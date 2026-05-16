@@ -97,7 +97,7 @@ use vauban_web::{
     db::create_pool_sandboxed,
     error::AppError,
     handlers,
-    ipc::{ProxyRdpClient, ProxySshClient},
+    ipc::{ProxyIacsClient, ProxyRdpClient, ProxySshClient},
     middleware, services,
     services::auth::AuthService,
     services::broadcast::BroadcastService,
@@ -183,6 +183,49 @@ fn init_rdp_proxy_client() -> Option<Arc<ProxyRdpClient>> {
         }
         Err(e) => {
             tracing::warn!("Failed to initialize RDP proxy client: {}", e);
+            None
+        }
+    }
+}
+
+/// Initialize IACS proxy client if IPC environment variables are set.
+///
+/// Returns `Some(Arc<ProxyIacsClient>)` when both
+/// `VAUBAN_PROXY_IACS_IPC_READ` and `VAUBAN_PROXY_IACS_IPC_WRITE` are
+/// set by the supervisor, `None` otherwise (dev / test mode where the
+/// legacy in-process iacs sshd is used as a fallback).
+fn init_iacs_proxy_client() -> Option<Arc<ProxyIacsClient>> {
+    use std::os::unix::io::RawFd;
+
+    let read_fd: RawFd = match std::env::var("VAUBAN_PROXY_IACS_IPC_READ") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    let write_fd: RawFd = match std::env::var("VAUBAN_PROXY_IACS_IPC_WRITE") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    // SAFETY: We are early in startup, before spawning async tasks.
+    unsafe {
+        std::env::remove_var("VAUBAN_PROXY_IACS_IPC_READ");
+        std::env::remove_var("VAUBAN_PROXY_IACS_IPC_WRITE");
+    }
+
+    match ProxyIacsClient::new(read_fd, write_fd) {
+        Ok(client) => {
+            tracing::info!("IACS proxy client initialized (running under supervisor)");
+            Some(client)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize IACS proxy client: {}", e);
             None
         }
     }
@@ -650,6 +693,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("RDP proxy IPC processing task started");
     }
 
+    // Create IACS proxy client if running under supervisor (Lot 3:
+    // per-asset target resolution).
+    let proxy_iacs = init_iacs_proxy_client();
+
+    if let Some(ref client) = proxy_iacs {
+        let client_clone = Arc::clone(client);
+        let broadcast_for_iacs = broadcast.clone();
+        tokio::spawn(async move {
+            if let Err(e) = client_clone
+                .process_incoming_with_broadcast(broadcast_for_iacs)
+                .await
+            {
+                tracing::error!(error = %e, "IACS proxy IPC processing task failed");
+            }
+        });
+        tracing::info!("IACS proxy IPC processing task started");
+    }
+
     // Create vault crypto client if running under supervisor
     let vault_client = init_vault_client();
 
@@ -739,6 +800,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limiter,
         ssh_proxy,
         rdp_proxy,
+        proxy_iacs,
         supervisor: supervisor_client.clone(),
         vault_client,
         access_client,
@@ -750,13 +812,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         iacs_tunnel_registry: vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
     };
 
-    // Boot the in-process IACS tunnel sshd if both the global
-    // industrial kill-switch AND the dedicated `[industrial.iacs_tunnel]`
-    // sub-toggle are on. A failure to bind logs an `error!` and is
-    // non-fatal: vauban-web stays up so the rest of the platform
-    // (web UI, IT sessions) keeps working while operators fix the
-    // IACS configuration.
-    if config.industrial.enabled && config.industrial.iacs_tunnel.enabled {
+    // === Lot 5: legacy in-process IACS sshd is deprecated in favour
+    // of the privileged-separated `vauban-proxy-iacs` service.
+    //
+    // When `app_state.proxy_iacs.is_some()` (production / supervised
+    // mode), the in-process sshd MUST NOT be spawned -- the listener
+    // bind would race with the supervisor's pre-bind on the same
+    // port, and the in-process path is incompatible with Capsicum on
+    // FreeBSD anyway. The watchdog still runs (it is DB-backed and
+    // protocol-agnostic; it terminates revoked tunnels via the new
+    // IPC instead of the in-process registry).
+    //
+    // The legacy in-process sshd is only spawned when no proxy-iacs
+    // IPC channel exists (dev / test mode without supervisor). This
+    // branch survives until the legacy module is fully retired in a
+    // follow-up cleanup; deletion would cascade through dozens of
+    // unit tests and is out of scope for this lot.
+    let proxy_iacs_present = app_state.proxy_iacs.is_some();
+    if config.industrial.enabled
+        && config.industrial.iacs_tunnel.enabled
+        && !proxy_iacs_present
+    {
         let registry = app_state.iacs_tunnel_registry.clone();
         let pool = app_state.db_pool.clone();
         let tunnel_cfg = config.industrial.iacs_tunnel.clone();
@@ -795,6 +871,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry, pool, tunnel_cfg,
         );
         tracing::info!("iacs_tunnel: revocation watchdog spawned");
+    } else if config.industrial.enabled && config.industrial.iacs_tunnel.enabled {
+        // proxy_iacs_present == true: spawn the revocation watchdog
+        // anyway. The watchdog is DB-backed and protocol-agnostic;
+        // it runs in vauban-web (which holds the DB pool) rather
+        // than vauban-proxy-iacs (which is DB-less). Revoked tunnels
+        // are terminated via the new `IacsTunnelTerminate` IPC sent
+        // to proxy-iacs.
+        let pool = app_state.db_pool.clone();
+        let tunnel_cfg = config.industrial.iacs_tunnel.clone();
+        let registry = app_state.iacs_tunnel_registry.clone();
+        let proxy_iacs_for_wd = app_state.proxy_iacs.clone();
+        let _watchdog = vauban_web::services::iacs_tunnel::spawn_watchdog_with_proxy_iacs(
+            registry,
+            pool,
+            tunnel_cfg,
+            proxy_iacs_for_wd,
+        );
+        tracing::info!(
+            "iacs_tunnel: revocation watchdog spawned (proxy-iacs IPC mode)"
+        );
     } else {
         tracing::info!(
             industrial_enabled = config.industrial.enabled,

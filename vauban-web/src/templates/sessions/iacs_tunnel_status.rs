@@ -50,12 +50,24 @@ pub struct IacsTunnelStatusTemplate {
     pub bastion_hostname: String,
     /// Bastion port the IACS sshd is bound to (default 22322).
     pub bastion_port: u16,
-    /// Local port the EWS will forward FROM (e.g. 4321) -- pulled from
-    /// the asset row at session creation time.
+    /// Local TCP port the EWS will bind via `ssh -L LP:...`. Computed
+    /// by [`crate::services::iacs_tunnel::derive_local_forward_port`]
+    /// so that privileged asset ports (Modbus 502, MMS 102, ...) are
+    /// shifted into the user range (50502, 50102, ...) -- the
+    /// operator never needs root to bind locally.
     pub local_forward_port: u16,
-    /// Target host:port the bastion will tunnel TO. Today always
-    /// `127.0.0.1:4321` (config-driven), tomorrow derived from
-    /// `assets.hostname:assets.port`.
+    /// Asset upstream hostname (RHS of the `ssh -L` command's
+    /// `<local>:<host>:<port>` triplet). The bastion's `validate_target`
+    /// pins this exact value on the per-session entry, so the
+    /// rendered command MUST carry it verbatim.
+    pub target_host: String,
+    /// Asset upstream port (the third element of the `-L` triplet).
+    /// Stays equal to `assets.port` end-to-end -- the privileged-port
+    /// rewrite is purely an EWS-side concern.
+    pub target_port: u16,
+    /// Display label for the upstream `host:port`. Rendered as a hint
+    /// alongside the SSH command so the operator can map "what I'm
+    /// reaching" to "what I configured in my IACS client".
     pub tunnel_target_addr: String,
     /// Current session status (`waiting_client`, `tunnel_active`,
     /// `terminated`). Used for the initial state pill; L5 mutates
@@ -67,8 +79,24 @@ pub struct IacsTunnelStatusTemplate {
 
 impl IacsTunnelStatusTemplate {
     /// Build the canonical
-    /// `ssh -i ~/.ssh/id_VAUBAN -L LP:127.0.0.1:LP <session_uuid>@<bastion> -p <port> -N`
+    /// `ssh -i ~/.ssh/id_VAUBAN -L <local>:<asset_host>:<asset_port> <session_uuid>@<bastion> -p <port> -N`
     /// command line as a String.
+    ///
+    /// Three independent fields drive the `-L` triplet:
+    ///
+    /// - `local_forward_port` (LHS): the port the EWS binds locally.
+    ///   Derived from the asset port via
+    ///   [`crate::services::iacs_tunnel::derive_local_forward_port`]
+    ///   so that privileged asset ports (Modbus 502, MMS 102, ...)
+    ///   are shifted out of the kernel-restricted range. The operator
+    ///   never needs root on their EWS.
+    /// - `target_host` (middle): the asset's hostname / IP. The
+    ///   bastion's `validate_target` pins this value on the
+    ///   per-session entry, so a rendered command that hardcodes
+    ///   `127.0.0.1` here would only ever work in a dev fixture
+    ///   where the asset is on loopback.
+    /// - `target_port` (RHS): the asset's true upstream port. Stays
+    ///   equal to `assets.port` end-to-end.
     ///
     /// `-i ~/.ssh/id_VAUBAN` is required: without it OpenSSH offers
     /// `~/.ssh/id_rsa` / `id_ed25519` / agent keys, none of which are
@@ -82,11 +110,25 @@ impl IacsTunnelStatusTemplate {
     /// `<code>`) and by the unit tests below.
     pub fn ssh_command(&self) -> String {
         format!(
-            "ssh -i ~/.ssh/id_VAUBAN -L {lp}:127.0.0.1:{lp} {sess}@{host} -p {port} -N",
+            "ssh -i ~/.ssh/id_VAUBAN -L {lp}:{th}:{tp} {sess}@{host} -p {port} -N",
             lp = self.local_forward_port,
+            th = self.target_host,
+            tp = self.target_port,
             sess = self.session_uuid,
             host = self.bastion_hostname,
             port = self.bastion_port,
+        )
+    }
+
+    /// Display string rendered next to the `ssh -L` block so the
+    /// operator immediately sees both ports and the asset.
+    /// Format: `127.0.0.1:50502  ->  10.42.0.7:502 (asset)`
+    pub fn local_to_upstream_label(&self) -> String {
+        format!(
+            "127.0.0.1:{lp}  ->  {th}:{tp}",
+            lp = self.local_forward_port,
+            th = self.target_host,
+            tp = self.target_port,
         )
     }
 }
@@ -114,8 +156,10 @@ mod tests {
             industrial_protocol: "modbus".to_string(),
             bastion_hostname: "bastion.example.com".to_string(),
             bastion_port: 22322,
-            local_forward_port: 4321,
-            tunnel_target_addr: "127.0.0.1:4321".to_string(),
+            local_forward_port: 50_502,
+            target_host: "10.42.0.7".to_string(),
+            target_port: 502,
+            tunnel_target_addr: "10.42.0.7:502".to_string(),
             session_status: "waiting_client".to_string(),
             csrf_token: "csrf-token".to_string(),
         }
@@ -126,7 +170,7 @@ mod tests {
         let t = make_template();
         assert_eq!(
             t.ssh_command(),
-            "ssh -i ~/.ssh/id_VAUBAN -L 4321:127.0.0.1:4321 \
+            "ssh -i ~/.ssh/id_VAUBAN -L 50502:10.42.0.7:502 \
              11111111-1111-1111-1111-111111111111@bastion.example.com -p 22322 -N"
         );
     }
@@ -147,11 +191,57 @@ mod tests {
         );
     }
 
+    /// The privileged-port rewrite contract: an asset on Modbus 502
+    /// renders as `-L 50502:<host>:502` so the EWS binds 50502
+    /// (unprivileged) but the bastion still tunnels to the real
+    /// asset port 502. A regression that re-coupled the LHS to the
+    /// asset port would break every Linux/macOS/Windows operator
+    /// who does not run `ssh` as root.
     #[test]
-    fn ssh_command_uses_local_forward_port_on_both_sides() {
+    fn ssh_command_decouples_local_port_from_upstream_for_modbus() {
         let mut t = make_template();
-        t.local_forward_port = 502;
-        assert!(t.ssh_command().contains("-L 502:127.0.0.1:502"));
+        t.local_forward_port = 50_502;
+        t.target_host = "10.42.0.7".to_string();
+        t.target_port = 502;
+        let cmd = t.ssh_command();
+        assert!(
+            cmd.contains("-L 50502:10.42.0.7:502"),
+            "Modbus must render as -L 50502:<host>:502 (got {cmd})"
+        );
+        assert!(
+            !cmd.contains(":127.0.0.1:"),
+            "the legacy hardcoded 127.0.0.1 RHS must NOT leak into \
+             the rendered command for a non-loopback asset (got {cmd})"
+        );
+    }
+
+    /// For a non-privileged asset port (OPC-UA 4840) the LHS equals
+    /// the upstream port -- no rewrite, the contract is a no-op
+    /// when no privilege is required.
+    #[test]
+    fn ssh_command_does_not_rewrite_unprivileged_asset_port() {
+        let mut t = make_template();
+        t.local_forward_port = 4_840;
+        t.target_host = "opcua.factory.local".to_string();
+        t.target_port = 4_840;
+        assert!(
+            t.ssh_command()
+                .contains("-L 4840:opcua.factory.local:4840"),
+        );
+    }
+
+    /// Loopback assets (dev / E2E fixtures) keep working: the
+    /// rendered RHS reflects whatever `target_host` was pinned on
+    /// the per-session entry, including `127.0.0.1`.
+    #[test]
+    fn ssh_command_supports_loopback_asset_in_dev_fixtures() {
+        let mut t = make_template();
+        t.local_forward_port = 50_502;
+        t.target_host = "127.0.0.1".to_string();
+        t.target_port = 502;
+        assert!(
+            t.ssh_command().contains("-L 50502:127.0.0.1:502"),
+        );
     }
 
     #[test]
@@ -171,7 +261,7 @@ mod tests {
         let html = t.render().expect("render must succeed");
         assert!(html.contains("PLC-Modbus-A1"));
         assert!(html.contains("waiting_client"));
-        assert!(html.contains("ssh -i ~/.ssh/id_VAUBAN -L 4321:127.0.0.1:4321"));
+        assert!(html.contains("ssh -i ~/.ssh/id_VAUBAN -L 50502:10.42.0.7:502"));
         assert!(html.contains("Disconnect"));
     }
 

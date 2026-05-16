@@ -123,6 +123,7 @@ fn run_service() -> Result<()> {
     let web_channel = parse_topology_channel("WEB");
     let proxy_ssh_channel = parse_topology_channel("PROXY_SSH");
     let proxy_rdp_channel = parse_topology_channel("PROXY_RDP");
+    let proxy_iacs_channel = parse_topology_channel("PROXY_IACS");
     let auth_channel = parse_topology_channel("AUTH");
 
     // SECURITY: load and CLEAR the session-token MAC key before any
@@ -163,6 +164,8 @@ fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_PROXY_SSH_IPC_WRITE");
         std::env::remove_var("VAUBAN_PROXY_RDP_IPC_READ");
         std::env::remove_var("VAUBAN_PROXY_RDP_IPC_WRITE");
+        std::env::remove_var("VAUBAN_PROXY_IACS_IPC_READ");
+        std::env::remove_var("VAUBAN_PROXY_IACS_IPC_WRITE");
         std::env::remove_var("VAUBAN_AUTH_IPC_READ");
         std::env::remove_var("VAUBAN_AUTH_IPC_WRITE");
     }
@@ -237,6 +240,11 @@ fn run_service() -> Result<()> {
         all_fds.push(ch.write_fd());
         peer_channels.push(("proxy_rdp", ch));
     }
+    if let Some(ref ch) = proxy_iacs_channel {
+        all_fds.push(ch.read_fd());
+        all_fds.push(ch.write_fd());
+        peer_channels.push(("proxy_iacs", ch));
+    }
     if let Some(ref ch) = auth_channel {
         all_fds.push(ch.read_fd());
         all_fds.push(ch.write_fd());
@@ -268,16 +276,17 @@ fn run_service() -> Result<()> {
     // peer channel: pure dev mode (manually launched, no env vars) keeps 0
     // peers and is allowed but completely useless for RBAC -- the operator
     // is on their own.
-    const EXPECTED_PEER_COUNT: usize = 4; // web, proxy_ssh, proxy_rdp, auth
+    const EXPECTED_PEER_COUNT: usize = 5; // web, proxy_ssh, proxy_rdp, proxy_iacs, auth
     if !peer_channels.is_empty() && peer_channels.len() != EXPECTED_PEER_COUNT {
         let attached: Vec<&str> = attached_peer_names.clone();
         anyhow::bail!(
             "vauban-access TOPOLOGY mismatch: expected {} incoming peers \
-             (web, proxy_ssh, proxy_rdp, auth) but got {}: {:?}. Refusing \
-             to start in an asymmetric state -- callers from missing peers \
-             would silently time out at the RBAC layer. Check that vauban-\
-             supervisor exports VAUBAN_<PEER>_IPC_READ/WRITE for every \
-             TOPOLOGY edge ending at Access.",
+             (web, proxy_ssh, proxy_rdp, proxy_iacs, auth) but got {}: {:?}. \
+             Refusing to start in an asymmetric state -- callers from \
+             missing peers would silently time out at the RBAC layer. \
+             Check that vauban-supervisor exports \
+             VAUBAN_<PEER>_IPC_READ/WRITE for every TOPOLOGY edge ending \
+             at Access.",
             EXPECTED_PEER_COUNT,
             peer_channels.len(),
             attached
@@ -1173,7 +1182,7 @@ mod tests {
         //   3. peer_channels.push(("<lower>", ch)) must appear so the
         //      main_loop poll set actually watches its read_fd.
         let source = prod_source();
-        for peer_suffix in ["WEB", "PROXY_SSH", "PROXY_RDP", "AUTH"] {
+        for peer_suffix in ["WEB", "PROXY_SSH", "PROXY_RDP", "PROXY_IACS", "AUTH"] {
             let lower = peer_suffix.to_lowercase();
             let parse_needle = format!("parse_topology_channel(\"{}\")", peer_suffix);
             assert!(
@@ -1207,8 +1216,8 @@ mod tests {
         // The constant that the boot-time check uses MUST stay aligned
         // with the actual peer count.
         assert!(
-            source.contains("EXPECTED_PEER_COUNT: usize = 4"),
-            "EXPECTED_PEER_COUNT must reflect the 4 TOPOLOGY incoming peers"
+            source.contains("EXPECTED_PEER_COUNT: usize = 5"),
+            "EXPECTED_PEER_COUNT must reflect the 5 TOPOLOGY incoming peers"
         );
         assert!(
             source.contains("anyhow::bail!") && source.contains("TOPOLOGY mismatch"),
@@ -1224,7 +1233,7 @@ mod tests {
         // raw FDs leak into descendant address spaces (information
         // disclosure / sandbox bypass risk).
         let source = prod_source();
-        for peer_suffix in ["WEB", "PROXY_SSH", "PROXY_RDP", "AUTH"] {
+        for peer_suffix in ["WEB", "PROXY_SSH", "PROXY_RDP", "PROXY_IACS", "AUTH"] {
             for direction in ["READ", "WRITE"] {
                 let needle = format!("remove_var(\"VAUBAN_{}_IPC_{}\")", peer_suffix, direction);
                 assert!(

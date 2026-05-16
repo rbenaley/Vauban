@@ -8,6 +8,7 @@ members = [
     "vauban-auth",
     "vauban-access",
     "vauban-proxy-ssh",
+    "vauban-proxy-iacs",
     "vauban-vault",
     "vauban-audit",
 ]
@@ -22,7 +23,7 @@ exclude = ["vauban-proxy-rdp"]
 default-members = ["vauban-supervisor"]
 
 [workspace.package]
-version = "0.7.7"
+version = "0.7.8"
 edition = "2024"
 rust-version = "1.89"
 authors = ["Richard Ben Aleya"]

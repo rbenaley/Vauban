@@ -328,8 +328,10 @@ async fn template_renders_ws_subscription_scaffolding() {
         industrial_protocol: "Modbus".to_string(),
         bastion_hostname: "127.0.0.1".to_string(),
         bastion_port: 22322,
-        local_forward_port: 4321,
-        tunnel_target_addr: "127.0.0.1:4321".to_string(),
+        local_forward_port: 50_502,
+        target_host: "127.0.0.1".to_string(),
+        target_port: 502,
+        tunnel_target_addr: "127.0.0.1:502".to_string(),
         session_status: "waiting_client".to_string(),
         csrf_token: "test".to_string(),
     };

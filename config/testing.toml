@@ -64,40 +64,20 @@ parallelism = 1
 # ==============================================================================
 # IACS / INDUSTRIAL
 # ==============================================================================
-#
-# Engineering Workstation (EWS) onboarding -- preliminary scaffolding for
-# future IACS asset support. The module exposes the "IACS" sidebar entry
-# (Administration zone), the "Onboard EWS" button on /assets, and the
-# /iacs/* routes (user-zone form + admin-zone CRUD).
-#
-# When `enabled = false`, the entire surface is killed: routes return 404,
-# sidebar entries are hidden, and `PermissionContext::iacs_*` is forced to
-# false even if the Casbin policy grants the action. Existing rows in
-# `ews_*` tables are kept; re-enabling exposes them again.
+
 [industrial]
 enabled = true            # set to false to fully hide the IACS surface
 max_ews_per_user = 0      # 0 = no cap; otherwise a per-user EWS quota
 
-# IACS tunnel sub-module: in-process sshd (russh) inside `vauban-web`.
-# Onboarded EWS connect to `bind_addr` with their VAUBAN id_VAUBAN
-# private key, the SSH username is the one-shot session UUID, and the
-# server only accepts a single `direct-tcpip` channel forwarded to
-# `target_addr`. All other SSH channels (shell, exec, subsystem,
-# tcpip-forward) are rejected.
-#
-# Boot precondition: industrial.enabled = true AND iacs_tunnel.enabled
-# = true. Either of those false, the sshd never binds.
-#
-# IACS sshd disabled in the test profile: integration tests that need a
-# sshd build their own (`spawn_iacs_tunnel_server` on `127.0.0.1:0` with a
-# per-test temp host key path). Leaving the global instance disabled
-# prevents two parallel test runs from fighting over the same host key file.
+# Anti-SSRF: `allow_loopback_targets = false` (default) refuses to
+# broker upstream TCP connect to a loopback IP. Flip to `true` only
+# in dev/E2E where the fake industrial server runs on `127.0.0.1`.
 [industrial.iacs_tunnel]
 enabled = false
 bind_addr = "0.0.0.0:22322"
 advertise_hostname = "localhost"
 target_addr = "127.0.0.1:4321"
-host_key_path = "vauban-web/certs/iacs_tunnel_host_ed25519.test"
+host_key_path = "vauban-proxy-iacs/certs/iacs_tunnel_host_ed25519.test"
 max_concurrent_per_user = 4
 max_concurrent_per_ews = 2
 waiting_client_ttl_seconds = 300

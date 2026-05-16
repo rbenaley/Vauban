@@ -122,12 +122,14 @@ pub const SESSION_TOKEN_KEY_ENV: &str = "VAUBAN_SESSION_TOKEN_KEY";
 /// Re-export rather than redefining to guarantee a single source of
 /// truth.
 #[cfg(feature = "access-guard")]
-pub use crate::access_guard::{PROTOCOL_RDP, PROTOCOL_SSH};
+pub use crate::access_guard::{PROTOCOL_IACS_TUNNEL, PROTOCOL_RDP, PROTOCOL_SSH};
 
 #[cfg(not(feature = "access-guard"))]
 pub const PROTOCOL_SSH: &str = "ssh";
 #[cfg(not(feature = "access-guard"))]
 pub const PROTOCOL_RDP: &str = "rdp";
+#[cfg(not(feature = "access-guard"))]
+pub const PROTOCOL_IACS_TUNNEL: &str = "iacs_tunnel";
 
 // ============================================================================
 // TokenKey

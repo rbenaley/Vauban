@@ -332,24 +332,39 @@ pub fn setup_service_sandbox_extended(
     db_fd: Option<RawFd>,
     fd_receiver_fds: Option<&[RawFd]>,
 ) -> Result<()> {
-    // Limit IPC pipe rights
+    setup_service_sandbox_with_listeners(ipc_fds, db_fd, fd_receiver_fds, None)
+}
+
+/// Like [`setup_service_sandbox_extended`], plus a list of pre-bound
+/// listening sockets that the service `accept()`s on after `cap_enter`.
+/// Used by `vauban-proxy-iacs` (the supervisor pre-binds the IACS
+/// sshd listener and hands the FD via `VAUBAN_IACS_LISTENER_FD`).
+pub fn setup_service_sandbox_with_listeners(
+    ipc_fds: &[RawFd],
+    db_fd: Option<RawFd>,
+    fd_receiver_fds: Option<&[RawFd]>,
+    listener_fds: Option<&[RawFd]>,
+) -> Result<()> {
     for &fd in ipc_fds {
         limit_fd_rights(fd, &CapRights::read_write())?;
     }
 
-    // Limit database socket rights if present
     if let Some(fd) = db_fd {
         limit_fd_rights(fd, &CapRights::connected_socket())?;
     }
 
-    // Limit FD receiver socket rights if present
     if let Some(fds) = fd_receiver_fds {
         for &fd in fds {
             limit_fd_rights(fd, &CapRights::fd_receiver_socket())?;
         }
     }
 
-    // Enter capability mode
+    if let Some(fds) = listener_fds {
+        for &fd in fds {
+            limit_fd_rights(fd, &CapRights::listening_socket())?;
+        }
+    }
+
     enter_capability_mode()?;
 
     Ok(())

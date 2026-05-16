@@ -185,10 +185,24 @@
         <p class="text-xs text-gray-500 dark:text-gray-400">
             The bastion will accept exactly one inbound SSH connection from your EWS public key
             on this session. Run the command on the workstation you onboarded;
-            the local port forward will tunnel
+            point your IACS client at
+            <code class="font-mono" data-testid="iacs-tunnel-local-bind">127.0.0.1:{{ local_forward_port }}</code>
+            and it will reach
             <code class="font-mono">{{ tunnel_target_addr }}</code>
             through the bastion.
         </p>
+        {% if local_forward_port != target_port %}
+        <p class="text-xs text-amber-700 dark:text-amber-300" data-testid="iacs-tunnel-port-rewrite-hint">
+            <strong>Note:</strong>
+            the upstream asset listens on the privileged port
+            <code class="font-mono">{{ target_port }}</code> (requires root to bind on Unix);
+            the local listener on your EWS therefore uses
+            <code class="font-mono">{{ local_forward_port }}</code>
+            so you do not need elevated privileges. Configure your IACS client accordingly
+            (e.g. <code class="font-mono">mbpoll -p {{ local_forward_port }} 127.0.0.1</code>
+            instead of the default port {{ target_port }}).
+        </p>
+        {% endif %}
         <div x-data="{ cmd: '{{ self.ssh_command()|escape }}', copied: false,
                        copy() {
                          const restore = () => { this.copied = true; setTimeout(() => this.copied = false, 1500); };
@@ -221,7 +235,7 @@
         <details class="text-xs text-gray-500 dark:text-gray-400">
             <summary class="cursor-pointer">What does this command do?</summary>
             <div class="mt-2 space-y-1">
-                <p><code class="font-mono">-L {{ local_forward_port }}:127.0.0.1:{{ local_forward_port }}</code> &mdash; bind a local TCP listener on your EWS that forwards through the bastion.</p>
+                <p><code class="font-mono">-L {{ local_forward_port }}:{{ target_host }}:{{ target_port }}</code> &mdash; bind <code class="font-mono">127.0.0.1:{{ local_forward_port }}</code> on your EWS and forward every byte through the bastion to <code class="font-mono">{{ target_host }}:{{ target_port }}</code> (the asset).</p>
                 <p><code class="font-mono">{{ session_uuid }}@{{ bastion_hostname }}</code> &mdash; the SSH username is the one-shot session UUID issued by VAUBAN.</p>
                 <p><code class="font-mono">-p {{ bastion_port }}</code> &mdash; the IACS sshd port (separate from the regular VAUBAN proxy).</p>
                 <p><code class="font-mono">-N</code> &mdash; do not request a shell; only the port forward is allowed.</p>

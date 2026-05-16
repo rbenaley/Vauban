@@ -88,6 +88,12 @@ pub enum Service {
     Audit,
     ProxySsh,
     ProxyRdp,
+    /// IACS tunnel proxy. Hosts the russh sshd that EWS hosts connect
+    /// to with `ssh -L`, and brokers the upstream TCP connection to
+    /// the industrial asset (`asset.hostname:asset.port`) via the
+    /// supervisor's SCM_RIGHTS broker. See
+    /// `docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.0).md`.
+    ProxyIacs,
 }
 
 impl Service {
@@ -106,6 +112,7 @@ impl Service {
             Service::Audit => 5,
             Service::ProxySsh => 6,
             Service::ProxyRdp => 7,
+            Service::ProxyIacs => 8,
         }
     }
 }
@@ -1546,6 +1553,122 @@ pub enum Message {
         error: Option<String>,
     },
 
+    // ========== IACS Tunnel (Web -> ProxyIacs) ==========
+    //
+    // The IACS tunnel lifecycle is staged:
+    //
+    // 1. vauban-web validates the asset / EWS / quotas / access-rule
+    //    and mints a `SessionToken` via vauban-access bound to
+    //    (host=asset.hostname, port=asset.port, target_service=ProxyIacs,
+    //    session_id, user, asset, "iacs_tunnel").
+    // 2. vauban-web emits `IacsTunnelOpen` to vauban-proxy-iacs with
+    //    the per-asset target plus the EWS public-key fingerprint
+    //    pinned in the EWS row (so the proxy can authenticate the
+    //    `ssh -L` handshake without DB access).
+    // 3. vauban-proxy-iacs verifies the token in `Verifier::Proxy`
+    //    role, stores the entry in `PendingSessions`, replies
+    //    `IacsTunnelOpened { success: true }`. The wait for the EWS
+    //    handshake is asynchronous from the IPC roundtrip's view.
+    // 4. When the EWS opens its `direct-tcpip`, vauban-proxy-iacs
+    //    re-checks via `AccessGuard` (defense-in-depth) then sends
+    //    `TcpConnectRequest { target_service: ProxyIacs, host, port,
+    //    session_token }` to the supervisor. The supervisor
+    //    DNS-resolves and connects, then hands the FD back via
+    //    SCM_RIGHTS.
+    // 5. On EWS close (or watchdog termination via
+    //    `IacsTunnelTerminate`), vauban-proxy-iacs emits
+    //    `IacsTunnelClosed` with the byte counters.
+    /// Open a new IACS tunnel pending entry.
+    IacsTunnelOpen {
+        request_id: u64,
+        /// `proxy_sessions.uuid` -- the EWS will use this string as
+        /// the SSH `user` field at handshake time.
+        session_id: String,
+        /// Owning user UUID (`users.uuid`).
+        user_uuid: String,
+        /// Industrial asset UUID (`assets.uuid`).
+        asset_uuid: String,
+        /// EWS UUID (`ews.uuid`) pinned by vauban-web before the
+        /// IPC send; vauban-proxy-iacs trusts this value.
+        ews_uuid: String,
+        /// SHA-256 hex (lowercase, 64 chars) of the EWS public-key
+        /// wire encoding. Sole authentication criterion in
+        /// `auth_publickey` on the proxy side.
+        ews_pubkey_fp: String,
+        /// Asset hostname (FQDN or IP). Resolved by the supervisor
+        /// at `TcpConnectRequest` time. NEVER resolved on the proxy
+        /// (post-Capsicum, no DNS).
+        asset_host: String,
+        /// Asset port.
+        asset_port: u16,
+        /// Industrial protocol label (`modbus`, `opcua`, `tcp`,
+        /// ...). Stored in `proxy_sessions.industrial_protocol`;
+        /// not used by the proxy for routing.
+        industrial_protocol: String,
+        /// TTL in seconds for the pending entry, mirrors
+        /// `industrial.iacs_tunnel.waiting_client_ttl_seconds`.
+        ttl_seconds: u32,
+        /// Bincode-serialised `shared::session_token::SessionToken`
+        /// minted by vauban-access in `Verifier::Proxy` role for
+        /// vauban-proxy-iacs. The proxy verifies it locally before
+        /// inserting into `PendingSessions`, then re-presents it on
+        /// the supervisor `TcpConnectRequest` (the supervisor
+        /// re-verifies it in `Verifier::Supervisor` role).
+        session_token: Vec<u8>,
+    },
+
+    /// Acknowledgement from vauban-proxy-iacs that the pending
+    /// entry was inserted (or rejected).
+    IacsTunnelOpened {
+        request_id: u64,
+        session_id: String,
+        success: bool,
+        /// Optional human-readable error (logged but never sent to
+        /// the EWS).
+        error: Option<String>,
+    },
+
+    /// Lifecycle close event emitted by vauban-proxy-iacs (EWS
+    /// disconnected, watchdog terminated, internal error).
+    IacsTunnelClosed {
+        request_id: u64,
+        session_id: String,
+        /// Free-form structured reason (`ews_disconnect`,
+        /// `terminated`, `expired`, `error: <msg>`).
+        reason: String,
+        bytes_in: u64,
+        bytes_out: u64,
+        /// EWS source IP, if known (set after the SSH handshake).
+        peer_ip: Option<String>,
+    },
+
+    /// Force-terminate a live IACS tunnel. Sent by vauban-web's
+    /// revocation watchdog when the owning EWS or user becomes
+    /// disabled / offboarded mid-session. Idempotent: a second
+    /// terminate for an already-closed session is a no-op.
+    IacsTunnelTerminate {
+        request_id: u64,
+        session_id: String,
+        /// Free-form reason logged on both sides
+        /// (`ews_disabled`, `user_disabled`, `access_revoked`,
+        /// `admin_terminate`).
+        reason: String,
+    },
+
+    /// Periodic stats / lifecycle update from vauban-proxy-iacs
+    /// to vauban-web, fanned out on `WsChannel::SessionLive(uuid)`.
+    /// The 5 s tick frequency means this is a high-volume message
+    /// type; vauban-web routes it through `BroadcastService::send_periodic`
+    /// so the broadcast log is coalesced (`websocket-logging.mdc`).
+    IacsTunnelStatusUpdate {
+        session_id: String,
+        /// `tunnel_active`, `tunnel_stats`, `tunnel_closed`.
+        status: String,
+        bytes_in: u64,
+        bytes_out: u64,
+        peer_ip: Option<String>,
+    },
+
     /// Bitmap region update from RDP session (ProxyRdp -> Web).
     /// Contains a PNG-encoded image of the updated screen region.
     RdpDisplayUpdate {
@@ -1836,6 +1959,10 @@ impl Message {
             | Message::SshHostKeyResult { request_id, .. }
             | Message::RdpSessionOpen { request_id, .. }
             | Message::RdpSessionOpened { request_id, .. }
+            | Message::IacsTunnelOpen { request_id, .. }
+            | Message::IacsTunnelOpened { request_id, .. }
+            | Message::IacsTunnelClosed { request_id, .. }
+            | Message::IacsTunnelTerminate { request_id, .. }
             | Message::AcmeRenewRequest { request_id, .. }
             | Message::AcmeRenewResponse { request_id, .. }
             | Message::AcmeChallengeInstall { request_id, .. }
@@ -1881,8 +2008,51 @@ mod tests {
             Service::Audit,
             Service::ProxySsh,
             Service::ProxyRdp,
+            Service::ProxyIacs,
         ];
-        assert_eq!(services.len(), 8);
+        assert_eq!(services.len(), 9);
+    }
+
+    /// Drift pin: the wire discriminants are an immutable contract
+    /// between vauban-access (token mint), the proxies (token verify
+    /// at the bord), and the supervisor (token verify before broker
+    /// SCM_RIGHTS). Renumbering an existing variant is a wire break;
+    /// adding a new one MUST come with a new branch in this test so
+    /// the reviewer is forced to confirm the value.
+    #[test]
+    fn service_token_discriminants_are_frozen() {
+        assert_eq!(Service::Supervisor.as_token_discriminant(), 0);
+        assert_eq!(Service::Web.as_token_discriminant(), 1);
+        assert_eq!(Service::Auth.as_token_discriminant(), 2);
+        assert_eq!(Service::Access.as_token_discriminant(), 3);
+        assert_eq!(Service::Vault.as_token_discriminant(), 4);
+        assert_eq!(Service::Audit.as_token_discriminant(), 5);
+        assert_eq!(Service::ProxySsh.as_token_discriminant(), 6);
+        assert_eq!(Service::ProxyRdp.as_token_discriminant(), 7);
+        assert_eq!(Service::ProxyIacs.as_token_discriminant(), 8);
+    }
+
+    /// Pinned variant count -- adding a new Service MUST update this
+    /// test alongside `service_token_discriminants_are_frozen` and
+    /// the supervisor TOPOLOGY drift tests.
+    #[test]
+    fn service_enum_count_pinned() {
+        let all = [
+            Service::Supervisor,
+            Service::Web,
+            Service::Auth,
+            Service::Access,
+            Service::Vault,
+            Service::Audit,
+            Service::ProxySsh,
+            Service::ProxyRdp,
+            Service::ProxyIacs,
+        ];
+        assert_eq!(
+            all.len(),
+            9,
+            "Service enum has changed -- update topology, mailer whitelist, broker gate, and proxy_*::env_suffix"
+        );
     }
 
     #[test]

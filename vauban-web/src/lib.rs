@@ -74,6 +74,16 @@ pub struct AppState {
     /// RDP proxy client for IPC with vauban-proxy-rdp.
     /// None if proxy is not available (development mode without supervisor).
     pub rdp_proxy: Option<Arc<ProxyRdpClient>>,
+    /// IACS proxy client for IPC with vauban-proxy-iacs.
+    ///
+    /// `None` when running outside the supervisor (dev/test mode); in
+    /// that legacy fallback the in-process iacs sshd in
+    /// `services::iacs_tunnel` handles tunnels with a fixed
+    /// `127.0.0.1:4321` target. Production must run under supervisor
+    /// so this field is `Some`. The field is read by
+    /// [`handlers::web::iacs_tunnel::connect_iacs`] which mints a
+    /// `SessionToken` and pushes a pending tunnel to proxy-iacs.
+    pub proxy_iacs: Option<Arc<ipc::ProxyIacsClient>>,
     /// Supervisor client for IPC with vauban-supervisor.
     /// Used for TCP connection brokering (Capsicum sandbox support).
     /// None if not running under supervisor (development mode).

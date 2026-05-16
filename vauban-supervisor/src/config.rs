@@ -56,6 +56,19 @@ pub struct SupervisorConfig {
     /// connect anywhere else when the requester is the Web service.
     #[serde(default)]
     pub mailer: MailerConfig,
+    /// Industrial / IACS tunnel configuration.
+    ///
+    /// Two responsibilities for the supervisor:
+    ///   1. Pre-bind the russh sshd listener (privileged port allowed,
+    ///      socket FD passed to vauban-proxy-iacs via `VAUBAN_IACS_LISTENER_FD`),
+    ///      so proxy-iacs only needs `accept()` after `cap_enter()`.
+    ///   2. Apply the same SSRF defence-in-depth as for the mailer: a
+    ///      `TcpConnectRequest { target_service: ProxyIacs }` whose
+    ///      destination resolves to a loopback IP is rejected unless
+    ///      `industrial.iacs_tunnel.allow_loopback_targets = true`
+    ///      (test/dev only).
+    #[serde(default)]
+    pub industrial: IndustrialConfig,
 }
 
 /// Database configuration for services that require direct DB access.
@@ -241,6 +254,70 @@ impl MailerConfig {
             && port == self.smtp_port
             && !self.smtp_host.is_empty()
             && host.eq_ignore_ascii_case(&self.smtp_host)
+    }
+}
+
+/// Industrial control systems configuration (supervisor view).
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct IndustrialConfig {
+    #[serde(default)]
+    pub iacs_tunnel: IacsTunnelSupervisorConfig,
+}
+
+/// Supervisor's view of `[industrial.iacs_tunnel]`. Only the fields
+/// the supervisor needs are deserialised here; vauban-web and
+/// vauban-proxy-iacs each parse the broader block separately.
+#[derive(Debug, Clone, Deserialize)]
+pub struct IacsTunnelSupervisorConfig {
+    /// Master switch. When false, the supervisor does NOT pre-bind
+    /// the IACS sshd listener; vauban-proxy-iacs is still spawned but
+    /// observes that `VAUBAN_IACS_LISTENER_FD` is unset and stays
+    /// idle. Useful when industrial mode is licensed off.
+    #[serde(default = "default_iacs_tunnel_enabled")]
+    pub enabled: bool,
+    /// Listener bind address ("host:port") for the sshd that EWS
+    /// hosts connect to with `ssh -L`. Defaults to `127.0.0.1:4321`
+    /// for backwards compatibility with development setups; production
+    /// deployments should pin a routable address.
+    #[serde(default = "default_iacs_tunnel_bind_addr")]
+    pub bind_addr: String,
+    /// Allow brokered TCP connect to a loopback address. False in
+    /// production (anti-SSRF defence-in-depth: the asset.hostname
+    /// MUST resolve to a non-loopback IP), true only for E2E tests
+    /// where the fake industrial server runs on `127.0.0.1`.
+    #[serde(default)]
+    pub allow_loopback_targets: bool,
+    /// Persistent path for the russh sshd ed25519 host key consumed
+    /// by `vauban-proxy-iacs`. The supervisor doesn't read this file;
+    /// it forwards the path to the proxy via
+    /// `VAUBAN_IACS_HOST_KEY_PATH`. The proxy generates the key on
+    /// first boot if absent (mode 0600). Defaults to the production
+    /// path under `/var/lib/vauban/`; dev / CI override to a repo-
+    /// local path that the unprivileged dev user can write.
+    #[serde(default = "default_iacs_tunnel_host_key_path")]
+    pub host_key_path: String,
+}
+
+fn default_iacs_tunnel_enabled() -> bool {
+    false
+}
+
+fn default_iacs_tunnel_bind_addr() -> String {
+    "127.0.0.1:4321".to_string()
+}
+
+fn default_iacs_tunnel_host_key_path() -> String {
+    "/var/lib/vauban/iacs_tunnel_host_ed25519".to_string()
+}
+
+impl Default for IacsTunnelSupervisorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_iacs_tunnel_enabled(),
+            bind_addr: default_iacs_tunnel_bind_addr(),
+            allow_loopback_targets: false,
+            host_key_path: default_iacs_tunnel_host_key_path(),
+        }
     }
 }
 
@@ -633,6 +710,24 @@ impl SupervisorConfig {
                     self.recording.storage_path.clone(),
                 ));
             }
+            "proxy_iacs" => {
+                // The supervisor pre-binds the IACS sshd listener and
+                // hands the FD via VAUBAN_IACS_LISTENER_FD (set in
+                // spawn_child via the inheritable_fds slot, NOT here
+                // -- env vars set here are strings, while the FD path
+                // also needs FD_CLOEXEC clearing).
+                //
+                // The host key path is a regular string env var,
+                // piped from `industrial.iacs_tunnel.host_key_path`
+                // so dev / CI can point at a repo-local file the
+                // unprivileged user can write (the production default
+                // `/var/lib/vauban/...` requires root or the
+                // `vauban_iacs` group).
+                vars.push((
+                    "VAUBAN_IACS_HOST_KEY_PATH".to_string(),
+                    self.industrial.iacs_tunnel.host_key_path.clone(),
+                ));
+            }
             _ => {}
         }
         vars
@@ -644,13 +739,14 @@ impl SupervisorConfig {
     pub fn startup_order(&self) -> Vec<&str> {
         // Fixed startup order based on dependencies
         vec![
-            "audit",     // No dependencies
-            "vault",     // No dependencies
-            "access",    // No dependencies
-            "auth",      // Depends on access, vault
-            "proxy_ssh", // Depends on access, vault, audit
-            "proxy_rdp", // Depends on access, vault, audit
-            "web",       // Depends on auth, access, audit
+            "audit",      // No dependencies
+            "vault",      // No dependencies
+            "access",     // No dependencies
+            "auth",       // Depends on access, vault
+            "proxy_ssh",  // Depends on access, vault, audit
+            "proxy_rdp",  // Depends on access, vault, audit
+            "proxy_iacs", // Depends on access, audit (no vault: no target credentials)
+            "web",        // Depends on auth, access, audit
         ]
     }
 }
@@ -685,7 +781,7 @@ mod tests {
 
         assert!(config.environment.is_development());
         assert!(!config.supervisor.privsep);
-        assert_eq!(config.services.len(), 7);
+        assert_eq!(config.services.len(), 8);
     }
 
     #[test]
@@ -720,6 +816,7 @@ mod tests {
         assert!(config.services.contains_key("auth"));
         assert!(config.services.contains_key("proxy_ssh"));
         assert!(config.services.contains_key("proxy_rdp"));
+        assert!(config.services.contains_key("proxy_iacs"));
         assert!(config.services.contains_key("web"));
     }
 
@@ -787,6 +884,7 @@ mod tests {
             "auth",
             "proxy_ssh",
             "proxy_rdp",
+            "proxy_iacs",
             "web",
         ];
         for service in services {
@@ -832,6 +930,7 @@ mod tests {
             "auth",
             "proxy_ssh",
             "proxy_rdp",
+            "proxy_iacs",
             "web",
         ];
 
@@ -880,9 +979,9 @@ mod tests {
         let config = test_config();
         let order = config.startup_order();
 
-        assert_eq!(order.len(), 7);
+        assert_eq!(order.len(), 8);
         assert_eq!(order[0], "audit");
-        assert_eq!(order[6], "web");
+        assert_eq!(order[7], "web");
     }
 
     #[test]

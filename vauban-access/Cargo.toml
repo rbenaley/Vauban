@@ -21,7 +21,7 @@ workspace = true
 [dependencies]
 # `session-token` enables minting cryptographic session tokens
 # (`IssueSessionToken` request handler).
-shared = { workspace = true, features = ["session-token", "tasks"] }
+shared = { workspace = true, features = ["session-token", "tasks", "access-guard"] }
 vauban-db.workspace = true
 libc.workspace = true
 tracing.workspace = true

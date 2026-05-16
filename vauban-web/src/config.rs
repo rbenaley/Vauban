@@ -1005,9 +1005,13 @@ pub struct IacsTunnelConfig {
     #[serde(default = "IacsTunnelConfig::default_advertise_hostname")]
     pub advertise_hostname: String,
 
-    /// Target `host:port` the bastion will tunnel each accepted
-    /// `direct-tcpip` channel to. Default `127.0.0.1:4321` (the MVP
-    /// fixed target until L6 wires the per-asset hostname:port).
+    /// DEPRECATED: legacy fixed `host:port` of the in-process iacs
+    /// sshd's MVP target. Per-asset target resolution now snapshots
+    /// `asset.hostname:asset.port` into `proxy_sessions.tunnel_target_addr`
+    /// at session creation; the in-process iacs sshd module
+    /// (`vauban-web/src/services/iacs_tunnel/server.rs`) is kept only
+    /// to compile until Lot 5 deletes it in favour of `vauban-proxy-iacs`.
+    /// Keep at the legacy default; nothing else reads this in production.
     #[serde(default = "IacsTunnelConfig::default_target_addr")]
     pub target_addr: String,
 

@@ -479,22 +479,57 @@ async fn iacs_status_page_renders_canonical_ssh_command() {
     assert_status(&resp, 200);
     let body = resp.text();
 
-    // The exact
-    // `ssh -i ~/.ssh/id_VAUBAN -L 4321:127.0.0.1:4321 ... -p 22322 -N`
-    // command line must appear, composed from the [industrial.iacs_tunnel]
-    // defaults (port 22322, target_addr 127.0.0.1:4321,
-    // advertise_hostname localhost). The `-i ~/.ssh/id_VAUBAN` segment
-    // mirrors the EWS onboarding flow (templates/iacs/onboard_form.html)
-    // and prevents the operator from hitting "Permission denied
-    // (publickey)" because OpenSSH otherwise offers default keys
-    // (~/.ssh/id_rsa / id_ed25519 / agent) that are not registered as an
+    // The status page must render `ssh -i ~/.ssh/id_VAUBAN
+    // -L <local>:<asset_host>:<asset_port> ... -p 22322 -N`. Three
+    // independent invariants:
+    //   * Lot 3 -- the LHS host:port pair is per-asset, sourced from
+    //     `proxy_sessions.tunnel_target_addr =
+    //     asset.hostname:asset.port` snapshot at session creation.
+    //   * Lot A -- privileged-port unprivilegisation. An IacsModbus
+    //     asset has `default_port() = 502`, which is privileged on
+    //     Unix; the helper `derive_local_forward_port(502) = 50502`
+    //     shifts the LHS into the user range so the EWS does not
+    //     need root to bind locally.
+    //   * Lot 3+A -- the RHS now carries the asset's real hostname,
+    //     not a hardcoded `127.0.0.1`. The fixture seeds
+    //     `<name>-<uuid_prefix>.test.local` so a regression that
+    //     re-introduced the hardcoded loopback would fail this
+    //     assertion.
+    // The `-i ~/.ssh/id_VAUBAN` segment mirrors the onboarding flow
+    // (templates/iacs/onboard_form.html) and prevents the operator
+    // from hitting "Permission denied (publickey)" because OpenSSH
+    // otherwise offers default keys that are not registered as an
     // EWS.
-    let expected_cmd_prefix = "ssh -i ~/.ssh/id_VAUBAN -L 4321:127.0.0.1:4321 ";
+    let expected_cmd_substr_lhs = "ssh -i ~/.ssh/id_VAUBAN -L 50502:";
     assert!(
-        body.contains(expected_cmd_prefix),
-        "status page must render the canonical ssh -L command (prefix '{}'). \
-         body excerpt: {}",
-        expected_cmd_prefix,
+        body.contains(expected_cmd_substr_lhs),
+        "status page must render the canonical ssh -L command \
+         starting with '{}' (privileged-port unprivilegisation \
+         for IacsModbus 502 -> 50502). body excerpt: {}",
+        expected_cmd_substr_lhs,
+        &body[..body.len().min(2000)]
+    );
+    let expected_cmd_substr_rhs = ":502 ";
+    assert!(
+        body.contains(expected_cmd_substr_rhs),
+        "status page must render `:502 ` (asset port) followed by \
+         a space before the username, body excerpt: {}",
+        &body[..body.len().min(2000)]
+    );
+    // Pin the per-asset RHS hostname: the fixture's
+    // `create_test_asset_in_group_with_type` seeds
+    // `<label>-<uuid_prefix>.test.local`. We simply check that
+    // `.test.local` (a string that no other field can plausibly
+    // produce) is in the rendered command -- a regression that
+    // hardcoded `127.0.0.1` would fail this assertion (the loopback
+    // literal does not contain `.test.local`).
+    assert!(
+        body.contains(".test.local:502 "),
+        "status page MUST render the asset's hostname (not a \
+         hardcoded loopback) on the RHS of `-L`. The bastion's \
+         `validate_target` pins the per-session (asset_host, \
+         asset_port); a rendered command with `127.0.0.1` would \
+         only ever validate for a loopback asset. body excerpt: {}",
         &body[..body.len().min(2000)]
     );
     assert!(

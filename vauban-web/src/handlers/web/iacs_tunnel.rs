@@ -378,7 +378,13 @@ pub async fn connect_iacs(
         max_session_duration: None,
         industrial_protocol,
         ews_uuid: Some(pinned_ews_uuid),
-        tunnel_target_addr: Some(state.config.industrial.iacs_tunnel.target_addr.clone()),
+        // Per-session pinned target. Replaces the legacy MVP fixed
+        // `target_addr` (the in-process iacs_tunnel sshd used to
+        // unconditionally connect to `127.0.0.1:4321`). The asset's
+        // hostname / port snapshot lives on `proxy_sessions` so a
+        // mid-session edit on `assets` does NOT redirect the live
+        // tunnel.
+        tunnel_target_addr: Some(format!("{}:{}", asset.hostname, asset.port)),
     };
 
     if let Err(e) = diesel::insert_into(proxy_sessions::table)
@@ -396,6 +402,135 @@ pub async fn connect_iacs(
             &headers,
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to create tunnel session",
+        );
+    }
+
+    // ----- Mint SessionToken + push pending tunnel to proxy-iacs -----
+    //
+    // SECURITY: this is the per-asset, per-session, crypto-bound
+    // authorization the legacy MVP could not deliver. The token is
+    // BLAKE3-keyed and bound to
+    // (user, asset, "iacs_tunnel", host, port, ProxyIacs, session_id).
+    // proxy-iacs verifies it locally (Verifier::Proxy) BEFORE caching
+    // the pending tunnel; the supervisor's TCP broker re-verifies it
+    // (Verifier::Supervisor) BEFORE doing the upstream connect. A
+    // compromised vauban-web cannot piggy-back another user / asset
+    // / protocol target through these surfaces, even with full DB
+    // write access.
+    //
+    // vauban-access also performs a `CheckAccessByUuid(user, asset,
+    // "iacs_tunnel")` re-check inside the mint verb, so the
+    // access-rule layer (Casbin allowed the action; the rule decides
+    // which assets the user can reach with this protocol) gates the
+    // token issuance even if the in-process Casbin cache had drifted.
+    if let Some(proxy_iacs_client) = state.proxy_iacs.as_ref() {
+        let token_params = shared::session_token::SessionTokenParams {
+            session_id: session_uuid.to_string(),
+            user_uuid: auth_user.uuid.clone(),
+            asset_uuid: asset_uuid.to_string(),
+            protocol: shared::access_guard::PROTOCOL_IACS_TUNNEL.to_string(),
+            host: asset.hostname.clone(),
+            port: asset.port as u16,
+            target_service: shared::messages::Service::ProxyIacs,
+        };
+
+        let session_token = match state.access_client.issue_session_token(token_params).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(
+                    user = %auth_user.username,
+                    session_uuid = %session_uuid,
+                    error = %e,
+                    "iacs_tunnel: session token mint failed -- rolling back proxy_session row"
+                );
+                let _ = diesel::delete(
+                    proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+                )
+                .execute(&mut conn)
+                .await;
+                return iacs_tunnel_error_response(
+                    &headers,
+                    StatusCode::FORBIDDEN,
+                    "Access denied",
+                );
+            }
+        };
+
+        let open_req = crate::ipc::IacsTunnelOpenRequest {
+            session_id: session_uuid.to_string(),
+            user_uuid: auth_user.uuid.clone(),
+            asset_uuid: asset_uuid.to_string(),
+            ews_uuid: pinned_ews_uuid.to_string(),
+            ews_pubkey_fp: ews_fp.clone(),
+            asset_host: asset.hostname.clone(),
+            asset_port: asset.port as u16,
+            industrial_protocol: new_session
+                .industrial_protocol
+                .clone()
+                .unwrap_or_else(|| "tcp".to_string()),
+            ttl_seconds: tunnel_cfg.waiting_client_ttl_seconds,
+            session_token,
+        };
+
+        match proxy_iacs_client.open_tunnel(open_req).await {
+            Ok(opened) if opened.success => {
+                tracing::info!(
+                    user = %auth_user.username,
+                    session_uuid = %session_uuid,
+                    asset_host = %asset.hostname,
+                    asset_port = asset.port,
+                    "iacs_tunnel: pending session materialized on proxy-iacs"
+                );
+            }
+            Ok(opened) => {
+                let err = opened
+                    .error
+                    .unwrap_or_else(|| "proxy-iacs refused".to_string());
+                tracing::warn!(
+                    user = %auth_user.username,
+                    session_uuid = %session_uuid,
+                    error = %err,
+                    "iacs_tunnel: proxy-iacs rejected open -- rolling back"
+                );
+                let _ = diesel::delete(
+                    proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+                )
+                .execute(&mut conn)
+                .await;
+                return iacs_tunnel_error_response(
+                    &headers,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to materialize tunnel",
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    user = %auth_user.username,
+                    session_uuid = %session_uuid,
+                    error = %e,
+                    "iacs_tunnel: IPC to proxy-iacs failed -- rolling back"
+                );
+                let _ = diesel::delete(
+                    proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+                )
+                .execute(&mut conn)
+                .await;
+                return iacs_tunnel_error_response(
+                    &headers,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Tunnel proxy unavailable",
+                );
+            }
+        }
+    } else {
+        // Legacy in-process iacs_tunnel sshd path. Kept until Lot 5
+        // deletes `vauban-web/src/services/iacs_tunnel/server.rs`.
+        // The in-process path does NOT mint a SessionToken because
+        // the relay is local; per-asset target validation is still
+        // enforced via `proxy_sessions.tunnel_target_addr`.
+        tracing::debug!(
+            session_uuid = %session_uuid,
+            "iacs_tunnel: proxy-iacs IPC client unavailable, using legacy in-process path"
         );
     }
 
@@ -551,16 +686,28 @@ pub async fn iacs_tunnel_status_page(
     let (status, asset_name, _asset_type_raw, _asset_hostname, industrial_protocol, target_addr) =
         row;
 
-    // Derive the local-forward port from `target_addr` ("host:port")
-    // so the rendered `ssh -L LP:127.0.0.1:LP ...` matches the
-    // actual bastion-side TCP target. Falls back to the configured
-    // default if the column is unexpectedly NULL (defensive).
-    let cfg_target = &state.config.industrial.iacs_tunnel.target_addr;
-    let target_addr_str = target_addr.unwrap_or_else(|| cfg_target.clone());
-    let local_forward_port: u16 = target_addr_str
-        .rsplit_once(':')
-        .and_then(|(_, p)| p.parse().ok())
-        .unwrap_or(4321);
+    // Derive the per-session `(target_host, target_port)` from the
+    // `proxy_sessions.tunnel_target_addr` snapshot taken at session
+    // creation (`format!("{}:{}", asset.hostname, asset.port)`).
+    // A NULL value is a legacy row only and collapses to the
+    // historical MVP fallback so the page still renders rather than
+    // 500.
+    //
+    // The local-forward port (LHS of `ssh -L`) is then derived via
+    // `derive_local_forward_port` so privileged asset ports
+    // (Modbus 502, MMS 102, ...) are shifted into the user range
+    // (50502, 50102, ...). The operator never needs root on their
+    // EWS to bind locally.
+    let target_addr_str = target_addr.unwrap_or_else(|| "127.0.0.1:4321".to_string());
+    let (target_host, target_port): (String, u16) = match target_addr_str.rsplit_once(':') {
+        Some((host, port_str)) => match port_str.parse::<u16>() {
+            Ok(p) => (host.to_string(), p),
+            Err(_) => ("127.0.0.1".to_string(), 4321),
+        },
+        None => ("127.0.0.1".to_string(), 4321),
+    };
+    let local_forward_port: u16 =
+        crate::services::iacs_tunnel::derive_local_forward_port(target_port);
 
     let user_ctx = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new(
@@ -608,6 +755,8 @@ pub async fn iacs_tunnel_status_page(
             .clone(),
         bastion_port: state.config.industrial.iacs_tunnel.bind_port(),
         local_forward_port,
+        target_host,
+        target_port,
         tunnel_target_addr: target_addr_str,
         session_status: status,
         csrf_token,

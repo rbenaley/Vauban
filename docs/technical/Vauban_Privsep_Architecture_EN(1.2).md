@@ -59,6 +59,7 @@ Vauban consists of 8 processes:
 | `vauban-audit` | Audit logging, session recording | Unprivileged (uid 901) |
 | `vauban-proxy-ssh` | SSH proxy (russh) | Unprivileged (uid 905) |
 | `vauban-proxy-rdp` | RDP proxy (IronRDP) | Unprivileged (uid 906) |
+| `vauban-proxy-iacs` | IACS / EWS tunnel proxy (russh, per-asset target resolution) | Unprivileged (uid 908) |
 
 **Related documents:**
 
@@ -90,6 +91,7 @@ flowchart TB
     subgraph proxy_services [Proxy Services - Async with Tokio]
         SSH["vauban-proxy-ssh<br/>russh"]
         RDP["vauban-proxy-rdp<br/>IronRDP"]
+        IACS["vauban-proxy-iacs<br/>russh (EWS tunnel)"]
     end
 
     subgraph external [External Resources]
@@ -106,6 +108,7 @@ flowchart TB
     S --> Audit
     S --> SSH
     S --> RDP
+    S --> IACS
 
     Web --> DB
     Web --> Cache
@@ -118,7 +121,7 @@ flowchart TB
 
 ### 2.3 Minimalist Philosophy
 
-**Only `vauban-web` and the proxy services (`vauban-proxy-ssh`, `vauban-proxy-rdp`) use Tokio** because they handle continuous bidirectional streams with multiple concurrent connections.
+**Only `vauban-web` and the proxy services (`vauban-proxy-ssh`, `vauban-proxy-rdp`, `vauban-proxy-iacs`) use Tokio** because they handle continuous bidirectional streams with multiple concurrent connections.
 
 #### Why Proxies Use Tokio
 
@@ -567,6 +570,7 @@ pub fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
 | `vauban-audit` | Yes | IPC + FD passing for recording files |
 | `vauban-proxy-ssh` | Yes | IPC + pre-established connections via FD passing |
 | `vauban-proxy-rdp` | Yes | IPC + pre-established connections via FD passing |
+| `vauban-proxy-iacs` | Yes | IPC + pre-bound listening FD (`VAUBAN_IACS_LISTENER_FD`) + per-asset upstream connections via SCM_RIGHTS broker |
 
 ### 5.6 TCP Connection Brokering for Sandboxed Proxies
 
@@ -577,7 +581,7 @@ After entering Capsicum capability mode, sandboxed processes cannot:
 1. **Perform DNS resolution** - Requires access to `/etc/resolv.conf` and DNS servers
 2. **Open new TCP connections** - Requires the `connect()` system call on new sockets
 
-This creates a challenge for proxy services (`vauban-proxy-ssh`, `vauban-proxy-rdp`) that need to connect to target hosts on demand.
+This creates a challenge for proxy services (`vauban-proxy-ssh`, `vauban-proxy-rdp`, `vauban-proxy-iacs`) that need to connect to target hosts on demand.
 
 #### 5.6.2 The Solution: Supervisor-Brokered Connections
 
@@ -649,6 +653,50 @@ flowchart TB
     W -->|"5. RdpSessionOpen"| P
     P <-->|"6. RDP Protocol"| T
 ```
+
+#### 5.6.3c Architecture Diagram (IACS / EWS tunnel)
+
+`vauban-proxy-iacs` is the third sandboxed proxy. Compared to SSH and RDP it has TWO additional FD-passing seams:
+
+1. **Pre-bound listening FD.** The proxy is EWS-facing and accepts inbound `russh` sshd connections; under Capsicum it cannot call `bind(2)`. The supervisor binds `industrial.iacs_tunnel.bind_addr` BEFORE the proxy is forked and exports the listener FD via the `VAUBAN_IACS_LISTENER_FD` environment variable. The proxy's `main.rs` reads that FD, calls `setup_service_sandbox_with_listeners` to grant the listener `cap_listen | cap_accept`, and then enters Capsicum.
+2. **Per-asset upstream connections.** Once an EWS opens a `direct-tcpip` channel to its asset's pinned `(asset.hostname, asset.port)`, the proxy's `SupervisorBrokerOpener` emits a `TcpConnectRequest` tagged with `target_service = ProxyIacs` and the session-bound BLAKE3 token. The supervisor enforces TWO anti-SSRF guards specific to IACS:
+   - **Anti-self-listener**: a request whose target equals the IACS sshd's own listening address is rejected.
+   - **Anti-loopback**: targets that resolve to a loopback IP (`127.0.0.0/8`, `::1`) are rejected unless `industrial.iacs_tunnel.allow_loopback_targets = true` (CI-only knob).
+
+```mermaid
+flowchart TB
+    subgraph supervisor [vauban-supervisor - NOT sandboxed]
+        S["Process Manager<br/>DNS Resolution<br/>TCP Connection Broker<br/>Anti-SSRF guards (self-listener, loopback)"]
+    end
+
+    subgraph web [vauban-web - Sandboxed]
+        W["HTTPS Server<br/>IACS Handler"]
+    end
+
+    subgraph proxy [vauban-proxy-iacs - Sandboxed]
+        P["russh sshd<br/>(EWS-facing)<br/>Per-session pinned (asset.host, asset.port)"]
+    end
+
+    subgraph ews [Engineering Workstation]
+        E["SSH client (operator key)"]
+    end
+
+    subgraph target [IACS asset]
+        T["Modbus / OPC-UA / DNP3 / IEC-104 endpoint"]
+    end
+
+    S -.->|"0. pre-bind listener FD<br/>(VAUBAN_IACS_LISTENER_FD)"| P
+    W -->|"1. mint session token (asset.host, asset.port, ProxyIacs)"| supervisor
+    W -->|"2. IacsTunnelOpen (token + per-asset target)"| P
+    E -->|"3. SSH handshake on inherited listener"| P
+    P -->|"4. TcpConnectRequest (ProxyIacs, asset.host:asset.port)"| S
+    S -->|"5. anti-SSRF guards + DNS + connect"| T
+    S -->|"6. send upstream FD via SCM_RIGHTS"| P
+    P <-->|"7. relay (per-session validate_target)"| T
+    P -.->|"8. IacsTunnelStatusUpdate / Closed"| W
+```
+
+The per-asset target is pinned ONCE at session creation time inside `vauban-web`'s IACS handler (using `asset.hostname:asset.port`) and travels end-to-end as the BLAKE3 token's `(host, port)` binding plus the `IacsTunnelOpenRequest` `asset_host` / `asset_port` fields. The proxy enforces the same target on every `direct-tcpip` open via `relay::validate_target`. Cross-asset swap (e.g. EWS asks for `10.0.0.2:502` while the session was minted for `10.0.0.1:502`) is rejected at the proxy layer; cross-protocol replay (a token minted for `ssh` accepted on `iacs_tunnel`) is rejected at the cryptographic gate.
 
 #### 5.6.4 File Descriptor Passing with SCM_RIGHTS
 

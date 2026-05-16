@@ -24,6 +24,7 @@
 //!
 //! Pinned by [`vauban-web/tests/web/iacs_revocation_watchdog_test.rs`](../../../../tests/web/iacs_revocation_watchdog_test.rs).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -34,6 +35,7 @@ use uuid::Uuid;
 use super::registry::TunnelRegistry;
 use crate::config::IacsTunnelConfig;
 use crate::db::DbPool;
+use crate::ipc::ProxyIacsClient;
 
 /// One pass of the watchdog. Returns `(closed, transitions)` --
 /// the number of live tunnels closed and the number of session
@@ -220,6 +222,25 @@ pub fn spawn_watchdog(
     pool: DbPool,
     cfg: IacsTunnelConfig,
 ) -> tokio::task::JoinHandle<()> {
+    spawn_watchdog_with_proxy_iacs(registry, pool, cfg, None)
+}
+
+/// Same as [`spawn_watchdog`] but also forwards revocation-driven
+/// terminations to `vauban-proxy-iacs` over IPC.
+///
+/// Lot 5: when the production proxy-iacs IPC is wired, the in-process
+/// `TunnelRegistry` is empty (the russh sshd lives in proxy-iacs); the
+/// revocation watchdog therefore needs a separate channel to force-
+/// close a live tunnel. We use the new `IacsTunnelTerminate` IPC verb
+/// for that, fire-and-forget. proxy-iacs emits a matching
+/// `IacsTunnelClosed` notification when the relay actually ends, which
+/// vauban-web handles in [`crate::ipc::proxy_iacs`].
+pub fn spawn_watchdog_with_proxy_iacs(
+    registry: TunnelRegistry,
+    pool: DbPool,
+    cfg: IacsTunnelConfig,
+    proxy_iacs: Option<Arc<ProxyIacsClient>>,
+) -> tokio::task::JoinHandle<()> {
     let interval = Duration::from_secs(cfg.revocation_poll_interval_seconds.max(1) as u64);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
@@ -228,7 +249,8 @@ pub fn spawn_watchdog(
         tick.tick().await;
         loop {
             tick.tick().await;
-            let (closed, transitions) = run_once(&registry, &pool, &cfg).await;
+            let (closed, transitions) =
+                run_once_with_proxy(&registry, &pool, &cfg, proxy_iacs.as_ref()).await;
             if closed > 0 || transitions > 0 {
                 tracing::debug!(
                     closed,
@@ -238,4 +260,64 @@ pub fn spawn_watchdog(
             }
         }
     })
+}
+
+/// Same as [`run_once`] but also relays revocation events to
+/// proxy-iacs over IPC when the optional client is provided. The
+/// SQL is replicated rather than threaded through `run_once` to
+/// keep the public test surface (`run_once`) backwards-compatible.
+pub async fn run_once_with_proxy(
+    registry: &TunnelRegistry,
+    pool: &DbPool,
+    cfg: &IacsTunnelConfig,
+    proxy_iacs: Option<&Arc<ProxyIacsClient>>,
+) -> (usize, usize) {
+    // The in-process `TunnelRegistry` is the legacy authority. When
+    // `proxy_iacs` is `Some`, we additionally pull every
+    // `tunnel_active` row from the DB and relay the IPC kill --
+    // proxy-iacs holds the canonical live state and only it can
+    // actually close the russh channel.
+    let (closed, transitions) = run_once(registry, pool, cfg).await;
+
+    if let Some(client) = proxy_iacs {
+        let mut conn = match pool.get().await {
+            Ok(c) => c,
+            Err(_) => return (closed, transitions),
+        };
+        use crate::schema::{ews, proxy_sessions, users};
+        // Same predicate as run_once but operates on rows that are
+        // STILL `tunnel_active` (the in-process flow already flipped
+        // them; the proxy-iacs flow has not).
+        let to_kill: Vec<(Uuid, String)> = proxy_sessions::table
+            .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+            .left_join(ews::table.on(ews::uuid.nullable().eq(proxy_sessions::ews_uuid)))
+            .filter(proxy_sessions::session_type.eq("iacs_tunnel"))
+            .filter(proxy_sessions::status.eq("tunnel_active"))
+            .filter(
+                users::is_active
+                    .eq(false)
+                    .or(ews::disabled_at.is_not_null())
+                    .or(ews::offboarded_at.is_not_null()),
+            )
+            .select((proxy_sessions::uuid, proxy_sessions::status))
+            .load::<(Uuid, String)>(&mut conn)
+            .await
+            .unwrap_or_default();
+        for (sess_uuid, _) in to_kill {
+            if let Err(e) = client.terminate_tunnel(&sess_uuid.to_string(), "revoked") {
+                tracing::warn!(
+                    session_uuid = %sess_uuid,
+                    error = %e,
+                    "iacs_tunnel watchdog: IacsTunnelTerminate IPC send failed"
+                );
+            } else {
+                tracing::info!(
+                    session_uuid = %sess_uuid,
+                    "iacs_tunnel watchdog: terminate IPC dispatched to proxy-iacs"
+                );
+            }
+        }
+    }
+
+    (closed, transitions)
 }

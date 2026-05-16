@@ -804,6 +804,58 @@ async fn resolve_actor_id(conn: &mut DbConnection, actor_uuid: Option<&str>) -> 
 
 // ==================== Access checking ====================
 
+/// Bridge the request-side `protocol` string and the access_rules
+/// row's `allowed_protocols` column.
+///
+/// For most protocols (`ssh`, `rdp`, applicative `iacs_*`) the rule
+/// holds the literal request string and a Postgres `@>` containment
+/// test ("the rule's array contains the request value") is the
+/// correct semantics. For the IACS transport-meta `iacs_tunnel`
+/// however, the rule holds the *applicative* protocol (`iacs_modbus`,
+/// `iacs_opcua`, ...) and we want a `&&` overlap test ("the rule's
+/// array intersects the expanded set"). The seam is centralised in
+/// [`shared::access_guard::expand_protocol_for_access_match`]; this
+/// helper plumbs the result into the Diesel query as a raw SQL
+/// fragment because Diesel's stable surface does not expose a
+/// generic `&& ARRAY[$bind]` helper for `Array<Nullable<Text>>`
+/// columns.
+fn protocol_match_filter(protocol: &str) -> diesel::expression::SqlLiteral<SqlBool> {
+    let expanded =
+        shared::access_guard::expand_protocol_for_access_match(protocol);
+    // Anti-injection: every element MUST go through `escape_sql_array_literal`
+    // because `sql_query` here is built by string concat (Diesel's bind
+    // parameter system on dynamic-length array literals is awkward to
+    // thread through `dsl::sql`). The escaper enforces that only the
+    // expected canonical protocol strings reach the SQL surface; an
+    // unexpected character collapses to fail-closed deny.
+    let array_literal = expanded
+        .iter()
+        .map(|p| escape_sql_array_literal(p))
+        .collect::<Vec<_>>()
+        .join(",");
+    sql::<SqlBool>(&format!(
+        "allowed_protocols && ARRAY[{array_literal}]::text[]"
+    ))
+}
+
+/// Defence-in-depth escaper for the protocol literals threaded
+/// through [`protocol_match_filter`]. Returns a fully-quoted Postgres
+/// string literal (`'iacs_modbus'`). Any character outside
+/// `[A-Za-z0-9_]` -- which includes every legitimate protocol the
+/// access-rule form can write -- is replaced with `_` and the
+/// literal is then wrapped in single quotes. The replacement cannot
+/// produce a valid match against any real `allowed_protocols`
+/// element (those only contain `[a-z_]`), so a malicious or
+/// malformed request degrades to a SQL fragment that matches
+/// nothing -- fail-closed.
+fn escape_sql_array_literal(s: &str) -> String {
+    let sanitised: String = s
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    format!("'{sanitised}'")
+}
+
 async fn handle_check_access(
     conn: &mut DbConnection,
     user_id: i32,
@@ -821,7 +873,7 @@ async fn handle_check_access(
         .filter(sql::<SqlBool>(
             "(valid_until IS NULL OR valid_until >= NOW())",
         ))
-        .filter(access_rules::allowed_protocols.contains(vec![Some(protocol.to_string())]))
+        .filter(protocol_match_filter(protocol))
         .select((
             access_rules::require_mfa,
             access_rules::require_approval,
@@ -903,7 +955,7 @@ async fn handle_check_access_multi(
         .filter(sql::<SqlBool>(
             "(valid_until IS NULL OR valid_until >= NOW())",
         ))
-        .filter(access_rules::allowed_protocols.contains(vec![Some(protocol.to_string())]))
+        .filter(protocol_match_filter(protocol))
         .select((
             access_rules::asset_group_id,
             access_rules::require_mfa,
@@ -2847,6 +2899,114 @@ fn evaluate_eligibility(
         return Some(ApprovalDenyReason::RuleNoLongerRequiresApproval);
     }
     None
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::*;
+
+    /// Pin the SQL-injection-safe escaper used by
+    /// [`protocol_match_filter`]. The pre-fix implementation used
+    /// raw `format!("ARRAY[{}]")` which would have shell-injected on
+    /// any `'`/`;`/`--` byte. The escaper must ALWAYS produce a
+    /// fragment that can only ever match a legitimate protocol
+    /// string -- never a control sequence.
+    #[test]
+    fn escape_sql_array_literal_preserves_canonical_protocols() {
+        // Every string the form / IPC writes to access_rules MUST
+        // pass through unchanged.
+        assert_eq!(escape_sql_array_literal("ssh"), "'ssh'");
+        assert_eq!(escape_sql_array_literal("rdp"), "'rdp'");
+        assert_eq!(escape_sql_array_literal("iacs_modbus"), "'iacs_modbus'");
+        assert_eq!(escape_sql_array_literal("iacs_opcua"), "'iacs_opcua'");
+        assert_eq!(escape_sql_array_literal("iacs_iec104"), "'iacs_iec104'");
+        assert_eq!(escape_sql_array_literal("iacs_tunnel"), "'iacs_tunnel'");
+    }
+
+    #[test]
+    fn escape_sql_array_literal_neutralises_sql_injection_attempts() {
+        // Single quote -> _, the canonical SQL break-out character.
+        assert_eq!(
+            escape_sql_array_literal("ssh'; DROP TABLE access_rules;--"),
+            "'ssh___DROP_TABLE_access_rules___'"
+        );
+        // Backslash, semicolon, double quote, parens -- every control
+        // character a SQL injection would rely on.
+        assert_eq!(escape_sql_array_literal("a';"), "'a__'");
+        assert_eq!(escape_sql_array_literal("\\\\"), "'__'");
+        assert_eq!(escape_sql_array_literal("(1=1)"), "'_1_1_'");
+        // Null byte / newline / tab.
+        assert_eq!(escape_sql_array_literal("\0\n\t"), "'___'");
+        // Empty -> empty literal (matches no row, fail-closed).
+        assert_eq!(escape_sql_array_literal(""), "''");
+    }
+
+    #[test]
+    fn protocol_match_filter_iacs_tunnel_expands_to_overlap_with_applicative() {
+        // We can't run the SQL fragment without a Postgres connection,
+        // but we can render it and check the structure. The fragment
+        // produced for `iacs_tunnel` MUST mention every applicative
+        // IACS protocol AND use the `&&` overlap operator (NOT the
+        // `@>` containment operator that broke the pre-fix wiring).
+        use diesel::pg::Pg;
+        use diesel::query_builder::{QueryBuilder, QueryFragment};
+
+        let frag = protocol_match_filter("iacs_tunnel");
+        let mut query_builder =
+            <diesel::pg::PgQueryBuilder as Default>::default();
+        frag.to_sql(&mut query_builder, &Pg)
+            .expect("fragment must render");
+        let sql = query_builder.finish();
+        assert!(
+            sql.contains("&&"),
+            "the IACS meta-protocol filter MUST use the overlap (&&) \
+             operator, NOT the containment (@>) operator. Got: {sql}"
+        );
+        for needle in [
+            "'iacs_modbus'",
+            "'iacs_opcua'",
+            "'iacs_profinet'",
+            "'iacs_iec104'",
+            "'iacs_tcp'",
+        ] {
+            assert!(
+                sql.contains(needle),
+                "the IACS meta-protocol filter MUST mention {needle} \
+                 in its expansion. Got: {sql}"
+            );
+        }
+        // The transport-meta itself MUST NOT appear in the expansion --
+        // an admin who manually wrote `iacs_tunnel` into a rule
+        // (impossible via the form, possible via raw IPC) would
+        // otherwise match the request via self-reference, which is
+        // not the contract.
+        assert!(
+            !sql.contains("'iacs_tunnel'"),
+            "the IACS meta-protocol MUST NOT self-include in its own \
+             expansion. Got: {sql}"
+        );
+    }
+
+    #[test]
+    fn protocol_match_filter_ssh_is_one_element_and_uses_overlap() {
+        use diesel::pg::Pg;
+        use diesel::query_builder::{QueryBuilder, QueryFragment};
+        let frag = protocol_match_filter("ssh");
+        let mut query_builder =
+            <diesel::pg::PgQueryBuilder as Default>::default();
+        frag.to_sql(&mut query_builder, &Pg).unwrap();
+        let sql = query_builder.finish();
+        // We use `&&` even for non-meta protocols -- this is harmless
+        // (overlap with a one-element array is equivalent to
+        // containment) and keeps the SQL homogeneous so the index
+        // (GIN on `allowed_protocols`) is hit consistently.
+        assert!(sql.contains("&&"), "expected overlap operator, got: {sql}");
+        assert!(sql.contains("'ssh'"), "expected 'ssh' literal, got: {sql}");
+        assert!(
+            !sql.contains("'rdp'") && !sql.contains("'iacs_"),
+            "ssh filter must NOT mention any other protocol, got: {sql}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -4914,6 +5074,223 @@ mod tests {
                 group_id: ug.id,
                 user_id,
             },
+        )
+        .await;
+        cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    // ==================== IACS transport-meta semantics ==================
+    //
+    // Pin the bridging contract from
+    // [`shared::access_guard::expand_protocol_for_access_match`]:
+    // an access_rule that allows ANY applicative IACS protocol on a
+    // given (user, asset) pair MUST grant the `iacs_tunnel`
+    // transport-meta probe. Conversely, an access_rule that allows
+    // ONLY non-IACS protocols (e.g. `ssh`) MUST deny `iacs_tunnel`.
+    //
+    // Without these tests, a regression in `protocol_match_filter`
+    // that switched back to `@>` (containment) instead of `&&`
+    // (overlap) -- or that dropped the meta-protocol expansion --
+    // would silently break every IACS tunnel session in production
+    // (the pre-fix bug). They are paired with the structural pin
+    // tests in `escape_tests::protocol_match_filter_*`.
+    // =====================================================================
+
+    /// An access_rule with the canonical IACS form-side expansion
+    /// (`["iacs_modbus", "iacs_opcua", "iacs_profinet", "iacs_iec104",
+    /// "iacs_tcp"]`) MUST grant a `protocol="iacs_tunnel"` request
+    /// on the matching (user, asset). This is the reproduction of
+    /// the production bug that motivated the fix.
+    #[tokio::test]
+    async fn test_check_access_by_uuid_iacs_tunnel_meta_protocol_grants_via_iacs_modbus_rule()
+    {
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+
+        let ug = create_test_vauban_group(&pool, &unique_name("ug_iacs_meta")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ag_iacs_meta")).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::AddGroupMember { group_id: ug.id, user_id },
+        )
+        .await;
+        // The form-side expansion writes EVERY iacs_* atomically; we
+        // mirror that here. The transport-meta `iacs_tunnel` is NOT
+        // in the rule (it is never written by the form).
+        let rule = create_test_rule(
+            &pool,
+            &unique_name("iacs_meta_rule"),
+            ug.id,
+            ag.id,
+            vec![
+                "iacs_modbus",
+                "iacs_opcua",
+                "iacs_profinet",
+                "iacs_iec104",
+                "iacs_tcp",
+            ],
+        )
+        .await;
+        let (asset_id, asset_uuid_str) =
+            insert_test_asset(&pool, &unique_name("asset_iacs_meta")).await;
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+
+        // The headline contract.
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: user_uuid_str.clone(),
+                asset_uuid: asset_uuid_str.clone(),
+                protocol: "iacs_tunnel".to_string(),
+            },
+        )
+        .await;
+        match resp {
+            AccessResponse::AccessChecked(r) => assert!(
+                r.allowed,
+                "iacs_tunnel transport-meta MUST be allowed when the \
+                 access_rule allows any applicative iacs_* protocol \
+                 (this is the reproduction of the production bug)"
+            ),
+            other => panic!("Expected AccessChecked, got {:?}", other),
+        }
+
+        // The applicative protocol used in the rule must also still
+        // be allowed (no regression on the verbatim path).
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: user_uuid_str.clone(),
+                asset_uuid: asset_uuid_str.clone(),
+                protocol: "iacs_modbus".to_string(),
+            },
+        )
+        .await;
+        match resp {
+            AccessResponse::AccessChecked(r) => assert!(r.allowed),
+            other => panic!("Expected AccessChecked, got {:?}", other),
+        }
+
+        cleanup_asset(&pool, asset_id).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::RemoveGroupMember { group_id: ug.id, user_id },
+        )
+        .await;
+        cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    /// Asymmetric rules created via IPC (only one applicative IACS
+    /// protocol, e.g. `iacs_modbus` for a strict deployment) MUST
+    /// still grant `iacs_tunnel`. The transport-meta is "any IACS
+    /// applicative protocol allowed" by design -- if the rule is
+    /// deliberately scoped to one protocol, the operator can still
+    /// reach the asset via the tunnel runtime.
+    #[tokio::test]
+    async fn test_check_access_by_uuid_iacs_tunnel_grants_via_partial_rule_with_only_iacs_modbus()
+    {
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+
+        let ug = create_test_vauban_group(&pool, &unique_name("ug_iacs_partial")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ag_iacs_partial")).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::AddGroupMember { group_id: ug.id, user_id },
+        )
+        .await;
+        let rule = create_test_rule(
+            &pool,
+            &unique_name("iacs_partial_rule"),
+            ug.id,
+            ag.id,
+            vec!["iacs_modbus"],
+        )
+        .await;
+        let (asset_id, asset_uuid_str) =
+            insert_test_asset(&pool, &unique_name("asset_iacs_partial")).await;
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: user_uuid_str,
+                asset_uuid: asset_uuid_str,
+                protocol: "iacs_tunnel".to_string(),
+            },
+        )
+        .await;
+        match resp {
+            AccessResponse::AccessChecked(r) => assert!(
+                r.allowed,
+                "a one-protocol IACS rule (iacs_modbus only) MUST \
+                 still grant iacs_tunnel transport-meta -- the \
+                 expansion is OR-of-applicative, not AND"
+            ),
+            other => panic!("Expected AccessChecked, got {:?}", other),
+        }
+
+        cleanup_asset(&pool, asset_id).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::RemoveGroupMember { group_id: ug.id, user_id },
+        )
+        .await;
+        cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    /// Negative pin: an `ssh`-only rule MUST NOT grant `iacs_tunnel`.
+    /// The bridging is OR-of-applicative-IACS, NOT OR-of-anything.
+    /// A regression that overgranted (e.g. expanded `iacs_tunnel`
+    /// to `[ssh, rdp, iacs_*]` by accident) would be caught here.
+    #[tokio::test]
+    async fn test_check_access_by_uuid_iacs_tunnel_denied_when_only_ssh_rule() {
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+
+        let ug = create_test_vauban_group(&pool, &unique_name("ug_iacs_neg")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ag_iacs_neg")).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::AddGroupMember { group_id: ug.id, user_id },
+        )
+        .await;
+        let rule = create_test_rule(
+            &pool,
+            &unique_name("iacs_neg_rule"),
+            ug.id,
+            ag.id,
+            vec!["ssh"],
+        )
+        .await;
+        let (asset_id, asset_uuid_str) =
+            insert_test_asset(&pool, &unique_name("asset_iacs_neg")).await;
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: user_uuid_str,
+                asset_uuid: asset_uuid_str,
+                protocol: "iacs_tunnel".to_string(),
+            },
+        )
+        .await;
+        assert_denied(&resp);
+
+        cleanup_asset(&pool, asset_id).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::RemoveGroupMember { group_id: ug.id, user_id },
         )
         .await;
         cleanup_rule(&pool, &rule.uuid).await;

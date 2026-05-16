@@ -1,0 +1,58 @@
+[package]
+name = "vauban-proxy-iacs"
+description = "Vauban - IACS (industrial control systems) tunnel proxy (russh sshd, EWS-facing)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Shared IPC, sandbox, AccessGuard re-check, session-token verification.
+# `access-guard` is mandatory: it brings shared::access_guard so the
+# `direct-tcpip` handler can re-verify (user, asset, "iacs_tunnel")
+# against vauban-access just before brokering the upstream TCP.
+# `session-token` is mandatory: vauban-proxy-iacs holds the BLAKE3 MAC
+# key (pinned by `service_needs_session_token_key` in
+# vauban-supervisor) so it can mint the supervisor-bound token piggybacked
+# on TcpConnectRequest, and verify the proxy-bound token piggybacked on
+# IacsTunnelOpen.
+shared = { workspace = true, features = ["access-guard", "session-token"] }
+
+libc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json = "1.0"
+
+tokio.workspace = true
+tokio-util.workspace = true
+
+# russh sshd (EWS-facing).
+russh.workspace = true
+async-trait.workspace = true
+
+# Secret management.
+secrecy.workspace = true
+
+# Concurrent map of live tunnels (per-session FD wait, byte counters).
+dashmap = "6"
+
+# Session UUIDs.
+uuid = { version = "1.11", features = ["v4", "serde"] }
+
+# SHA-256 fingerprint over the SSH wire encoding of the EWS public key.
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+nix.workspace = true
+rand_core = { version = "0.6", features = ["std"] }
+async-trait.workspace = true

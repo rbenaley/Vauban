@@ -660,6 +660,7 @@ fn build_state_from(app: &TestApp) -> vauban_web::AppState {
         rate_limiter: unwrap_ok!(RateLimiter::new(false, None, 1000)),
         ssh_proxy: None,
         rdp_proxy: None,
+        proxy_iacs: None,
         supervisor: None,
         vault_client: None,
         access_client: std::sync::Arc::clone(&app._access_service.access_client),

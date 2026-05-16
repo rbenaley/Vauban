@@ -303,8 +303,226 @@ row stays for audit; the partial unique index does not block a
 re-submission because rejected rows are not in the
 `pending`-filtered index.
 
+## `vauban-proxy-iacs` -- per-asset target tunnel runtime
+
+Starting with v0.7.8, the IACS tunnel runtime moved from a thread
+inside `vauban-web` to a dedicated, sandboxed service called
+`vauban-proxy-iacs`. The runbook impact is localised; the user-facing
+URLs and the `ews_audit_log` invariants documented above are
+unchanged. What follows is the operator playbook for the new
+service.
+
+### Process layout
+
+```
+vauban-supervisor (root, un-sandboxed)
+  | bind() 127.0.0.1:<bind_addr>            <-- pre-fork, before drop_priv
+  | bind() upstream PerAssetTcp <-- on demand, gated by anti-SSRF
+  | SCM_RIGHTS over `pipe:web<->access<->audit<->proxy_iacs`
+  v
+vauban-proxy-iacs (vauban_iacs:vauban_iacs, Capsicum cap_enter)
+   - inherits the listening FD via VAUBAN_IACS_LISTENER_FD
+   - never calls bind() / connect() / socket()
+   - russh sshd, EWS-facing
+   - `direct-tcpip` -> SupervisorBrokerOpener -> SCM_RIGHTS upstream FD
+```
+
+The supervisor pre-binds the listening socket (so the proxy can stay
+fully sandboxed) and brokers every upstream TCP connection on behalf
+of the proxy via `Message::TcpConnectRequest` / `Message::TcpConnectResponse`
+with the connected file descriptor passed via `SCM_RIGHTS`.
+
+### Anti-SSRF guards (supervisor side)
+
+The supervisor enforces two guards on every TCP broker request that
+targets `Service::ProxyIacs`:
+
+1. **Anti-self-listener**. A request whose `(target_host, target_port)`
+   equals the IACS sshd's own listening address is rejected. This
+   prevents an attacker who owns an EWS key from looping the SSH
+   server back into itself (which would create an infinite ssh-in-ssh
+   tunnel and exhaust file descriptors).
+2. **Anti-loopback (default deny)**. A request that resolves to a
+   loopback IP (`127.0.0.0/8`, `::1`) is rejected unless
+   `industrial.iacs_tunnel.allow_loopback_targets = true` (set this
+   ONLY for the integration test harness, never in production --
+   loopback assets give an EWS oracular access to colocated
+   services).
+
+Both guards log a structured `target_resolved_ip` field so an
+operator can pivot on `journalctl -u vauban-supervisor -g
+target_resolved_ip` to triage a denied tunnel.
+
+### `vauban.conf` knobs
+
+```toml
+[industrial.iacs_tunnel]
+enabled = true
+bind_addr = "127.0.0.1:2225"
+advertise_hostname = "vauban.example.org"
+host_key_path = "/var/lib/vauban/iacs_host_key"
+allow_loopback_targets = false   # NEVER set true outside of CI
+waiting_client_ttl_seconds = 60
+revocation_poll_interval_seconds = 5
+max_concurrent_per_user = 8
+max_concurrent_per_ews = 4
+
+[services.proxy_iacs]
+enabled = true
+binary_path = "/usr/local/bin/vauban-proxy-iacs"
+log_level = "info"
+```
+
+The pre-v0.7.8 field `target_addr` is no longer read. The persisted
+`proxy_sessions.tunnel_target_addr` is now derived per-session from
+`asset.hostname:asset.port` at session creation time, not from a
+process-wide constant. A residual `target_addr` line in
+`vauban.conf` is silently ignored (it has a `default_target_addr`
+in code purely for backwards-compatible test deserialization).
+
+### Status of an active tunnel
+
+```sql
+-- All sessions opened in the last hour with their resolved target
+SELECT ps.uuid, u.username, a.name AS asset, ps.tunnel_target_addr,
+       ps.status, ps.created_at, ps.industrial_protocol
+FROM proxy_sessions ps
+INNER JOIN users u ON u.id = ps.user_id
+INNER JOIN assets a ON a.id = ps.asset_id
+WHERE ps.session_type = 'iacs_tunnel'
+  AND ps.created_at >= NOW() - INTERVAL '1 hour'
+ORDER BY ps.created_at DESC;
+```
+
+A `tunnel_target_addr` that does NOT match the current
+`asset.hostname:asset.port` indicates either (a) the asset was edited
+after the session was created (legitimate, the session keeps the
+pinned target until termination) or (b) data drift (HIGH severity
+incident, file a forensic ticket).
+
+### Live tunnel status (WebSocket fan-out)
+
+`vauban-proxy-iacs` emits `IacsTunnelStatusUpdate` and
+`IacsTunnelClosed` IPC messages on every state change; `vauban-web`
+forwards them as WebSocket frames on the `notifications` channel.
+The supervisor dashboard (`/admin`) and the user "My Requests" page
+both subscribe and update without a page refresh. If you observe
+"My tunnel is stuck on `waiting_client`" in production:
+
+1. Check `vauban-proxy-iacs` logs for the matching `session_id` --
+   look for `WebSocket connected` / `WebSocket closed` lifecycle
+   lines and a `cause = ...` field on the closed line.
+2. If the tunnel was opened on the proxy but never broadcast as
+   `IacsTunnelStatusUpdate`, the IPC pipe between proxy-iacs and
+   web is wedged: bounce `vauban-web` (the watchdog inside
+   proxy-iacs will re-emit on the next heartbeat).
+
+### Revocation watchdog (DB-driven, IPC-dispatched)
+
+The watchdog still lives inside `vauban-web` (DB-resident logic) but
+no longer manipulates an in-process registry. When it decides a
+tunnel must die (EWS disabled / offboarded / user deactivated /
+access-rule revoked / waiting_client TTL exceeded), it sends an
+`IacsTunnelTerminate` IPC message to `vauban-proxy-iacs`. The
+proxy answers asynchronously with an `IacsTunnelClosed` event that
+fans out on the WebSocket channel.
+
+Operator triage when "an offboarded EWS still has an open tunnel":
+
+1. `journalctl -u vauban-web -g 'iacs_tunnel.*revocation'` -- the
+   watchdog logs every dispatched terminate.
+2. `journalctl -u vauban-proxy-iacs -g 'IacsTunnelTerminate'` -- the
+   proxy logs every received terminate.
+3. Mismatch (web dispatched, proxy never received) -> the IPC pipe
+   is wedged; restart `vauban-proxy-iacs` (the supervisor will
+   respawn it and the watchdog will redispatch on the next tick).
+
+### Privileged-port unprivilegisation on the EWS (`-L LP:asset:AP`)
+
+Most industrial protocols listen on TCP ports below 1024 (Modbus
+502, MMS / IEC-61850 102, FTP 21). Binding such a port via
+`bind(2)` requires elevated privileges on every Unix kernel
+(`CAP_NET_BIND_SERVICE` on Linux, root on FreeBSD/macOS) and on
+Windows (the "increased priority" right). Forcing operators to run
+`ssh -L 502:...` as root every time they need to reach a Modbus
+PLC is unacceptable from a security and a UX standpoint.
+
+Vauban therefore decouples the local-bind port (LHS of `ssh -L`)
+from the asset's upstream port (RHS):
+
+| Asset upstream port | EWS local-bind port (LHS) |
+|---|---|
+| 502 (Modbus / Modbus-TCP) | 50502 |
+| 102 (IEC-61850 / MMS) | 50102 |
+| 21 (FTP) | 50021 |
+| 22 (SSH) | 50022 |
+| 4840 (OPC-UA) | 4840 (no rewrite -- already user-range) |
+| 34962 (Profinet) | 34962 (no rewrite) |
+| 2404 (IEC-60870-5-104) | 2404 (no rewrite) |
+| 1023 | 51023 (last privileged port) |
+| 1024 | 1024 (first user port; no rewrite) |
+
+The mapping is `local = asset_port if asset_port >= 1024 else
+50000 + asset_port` -- deterministic, reversible, collision-free
+on the privileged range, stable across releases (pinned by
+[`port_mapping::derive_local_forward_port_is_stable_across_releases`](mdc:vauban-web/src/services/iacs_tunnel/port_mapping.rs)).
+The status page renders the mapped port AND a yellow hint
+explaining the rewrite for any asset whose upstream port is `< 1024`,
+including a copy-pasteable example for `mbpoll` / similar tools
+(test pin
+[`lot_a_modbus_502_renders_local_50502`](mdc:vauban-web/tests/web/iacs_local_forward_port_test.rs)).
+
+Operator workflow:
+
+1. Open the IACS tunnel from `/assets`. The status page renders
+   `ssh -i ~/.ssh/id_VAUBAN -L 50502:plc.factory.example:502
+   <session>@bastion -p 22322 -N`.
+2. Run the command verbatim on the EWS -- no `sudo`, no
+   `setcap`, no Windows admin elevation.
+3. Configure the IACS client to connect to **`127.0.0.1:50502`**
+   (NOT 502). The client speaks the protocol normally; the
+   bastion tunnels every byte to the asset on port 502.
+
+Edge cases:
+
+- **IPv6 asset hostname** (`fd00::cafe:beef`): the literal is
+  preserved verbatim in the rendered command. OpenSSH parses
+  `-L LP:fd00::cafe:beef:AP` correctly because the LHS port +
+  separator are unambiguous; the operator does NOT need to
+  bracket the IPv6 host. Pinned by
+  [`lot_a_ipv6_asset_host_preserved_verbatim`](mdc:vauban-web/tests/web/iacs_local_forward_port_test.rs).
+- **Already-bound `127.0.0.1:50502`**: the EWS-side `ssh` will
+  fail with `bind: Address already in use`. Pick another port via
+  `ssh -L 60502:...` overriding the rendered command. The
+  bastion's `validate_target` only enforces the RHS triplet
+  `<asset_host>:<asset_port>`; the LHS is purely an EWS-side label.
+- **Custom port `< 1024` not in the canonical IACS list**: still
+  rewritten by `derive_local_forward_port`. Example: an asset on
+  port 23 (Telnet) renders as `-L 50023:host:23`.
+
+### Capsicum / FreeBSD-only sandbox notes
+
+`vauban-proxy-iacs` runs under Capsicum on FreeBSD (production). On
+Linux/macOS dev hosts the sandbox is a no-op (the process still
+inherits the FD and behaves identically, but cap_enter is skipped).
+Concretely:
+
+- Production (FreeBSD): `cap_enter` after the listener FD is
+  granted the `cap_listen | cap_accept` rights. Any subsequent
+  `socket()`, `bind()`, `connect()`, or open of an unallowed FD
+  returns `ECAPMODE`. This is why the supervisor brokers every
+  upstream TCP.
+- Development (Linux/macOS): the proxy still goes through the
+  supervisor broker (so the per-asset target contract is
+  exercised in tests), but a misbehaving build that called
+  `connect()` directly would NOT fail-close. CI exercises both
+  paths; do not rely on the dev path for security claims.
+
 ## Change log
 
 | Version | Date | Notes |
 |---------|------|-------|
 | 0.7.4 | 2026-05-06 | Initial release: data model + user / admin handlers + kill-switch + audit log. |
+| 0.7.8 | 2026-05-15 | IACS tunnel runtime split into `vauban-proxy-iacs` (Capsicum-sandboxed). Per-asset target resolution: `tunnel_target_addr` is now derived from `asset.hostname:asset.port`. Anti-SSRF guards (anti-self-listener, anti-loopback) added on the supervisor TCP broker. Watchdog dispatches `IacsTunnelTerminate` IPC instead of touching an in-process registry. |
+| 0.7.8 | 2026-05-16 | Privileged-port unprivilegisation: the EWS local-bind port (LHS of `ssh -L`) is now decoupled from the asset port. Privileged asset ports (`< 1024`, e.g. Modbus 502, MMS 102) are shifted into the user range (50502, 50102) so operators never need root on their EWS. The rendered status page surfaces a yellow hint with a copy-pasteable client example whenever the rewrite kicks in. The RHS of `-L` now carries the asset's actual hostname (was hardcoded `127.0.0.1`), so production assets on routable IPs validate correctly against the bastion's `validate_target`. |
+| 0.7.8 | 2026-05-16 | Fix: IACS access denied despite an explicit access rule. `CheckAccessByUuid(protocol="iacs_tunnel")` now matches any access_rule whose `allowed_protocols` array intersects the applicative IACS set (`iacs_modbus`, `iacs_opcua`, `iacs_profinet`, `iacs_iec104`, `iacs_tcp`). The bridging seam lives in `shared::access_guard::expand_protocol_for_access_match` and `vauban-access::handlers::protocol_match_filter`. No DB migration required; existing access rules created via the "IACS (all industrial protocols)" master checkbox keep working unchanged. |

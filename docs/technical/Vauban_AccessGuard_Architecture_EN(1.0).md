@@ -171,6 +171,10 @@ flowchart LR
         RDP_STATE["ServiceState<br/>impl AccessGuardMetrics"]
     end
 
+    subgraph proxy_iacs["vauban-proxy-iacs"]
+        IACS_STATE["ServiceState<br/>impl AccessGuardMetrics"]
+    end
+
     subgraph supervisor["vauban-supervisor"]
         TOPO["TOPOLOGY<br/>edges"]
         ENV["VAUBAN_ACCESS_IPC_READ<br/>VAUBAN_ACCESS_IPC_WRITE"]
@@ -186,8 +190,10 @@ flowchart LR
     AG --> AGW
     SSH_STATE -. implements .-> AGM
     RDP_STATE -. implements .-> AGM
+    IACS_STATE -. implements .-> AGM
     SSH_STATE --> AG
     RDP_STATE --> AG
+    IACS_STATE --> AG
     AG -->|"CheckAccessByUuid (IPC)"| H
     H --> DB
 ```
@@ -336,6 +342,7 @@ Construction-time only. The hot path (`authorize`) never returns a
 pub const RBAC_RECHECK_TIMEOUT: Duration = Duration::from_secs(10);
 pub const PROTOCOL_SSH: &str = "ssh";
 pub const PROTOCOL_RDP: &str = "rdp";
+pub const PROTOCOL_IACS_TUNNEL: &str = "iacs_tunnel";
 ```
 
 `PROTOCOL_*` are the canonical strings used in `access_rules.protocols`.
@@ -629,10 +636,11 @@ authoritative re-check on the policy itself.
 ### 6.5 Key dissemination
 
 The MAC key is 32 bytes of `OsRng` material, generated once by
-`vauban-supervisor` at boot and published to the four services that
+`vauban-supervisor` at boot and published to the five services that
 need it (`vauban-supervisor` itself, `vauban-access`, `vauban-proxy-ssh`,
-`vauban-proxy-rdp`) through the `VAUBAN_SESSION_TOKEN_KEY_*` environment
-variables, exactly like the existing `VAUBAN_ACCESS_IPC_*` channel.
+`vauban-proxy-rdp`, `vauban-proxy-iacs`) through the
+`VAUBAN_SESSION_TOKEN_KEY_*` environment variables, exactly like the
+existing `VAUBAN_ACCESS_IPC_*` channel.
 
 ```mermaid
 flowchart LR
@@ -641,10 +649,12 @@ flowchart LR
     Sup -->|env var| SupSelf["vauban-supervisor<br/>TokenKey::from_env"]
     Sup -->|env var| PsshLoad["vauban-proxy-ssh<br/>session_token_gate::init_from_env"]
     Sup -->|env var| PrdpLoad["vauban-proxy-rdp<br/>session_token_gate::init_from_env"]
+    Sup -->|env var| PiacsLoad["vauban-proxy-iacs<br/>session_token_gate::init_from_env"]
     AccLoad -.->|mints| Tok((Session Token))
     Tok -.->|verifies| SupSelf
     Tok -.->|verifies| PsshLoad
     Tok -.->|verifies| PrdpLoad
+    Tok -.->|verifies| PiacsLoad
 ```
 
 The same boot-order invariant as `AccessGuard` applies: each consumer
@@ -924,7 +934,7 @@ INFO  AccessGuard dispatcher started   protocol="ssh"
 `vauban-access` logs the peer set it has bound:
 
 ```
-INFO  vauban-access ready  peers=["web", "auth", "proxy_ssh", "proxy_rdp"]  peer_count=4
+INFO  vauban-access ready  peers=["web", "auth", "proxy_ssh", "proxy_rdp", "proxy_iacs"]  peer_count=5
 ```
 
 If the peer count does not match the supervisor topology, `vauban-access`
@@ -968,8 +978,8 @@ runbook.
   proxy-boundary gate (`init_from_env`, `verify_proxy`) consumed
   verbatim by every protocol proxy
 - `shared/Cargo.toml` — `access-guard` and `session-token` feature flags
-- `vauban-proxy-ssh/src/main.rs`, `vauban-proxy-rdp/src/main.rs` —
-  consumers (both gates) via
+- `vauban-proxy-ssh/src/main.rs`, `vauban-proxy-rdp/src/main.rs`,
+  `vauban-proxy-iacs/src/main.rs` — consumers (both gates) via
   `use shared::session_token::proxy_gate as session_token_gate`
 - `vauban-access/src/handlers.rs::handle_check_access_by_uuid` —
   authoritative server-side handler

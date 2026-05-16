@@ -236,18 +236,18 @@ fn test_user_zone_label_matches_administration_typography() {
 }
 
 // ---------------------------------------------------------------
-// IACS sidebar entry carries an "Experimental" badge
+// IACS sidebar entry carries a "Beta" badge
 // ---------------------------------------------------------------
 
-/// Operator request 2026-05-08: the IACS sidebar entry must
-/// surface a small "Experimental" tag next to its label so an
-/// operator cannot mistake the preview surface for a stable one.
-/// The badge MUST sit BETWEEN the "IACS" text and the
-/// `ml-auto`-floated pending-count badge so the relative ordering
-/// stays predictable. Pinned here so a future template refactor
-/// cannot silently drop it.
+/// Operator request 2026-05-08 (renamed Experimental -> Beta on
+/// 2026-05-15): the IACS sidebar entry must surface a small "Beta"
+/// tag next to its label so an operator cannot mistake the preview
+/// surface for a stable one. The badge MUST sit BETWEEN the "IACS"
+/// text and the `ml-auto`-floated pending-count badge so the
+/// relative ordering stays predictable. Pinned here so a future
+/// template refactor cannot silently drop it.
 #[test]
-fn test_iacs_sidebar_entry_carries_experimental_tag() {
+fn test_iacs_sidebar_entry_carries_beta_tag() {
     let html = render_with(make_sidebar(user_ctx(true), admin_perms()));
 
     let iacs_idx = html
@@ -255,33 +255,33 @@ fn test_iacs_sidebar_entry_carries_experimental_tag() {
         .or_else(|| html.find(">IACS<"))
         .or_else(|| html.find("IACS\n"))
         .expect("sidebar must carry the IACS entry label");
-    let experimental_idx = html
-        .find(">Experimental<")
-        .or_else(|| html.find("Experimental\n"))
-        .expect("sidebar IACS entry must carry an 'Experimental' badge");
+    let beta_idx = html
+        .find(">Beta<")
+        .or_else(|| html.find("Beta\n"))
+        .expect("sidebar IACS entry must carry a 'Beta' badge");
     assert!(
-        iacs_idx < experimental_idx,
-        "the Experimental badge (idx {experimental_idx}) must appear AFTER the IACS label (idx {iacs_idx}) so it sits next to the entry, not somewhere else on the page"
+        iacs_idx < beta_idx,
+        "the Beta badge (idx {beta_idx}) must appear AFTER the IACS label (idx {iacs_idx}) so it sits next to the entry, not somewhere else on the page"
     );
 
     // Tooltip pin: hovering the badge must surface the "preview
     // surface" disclaimer so operators understand WHY the tag is
     // there. Stays in sync with the rule docstring.
     assert!(
-        html.contains("experimental preview surface"),
-        "the Experimental badge MUST carry a `title=` tooltip explaining that IACS is a preview surface"
+        html.contains("beta preview surface"),
+        "the Beta badge MUST carry a `title=` tooltip explaining that IACS is a preview surface"
     );
 
     // Layout pin: the pending-count badge keeps `ml-auto` so it
-    // floats right; the Experimental tag stays inline next to the
+    // floats right; the Beta tag stays inline next to the
     // label. We check that the count's id appears AFTER the
-    // Experimental tag in the source.
+    // Beta tag in the source.
     let count_idx = html
         .find("id=\"sidebar-iacs-badge\"")
         .expect("sidebar IACS entry must keep its pending-count badge");
     assert!(
-        experimental_idx < count_idx,
-        "the Experimental tag (idx {experimental_idx}) must come BEFORE the ml-auto-floated pending-count badge (idx {count_idx})"
+        beta_idx < count_idx,
+        "the Beta tag (idx {beta_idx}) must come BEFORE the ml-auto-floated pending-count badge (idx {count_idx})"
     );
 }
 
@@ -289,12 +289,12 @@ fn test_iacs_sidebar_entry_carries_experimental_tag() {
 fn test_iacs_sidebar_entry_hidden_when_iacs_manage_is_false() {
     // The IACS entry as a whole is gated by `iacs_manage`. When
     // `iacs_manage` is false the entire `<li>` block must not
-    // render -- and so the Experimental tag must NOT leak into
+    // render -- and so the Beta tag must NOT leak into
     // the output either (regression guard for a future refactor
     // that pulls the badge out of the `{% if %}` block).
     let html = render_with(make_sidebar(user_ctx(false), user_perms()));
     assert!(
-        !html.contains(">Experimental<"),
-        "the Experimental badge must NOT render when iacs_manage is false; it lives inside the gated IACS entry"
+        !html.contains(">Beta<"),
+        "the Beta badge must NOT render when iacs_manage is false; it lives inside the gated IACS entry"
     );
 }

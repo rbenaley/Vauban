@@ -61,6 +61,85 @@ pub const RBAC_RECHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// time instead of producing silent denials in production.
 pub const PROTOCOL_SSH: &str = "ssh";
 pub const PROTOCOL_RDP: &str = "rdp";
+/// IACS tunnel (industrial control system, ssh -L from EWS).
+/// MUST match `proxy_sessions.session_type` and the `protocol` field
+/// of every `SessionToken` minted for `Service::ProxyIacs`. The string
+/// is also the discriminant the supervisor logs when brokering the
+/// upstream TCP connect to the asset.
+///
+/// Semantically this is a **transport-layer / meta-protocol**: it
+/// identifies the SSH-tunnel runtime carrying the bytes, not the
+/// industrial-protocol payload (Modbus, OPC-UA, ...). Access rules,
+/// in contrast, store the **applicative** protocol (`iacs_modbus`,
+/// `iacs_opcua`, ...) -- the one matching the asset's `AssetType`.
+/// The bridging seam is [`expand_protocol_for_access_match`], which
+/// expands `iacs_tunnel` to the set of every `iacs_*` applicative
+/// protocol when matching access-rule rows.
+pub const PROTOCOL_IACS_TUNNEL: &str = "iacs_tunnel";
+
+/// Every applicative IACS protocol the access-rule UI persists.
+///
+/// MUST stay in lockstep with `vauban-web/src/handlers/web/access_rules.rs::iacs_protocols`
+/// (the form-side expansion of the "IACS (all industrial protocols)"
+/// master checkbox) and with the `iacs_*` arms of
+/// `vauban-web/src/models/asset.rs::AssetType::as_str`. A drift
+/// pin in `vauban-access/src/handlers.rs` tests refuses the build
+/// otherwise.
+///
+/// The list does NOT include `iacs_tunnel` -- the transport-meta
+/// is the *consumer* of this set, never a member.
+pub const IACS_APPLICATIVE_PROTOCOLS: &[&str] = &[
+    "iacs_modbus",
+    "iacs_opcua",
+    "iacs_profinet",
+    "iacs_iec104",
+    "iacs_tcp",
+];
+
+/// Bridge the transport-meta (`iacs_tunnel`) and the applicative
+/// (`iacs_modbus`, ...) views of the access-rule database.
+///
+/// Returns the set of access-rule protocol strings that should match
+/// when the caller asked for `protocol`:
+///
+/// - For the IACS transport-meta, returns every applicative
+///   IACS protocol (`iacs_modbus`, `iacs_opcua`, `iacs_profinet`,
+///   `iacs_iec104`, `iacs_tcp`). An access rule that allows ANY
+///   of them grants the `iacs_tunnel` transport on the matching
+///   asset. This mirrors the access-rule create/edit form's
+///   "IACS (all industrial protocols)" master checkbox: it expands
+///   to every `iacs_*` value at save time, so a rule that allows
+///   IACS allows them all atomically. Asymmetric rules created via
+///   IPC (only `iacs_modbus`, say) still grant `iacs_tunnel` --
+///   that is the conservative choice (any IACS protocol allowed
+///   on this asset means the operator is allowed to reach it via
+///   the tunnel runtime).
+/// - For every other protocol, returns `[protocol]` unchanged.
+///   `ssh`, `rdp`, and the applicative `iacs_*` strings flow
+///   through verbatim.
+///
+/// The returned `Vec<String>` is suitable for a Postgres
+/// `allowed_protocols && ARRAY[...]` overlap test in Diesel.
+///
+/// ## Why this exists
+///
+/// Pre-fix, `vauban-access::CheckAccessByUuid` filtered access rules
+/// with `allowed_protocols.contains([protocol])`. That worked for
+/// `ssh` / `rdp` (where the rule and the request use the same
+/// string) but broke `iacs_tunnel` (the request was the transport
+/// meta, the rule held an applicative protocol -- never a match,
+/// production-blocker). The expansion centralises the bridging
+/// logic so every consumer of the access-rule index gets the same
+/// answer.
+pub fn expand_protocol_for_access_match(protocol: &str) -> Vec<String> {
+    if protocol == PROTOCOL_IACS_TUNNEL {
+        return IACS_APPLICATIVE_PROTOCOLS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+    }
+    vec![protocol.to_string()]
+}
 
 /// Final verdict returned by [`AccessGuard::authorize`].
 ///
@@ -689,6 +768,122 @@ mod tests {
         // silently degrade to Denied.
         assert_eq!(PROTOCOL_SSH, "ssh");
         assert_eq!(PROTOCOL_RDP, "rdp");
+        assert_eq!(PROTOCOL_IACS_TUNNEL, "iacs_tunnel");
+    }
+
+    // ===================================================================
+    // expand_protocol_for_access_match -- transport-meta -> applicative
+    //
+    // These tests pin the bridging contract that `vauban-access` uses
+    // when filtering access_rules.allowed_protocols. They are the
+    // first line of defense against the pre-fix regression where
+    // `iacs_tunnel` requests silently denied every legitimate IACS
+    // access rule (the rule held `iacs_modbus`, the request held
+    // `iacs_tunnel`, the SQL `&&` operator never matched).
+    // ===================================================================
+
+    #[test]
+    fn expand_protocol_passes_through_verbatim_for_non_meta_protocols() {
+        assert_eq!(
+            expand_protocol_for_access_match("ssh"),
+            vec!["ssh".to_string()]
+        );
+        assert_eq!(
+            expand_protocol_for_access_match("rdp"),
+            vec!["rdp".to_string()]
+        );
+        // Applicative IACS protocols are stored as-is in access rules
+        // (the form-side expansion writes them literally), so the
+        // bridge is a no-op here -- the SQL operator matches the row
+        // directly.
+        assert_eq!(
+            expand_protocol_for_access_match("iacs_modbus"),
+            vec!["iacs_modbus".to_string()]
+        );
+        assert_eq!(
+            expand_protocol_for_access_match("iacs_opcua"),
+            vec!["iacs_opcua".to_string()]
+        );
+    }
+
+    #[test]
+    fn expand_protocol_iacs_tunnel_returns_every_applicative_iacs_protocol() {
+        let expanded = expand_protocol_for_access_match(PROTOCOL_IACS_TUNNEL);
+        let expected: Vec<String> = IACS_APPLICATIVE_PROTOCOLS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert_eq!(expanded, expected);
+        // The transport-meta MUST NOT appear inside its own expansion
+        // (it has no business being in access_rules.allowed_protocols
+        // -- the form never writes it, and admins should not be able
+        // to grant transport-only access).
+        assert!(
+            !expanded.iter().any(|p| p == PROTOCOL_IACS_TUNNEL),
+            "iacs_tunnel must not be self-included in the expansion"
+        );
+        // Concretely, the four canonical IACS protocols MUST be in
+        // the expansion. A regression that drops one would silently
+        // break that protocol's tunnels.
+        for needle in ["iacs_modbus", "iacs_opcua", "iacs_profinet", "iacs_iec104"]
+        {
+            assert!(
+                expanded.iter().any(|p| p == needle),
+                "{needle} must be in the expansion of iacs_tunnel"
+            );
+        }
+    }
+
+    #[test]
+    fn expand_protocol_unknown_protocol_falls_through_unchanged() {
+        // Future-proofing: an unknown protocol string MUST flow
+        // through verbatim (one-element Vec). The `vauban-access`
+        // SQL filter then either matches a hand-crafted rule with
+        // that exact value, or denies. Never an unintended grant
+        // via a meta-expansion.
+        assert_eq!(
+            expand_protocol_for_access_match("vnc"),
+            vec!["vnc".to_string()]
+        );
+        assert_eq!(
+            expand_protocol_for_access_match(""),
+            vec!["".to_string()]
+        );
+        assert_eq!(
+            expand_protocol_for_access_match("IACS_TUNNEL"),
+            vec!["IACS_TUNNEL".to_string()],
+            "uppercase variant must NOT alias to PROTOCOL_IACS_TUNNEL \
+             -- access_rules are case-sensitive in Postgres"
+        );
+    }
+
+    #[test]
+    fn iacs_applicative_protocols_catalogue_is_anti_typo_pinned() {
+        // Every entry MUST start with `iacs_` and MUST NOT be the
+        // transport-meta itself. A drift here would be caught by
+        // the bigger test in vauban-access/src/handlers.rs that
+        // pins this list against the form-side expansion in
+        // vauban-web::handlers::access_rules::iacs_protocols.
+        for p in IACS_APPLICATIVE_PROTOCOLS {
+            assert!(
+                p.starts_with("iacs_"),
+                "applicative IACS protocol {p:?} must start with `iacs_`"
+            );
+            assert_ne!(
+                *p, PROTOCOL_IACS_TUNNEL,
+                "the transport-meta has no business in the applicative \
+                 catalogue (rule of thumb: it is never written by the form)"
+            );
+        }
+        assert_eq!(
+            IACS_APPLICATIVE_PROTOCOLS.len(),
+            5,
+            "drift guard: the applicative catalogue is currently \
+             {{iacs_modbus, iacs_opcua, iacs_profinet, iacs_iec104, \
+             iacs_tcp}} (5 entries). Adding a new IACS protocol \
+             requires updating this length AND the matching arms in \
+             vauban-web::models::asset::AssetType."
+        );
     }
 
     #[tokio::test]

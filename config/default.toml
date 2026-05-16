@@ -58,6 +58,16 @@ binary = "vauban-proxy-ssh"
 name = "vauban-proxy-rdp"
 binary = "vauban-proxy-rdp"
 
+# IACS tunnel proxy: hosts the russh sshd that EWS hosts connect to with
+# `ssh -L`, brokers upstream TCP to industrial assets via the supervisor.
+# Lives in its own UID (908) so the russh process is privsep-isolated
+# from vauban-web. Requires `[industrial.iacs_tunnel].enabled = true`
+# below for the supervisor to pre-bind the listener; without it the
+# proxy starts but stays idle.
+[services.proxy_iacs]
+name = "vauban-proxy-iacs"
+binary = "vauban-proxy-iacs"
+
 [services.web]
 name = "vauban-web"
 binary = "vauban-web"

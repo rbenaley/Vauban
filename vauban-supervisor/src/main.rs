@@ -186,6 +186,7 @@ fn service_key_to_service(key: &str) -> Option<Service> {
         "audit" => Some(Service::Audit),
         "proxy_ssh" => Some(Service::ProxySsh),
         "proxy_rdp" => Some(Service::ProxyRdp),
+        "proxy_iacs" => Some(Service::ProxyIacs),
         _ => None,
     }
 }
@@ -200,6 +201,7 @@ fn service_to_env_suffix(service: Service) -> &'static str {
         Service::Audit => "AUDIT",
         Service::ProxySsh => "PROXY_SSH",
         Service::ProxyRdp => "PROXY_RDP",
+        Service::ProxyIacs => "PROXY_IACS",
         Service::Supervisor => "SUPERVISOR",
     }
 }
@@ -231,6 +233,10 @@ const TOPOLOGY: &[PipeTopology] = &[
     PipeTopology {
         from: Service::Web,
         to: Service::ProxyRdp,
+    },
+    PipeTopology {
+        from: Service::Web,
+        to: Service::ProxyIacs,
     },
     // Auth connections
     PipeTopology {
@@ -265,6 +271,18 @@ const TOPOLOGY: &[PipeTopology] = &[
     },
     PipeTopology {
         from: Service::ProxyRdp,
+        to: Service::Audit,
+    },
+    // Proxy IACS connections (no Vault edge: IACS tunnels do not
+    // hold target-asset credentials -- the EWS authenticates with its
+    // own pinned public key. AccessGuard re-check + audit are still
+    // required, see docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.0).md).
+    PipeTopology {
+        from: Service::ProxyIacs,
+        to: Service::Access,
+    },
+    PipeTopology {
+        from: Service::ProxyIacs,
         to: Service::Audit,
     },
 ];
@@ -346,14 +364,18 @@ fn main() -> ExitCode {
 /// MAC key disseminated via [`SESSION_TOKEN_KEY_ENV`]:
 ///
 /// - `access`: mints session tokens.
-/// - `proxy_ssh`, `proxy_rdp`: verify session tokens before invoking
-///   `AccessGuard`.
+/// - `proxy_ssh`, `proxy_rdp`, `proxy_iacs`: verify session tokens
+///   before invoking `AccessGuard` and before sending
+///   `TcpConnectRequest` to the supervisor.
 ///
 /// vauban-web is intentionally excluded: it is a transport for opaque
 /// token bytes only; giving it the key would let a compromised web
 /// forge tokens.
 fn service_needs_session_token_key(service_key: &str) -> bool {
-    matches!(service_key, "access" | "proxy_ssh" | "proxy_rdp")
+    matches!(
+        service_key,
+        "access" | "proxy_ssh" | "proxy_rdp" | "proxy_iacs"
+    )
 }
 
 /// Build the per-service environment variable list, including the
@@ -439,6 +461,7 @@ fn run_supervisor() -> Result<()> {
     for proxy_service in [
         Service::ProxySsh,
         Service::ProxyRdp,
+        Service::ProxyIacs,
         Service::Audit,
         Service::Web,
     ] {
@@ -475,6 +498,40 @@ fn run_supervisor() -> Result<()> {
             .with_context(|| format!("Failed to bind listening socket on {}", addr))?;
         info!("Bound listening socket on {}", addr);
         listener
+    };
+
+    // Pre-bind the IACS sshd listener (industrial.iacs_tunnel.bind_addr).
+    //
+    // SECURITY: vauban-proxy-iacs runs under Capsicum after `cap_enter`,
+    // which forbids `bind()`. The supervisor (un-sandboxed) binds the
+    // listening socket here, then hands the raw FD to the proxy via
+    // env `VAUBAN_IACS_LISTENER_FD` so the proxy only needs `accept()`.
+    //
+    // When `industrial.iacs_tunnel.enabled = false` we skip the bind
+    // entirely; the proxy observes the env var is unset and stays
+    // idle (its Casbin gate flips to deny anyway).
+    let iacs_listener_fd: Option<i32> = if config.industrial.iacs_tunnel.enabled {
+        let addr = &config.industrial.iacs_tunnel.bind_addr;
+        let listener = std::net::TcpListener::bind(addr).with_context(|| {
+            format!(
+                "Failed to bind IACS sshd listening socket on {addr} \
+                 (industrial.iacs_tunnel.bind_addr)"
+            )
+        })?;
+        info!(
+            iacs_bind_addr = %addr,
+            "Pre-bound IACS sshd listening socket; FD will be inherited \
+             by vauban-proxy-iacs via VAUBAN_IACS_LISTENER_FD"
+        );
+        let fd = listener.as_raw_fd();
+        std::mem::forget(listener);
+        Some(fd)
+    } else {
+        info!(
+            "industrial.iacs_tunnel.enabled = false, skipping IACS \
+             listener pre-bind; vauban-proxy-iacs will stay idle"
+        );
+        None
     };
 
     // Spawn all child services in dependency order
@@ -526,6 +583,14 @@ fn run_supervisor() -> Result<()> {
             service.and_then(|s| fd_passing_sockets.get(&s).map(|fps| fps.child_socket_fd));
 
         let svc_env = service_env_with_token(&config, service_key);
+        // Inheritable FDs:
+        //   * `VAUBAN_IACS_LISTENER_FD` is exposed only to vauban-proxy-iacs.
+        let mut inheritable_fds: Vec<(&str, i32)> = Vec::new();
+        if service_key == "proxy_iacs"
+            && let Some(fd) = iacs_listener_fd
+        {
+            inheritable_fds.push(("VAUBAN_IACS_LISTENER_FD", fd));
+        }
         match spawn_child(
             &binary_path,
             uid,
@@ -535,6 +600,7 @@ fn run_supervisor() -> Result<()> {
             topology_pipes,
             fd_passing_child_fd,
             &svc_env,
+            &inheritable_fds,
         ) {
             Ok(pid) => {
                 info!("Started {} with pid {}", service_config.name, pid);
@@ -612,6 +678,7 @@ fn run_supervisor() -> Result<()> {
         watchdog_config.max_missed_heartbeats,
         watchdog_config.max_respawns_per_hour,
         listener_fd,
+        iacs_listener_fd,
     )?;
 
     Ok(())
@@ -772,6 +839,7 @@ fn spawn_child(
     topology_pipes: Option<&ServicePipes>,
     fd_passing_socket: Option<i32>,
     service_env_vars: &[(String, String)],
+    inheritable_fds: &[(&str, i32)],
 ) -> Result<i32> {
     // Get raw FDs before fork (we'll pass them via env vars)
     let read_fd = channel.read_fd();
@@ -842,10 +910,26 @@ fn spawn_child(
             if let Some(fd) = fd_passing_socket {
                 use nix::fcntl::{FcntlArg, FdFlag, fcntl};
                 use std::os::unix::io::BorrowedFd;
-                // SAFETY: fd is valid and we're in the forked child
                 let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
                 if let Err(e) = fcntl(borrowed, FcntlArg::F_SETFD(FdFlag::empty())) {
                     eprintln!("Failed to clear FD_CLOEXEC on fd_passing_socket: {}", e);
+                    std::process::exit(1);
+                }
+            }
+
+            // Same FD_CLOEXEC clearing for any extra inheritable FD (e.g.
+            // the pre-bound IACS sshd listener for vauban-proxy-iacs --
+            // the proxy `accept()`s on this FD post-Capsicum and never
+            // calls `bind()` itself).
+            for (_env_name, fd) in inheritable_fds {
+                use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+                use std::os::unix::io::BorrowedFd;
+                let borrowed = unsafe { BorrowedFd::borrow_raw(*fd) };
+                if let Err(e) = fcntl(borrowed, FcntlArg::F_SETFD(FdFlag::empty())) {
+                    eprintln!(
+                        "Failed to clear FD_CLOEXEC on inheritable fd {}: {}",
+                        fd, e
+                    );
                     std::process::exit(1);
                 }
             }
@@ -870,6 +954,13 @@ fn spawn_child(
                 // Set service-specific environment variables (e.g. bitrate for proxy_rdp)
                 for (name, value) in service_env_vars {
                     std::env::set_var(name, value);
+                }
+
+                // Inheritable FDs (e.g. pre-bound IACS sshd listener).
+                // The FD_CLOEXEC flag was cleared above; here we only
+                // expose the integer to the child via env.
+                for (name, fd) in inheritable_fds {
+                    std::env::set_var(name, fd.to_string());
                 }
             }
 
@@ -897,6 +988,7 @@ fn spawn_child(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // 8 supervisor-state knobs all used together; bundling into a struct would only displace the lint
 fn watchdog_loop(
     children: &mut HashMap<String, ChildState>,
     config: &SupervisorConfig,
@@ -905,6 +997,7 @@ fn watchdog_loop(
     max_missed_heartbeats: u32,
     max_respawns_per_hour: u32,
     listener_fd: RawFd,
+    iacs_listener_fd: Option<RawFd>,
 ) -> Result<()> {
     let mut last_heartbeat = Instant::now();
     // Track services that need linked restart (will be processed after reaping)
@@ -926,6 +1019,7 @@ fn watchdog_loop(
             max_respawns_per_hour,
             &mut pending_linked_restarts,
             listener_fd,
+            iacs_listener_fd,
         );
 
         // Process pending linked restarts (restart entire groups)
@@ -935,12 +1029,25 @@ fn watchdog_loop(
                     "Restarting linked group for {}: {:?}",
                     service_key, linked_group
                 );
-                respawn_linked_group(children, config, service_pipes, linked_group, listener_fd);
+                respawn_linked_group(
+                    children,
+                    config,
+                    service_pipes,
+                    linked_group,
+                    listener_fd,
+                    iacs_listener_fd,
+                );
             }
         }
 
         // Process incoming messages from services (TcpConnectRequest, RecordingFileRequest, etc.)
-        process_service_messages(children, &config.recording.storage_path, &config.mailer);
+        let iacs_guards = IacsTunnelGuards::from_config(&config.industrial.iacs_tunnel);
+        process_service_messages(
+            children,
+            &config.recording.storage_path,
+            &config.mailer,
+            &iacs_guards,
+        );
 
         // Send heartbeats periodically
         if last_heartbeat.elapsed() >= heartbeat_interval {
@@ -966,7 +1073,7 @@ fn watchdog_loop(
                     } else {
                         let topology =
                             service_key_to_service(service_key).and_then(|s| service_pipes.get(&s));
-                        drain_and_restart(state, config, topology, listener_fd);
+                        drain_and_restart(state, config, topology, listener_fd, iacs_listener_fd);
                     }
                 }
                 RestartDecision::ForceNow => {
@@ -977,7 +1084,7 @@ fn watchdog_loop(
                     } else {
                         let topology =
                             service_key_to_service(service_key).and_then(|s| service_pipes.get(&s));
-                        kill_and_respawn(state, config, topology, listener_fd);
+                        kill_and_respawn(state, config, topology, listener_fd, iacs_listener_fd);
                     }
                 }
             }
@@ -990,7 +1097,14 @@ fn watchdog_loop(
                     "Restarting linked group due to unresponsive {}: {:?}",
                     service_key, linked_group
                 );
-                respawn_linked_group(children, config, service_pipes, linked_group, listener_fd);
+                respawn_linked_group(
+                    children,
+                    config,
+                    service_pipes,
+                    linked_group,
+                    listener_fd,
+                    iacs_listener_fd,
+                );
             }
         }
 
@@ -1071,6 +1185,7 @@ fn reap_children(
     max_respawns_per_hour: u32,
     pending_linked_restarts: &mut Vec<String>,
     listener_fd: RawFd,
+    iacs_listener_fd: Option<RawFd>,
 ) {
     loop {
         match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
@@ -1102,7 +1217,13 @@ fn reap_children(
                             info!("Respawning {}", service_key);
                             let topology = service_key_to_service(&service_key)
                                 .and_then(|s| service_pipes.get(&s));
-                            respawn_service(state, config, topology, listener_fd);
+                            respawn_service(
+                                state,
+                                config,
+                                topology,
+                                listener_fd,
+                                iacs_listener_fd,
+                            );
                         }
                     } else {
                         error!("{} has crashed too many times, not respawning", service_key);
@@ -1137,7 +1258,13 @@ fn reap_children(
                             info!("Respawning {}", service_key);
                             let topology = service_key_to_service(&service_key)
                                 .and_then(|s| service_pipes.get(&s));
-                            respawn_service(state, config, topology, listener_fd);
+                            respawn_service(
+                                state,
+                                config,
+                                topology,
+                                listener_fd,
+                                iacs_listener_fd,
+                            );
                         }
                     } else {
                         error!("{} has crashed too many times, not respawning", service_key);
@@ -1327,6 +1454,7 @@ fn kill_and_respawn(
     config: &SupervisorConfig,
     topology_pipes: Option<&ServicePipes>,
     listener_fd: RawFd,
+    iacs_listener_fd: Option<RawFd>,
 ) {
     let pid = Pid::from_raw(state.pid);
 
@@ -1349,7 +1477,7 @@ fn kill_and_respawn(
         }
     }
 
-    respawn_service(state, config, topology_pipes, listener_fd);
+    respawn_service(state, config, topology_pipes, listener_fd, iacs_listener_fd);
 }
 
 fn respawn_service(
@@ -1357,6 +1485,7 @@ fn respawn_service(
     config: &SupervisorConfig,
     topology_pipes: Option<&ServicePipes>,
     listener_fd: RawFd,
+    iacs_listener_fd: Option<RawFd>,
 ) {
     let uid = config.effective_uid(&state.service_key);
     let gid = config.effective_gid(&state.service_key);
@@ -1380,7 +1509,7 @@ fn respawn_service(
 
     let needs_fd_passing = matches!(
         state.service_key.as_str(),
-        "proxy_ssh" | "proxy_rdp" | "audit" | "web"
+        "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "audit" | "web"
     );
     let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
         match socketpair_for_fd_passing() {
@@ -1402,6 +1531,12 @@ fn respawn_service(
     };
 
     let svc_env = service_env_with_token(config, &state.service_key);
+    let mut inheritable_fds: Vec<(&str, i32)> = Vec::new();
+    if state.service_key == "proxy_iacs"
+        && let Some(fd) = iacs_listener_fd
+    {
+        inheritable_fds.push(("VAUBAN_IACS_LISTENER_FD", fd));
+    }
     match spawn_child(
         &binary_path,
         uid,
@@ -1411,6 +1546,7 @@ fn respawn_service(
         topology_pipes,
         fd_passing_child_fd,
         &svc_env,
+        &inheritable_fds,
     ) {
         Ok(pid) => {
             info!("Respawned {} with pid {}", state.service_key, pid);
@@ -1467,6 +1603,7 @@ fn respawn_linked_group(
     service_pipes: &mut HashMap<Service, ServicePipes>,
     group: &[&str],
     listener_fd: RawFd,
+    iacs_listener_fd: Option<RawFd>,
 ) {
     info!("Starting linked group restart for: {:?}", group);
 
@@ -1608,8 +1745,10 @@ fn respawn_linked_group(
                 }
             };
 
-            let needs_fd_passing =
-                matches!(service_key, "proxy_ssh" | "proxy_rdp" | "audit" | "web");
+            let needs_fd_passing = matches!(
+                service_key,
+                "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "audit" | "web"
+            );
             let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
                 match socketpair_for_fd_passing() {
                     Ok((supervisor_socket, child_socket)) => {
@@ -1630,6 +1769,12 @@ fn respawn_linked_group(
             };
 
             let svc_env = service_env_with_token(config, service_key);
+            let mut inheritable_fds: Vec<(&str, i32)> = Vec::new();
+            if service_key == "proxy_iacs"
+                && let Some(fd) = iacs_listener_fd
+            {
+                inheritable_fds.push(("VAUBAN_IACS_LISTENER_FD", fd));
+            }
             match spawn_child(
                 &binary_path,
                 uid,
@@ -1639,6 +1784,7 @@ fn respawn_linked_group(
                 topology,
                 fd_passing_child_fd,
                 &svc_env,
+                &inheritable_fds,
             ) {
                 Ok(pid) => {
                     info!("Respawned {} (linked group) with pid {}", service_key, pid);
@@ -1714,6 +1860,7 @@ fn service_to_key(service: Service) -> &'static str {
         Service::Audit => "audit",
         Service::ProxySsh => "proxy_ssh",
         Service::ProxyRdp => "proxy_rdp",
+        Service::ProxyIacs => "proxy_iacs",
         Service::Supervisor => "supervisor",
     }
 }
@@ -1731,6 +1878,51 @@ struct TcpConnectPayload {
     session_token: Vec<u8>,
 }
 
+/// Anti-SSRF guard rails enforced exclusively for `Service::ProxyIacs`
+/// targets. Wired in Lot 4: the IACS tunnel proxy is the only path
+/// where vauban-web can request an arbitrary `(host, port)` (every
+/// other proxy ships with its own per-asset crypto-bound target),
+/// so we add two structural guard rails on top of the SessionToken
+/// gate:
+///
+/// 1. **Anti-self-listener**: refuse any target whose
+///    `(resolved_ip, port)` lands on the IACS sshd's own listener
+///    bind address. Without this, a compromised vauban-web could
+///    mint a valid token for `(advertise_hostname,
+///    iacs_listener_port)` and turn the supervisor into a relay
+///    that loops the EWS through itself indefinitely.
+/// 2. **Anti-loopback**: in production (`allow_loopback_targets =
+///    false`), refuse any target whose resolved IP is in
+///    `127.0.0.0/8` or `::1`. Industrial assets MUST run on a
+///    routable network; a loopback target would imply the asset
+///    hostname is mis-configured and could be turned into a
+///    half-blind probe of the bastion's internal services. The
+///    flag is `true` only in E2E tests where the fake industrial
+///    server runs on `127.0.0.1`.
+///
+/// Both checks happen AFTER the cryptographic token gate so a
+/// non-authorized caller never reaches them, but BEFORE the actual
+/// `connect_timeout()` so the guard does not leak port-scan
+/// information through latency variance.
+#[derive(Debug, Clone)]
+struct IacsTunnelGuards {
+    /// Pre-bound listener bind address (`host:port`). The host part
+    /// is parsed lazily inside the check (compared against the
+    /// resolved IP).
+    bind_addr: String,
+    /// When `true`, the loopback-target deny is suppressed.
+    allow_loopback_targets: bool,
+}
+
+impl IacsTunnelGuards {
+    fn from_config(cfg: &crate::config::IacsTunnelSupervisorConfig) -> Self {
+        Self {
+            bind_addr: cfg.bind_addr.clone(),
+            allow_loopback_targets: cfg.allow_loopback_targets,
+        }
+    }
+}
+
 /// Handle a TcpConnectRequest from vauban-web.
 ///
 /// This function:
@@ -1739,15 +1931,19 @@ struct TcpConnectPayload {
 ///    process-global anti-replay cache. ANY failure collapses to a
 ///    fail-closed `TcpConnectResponse { success: false }` and the FD
 ///    is never opened.
-/// 1. Performs DNS resolution on the target host
-/// 2. Establishes a TCP connection to the target
-/// 3. Sends the connected socket FD to the target proxy service via SCM_RIGHTS
-/// 4. Sends a TcpConnectResponse back to the requesting service (web)
+/// 1. For `Service::ProxyIacs` targets, runs the [`IacsTunnelGuards`]
+///    anti-self-listener and anti-loopback rails.
+/// 2. Performs DNS resolution on the target host.
+/// 3. Establishes a TCP connection to the target.
+/// 4. Sends the connected socket FD to the target proxy service via
+///    SCM_RIGHTS.
+/// 5. Sends a TcpConnectResponse back to the requesting service (web).
 fn handle_tcp_connect_request(
     payload: TcpConnectPayload,
     requesting_channel: &IpcChannel,
     children: &HashMap<String, ChildState>,
     mailer: &crate::config::MailerConfig,
+    iacs_guards: &IacsTunnelGuards,
 ) {
     let TcpConnectPayload {
         request_id,
@@ -1792,6 +1988,7 @@ fn handle_tcp_connect_request(
     let target_key = match target_service {
         Service::ProxySsh => "proxy_ssh",
         Service::ProxyRdp => "proxy_rdp",
+        Service::ProxyIacs => "proxy_iacs",
         Service::Web => "web",
         _ => {
             warn!(
@@ -1982,6 +2179,100 @@ fn handle_tcp_connect_request(
     };
 
     debug!("DNS resolved {} -> {}", host, socket_addr);
+
+    // === Lot 4: IACS-only anti-SSRF guard rails. Logged at info!
+    // (per-tunnel cardinality is low) so an operator forensic
+    // grepping for an industrial connect can pivot on the
+    // `target_resolved_ip` field. Other target services already
+    // have a stricter prior gate (mailer whitelist; SSH/RDP per-
+    // asset host/port crypto-bound in the token) so we only enforce
+    // these on `ProxyIacs`.
+    if matches!(target_service, Service::ProxyIacs) {
+        info!(
+            session_id = %session_id,
+            requested_host = %host,
+            requested_port = port,
+            target_resolved_ip = %socket_addr.ip(),
+            "broker iacs target resolved"
+        );
+
+        // Anti-self-listener: forbid targets that resolve to the
+        // IACS sshd's own bind address (host_part(bind_addr),
+        // port_part(bind_addr)). The check uses the RESOLVED IP so
+        // a hostname alias for `localhost` cannot bypass it.
+        if let Some((bind_host, bind_port)) =
+            iacs_guards.bind_addr.rsplit_once(':')
+            && let Ok(bind_port) = bind_port.parse::<u16>()
+        {
+            // Resolve the listener bind host once per request. If
+            // that resolution fails we fail-open the guard (the
+            // listener is not reachable anyway), but log a warn.
+            let bind_resolved_ip: Option<std::net::IpAddr> =
+                format!("{}:0", bind_host)
+                    .to_socket_addrs()
+                    .ok()
+                    .and_then(|mut a| a.next())
+                    .map(|s| s.ip());
+            let target_ip = socket_addr.ip();
+            let listener_match = match bind_resolved_ip {
+                Some(ip) => ip == target_ip || (
+                    ip.is_unspecified() && target_ip.is_loopback()
+                ),
+                None => false,
+            };
+            if listener_match && socket_addr.port() == bind_port {
+                warn!(
+                    session_id = %session_id,
+                    requested_host = %host,
+                    requested_port = port,
+                    target_resolved_ip = %target_ip,
+                    bind_addr = %iacs_guards.bind_addr,
+                    "iacs anti-SSRF: refused target == iacs sshd self-listener"
+                );
+                let response = Message::TcpConnectResponse {
+                    request_id,
+                    session_id,
+                    success: false,
+                    error: Some("Access denied".to_string()),
+                };
+                let _ = requesting_channel.send(&response);
+                return;
+            }
+        }
+
+        // Anti-loopback: production deployments must point IACS
+        // tunnels at routable industrial IPs. The opt-in toggle is
+        // `industrial.iacs_tunnel.allow_loopback_targets = true`
+        // (false by default). A `true` value is logged at debug!
+        // so an operator running in dev knows the guard is off.
+        let target_ip = socket_addr.ip();
+        let is_loopback = target_ip.is_loopback();
+        if is_loopback && !iacs_guards.allow_loopback_targets {
+            warn!(
+                session_id = %session_id,
+                requested_host = %host,
+                requested_port = port,
+                target_resolved_ip = %target_ip,
+                "iacs anti-SSRF: refused loopback target \
+                 (allow_loopback_targets=false)"
+            );
+            let response = Message::TcpConnectResponse {
+                request_id,
+                session_id,
+                success: false,
+                error: Some("Access denied".to_string()),
+            };
+            let _ = requesting_channel.send(&response);
+            return;
+        }
+        if is_loopback {
+            debug!(
+                session_id = %session_id,
+                target_resolved_ip = %target_ip,
+                "iacs broker: loopback target accepted (dev override)"
+            );
+        }
+    }
 
     // Step 2: Establish TCP connection
     let tcp_stream =
@@ -2197,6 +2488,7 @@ fn process_service_messages(
     children: &HashMap<String, ChildState>,
     recording_storage_path: &str,
     mailer: &crate::config::MailerConfig,
+    iacs_guards: &IacsTunnelGuards,
 ) {
     // Collect all read FDs from services
     let service_fds: Vec<(String, i32)> = children
@@ -2250,6 +2542,7 @@ fn process_service_messages(
                             &state.channel,
                             children,
                             mailer,
+                            iacs_guards,
                         );
                     }
                     Ok(Message::AcmeRenewRequest {
@@ -2342,6 +2635,7 @@ fn drain_and_restart(
     config: &SupervisorConfig,
     topology_pipes: Option<&ServicePipes>,
     listener_fd: RawFd,
+    iacs_listener_fd: Option<RawFd>,
 ) {
     use shared::ipc::poll_readable;
 
@@ -2352,7 +2646,7 @@ fn drain_and_restart(
             "{}: failed to send Drain, proceeding with kill: {}",
             state.service_key, e
         );
-        kill_and_respawn(state, config, topology_pipes, listener_fd);
+        kill_and_respawn(state, config, topology_pipes, listener_fd, iacs_listener_fd);
         return;
     }
 
@@ -2414,12 +2708,12 @@ fn drain_and_restart(
     let shutdown_msg = Message::Control(ControlMessage::Shutdown);
     let _ = state.channel.send(&shutdown_msg);
 
-    kill_and_respawn(state, config, topology_pipes, listener_fd);
+    kill_and_respawn(state, config, topology_pipes, listener_fd, iacs_listener_fd);
 }
 
 /// Frontend services: drained in parallel (no dependencies between them)
 #[allow(dead_code)] // Will be used when graceful shutdown is fully implemented
-const FRONTEND_SERVICES: &[&str] = &["web", "proxy_rdp", "proxy_ssh"];
+const FRONTEND_SERVICES: &[&str] = &["web", "proxy_rdp", "proxy_ssh", "proxy_iacs"];
 
 /// Backend services: drained sequentially after frontend completes
 /// Order matters: audit must be last to capture all events
@@ -2544,6 +2838,7 @@ fn service_key_to_enum(key: &str) -> Option<Service> {
         "audit" => Some(Service::Audit),
         "proxy_ssh" => Some(Service::ProxySsh),
         "proxy_rdp" => Some(Service::ProxyRdp),
+        "proxy_iacs" => Some(Service::ProxyIacs),
         _ => None,
     }
 }
@@ -2578,7 +2873,7 @@ mod tests {
 
     #[test]
     fn test_topology_count() {
-        assert_eq!(TOPOLOGY.len(), 14);
+        assert_eq!(TOPOLOGY.len(), 17);
     }
 
     #[test]
@@ -2588,8 +2883,9 @@ mod tests {
             .filter(|conn| conn.from == Service::Web)
             .collect();
 
-        // Web connects to: Auth, Access, Audit, ProxySsh, ProxyRdp, Vault
-        assert_eq!(web_connections.len(), 6);
+        // Web connects to: Auth, Access, Audit, ProxySsh, ProxyRdp,
+        // ProxyIacs, Vault
+        assert_eq!(web_connections.len(), 7);
     }
 
     #[test]
@@ -2626,6 +2922,38 @@ mod tests {
     }
 
     #[test]
+    fn test_topology_proxy_iacs_connections() {
+        let proxy_connections: Vec<_> = TOPOLOGY
+            .iter()
+            .filter(|conn| conn.from == Service::ProxyIacs)
+            .collect();
+
+        // ProxyIacs connects to: Access (re-check), Audit. No Vault
+        // edge: IACS tunnels do not hold target-asset credentials --
+        // the EWS authenticates with its own pinned public key.
+        assert_eq!(proxy_connections.len(), 2);
+        assert!(
+            proxy_connections
+                .iter()
+                .any(|c| c.to == Service::Access),
+            "ProxyIacs MUST have an outgoing edge to Access for the \
+             defence-in-depth re-check on direct-tcpip"
+        );
+        assert!(
+            proxy_connections.iter().any(|c| c.to == Service::Audit),
+            "ProxyIacs MUST have an outgoing edge to Audit for tunnel \
+             open/close events"
+        );
+        // Anti-regression: no Vault edge -- IACS does not own target
+        // credentials.
+        assert!(
+            !proxy_connections.iter().any(|c| c.to == Service::Vault),
+            "ProxyIacs MUST NOT have an edge to Vault: IACS tunnels do \
+             not hold target-asset credentials"
+        );
+    }
+
+    #[test]
     fn test_topology_no_self_connections() {
         for conn in TOPOLOGY {
             assert_ne!(
@@ -2647,6 +2975,10 @@ mod tests {
         assert_eq!(service_key_to_enum("audit"), Some(Service::Audit));
         assert_eq!(service_key_to_enum("proxy_ssh"), Some(Service::ProxySsh));
         assert_eq!(service_key_to_enum("proxy_rdp"), Some(Service::ProxyRdp));
+        assert_eq!(
+            service_key_to_enum("proxy_iacs"),
+            Some(Service::ProxyIacs)
+        );
     }
 
     #[test]
@@ -2958,6 +3290,7 @@ mod tests {
                 Service::Audit => "audit",
                 Service::ProxySsh => "proxy_ssh",
                 Service::ProxyRdp => "proxy_rdp",
+                Service::ProxyIacs => "proxy_iacs",
                 Service::Supervisor => continue, // Supervisor not in services
             };
 
@@ -3304,10 +3637,11 @@ mod tests {
     #[test]
     fn test_drain_order_frontend_services() {
         // Verify frontend services list for drain order
-        assert_eq!(FRONTEND_SERVICES.len(), 3);
+        assert_eq!(FRONTEND_SERVICES.len(), 4);
         assert!(FRONTEND_SERVICES.contains(&"web"));
         assert!(FRONTEND_SERVICES.contains(&"proxy_rdp"));
         assert!(FRONTEND_SERVICES.contains(&"proxy_ssh"));
+        assert!(FRONTEND_SERVICES.contains(&"proxy_iacs"));
     }
 
     #[test]
@@ -4202,6 +4536,122 @@ mod tests {
             handler.contains("as u64"),
             "broker latency MUST be cast to u64 microseconds; a drift \
              to f64 would break log-based integer aggregators."
+        );
+    }
+
+    // ==================== Lot 4: IACS anti-SSRF guard rails ====================
+    //
+    // SECURITY: the IACS tunnel is the only `TcpConnectRequest` path
+    // where the per-asset target is variable (every other proxy ships
+    // a per-asset host/port crypto-bound in the token at session-open
+    // time). These pin tests guarantee the supervisor enforces the
+    // anti-self-listener and anti-loopback guard rails BEFORE the
+    // outbound `connect()` is attempted.
+
+    #[test]
+    fn test_iacs_tunnel_guards_struct_exists() {
+        let source = supervisor_prod_source();
+        assert!(
+            source.contains("struct IacsTunnelGuards"),
+            "Lot 4: IacsTunnelGuards struct must exist (carries the \
+             per-tunnel anti-SSRF state for the broker)"
+        );
+        assert!(
+            source.contains("fn from_config(cfg: &crate::config::IacsTunnelSupervisorConfig)"),
+            "Lot 4: IacsTunnelGuards::from_config must exist so the \
+             main loop can build the guard payload from the parsed \
+             [industrial.iacs_tunnel] block on every iteration"
+        );
+    }
+
+    #[test]
+    fn test_iacs_broker_logs_target_resolved_ip() {
+        let source = supervisor_prod_source();
+        let handler_start = source
+            .find("fn handle_tcp_connect_request(")
+            .expect("handle_tcp_connect_request must exist");
+        let handler = &source[handler_start..];
+        let handler_end = handler
+            .find("\nfn ")
+            .or_else(|| handler.find("\nasync fn "))
+            .unwrap_or(handler.len());
+        let handler = &handler[..handler_end];
+        assert!(
+            handler.contains("\"broker iacs target resolved\""),
+            "Lot 4: handle_tcp_connect_request MUST emit the canonical \
+             `broker iacs target resolved` info! line for ProxyIacs \
+             targets so an operator can pivot on `target_resolved_ip`"
+        );
+        assert!(
+            handler.contains("target_resolved_ip = %socket_addr.ip(),"),
+            "Lot 4: target_resolved_ip MUST be a structured field on \
+             the `broker iacs target resolved` line (drift to a free \
+             text format would break log-aggregator queries)"
+        );
+    }
+
+    #[test]
+    fn test_iacs_broker_anti_self_listener_guard_exists() {
+        let source = supervisor_prod_source();
+        let handler_start = source
+            .find("fn handle_tcp_connect_request(")
+            .expect("handle_tcp_connect_request must exist");
+        let handler = &source[handler_start..];
+        let handler_end = handler
+            .find("\nfn ")
+            .or_else(|| handler.find("\nasync fn "))
+            .unwrap_or(handler.len());
+        let handler = &handler[..handler_end];
+        assert!(
+            handler.contains("iacs anti-SSRF: refused target == iacs sshd self-listener"),
+            "Lot 4: anti-self-listener guard must reject targets that \
+             resolve to the IACS sshd's own bind address. Removing this \
+             would let a compromised vauban-web mint a token for \
+             (advertise_hostname, listener_port) and turn the bastion \
+             into a self-loop."
+        );
+    }
+
+    #[test]
+    fn test_iacs_broker_anti_loopback_guard_exists() {
+        let source = supervisor_prod_source();
+        let handler_start = source
+            .find("fn handle_tcp_connect_request(")
+            .expect("handle_tcp_connect_request must exist");
+        let handler = &source[handler_start..];
+        let handler_end = handler
+            .find("\nfn ")
+            .or_else(|| handler.find("\nasync fn "))
+            .unwrap_or(handler.len());
+        let handler = &handler[..handler_end];
+        assert!(
+            handler.contains("iacs_guards.allow_loopback_targets"),
+            "Lot 4: the anti-loopback guard must read \
+             `iacs_guards.allow_loopback_targets` so the dev / E2E \
+             override is opt-in"
+        );
+        assert!(
+            handler.contains("iacs anti-SSRF: refused loopback target"),
+            "Lot 4: handle_tcp_connect_request MUST log a refusal \
+             when the loopback guard fires (audit trail for SOC)"
+        );
+    }
+
+    #[test]
+    fn test_iacs_guards_threaded_through_process_service_messages() {
+        let source = supervisor_prod_source();
+        assert!(
+            source.contains("iacs_guards: &IacsTunnelGuards"),
+            "Lot 4: IacsTunnelGuards must be threaded through the \
+             call graph (process_service_messages + \
+             handle_tcp_connect_request) so the guards are not \
+             accidentally bypassed by a future refactor"
+        );
+        assert!(
+            source.contains("IacsTunnelGuards::from_config(&config.industrial.iacs_tunnel)"),
+            "Lot 4: the supervisor main loop must rebuild \
+             IacsTunnelGuards from the config every iteration (cheap \
+             struct, picks up hot-reload changes)"
         );
     }
 

@@ -145,6 +145,7 @@ impl TestApp {
             rate_limiter,
             ssh_proxy: None,       // No SSH proxy in tests
             rdp_proxy: None,       // No RDP proxy in tests
+            proxy_iacs: None,      // No IACS proxy in tests
             supervisor: None,      // No supervisor in tests
             vault_client: None,    // No vault in tests (dev mode fallback)
             access_client,         // Real Casbin-backed IPC client
