@@ -112,10 +112,10 @@ cookie scenarios against a fixed `2026-01-15 10:30:00Z` source
 date. Run them locally to validate the build:
 
 ```sh
-cargo test -p vauban-web --test mod timezone -- --test-threads=1
+cargo test -p vauban-web --test integration_tests timezone -- --test-threads=1
 ```
 
-Expect 20 passed across `timezone_e2e_test`, `timezone_lints_test`
+Expect 21 passed across `timezone_e2e_test`, `timezone_lints_test`
 and `timezone_snippet_test`.
 
 ## Triage: operator reports times in the wrong timezone

@@ -19,7 +19,10 @@ check *ARGS:
     cargo check --workspace {{ARGS}}
     cargo check {{rdp_manifest}} {{ARGS}}
 
-# Run all tests (single-threaded to avoid shared DB conflicts)
+# Run all tests (single-threaded per harness to reduce DB contention).
+# Requires PostgreSQL for crates that hit DATABASE_URL (see config/testing.toml).
+# vauban-web exposes a single integration crate (`integration_tests`) so the
+# workspace run does not spawn two binaries racing on the same catalog.
 test *ARGS:
     cargo test --workspace {{ARGS}} -- --test-threads=1
     cargo test {{rdp_manifest}} {{ARGS}} -- --test-threads=1
