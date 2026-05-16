@@ -87,6 +87,38 @@ pub struct TunnelRegistry {
     inner: Arc<DashMap<Uuid, TunnelHandle>>,
 }
 
+/// Keyed map of `russh::server::Handle` for every authenticated EWS
+/// SSH session, indexed by its `session_uuid`.
+///
+/// Background: the proxy needs to FORCE-disconnect the SSH session
+/// when an operator clicks "Terminate" on `/sessions/active`. The
+/// `TunnelRegistry` only carries per-channel byte counters and a
+/// close `Notify`; closing it does not propagate to the russh
+/// session itself, so the EWS would keep its `ssh -L` tunnel open
+/// and silently re-connect on the next `accept()`. The russh
+/// `Handle` (returned by `Session::handle()`) is the only seam that
+/// can dispatch a `Disconnect::ByApplication` message to the EWS
+/// from outside a Handler callback.
+///
+/// Lifecycle:
+///   - INSERT in `Handler::auth_succeeded` (the earliest callback
+///     where both the resolved `PendingTunnel.session_uuid` and the
+///     `Session` reference are simultaneously available).
+///   - REMOVE in the Handler's `Drop` impl (idempotent: `remove` on
+///     a missing key is a no-op).
+///   - LOOKUP in `Message::IacsTunnelTerminate` so the proxy can
+///     call `handle.disconnect(...)` to tear down the SSH session
+///     even when no `direct-tcpip` channel is currently open
+///     (e.g. session in `Waiting_client` after auth but before the
+///     first local TCP `accept()` on the EWS).
+///
+/// The handle is `Clone + Debug` (russh contract) so the DashMap
+/// stores an owned copy and lookups never block writers.
+#[derive(Debug, Default, Clone)]
+pub struct SessionHandles {
+    inner: Arc<DashMap<Uuid, russh::server::Handle>>,
+}
+
 #[allow(dead_code)] // Several methods surface in Lot 5 (terminate / WS pusher)
 impl TunnelRegistry {
     pub fn new() -> Self {
@@ -125,6 +157,41 @@ impl TunnelRegistry {
 
     pub fn snapshot(&self) -> Vec<TunnelHandle> {
         self.inner.iter().map(|r| r.clone()).collect()
+    }
+}
+
+#[allow(dead_code)] // surfaced via terminate IPC + tests
+impl SessionHandles {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Idempotent: a second `insert` for the same session_uuid
+    /// REPLACES the previous handle. Replacement is not expected in
+    /// production (one Handler per SSH session), but keeping it
+    /// no-warn protects us against future reconnect / refactor
+    /// edge cases.
+    pub fn insert(&self, session_uuid: Uuid, handle: russh::server::Handle) {
+        self.inner.insert(session_uuid, handle);
+    }
+
+    pub fn get(&self, session_uuid: &Uuid) -> Option<russh::server::Handle> {
+        self.inner.get(session_uuid).map(|r| r.clone())
+    }
+
+    /// Idempotent: `remove` of a missing key is a no-op.
+    pub fn remove(&self, session_uuid: &Uuid) -> Option<russh::server::Handle> {
+        self.inner.remove(session_uuid).map(|(_, v)| v)
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 }
 
@@ -176,5 +243,23 @@ mod tests {
         let removed = reg.close_and_remove(&uuid).expect("present");
         assert!(removed.is_closed());
         assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn session_handles_starts_empty_and_reports_len_zero() {
+        let s = SessionHandles::new();
+        assert!(s.is_empty());
+        assert_eq!(s.len(), 0);
+        assert!(s.get(&Uuid::new_v4()).is_none());
+    }
+
+    #[test]
+    fn session_handles_remove_of_missing_key_is_noop() {
+        let s = SessionHandles::new();
+        // No panic, no error: a terminate IPC arriving after the
+        // handler's Drop already removed the entry MUST be a no-op
+        // (idempotency contract of the SessionHandles API).
+        assert!(s.remove(&Uuid::new_v4()).is_none());
+        assert!(s.is_empty());
     }
 }

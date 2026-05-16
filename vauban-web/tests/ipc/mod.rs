@@ -1,2 +1,3 @@
 mod access_ipc_test;
+mod iacs_lifecycle_persistence_test;
 mod virtual_asset_group_ipc_test;

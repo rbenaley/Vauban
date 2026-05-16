@@ -132,10 +132,8 @@ async fn spawn_test_sshd_with_channel_cap(
     target_addr: std::net::SocketAddr,
     max_concurrent_channels_per_session: u32,
 ) -> (std::net::SocketAddr, TunnelRegistry) {
-    let host_key_path = std::env::temp_dir().join(format!(
-        "vauban_iacs_test_host_{}.key",
-        Uuid::new_v4()
-    ));
+    let host_key_path =
+        std::env::temp_dir().join(format!("vauban_iacs_test_host_{}.key", Uuid::new_v4()));
     let cfg = IacsTunnelConfig {
         enabled: true,
         bind_addr: "127.0.0.1:0".to_string(),
@@ -149,10 +147,9 @@ async fn spawn_test_sshd_with_channel_cap(
         revocation_poll_interval_seconds: 2,
     };
     let registry = TunnelRegistry::new();
-    let (addr, _join) =
-        spawn_iacs_tunnel_server(registry.clone(), app.db_pool.clone(), cfg)
-            .await
-            .expect("spawn sshd");
+    let (addr, _join) = spawn_iacs_tunnel_server(registry.clone(), app.db_pool.clone(), cfg)
+        .await
+        .expect("spawn sshd");
     // Give the listener a beat so a client connect cannot race
     // the bind on slow CI runners.
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -287,11 +284,9 @@ async fn connect_authenticated(
 async fn happy_path_relay_round_trips_bytes() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let user_id =
-        create_simple_user(&mut conn, &unique_name("iacs_tunnel_user")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("iacs_tunnel_user")).await;
     let key = fresh_ed25519_key();
-    let (session_uuid, _ews_uuid) =
-        seed_session_and_ews(&mut conn, user_id, &key).await;
+    let (session_uuid, _ews_uuid) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
 
     let target = spawn_echo_target().await;
@@ -467,7 +462,12 @@ async fn refuses_direct_tcpip_to_wrong_target() {
         .expect("auth");
     // Same host, different port.
     let res = handle
-        .channel_open_direct_tcpip("127.0.0.1", target.port().wrapping_add(1) as u32, "127.0.0.1", 0)
+        .channel_open_direct_tcpip(
+            "127.0.0.1",
+            target.port().wrapping_add(1) as u32,
+            "127.0.0.1",
+            0,
+        )
         .await;
     assert!(res.is_err(), "{}", SSH_OPEN_REJECTED);
     // Different host, same port.
@@ -495,8 +495,7 @@ async fn refuses_direct_tcpip_to_wrong_target() {
 async fn accepts_multiple_sequential_direct_tcpip_on_same_session() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let user_id =
-        create_simple_user(&mut conn, &unique_name("iacs_seq_chan")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("iacs_seq_chan")).await;
     let key = fresh_ed25519_key();
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
@@ -545,8 +544,7 @@ async fn accepts_multiple_sequential_direct_tcpip_on_same_session() {
 async fn accepts_multiple_concurrent_direct_tcpip_on_same_session() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let user_id =
-        create_simple_user(&mut conn, &unique_name("iacs_concurrent_chan")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("iacs_concurrent_chan")).await;
     let key = fresh_ed25519_key();
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
@@ -602,15 +600,13 @@ async fn accepts_multiple_concurrent_direct_tcpip_on_same_session() {
 async fn enforces_per_login_concurrent_channel_cap() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let user_id =
-        create_simple_user(&mut conn, &unique_name("iacs_chan_cap")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("iacs_chan_cap")).await;
     let key = fresh_ed25519_key();
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
 
     let target = spawn_echo_target().await;
-    let (sshd_addr, _registry) =
-        spawn_test_sshd_with_channel_cap(app, target, 2).await;
+    let (sshd_addr, _registry) = spawn_test_sshd_with_channel_cap(app, target, 2).await;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
@@ -695,8 +691,7 @@ async fn refuses_tcpip_forward() {
 async fn refuses_streamlocal_channel() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let user_id =
-        create_simple_user(&mut conn, &unique_name("iacs_no_streamlocal")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("iacs_no_streamlocal")).await;
     let key = fresh_ed25519_key();
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
@@ -724,12 +719,7 @@ async fn refuses_to_spawn_when_disabled() {
         enabled: false,
         ..Default::default()
     };
-    let res = spawn_iacs_tunnel_server(
-        TunnelRegistry::new(),
-        app.db_pool.clone(),
-        cfg,
-    )
-    .await;
+    let res = spawn_iacs_tunnel_server(TunnelRegistry::new(), app.db_pool.clone(), cfg).await;
     assert!(
         res.is_err(),
         "spawn_iacs_tunnel_server must refuse when enabled=false"
@@ -749,12 +739,7 @@ async fn refuses_to_spawn_when_bind_equals_target() {
             .to_string(),
         ..Default::default()
     };
-    let res = spawn_iacs_tunnel_server(
-        TunnelRegistry::new(),
-        app.db_pool.clone(),
-        cfg,
-    )
-    .await;
+    let res = spawn_iacs_tunnel_server(TunnelRegistry::new(), app.db_pool.clone(), cfg).await;
     assert!(
         res.is_err(),
         "spawn_iacs_tunnel_server must refuse self-loop config"

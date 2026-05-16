@@ -438,19 +438,53 @@ pub async fn terminate_session(
                 proxy.unsubscribe_session(&session_uuid_str).await;
             }
         }
-        // L5: IACS tunnels are owned by the in-process russh server.
-        // Closing the registry handle drains both relay tasks and
-        // disconnects the EWS within milliseconds. The status row
-        // is already updated to `terminated`; pushing a WS event so
-        // the status page can flip its pill without a reload.
+        // IACS tunnels live in two flavours:
+        // - PRODUCTION (proxy-iacs spawned by the supervisor):
+        //   `state.proxy_iacs.terminate_tunnel(...)` dispatches an
+        //   `IacsTunnelTerminate` IPC; proxy-iacs drains the relay,
+        //   closes the SSH login, and emits `IacsTunnelClosed` which
+        //   the IPC pump (`ipc::proxy_iacs::handle_message`)
+        //   already persists as `status = 'terminated'` and pushes
+        //   to the active-list WS subscribers.
+        // - LEGACY (in-process russh server, used by tests and
+        //   pre-supervisor dev mode): the in-memory registry is the
+        //   only handle on the live tunnel; closing it drains the
+        //   relay tasks within milliseconds.
+        // We always try the IPC path first when wired so the
+        // supervised topology stays canonical; the legacy registry
+        // remains as a no-op fall-through for dev / test fixtures.
         SessionType::IacsTunnel => {
-            if let Some(handle) = state.iacs_tunnel_registry.close_and_remove(&session_uuid) {
+            let mut handled_via_ipc = false;
+            if let Some(ref proxy) = state.proxy_iacs {
+                match proxy.terminate_tunnel(&session_uuid_str, "user_terminated") {
+                    Ok(()) => {
+                        tracing::info!(
+                            session_uuid = %session_uuid_str,
+                            "iacs_tunnel: terminate IPC dispatched to proxy-iacs"
+                        );
+                        handled_via_ipc = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            session_uuid = %session_uuid_str,
+                            error = %e,
+                            "iacs_tunnel: terminate IPC dispatch failed; \
+                             falling back to in-process registry"
+                        );
+                    }
+                }
+            }
+            if !handled_via_ipc
+                && let Some(handle) = state.iacs_tunnel_registry.close_and_remove(&session_uuid)
+            {
                 tracing::info!(
                     session_uuid = %session_uuid_str,
                     ews_uuid = %handle.ews_uuid,
-                    "iacs_tunnel: tunnel closed by /terminate"
+                    "iacs_tunnel: tunnel closed via legacy in-process registry"
                 );
             }
+            // Per-session WS hint so the status page flips its pill
+            // without waiting for the IPC round-trip / IacsTunnelClosed.
             let channel =
                 crate::services::broadcast::WsChannel::SessionLive(session_uuid_str.clone());
             let payload = serde_json::json!({

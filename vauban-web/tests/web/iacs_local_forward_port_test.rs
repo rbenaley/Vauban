@@ -127,10 +127,8 @@ async fn seed_iacs_asset_with_explicit_target(
     use vauban_web::schema::assets;
 
     let suffix = unique_name(label);
-    let asset_group_uuid =
-        create_test_asset_group(conn, &format!("{}-ag", suffix)).await;
-    let user_group_uuid =
-        create_test_vauban_group(conn, &format!("{}-ug", suffix)).await;
+    let asset_group_uuid = create_test_asset_group(conn, &format!("{}-ag", suffix)).await;
+    let user_group_uuid = create_test_vauban_group(conn, &format!("{}-ug", suffix)).await;
     add_user_to_vauban_group(conn, user_id, &user_group_uuid).await;
 
     let asset_id = create_test_asset_in_group_with_type(
@@ -181,7 +179,9 @@ async fn open_tunnel_and_fetch_status(
     user_uuid: &str,
     username: &str,
 ) -> (String, String) {
-    let token = app.generate_test_token(user_uuid, username, false, false).await;
+    let token = app
+        .generate_test_token(user_uuid, username, false, false)
+        .await;
     let csrf = app.generate_csrf_token();
 
     let response = app
@@ -225,8 +225,7 @@ async fn lot_a_modbus_502_renders_local_50502() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("a_modbus_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("a_modbus_admin")).await;
     let username = unique_name("a_modbus_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await.to_string();
@@ -274,8 +273,7 @@ async fn lot_a_mms_102_renders_local_50102() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("a_mms_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("a_mms_admin")).await;
     let username = unique_name("a_mms_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await.to_string();
@@ -312,8 +310,7 @@ async fn lot_a_opcua_4840_no_rewrite() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("a_opcua_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("a_opcua_admin")).await;
     let username = unique_name("a_opcua_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await.to_string();
@@ -356,8 +353,7 @@ async fn lot_a_boundary_1024_not_rewritten_1023_rewritten() {
     {
         let app = TestApp::spawn().await;
         let mut conn = app.get_conn().await;
-        let admin_id =
-            create_simple_admin_user(&mut conn, &unique_name("a_b1024_admin")).await;
+        let admin_id = create_simple_admin_user(&mut conn, &unique_name("a_b1024_admin")).await;
         let username = unique_name("a_b1024_user");
         let user_id = create_simple_user(&mut conn, &username).await;
         let user_uuid = get_user_uuid(&mut conn, user_id).await.to_string();
@@ -387,8 +383,7 @@ async fn lot_a_boundary_1024_not_rewritten_1023_rewritten() {
     {
         let app = TestApp::spawn().await;
         let mut conn = app.get_conn().await;
-        let admin_id =
-            create_simple_admin_user(&mut conn, &unique_name("a_b1023_admin")).await;
+        let admin_id = create_simple_admin_user(&mut conn, &unique_name("a_b1023_admin")).await;
         let username = unique_name("a_b1023_user");
         let user_id = create_simple_user(&mut conn, &username).await;
         let user_uuid = get_user_uuid(&mut conn, user_id).await.to_string();
@@ -431,8 +426,7 @@ async fn lot_a_ipv6_asset_host_preserved_verbatim() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("a_ipv6_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("a_ipv6_admin")).await;
     let username = unique_name("a_ipv6_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await.to_string();
@@ -484,8 +478,7 @@ async fn lot_a_malformed_target_addr_falls_back_safely() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("a_mal_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("a_mal_admin")).await;
     let username = unique_name("a_mal_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await.to_string();
@@ -535,9 +528,7 @@ async fn lot_a_malformed_target_addr_falls_back_safely() {
         "UPDATE proxy_sessions SET tunnel_target_addr = 'not-a-host-port' \
          WHERE uuid = $1",
     )
-    .bind::<diesel::sql_types::Uuid, _>(
-        Uuid::parse_str(&session_uuid_str).expect("uuid parse"),
-    )
+    .bind::<diesel::sql_types::Uuid, _>(Uuid::parse_str(&session_uuid_str).expect("uuid parse"))
     .execute(&mut conn)
     .await
     .expect("update tunnel_target_addr");
@@ -595,9 +586,12 @@ async fn lot_a_handler_uses_helper_for_every_iacs_asset_type() {
             asset_port,
         )
         .await;
-        let _ews =
-            seed_active_ews(&mut conn, user_id, &format!("a_helper_{}", asset_type.as_str()))
-                .await;
+        let _ews = seed_active_ews(
+            &mut conn,
+            user_id,
+            &format!("a_helper_{}", asset_type.as_str()),
+        )
+        .await;
 
         let (_session_uuid, body) =
             open_tunnel_and_fetch_status(app, asset_uuid, &user_uuid, &username).await;
@@ -625,8 +619,7 @@ async fn lot_a_no_hardcoded_loopback_rhs_for_non_loopback_assets() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("a_noloop_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("a_noloop_admin")).await;
     let username = unique_name("a_noloop_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await.to_string();
@@ -682,8 +675,7 @@ async fn lot_a_status_page_advertises_local_bind_address() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("a_uxbind_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("a_uxbind_admin")).await;
     let username = unique_name("a_uxbind_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await.to_string();

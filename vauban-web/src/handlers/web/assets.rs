@@ -154,8 +154,7 @@ pub async fn asset_list(
                 query = query.filter(schema_assets::asset_type.eq(parsed));
             }
             crate::models::asset::AssetTypeFilter::IacsAll => {
-                query =
-                    query.filter(schema_assets::asset_type.eq_any(AssetType::iacs_variants()));
+                query = query.filter(schema_assets::asset_type.eq_any(AssetType::iacs_variants()));
             }
             crate::models::asset::AssetTypeFilter::Unknown => {
                 query = query.filter(schema_assets::id.eq(-1));
@@ -304,35 +303,33 @@ pub async fn asset_list(
 
     let asset_items: Vec<AssetListItem> = db_assets
         .into_iter()
-        .map(
-            |(id, uuid, name, hostname, port, asset_type, status)| {
-                // The `asset_type` column is decoded into the strict
-                // `AssetType` enum at the Diesel layer (see
-                // `models::asset::AssetType::FromSql`), so we already
-                // hold the typed value here. The DB CHECK constraint
-                // (`assets_asset_type_chk`) ensures no unknown
-                // variant can ever reach this path.
-                let is_iacs = asset_type.is_iacs();
-                let iacs_protocol_label = asset_type
-                    .iacs_protocol()
-                    .map(|p| p.as_str().to_string())
-                    .unwrap_or_default();
-                AssetListItem {
-                    requires_request: approval_set.contains(&id) && !approved_set.contains(&id),
-                    require_mfa: mfa_set.contains(&id),
-                    id,
-                    uuid,
-                    name,
-                    hostname,
-                    port,
-                    asset_type: asset_type.to_string(),
-                    status,
-                    group_name: None,
-                    is_iacs,
-                    iacs_protocol_label,
-                }
-            },
-        )
+        .map(|(id, uuid, name, hostname, port, asset_type, status)| {
+            // The `asset_type` column is decoded into the strict
+            // `AssetType` enum at the Diesel layer (see
+            // `models::asset::AssetType::FromSql`), so we already
+            // hold the typed value here. The DB CHECK constraint
+            // (`assets_asset_type_chk`) ensures no unknown
+            // variant can ever reach this path.
+            let is_iacs = asset_type.is_iacs();
+            let iacs_protocol_label = asset_type
+                .iacs_protocol()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            AssetListItem {
+                requires_request: approval_set.contains(&id) && !approved_set.contains(&id),
+                require_mfa: mfa_set.contains(&id),
+                id,
+                uuid,
+                name,
+                hostname,
+                port,
+                asset_type: asset_type.to_string(),
+                status,
+                group_name: None,
+                is_iacs,
+                iacs_protocol_label,
+            }
+        })
         .collect();
 
     use crate::templates::accounts::user_list::Pagination;

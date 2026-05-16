@@ -128,10 +128,8 @@ async fn seed_iacs_asset_with_access(
     // do not collide on `asset_groups_name_key` /
     // `vauban_groups_name_key`.
     let suffix = unique_name(label);
-    let asset_group_uuid =
-        create_test_asset_group(conn, &format!("{}-ag", suffix)).await;
-    let user_group_uuid =
-        create_test_vauban_group(conn, &format!("{}-ug", suffix)).await;
+    let asset_group_uuid = create_test_asset_group(conn, &format!("{}-ag", suffix)).await;
+    let user_group_uuid = create_test_vauban_group(conn, &format!("{}-ug", suffix)).await;
     add_user_to_vauban_group(conn, user_id, &user_group_uuid).await;
 
     let asset_id = create_test_asset_in_group_with_type(
@@ -144,13 +142,7 @@ async fn seed_iacs_asset_with_access(
     .await;
 
     let proto = asset_type.as_str();
-    let _ = create_test_access_rule(
-        conn,
-        &user_group_uuid,
-        &asset_group_uuid,
-        &[proto],
-    )
-    .await;
+    let _ = create_test_access_rule(conn, &user_group_uuid, &asset_group_uuid, &[proto]).await;
 
     get_asset_uuid(conn, asset_id).await
 }
@@ -164,15 +156,19 @@ async fn iacs_connect_button_visible_when_perm_and_active_ews() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("iacs_btn_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("iacs_btn_admin")).await;
     let username = unique_name("iacs_btn_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let asset_uuid =
-        seed_iacs_asset_with_access(&mut conn, admin_id, user_id, "btnvis", AssetType::IacsModbus)
-            .await;
+    let asset_uuid = seed_iacs_asset_with_access(
+        &mut conn,
+        admin_id,
+        user_id,
+        "btnvis",
+        AssetType::IacsModbus,
+    )
+    .await;
     let _ews = seed_active_ews(&mut conn, user_id, "btnvis").await;
 
     let token = app
@@ -208,8 +204,7 @@ async fn iacs_connect_button_replaced_by_tooltip_when_no_active_ews() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("iacs_btn2_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("iacs_btn2_admin")).await;
     let username = unique_name("iacs_btn2_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
@@ -279,19 +274,13 @@ async fn iacs_connect_iacs_returns_redirect_for_eligible_user() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("iacs_post_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("iacs_post_admin")).await;
     let username = unique_name("iacs_post_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
-    let asset_uuid = seed_iacs_asset_with_access(
-        &mut conn,
-        admin_id,
-        user_id,
-        "post",
-        AssetType::IacsModbus,
-    )
-    .await;
+    let asset_uuid =
+        seed_iacs_asset_with_access(&mut conn, admin_id, user_id, "post", AssetType::IacsModbus)
+            .await;
     let _ews = seed_active_ews(&mut conn, user_id, "post").await;
 
     let token = app
@@ -337,22 +326,15 @@ async fn iacs_connect_iacs_returns_404_on_non_iacs_asset() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("iacs_405_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("iacs_405_admin")).await;
     let username = unique_name("iacs_405_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     // Note: SSH asset, not IACS. The button on /assets would NEVER
     // render this URL, but a hand-crafted POST must not leak
     // existence either.
-    let asset_uuid = seed_iacs_asset_with_access(
-        &mut conn,
-        admin_id,
-        user_id,
-        "404",
-        AssetType::Ssh,
-    )
-    .await;
+    let asset_uuid =
+        seed_iacs_asset_with_access(&mut conn, admin_id, user_id, "404", AssetType::Ssh).await;
     let _ews = seed_active_ews(&mut conn, user_id, "404").await;
 
     let token = app
@@ -382,8 +364,7 @@ async fn iacs_connect_iacs_returns_403_when_no_active_ews() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("iacs_noews_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("iacs_noews_admin")).await;
     let username = unique_name("iacs_noews_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
@@ -429,8 +410,7 @@ async fn iacs_status_page_renders_canonical_ssh_command() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("iacs_status_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("iacs_status_admin")).await;
     let username = unique_name("iacs_status_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
@@ -596,7 +576,9 @@ async fn iacs_status_page_renders_canonical_ssh_command() {
     // `iacs-tunnel-ssh-command` testid means we re-introduced the
     // overlap bug.
     for line in body.lines() {
-        if line.contains("iacs-tunnel-ssh-command") && !line.contains("iacs-tunnel-ssh-command-copy") {
+        if line.contains("iacs-tunnel-ssh-command")
+            && !line.contains("iacs-tunnel-ssh-command-copy")
+        {
             assert!(
                 !line.contains("overflow-x-auto"),
                 "the IACS status ssh-command code block MUST NOT carry \
@@ -618,8 +600,7 @@ async fn iacs_status_page_404_for_other_users_session() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("iacs_xown_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("iacs_xown_admin")).await;
     // Owner of the session.
     let owner_name = unique_name("iacs_xown_owner");
     let owner_id = create_simple_user(&mut conn, &owner_name).await;
@@ -630,14 +611,9 @@ async fn iacs_status_page_404_for_other_users_session() {
     let stranger_id = create_simple_user(&mut conn, &stranger_name).await;
     let stranger_uuid = get_user_uuid(&mut conn, stranger_id).await;
 
-    let asset_uuid = seed_iacs_asset_with_access(
-        &mut conn,
-        admin_id,
-        owner_id,
-        "xown",
-        AssetType::IacsIec104,
-    )
-    .await;
+    let asset_uuid =
+        seed_iacs_asset_with_access(&mut conn, admin_id, owner_id, "xown", AssetType::IacsIec104)
+            .await;
     let _ews = seed_active_ews(&mut conn, owner_id, "xown").await;
 
     let owner_token = app
@@ -695,19 +671,13 @@ async fn iacs_connect_iacs_returns_429_when_per_user_quota_exhausted() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_id =
-        create_simple_admin_user(&mut conn, &unique_name("iacs_quota_admin")).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("iacs_quota_admin")).await;
     let username = unique_name("iacs_quota_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
-    let asset_uuid = seed_iacs_asset_with_access(
-        &mut conn,
-        admin_id,
-        user_id,
-        "quota",
-        AssetType::IacsModbus,
-    )
-    .await;
+    let asset_uuid =
+        seed_iacs_asset_with_access(&mut conn, admin_id, user_id, "quota", AssetType::IacsModbus)
+            .await;
     let ews_uuid = seed_active_ews(&mut conn, user_id, "quota").await;
 
     // Need a real asset_id to satisfy proxy_sessions FK + IACS check.

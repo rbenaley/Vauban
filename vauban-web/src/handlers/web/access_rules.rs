@@ -891,12 +891,11 @@ mod tests {
     fn iacs_protocols_covers_every_iacs_variant() {
         let from_helper: std::collections::BTreeSet<String> =
             iacs_protocols().into_iter().collect();
-        let from_enum: std::collections::BTreeSet<String> =
-            crate::models::asset::AssetType::ALL
-                .iter()
-                .filter(|t| t.is_iacs())
-                .map(|t| t.as_str().to_string())
-                .collect();
+        let from_enum: std::collections::BTreeSet<String> = crate::models::asset::AssetType::ALL
+            .iter()
+            .filter(|t| t.is_iacs())
+            .map(|t| t.as_str().to_string())
+            .collect();
         assert_eq!(
             from_helper, from_enum,
             "iacs_protocols() must enumerate every AssetType::is_iacs variant"
@@ -910,11 +909,7 @@ mod tests {
 
     #[test]
     fn build_protocols_with_iacs_master_expands_to_every_iacs_variant() {
-        let protos = build_protocols(
-            &Some("true".to_string()),
-            &None,
-            &Some("true".to_string()),
-        );
+        let protos = build_protocols(&Some("true".to_string()), &None, &Some("true".to_string()));
         assert!(protos.contains(&"ssh".to_string()));
         assert!(!protos.contains(&"rdp".to_string()));
         assert!(protos.contains(&"iacs_modbus".to_string()));
@@ -926,11 +921,7 @@ mod tests {
 
     #[test]
     fn build_protocols_without_iacs_master_yields_no_iacs_protocols() {
-        let protos = build_protocols(
-            &Some("true".to_string()),
-            &Some("true".to_string()),
-            &None,
-        );
+        let protos = build_protocols(&Some("true".to_string()), &Some("true".to_string()), &None);
         assert_eq!(protos, vec!["ssh".to_string(), "rdp".to_string()]);
         assert!(!protos.iter().any(|p| p.starts_with("iacs_")));
     }

@@ -14,19 +14,32 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use russh::keys::ssh_key::Algorithm;
 use russh::keys::{PrivateKey, PublicKey};
 use russh::server::{Auth, Config as ServerConfig, Handler, Msg, Server, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet};
-use tokio::sync::Mutex;
+use shared::messages::Message;
+use tokio::sync::{Mutex, mpsc::UnboundedSender};
 use tracing::{debug, error, info, warn};
 
 use crate::auth::{AuthOutcome, PendingSessions, PendingTunnel, verify_publickey};
-use crate::registry::{TunnelHandle, TunnelRegistry};
+use crate::registry::{SessionHandles, TunnelHandle, TunnelRegistry};
 use crate::relay::{copy_with_counter, validate_target};
+
+/// Channel used by the russh handler / relay tasks to push
+/// `IacsTunnelStatusUpdate` and `IacsTunnelClosed` IPC messages
+/// back to vauban-web. Wrapped in an `mpsc` so a single writer
+/// task drains the queue and serialises the writes onto the web
+/// IPC fd: multiple russh tasks may emit concurrently without
+/// racing on the underlying pipe.
+///
+/// In tests `None` disables the reporting (the test harness drives
+/// the russh handler directly without an IPC peer); production
+/// always wires this up in `main.rs` BEFORE the accept loop spawns.
+pub type WebReporter = Option<UnboundedSender<Message>>;
 
 /// Trait abstraction over "open the upstream TCP connection to the
 /// industrial asset". Production wires this to the IPC client that
@@ -38,16 +51,19 @@ pub trait UpstreamOpener: Send + Sync + 'static {
     /// Open a connection to `(host, port)` for the pre-authorized
     /// session. Implementations MUST surface the supervisor's
     /// `TcpConnectResponse` failure as a non-`Ok` `Result`.
-    async fn open(
-        &self,
-        pending: &PendingTunnel,
-    ) -> std::io::Result<tokio::net::TcpStream>;
+    async fn open(&self, pending: &PendingTunnel) -> std::io::Result<tokio::net::TcpStream>;
 }
 
 /// Server-level state shared across every accepted EWS connection.
 pub struct IacsTunnelServer {
     pub registry: TunnelRegistry,
     pub pending: PendingSessions,
+    /// Map of `russh::server::Handle` per authenticated SSH session,
+    /// populated in `Handler::auth_succeeded` and consulted by the
+    /// `Message::IacsTunnelTerminate` IPC handler to dispatch a
+    /// `Disconnect::ByApplication` and force-tear-down the EWS link
+    /// even when no `direct-tcpip` channel is currently open.
+    pub session_handles: SessionHandles,
     pub upstream: Arc<dyn UpstreamOpener>,
     /// Cap on the number of concurrent `direct-tcpip` channels
     /// accepted per authenticated EWS connection. `0` disables the
@@ -56,20 +72,26 @@ pub struct IacsTunnelServer {
     /// See `IacsTunnelConfig::max_concurrent_channels_per_session` in
     /// `vauban-web` for the rationale.
     pub max_channels_per_session: usize,
+    /// Outbound IPC channel to vauban-web. See [`WebReporter`].
+    pub web_reporter: WebReporter,
 }
 
 impl IacsTunnelServer {
     pub fn new(
         registry: TunnelRegistry,
         pending: PendingSessions,
+        session_handles: SessionHandles,
         upstream: Arc<dyn UpstreamOpener>,
         max_channels_per_session: usize,
+        web_reporter: WebReporter,
     ) -> Self {
         Self {
             registry,
             pending,
+            session_handles,
             upstream,
             max_channels_per_session,
+            web_reporter,
         }
     }
 }
@@ -81,18 +103,20 @@ impl Server for IacsTunnelServer {
         IacsTunnelHandler {
             registry: self.registry.clone(),
             pending: self.pending.clone(),
+            session_handles: self.session_handles.clone(),
             upstream: self.upstream.clone(),
             peer_addr,
             authorized: Mutex::new(None),
             live_channels: Arc::new(AtomicUsize::new(0)),
             max_channels_per_session: self.max_channels_per_session,
+            web_reporter: self.web_reporter.clone(),
+            tunnel_active_emitted: Arc::new(AtomicBool::new(false)),
+            session_total_bytes_in: Arc::new(AtomicUsize::new(0)),
+            session_total_bytes_out: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    fn handle_session_error(
-        &mut self,
-        error: <Self::Handler as Handler>::Error,
-    ) {
+    fn handle_session_error(&mut self, error: <Self::Handler as Handler>::Error) {
         debug!(error = ?error, "iacs_tunnel: session error");
     }
 }
@@ -103,6 +127,11 @@ impl Server for IacsTunnelServer {
 pub struct IacsTunnelHandler {
     pub registry: TunnelRegistry,
     pub pending: PendingSessions,
+    /// Per-session russh handle map -- see
+    /// [`SessionHandles`](crate::registry::SessionHandles). Cloned
+    /// from the parent `IacsTunnelServer` so every handler shares
+    /// the same underlying `DashMap`.
+    pub session_handles: SessionHandles,
     pub upstream: Arc<dyn UpstreamOpener>,
     pub peer_addr: Option<std::net::SocketAddr>,
     /// `Some(pending)` once `auth_publickey` accepted.
@@ -118,16 +147,25 @@ pub struct IacsTunnelHandler {
     /// `0` means unlimited. Per-handler so a future config-reload
     /// path stays trivial.
     pub max_channels_per_session: usize,
+    /// Outbound IPC channel to vauban-web -- see [`WebReporter`].
+    pub web_reporter: WebReporter,
+    /// `true` once the per-EWS-login `IacsTunnelStatusUpdate { status =
+    /// "tunnel_active" }` has been emitted on the web IPC. The first
+    /// successful `direct-tcpip` flips it; subsequent channels do not
+    /// re-emit (the DB transition `waiting_client -> tunnel_active`
+    /// is idempotent in vauban-web but we still avoid the log noise).
+    pub tunnel_active_emitted: Arc<AtomicBool>,
+    /// Cumulative byte counters across every channel of this EWS
+    /// login. Used to populate the `IacsTunnelClosed { bytes_in,
+    /// bytes_out }` payload at handler-drop time.
+    pub session_total_bytes_in: Arc<AtomicUsize>,
+    pub session_total_bytes_out: Arc<AtomicUsize>,
 }
 
 impl Handler for IacsTunnelHandler {
     type Error = russh::Error;
 
-    async fn auth_password(
-        &mut self,
-        _user: &str,
-        _password: &str,
-    ) -> Result<Auth, Self::Error> {
+    async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
         Ok(Auth::reject())
     }
 
@@ -179,6 +217,34 @@ impl Handler for IacsTunnelHandler {
                 Ok(Auth::reject())
             }
         }
+    }
+
+    /// Capture the per-session `russh::server::Handle` so the
+    /// `Message::IacsTunnelTerminate` IPC can force-disconnect the
+    /// SSH session from outside the Handler call-stack. This is the
+    /// EARLIEST point in the russh lifecycle where both the resolved
+    /// `PendingTunnel.session_uuid` (stored in `self.authorized` by
+    /// `auth_publickey`) and the live `Session` ref are
+    /// simultaneously available; capturing here covers the full
+    /// `waiting_client` window (auth done, no `direct-tcpip` yet)
+    /// AND every subsequent `tunnel_active` / multi-channel state.
+    ///
+    /// The handle is stored in the shared
+    /// [`SessionHandles`](crate::registry::SessionHandles) registry
+    /// and removed in this handler's `Drop` impl. Idempotent: a
+    /// second auth on the same `session_uuid` (not expected in
+    /// practice but possible after a reconnect refactor) replaces
+    /// the previous handle.
+    async fn auth_succeeded(&mut self, session: &mut Session) -> Result<(), Self::Error> {
+        if let Some(p) = self.authorized.lock().await.as_ref() {
+            self.session_handles
+                .insert(p.session_uuid, session.handle());
+            debug!(
+                session_uuid = %p.session_uuid,
+                "iacs_tunnel: russh handle registered for forced disconnect"
+            );
+        }
+        Ok(())
     }
 
     async fn channel_open_session(
@@ -325,6 +391,38 @@ impl Handler for IacsTunnelHandler {
             channel_count = self.live_channels.load(Ordering::SeqCst),
             "iacs_tunnel: tunnel_active"
         );
+        // Emit the per-session `tunnel_active` IPC ONCE per EWS
+        // login (idempotent on the vauban-web side, but we keep
+        // the log noise down). This is the seam that flips
+        // `proxy_sessions.status` from `waiting_client` to
+        // `tunnel_active` in the database, populates `connected_at`
+        // and the `client_ip` (via `peer_ip`), and triggers the
+        // `WsChannel::ActiveSessionsList` broadcast that surfaces
+        // the row on `/sessions/active` and the Bastion Watch
+        // dashboard. Without this IPC the row stays in
+        // `waiting_client` forever and never appears on the active
+        // sessions surfaces (issue: 0.7.11 active-list integration
+        // landed without the producer side, so the IPC hooks were
+        // dormant).
+        if !self.tunnel_active_emitted.swap(true, Ordering::SeqCst)
+            && let Some(tx) = self.web_reporter.as_ref()
+        {
+            let peer_ip = self.peer_addr.map(|sa| sa.ip().to_string());
+            let msg = Message::IacsTunnelStatusUpdate {
+                session_id: pending.session_uuid.to_string(),
+                status: "tunnel_active".to_string(),
+                bytes_in: 0,
+                bytes_out: 0,
+                peer_ip,
+            };
+            if let Err(e) = tx.send(msg) {
+                warn!(
+                    session_uuid = %pending.session_uuid,
+                    error = %e,
+                    "iacs_tunnel: failed to enqueue IacsTunnelStatusUpdate (web channel closed?)"
+                );
+            }
+        }
         let handle = TunnelHandle::new(
             pending.session_uuid,
             pending.user_uuid,
@@ -333,7 +431,14 @@ impl Handler for IacsTunnelHandler {
             self.peer_addr,
         );
         self.registry.insert(handle.clone());
-        spawn_relay(channel, upstream_stream, handle, Arc::clone(&self.live_channels));
+        spawn_relay(
+            channel,
+            upstream_stream,
+            handle,
+            Arc::clone(&self.live_channels),
+            Arc::clone(&self.session_total_bytes_in),
+            Arc::clone(&self.session_total_bytes_out),
+        );
         Ok(true)
     }
 
@@ -416,7 +521,40 @@ impl Drop for IacsTunnelHandler {
             && let Some(p) = slot.as_ref()
         {
             self.registry.close_and_remove(&p.session_uuid);
+            // Drop the russh handle slot so a subsequent terminate
+            // IPC for the same `session_uuid` becomes a no-op
+            // instead of trying to disconnect a dead session.
+            self.session_handles.remove(&p.session_uuid);
             debug!(session_uuid = %p.session_uuid, "iacs_tunnel: drop cleanup");
+            // Notify vauban-web so the `proxy_sessions.status` row
+            // flips to `terminated`, `disconnected_at` is anchored,
+            // and the row leaves `/sessions/active`. Only fires if a
+            // `tunnel_active` was previously emitted -- a connection
+            // that never reached `direct-tcpip` (failed auth, no
+            // channel) was never persisted as `tunnel_active`, so
+            // there is nothing to close in vauban-web's view.
+            if self.tunnel_active_emitted.load(Ordering::SeqCst)
+                && let Some(tx) = self.web_reporter.as_ref()
+            {
+                let peer_ip = self.peer_addr.map(|sa| sa.ip().to_string());
+                let bytes_in = self.session_total_bytes_in.load(Ordering::SeqCst) as u64;
+                let bytes_out = self.session_total_bytes_out.load(Ordering::SeqCst) as u64;
+                let msg = Message::IacsTunnelClosed {
+                    request_id: 0,
+                    session_id: p.session_uuid.to_string(),
+                    reason: "ews_disconnect".to_string(),
+                    bytes_in,
+                    bytes_out,
+                    peer_ip,
+                };
+                if let Err(e) = tx.send(msg) {
+                    debug!(
+                        session_uuid = %p.session_uuid,
+                        error = %e,
+                        "iacs_tunnel: drop could not enqueue IacsTunnelClosed"
+                    );
+                }
+            }
         }
     }
 }
@@ -426,6 +564,8 @@ fn spawn_relay(
     upstream: tokio::net::TcpStream,
     handle: TunnelHandle,
     live_channels: Arc<AtomicUsize>,
+    session_total_bytes_in: Arc<AtomicUsize>,
+    session_total_bytes_out: Arc<AtomicUsize>,
 ) {
     let stream = channel.into_stream();
     let (reader_ssh, writer_ssh) = tokio::io::split(stream);
@@ -443,6 +583,13 @@ fn spawn_relay(
     });
     tokio::spawn(async move {
         let _ = tokio::join!(outbound, inbound);
+        let (bin, bout) = h_close.counters();
+        // Accumulate this channel's traffic into the per-EWS-login
+        // totals so the `IacsTunnelClosed` IPC emitted at handler
+        // drop carries the cumulative byte counts (sum across every
+        // `direct-tcpip` channel of the same session).
+        session_total_bytes_in.fetch_add(bin as usize, Ordering::SeqCst);
+        session_total_bytes_out.fetch_add(bout as usize, Ordering::SeqCst);
         h_close.close();
         // Release the per-login channel slot so the EWS can open a
         // new `direct-tcpip` for the next local TCP `accept()`.
@@ -451,7 +598,6 @@ fn spawn_relay(
         live_channels
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .ok();
-        let (bin, bout) = h_close.counters();
         info!(
             session_uuid = %h_close.session_uuid,
             bytes_in = bin,

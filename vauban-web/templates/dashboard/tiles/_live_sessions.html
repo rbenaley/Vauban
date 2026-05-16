@@ -13,10 +13,22 @@
 <ul class="divide-y divide-gray-100 dark:divide-gray-700">
   {% for s in snapshot.live_sessions %}
   <li class="py-2 flex items-center gap-3">
+    {# Per-protocol badge. Same colour convention as
+       `session_detail.html` and `active_list.rs::session_type_class()`:
+       SSH = emerald, RDP = blue, IACS = amber. The amber slot is
+       essential to keep IACS distinct from RDP at a glance --
+       sharing the blue branch with RDP would silently swap the
+       protocol identity in operators' visual model.
+       The label uses `session_type_label()` so the raw DB enum
+       `iacs_tunnel` collapses to `IACS` and the badge stays inside
+       its 24 px (h-6 w-6) slot. #}
     <span class="inline-flex h-6 w-6 items-center justify-center rounded
-      {% if s.session_type == "ssh" %}bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300{% else %}bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300{% endif %}
+      {% if s.session_type == "ssh" %}bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300
+      {% else if s.session_type == "rdp" %}bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300
+      {% else if s.session_type == "iacs_tunnel" %}bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300
+      {% else %}bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300{% endif %}
       font-mono text-[10px] uppercase">
-      {{ s.session_type }}
+      {{ s.session_type_label() }}
     </span>
     <div class="flex-1 min-w-0">
       <p class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">

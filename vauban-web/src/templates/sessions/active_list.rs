@@ -19,11 +19,31 @@ pub struct ActiveSessionItem {
 
 impl ActiveSessionItem {
     /// Get session type badge class.
+    ///
+    /// IACS tunnels are styled in amber so an operator can pick them
+    /// out at a glance from SSH (green) and RDP (blue): the IACS
+    /// surface is BETA and the colour cue reinforces the runbook
+    /// guidance to monitor them carefully.
     pub fn session_type_class(&self) -> &str {
         match self.session_type.as_str() {
             "ssh" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
             "rdp" => "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300",
+            "iacs_tunnel" => "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
+        }
+    }
+
+    /// Short, human-readable session type label for the row badge.
+    /// Avoids the verbose `IACS_TUNNEL` that would result from
+    /// uppercasing `session_type` directly in the template (the
+    /// asset-zone surface already disambiguates between protocols
+    /// inside the tunnel via the `endpoint` column).
+    pub fn session_type_label(&self) -> &'static str {
+        match self.session_type.as_str() {
+            "ssh" => "SSH",
+            "rdp" => "RDP",
+            "iacs_tunnel" => "IACS",
+            _ => "OTHER",
         }
     }
 }
@@ -57,6 +77,13 @@ impl ActiveListTemplate {
             .filter(|s| s.session_type == "rdp")
             .count()
     }
+
+    pub fn iacs_count(&self) -> usize {
+        self.sessions
+            .iter()
+            .filter(|s| s.session_type == "iacs_tunnel")
+            .count()
+    }
 }
 
 /// WebSocket widget for active sessions list content.
@@ -85,6 +112,13 @@ impl ActiveListStatsWidget {
         self.sessions
             .iter()
             .filter(|s| s.session_type == "rdp")
+            .count()
+    }
+
+    pub fn iacs_count(&self) -> usize {
+        self.sessions
+            .iter()
+            .filter(|s| s.session_type == "iacs_tunnel")
             .count()
     }
 }

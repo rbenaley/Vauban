@@ -1,8 +1,8 @@
+#[allow(unused_imports)]
+use crate::utils::filters;
 /// VAUBAN Web - Recent activity widget template.
 use askama::Template;
 use chrono::{DateTime, Utc};
-#[allow(unused_imports)]
-use crate::utils::filters;
 
 #[derive(Debug, Clone)]
 pub struct ActivityItem {

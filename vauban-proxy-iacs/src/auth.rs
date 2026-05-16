@@ -272,9 +272,7 @@ mod tests {
         let session = Uuid::new_v4();
         let key = fresh_key();
         let deadline = Instant::now() + Duration::from_secs(60);
-        pending
-            .insert(pending_for(&key, session, deadline))
-            .await;
+        pending.insert(pending_for(&key, session, deadline)).await;
         let outcome = verify_publickey(
             &pending,
             &session.to_string(),
@@ -291,8 +289,8 @@ mod tests {
     async fn verify_publickey_reject_on_invalid_uuid() {
         let pending = PendingSessions::new();
         let key = fresh_key();
-        let outcome = verify_publickey(&pending, "not-a-uuid", key.public_key(), Instant::now())
-            .await;
+        let outcome =
+            verify_publickey(&pending, "not-a-uuid", key.public_key(), Instant::now()).await;
         assert!(outcome.rejected_with(RejectReason::InvalidSessionUuidFormat));
     }
 

@@ -34,9 +34,8 @@ mod relay_inner {
         if requested_host == expected_host {
             return true;
         }
-        let is_loopback = |s: &str| {
-            matches!(s, "127.0.0.1" | "0.0.0.0" | "localhost" | "::1" | "[::1]")
-        };
+        let is_loopback =
+            |s: &str| matches!(s, "127.0.0.1" | "0.0.0.0" | "localhost" | "::1" | "[::1]");
         is_loopback(requested_host) && is_loopback(expected_host)
     }
 }
@@ -47,8 +46,7 @@ fn read_src(rel: &str) -> String {
     let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(PROXY_IACS_SRC)
         .join(rel);
-    std::fs::read_to_string(&p)
-        .unwrap_or_else(|e| panic!("read {}: {}", p.display(), e))
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {}", p.display(), e))
 }
 
 // ===================================================================
@@ -60,10 +58,16 @@ fn read_src(rel: &str) -> String {
 #[test]
 fn per_asset_target_accepted_when_match() {
     assert!(relay_inner::validate_target(
-        "10.42.0.7", 502, "10.42.0.7", 502
+        "10.42.0.7",
+        502,
+        "10.42.0.7",
+        502
     ));
     assert!(relay_inner::validate_target(
-        "factory-plc.internal", 34962, "factory-plc.internal", 34962
+        "factory-plc.internal",
+        34962,
+        "factory-plc.internal",
+        34962
     ));
 }
 
@@ -89,7 +93,10 @@ fn legacy_fixed_target_rejected_when_asset_is_remote() {
     // asset pinned to a remote address. This is the regression the
     // Lot 3 plan calls "rejects_legacy_target".
     assert!(!relay_inner::validate_target(
-        "127.0.0.1", 4321, "10.0.0.1", 502
+        "127.0.0.1",
+        4321,
+        "10.0.0.1",
+        502
     ));
 }
 
@@ -98,15 +105,19 @@ fn loopback_equivalences_accepted_only_when_both_sides_loopback() {
     // 127.0.0.1 vs localhost is permitted (operator convenience
     // within the same loopback family).
     assert!(relay_inner::validate_target(
-        "localhost", 502, "127.0.0.1", 502
+        "localhost",
+        502,
+        "127.0.0.1",
+        502
     ));
-    assert!(relay_inner::validate_target(
-        "::1", 502, "127.0.0.1", 502
-    ));
+    assert!(relay_inner::validate_target("::1", 502, "127.0.0.1", 502));
     // But a routable host on one side must NOT alias to loopback on
     // the other side.
     assert!(!relay_inner::validate_target(
-        "127.0.0.1", 502, "10.0.0.1", 502
+        "127.0.0.1",
+        502,
+        "10.0.0.1",
+        502
     ));
 }
 
@@ -164,9 +175,7 @@ fn iacs_tunnel_open_handler_verifies_session_token() {
          vauban-web could mint pending entries for any user/asset."
     );
     assert!(
-        src.contains(
-            "shared::access_guard::PROTOCOL_IACS_TUNNEL"
-        ),
+        src.contains("shared::access_guard::PROTOCOL_IACS_TUNNEL"),
         "verify_proxy MUST be called with PROTOCOL_IACS_TUNNEL so the \
          token's protocol binding is enforced (a token minted for \
          'ssh' must NOT be accepted on this surface)."

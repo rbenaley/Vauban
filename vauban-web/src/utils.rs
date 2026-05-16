@@ -39,7 +39,9 @@ use chrono_tz::Tz;
 /// it. `Tz::UTC` yields `"2026-05-08 22:14 UTC"` -- the canonical
 /// "no cookie posted yet" rendering.
 pub fn format_local(dt: DateTime<Utc>, tz: Tz) -> String {
-    dt.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z").to_string()
+    dt.with_timezone(&tz)
+        .format("%Y-%m-%d %H:%M %Z")
+        .to_string()
 }
 
 /// Same shape as [`format_local`] with second precision:

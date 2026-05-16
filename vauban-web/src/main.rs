@@ -700,9 +700,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref client) = proxy_iacs {
         let client_clone = Arc::clone(client);
         let broadcast_for_iacs = broadcast.clone();
+        let pool_for_iacs = db_pool.clone();
         tokio::spawn(async move {
             if let Err(e) = client_clone
-                .process_incoming_with_broadcast(broadcast_for_iacs)
+                .process_incoming_with_state(broadcast_for_iacs, pool_for_iacs)
                 .await
             {
                 tracing::error!(error = %e, "IACS proxy IPC processing task failed");
@@ -829,10 +830,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // follow-up cleanup; deletion would cascade through dozens of
     // unit tests and is out of scope for this lot.
     let proxy_iacs_present = app_state.proxy_iacs.is_some();
-    if config.industrial.enabled
-        && config.industrial.iacs_tunnel.enabled
-        && !proxy_iacs_present
-    {
+    if config.industrial.enabled && config.industrial.iacs_tunnel.enabled && !proxy_iacs_present {
         let registry = app_state.iacs_tunnel_registry.clone();
         let pool = app_state.db_pool.clone();
         let tunnel_cfg = config.industrial.iacs_tunnel.clone();
@@ -867,9 +865,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // L4: revocation + TTL watchdog. Runs forever; intentionally
         // de-coupled from the sshd task so a sshd panic does not
         // also stop revocation.
-        let _watchdog = vauban_web::services::iacs_tunnel::spawn_watchdog(
-            registry, pool, tunnel_cfg,
-        );
+        let _watchdog =
+            vauban_web::services::iacs_tunnel::spawn_watchdog(registry, pool, tunnel_cfg);
         tracing::info!("iacs_tunnel: revocation watchdog spawned");
     } else if config.industrial.enabled && config.industrial.iacs_tunnel.enabled {
         // proxy_iacs_present == true: spawn the revocation watchdog
@@ -888,9 +885,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tunnel_cfg,
             proxy_iacs_for_wd,
         );
-        tracing::info!(
-            "iacs_tunnel: revocation watchdog spawned (proxy-iacs IPC mode)"
-        );
+        tracing::info!("iacs_tunnel: revocation watchdog spawned (proxy-iacs IPC mode)");
     } else {
         tracing::info!(
             industrial_enabled = config.industrial.enabled,

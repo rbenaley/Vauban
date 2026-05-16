@@ -34,23 +34,30 @@
                     </li>
                 </ol>
             </nav>
-            <div class="mt-2 flex items-center">
-                <span class="inline-flex h-10 w-10 items-center justify-center rounded-lg mr-3
+            <div class="mt-2 flex flex-wrap items-center gap-2 sm:gap-3">
+                {# Fixed h-10 w-10 square badge: the inner label MUST be a
+                   short token (max 4 chars) so it fits without overflowing
+                   onto the title. `iacs_tunnel` is collapsed to "IACS"
+                   here for the same reason it is on the active list /
+                   sessions history rows -- mirrors `session_type_label()`
+                   in `templates/sessions/active_list.rs` and
+                   `session_type_display()` in `session_list.rs`. #}
+                <span class="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg
                     {% if session.session_type == "ssh" %}bg-green-100 dark:bg-green-900/50
                     {% else if session.session_type == "rdp" %}bg-blue-100 dark:bg-blue-900/50
+                    {% else if session.session_type == "iacs_tunnel" %}bg-amber-100 dark:bg-amber-900/50
                     {% else %}bg-purple-100 dark:bg-purple-900/50{% endif %}">
                     <span class="text-sm font-bold
                         {% if session.session_type == "ssh" %}text-green-600 dark:text-green-400
                         {% else if session.session_type == "rdp" %}text-blue-600 dark:text-blue-400
-                        {% else %}text-purple-600 dark:text-purple-400{% endif %}">
-                        {{ session.session_type|upper }}
-                    </span>
+                        {% else if session.session_type == "iacs_tunnel" %}text-amber-700 dark:text-amber-300
+                        {% else %}text-purple-600 dark:text-purple-400{% endif %}">{{ session.session_type_display() }}</span>
                 </span>
-                <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
+                <h2 class="min-w-0 text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
                     Session #{{ session.id }}
                 </h2>
-                <span class="ml-3 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ session.status_class() }}">
-                    {{ session.status|capitalize }}
+                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ session.status_class() }}">
+                    {{ session.status_display() }}
                 </span>
             </div>
         </div>
@@ -99,7 +106,7 @@
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Session Type</dt>
                     <dd class="mt-1">
                         <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ session.type_class() }}">
-                            {{ session.session_type|upper }}
+                            {{ session.session_type_display() }}
                         </span>
                     </dd>
                 </div>
@@ -107,7 +114,7 @@
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Status</dt>
                     <dd class="mt-1">
                         <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ session.status_class() }}">
-                            {{ session.status|capitalize }}
+                            {{ session.status_display() }}
                         </span>
                     </dd>
                 </div>

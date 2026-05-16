@@ -37,12 +37,58 @@ impl SessionDetail {
         super::session_status_class(&self.status)
     }
 
+    /// Human-friendly status label for the header badge. Mirrors
+    /// `SessionListItem::status_display` so the same status renders
+    /// the same way across `/sessions`, `/sessions/active`, and the
+    /// detail page (the previous `{{ status|capitalize }}` filter
+    /// produced the awkward "Tunnel_active" string with a trailing
+    /// underscore).
+    pub fn status_display(&self) -> String {
+        match self.status.as_str() {
+            "active" | "tunnel_active" => "Active".to_string(),
+            "waiting_client" => "Waiting client".to_string(),
+            "disconnected" => "Disconnected".to_string(),
+            "completed" => "Completed".to_string(),
+            "terminated" => "Terminated".to_string(),
+            "pending" => "Pending".to_string(),
+            "failed" => "Failed".to_string(),
+            "connecting" => "Connecting".to_string(),
+            "expired" => "Expired".to_string(),
+            "approved" => "Approved".to_string(),
+            "consumed" => "Consumed".to_string(),
+            other => {
+                let mut chars = other.chars();
+                match chars.next() {
+                    Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
+                    None => String::new(),
+                }
+            }
+        }
+    }
+
     /// Get session type badge class.
     pub fn type_class(&self) -> &str {
         match self.session_type.as_str() {
             "ssh" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
             "rdp" => "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300",
+            "iacs_tunnel" => "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
+        }
+    }
+
+    /// Short, badge-friendly label for the session type. Mirrors
+    /// `SessionListItem::session_type_display` and
+    /// `ActiveSessionItem::session_type_label` so the same session
+    /// renders with the same token everywhere. Crucially, it
+    /// collapses `iacs_tunnel` to `IACS` (the long form overflowed
+    /// the fixed-width `h-10 w-10` header badge and visually
+    /// overlapped the page title -- the regression we fix here).
+    pub fn session_type_display(&self) -> &str {
+        match self.session_type.as_str() {
+            "ssh" => "SSH",
+            "rdp" => "RDP",
+            "iacs_tunnel" => "IACS",
+            other => other,
         }
     }
 
@@ -207,6 +253,79 @@ mod tests {
     fn test_type_class_unknown() {
         let detail = create_test_session_detail("active", "telnet");
         assert!(detail.type_class().contains("gray"));
+    }
+
+    #[test]
+    fn test_type_class_iacs_uses_amber() {
+        let detail = create_test_session_detail("tunnel_active", "iacs_tunnel");
+        assert!(
+            detail.type_class().contains("amber"),
+            "iacs_tunnel detail badge MUST use the amber palette \
+             (consistent with the active list / sessions history)"
+        );
+    }
+
+    #[test]
+    fn test_status_display_tunnel_active_renders_active() {
+        let detail = create_test_session_detail("tunnel_active", "iacs_tunnel");
+        assert_eq!(detail.status_display(), "Active");
+    }
+
+    #[test]
+    fn test_status_display_waiting_client_renders_human_friendly() {
+        let detail = create_test_session_detail("waiting_client", "iacs_tunnel");
+        assert_eq!(
+            detail.status_display(),
+            "Waiting client",
+            "waiting_client must render without the trailing underscore"
+        );
+    }
+
+    #[test]
+    fn test_session_detail_header_collapses_iacs_tunnel_to_short_label() {
+        use askama::Template;
+
+        let detail = create_test_session_detail("tunnel_active", "iacs_tunnel");
+        let template = SessionDetailTemplate {
+            title: "Session #573".to_string(),
+            user: Some(UserContext {
+                uuid: "u".to_string(),
+                username: "alice".to_string(),
+                display_name: "Alice".to_string(),
+                is_superuser: true,
+                is_staff: true,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+                ..Default::default()
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            session: detail,
+            show_play_recording: false,
+        };
+        let html = template.render().expect("render");
+        assert!(
+            !html.contains("IACS_TUNNEL"),
+            "the fixed-width h-10 w-10 badge MUST collapse the long \
+             `IACS_TUNNEL` token to the short `IACS` label, otherwise \
+             the text overflows onto the page title (issue: visual \
+             overlap on /sessions/573)"
+        );
+        assert!(
+            html.contains("IACS"),
+            "the badge MUST render the short `IACS` token"
+        );
+        assert!(
+            !html.contains("Tunnel_active"),
+            "the status pill MUST NOT show the awkward \
+             `Tunnel_active` text from `|capitalize`; use \
+             `status_display()` so it reads `Active` instead"
+        );
     }
 
     // Tests for format_bytes()

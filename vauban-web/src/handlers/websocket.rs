@@ -689,8 +689,12 @@ async fn fetch_initial_stats(
 
     use crate::schema::proxy_sessions::dsl::*;
 
+    // Mirrors `tasks::dashboard::fetch_stats`: SSH/RDP run as
+    // `active`, IACS as `tunnel_active`. Both are live so the
+    // dashboard tile reflects what the operator sees on the
+    // active-sessions page.
     let active_count: i64 = proxy_sessions
-        .filter(status.eq("active"))
+        .filter(status.eq_any(["active", "tunnel_active"]))
         .count()
         .get_result(&mut conn)
         .await
@@ -738,8 +742,11 @@ async fn fetch_initial_sessions(
 
     use crate::schema::proxy_sessions::dsl::*;
 
+    // Same composite filter as the rest of the active-list pipeline:
+    // see `tasks::dashboard::fetch_active_sessions`. SSH/RDP are
+    // `active`, IACS tunnels are `tunnel_active`.
     let sessions: Vec<ProxySession> = proxy_sessions
-        .filter(status.eq("active"))
+        .filter(status.eq_any(["active", "tunnel_active"]))
         .order(created_at.desc())
         .limit(10)
         .load(&mut conn)
@@ -1257,10 +1264,16 @@ pub(crate) async fn fetch_active_sessions_list(
         String,
         ipnetwork::IpNetwork,
         Option<chrono::DateTime<chrono::Utc>>,
+        // Active-list filter: see the rationale on the matching site in
+        // `handlers::web::sessions::active_sessions`. SSH/RDP run as
+        // `status = 'active'`, IACS tunnels run as
+        // `status = 'tunnel_active'`; both surface on this WebSocket
+        // initial-data send so a freshly-subscribed admin tab matches
+        // the page-load HTML byte-for-byte.
     )> = proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::status.eq("active"))
+        .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
         .filter(proxy_sessions::connected_at.is_not_null())
         .select((
             proxy_sessions::id,
@@ -1478,6 +1491,7 @@ pub(crate) async fn fetch_session_list_data(
         crate::models::session::SessionType,
         String,
         String,
+        Option<String>,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<chrono::DateTime<chrono::Utc>>,
         bool,
@@ -1493,6 +1507,7 @@ pub(crate) async fn fetch_session_list_data(
             proxy_sessions::session_type,
             proxy_sessions::status,
             proxy_sessions::credential_username,
+            proxy_sessions::tunnel_target_addr,
             proxy_sessions::connected_at,
             proxy_sessions::disconnected_at,
             proxy_sessions::is_recorded,
@@ -1515,6 +1530,7 @@ pub(crate) async fn fetch_session_list_data(
                 session_type,
                 status,
                 credential_username,
+                tunnel_target_addr,
                 connected_at,
                 disconnected_at,
                 is_recorded,
@@ -1523,7 +1539,7 @@ pub(crate) async fn fetch_session_list_data(
                     (Some(start), Some(end)) => {
                         Some(end.signed_duration_since(start).num_seconds())
                     }
-                    (Some(start), None) if status == "active" => {
+                    (Some(start), None) if status == "active" || status == "tunnel_active" => {
                         Some(now.signed_duration_since(start).num_seconds())
                     }
                     _ => None,
@@ -1536,6 +1552,7 @@ pub(crate) async fn fetch_session_list_data(
                     session_type: session_type.to_string(),
                     status,
                     credential_username,
+                    tunnel_target_addr,
                     connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
                     duration_seconds,
                     is_recorded,

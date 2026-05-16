@@ -214,10 +214,12 @@ async fn session_list_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool
 async fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
     let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
 
-    // Count active sessions
+    // Count active sessions: SSH/RDP run as `active`, IACS tunnels
+    // run as `tunnel_active`. Both are "live" so the dashboard tile
+    // reflects what an operator would see on `/sessions/active`.
     use crate::schema::proxy_sessions::dsl::*;
     let active_sessions_count: i64 = proxy_sessions
-        .filter(status.eq("active"))
+        .filter(status.eq_any(["active", "tunnel_active"]))
         .count()
         .get_result(&mut conn)
         .await
@@ -260,8 +262,11 @@ async fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem
     use crate::models::session::ProxySession;
     use crate::schema::proxy_sessions::dsl::*;
 
+    // Same composite filter as `fetch_active_sessions_full`: SSH/RDP
+    // (`active`) and IACS (`tunnel_active`) both surface on the home
+    // dashboard "live sessions" widget.
     let sessions: Vec<ProxySession> = proxy_sessions
-        .filter(status.eq("active"))
+        .filter(status.eq_any(["active", "tunnel_active"]))
         .order(created_at.desc())
         .limit(10)
         .load(&mut conn)
@@ -308,10 +313,15 @@ async fn fetch_active_sessions_full(
         String,
         ipnetwork::IpNetwork,
         Option<chrono::DateTime<chrono::Utc>>,
+        // Active-list filter: see the rationale on the matching site in
+        // `handlers::web::sessions::active_sessions`. SSH/RDP run as
+        // `status = 'active'`, IACS tunnels run as
+        // `status = 'tunnel_active'`; we surface both so the periodic
+        // 10 s push and the page-load query stay byte-identical.
     )> = proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::status.eq("active"))
+        .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
         .filter(proxy_sessions::connected_at.is_not_null())
         .select((
             proxy_sessions::id,
@@ -419,6 +429,7 @@ async fn fetch_session_list(db_pool: &DbPool) -> Result<Vec<SessionListItem>, St
         crate::models::session::SessionType,
         String,
         String,
+        Option<String>,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<chrono::DateTime<chrono::Utc>>,
         bool,
@@ -434,6 +445,7 @@ async fn fetch_session_list(db_pool: &DbPool) -> Result<Vec<SessionListItem>, St
             proxy_sessions::session_type,
             proxy_sessions::status,
             proxy_sessions::credential_username,
+            proxy_sessions::tunnel_target_addr,
             proxy_sessions::connected_at,
             proxy_sessions::disconnected_at,
             proxy_sessions::is_recorded,
@@ -456,6 +468,7 @@ async fn fetch_session_list(db_pool: &DbPool) -> Result<Vec<SessionListItem>, St
                 session_type,
                 status,
                 credential_username,
+                tunnel_target_addr,
                 connected_at,
                 disconnected_at,
                 is_recorded,
@@ -464,7 +477,7 @@ async fn fetch_session_list(db_pool: &DbPool) -> Result<Vec<SessionListItem>, St
                     (Some(start), Some(end)) => {
                         Some(end.signed_duration_since(start).num_seconds())
                     }
-                    (Some(start), None) if status == "active" => {
+                    (Some(start), None) if status == "active" || status == "tunnel_active" => {
                         Some(now.signed_duration_since(start).num_seconds())
                     }
                     _ => None,
@@ -477,6 +490,7 @@ async fn fetch_session_list(db_pool: &DbPool) -> Result<Vec<SessionListItem>, St
                     session_type: session_type.to_string(),
                     status,
                     credential_username,
+                    tunnel_target_addr,
                     connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
                     duration_seconds,
                     is_recorded,

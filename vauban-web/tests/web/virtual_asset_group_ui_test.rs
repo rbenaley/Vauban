@@ -508,8 +508,7 @@ async fn u42_access_rule_create_on_virtual_group_succeeds() {
 async fn u42b_iacs_master_checkbox_expands_to_every_iacs_protocol() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let admin =
-        create_admin_user(&mut conn, &app.auth_service, &unique_name("u42b_adm")).await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("u42b_adm")).await;
     let csrf = app.generate_csrf_token();
 
     let ug = create_test_vauban_group(&mut conn, &unique_name("u42b_ug")).await;
@@ -553,8 +552,7 @@ async fn u42b_iacs_master_checkbox_expands_to_every_iacs_protocol() {
         .first(&mut conn)
         .await
         .unwrap();
-    let persisted: std::collections::BTreeSet<String> =
-        persisted.into_iter().flatten().collect();
+    let persisted: std::collections::BTreeSet<String> = persisted.into_iter().flatten().collect();
 
     for required in [
         "ssh",

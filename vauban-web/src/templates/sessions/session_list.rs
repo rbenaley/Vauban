@@ -13,6 +13,15 @@ pub struct SessionListItem {
     pub session_type: String,
     pub status: String,
     pub credential_username: String,
+    /// Snapshot of `proxy_sessions.tunnel_target_addr`. For IACS
+    /// tunnels this is `host:port` of the industrial asset captured
+    /// at session creation. SSH / RDP rows leave it `None`. The
+    /// list template uses [`Self::display_identity`] to fall back
+    /// to this field when `credential_username` is empty (the IACS
+    /// tunnel session by design carries no `credential_username`,
+    /// so without this fallback the row collapsed to "iacs_tunnel
+    /// &bull; " with no actionable identity).
+    pub tunnel_target_addr: Option<String>,
     pub connected_at: Option<String>,
     pub duration_seconds: Option<i64>,
     pub is_recorded: bool,
@@ -24,8 +33,28 @@ impl SessionListItem {
         match self.session_type.as_str() {
             "ssh" => "SSH",
             "rdp" => "RDP",
+            "iacs_tunnel" => "IACS",
             _ => &self.session_type,
         }
+    }
+
+    /// Identity to render in the session row metadata. For SSH /
+    /// RDP this is the credential username (e.g. `admin`). For IACS
+    /// tunnels there is no per-session credential (the `EWS`
+    /// authenticates with its own pubkey), so we surface the
+    /// industrial endpoint snapshot from `tunnel_target_addr`. Falls
+    /// back to a placeholder dash so the row never renders an empty
+    /// `&bull; &bull;` sequence even on a malformed legacy entry.
+    pub fn display_identity(&self) -> &str {
+        if !self.credential_username.is_empty() {
+            return self.credential_username.as_str();
+        }
+        if let Some(addr) = self.tunnel_target_addr.as_deref()
+            && !addr.is_empty()
+        {
+            return addr;
+        }
+        "-"
     }
 
     /// Get status badge CSS class.
@@ -37,6 +66,8 @@ impl SessionListItem {
     pub fn status_display(&self) -> String {
         match self.status.as_str() {
             "active" => "Active".to_string(),
+            "tunnel_active" => "Active".to_string(),
+            "waiting_client" => "Waiting client".to_string(),
             "disconnected" => "Disconnected".to_string(),
             "completed" => "Completed".to_string(),
             "terminated" => "Terminated".to_string(),
@@ -114,6 +145,7 @@ mod tests {
             session_type: session_type.to_string(),
             status: status.to_string(),
             credential_username: "testuser".to_string(),
+            tunnel_target_addr: None,
             connected_at: Some("2026-01-03 10:00:00".to_string()),
             duration_seconds: duration,
             is_recorded: true,
@@ -137,6 +169,70 @@ mod tests {
     fn test_session_type_display_unknown() {
         let item = create_test_session_item("telnet", "active", None);
         assert_eq!(item.session_type_display(), "telnet");
+    }
+
+    #[test]
+    fn test_session_type_display_iacs_maps_to_short_label() {
+        let item = create_test_session_item("iacs_tunnel", "tunnel_active", None);
+        assert_eq!(
+            item.session_type_display(),
+            "IACS",
+            "iacs_tunnel must collapse to the short `IACS` label so \
+             the row metadata stays compact"
+        );
+    }
+
+    #[test]
+    fn test_status_display_tunnel_active_renders_active() {
+        let item = create_test_session_item("iacs_tunnel", "tunnel_active", None);
+        assert_eq!(item.status_display(), "Active");
+    }
+
+    #[test]
+    fn test_status_display_waiting_client_renders_human_friendly() {
+        let item = create_test_session_item("iacs_tunnel", "waiting_client", None);
+        assert_eq!(
+            item.status_display(),
+            "Waiting client",
+            "waiting_client must render as `Waiting client` (no underscore)"
+        );
+    }
+
+    #[test]
+    fn test_display_identity_falls_back_to_tunnel_target_for_iacs() {
+        let mut item = create_test_session_item("iacs_tunnel", "tunnel_active", Some(60));
+        item.credential_username = String::new();
+        item.tunnel_target_addr = Some("10.42.0.7:502".to_string());
+        assert_eq!(
+            item.display_identity(),
+            "10.42.0.7:502",
+            "IACS rows have no credential_username; the row identity \
+             must fall back to the tunnel_target_addr snapshot"
+        );
+    }
+
+    #[test]
+    fn test_display_identity_keeps_credential_for_ssh() {
+        let item = create_test_session_item("ssh", "active", None);
+        assert_eq!(
+            item.display_identity(),
+            "testuser",
+            "SSH rows must keep showing credential_username; IACS \
+             fallback only kicks in when credential_username is empty"
+        );
+    }
+
+    #[test]
+    fn test_display_identity_dashes_when_both_missing() {
+        let mut item = create_test_session_item("iacs_tunnel", "waiting_client", None);
+        item.credential_username = String::new();
+        item.tunnel_target_addr = None;
+        assert_eq!(
+            item.display_identity(),
+            "-",
+            "Legacy / malformed rows must collapse to `-` so the \
+             template never renders an empty bullet sequence"
+        );
     }
 
     // Tests for status_display()

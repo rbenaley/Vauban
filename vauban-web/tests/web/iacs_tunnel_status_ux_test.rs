@@ -35,9 +35,7 @@ use tokio::time::{Duration, timeout};
 use uuid::Uuid;
 use vauban_web::config::IacsTunnelConfig;
 use vauban_web::services::broadcast::WsChannel;
-use vauban_web::services::iacs_tunnel::{
-    TunnelRegistry, spawn_iacs_tunnel_server_with_broadcast,
-};
+use vauban_web::services::iacs_tunnel::{TunnelRegistry, spawn_iacs_tunnel_server_with_broadcast};
 
 use crate::common::TestApp;
 use crate::fixtures::{create_simple_user, unique_name};
@@ -188,14 +186,9 @@ async fn seed_session_and_ews(
     session_uuid
 }
 
-async fn spawn_test_sshd(
-    app: &TestApp,
-    target_addr: std::net::SocketAddr,
-) -> std::net::SocketAddr {
-    let host_key_path = std::env::temp_dir().join(format!(
-        "vauban_iacs_l5_test_host_{}.key",
-        Uuid::new_v4()
-    ));
+async fn spawn_test_sshd(app: &TestApp, target_addr: std::net::SocketAddr) -> std::net::SocketAddr {
+    let host_key_path =
+        std::env::temp_dir().join(format!("vauban_iacs_l5_test_host_{}.key", Uuid::new_v4()));
     let cfg = IacsTunnelConfig {
         enabled: true,
         bind_addr: "127.0.0.1:0".to_string(),
@@ -247,7 +240,9 @@ async fn ws_pushes_tunnel_active_then_closed_on_handshake_lifecycle() {
         inactivity_timeout: Some(Duration::from_secs(5)),
         ..Default::default()
     });
-    let mut handle = client::connect(cfg, sshd_addr, TestClient).await.expect("connect");
+    let mut handle = client::connect(cfg, sshd_addr, TestClient)
+        .await
+        .expect("connect");
     let signer = PrivateKeyWithHashAlg::new(Arc::new(key), None);
     assert!(
         handle
@@ -272,8 +267,7 @@ async fn ws_pushes_tunnel_active_then_closed_on_handshake_lifecycle() {
         .await
         .expect("timeout waiting for tunnel_active")
         .expect("recv");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&active).expect("payload is JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&active).expect("payload is JSON");
     assert_eq!(parsed["type"], "tunnel_active");
 
     // Drive a few bytes to keep the relay tasks busy. Closing the
@@ -297,8 +291,7 @@ async fn ws_pushes_tunnel_active_then_closed_on_handshake_lifecycle() {
     while std::time::Instant::now() < deadline {
         match timeout(Duration::from_secs(1), rx.recv()).await {
             Ok(Ok(payload)) => {
-                let v: serde_json::Value =
-                    serde_json::from_str(&payload).expect("json");
+                let v: serde_json::Value = serde_json::from_str(&payload).expect("json");
                 if v["type"] == "tunnel_closed" {
                     saw_closed = true;
                     break;
@@ -377,6 +370,9 @@ async fn terminate_closes_in_memory_tunnel() {
     reg.insert(h);
     assert!(reg.get(&session).is_some());
     let removed = reg.close_and_remove(&session).expect("must remove");
-    assert!(removed.is_closed(), "close_and_remove must close the handle");
+    assert!(
+        removed.is_closed(),
+        "close_and_remove must close the handle"
+    );
     assert!(reg.get(&session).is_none(), "registry must drop the row");
 }

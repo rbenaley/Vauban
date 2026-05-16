@@ -1059,13 +1059,11 @@ mod tests {
         // in production where `ssh -L` failed on the second channel
         // open with `session token rejected: token expired`.
         let later = issued + TOKEN_TTL_SECONDS + 600;
-        token
-            .verify(&key, later, &supervisor_view(&token))
-            .expect(
-                "IACS token MUST still verify well past the short default \
+        token.verify(&key, later, &supervisor_view(&token)).expect(
+            "IACS token MUST still verify well past the short default \
                  TTL: that is the entire reason it has a per-target_service \
                  TTL in the first place",
-            );
+        );
     }
 
     #[test]

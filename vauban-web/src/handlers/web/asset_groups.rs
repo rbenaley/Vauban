@@ -936,7 +936,7 @@ pub async fn asset_group_edit(
         browser_tz.0,
     )
     .with_current_path("/assets/groups")
-        .with_messages(flash_messages);
+    .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await

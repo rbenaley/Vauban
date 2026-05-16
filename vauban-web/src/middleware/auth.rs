@@ -293,12 +293,10 @@ async fn verify_session_with_timeouts(
 /// This is called on each authenticated request to track user activity.
 async fn update_last_activity(state: &AppState, session_uuid: Uuid) {
     if let Ok(mut conn) = state.db_pool.get().await {
-        let _ = diesel::update(
-            auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)),
-        )
-        .set(auth_sessions::last_activity.eq(chrono::Utc::now()))
-        .execute(&mut conn)
-        .await;
+        let _ = diesel::update(auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)))
+            .set(auth_sessions::last_activity.eq(chrono::Utc::now()))
+            .execute(&mut conn)
+            .await;
     }
 }
 
@@ -347,7 +345,9 @@ async fn maybe_rotate_access_cookie(
     }
 
     let now = chrono::Utc::now().timestamp();
-    let renew_within = state.auth_service.access_token_renew_if_expires_within_seconds();
+    let renew_within = state
+        .auth_service
+        .access_token_renew_if_expires_within_seconds();
     if claims.exp - now > renew_within {
         return;
     }
@@ -431,14 +431,7 @@ pub async fn require_auth(
     update_last_activity(&state, session_uuid).await;
 
     let mut response = next.run(request).await;
-    maybe_rotate_access_cookie(
-        &state,
-        &claims,
-        session_uuid,
-        &source,
-        &mut response,
-    )
-    .await;
+    maybe_rotate_access_cookie(&state, &claims, session_uuid, &source, &mut response).await;
 
     Ok(response)
 }
@@ -481,14 +474,7 @@ pub async fn require_mfa(
     update_last_activity(&state, session_uuid).await;
 
     let mut response = next.run(request).await;
-    maybe_rotate_access_cookie(
-        &state,
-        &claims,
-        session_uuid,
-        &source,
-        &mut response,
-    )
-    .await;
+    maybe_rotate_access_cookie(&state, &claims, session_uuid, &source, &mut response).await;
 
     Ok(response)
 }
@@ -589,7 +575,8 @@ mod tests {
         );
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
+        let result =
+            unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         assert_eq!(result, Some("my-jwt-token-123".to_string()));
     }
@@ -605,7 +592,8 @@ mod tests {
             );
 
             let jar = CookieJar::new();
-            let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
+            let result =
+                unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
             assert_eq!(
                 result,
@@ -621,7 +609,8 @@ mod tests {
         let request = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()));
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
+        let result =
+            unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         assert!(result.is_none());
     }
@@ -635,7 +624,8 @@ mod tests {
         );
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
+        let result =
+            unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         // Basic auth should not be extracted
         assert!(result.is_none());
@@ -650,7 +640,8 @@ mod tests {
         );
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
+        let result =
+            unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         // Should return empty string (the code after "Bearer ")
         assert_eq!(result, Some("".to_string()));
@@ -757,7 +748,8 @@ mod tests {
         );
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
+        let result =
+            unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         assert_eq!(result, Some(long_token));
     }
@@ -772,7 +764,8 @@ mod tests {
         );
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
+        let result =
+            unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         assert_eq!(result, Some(token.to_string()));
     }
@@ -786,7 +779,8 @@ mod tests {
         );
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
+        let result =
+            unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         assert!(result.is_none());
     }

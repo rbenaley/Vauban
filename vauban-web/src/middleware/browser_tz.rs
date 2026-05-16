@@ -147,9 +147,18 @@ mod tests {
     /// in the identifier. The whitelist regex must not reject it.
     #[test]
     fn parse_accepts_etc_gmt_offset_names() {
-        assert_eq!(parse_browser_tz("Etc/GMT+5").map(|t| t.name()), Some("Etc/GMT+5"));
-        assert_eq!(parse_browser_tz("Etc/GMT-5").map(|t| t.name()), Some("Etc/GMT-5"));
-        assert_eq!(parse_browser_tz("Etc/UTC").map(|t| t.name()), Some("Etc/UTC"));
+        assert_eq!(
+            parse_browser_tz("Etc/GMT+5").map(|t| t.name()),
+            Some("Etc/GMT+5")
+        );
+        assert_eq!(
+            parse_browser_tz("Etc/GMT-5").map(|t| t.name()),
+            Some("Etc/GMT-5")
+        );
+        assert_eq!(
+            parse_browser_tz("Etc/UTC").map(|t| t.name()),
+            Some("Etc/UTC")
+        );
     }
 
     /// Half-hour and 45-minute offsets must round-trip cleanly.

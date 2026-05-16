@@ -510,6 +510,7 @@ fn one_session() -> SessionListItem {
         session_type: "ssh".to_string(),
         status: "active".to_string(),
         credential_username: "alice".to_string(),
+        tunnel_target_addr: None,
         connected_at: Some("2026-04-30 10:00:00".to_string()),
         duration_seconds: Some(120),
         is_recorded: true,

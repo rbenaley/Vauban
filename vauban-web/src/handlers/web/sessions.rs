@@ -109,6 +109,7 @@ pub async fn session_list(
         SessionType,
         String,
         String,
+        Option<String>,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<chrono::DateTime<chrono::Utc>>,
         bool,
@@ -121,6 +122,7 @@ pub async fn session_list(
             proxy_sessions::session_type,
             proxy_sessions::status,
             proxy_sessions::credential_username,
+            proxy_sessions::tunnel_target_addr,
             proxy_sessions::connected_at,
             proxy_sessions::disconnected_at,
             proxy_sessions::is_recorded,
@@ -142,6 +144,7 @@ pub async fn session_list(
                 session_type,
                 status,
                 credential_username,
+                tunnel_target_addr,
                 connected_at,
                 disconnected_at,
                 is_recorded,
@@ -150,7 +153,7 @@ pub async fn session_list(
                     (Some(start), Some(end)) => {
                         Some(end.signed_duration_since(start).num_seconds())
                     }
-                    (Some(start), None) if status == "active" => Some(
+                    (Some(start), None) if status == "active" || status == "tunnel_active" => Some(
                         chrono::Utc::now()
                             .signed_duration_since(start)
                             .num_seconds(),
@@ -165,6 +168,7 @@ pub async fn session_list(
                     session_type: session_type.to_string(),
                     status,
                     credential_username,
+                    tunnel_target_addr,
                     connected_at: connected_at
                         .map(|dt| crate::utils::format_local(dt, browser_tz.0)),
                     duration_seconds,
@@ -294,9 +298,7 @@ pub async fn terminate_session_web(
             flash.error("Session not found"),
             "/sessions",
         )),
-        Err(AppError::Validation(msg)) => {
-            Ok(flash_redirect(flash.error(&msg), "/sessions"))
-        }
+        Err(AppError::Validation(msg)) => Ok(flash_redirect(flash.error(&msg), "/sessions")),
         Err(e) => Err(e),
     }
 }
@@ -521,9 +523,8 @@ pub async fn session_detail(
         created_at: crate::utils::format_local_with_seconds(s_created_at, browser_tz.0),
     };
 
-    let base =
-        BaseTemplate::new(format!("Session #{}", id), user.clone(), browser_tz.0)
-            .with_current_path("/sessions");
+    let base = BaseTemplate::new(format!("Session #{}", id), user.clone(), browser_tz.0)
+        .with_current_path("/sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -2446,8 +2447,7 @@ pub async fn my_requests(
                     status,
                     justification,
                     created_at: crate::utils::format_local(created_at, browser_tz.0),
-                    approved_at: approved_at
-                        .map(|dt| crate::utils::format_local(dt, browser_tz.0)),
+                    approved_at: approved_at.map(|dt| crate::utils::format_local(dt, browser_tz.0)),
                     approved_by,
                     max_session_duration,
                 }
@@ -2559,10 +2559,25 @@ pub async fn active_sessions(
         .unwrap_or(1)
         .max(1);
 
+    // ACTIVE-LIST FILTER (kept in lock-step across three call sites:
+    // here, `tasks::dashboard::fetch_active_sessions_full`, and
+    // `handlers::websocket::fetch_active_sessions_list`).
+    //
+    // SSH/RDP sessions live in `status = 'active'`. IACS tunnels live
+    // in `status = 'tunnel_active'` (the "EWS handshake done, bytes
+    // forwarding" leg of the IACS state machine -- see
+    // `models::session::SessionStatus`). The admin "Active Sessions"
+    // page MUST surface BOTH so an operator gets a single pane on
+    // every live protocol; the per-session WS push from
+    // `vauban-proxy-iacs` (`Message::IacsTunnelStatusUpdate`) flips
+    // the row to `tunnel_active` + sets `connected_at` so the second
+    // filter clause keeps the same semantics ("really connected").
+    // Pinned by
+    // `tests::active_list_query_includes_iacs_tunnel_active_status`.
     let total_items: i64 = proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::status.eq("active"))
+        .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
         .filter(proxy_sessions::connected_at.is_not_null())
         .count()
         .get_result(&mut conn)
@@ -2588,7 +2603,7 @@ pub async fn active_sessions(
     )> = proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::status.eq("active"))
+        .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
         .filter(proxy_sessions::connected_at.is_not_null())
         .select((
             proxy_sessions::id,
@@ -3172,7 +3187,7 @@ pub async fn recording_detail(
         user.clone(),
         browser_tz.0,
     )
-        .with_current_path("/sessions/recordings");
+    .with_current_path("/sessions/recordings");
     let perms_for_template = perms.clone();
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)

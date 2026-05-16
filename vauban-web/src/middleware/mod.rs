@@ -225,9 +225,9 @@ mod tests {
     // ------------------------------------------------------------------
 
     use axum::body::Body;
-    use axum::http::{StatusCode, Uri};
     use axum::extract::OriginalUri;
     use axum::extract::Request;
+    use axum::http::{StatusCode, Uri};
 
     fn req_with_original_uri(path: &str) -> Request {
         let uri: Uri = path.parse().expect("valid uri");

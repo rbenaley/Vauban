@@ -476,8 +476,8 @@ mod tests {
 
     #[test]
     fn test_base_template_with_messages() {
-        let base = BaseTemplate::new("Test".to_string(), None, chrono_tz::Tz::UTC).with_messages(
-            vec![
+        let base =
+            BaseTemplate::new("Test".to_string(), None, chrono_tz::Tz::UTC).with_messages(vec![
                 FlashMessage {
                     level: "success".to_string(),
                     message: "Done".to_string(),
@@ -486,8 +486,7 @@ mod tests {
                     level: "error".to_string(),
                     message: "Failed".to_string(),
                 },
-            ],
-        );
+            ]);
 
         assert_eq!(base.messages.len(), 2);
         assert_eq!(base.messages[0].level, "success");

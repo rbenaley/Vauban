@@ -64,10 +64,7 @@ pub struct SupervisorBrokerOpener {
 
 #[async_trait::async_trait]
 impl UpstreamOpener for SupervisorBrokerOpener {
-    async fn open(
-        &self,
-        pending: &PendingTunnel,
-    ) -> io::Result<tokio::net::TcpStream> {
+    async fn open(&self, pending: &PendingTunnel) -> io::Result<tokio::net::TcpStream> {
         let session_id = pending.session_uuid.to_string();
         let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
         let req = Message::TcpConnectRequest {

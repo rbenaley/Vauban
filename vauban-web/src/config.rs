@@ -1120,8 +1120,8 @@ impl Default for IacsTunnelConfig {
             host_key_path: Self::default_host_key_path(),
             max_concurrent_per_user: Self::default_max_concurrent_per_user(),
             max_concurrent_per_ews: Self::default_max_concurrent_per_ews(),
-            max_concurrent_channels_per_session:
-                Self::default_max_concurrent_channels_per_session(),
+            max_concurrent_channels_per_session: Self::default_max_concurrent_channels_per_session(
+            ),
             waiting_client_ttl_seconds: Self::default_waiting_client_ttl_seconds(),
             revocation_poll_interval_seconds: Self::default_revocation_poll_interval_seconds(),
         }

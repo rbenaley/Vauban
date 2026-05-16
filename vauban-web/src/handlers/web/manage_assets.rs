@@ -156,7 +156,10 @@ pub async fn create_asset_web(
                 flash.error(format!(
                     "Unknown asset type: {:?}. Must be one of {:?}",
                     form.asset_type,
-                    AssetType::ALL.iter().map(|a| a.as_str()).collect::<Vec<_>>()
+                    AssetType::ALL
+                        .iter()
+                        .map(|a| a.as_str())
+                        .collect::<Vec<_>>()
                 )),
                 "/assets/manage/new",
             );
@@ -393,8 +396,7 @@ pub async fn manage_asset_list(
                 query = query.filter(schema_assets::asset_type.eq(parsed));
             }
             crate::models::asset::AssetTypeFilter::IacsAll => {
-                query =
-                    query.filter(schema_assets::asset_type.eq_any(AssetType::iacs_variants()));
+                query = query.filter(schema_assets::asset_type.eq_any(AssetType::iacs_variants()));
             }
             crate::models::asset::AssetTypeFilter::Unknown => {
                 query = query.filter(schema_assets::id.eq(-1));
@@ -425,25 +427,23 @@ pub async fn manage_asset_list(
 
     let assets: Vec<ManageAssetItem> = db_assets
         .into_iter()
-        .map(
-            |(uuid, name, hostname, port, asset_type, status)| {
-                let iacs_protocol_label = asset_type
-                    .iacs_protocol()
-                    .map(|p| p.as_str().to_string())
-                    .unwrap_or_default();
-                ManageAssetItem {
-                    uuid,
-                    name,
-                    hostname,
-                    port,
-                    is_iacs: asset_type.is_iacs(),
-                    iacs_protocol_label,
-                    asset_type: asset_type.to_string(),
-                    status,
-                    group_name: None,
-                }
-            },
-        )
+        .map(|(uuid, name, hostname, port, asset_type, status)| {
+            let iacs_protocol_label = asset_type
+                .iacs_protocol()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            ManageAssetItem {
+                uuid,
+                name,
+                hostname,
+                port,
+                is_iacs: asset_type.is_iacs(),
+                iacs_protocol_label,
+                asset_type: asset_type.to_string(),
+                status,
+                group_name: None,
+            }
+        })
         .collect();
 
     let start_index = if total_items > 0 { offset + 1 } else { 0 };
@@ -891,8 +891,8 @@ pub async fn asset_detail(
         user.clone(),
         browser_tz.0,
     )
-        .with_current_path("/assets/manage")
-        .with_messages(flash_messages);
+    .with_current_path("/assets/manage")
+    .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -1061,8 +1061,8 @@ pub async fn asset_edit(
         user.clone(),
         browser_tz.0,
     )
-        .with_current_path("/assets/manage")
-        .with_messages(flash_messages);
+    .with_current_path("/assets/manage")
+    .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await

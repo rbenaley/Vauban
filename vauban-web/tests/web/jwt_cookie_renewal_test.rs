@@ -67,11 +67,16 @@ async fn cookie_near_exp_triggers_access_token_set_cookie_and_fresh_exp() {
 
     let username = unique_name("jwt_renew_cookie");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
-    let base_claims = app.auth_service.verify_token(&test_user.token).expect("valid fixture token");
+    let base_claims = app
+        .auth_service
+        .verify_token(&test_user.token)
+        .expect("valid fixture token");
     let session_uuid = Uuid::parse_str(base_claims.jti.as_ref().expect("fixture token has jti"))
         .expect("jti is uuid");
 
-    let renew_within = app.auth_service.access_token_renew_if_expires_within_seconds();
+    let renew_within = app
+        .auth_service
+        .access_token_renew_if_expires_within_seconds();
     assert!(
         renew_within >= 60,
         "test assumes renew window at least 60s (config drift)"
@@ -79,8 +84,10 @@ async fn cookie_near_exp_triggers_access_token_set_cookie_and_fresh_exp() {
 
     // Fewer seconds remaining than the renewal threshold -> must rotate on next request.
     let exp = Utc::now() + Duration::seconds((renew_within - 30).max(10).min(renew_within));
-    let near_token =
-        encode_jwt(app, &claims_with_exp(&base_claims, exp, base_claims.jti.clone()));
+    let near_token = encode_jwt(
+        app,
+        &claims_with_exp(&base_claims, exp, base_claims.jti.clone()),
+    );
 
     diesel::update(auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)))
         .set(auth_sessions::token_hash.eq(hash_token(&near_token)))
@@ -104,10 +111,7 @@ async fn cookie_near_exp_triggers_access_token_set_cookie_and_fresh_exp() {
     );
 
     let raw = &set_cookies[0];
-    let cookie_val = raw
-        .split(';')
-        .next()
-        .expect("access_token cookie line");
+    let cookie_val = raw.split(';').next().expect("access_token cookie line");
     let token_part = cookie_val
         .strip_prefix("access_token=")
         .expect("access_token cookie prefix");
@@ -138,14 +142,21 @@ async fn cookie_long_ttl_does_not_emit_access_token_set_cookie() {
 
     let username = unique_name("jwt_no_renew");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
-    let base_claims = app.auth_service.verify_token(&test_user.token).expect("valid fixture token");
+    let base_claims = app
+        .auth_service
+        .verify_token(&test_user.token)
+        .expect("valid fixture token");
     let session_uuid = Uuid::parse_str(base_claims.jti.as_ref().expect("fixture jti")).unwrap();
 
-    let renew_within = app.auth_service.access_token_renew_if_expires_within_seconds();
+    let renew_within = app
+        .auth_service
+        .access_token_renew_if_expires_within_seconds();
     // Well outside the renewal window.
     let exp = Utc::now() + Duration::seconds(renew_within + 600);
-    let long_token =
-        encode_jwt(app, &claims_with_exp(&base_claims, exp, base_claims.jti.clone()));
+    let long_token = encode_jwt(
+        app,
+        &claims_with_exp(&base_claims, exp, base_claims.jti.clone()),
+    );
 
     diesel::update(auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)))
         .set(auth_sessions::token_hash.eq(hash_token(&long_token)))
@@ -178,13 +189,20 @@ async fn bearer_near_exp_does_not_emit_access_token_set_cookie() {
 
     let username = unique_name("jwt_renew_bearer");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
-    let base_claims = app.auth_service.verify_token(&test_user.token).expect("valid fixture token");
+    let base_claims = app
+        .auth_service
+        .verify_token(&test_user.token)
+        .expect("valid fixture token");
     let session_uuid = Uuid::parse_str(base_claims.jti.as_ref().expect("fixture jti")).unwrap();
 
-    let renew_within = app.auth_service.access_token_renew_if_expires_within_seconds();
+    let renew_within = app
+        .auth_service
+        .access_token_renew_if_expires_within_seconds();
     let exp = Utc::now() + Duration::seconds((renew_within - 30).max(10).min(renew_within));
-    let near_token =
-        encode_jwt(app, &claims_with_exp(&base_claims, exp, base_claims.jti.clone()));
+    let near_token = encode_jwt(
+        app,
+        &claims_with_exp(&base_claims, exp, base_claims.jti.clone()),
+    );
 
     diesel::update(auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)))
         .set(auth_sessions::token_hash.eq(hash_token(&near_token)))
@@ -218,10 +236,15 @@ async fn legacy_jwt_without_jti_cookie_near_exp_still_renews() {
 
     let username = unique_name("jwt_legacy_jti");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
-    let base_claims = app.auth_service.verify_token(&test_user.token).expect("valid fixture token");
+    let base_claims = app
+        .auth_service
+        .verify_token(&test_user.token)
+        .expect("valid fixture token");
     let session_uuid = Uuid::parse_str(base_claims.jti.as_ref().expect("fixture jti")).unwrap();
 
-    let renew_within = app.auth_service.access_token_renew_if_expires_within_seconds();
+    let renew_within = app
+        .auth_service
+        .access_token_renew_if_expires_within_seconds();
     let exp = Utc::now() + Duration::seconds((renew_within - 30).max(10).min(renew_within));
     let near_no_jti = encode_jwt(app, &claims_with_exp(&base_claims, exp, None));
 
@@ -254,7 +277,10 @@ async fn legacy_jwt_without_jti_cookie_near_exp_still_renews() {
         .strip_prefix("access_token=")
         .expect("prefix");
 
-    let renewed = app.auth_service.verify_token(token_part).expect("renewed jwt");
+    let renewed = app
+        .auth_service
+        .verify_token(token_part)
+        .expect("renewed jwt");
     let sid = session_uuid.to_string();
     assert_eq!(renewed.jti.as_deref(), Some(sid.as_str()));
 

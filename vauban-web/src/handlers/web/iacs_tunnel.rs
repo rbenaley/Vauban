@@ -145,21 +145,13 @@ pub async fn connect_iacs(
     }
 
     if !validate_csrf(&state, &jar, &form.csrf_token) {
-        return iacs_tunnel_error_response(
-            &headers,
-            StatusCode::BAD_REQUEST,
-            "Invalid CSRF token",
-        );
+        return iacs_tunnel_error_response(&headers, StatusCode::BAD_REQUEST, "Invalid CSRF token");
     }
 
     let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {
         Ok(u) => u,
         Err(_) => {
-            return iacs_tunnel_error_response(
-                &headers,
-                StatusCode::NOT_FOUND,
-                "Asset not found",
-            );
+            return iacs_tunnel_error_response(&headers, StatusCode::NOT_FOUND, "Asset not found");
         }
     };
 
@@ -183,11 +175,7 @@ pub async fn connect_iacs(
     {
         Ok(a) => a,
         Err(diesel::result::Error::NotFound) => {
-            return iacs_tunnel_error_response(
-                &headers,
-                StatusCode::NOT_FOUND,
-                "Asset not found",
-            );
+            return iacs_tunnel_error_response(&headers, StatusCode::NOT_FOUND, "Asset not found");
         }
         Err(e) => {
             tracing::error!("Failed to fetch asset: {}", e);
@@ -539,8 +527,7 @@ pub async fn connect_iacs(
     // `tunnel_closed` since the L1 migration. Failure to insert
     // is non-fatal -- the row is already committed -- but we
     // log loudly so an operator notices.
-    let actor_ip: ipnetwork::IpNetwork =
-        ipnetwork::IpNetwork::from(client_addr.addr().ip());
+    let actor_ip: ipnetwork::IpNetwork = ipnetwork::IpNetwork::from(client_addr.addr().ip());
     if let Err(e) = diesel::sql_query(
         "INSERT INTO ews_audit_log \
          (ews_uuid, event, actor_user_id, actor_username, \
@@ -557,10 +544,7 @@ pub async fn connect_iacs(
         "session_uuid={} asset={} protocol={}",
         session_uuid,
         asset.name,
-        new_session
-            .industrial_protocol
-            .as_deref()
-            .unwrap_or("tcp"),
+        new_session.industrial_protocol.as_deref().unwrap_or("tcp"),
     )))
     .bind::<diesel::sql_types::Nullable<diesel::sql_types::Inet>, _>(Some(actor_ip))
     .execute(&mut conn)
@@ -654,34 +638,40 @@ pub async fn iacs_tunnel_status_page(
     // metadata without a second round-trip. Filtered on user_id so
     // a user cannot fetch someone else's session by URL.
     #[allow(clippy::type_complexity)]
-    let row: (String, String, String, String, Option<String>, Option<String>) =
-        match proxy_sessions::table
-            .inner_join(schema_assets::table)
-            .filter(proxy_sessions::uuid.eq(session_uuid))
-            .filter(proxy_sessions::user_id.eq(user_id))
-            .filter(proxy_sessions::session_type.eq("iacs_tunnel"))
-            .select((
-                proxy_sessions::status,
-                schema_assets::name,
-                schema_assets::asset_type,
-                schema_assets::hostname,
-                proxy_sessions::industrial_protocol,
-                proxy_sessions::tunnel_target_addr,
-            ))
-            .first(&mut conn)
-            .await
-        {
-            Ok(r) => r,
-            Err(diesel::result::Error::NotFound) => {
-                return Err(AppError::NotFound("Not Found".to_string()));
-            }
-            Err(e) => {
-                return Err(AppError::Internal(anyhow::anyhow!(
-                    "Failed to fetch session: {}",
-                    e
-                )));
-            }
-        };
+    let row: (
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = match proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .filter(proxy_sessions::user_id.eq(user_id))
+        .filter(proxy_sessions::session_type.eq("iacs_tunnel"))
+        .select((
+            proxy_sessions::status,
+            schema_assets::name,
+            schema_assets::asset_type,
+            schema_assets::hostname,
+            proxy_sessions::industrial_protocol,
+            proxy_sessions::tunnel_target_addr,
+        ))
+        .first(&mut conn)
+        .await
+    {
+        Ok(r) => r,
+        Err(diesel::result::Error::NotFound) => {
+            return Err(AppError::NotFound("Not Found".to_string()));
+        }
+        Err(e) => {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Failed to fetch session: {}",
+                e
+            )));
+        }
+    };
 
     let (status, asset_name, _asset_type_raw, _asset_hostname, industrial_protocol, target_addr) =
         row;

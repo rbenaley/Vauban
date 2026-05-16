@@ -137,9 +137,13 @@ pub async fn dashboard_widget_stats(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    // Count active sessions
+    // Count active sessions: SSH/RDP run as `active`, IACS tunnels
+    // run as `tunnel_active`. Both surface on the Bastion Watch
+    // KPI tile so operators see industrial activity. Mirrors the
+    // composite filter in `services::dashboard::snapshot::load_hero`
+    // (HTTP first-paint + HTMX widget refresh stay in lock-step).
     let active_sessions: i64 = proxy_sessions::table
-        .filter(proxy_sessions::status.eq("active"))
+        .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
         .count()
         .get_result(&mut conn)
         .await?;
@@ -189,7 +193,11 @@ pub async fn dashboard_widget_active_sessions(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    // Load active sessions with asset info
+    // Load active sessions with asset info. Same composite filter
+    // as the hero-band count above: include SSH/RDP (`active`) and
+    // IACS tunnels (`tunnel_active`) so the dashboard widget agrees
+    // with `/sessions/active` and the WS-pushed counterpart in
+    // `tasks::dashboard::fetch_active_sessions`.
     let active_sessions: Vec<(
         i32,
         String,
@@ -198,7 +206,7 @@ pub async fn dashboard_widget_active_sessions(
         chrono::DateTime<chrono::Utc>,
     )> = proxy_sessions::table
         .inner_join(schema_assets::table)
-        .filter(proxy_sessions::status.eq("active"))
+        .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
         .select((
             proxy_sessions::id,
             schema_assets::name,

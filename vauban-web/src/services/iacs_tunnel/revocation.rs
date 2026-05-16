@@ -88,10 +88,8 @@ pub async fn run_once(
                     .eq(false)
                     .or(ews::disabled_at.is_not_null())
                     .or(ews::offboarded_at.is_not_null())
-                    .or(proxy_sessions::status.ne_all([
-                        "waiting_client".to_string(),
-                        "tunnel_active".to_string(),
-                    ])),
+                    .or(proxy_sessions::status
+                        .ne_all(["waiting_client".to_string(), "tunnel_active".to_string()])),
             )
             .load::<(Uuid, String)>(&mut conn)
             .await
@@ -119,13 +117,9 @@ pub async fn run_once(
                 ))
                 .execute(&mut conn)
                 .await;
-                let _ = append_tunnel_closed_audit(
-                    &mut conn,
-                    handle.ews_uuid,
-                    sess_uuid,
-                    "revoked",
-                )
-                .await;
+                let _ =
+                    append_tunnel_closed_audit(&mut conn, handle.ews_uuid, sess_uuid, "revoked")
+                        .await;
             }
         }
     }
@@ -135,8 +129,7 @@ pub async fn run_once(
     //    so the registry is empty for them.
     if cfg.waiting_client_ttl_seconds > 0 {
         use crate::schema::proxy_sessions;
-        let cutoff =
-            Utc::now() - chrono::Duration::seconds(cfg.waiting_client_ttl_seconds as i64);
+        let cutoff = Utc::now() - chrono::Duration::seconds(cfg.waiting_client_ttl_seconds as i64);
         let expired: Vec<Uuid> = proxy_sessions::table
             .filter(proxy_sessions::session_type.eq("iacs_tunnel"))
             .filter(proxy_sessions::status.eq("waiting_client"))
@@ -147,15 +140,14 @@ pub async fn run_once(
             .unwrap_or_default();
         if !expired.is_empty() {
             transitions += expired.len();
-            let _ = diesel::update(
-                proxy_sessions::table.filter(proxy_sessions::uuid.eq_any(&expired)),
-            )
-            .set((
-                proxy_sessions::status.eq("expired"),
-                proxy_sessions::disconnected_at.eq(Some(Utc::now())),
-            ))
-            .execute(&mut conn)
-            .await;
+            let _ =
+                diesel::update(proxy_sessions::table.filter(proxy_sessions::uuid.eq_any(&expired)))
+                    .set((
+                        proxy_sessions::status.eq("expired"),
+                        proxy_sessions::disconnected_at.eq(Some(Utc::now())),
+                    ))
+                    .execute(&mut conn)
+                    .await;
             for sess_uuid in expired {
                 tracing::info!(
                     session_uuid = %sess_uuid,
@@ -190,9 +182,8 @@ async fn append_tunnel_closed_audit(
         .first(conn)
         .await
         .optional()?;
-    let (ews_name, fp, owner_id) = meta.unwrap_or_else(|| {
-        ("<deleted>".to_string(), "0".repeat(64), None)
-    });
+    let (ews_name, fp, owner_id) =
+        meta.unwrap_or_else(|| ("<deleted>".to_string(), "0".repeat(64), None));
     diesel::sql_query(
         "INSERT INTO ews_audit_log \
          (ews_uuid, event, actor_user_id, actor_username, \
@@ -252,11 +243,7 @@ pub fn spawn_watchdog_with_proxy_iacs(
             let (closed, transitions) =
                 run_once_with_proxy(&registry, &pool, &cfg, proxy_iacs.as_ref()).await;
             if closed > 0 || transitions > 0 {
-                tracing::debug!(
-                    closed,
-                    transitions,
-                    "iacs_tunnel watchdog: tick complete"
-                );
+                tracing::debug!(closed, transitions, "iacs_tunnel watchdog: tick complete");
             }
         }
     })

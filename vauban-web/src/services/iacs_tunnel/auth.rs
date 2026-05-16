@@ -110,22 +110,21 @@ pub async fn verify_pubkey(
     //    legacy SSH session UUID cannot be reused as an IACS
     //    handshake username.
     #[allow(clippy::type_complexity)]
-    let session_row: Option<(i32, String, String, Option<Uuid>, Uuid)> =
-        proxy_sessions::table
-            .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-            .filter(proxy_sessions::uuid.eq(session_uuid))
-            .select((
-                proxy_sessions::user_id,
-                proxy_sessions::session_type,
-                proxy_sessions::status,
-                proxy_sessions::ews_uuid,
-                users::uuid,
-            ))
-            .first(conn)
-            .await
-            .optional()
-            .ok()
-            .flatten();
+    let session_row: Option<(i32, String, String, Option<Uuid>, Uuid)> = proxy_sessions::table
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .select((
+            proxy_sessions::user_id,
+            proxy_sessions::session_type,
+            proxy_sessions::status,
+            proxy_sessions::ews_uuid,
+            users::uuid,
+        ))
+        .first(conn)
+        .await
+        .optional()
+        .ok()
+        .flatten();
 
     let (session_user_id, session_type, status, pinned_ews_uuid, owner_user_uuid) =
         match session_row {

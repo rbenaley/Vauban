@@ -224,10 +224,7 @@ mod tests {
         t.local_forward_port = 4_840;
         t.target_host = "opcua.factory.local".to_string();
         t.target_port = 4_840;
-        assert!(
-            t.ssh_command()
-                .contains("-L 4840:opcua.factory.local:4840"),
-        );
+        assert!(t.ssh_command().contains("-L 4840:opcua.factory.local:4840"),);
     }
 
     /// Loopback assets (dev / E2E fixtures) keep working: the
@@ -239,9 +236,7 @@ mod tests {
         t.local_forward_port = 50_502;
         t.target_host = "127.0.0.1".to_string();
         t.target_port = 502;
-        assert!(
-            t.ssh_command().contains("-L 50502:127.0.0.1:502"),
-        );
+        assert!(t.ssh_command().contains("-L 50502:127.0.0.1:502"),);
     }
 
     #[test]

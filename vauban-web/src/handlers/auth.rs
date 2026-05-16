@@ -9,8 +9,8 @@ use axum::{
 };
 use axum_extra::extract::CookieJar;
 use chrono::{Duration, Utc};
-use diesel::prelude::*;
 use diesel::OptionalExtension;
+use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};

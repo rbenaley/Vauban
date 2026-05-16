@@ -258,25 +258,19 @@ pub(crate) fn validate_auth_inputs(
     // the form cannot be used to seed credentials on an IACS row.
     if asset_type.is_iacs() {
         if auth_type.is_some_and(|s| !s.trim().is_empty()) {
-            return Err(
-                "Authentication type must not be set on IACS assets. \
+            return Err("Authentication type must not be set on IACS assets. \
                  Authentication is handled by EWS public keys."
-                    .to_string(),
-            );
+                .to_string());
         }
         if private_key.is_some_and(|s| !s.is_empty()) {
-            return Err(
-                "Private key is not allowed on IACS assets. \
+            return Err("Private key is not allowed on IACS assets. \
                  Authentication is handled by EWS public keys."
-                    .to_string(),
-            );
+                .to_string());
         }
         if passphrase.is_some_and(|s| !s.is_empty()) {
-            return Err(
-                "Passphrase is not allowed on IACS assets. \
+            return Err("Passphrase is not allowed on IACS assets. \
                  Authentication is handled by EWS public keys."
-                    .to_string(),
-            );
+                .to_string());
         }
     }
 

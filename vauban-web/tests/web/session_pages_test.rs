@@ -1662,10 +1662,7 @@ async fn test_terminate_non_staff_rejected() {
     // is what we really care about.
     let status_code = response.status_code().as_u16();
     assert!(
-        status_code == 303
-            || status_code == 403
-            || status_code == 302
-            || status_code == 404,
+        status_code == 303 || status_code == 403 || status_code == 302 || status_code == 404,
         "Non-staff user must be rejected (got {})",
         status_code
     );

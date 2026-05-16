@@ -608,6 +608,45 @@ pub async fn create_simple_ssh_asset(
     asset.id
 }
 
+/// Create a simple IACS Modbus asset for testing (returns asset ID).
+///
+/// Used by the active-sessions surface tests and any future IACS row
+/// fixture. Defaults to Modbus/TCP on port 502 -- the canonical
+/// privileged protocol that the IACS proxy decoupled from local
+/// `ssh -L` forwarding ports (issue tracking the per-asset target
+/// resolution).
+pub async fn create_simple_iacs_asset(
+    conn: &mut AsyncPgConnection,
+    name: &str,
+    created_by: i32,
+) -> i32 {
+    let asset_uuid = Uuid::new_v4();
+    let unique_hostname = format!("{}-{}.test.local", name, &asset_uuid.to_string()[..8]);
+
+    let new_asset = NewAsset {
+        uuid: asset_uuid,
+        name: name.to_string(),
+        hostname: unique_hostname,
+        port: 502,
+        asset_type: AssetType::IacsModbus,
+        status: "online".to_string(),
+        description: None,
+        connection_config: serde_json::json!({}),
+        created_by_id: Some(created_by),
+        updated_by_id: Some(created_by),
+        connection_username: String::new(),
+    };
+
+    let asset: Asset = unwrap_ok!(
+        diesel::insert_into(assets::table)
+            .values(&new_asset)
+            .get_result(conn)
+            .await
+    );
+
+    asset.id
+}
+
 /// Create a simple RDP asset for testing (returns asset ID).
 pub async fn create_simple_rdp_asset(
     conn: &mut AsyncPgConnection,
@@ -665,8 +704,17 @@ pub async fn create_test_session(
     let session_uuid = Uuid::new_v4();
     let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
 
-    let (connected_at, disconnected_at) = if status == "active" {
+    // `active` (SSH/RDP) and `tunnel_active` (IACS) both represent a
+    // session that is currently exchanging bytes -- the seed must
+    // anchor `connected_at` so the active-list filter
+    // (`status IN (active, tunnel_active) AND connected_at IS NOT
+    //  NULL`) matches the row.
+    let (connected_at, disconnected_at) = if status == "active" || status == "tunnel_active" {
         (Some(Utc::now()), None)
+    } else if status == "waiting_client" {
+        // IACS pre-handshake: row exists but no bytes yet, no
+        // `connected_at` -> stays out of the active list.
+        (None, None)
     } else {
         (Some(Utc::now() - Duration::hours(1)), Some(Utc::now()))
     };
@@ -752,8 +800,10 @@ pub async fn create_test_session_with_uuid(
     let session_uuid = Uuid::new_v4();
     let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
 
-    let (connected_at, disconnected_at) = if status == "active" {
+    let (connected_at, disconnected_at) = if status == "active" || status == "tunnel_active" {
         (Some(Utc::now()), None)
+    } else if status == "waiting_client" {
+        (None, None)
     } else {
         (Some(Utc::now() - Duration::hours(1)), Some(Utc::now()))
     };
@@ -780,6 +830,106 @@ pub async fn create_test_session_with_uuid(
     );
 
     (session_id, session_uuid)
+}
+
+/// IACS-tunnel-flavoured `proxy_sessions` insertion.
+///
+/// The IACS check constraint (`proxy_sessions_iacs_consistency`)
+/// requires three extra columns to be NON-NULL:
+/// `industrial_protocol`, `ews_uuid`, `tunnel_target_addr` (the
+/// last only when `status != waiting_client`). `ews_uuid` itself
+/// has a foreign-key into `ews(uuid)`, so we seed a minimal EWS
+/// row alongside.
+///
+/// Returns `(session_id, session_uuid)` so the caller can assert
+/// against the row in either form.
+pub async fn create_iacs_test_session_with_uuid(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    asset_id: i32,
+    status: &str,
+) -> (i32, Uuid) {
+    let session_uuid = Uuid::new_v4();
+    let request_uuid = Uuid::new_v4();
+    let ews_uuid = Uuid::new_v4();
+    let now = Utc::now();
+    let label = unique_name("ews_fixture");
+    let fingerprint = format!("fp-{}", &session_uuid.to_string()[..8]);
+
+    unwrap_ok!(
+        diesel::sql_query(
+            "INSERT INTO ews_onboarding_requests \
+             (uuid, user_id, name, public_key, public_key_fingerprint, key_algo, \
+              status, justification, decided_by_id, decided_at, created_at, updated_at) \
+             VALUES ($1, $2, $3, 'ssh-ed25519 placeholder', $4, 'ed25519', \
+                     'approved', 'fixture', $2, $5, $5, $5)",
+        )
+        .bind::<diesel::sql_types::Uuid, _>(request_uuid)
+        .bind::<diesel::sql_types::Integer, _>(user_id)
+        .bind::<diesel::sql_types::Text, _>(label.clone())
+        .bind::<diesel::sql_types::Text, _>(&fingerprint)
+        .bind::<diesel::sql_types::Timestamptz, _>(now)
+        .execute(conn)
+        .await
+    );
+
+    unwrap_ok!(
+        diesel::sql_query(
+            "INSERT INTO ews \
+             (uuid, request_uuid, user_id, name, public_key, public_key_fingerprint, \
+              key_algo, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, 'ssh-ed25519 placeholder', $5, 'ed25519', $6, $6)",
+        )
+        .bind::<diesel::sql_types::Uuid, _>(ews_uuid)
+        .bind::<diesel::sql_types::Uuid, _>(request_uuid)
+        .bind::<diesel::sql_types::Integer, _>(user_id)
+        .bind::<diesel::sql_types::Text, _>(label)
+        .bind::<diesel::sql_types::Text, _>(&fingerprint)
+        .bind::<diesel::sql_types::Timestamptz, _>(now)
+        .execute(conn)
+        .await
+    );
+
+    let (connected_at, disconnected_at): (
+        Option<chrono::DateTime<Utc>>,
+        Option<chrono::DateTime<Utc>>,
+    ) = match status {
+        "tunnel_active" => (Some(now), None),
+        "waiting_client" => (None, None),
+        "terminated" | "expired" | "disconnected" | "failed" => {
+            (Some(now - Duration::hours(1)), Some(now))
+        }
+        _ => (Some(now - Duration::hours(1)), Some(now)),
+    };
+
+    let session_id: i32 = unwrap_ok!(
+        diesel::sql_query(
+            "INSERT INTO proxy_sessions \
+             (uuid, user_id, asset_id, credential_id, credential_username, \
+              session_type, status, client_ip, connected_at, disconnected_at, \
+              ews_uuid, industrial_protocol, tunnel_target_addr) \
+             VALUES ($1, $2, $3, '', '', 'iacs_tunnel', $4, '127.0.0.1'::inet, \
+                     $5, $6, $7, 'iacs_modbus', '127.0.0.1:4321') \
+             RETURNING id",
+        )
+        .bind::<diesel::sql_types::Uuid, _>(session_uuid)
+        .bind::<diesel::sql_types::Integer, _>(user_id)
+        .bind::<diesel::sql_types::Integer, _>(asset_id)
+        .bind::<diesel::sql_types::Text, _>(status)
+        .bind::<diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>, _>(connected_at)
+        .bind::<diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>, _>(disconnected_at)
+        .bind::<diesel::sql_types::Uuid, _>(ews_uuid)
+        .get_result::<IdRow>(conn)
+        .await
+        .map(|r| r.id)
+    );
+    (session_id, session_uuid)
+}
+
+#[derive(diesel::QueryableByName)]
+struct IdRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    id: i32,
 }
 
 /// Like [`create_test_session_with_uuid`], but also provisions a fresh

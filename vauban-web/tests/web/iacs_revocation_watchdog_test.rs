@@ -120,10 +120,7 @@ async fn seed_active_session(
     uuid
 }
 
-async fn read_session_status(
-    conn: &mut AsyncPgConnection,
-    uuid: Uuid,
-) -> String {
+async fn read_session_status(conn: &mut AsyncPgConnection, uuid: Uuid) -> String {
     use vauban_web::schema::proxy_sessions;
     proxy_sessions::table
         .filter(proxy_sessions::uuid.eq(uuid))
@@ -166,11 +163,14 @@ async fn watchdog_closes_tunnels_when_ews_disabled() {
     let user_id = create_simple_user(&mut conn, &unique_name("watchdog_dis")).await;
     let asset_id = seed_iacs_asset(&mut conn, user_id).await;
     let ews_uuid = seed_ews(&mut conn, user_id).await;
-    let session_uuid =
-        seed_active_session(&mut conn, user_id, asset_id, ews_uuid).await;
+    let session_uuid = seed_active_session(&mut conn, user_id, asset_id, ews_uuid).await;
 
     let registry = TunnelRegistry::new();
-    registry.insert(TunnelHandle::new(session_uuid, ews_uuid, user_uuid_for(user_id)));
+    registry.insert(TunnelHandle::new(
+        session_uuid,
+        ews_uuid,
+        user_uuid_for(user_id),
+    ));
 
     // Disable the EWS (mimics the admin offboarding flow over IPC).
     diesel::sql_query("UPDATE ews SET disabled_at = NOW() WHERE uuid = $1")
@@ -183,7 +183,10 @@ async fn watchdog_closes_tunnels_when_ews_disabled() {
     let (closed, _) = watchdog_run_once(&registry, &app.db_pool, &cfg).await;
     assert_eq!(closed, 1, "watchdog must close exactly the disabled tunnel");
     assert!(registry.get(&session_uuid).is_none(), "registry must drop");
-    assert_eq!(read_session_status(&mut conn, session_uuid).await, "terminated");
+    assert_eq!(
+        read_session_status(&mut conn, session_uuid).await,
+        "terminated"
+    );
 }
 
 #[tokio::test]
@@ -193,11 +196,14 @@ async fn watchdog_closes_tunnels_when_ews_offboarded() {
     let user_id = create_simple_user(&mut conn, &unique_name("watchdog_off")).await;
     let asset_id = seed_iacs_asset(&mut conn, user_id).await;
     let ews_uuid = seed_ews(&mut conn, user_id).await;
-    let session_uuid =
-        seed_active_session(&mut conn, user_id, asset_id, ews_uuid).await;
+    let session_uuid = seed_active_session(&mut conn, user_id, asset_id, ews_uuid).await;
 
     let registry = TunnelRegistry::new();
-    registry.insert(TunnelHandle::new(session_uuid, ews_uuid, user_uuid_for(user_id)));
+    registry.insert(TunnelHandle::new(
+        session_uuid,
+        ews_uuid,
+        user_uuid_for(user_id),
+    ));
 
     diesel::sql_query("UPDATE ews SET offboarded_at = NOW() WHERE uuid = $1")
         .bind::<diesel::sql_types::Uuid, _>(ews_uuid)
@@ -217,11 +223,14 @@ async fn watchdog_closes_tunnels_when_user_deactivated() {
     let user_id = create_simple_user(&mut conn, &unique_name("watchdog_user")).await;
     let asset_id = seed_iacs_asset(&mut conn, user_id).await;
     let ews_uuid = seed_ews(&mut conn, user_id).await;
-    let session_uuid =
-        seed_active_session(&mut conn, user_id, asset_id, ews_uuid).await;
+    let session_uuid = seed_active_session(&mut conn, user_id, asset_id, ews_uuid).await;
 
     let registry = TunnelRegistry::new();
-    registry.insert(TunnelHandle::new(session_uuid, ews_uuid, user_uuid_for(user_id)));
+    registry.insert(TunnelHandle::new(
+        session_uuid,
+        ews_uuid,
+        user_uuid_for(user_id),
+    ));
 
     use vauban_web::schema::users;
     diesel::update(users::table.filter(users::id.eq(user_id)))
@@ -294,10 +303,12 @@ async fn watchdog_expires_waiting_client_past_ttl() {
     .expect("seed stale waiting_client");
 
     let registry = TunnelRegistry::new();
-    let (_, transitions) =
-        watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(60)).await;
+    let (_, transitions) = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(60)).await;
     assert!(transitions >= 1, "stale waiting_client must transition");
-    assert_eq!(read_session_status(&mut conn, session_uuid).await, "expired");
+    assert_eq!(
+        read_session_status(&mut conn, session_uuid).await,
+        "expired"
+    );
 }
 
 #[tokio::test]
@@ -337,14 +348,16 @@ async fn watchdog_does_not_expire_recent_waiting_client() {
 async fn watchdog_appends_tunnel_closed_audit_row() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let user_id =
-        create_simple_user(&mut conn, &unique_name("watchdog_audit")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("watchdog_audit")).await;
     let asset_id = seed_iacs_asset(&mut conn, user_id).await;
     let ews_uuid = seed_ews(&mut conn, user_id).await;
-    let session_uuid =
-        seed_active_session(&mut conn, user_id, asset_id, ews_uuid).await;
+    let session_uuid = seed_active_session(&mut conn, user_id, asset_id, ews_uuid).await;
     let registry = TunnelRegistry::new();
-    registry.insert(TunnelHandle::new(session_uuid, ews_uuid, user_uuid_for(user_id)));
+    registry.insert(TunnelHandle::new(
+        session_uuid,
+        ews_uuid,
+        user_uuid_for(user_id),
+    ));
 
     diesel::sql_query("UPDATE ews SET disabled_at = NOW() WHERE uuid = $1")
         .bind::<diesel::sql_types::Uuid, _>(ews_uuid)

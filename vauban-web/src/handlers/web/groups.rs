@@ -256,9 +256,13 @@ pub async fn group_detail(
         }
     };
 
-    let base = BaseTemplate::new(format!("{} - Group", group.name), user.clone(), browser_tz.0)
-        .with_current_path("/accounts/groups")
-        .with_messages(flash_messages);
+    let base = BaseTemplate::new(
+        format!("{} - Group", group.name),
+        user.clone(),
+        browser_tz.0,
+    )
+    .with_current_path("/accounts/groups")
+    .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -334,9 +338,8 @@ pub async fn vauban_group_create_form(
         .unwrap_or_default();
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base =
-        BaseTemplate::new("Create Group".to_string(), user, browser_tz.0)
-            .with_current_path("/accounts/groups");
+    let base = BaseTemplate::new("Create Group".to_string(), user, browser_tz.0)
+        .with_current_path("/accounts/groups");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)

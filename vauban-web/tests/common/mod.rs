@@ -170,8 +170,7 @@ impl TestApp {
                     std::sync::Arc::new(vauban_web::services::system_health::HttpRateTracker::new()),
                 ),
             ),
-            iacs_tunnel_registry:
-                vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
+            iacs_tunnel_registry: vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
         };
 
         // Build router

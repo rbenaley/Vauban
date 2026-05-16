@@ -76,11 +76,7 @@ where
 /// Pinned by `tests::target_resolver_*` AND by the adversarial
 /// suite (lot L3 acceptance #4: "direct-tcpip vers host:port !=
 /// target_addr -> reject").
-pub fn validate_target(
-    requested_host: &str,
-    requested_port: u32,
-    expected_target: &str,
-) -> bool {
+pub fn validate_target(requested_host: &str, requested_port: u32, expected_target: &str) -> bool {
     let normalized = format!("{}:{}", requested_host, requested_port);
     normalized == expected_target
         || normalized == expected_target.replace("0.0.0.0", "127.0.0.1")

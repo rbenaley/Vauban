@@ -644,7 +644,10 @@ mod tests {
     fn test_asset_type_parse_or_ssh_legacy_fallback() {
         assert_eq!(AssetType::parse_or_ssh("unknown"), AssetType::Ssh);
         assert_eq!(AssetType::parse_or_ssh("rdp"), AssetType::Rdp);
-        assert_eq!(AssetType::parse_or_ssh("iacs_modbus"), AssetType::IacsModbus);
+        assert_eq!(
+            AssetType::parse_or_ssh("iacs_modbus"),
+            AssetType::IacsModbus
+        );
     }
 
     #[test]
@@ -662,14 +665,26 @@ mod tests {
     fn test_format_access_rule_protocol() {
         assert_eq!(AssetType::format_access_rule_protocol("ssh"), "SSH");
         assert_eq!(AssetType::format_access_rule_protocol("rdp"), "RDP");
-        assert_eq!(AssetType::format_access_rule_protocol("iacs_modbus"), "Modbus");
-        assert_eq!(AssetType::format_access_rule_protocol("iacs_opcua"), "OPC UA");
+        assert_eq!(
+            AssetType::format_access_rule_protocol("iacs_modbus"),
+            "Modbus"
+        );
+        assert_eq!(
+            AssetType::format_access_rule_protocol("iacs_opcua"),
+            "OPC UA"
+        );
         assert_eq!(
             AssetType::format_access_rule_protocol("iacs_profinet"),
             "PROFINET"
         );
-        assert_eq!(AssetType::format_access_rule_protocol("iacs_iec104"), "IEC-104");
-        assert_eq!(AssetType::format_access_rule_protocol("iacs_tcp"), "IACS (TCP)");
+        assert_eq!(
+            AssetType::format_access_rule_protocol("iacs_iec104"),
+            "IEC-104"
+        );
+        assert_eq!(
+            AssetType::format_access_rule_protocol("iacs_tcp"),
+            "IACS (TCP)"
+        );
         assert_eq!(AssetType::format_access_rule_protocol("weird"), "WEIRD");
     }
 
@@ -791,7 +806,11 @@ mod tests {
     fn test_asset_type_badge_label_fits_the_square_tile() {
         for variant in AssetType::ALL {
             let badge = variant.badge_label();
-            assert!(!badge.is_empty(), "badge_label must be set for {:?}", variant);
+            assert!(
+                !badge.is_empty(),
+                "badge_label must be set for {:?}",
+                variant
+            );
             assert!(
                 badge.len() <= 3,
                 "badge_label '{}' for {:?} is too long for the h-10 w-10 tile (max 3 chars)",
@@ -853,7 +872,10 @@ mod tests {
         assert_eq!(last.1, "IACS - All Industrial Protocols");
         // First N rows must match select_options (no reordering).
         for (i, sel) in AssetType::select_options().iter().enumerate() {
-            assert_eq!(&opts[i], sel, "filter_options must keep select_options order at index {i}");
+            assert_eq!(
+                &opts[i], sel,
+                "filter_options must keep select_options order at index {i}"
+            );
         }
     }
 

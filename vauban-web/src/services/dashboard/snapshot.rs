@@ -98,6 +98,25 @@ pub struct LiveSession {
     pub is_recorded: bool,
 }
 
+impl LiveSession {
+    /// Short, user-facing label for the protocol badge in the Live
+    /// Sessions tile of `/`. Mirrors `session_type_display()` on
+    /// `SessionListItem` (sessions list page) and the inline
+    /// expansion in `templates/sessions/session_detail.html`: the
+    /// raw DB enum `iacs_tunnel` is collapsed to `IACS` so the
+    /// badge fits the same horizontal slot as `SSH` / `RDP`.
+    /// Without this collapse, the literal `IACS_TUNNEL` blew the
+    /// 24 px badge slot and overflowed onto the row text.
+    pub fn session_type_label(&self) -> &'static str {
+        match self.session_type.as_str() {
+            "ssh" => "SSH",
+            "rdp" => "RDP",
+            "iacs_tunnel" => "IACS",
+            _ => "OTHER",
+        }
+    }
+}
+
 /// Evidence chain panel: counts per phase + vault size.
 #[derive(Debug, Clone)]
 pub struct EvidenceChain {
@@ -237,8 +256,23 @@ pub(crate) async fn load_hero(
         }};
     }
 
-    let live: i64 =
-        count_with_scope!(proxy_sessions::table.filter(proxy_sessions::status.eq("active")));
+    // Active session count for the Bastion Watch hero band.
+    //
+    // The "live" KPI surfaces every session an operator considers
+    // running RIGHT NOW. SSH/RDP rows persist as `status = 'active'`,
+    // IACS tunnels persist as `status = 'tunnel_active'` (the EWS
+    // has authenticated AND opened at least one `direct-tcpip`
+    // channel). Both must count: a dashboard that ignored
+    // `tunnel_active` would silently under-report industrial
+    // activity, the opposite of the operator-facing visibility
+    // contract.
+    //
+    // The `eq_any` filter mirrors `tasks::dashboard::fetch_stats`
+    // (the WS-pushed counterpart) so the HTTP-rendered first paint
+    // and the live WS update agree on the same set.
+    let live: i64 = count_with_scope!(
+        proxy_sessions::table.filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
+    );
     let live_u64 = live.max(0) as u64;
     // Push the freshly-observed live count into the per-scope
     // rolling history BEFORE building the sparkline so the trace's
@@ -307,11 +341,16 @@ pub(crate) async fn load_live_sessions(
     // is what guarantees a non-supervisor never observes a row
     // belonging to another tenant. The match below threads `scope`
     // through both branches without losing the typed query.
+    // Live sessions panel: same composite filter as the hero band's
+    // `live` count -- SSH/RDP run as `active`, IACS as
+    // `tunnel_active`. Without `tunnel_active` here, the hero
+    // counter ticks up but the matching row never appears in the
+    // panel below it, which looks like a backend bug to operators.
     let rows: Vec<Row> = match scope {
         DashboardScope::Global => proxy_sessions::table
             .inner_join(assets::table)
             .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-            .filter(proxy_sessions::status.eq("active"))
+            .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
             .select((
                 proxy_sessions::uuid,
                 assets::name,
@@ -330,7 +369,7 @@ pub(crate) async fn load_live_sessions(
         DashboardScope::User(uid) => proxy_sessions::table
             .inner_join(assets::table)
             .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-            .filter(proxy_sessions::status.eq("active"))
+            .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
             .filter(proxy_sessions::user_id.eq(uid))
             .select((
                 proxy_sessions::uuid,
@@ -733,5 +772,147 @@ mod tests {
         let recorded: i64 = 7;
         let pct = ((recorded as f64 / total as f64) * 100.0).round() as u8;
         assert_eq!(pct, 100);
+    }
+
+    /// Bastion Watch hero band: the `live` count MUST include both
+    /// SSH/RDP (`status = 'active'`) and IACS tunnels
+    /// (`status = 'tunnel_active'`). A regression that drops the
+    /// composite filter would silently under-report industrial
+    /// activity and the IACS counter on `/sessions/active` would
+    /// disagree with the home-page tile -- the operator-visible
+    /// inconsistency we're explicitly preventing here.
+    ///
+    /// Pinned via source-grep so the SQL contract stays stable
+    /// even if Diesel's typed query builder changes.
+    #[test]
+    fn load_hero_live_count_includes_tunnel_active() {
+        let src = include_str!("snapshot.rs");
+        let load_hero_idx = src
+            .find("pub(crate) async fn load_hero(")
+            .expect("load_hero must exist");
+        // Restrict the search window to the body of `load_hero` so
+        // a future helper that also mentions `tunnel_active`
+        // doesn't accidentally satisfy the contract.
+        let next_fn = src[load_hero_idx + 1..]
+            .find("\npub(crate) async fn ")
+            .map(|i| load_hero_idx + 1 + i)
+            .unwrap_or(src.len());
+        let body = &src[load_hero_idx..next_fn];
+
+        let collapsed: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            collapsed.contains("status.eq_any([\"active\", \"tunnel_active\"])"),
+            "load_hero MUST filter the `live` count on \
+             `status.eq_any([\"active\", \"tunnel_active\"])` so IACS \
+             tunnels are counted on the Bastion Watch hero band. \
+             Whitespace-collapsed body:\n{}",
+            collapsed
+        );
+    }
+
+    /// `LiveSession::session_type_label` MUST collapse the raw DB
+    /// enum `iacs_tunnel` to the short user-facing `IACS` label.
+    /// The legacy literal (`iacs_tunnel`) overflowed the 24 px
+    /// (h-6 w-6) badge slot in the Live Sessions tile and bled
+    /// onto the row text -- the visual regression operators
+    /// reported. Mirrors `SessionListItem::session_type_display()`
+    /// (sessions history) so badges stay byte-for-byte aligned
+    /// across surfaces.
+    #[test]
+    fn live_session_label_collapses_iacs_tunnel_to_iacs() {
+        let make = |t: &str| LiveSession {
+            uuid: ::uuid::Uuid::new_v4(),
+            asset_name: String::new(),
+            asset_hostname: String::new(),
+            username: String::new(),
+            session_type: t.to_string(),
+            started_at: Utc::now(),
+            duration_seconds: 0,
+            is_recorded: false,
+        };
+        assert_eq!(make("ssh").session_type_label(), "SSH");
+        assert_eq!(make("rdp").session_type_label(), "RDP");
+        assert_eq!(make("iacs_tunnel").session_type_label(), "IACS");
+        // Anything else collapses to a non-overflowing fallback so
+        // a future enum value never silently breaks the layout.
+        assert_eq!(make("vnc").session_type_label(), "OTHER");
+    }
+
+    /// The Live Sessions tile MUST style the IACS badge in amber,
+    /// NOT in the RDP blue. Without a dedicated branch, IACS rows
+    /// would inherit the catch-all blue and operators would swap
+    /// the two protocols' identity at a glance. Pinned via
+    /// source-grep on the template so a refactor that drops the
+    /// `iacs_tunnel` arm fails CI.
+    #[test]
+    fn live_sessions_tile_styles_iacs_badge_in_amber() {
+        let template = include_str!("../../../templates/dashboard/tiles/_live_sessions.html");
+        // Amber branch must exist at the badge level.
+        assert!(
+            template.contains("s.session_type == \"iacs_tunnel\""),
+            "_live_sessions.html MUST carry a dedicated branch for \
+             `iacs_tunnel` so its badge keeps the IACS amber colour \
+             instead of inheriting the RDP blue."
+        );
+        for needle in [
+            "bg-amber-100",
+            "text-amber-700",
+            "bg-amber-900",
+            "text-amber-300",
+        ] {
+            assert!(
+                template.contains(needle),
+                "_live_sessions.html IACS branch MUST style the badge \
+                 with the IACS amber palette (`{}`).",
+                needle
+            );
+        }
+        // The raw DB enum literal must NOT be rendered (it overflows
+        // the 24 px slot). The label helper is the only contract.
+        assert!(
+            template.contains("s.session_type_label()"),
+            "_live_sessions.html MUST render the protocol badge via \
+             `s.session_type_label()` so `iacs_tunnel` collapses to \
+             `IACS` (not the overflowing `IACS_TUNNEL` literal)."
+        );
+        assert!(
+            !template.contains("{{ s.session_type }}"),
+            "_live_sessions.html MUST NOT render the raw \
+             `s.session_type` -- `iacs_tunnel` overflows the 24 px \
+             badge slot. Use `s.session_type_label()` instead."
+        );
+    }
+
+    /// Live Sessions panel on Bastion Watch (`/`): MUST surface
+    /// IACS rows alongside SSH/RDP. Without this, the hero counter
+    /// can show `2 live` while the panel below it lists only the
+    /// SSH/RDP row -- a confusing UX that looks like a bug.
+    #[test]
+    fn load_live_sessions_includes_tunnel_active_in_both_scopes() {
+        let src = include_str!("snapshot.rs");
+        let fn_idx = src
+            .find("pub(crate) async fn load_live_sessions(")
+            .expect("load_live_sessions must exist");
+        let next_fn = src[fn_idx + 1..]
+            .find("\npub(crate) async fn ")
+            .map(|i| fn_idx + 1 + i)
+            .unwrap_or(src.len());
+        let body = &src[fn_idx..next_fn];
+
+        // The composite filter must appear at least TWICE in the
+        // function body: once for `DashboardScope::Global`, once
+        // for `DashboardScope::User(uid)`. A single occurrence
+        // would mean one of the two branches still uses the bare
+        // `status.eq("active")` and would silently drop IACS rows
+        // for that scope.
+        let needle = "status.eq_any([\"active\", \"tunnel_active\"])";
+        let count = body.matches(needle).count();
+        assert!(
+            count >= 2,
+            "load_live_sessions MUST apply `{}` in BOTH scope arms \
+             (`Global` and `User(uid)`). Found {} occurrence(s).",
+            needle,
+            count
+        );
     }
 }

@@ -38,9 +38,17 @@ async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> uuid::Uuid
 /// formatted display is deterministic across runs and timezones.
 /// Winter date (January) so Paris is CET (UTC+01:00) and the test
 /// is DST-stable even if it runs during a DST transition window.
-async fn pin_created_at(conn: &mut AsyncPgConnection, user_id: i32) -> chrono::DateTime<chrono::Utc> {
+async fn pin_created_at(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+) -> chrono::DateTime<chrono::Utc> {
     use vauban_web::schema::users;
-    let pinned = unwrap_ok!(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 10, 30, 0).single().ok_or("bad date"));
+    let pinned = unwrap_ok!(
+        chrono::Utc
+            .with_ymd_and_hms(2026, 1, 15, 10, 30, 0)
+            .single()
+            .ok_or("bad date")
+    );
     unwrap_ok!(
         diesel::update(users::table.filter(users::id.eq(user_id)))
             .set(users::created_at.eq(pinned))
@@ -153,10 +161,7 @@ async fn timezone_e2e_cookie_invalid_iana_falls_back_to_utc() {
     let response = app
         .server
         .get("/accounts/profile")
-        .add_header(
-            COOKIE,
-            format!("access_token={}; vbn_tz=Foo%2FBar", token),
-        )
+        .add_header(COOKIE, format!("access_token={}; vbn_tz=Foo%2FBar", token))
         .await;
 
     assert_status(&response, 200);
@@ -236,10 +241,7 @@ async fn timezone_e2e_cookie_oversized_falls_back_to_utc() {
     let response = app
         .server
         .get("/accounts/profile")
-        .add_header(
-            COOKIE,
-            format!("access_token={}; vbn_tz={}", token, big),
-        )
+        .add_header(COOKIE, format!("access_token={}; vbn_tz={}", token, big))
         .await;
 
     assert_status(&response, 200);

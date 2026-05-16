@@ -16,9 +16,10 @@ use std::path::Path;
 const SRC_ROOT: &str = "src";
 
 fn read_src(rel: &str) -> String {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join(SRC_ROOT).join(rel);
-    std::fs::read_to_string(&p)
-        .unwrap_or_else(|e| panic!("read {}: {}", p.display(), e))
+    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(SRC_ROOT)
+        .join(rel);
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {}", p.display(), e))
 }
 
 #[test]

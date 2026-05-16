@@ -820,8 +820,7 @@ async fn resolve_actor_id(conn: &mut DbConnection, actor_uuid: Option<&str>) -> 
 /// generic `&& ARRAY[$bind]` helper for `Array<Nullable<Text>>`
 /// columns.
 fn protocol_match_filter(protocol: &str) -> diesel::expression::SqlLiteral<SqlBool> {
-    let expanded =
-        shared::access_guard::expand_protocol_for_access_match(protocol);
+    let expanded = shared::access_guard::expand_protocol_for_access_match(protocol);
     // Anti-injection: every element MUST go through `escape_sql_array_literal`
     // because `sql_query` here is built by string concat (Diesel's bind
     // parameter system on dynamic-length array literals is awkward to
@@ -851,7 +850,13 @@ fn protocol_match_filter(protocol: &str) -> diesel::expression::SqlLiteral<SqlBo
 fn escape_sql_array_literal(s: &str) -> String {
     let sanitised: String = s
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("'{sanitised}'")
 }
@@ -2952,8 +2957,7 @@ mod escape_tests {
         use diesel::query_builder::{QueryBuilder, QueryFragment};
 
         let frag = protocol_match_filter("iacs_tunnel");
-        let mut query_builder =
-            <diesel::pg::PgQueryBuilder as Default>::default();
+        let mut query_builder = <diesel::pg::PgQueryBuilder as Default>::default();
         frag.to_sql(&mut query_builder, &Pg)
             .expect("fragment must render");
         let sql = query_builder.finish();
@@ -2992,8 +2996,7 @@ mod escape_tests {
         use diesel::pg::Pg;
         use diesel::query_builder::{QueryBuilder, QueryFragment};
         let frag = protocol_match_filter("ssh");
-        let mut query_builder =
-            <diesel::pg::PgQueryBuilder as Default>::default();
+        let mut query_builder = <diesel::pg::PgQueryBuilder as Default>::default();
         frag.to_sql(&mut query_builder, &Pg).unwrap();
         let sql = query_builder.finish();
         // We use `&&` even for non-meta protocols -- this is harmless
@@ -5104,8 +5107,7 @@ mod tests {
     /// on the matching (user, asset). This is the reproduction of
     /// the production bug that motivated the fix.
     #[tokio::test]
-    async fn test_check_access_by_uuid_iacs_tunnel_meta_protocol_grants_via_iacs_modbus_rule()
-    {
+    async fn test_check_access_by_uuid_iacs_tunnel_meta_protocol_grants_via_iacs_modbus_rule() {
         let pool = test_pool().await;
         let user_id = ensure_test_user(&pool).await;
         let user_uuid_str = user_uuid(&pool, user_id).await;
@@ -5114,7 +5116,10 @@ mod tests {
         let ag = create_test_asset_group(&pool, &unique_name("ag_iacs_meta")).await;
         handle_access_request(
             &pool,
-            AccessRequest::AddGroupMember { group_id: ug.id, user_id },
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
         )
         .await;
         // The form-side expansion writes EVERY iacs_* atomically; we
@@ -5177,7 +5182,10 @@ mod tests {
         cleanup_asset(&pool, asset_id).await;
         handle_access_request(
             &pool,
-            AccessRequest::RemoveGroupMember { group_id: ug.id, user_id },
+            AccessRequest::RemoveGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
         )
         .await;
         cleanup_rule(&pool, &rule.uuid).await;
@@ -5192,8 +5200,7 @@ mod tests {
     /// deliberately scoped to one protocol, the operator can still
     /// reach the asset via the tunnel runtime.
     #[tokio::test]
-    async fn test_check_access_by_uuid_iacs_tunnel_grants_via_partial_rule_with_only_iacs_modbus()
-    {
+    async fn test_check_access_by_uuid_iacs_tunnel_grants_via_partial_rule_with_only_iacs_modbus() {
         let pool = test_pool().await;
         let user_id = ensure_test_user(&pool).await;
         let user_uuid_str = user_uuid(&pool, user_id).await;
@@ -5202,7 +5209,10 @@ mod tests {
         let ag = create_test_asset_group(&pool, &unique_name("ag_iacs_partial")).await;
         handle_access_request(
             &pool,
-            AccessRequest::AddGroupMember { group_id: ug.id, user_id },
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
         )
         .await;
         let rule = create_test_rule(
@@ -5239,7 +5249,10 @@ mod tests {
         cleanup_asset(&pool, asset_id).await;
         handle_access_request(
             &pool,
-            AccessRequest::RemoveGroupMember { group_id: ug.id, user_id },
+            AccessRequest::RemoveGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
         )
         .await;
         cleanup_rule(&pool, &rule.uuid).await;
@@ -5261,7 +5274,10 @@ mod tests {
         let ag = create_test_asset_group(&pool, &unique_name("ag_iacs_neg")).await;
         handle_access_request(
             &pool,
-            AccessRequest::AddGroupMember { group_id: ug.id, user_id },
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
         )
         .await;
         let rule = create_test_rule(
@@ -5290,7 +5306,10 @@ mod tests {
         cleanup_asset(&pool, asset_id).await;
         handle_access_request(
             &pool,
-            AccessRequest::RemoveGroupMember { group_id: ug.id, user_id },
+            AccessRequest::RemoveGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
         )
         .await;
         cleanup_rule(&pool, &rule.uuid).await;

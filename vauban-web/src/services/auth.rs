@@ -11,8 +11,8 @@ use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode}
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use shared::totp::{TOTP_DIGITS, TOTP_SKEW, TOTP_STEP};
-use uuid::Uuid;
 use totp_rs::{Algorithm as TotpAlgorithm, Secret as TotpSecret, TOTP};
+use uuid::Uuid;
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
@@ -463,8 +463,9 @@ mod tests {
         let user_uuid = "550e8400-e29b-41d4-a716-446655440000";
         let username = "testuser";
 
-        let token =
-            unwrap_ok!(auth_service.generate_access_token(user_uuid, username, true, true, true, None));
+        let token = unwrap_ok!(
+            auth_service.generate_access_token(user_uuid, username, true, true, true, None)
+        );
 
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
@@ -620,8 +621,9 @@ mod tests {
         let cloned = auth_service.clone();
 
         // Both should work identically
-        let token =
-            unwrap_ok!(auth_service.generate_access_token("user-1", "test", false, false, false, None));
+        let token = unwrap_ok!(
+            auth_service.generate_access_token("user-1", "test", false, false, false, None)
+        );
         let claims = unwrap_ok!(cloned.verify_token(&token));
         assert_eq!(claims.sub, "user-1");
     }
@@ -763,7 +765,8 @@ mod tests {
         let config = load_test_config();
         let auth_service = unwrap_ok!(AuthService::new(config));
 
-        let token = unwrap_ok!(auth_service.generate_access_token("uuid", "", false, false, false, None));
+        let token =
+            unwrap_ok!(auth_service.generate_access_token("uuid", "", false, false, false, None));
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
         assert_eq!(claims.username, "");
@@ -775,8 +778,9 @@ mod tests {
         let auth_service = unwrap_ok!(AuthService::new(config));
 
         let username = "用户名";
-        let token =
-            unwrap_ok!(auth_service.generate_access_token("uuid", username, false, false, false, None));
+        let token = unwrap_ok!(
+            auth_service.generate_access_token("uuid", username, false, false, false, None)
+        );
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
         assert_eq!(claims.username, username);
@@ -816,8 +820,9 @@ mod tests {
         let config = load_test_config();
         let auth_service = unwrap_ok!(AuthService::new(config));
 
-        let token =
-            unwrap_ok!(auth_service.generate_access_token("uuid", "user", false, false, false, None));
+        let token = unwrap_ok!(
+            auth_service.generate_access_token("uuid", "user", false, false, false, None)
+        );
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
         let now = Utc::now().timestamp();

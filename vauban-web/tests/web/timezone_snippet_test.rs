@@ -23,14 +23,12 @@ fn manifest_dir() -> PathBuf {
 
 fn read_static_js() -> String {
     let path = manifest_dir().join("static/js/vbn-tz.js");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("missing {}: {}", path.display(), e))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("missing {}: {}", path.display(), e))
 }
 
 fn read_base_html() -> String {
     let path = manifest_dir().join("templates/base.html");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("missing {}: {}", path.display(), e))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("missing {}: {}", path.display(), e))
 }
 
 #[test]
@@ -69,10 +67,7 @@ fn snippet_writes_vbn_tz_cookie() {
         body.contains("SameSite=Lax"),
         "the cookie must carry SameSite=Lax"
     );
-    assert!(
-        body.contains("Path=/"),
-        "the cookie must carry Path=/"
-    );
+    assert!(body.contains("Path=/"), "the cookie must carry Path=/");
 }
 
 #[test]
@@ -126,9 +121,7 @@ fn base_html_loads_snippet_synchronously_in_head() {
     let snippet_pos = head
         .find("/static/js/vbn-tz.js")
         .expect("snippet must be in <head>");
-    let title_pos = head
-        .find("<title>")
-        .expect("<head> must declare a <title>");
+    let title_pos = head.find("<title>").expect("<head> must declare a <title>");
     assert!(
         snippet_pos < title_pos,
         "the snippet must load BEFORE <title> so the timezone is set on the first paint"
@@ -164,10 +157,11 @@ fn base_html_does_not_inline_snippet_body() {
 /// also be served by `serve_static`.
 #[test]
 fn vbn_tz_js_is_served_under_static() {
-    let asset = vauban_web::static_assets::lookup("js/vbn-tz.js")
-        .expect("`/static/js/vbn-tz.js` must be registered in STATIC_FILES \
+    let asset = vauban_web::static_assets::lookup("js/vbn-tz.js").expect(
+        "`/static/js/vbn-tz.js` must be registered in STATIC_FILES \
                  (otherwise the browser timezone bootstrap silently 404s \
-                 and the UI collapses to UTC)");
+                 and the UI collapses to UTC)",
+    );
     assert_eq!(asset.path, "js/vbn-tz.js");
     assert!(
         asset.content_type.starts_with("application/javascript"),

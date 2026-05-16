@@ -825,8 +825,7 @@ mod tests {
         // Concretely, the four canonical IACS protocols MUST be in
         // the expansion. A regression that drops one would silently
         // break that protocol's tunnels.
-        for needle in ["iacs_modbus", "iacs_opcua", "iacs_profinet", "iacs_iec104"]
-        {
+        for needle in ["iacs_modbus", "iacs_opcua", "iacs_profinet", "iacs_iec104"] {
             assert!(
                 expanded.iter().any(|p| p == needle),
                 "{needle} must be in the expansion of iacs_tunnel"
@@ -845,10 +844,7 @@ mod tests {
             expand_protocol_for_access_match("vnc"),
             vec!["vnc".to_string()]
         );
-        assert_eq!(
-            expand_protocol_for_access_match(""),
-            vec!["".to_string()]
-        );
+        assert_eq!(expand_protocol_for_access_match(""), vec!["".to_string()]);
         assert_eq!(
             expand_protocol_for_access_match("IACS_TUNNEL"),
             vec!["IACS_TUNNEL".to_string()],

@@ -33,11 +33,7 @@ use vauban_web::models::asset::AssetType;
 #[tokio::test]
 async fn asset_type_check_constraint_matches_rust_enum() {
     let app = TestApp::spawn().await;
-    let mut conn = app
-        .db_pool
-        .get()
-        .await
-        .expect("test db pool unavailable");
+    let mut conn = app.db_pool.get().await.expect("test db pool unavailable");
 
     #[derive(QueryableByName, Debug)]
     struct CheckDef {
@@ -135,11 +131,7 @@ async fn iacs_protocol_round_trip_exhaustive() {
 #[tokio::test]
 async fn proxy_sessions_iacs_consistency_check_rejects_inconsistent_rows() {
     let app = TestApp::spawn().await;
-    let mut conn = app
-        .db_pool
-        .get()
-        .await
-        .expect("test db pool unavailable");
+    let mut conn = app.db_pool.get().await.expect("test db pool unavailable");
 
     // The CHECK exists.
     #[derive(QueryableByName, Debug)]
@@ -171,11 +163,7 @@ async fn proxy_sessions_iacs_consistency_check_rejects_inconsistent_rows() {
 #[tokio::test]
 async fn ews_audit_log_event_chk_admits_iacs_events() {
     let app = TestApp::spawn().await;
-    let mut conn = app
-        .db_pool
-        .get()
-        .await
-        .expect("test db pool unavailable");
+    let mut conn = app.db_pool.get().await.expect("test db pool unavailable");
 
     #[derive(QueryableByName, Debug)]
     struct CheckDef {
@@ -219,14 +207,12 @@ async fn virtual_asset_group_all_iacs_is_seeded() {
     use vauban_web::schema::asset_groups::dsl as ag;
 
     let app = TestApp::spawn().await;
-    let mut conn = app
-        .db_pool
-        .get()
-        .await
-        .expect("test db pool unavailable");
+    let mut conn = app.db_pool.get().await.expect("test db pool unavailable");
 
     let kind: String = ag::asset_groups
-        .filter(ag::uuid.eq(::uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000a1c").unwrap()))
+        .filter(
+            ag::uuid.eq(::uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000a1c").unwrap()),
+        )
         .select(ag::kind)
         .first(&mut conn)
         .await

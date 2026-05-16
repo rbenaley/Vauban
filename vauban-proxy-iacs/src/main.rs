@@ -61,7 +61,7 @@ use uuid::Uuid;
 
 use crate::auth::{PendingSessions, PendingTunnel};
 use crate::ipc::AsyncIpcChannel;
-use crate::registry::TunnelRegistry;
+use crate::registry::{SessionHandles, TunnelRegistry};
 use crate::server::{IacsTunnelServer, build_server_config, load_or_generate_host_key};
 use crate::upstream::{PendingConnections, SupervisorBrokerOpener};
 
@@ -121,6 +121,21 @@ impl AccessGuardMetrics for ServiceState {
 /// the IPC pipe before the SCM_RIGHTS FD lands on the FD-passing
 /// socket. Poll the socket and retry until the FD arrives or the
 /// max-retries is exhausted (mirrors the SSH proxy implementation).
+///
+/// SAFETY INVARIANT: this function MUST NOT make a blocking syscall
+/// on the FD-passing socket under any circumstance. The socket is
+/// blocking by default (`socketpair_for_fd_passing` -- `SockFlag::empty()`),
+/// so a fall-through `recv_fd(socket_fd)` after all polls returned
+/// "not ready" would park the calling tokio worker indefinitely on
+/// `recvmsg(2)`. Historically (pre-fix) such a path existed and would
+/// fire whenever the supervisor delivered an unexpected
+/// `TcpConnectResponse` (e.g. the duplicate self-targeting message
+/// the supervisor used to send to ProxyIacs) -- the wedge would then
+/// starve `main_loop`'s heartbeats and trigger an unresponsive
+/// force-restart. The matching pin tests are
+/// `fn fallback_returns_error_after_all_retries` (in this file's
+/// `mod tests`) and the supervisor-side
+/// `test_supervisor_iacs_broker_skips_duplicate_response_to_self`.
 async fn receive_fd_with_retry(
     socket_fd: RawFd,
     max_retries: u32,
@@ -146,7 +161,17 @@ async fn receive_fd_with_retry(
             }
         }
     }
-    recv_fd(socket_fd)
+    // All retries exhausted with no SCM_RIGHTS FD ready: fail closed.
+    // NEVER fall through to a blocking `recv_fd(socket_fd)` -- see the
+    // safety invariant in this function's doc comment.
+    Err(shared::ipc::IpcError::Io(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!(
+            "iacs_tunnel: receive_fd_with_retry timed out after {} attempts \
+             ({} ms each); refusing to fall through to a blocking recv_fd",
+            max_retries, delay_ms
+        ),
+    )))
 }
 
 fn main() -> ExitCode {
@@ -319,6 +344,10 @@ async fn run_service() -> Result<()> {
     // === 6. Build the russh server.
     let registry = TunnelRegistry::new();
     let pending = PendingSessions::new();
+    // Per-session russh handle map: lets the `IacsTunnelTerminate`
+    // IPC dispatch a `Disconnect::ByApplication` and force-tear-down
+    // the EWS SSH session. Cloned into every accepted handler.
+    let session_handles = SessionHandles::new();
     let pending_connections: PendingConnections = Arc::new(Mutex::new(HashMap::new()));
 
     // Outbound supervisor pipe writer: the SupervisorBrokerOpener
@@ -326,6 +355,15 @@ async fn run_service() -> Result<()> {
     // dedicated writer task consumes them so we never have two
     // tasks racing on the same `IpcChannel::send`.
     let (sup_tx, mut sup_rx) = mpsc::unbounded_channel::<Message>();
+    // Outbound web pipe writer: the russh accept loop / handler /
+    // relay tasks AND the main_loop's web-message handler ALL push
+    // `IacsTunnelOpened` / `IacsTunnelStatusUpdate` /
+    // `IacsTunnelClosed` messages on this channel. A single writer
+    // task drains it and serialises every send onto the underlying
+    // pipe fd, so multiple tokio tasks (one per EWS login) never
+    // race on `AsyncIpcChannel::send` and partial frames cannot
+    // interleave on the wire. See [`server::WebReporter`].
+    let (web_tx, mut web_rx) = mpsc::unbounded_channel::<Message>();
 
     let upstream: Arc<dyn server::UpstreamOpener> = Arc::new(SupervisorBrokerOpener {
         supervisor_tx: sup_tx.clone(),
@@ -366,10 +404,12 @@ async fn run_service() -> Result<()> {
 
         let accept_registry = registry.clone();
         let accept_pending = pending.clone();
+        let accept_session_handles = session_handles.clone();
         let accept_upstream = Arc::clone(&upstream);
         let accept_config = Arc::clone(&server_config);
         let accept_bind_addr = iacs_bind_addr.clone();
         let accept_max_channels = max_channels_per_session;
+        let accept_web_tx = web_tx.clone();
         tokio::spawn(async move {
             info!(
                 iacs_bind_addr = %accept_bind_addr,
@@ -383,15 +423,15 @@ async fn run_service() -> Result<()> {
                         let mut server = IacsTunnelServer::new(
                             accept_registry.clone(),
                             accept_pending.clone(),
+                            accept_session_handles.clone(),
                             Arc::clone(&accept_upstream),
                             accept_max_channels,
+                            Some(accept_web_tx.clone()),
                         );
                         let cfg = Arc::clone(&accept_config);
                         let handler = russh::server::Server::new_client(&mut server, Some(peer));
                         tokio::spawn(async move {
-                            if let Err(e) =
-                                russh::server::run_stream(cfg, stream, handler).await
-                            {
+                            if let Err(e) = russh::server::run_stream(cfg, stream, handler).await {
                                 debug!(?peer, error = ?e, "iacs_tunnel: russh stream ended");
                             }
                         });
@@ -418,9 +458,8 @@ async fn run_service() -> Result<()> {
         AsyncIpcChannel::new(supervisor_channel)
             .context("Failed to create async supervisor channel")?,
     );
-    let web_async = Arc::new(
-        AsyncIpcChannel::new(web_channel).context("Failed to create async web channel")?,
-    );
+    let web_async =
+        Arc::new(AsyncIpcChannel::new(web_channel).context("Failed to create async web channel")?);
 
     {
         let sup_writer = Arc::clone(&supervisor_async);
@@ -433,14 +472,27 @@ async fn run_service() -> Result<()> {
         });
     }
 
+    {
+        let web_writer = Arc::clone(&web_async);
+        tokio::spawn(async move {
+            while let Some(msg) = web_rx.recv().await {
+                if let Err(e) = web_writer.send(&msg) {
+                    error!(error = %e, "iacs_tunnel: web send failed");
+                }
+            }
+        });
+    }
+
     drop(audit_channel);
 
     main_loop(
         supervisor_async,
         web_async,
+        web_tx,
         state,
         registry,
         pending,
+        session_handles,
         pending_connections,
         fd_passing_socket,
         access_guard,
@@ -452,9 +504,11 @@ async fn run_service() -> Result<()> {
 async fn main_loop(
     supervisor: Arc<AsyncIpcChannel>,
     web: Arc<AsyncIpcChannel>,
+    web_tx: mpsc::UnboundedSender<Message>,
     state: Arc<ServiceState>,
     registry: TunnelRegistry,
     pending: PendingSessions,
+    session_handles: SessionHandles,
     pending_connections: PendingConnections,
     fd_passing_socket: Option<RawFd>,
     access_guard: Arc<AccessGuard>,
@@ -473,9 +527,11 @@ async fn main_loop(
                     Ok(Message::Control(ctrl)) => match ctrl {
                         ControlMessage::Ping { seq } => {
                             let stats = state.stats(registry.len() as u32);
-                            let _ = supervisor.send(
+                            if let Err(e) = supervisor.send(
                                 &Message::Control(ControlMessage::Pong { seq, stats }),
-                            );
+                            ) {
+                                warn!(error = %e, "iacs_tunnel: failed to send Pong");
+                            }
                         }
                         ControlMessage::Drain => {
                             info!("Drain requested");
@@ -548,10 +604,11 @@ async fn main_loop(
                 match result {
                     Ok(msg) => {
                         handle_web_message(
-                            Arc::clone(&web),
+                            web_tx.clone(),
                             Arc::clone(&state),
                             pending.clone(),
                             registry.clone(),
+                            session_handles.clone(),
                             Arc::clone(&access_guard),
                             msg,
                         )
@@ -568,11 +625,13 @@ async fn main_loop(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_web_message(
-    web: Arc<AsyncIpcChannel>,
+    web_tx: mpsc::UnboundedSender<Message>,
     state: Arc<ServiceState>,
     pending: PendingSessions,
     registry: TunnelRegistry,
+    session_handles: SessionHandles,
     access_guard: Arc<AccessGuard>,
     msg: Message,
 ) {
@@ -607,7 +666,7 @@ async fn handle_web_message(
                     session_id = %session_id,
                     "iacs_tunnel: session-token verify_proxy failed"
                 );
-                let _ = web.send(&Message::IacsTunnelOpened {
+                let _ = web_tx.send(Message::IacsTunnelOpened {
                     request_id,
                     session_id,
                     success: false,
@@ -618,7 +677,7 @@ async fn handle_web_message(
             }
 
             if state.draining.load(Ordering::SeqCst) {
-                let _ = web.send(&Message::IacsTunnelOpened {
+                let _ = web_tx.send(Message::IacsTunnelOpened {
                     request_id,
                     session_id,
                     success: false,
@@ -642,7 +701,7 @@ async fn handle_web_message(
                     ?decision,
                     "iacs_tunnel: AccessGuard re-check denied tunnel open"
                 );
-                let _ = web.send(&Message::IacsTunnelOpened {
+                let _ = web_tx.send(Message::IacsTunnelOpened {
                     request_id,
                     session_id,
                     success: false,
@@ -665,7 +724,7 @@ async fn handle_web_message(
             let (sess, user, asset, ews) = match parse() {
                 Some(t) => t,
                 None => {
-                    let _ = web.send(&Message::IacsTunnelOpened {
+                    let _ = web_tx.send(Message::IacsTunnelOpened {
                         request_id,
                         session_id,
                         success: false,
@@ -697,7 +756,7 @@ async fn handle_web_message(
                 "iacs_tunnel: pending tunnel materialised"
             );
             state.requests_processed.fetch_add(1, Ordering::SeqCst);
-            let _ = web.send(&Message::IacsTunnelOpened {
+            let _ = web_tx.send(Message::IacsTunnelOpened {
                 request_id,
                 session_id,
                 success: true,
@@ -720,6 +779,62 @@ async fn handle_web_message(
             };
             let _expired_pending = pending.take(&parsed).await;
             registry.close_and_remove(&parsed);
+
+            // Force-disconnect the EWS SSH session via the russh
+            // `Handle` captured in `auth_succeeded`. Without this
+            // dispatch the `close_and_remove` above only flips an
+            // AtomicBool inside the per-channel TunnelHandle and
+            // notifies waiters; the russh server itself keeps the
+            // SSH transport alive and the EWS retains its `ssh -L`
+            // tunnel (so a follow-up `nc localhost 7022` would still
+            // succeed and re-open a fresh `direct-tcpip` channel).
+            //
+            // The disconnect is dispatched in a spawned task because
+            // `Handle::disconnect` is async (`Sender::send` on the
+            // channel-buffered russh internal queue). Errors are
+            // logged but never block the IPC dispatch loop.
+            //
+            // Idempotent across states:
+            //   - `tunnel_active`: cuts the live `direct-tcpip` and
+            //     closes the SSH transport.
+            //   - `waiting_client`: there is no `direct-tcpip` yet
+            //     but the russh handle exists, so the SSH session is
+            //     dropped before the EWS can ever open a channel.
+            //   - already gone (Drop ran): `session_handles.get`
+            //     returns `None` -> no-op.
+            if let Some(handle) = session_handles.get(&parsed) {
+                let reason_for_task = reason.clone();
+                let session_id_for_task = session_id.clone();
+                tokio::spawn(async move {
+                    let r = handle
+                        .disconnect(
+                            russh::Disconnect::ByApplication,
+                            format!("Terminated by operator: {}", reason_for_task),
+                            "en".to_string(),
+                        )
+                        .await;
+                    match r {
+                        Ok(()) => info!(
+                            session_id = %session_id_for_task,
+                            reason = %reason_for_task,
+                            "iacs_tunnel: russh disconnect dispatched"
+                        ),
+                        Err(e) => warn!(
+                            session_id = %session_id_for_task,
+                            reason = %reason_for_task,
+                            error = %e,
+                            "iacs_tunnel: russh disconnect failed (session may already be gone)"
+                        ),
+                    }
+                });
+            } else {
+                debug!(
+                    session_id = %session_id,
+                    "iacs_tunnel: terminate found no russh handle (session not authenticated, \
+                     already disconnected, or never reached auth_succeeded)"
+                );
+            }
+
             info!(
                 session_id = %session_id,
                 reason = %reason,

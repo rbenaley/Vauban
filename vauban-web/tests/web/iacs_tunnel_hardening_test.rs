@@ -60,10 +60,8 @@ async fn spawn_dummy_target() -> std::net::SocketAddr {
 
 async fn spawn_test_sshd(app: &TestApp) -> (std::net::SocketAddr, TunnelRegistry) {
     let target = spawn_dummy_target().await;
-    let host_key_path = std::env::temp_dir().join(format!(
-        "vauban_iacs_l6_test_host_{}.key",
-        Uuid::new_v4()
-    ));
+    let host_key_path =
+        std::env::temp_dir().join(format!("vauban_iacs_l6_test_host_{}.key", Uuid::new_v4()));
     let cfg = IacsTunnelConfig {
         enabled: true,
         bind_addr: "127.0.0.1:0".to_string(),
@@ -91,11 +89,7 @@ fn client_config() -> Arc<client::Config> {
     })
 }
 
-async fn measure_auth_fail_ms(
-    addr: std::net::SocketAddr,
-    user: &str,
-    key: PrivateKey,
-) -> u128 {
+async fn measure_auth_fail_ms(addr: std::net::SocketAddr, user: &str, key: PrivateKey) -> u128 {
     let started = Instant::now();
     let mut handle = client::connect(client_config(), addr, TestClient)
         .await
@@ -136,8 +130,11 @@ async fn auth_rejection_is_constant_time() {
 
     let n = samples_ms.len() as f64;
     let mean = samples_ms.iter().map(|&v| v as f64).sum::<f64>() / n;
-    let variance =
-        samples_ms.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / n;
+    let variance = samples_ms
+        .iter()
+        .map(|&v| (v as f64 - mean).powi(2))
+        .sum::<f64>()
+        / n;
     let stddev = variance.sqrt();
     let min = samples_ms.iter().min().copied().unwrap();
     let max = samples_ms.iter().max().copied().unwrap();
@@ -191,8 +188,7 @@ async fn stress_1000_concurrent_auth_fails() {
                 Ok(h) => h,
                 Err(_) => return,
             };
-            let signer =
-                PrivateKeyWithHashAlg::new(Arc::new(fresh_ed25519_key()), None);
+            let signer = PrivateKeyWithHashAlg::new(Arc::new(fresh_ed25519_key()), None);
             let _ = h
                 .authenticate_publickey(Uuid::new_v4().to_string(), signer)
                 .await;

@@ -68,11 +68,7 @@ pub struct IacsTunnelServer {
 }
 
 impl IacsTunnelServer {
-    pub fn new(
-        registry: TunnelRegistry,
-        db_pool: DbPool,
-        config: IacsTunnelConfig,
-    ) -> Self {
+    pub fn new(registry: TunnelRegistry, db_pool: DbPool, config: IacsTunnelConfig) -> Self {
         let target_addr = Arc::new(config.target_addr.clone());
         Self {
             registry,
@@ -106,10 +102,7 @@ impl Server for IacsTunnelServer {
         }
     }
 
-    fn handle_session_error(
-        &mut self,
-        error: <Self::Handler as Handler>::Error,
-    ) {
+    fn handle_session_error(&mut self, error: <Self::Handler as Handler>::Error) {
         // Connection-level errors (KEX abort, malformed packet) are
         // non-fatal: the per-connection task already exited cleanly,
         // we just log so operators can correlate with peer logs.
@@ -168,11 +161,7 @@ async fn push_event(
 impl Handler for IacsTunnelHandler {
     type Error = russh::Error;
 
-    async fn auth_password(
-        &mut self,
-        _user: &str,
-        _password: &str,
-    ) -> Result<Auth, Self::Error> {
+    async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
         // Defence in depth: the Config below already restricts
         // methods to publickey, but if a future refactor widens
         // it we still refuse.
@@ -213,7 +202,10 @@ impl Handler for IacsTunnelHandler {
         };
         let outcome = verify_pubkey(&mut conn, user, public_key).await;
         match outcome {
-            AuthOutcome::Accept { ews_uuid, user_uuid } => {
+            AuthOutcome::Accept {
+                ews_uuid,
+                user_uuid,
+            } => {
                 info!(
                     peer = ?self.peer_addr,
                     session_uuid = %user,

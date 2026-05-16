@@ -15,6 +15,7 @@
 //! definitions, and the per-asset target plan in
 //! `.cursor/plans/iacs_proxy_per-asset_target_efa20838.plan.md`.
 
+use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
 use crate::services::broadcast::{BroadcastService, WsChannel};
 use serde_json::json;
@@ -87,13 +88,29 @@ pub struct ProxyIacsClient {
     next_request_id: AtomicU64,
     pending_open_requests: Mutex<HashMap<u64, oneshot::Sender<IacsTunnelOpened>>>,
     /// Optional broadcast handle, set by
-    /// [`ProxyIacsClient::process_incoming_with_broadcast`] before
+    /// [`ProxyIacsClient::process_incoming_with_state`] before
     /// the loop starts. When present, every incoming
     /// `IacsTunnelStatusUpdate` / `IacsTunnelClosed` is fanned out
     /// on `WsChannel::SessionLive(<session_id>)` so the status page
     /// flips between `waiting_client` -> `tunnel_active` ->
-    /// `tunnel_closed` in real time without DB polling.
+    /// `tunnel_closed` in real time without DB polling, AND on the
+    /// admin-wide `WsChannel::ActiveSessionsList` (rendered from the
+    /// freshly-persisted DB state) so the `/sessions/active` page
+    /// gains/loses the IACS row in real time alongside SSH/RDP.
     broadcast: Mutex<Option<BroadcastService>>,
+    /// Optional DB pool, set by [`ProxyIacsClient::process_incoming_with_state`]
+    /// before the loop starts. When present, every
+    /// `IacsTunnelStatusUpdate { status = "tunnel_active", peer_ip }`
+    /// flips `proxy_sessions.status = "tunnel_active"`,
+    /// `connected_at = NOW()`, `client_ip = peer_ip` in the DB so the
+    /// admin `/sessions/active` page can surface the tunnel by the
+    /// same SQL filter it uses for SSH/RDP. Symmetrically,
+    /// `IacsTunnelClosed` flips status to `terminated` /
+    /// `disconnected_at = NOW()` so the row leaves the active list.
+    /// Without this seam (`broadcast`-only flavour, the pre-issue
+    /// integration), the IACS lifecycle was visible only on the
+    /// per-session viewer, never on the admin dashboard.
+    db_pool: Mutex<Option<DbPool>>,
 }
 
 impl ProxyIacsClient {
@@ -113,13 +130,51 @@ impl ProxyIacsClient {
             next_request_id: AtomicU64::new(1),
             pending_open_requests: Mutex::new(HashMap::new()),
             broadcast: Mutex::new(None),
+            db_pool: Mutex::new(None),
         }))
     }
 
     /// Like [`Self::process_incoming`] but stashes a broadcast
-    /// handle first so `IacsTunnelStatusUpdate` / `IacsTunnelClosed`
-    /// notifications can be fanned out to the per-session WebSocket
-    /// channel.
+    /// handle and a DB pool first so `IacsTunnelStatusUpdate` /
+    /// `IacsTunnelClosed` notifications can:
+    /// - flip `proxy_sessions.status` / `connected_at` /
+    ///   `disconnected_at` / `client_ip` in the DB so the admin
+    ///   `/sessions/active` page picks the tunnel up by its SQL
+    ///   filter (the same one SSH/RDP rely on);
+    /// - fan out a fresh active-list HTML fragment so subscribers
+    ///   to `WsChannel::ActiveSessionsList` see the row appear /
+    ///   disappear in real time;
+    /// - fan out the per-session JSON payload on
+    ///   `WsChannel::SessionLive(<session_id>)` for the tunnel
+    ///   status page (unchanged).
+    ///
+    /// SECURITY: this is the **only** place where the IACS lifecycle
+    /// transitions are persisted. No HTTP handler may set
+    /// `proxy_sessions.status = "tunnel_active"` (only the proxy can
+    /// observe the EWS handshake), nor may any HTTP handler short-
+    /// circuit the closure path: `IacsTunnelClosed` from the proxy is
+    /// the canonical signal that the EWS is gone.
+    pub async fn process_incoming_with_state(
+        self: Arc<Self>,
+        broadcast: BroadcastService,
+        db_pool: DbPool,
+    ) -> AppResult<()> {
+        {
+            let mut slot = self.broadcast.lock().await;
+            *slot = Some(broadcast);
+        }
+        {
+            let mut slot = self.db_pool.lock().await;
+            *slot = Some(db_pool);
+        }
+        self.process_incoming().await
+    }
+
+    /// Backwards-compatible shim: keep the broadcast-only entry-point
+    /// for tests that don't need the DB persistence side-effect (and
+    /// for any future caller that wants the per-session WS fan-out
+    /// without the admin-list integration).
+    #[cfg(test)]
     pub async fn process_incoming_with_broadcast(
         self: Arc<Self>,
         broadcast: BroadcastService,
@@ -135,10 +190,7 @@ impl ProxyIacsClient {
     ///
     /// Sends an `IacsTunnelOpen` IPC, waits for `IacsTunnelOpened`,
     /// times out after 30 s.
-    pub async fn open_tunnel(
-        &self,
-        request: IacsTunnelOpenRequest,
-    ) -> AppResult<IacsTunnelOpened> {
+    pub async fn open_tunnel(&self, request: IacsTunnelOpenRequest) -> AppResult<IacsTunnelOpened> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
         let session_id = request.session_id.clone();
 
@@ -273,6 +325,15 @@ impl ProxyIacsClient {
             // without DB polling. The channel is parametric (one
             // instance per session) so the broadcast level is
             // `debug!` per `websocket-logging.mdc`.
+            //
+            // When `status == "tunnel_active"` AND a DB pool was
+            // wired via `process_incoming_with_state`, we also flip
+            // `proxy_sessions.status = "tunnel_active"`,
+            // `connected_at = NOW()`, and (if `peer_ip` is known)
+            // `client_ip = peer_ip`. This is the seam that lets the
+            // admin `/sessions/active` page surface IACS tunnels
+            // alongside SSH/RDP through the same SQL filter
+            // (`status IN ('active', 'tunnel_active')`).
             Message::IacsTunnelStatusUpdate {
                 session_id,
                 status,
@@ -287,6 +348,42 @@ impl ProxyIacsClient {
                     bytes_out = bytes_out,
                     "IACS tunnel status update received"
                 );
+                let mut db_persisted = false;
+                if status == "tunnel_active"
+                    && let Some(pool) = self.db_pool.lock().await.as_ref()
+                {
+                    match persist_tunnel_active(pool, &session_id, peer_ip.as_deref()).await {
+                        Ok(updated) => {
+                            if updated {
+                                debug!(
+                                    session_id = %session_id,
+                                    "iacs_tunnel: proxy_sessions row \
+                                     flipped to tunnel_active"
+                                );
+                                db_persisted = true;
+                            } else {
+                                // No row matched -- either the
+                                // session was already torn down or
+                                // never existed. Idempotent: log at
+                                // debug, do not fail the IPC loop.
+                                debug!(
+                                    session_id = %session_id,
+                                    "iacs_tunnel: no waiting_client \
+                                     row to flip (already active or \
+                                     terminated)"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                session_id = %session_id,
+                                error = %e,
+                                "iacs_tunnel: failed to flip status \
+                                 to tunnel_active in DB"
+                            );
+                        }
+                    }
+                }
                 let payload = json!({
                     "type": "iacs_tunnel_status",
                     "session_id": session_id,
@@ -295,10 +392,21 @@ impl ProxyIacsClient {
                     "bytes_out": bytes_out,
                     "peer_ip": peer_ip,
                 });
-                let channel_name =
-                    WsChannel::SessionLive(session_id.clone()).as_str();
-                if let Some(b) = self.broadcast.lock().await.as_ref() {
+                let channel_name = WsChannel::SessionLive(session_id.clone()).as_str();
+                let broadcast_handle = self.broadcast.lock().await.clone();
+                if let Some(b) = broadcast_handle.as_ref() {
                     let _ = b.send_raw(&channel_name, payload.to_string()).await;
+                }
+                // Active-list fan-out only fires when a row actually
+                // changed: a `tunnel_stats` ping arriving every few
+                // seconds would otherwise re-render the whole admin
+                // list for nothing.
+                if db_persisted {
+                    let pool_handle = self.db_pool.lock().await.clone();
+                    if let (Some(b), Some(pool)) = (broadcast_handle.as_ref(), pool_handle.as_ref())
+                    {
+                        crate::tasks::dashboard::push_active_sessions_update(b, pool).await;
+                    }
                 }
             }
 
@@ -317,6 +425,35 @@ impl ProxyIacsClient {
                     bytes_out = bytes_out,
                     "IACS tunnel closed"
                 );
+                let mut db_persisted = false;
+                if let Some(pool) = self.db_pool.lock().await.as_ref() {
+                    match persist_tunnel_closed(pool, &session_id).await {
+                        Ok(updated) => {
+                            if updated {
+                                debug!(
+                                    session_id = %session_id,
+                                    "iacs_tunnel: proxy_sessions row \
+                                     flipped to terminated"
+                                );
+                                db_persisted = true;
+                            } else {
+                                debug!(
+                                    session_id = %session_id,
+                                    "iacs_tunnel: no live row to mark \
+                                     terminated (already gone)"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                session_id = %session_id,
+                                error = %e,
+                                "iacs_tunnel: failed to flip status \
+                                 to terminated in DB"
+                            );
+                        }
+                    }
+                }
                 let payload = json!({
                     "type": "iacs_tunnel_closed",
                     "session_id": session_id,
@@ -325,10 +462,17 @@ impl ProxyIacsClient {
                     "bytes_out": bytes_out,
                     "peer_ip": peer_ip,
                 });
-                let channel_name =
-                    WsChannel::SessionLive(session_id.clone()).as_str();
-                if let Some(b) = self.broadcast.lock().await.as_ref() {
+                let channel_name = WsChannel::SessionLive(session_id.clone()).as_str();
+                let broadcast_handle = self.broadcast.lock().await.clone();
+                if let Some(b) = broadcast_handle.as_ref() {
                     let _ = b.send_raw(&channel_name, payload.to_string()).await;
+                }
+                if db_persisted {
+                    let pool_handle = self.db_pool.lock().await.clone();
+                    if let (Some(b), Some(pool)) = (broadcast_handle.as_ref(), pool_handle.as_ref())
+                    {
+                        crate::tasks::dashboard::push_active_sessions_update(b, pool).await;
+                    }
                 }
             }
 
@@ -337,6 +481,114 @@ impl ProxyIacsClient {
             }
         }
     }
+}
+
+/// Flip a `proxy_sessions` row from `waiting_client` to
+/// `tunnel_active`, anchor `connected_at` at the current wall clock,
+/// and (if `peer_ip` is provided and parses as a valid IP) update
+/// `client_ip` so the admin `/sessions/active` page shows the EWS's
+/// actual source instead of the WebUI browser IP captured at
+/// session creation time.
+///
+/// Returns `Ok(true)` if a row was updated, `Ok(false)` if no row
+/// matched (idempotent, e.g. the session was terminated before the
+/// proxy reported the active status). The transition is gated on
+/// `status = 'waiting_client'` so a re-delivery of the same IPC
+/// message cannot reset `connected_at` mid-session.
+///
+/// Exposed publicly (with `#[doc(hidden)]`) so the integration
+/// suite at `tests/ipc/iacs_lifecycle_persistence_test.rs` can pin
+/// the behaviour without spawning a full proxy-iacs subprocess.
+/// Not part of the public API; production code MUST call this
+/// indirectly via [`ProxyIacsClient::process_incoming_with_state`].
+#[doc(hidden)]
+pub async fn persist_tunnel_active(
+    pool: &DbPool,
+    session_id: &str,
+    peer_ip: Option<&str>,
+) -> AppResult<bool> {
+    use crate::schema::proxy_sessions::dsl as ps;
+    use diesel::ExpressionMethods;
+    use diesel_async::RunQueryDsl;
+
+    let session_uuid = uuid::Uuid::parse_str(session_id)
+        .map_err(|e| AppError::Validation(format!("invalid session UUID: {}", e)))?;
+
+    let mut conn = pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB pool: {}", e)))?;
+
+    let now = chrono::Utc::now();
+    let parsed_peer_ip = peer_ip.and_then(|s| s.parse::<std::net::IpAddr>().ok());
+
+    // Two flavours of the UPDATE so we never write a `client_ip`
+    // value that did not come from the proxy. Diesel's typed
+    // builder otherwise forces us to materialise a default
+    // `IpNetwork`, which would silently overwrite the WebUI IP
+    // even when proxy-iacs did not report a peer.
+    let updated = if let Some(ip) = parsed_peer_ip {
+        let net = ipnetwork::IpNetwork::from(ip);
+        diesel::update(ps::proxy_sessions)
+            .filter(ps::uuid.eq(session_uuid))
+            .filter(ps::status.eq("waiting_client"))
+            .set((
+                ps::status.eq("tunnel_active"),
+                ps::connected_at.eq(now),
+                ps::client_ip.eq(net),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(AppError::Database)?
+    } else {
+        diesel::update(ps::proxy_sessions)
+            .filter(ps::uuid.eq(session_uuid))
+            .filter(ps::status.eq("waiting_client"))
+            .set((ps::status.eq("tunnel_active"), ps::connected_at.eq(now)))
+            .execute(&mut conn)
+            .await
+            .map_err(AppError::Database)?
+    };
+    Ok(updated > 0)
+}
+
+/// Flip a `proxy_sessions` row from a live IACS state
+/// (`waiting_client` or `tunnel_active`) to `terminated` and anchor
+/// `disconnected_at`. Idempotent: subsequent calls for the same
+/// session find no matching row and return `Ok(false)` without
+/// touching the timestamp.
+///
+/// Counter-balances the optimistic `tunnel_active` filter from
+/// [`persist_tunnel_active`]: if proxy-iacs misses the
+/// `waiting_client -> tunnel_active` transition (e.g. the EWS
+/// disconnects before the first relay byte), `IacsTunnelClosed` is
+/// still authoritative and clears the row from the active list.
+///
+/// Exposed publicly (with `#[doc(hidden)]`) for the integration
+/// suite -- see [`persist_tunnel_active`].
+#[doc(hidden)]
+pub async fn persist_tunnel_closed(pool: &DbPool, session_id: &str) -> AppResult<bool> {
+    use crate::schema::proxy_sessions::dsl as ps;
+    use diesel::ExpressionMethods;
+    use diesel_async::RunQueryDsl;
+
+    let session_uuid = uuid::Uuid::parse_str(session_id)
+        .map_err(|e| AppError::Validation(format!("invalid session UUID: {}", e)))?;
+
+    let mut conn = pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB pool: {}", e)))?;
+
+    let now = chrono::Utc::now();
+    let updated = diesel::update(ps::proxy_sessions)
+        .filter(ps::uuid.eq(session_uuid))
+        .filter(ps::status.eq_any(["waiting_client", "tunnel_active"]))
+        .set((ps::status.eq("terminated"), ps::disconnected_at.eq(now)))
+        .execute(&mut conn)
+        .await
+        .map_err(AppError::Database)?;
+    Ok(updated > 0)
 }
 
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {

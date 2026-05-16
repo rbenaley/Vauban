@@ -40,7 +40,7 @@ fn run_lint(script_name: &str) -> std::process::Output {
         .arg(&script)
         .output()
         .unwrap_or_else(|e| panic!("failed to spawn {}: {}", script.display(), e))
-    }
+}
 
 #[test]
 fn check_no_naked_datetime_passes() {
@@ -73,10 +73,7 @@ fn check_template_carries_tz_passes() {
 #[test]
 fn lint_scripts_exist_and_executable() {
     use std::os::unix::fs::PermissionsExt;
-    for name in [
-        "check_no_naked_datetime.sh",
-        "check_template_carries_tz.sh",
-    ] {
+    for name in ["check_no_naked_datetime.sh", "check_template_carries_tz.sh"] {
         let path = manifest_dir().join("scripts").join(name);
         assert!(path.exists(), "missing lint script: {}", path.display());
         let meta = std::fs::metadata(&path).expect("metadata");

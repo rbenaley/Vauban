@@ -926,10 +926,7 @@ fn spawn_child(
                 use std::os::unix::io::BorrowedFd;
                 let borrowed = unsafe { BorrowedFd::borrow_raw(*fd) };
                 if let Err(e) = fcntl(borrowed, FcntlArg::F_SETFD(FdFlag::empty())) {
-                    eprintln!(
-                        "Failed to clear FD_CLOEXEC on inheritable fd {}: {}",
-                        fd, e
-                    );
+                    eprintln!("Failed to clear FD_CLOEXEC on inheritable fd {}: {}", fd, e);
                     std::process::exit(1);
                 }
             }
@@ -1217,13 +1214,7 @@ fn reap_children(
                             info!("Respawning {}", service_key);
                             let topology = service_key_to_service(&service_key)
                                 .and_then(|s| service_pipes.get(&s));
-                            respawn_service(
-                                state,
-                                config,
-                                topology,
-                                listener_fd,
-                                iacs_listener_fd,
-                            );
+                            respawn_service(state, config, topology, listener_fd, iacs_listener_fd);
                         }
                     } else {
                         error!("{} has crashed too many times, not respawning", service_key);
@@ -1258,13 +1249,7 @@ fn reap_children(
                             info!("Respawning {}", service_key);
                             let topology = service_key_to_service(&service_key)
                                 .and_then(|s| service_pipes.get(&s));
-                            respawn_service(
-                                state,
-                                config,
-                                topology,
-                                listener_fd,
-                                iacs_listener_fd,
-                            );
+                            respawn_service(state, config, topology, listener_fd, iacs_listener_fd);
                         }
                     } else {
                         error!("{} has crashed too many times, not respawning", service_key);
@@ -1330,7 +1315,7 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
                             }
                         }
                     }
-                    Ok(_) => {
+                    Ok(_other) => {
                         // Other message types - skip them
                         // (the service might be sending data to other components)
                     }
@@ -1338,7 +1323,7 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
                         // Buffer drained
                         break;
                     }
-                    Err(_) => {
+                    Err(_e) => {
                         // Error reading - stop draining
                         break;
                     }
@@ -1937,10 +1922,27 @@ impl IacsTunnelGuards {
 /// 3. Establishes a TCP connection to the target.
 /// 4. Sends the connected socket FD to the target proxy service via
 ///    SCM_RIGHTS.
-/// 5. Sends a TcpConnectResponse back to the requesting service (web).
+/// 5. Sends a TcpConnectResponse back to the requesting service.
+///
+/// `requesting_service_key` identifies the child that sent the
+/// `TcpConnectRequest` (e.g. `"web"`, `"proxy_iacs"`). When the
+/// requester *is* the target -- as is the case for `Service::ProxyIacs`
+/// (the proxy itself sends the broker request from its russh handler)
+/// and `Service::Web` (the mailer flow in vauban-web) -- the success
+/// response in step 5 is REDUNDANT with the fd_info notification in
+/// step 4 (both carry `success: true` and travel on the same pipe).
+/// In that case, sending step 5 would deliver a duplicate
+/// `TcpConnectResponse` to the requester, which would then trigger a
+/// second `receive_fd_with_retry` looking for a non-existent SCM_RIGHTS
+/// FD and wedge the requester's main loop on the blocking syscall
+/// fallback. Step 5 is therefore SKIPPED on the success path when
+/// `target_key == requesting_service_key`. Failure paths (which only
+/// touch step 5) are unaffected: the requester needs the explicit
+/// `success: false` reply regardless of self-vs-other targeting.
 fn handle_tcp_connect_request(
     payload: TcpConnectPayload,
     requesting_channel: &IpcChannel,
+    requesting_service_key: &str,
     children: &HashMap<String, ChildState>,
     mailer: &crate::config::MailerConfig,
     iacs_guards: &IacsTunnelGuards,
@@ -2221,24 +2223,20 @@ fn handle_tcp_connect_request(
         // IACS sshd's own bind address (host_part(bind_addr),
         // port_part(bind_addr)). The check uses the RESOLVED IP so
         // a hostname alias for `localhost` cannot bypass it.
-        if let Some((bind_host, bind_port)) =
-            iacs_guards.bind_addr.rsplit_once(':')
+        if let Some((bind_host, bind_port)) = iacs_guards.bind_addr.rsplit_once(':')
             && let Ok(bind_port) = bind_port.parse::<u16>()
         {
             // Resolve the listener bind host once per request. If
             // that resolution fails we fail-open the guard (the
             // listener is not reachable anyway), but log a warn.
-            let bind_resolved_ip: Option<std::net::IpAddr> =
-                format!("{}:0", bind_host)
-                    .to_socket_addrs()
-                    .ok()
-                    .and_then(|mut a| a.next())
-                    .map(|s| s.ip());
+            let bind_resolved_ip: Option<std::net::IpAddr> = format!("{}:0", bind_host)
+                .to_socket_addrs()
+                .ok()
+                .and_then(|mut a| a.next())
+                .map(|s| s.ip());
             let target_ip = socket_addr.ip();
             let listener_match = match bind_resolved_ip {
-                Some(ip) => ip == target_ip || (
-                    ip.is_unspecified() && target_ip.is_loopback()
-                ),
+                Some(ip) => ip == target_ip || (ip.is_unspecified() && target_ip.is_loopback()),
                 None => false,
             };
             if listener_match && socket_addr.port() == bind_port {
@@ -2361,16 +2359,39 @@ fn handle_tcp_connect_request(
         return;
     }
 
-    // Step 5: Send success response back to web
-    let response = Message::TcpConnectResponse {
-        request_id,
-        session_id,
-        success: true,
-        error: None,
-    };
+    // Step 5: Send success response back to the requester.
+    //
+    // SKIPPED when the requester IS the target: in that case (e.g. the
+    // ProxyIacs broker, where the russh handler running INSIDE
+    // proxy_iacs is the one that sent the original
+    // `TcpConnectRequest`), `target_state.channel == requesting_channel`,
+    // so step 4's `fd_info` message has already delivered
+    // `TcpConnectResponse { success: true, ... }` on the same pipe.
+    // Sending step 5 would queue a DUPLICATE `TcpConnectResponse` on
+    // the requester's pipe, which on the proxy side would trigger a
+    // second `receive_fd_with_retry` -> 10 retries -> fallback
+    // `recv_fd` blocking syscall -> wedged tokio worker -> missed
+    // heartbeats -> supervisor kills the proxy.
+    //
+    // See `vauban-proxy-iacs/tests/main_loop_no_blocking_recv_fd_test.rs`
+    // for the matching invariant on the proxy side.
+    if target_key == requesting_service_key {
+        debug!(
+            target_key,
+            "broker self-targeting: skipping duplicate step-5 TcpConnectResponse \
+             (already delivered via step-4 fd_info on the same pipe)"
+        );
+    } else {
+        let response = Message::TcpConnectResponse {
+            request_id,
+            session_id,
+            success: true,
+            error: None,
+        };
 
-    if let Err(e) = requesting_channel.send(&response) {
-        error!("Failed to send TcpConnectResponse to web: {}", e);
+        if let Err(e) = requesting_channel.send(&response) {
+            error!("Failed to send TcpConnectResponse to web: {}", e);
+        }
     }
 
     // Broker round-trip latency, exposed via structured log for ops
@@ -2561,6 +2582,7 @@ fn process_service_messages(
                                 session_token,
                             },
                             &state.channel,
+                            service_key,
                             children,
                             mailer,
                             iacs_guards,
@@ -2954,9 +2976,7 @@ mod tests {
         // the EWS authenticates with its own pinned public key.
         assert_eq!(proxy_connections.len(), 2);
         assert!(
-            proxy_connections
-                .iter()
-                .any(|c| c.to == Service::Access),
+            proxy_connections.iter().any(|c| c.to == Service::Access),
             "ProxyIacs MUST have an outgoing edge to Access for the \
              defence-in-depth re-check on direct-tcpip"
         );
@@ -2996,10 +3016,7 @@ mod tests {
         assert_eq!(service_key_to_enum("audit"), Some(Service::Audit));
         assert_eq!(service_key_to_enum("proxy_ssh"), Some(Service::ProxySsh));
         assert_eq!(service_key_to_enum("proxy_rdp"), Some(Service::ProxyRdp));
-        assert_eq!(
-            service_key_to_enum("proxy_iacs"),
-            Some(Service::ProxyIacs)
-        );
+        assert_eq!(service_key_to_enum("proxy_iacs"), Some(Service::ProxyIacs));
     }
 
     #[test]
@@ -4749,6 +4766,55 @@ mod tests {
             "Lot 4: the supervisor main loop must rebuild \
              IacsTunnelGuards from the config every iteration (cheap \
              struct, picks up hot-reload changes)"
+        );
+    }
+
+    /// IACS broker self-targeting: when proxy_iacs sends a
+    /// `TcpConnectRequest` whose `target_service == ProxyIacs`, the
+    /// supervisor must NOT send a duplicate `TcpConnectResponse` on the
+    /// success path (the step-4 `fd_info` already carries
+    /// `success: true` on the same pipe). A regression here wedges the
+    /// proxy on a blocking `recv_fd` syscall in
+    /// `receive_fd_with_retry`'s fallback, starves its main loop, and
+    /// trips the supervisor heartbeat watchdog ~15-18 s later.
+    ///
+    /// Pinned via source-grep on the production code so the invariant is
+    /// expressed at compile-time-of-test rather than requiring a full
+    /// child-process harness.
+    #[test]
+    fn test_supervisor_iacs_broker_skips_duplicate_response_to_self() {
+        let source = supervisor_prod_source();
+
+        // The handler must take a `requesting_service_key: &str` parameter
+        // (the supervisor dispatcher passes the producer's service key
+        // so the handler can detect self-targeting).
+        assert!(
+            source.contains("requesting_service_key: &str"),
+            "handle_tcp_connect_request must accept a `requesting_service_key: &str` \
+             parameter so it can detect self-targeting (target_key == requester)."
+        );
+
+        // The handler must skip step 5 when target_key == requesting_service_key.
+        assert!(
+            source.contains("if target_key == requesting_service_key"),
+            "handle_tcp_connect_request must skip the step-5 success \
+             TcpConnectResponse when target_key == requesting_service_key."
+        );
+
+        // The dispatcher must pass `service_key` (the producer's key) to
+        // the handler.
+        let dispatcher_start = source
+            .find("Received TcpConnectRequest from")
+            .expect("dispatcher log message must exist");
+        let after_dispatcher = &source[dispatcher_start..];
+        let call_start = after_dispatcher
+            .find("handle_tcp_connect_request(")
+            .expect("dispatcher must call handle_tcp_connect_request");
+        let call_window = &after_dispatcher[call_start..call_start + 600];
+        assert!(
+            call_window.contains("service_key,"),
+            "the dispatcher must pass `service_key` (the producer's key) \
+             to handle_tcp_connect_request as `requesting_service_key`."
         );
     }
 

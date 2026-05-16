@@ -178,8 +178,7 @@ pub async fn user_list(
                     is_active,
                     is_staff,
                     is_superuser,
-                    last_login: last_login
-                        .map(|dt| crate::utils::format_local(dt, browser_tz.0)),
+                    last_login: last_login.map(|dt| crate::utils::format_local(dt, browser_tz.0)),
                 }
             },
         )

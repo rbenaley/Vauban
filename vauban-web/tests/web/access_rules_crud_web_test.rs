@@ -551,7 +551,7 @@ async fn test_web_access_rule_detail_loads() {
 /// Operator request 2026-05-08: when the operator opens the edit
 /// form on a rule whose `allowed_protocols` carries at least one
 /// `iacs_*` value, the master "IACS (all industrial protocols)"
-/// checkbox MUST surface PRE-CHECKED. The asymmetry "any iacs_* -> 
+/// checkbox MUST surface PRE-CHECKED. The asymmetry "any iacs_* ->
 /// checked, save -> expand to all" is intentional and documented
 /// on `AccessRuleCreateForm::allowed_iacs`. This pin guards the
 /// pre-fill side of the contract; the expansion side is pinned by
@@ -598,9 +598,7 @@ async fn test_web_access_rule_edit_form_iacs_master_checkbox_prefills_when_parti
     let ssh_idx = body
         .find("name=\"allowed_ssh\"")
         .expect("edit form must carry the SSH checkbox");
-    let ssh_tag_end = body[ssh_idx..]
-        .find('>')
-        .expect("ssh checkbox must close");
+    let ssh_tag_end = body[ssh_idx..].find('>').expect("ssh checkbox must close");
     assert!(
         body[ssh_idx..ssh_idx + ssh_tag_end].contains("checked"),
         "SSH checkbox must stay checked when allowed_protocols carries 'ssh'"
@@ -610,9 +608,7 @@ async fn test_web_access_rule_edit_form_iacs_master_checkbox_prefills_when_parti
     let rdp_idx = body
         .find("name=\"allowed_rdp\"")
         .expect("edit form must carry the RDP checkbox");
-    let rdp_tag_end = body[rdp_idx..]
-        .find('>')
-        .expect("rdp checkbox must close");
+    let rdp_tag_end = body[rdp_idx..].find('>').expect("rdp checkbox must close");
     assert!(
         !body[rdp_idx..rdp_idx + rdp_tag_end].contains("checked"),
         "RDP checkbox must NOT be checked when allowed_protocols does not carry 'rdp'"

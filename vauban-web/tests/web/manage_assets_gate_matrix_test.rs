@@ -361,7 +361,8 @@ async fn web_routes_redirect_to_login_when_unauthenticated() {
             Method::Put => app.server.put(&resolved_path(route)).await,
         };
         assert_eq!(
-            status, 303,
+            status,
+            303,
             "{} {} MUST redirect to /login (303) on missing JWT, got {}",
             method_str(route.method),
             route.path_template,
@@ -373,7 +374,8 @@ async fn web_routes_redirect_to_login_when_unauthenticated() {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         assert_eq!(
-            location, "/login",
+            location,
+            "/login",
             "{} {} Location header must be /login (was {location:?})",
             method_str(route.method),
             route.path_template
@@ -407,7 +409,8 @@ async fn api_routes_return_401_when_unauthenticated() {
             Method::Put => app.server.put(&resolved_path(route)).await,
         };
         assert_eq!(
-            status, 401,
+            status,
+            401,
             "{} {} MUST return 401 (Authentication required) on missing JWT, got {}",
             method_str(route.method),
             route.path_template,

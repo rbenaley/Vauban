@@ -80,9 +80,8 @@ pub fn validate_target(
     }
     // Loopback-equivalence for development / E2E. Production
     // assets resolve to a routable IP and never trip this branch.
-    let is_loopback = |s: &str| {
-        matches!(s, "127.0.0.1" | "0.0.0.0" | "localhost" | "::1" | "[::1]")
-    };
+    let is_loopback =
+        |s: &str| matches!(s, "127.0.0.1" | "0.0.0.0" | "localhost" | "::1" | "[::1]");
     is_loopback(requested_host) && is_loopback(expected_host)
 }
 
