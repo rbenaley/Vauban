@@ -366,12 +366,49 @@ waiting_client_ttl_seconds = 60
 revocation_poll_interval_seconds = 5
 max_concurrent_per_user = 8
 max_concurrent_per_ews = 4
+max_concurrent_channels_per_session = 16  # default, see below
 
 [services.proxy_iacs]
 enabled = true
 binary_path = "/usr/local/bin/vauban-proxy-iacs"
 log_level = "info"
 ```
+
+#### Per-login concurrent SSH channels (`max_concurrent_channels_per_session`)
+
+Every TCP `accept()` on the EWS-side `ssh -L LP:asset:AP` listener
+spawns a NEW `direct-tcpip` channel over the existing SSH login
+(this is normal OpenSSH behaviour: the bastion does NOT "reuse" a
+single channel for multiple TCP clients). A bastion that capped
+the per-login channel count to `1` would therefore break every
+multi-client industrial workflow -- e.g. a SCADA HMI keeping a
+polling channel open while an engineer attaches a Modbus
+diagnostic tool, or simply an operator running `nc localhost 7022`
+twice in a row.
+
+The cap protects against fan-out exfil while preserving the
+multi-client workflow. Operationally:
+
+- Default `16`: leaves room for an HMI + a couple of diagnostic
+  tools per asset without ever surfacing
+  `administratively prohibited` to legitimate operators.
+- `0`: disables the cap entirely (unlimited concurrent channels
+  per login). NOT recommended in production -- the supervisor
+  broker has its own quotas but the per-login cap is the only
+  bound that scales with the in-flight SSH channel count.
+- `1`: re-introduces the pre-v0.7.9 single-shot bug where a
+  closed `nc` made every subsequent connection fail. NEVER use.
+
+Forwarded to `vauban-proxy-iacs` via the
+`VAUBAN_IACS_MAX_CHANNELS_PER_SESSION` env var (set automatically
+by the supervisor; do not export it manually).
+
+If an operator reports `channel N: open failed: administratively
+prohibited` after a clean `nc`/Ctrl-C cycle, the most likely
+cause is a misconfigured `max_concurrent_channels_per_session = 1`
+or `max_concurrent_channels_per_session = 0` on a build older
+than v0.7.9 where the runtime ignored this field. Bumping to the
+default `16` and restarting `vauban-proxy-iacs` clears it.
 
 The pre-v0.7.8 field `target_addr` is no longer read. The persisted
 `proxy_sessions.tunnel_target_addr` is now derived per-session from
@@ -526,3 +563,5 @@ Concretely:
 | 0.7.8 | 2026-05-15 | IACS tunnel runtime split into `vauban-proxy-iacs` (Capsicum-sandboxed). Per-asset target resolution: `tunnel_target_addr` is now derived from `asset.hostname:asset.port`. Anti-SSRF guards (anti-self-listener, anti-loopback) added on the supervisor TCP broker. Watchdog dispatches `IacsTunnelTerminate` IPC instead of touching an in-process registry. |
 | 0.7.8 | 2026-05-16 | Privileged-port unprivilegisation: the EWS local-bind port (LHS of `ssh -L`) is now decoupled from the asset port. Privileged asset ports (`< 1024`, e.g. Modbus 502, MMS 102) are shifted into the user range (50502, 50102) so operators never need root on their EWS. The rendered status page surfaces a yellow hint with a copy-pasteable client example whenever the rewrite kicks in. The RHS of `-L` now carries the asset's actual hostname (was hardcoded `127.0.0.1`), so production assets on routable IPs validate correctly against the bastion's `validate_target`. |
 | 0.7.8 | 2026-05-16 | Fix: IACS access denied despite an explicit access rule. `CheckAccessByUuid(protocol="iacs_tunnel")` now matches any access_rule whose `allowed_protocols` array intersects the applicative IACS set (`iacs_modbus`, `iacs_opcua`, `iacs_profinet`, `iacs_iec104`, `iacs_tcp`). The bridging seam lives in `shared::access_guard::expand_protocol_for_access_match` and `vauban-access::handlers::protocol_match_filter`. No DB migration required; existing access rules created via the "IACS (all industrial protocols)" master checkbox keep working unchanged. |
+| 0.7.9 | 2026-05-16 | Fix: `channel N: open failed: administratively prohibited: Rejected` after a clean `nc localhost <LP>`/Ctrl-C cycle. The pre-fix `channel_open_direct_tcpip` used `AtomicBool::swap(true)` to enforce "at most one direct-tcpip per SSH login", which made every TCP `accept()` past the first one fail -- breaking the multi-client `ssh -L` workflow on every IACS asset (each `accept()` spawns a new SSH channel by OpenSSH design). Replaced with a bounded `live_channels: AtomicUsize` counter capped by the new `industrial.iacs_tunnel.max_concurrent_channels_per_session` (default 16, `0` = unlimited). Closed channels return their slot to the pool. E2E tested: sequential reuse, concurrent reuse, cap enforcement. |
+| 0.7.10 | 2026-05-16 | Fix (continuation of 0.7.9): the same workflow still failed at the supervisor layer with `session token rejected: token expired; fail-closed deny` after the first 30 s, OR with a silent `Access denied` on the second channel-open within the TTL. Root cause: the cryptographic `SessionToken` used a single 30 s TTL plus a `(session_id, nonce)` replay cache -- both designed for the SSH/RDP single-shot model in which one upstream TCP per session is opened. IACS multiplexes many `direct-tcpip` channels over its lifetime, all carrying the SAME token bytes. Fix: `Service::ProxyIacs` tokens now get a 12 h TTL (`TOKEN_TTL_SECONDS_IACS_TUNNEL`), and the supervisor's replay cache is bypassed for `Service::ProxyIacs`. Compensating controls unchanged: per-asset crypto binding, anti-SSRF guards, revocation watchdog. No config knob -- the TTL and bypass live in the code (see `shared::session_token::token_ttl_for` and `vauban-supervisor::handle_tcp_connect_request`). Pinned by `iacs_token_ttl_is_long_lived`, `iacs_token_eventually_expires`, `non_iacs_tokens_keep_short_single_shot_ttl`, `test_supervisor_tcp_broker_bypasses_replay_cache_for_iacs`. |

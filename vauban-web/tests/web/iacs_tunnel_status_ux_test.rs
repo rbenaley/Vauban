@@ -204,6 +204,7 @@ async fn spawn_test_sshd(
         host_key_path: host_key_path.to_string_lossy().to_string(),
         max_concurrent_per_user: 0,
         max_concurrent_per_ews: 0,
+        max_concurrent_channels_per_session: 16,
         waiting_client_ttl_seconds: 300,
         revocation_poll_interval_seconds: 2,
     };

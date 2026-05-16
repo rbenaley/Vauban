@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use russh::keys::ssh_key::Algorithm;
@@ -48,6 +49,13 @@ pub struct IacsTunnelServer {
     pub registry: TunnelRegistry,
     pub pending: PendingSessions,
     pub upstream: Arc<dyn UpstreamOpener>,
+    /// Cap on the number of concurrent `direct-tcpip` channels
+    /// accepted per authenticated EWS connection. `0` disables the
+    /// cap (unlimited concurrent channels per login -- still gated by
+    /// the per-session target-address pin and the supervisor broker).
+    /// See `IacsTunnelConfig::max_concurrent_channels_per_session` in
+    /// `vauban-web` for the rationale.
+    pub max_channels_per_session: usize,
 }
 
 impl IacsTunnelServer {
@@ -55,11 +63,13 @@ impl IacsTunnelServer {
         registry: TunnelRegistry,
         pending: PendingSessions,
         upstream: Arc<dyn UpstreamOpener>,
+        max_channels_per_session: usize,
     ) -> Self {
         Self {
             registry,
             pending,
             upstream,
+            max_channels_per_session,
         }
     }
 }
@@ -74,7 +84,8 @@ impl Server for IacsTunnelServer {
             upstream: self.upstream.clone(),
             peer_addr,
             authorized: Mutex::new(None),
-            channel_open: std::sync::atomic::AtomicBool::new(false),
+            live_channels: Arc::new(AtomicUsize::new(0)),
+            max_channels_per_session: self.max_channels_per_session,
         }
     }
 
@@ -96,9 +107,17 @@ pub struct IacsTunnelHandler {
     pub peer_addr: Option<std::net::SocketAddr>,
     /// `Some(pending)` once `auth_publickey` accepted.
     pub authorized: Mutex<Option<PendingTunnel>>,
-    /// Lockless fast-path against a second `direct-tcpip` on the
-    /// same connection.
-    pub channel_open: std::sync::atomic::AtomicBool,
+    /// Live `direct-tcpip` channel counter on this connection. Each
+    /// successful channel open increments the counter; the relay task
+    /// decrements it when the channel closes (so a closed channel
+    /// returns its slot to the pool, allowing the EWS to open new
+    /// `direct-tcpip` channels for new local TCP `accept()`s -- the
+    /// normal `ssh -L` workflow).
+    pub live_channels: Arc<AtomicUsize>,
+    /// Snapshot of the server-level cap at handler-creation time.
+    /// `0` means unlimited. Per-handler so a future config-reload
+    /// path stays trivial.
+    pub max_channels_per_session: usize,
 }
 
 impl Handler for IacsTunnelHandler {
@@ -217,21 +236,47 @@ impl Handler for IacsTunnelHandler {
         _originator_port: u32,
         _session: &mut Session,
     ) -> Result<bool, Self::Error> {
-        // At-most-one direct-tcpip per accepted SSH login: prevents
-        // multi-channel exfil over a single auth.
-        if self
-            .channel_open
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            warn!(
-                peer = ?self.peer_addr,
-                "iacs_tunnel: refused second direct-tcpip on same session"
-            );
-            return Ok(false);
+        // Acquire a slot from the per-login channel pool. Multiple
+        // concurrent `direct-tcpip` channels per authenticated SSH
+        // login are accepted by design: every TCP `accept()` on the
+        // EWS-side `ssh -L` listener spawns a new SSH channel over
+        // the existing tunnel, and that's how a single SSH login
+        // serves more than one client. The cap protects against
+        // fan-out exfil while preserving legitimate multi-client
+        // industrial traffic; every channel still validates the
+        // pinned `(asset_host, asset_port)` and flows through the
+        // supervisor's SCM_RIGHTS broker, so multi-channel does NOT
+        // widen the reachable target set.
+        //
+        // `max_channels_per_session = 0` disables the cap (unlimited
+        // concurrent channels per login). The slot is RELEASED in
+        // `spawn_relay` when the channel closes, so a closed channel
+        // returns its slot to the pool -- the bug fix that turned
+        // a single-shot `AtomicBool::swap(true)` into a bounded
+        // counter.
+        if self.max_channels_per_session > 0 {
+            let prev = self.live_channels.fetch_add(1, Ordering::SeqCst);
+            if prev >= self.max_channels_per_session {
+                self.live_channels.fetch_sub(1, Ordering::SeqCst);
+                warn!(
+                    peer = ?self.peer_addr,
+                    cap = self.max_channels_per_session,
+                    in_flight = prev,
+                    "iacs_tunnel: refused direct-tcpip (per-login channel cap reached)"
+                );
+                return Ok(false);
+            }
+        } else {
+            self.live_channels.fetch_add(1, Ordering::SeqCst);
         }
+        // From here on, EVERY early-return path MUST decrement
+        // `live_channels` so a rejected channel does not eat a slot
+        // forever. The successful path hands ownership of the slot
+        // to the relay task, which decrements when the relay ends.
         let pending = match self.authorized.lock().await.clone() {
             Some(p) => p,
             None => {
+                self.live_channels.fetch_sub(1, Ordering::SeqCst);
                 error!(
                     peer = ?self.peer_addr,
                     "iacs_tunnel: direct-tcpip without auth state"
@@ -248,6 +293,7 @@ impl Handler for IacsTunnelHandler {
             &pending.asset_host,
             pending.asset_port,
         ) {
+            self.live_channels.fetch_sub(1, Ordering::SeqCst);
             warn!(
                 peer = ?self.peer_addr,
                 requested = format!("{}:{}", host_to_connect, port_to_connect),
@@ -262,6 +308,7 @@ impl Handler for IacsTunnelHandler {
         let upstream_stream = match self.upstream.open(&pending).await {
             Ok(s) => s,
             Err(e) => {
+                self.live_channels.fetch_sub(1, Ordering::SeqCst);
                 error!(
                     peer = ?self.peer_addr,
                     target = format!("{}:{}", pending.asset_host, pending.asset_port),
@@ -275,6 +322,7 @@ impl Handler for IacsTunnelHandler {
             peer = ?self.peer_addr,
             session_uuid = %pending.session_uuid,
             target = format!("{}:{}", pending.asset_host, pending.asset_port),
+            channel_count = self.live_channels.load(Ordering::SeqCst),
             "iacs_tunnel: tunnel_active"
         );
         let handle = TunnelHandle::new(
@@ -285,7 +333,7 @@ impl Handler for IacsTunnelHandler {
             self.peer_addr,
         );
         self.registry.insert(handle.clone());
-        spawn_relay(channel, upstream_stream, handle);
+        spawn_relay(channel, upstream_stream, handle, Arc::clone(&self.live_channels));
         Ok(true)
     }
 
@@ -377,6 +425,7 @@ fn spawn_relay(
     channel: Channel<Msg>,
     upstream: tokio::net::TcpStream,
     handle: TunnelHandle,
+    live_channels: Arc<AtomicUsize>,
 ) {
     let stream = channel.into_stream();
     let (reader_ssh, writer_ssh) = tokio::io::split(stream);
@@ -395,11 +444,19 @@ fn spawn_relay(
     tokio::spawn(async move {
         let _ = tokio::join!(outbound, inbound);
         h_close.close();
+        // Release the per-login channel slot so the EWS can open a
+        // new `direct-tcpip` for the next local TCP `accept()`.
+        // Saturating sub: a panic in the relay task that ran before
+        // the increment would otherwise underflow.
+        live_channels
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .ok();
         let (bin, bout) = h_close.counters();
         info!(
             session_uuid = %h_close.session_uuid,
             bytes_in = bin,
             bytes_out = bout,
+            channel_count_after = live_channels.load(Ordering::SeqCst),
             "iacs_tunnel: tunnel_closed"
         );
     });

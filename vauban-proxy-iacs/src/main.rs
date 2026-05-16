@@ -223,6 +223,17 @@ async fn run_service() -> Result<()> {
     let host_key_path = std::env::var("VAUBAN_IACS_HOST_KEY_PATH")
         .unwrap_or_else(|_| "/var/lib/vauban/iacs_tunnel_host_ed25519".to_string());
 
+    // Per-login concurrent `direct-tcpip` channel cap. `0` disables
+    // the cap (unlimited). A malformed value falls back to the
+    // documented default `16` so a typo in the operator's config
+    // does not turn the bastion into a single-shot tunnel (the
+    // pre-fix behaviour was effectively `1`, which broke the
+    // multi-client `ssh -L` workflow on every IACS asset).
+    let max_channels_per_session: usize = std::env::var("VAUBAN_IACS_MAX_CHANNELS_PER_SESSION")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(16);
+
     // === 3. Load and clear the BLAKE3 session-token MAC key.
     session_token_gate::init_from_env().context(
         "Failed to load VAUBAN_SESSION_TOKEN_KEY - vauban-proxy-iacs \
@@ -243,6 +254,7 @@ async fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
         std::env::remove_var("VAUBAN_IACS_LISTENER_FD");
         std::env::remove_var("VAUBAN_IACS_HOST_KEY_PATH");
+        std::env::remove_var("VAUBAN_IACS_MAX_CHANNELS_PER_SESSION");
     }
 
     let supervisor_channel =
@@ -357,8 +369,13 @@ async fn run_service() -> Result<()> {
         let accept_upstream = Arc::clone(&upstream);
         let accept_config = Arc::clone(&server_config);
         let accept_bind_addr = iacs_bind_addr.clone();
+        let accept_max_channels = max_channels_per_session;
         tokio::spawn(async move {
-            info!(iacs_bind_addr = %accept_bind_addr, "iacs_tunnel: accept loop started");
+            info!(
+                iacs_bind_addr = %accept_bind_addr,
+                max_channels_per_session = accept_max_channels,
+                "iacs_tunnel: accept loop started"
+            );
             loop {
                 match tokio_listener.accept().await {
                     Ok((stream, peer)) => {
@@ -367,6 +384,7 @@ async fn run_service() -> Result<()> {
                             accept_registry.clone(),
                             accept_pending.clone(),
                             Arc::clone(&accept_upstream),
+                            accept_max_channels,
                         );
                         let cfg = Arc::clone(&accept_config);
                         let handler = russh::server::Server::new_client(&mut server, Some(peer));

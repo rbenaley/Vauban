@@ -17,13 +17,23 @@
 //! | `streamlocal-forward@openssh.com`   | `Ok(false)`             |
 //! | `direct-streamlocal@openssh.com`    | `Ok(false)`             |
 //! | `direct-tcpip` to wrong host:port   | `Ok(false)`             |
-//! | second `direct-tcpip` on session    | `Ok(false)`             |
+//! | `direct-tcpip` past per-login cap   | `Ok(false)`             |
 //! | `channel_open_session`              | `Ok(false)`             |
 //! | `channel_open_x11`                  | `Ok(false)`             |
 //! | `direct-tcpip` to target_addr       | accepted, relay starts  |
+//!
+//! Multiple concurrent `direct-tcpip` channels per authenticated
+//! login are accepted by design (each TCP `accept()` on the EWS-side
+//! `ssh -L` listener spawns a new channel; a single SSH login MUST
+//! be able to serve more than one client at a time). The per-login
+//! cap (`IacsTunnelConfig::max_concurrent_channels_per_session`,
+//! default 16, `0` disables) bounds in-flight channels and is the
+//! sole defence against fan-out exfil. Closed channels return their
+//! slot to the pool.
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use russh::keys::ssh_key::Algorithm;
 use russh::keys::{PrivateKey, PublicKey};
@@ -90,7 +100,8 @@ impl Server for IacsTunnelServer {
             peer_addr,
             session_uuid_str: Mutex::new(None),
             handle: Mutex::new(None),
-            channel_open: std::sync::atomic::AtomicBool::new(false),
+            live_channels: Arc::new(AtomicUsize::new(0)),
+            max_channels_per_session: self.config.max_concurrent_channels_per_session as usize,
             broadcast: self.broadcast.clone(),
         }
     }
@@ -119,13 +130,21 @@ pub struct IacsTunnelHandler {
     /// with the russh polling loop.
     pub session_uuid_str: Mutex<Option<String>>,
     /// `Some(handle)` once a tunnel has been accepted on this
-    /// connection. The handler enforces "at most one
-    /// direct-tcpip per session" via this slot.
+    /// connection. Shared across every concurrent `direct-tcpip`
+    /// channel of the same login (the `(session_uuid, ews_uuid,
+    /// user_uuid)` triple is per-login, not per-channel).
     pub handle: Mutex<Option<TunnelHandle>>,
-    /// Lockless fast-path for "did this connection already open a
-    /// channel?". Reads outside the `handle` lock so the channel
-    /// open hot path is allocation-free.
-    pub channel_open: std::sync::atomic::AtomicBool,
+    /// Live `direct-tcpip` channel counter on this connection. Each
+    /// successful channel open increments the counter; the relay
+    /// task decrements it when the channel closes. Bounded by
+    /// `max_channels_per_session`. The pre-fix single-shot
+    /// `AtomicBool::swap(true)` is replaced by this bounded counter
+    /// so `ssh -L` can serve more than one local TCP `accept()` per
+    /// SSH login (the normal OpenSSH behaviour).
+    pub live_channels: Arc<AtomicUsize>,
+    /// Snapshot of `IacsTunnelConfig::max_concurrent_channels_per_session`
+    /// at handler-creation time. `0` disables the cap.
+    pub max_channels_per_session: usize,
     /// Optional broadcast service for L5 lifecycle / stats events.
     pub broadcast: Option<BroadcastService>,
 }
@@ -300,22 +319,29 @@ impl Handler for IacsTunnelHandler {
         _originator_port: u32,
         _session: &mut Session,
     ) -> Result<bool, Self::Error> {
-        // Refuse a second direct-tcpip on the same connection
-        // (ssh-mitm-style multi-channel exfil over a single login).
-        if self
-            .channel_open
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            warn!(
-                peer = ?self.peer_addr,
-                "iacs_tunnel: refused second direct-tcpip on same session"
-            );
-            return Ok(false);
+        // Acquire a slot from the per-login channel pool. Multiple
+        // concurrent `direct-tcpip` channels are accepted by design;
+        // the cap protects against fan-out exfil. The slot is
+        // released by `spawn_relay` when the relay task completes,
+        // so a closed channel returns its slot to the pool.
+        if self.max_channels_per_session > 0 {
+            let prev = self.live_channels.fetch_add(1, Ordering::SeqCst);
+            if prev >= self.max_channels_per_session {
+                self.live_channels.fetch_sub(1, Ordering::SeqCst);
+                warn!(
+                    peer = ?self.peer_addr,
+                    cap = self.max_channels_per_session,
+                    in_flight = prev,
+                    "iacs_tunnel: refused direct-tcpip (per-login channel cap reached)"
+                );
+                return Ok(false);
+            }
+        } else {
+            self.live_channels.fetch_add(1, Ordering::SeqCst);
         }
-        // Strict target match. The validator is intentionally a
-        // pure function so the unit tests in `relay.rs` cover
-        // every accepted form.
+        // From here on, every early-return MUST decrement the slot.
         if !validate_target(host_to_connect, port_to_connect, &self.target_addr) {
+            self.live_channels.fetch_sub(1, Ordering::SeqCst);
             warn!(
                 peer = ?self.peer_addr,
                 requested = format!("{}:{}", host_to_connect, port_to_connect),
@@ -327,6 +353,7 @@ impl Handler for IacsTunnelHandler {
         let handle = match self.handle.lock().await.clone() {
             Some(h) => h,
             None => {
+                self.live_channels.fetch_sub(1, Ordering::SeqCst);
                 error!(peer = ?self.peer_addr, "iacs_tunnel: direct-tcpip without auth state");
                 return Ok(false);
             }
@@ -337,6 +364,7 @@ impl Handler for IacsTunnelHandler {
         let upstream = match connect_target(&target).await {
             Ok(s) => s,
             Err(e) => {
+                self.live_channels.fetch_sub(1, Ordering::SeqCst);
                 error!(
                     peer = ?self.peer_addr,
                     target = %target,
@@ -383,7 +411,13 @@ impl Handler for IacsTunnelHandler {
             }),
         )
         .await;
-        spawn_relay(channel, upstream, handle.clone(), self.broadcast.clone());
+        spawn_relay(
+            channel,
+            upstream,
+            handle.clone(),
+            self.broadcast.clone(),
+            Arc::clone(&self.live_channels),
+        );
         Ok(true)
     }
 
@@ -487,6 +521,7 @@ fn spawn_relay(
     upstream: tokio::net::TcpStream,
     handle: TunnelHandle,
     broadcast: Option<BroadcastService>,
+    live_channels: Arc<AtomicUsize>,
 ) {
     let stream = channel.into_stream();
     let (reader_ssh, writer_ssh) = tokio::io::split(stream);
@@ -536,15 +571,31 @@ fn spawn_relay(
 
     tokio::spawn(async move {
         // Tear-down sentinel: when EITHER direction exits, the
-        // tunnel is over -- close the handle so the other
-        // direction observes and stops, then remove from registry.
+        // tunnel CHANNEL is over. We release the per-login channel
+        // slot so a new local TCP `accept()` on the EWS can open
+        // another `direct-tcpip` (the bug-fix that turned the
+        // pre-fix `AtomicBool::swap(true)` into a bounded counter).
+        //
+        // We also call `h_close.close()` and emit `tunnel_closed`
+        // for backward compat with the v0.7.x status-page WS
+        // contract: the in-process flavour is single-channel-shaped
+        // by design and is being deprecated in favour of
+        // `vauban-proxy-iacs` (which has a cleaner per-channel
+        // handle model). For multi-channel scenarios on this
+        // legacy flavour the close is idempotent; subsequent
+        // channels still relay correctly because `validate_target`
+        // and the handle slot are independent of the registry.
         let _ = tokio::join!(outbound, inbound);
+        live_channels
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .ok();
         h_close.close();
         let (bin, bout) = h_close.counters();
         info!(
             session_uuid = %h_close.session_uuid,
             bytes_in = bin,
             bytes_out = bout,
+            channel_count_after = live_channels.load(Ordering::SeqCst),
             "iacs_tunnel: tunnel_closed"
         );
         push_event(

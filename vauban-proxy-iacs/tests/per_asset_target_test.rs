@@ -228,6 +228,96 @@ fn proxy_iacs_does_not_call_socket_or_bind() {
     }
 }
 
+/// The single-shot `AtomicBool::swap(true)` gate that used to live
+/// in `channel_open_direct_tcpip` made every `direct-tcpip` past
+/// the first one return `administratively prohibited` -- which
+/// broke the multi-client `ssh -L` workflow on every IACS asset
+/// (every TCP `accept()` on the EWS side spawns a new SSH channel
+/// over the existing tunnel; OpenSSH does not "reuse" a single
+/// channel).
+///
+/// The fix replaces the `AtomicBool` with a bounded `AtomicUsize`
+/// counter (`live_channels`) decremented when the relay task ends.
+/// This pin grep-fences the regression: no future refactor may
+/// re-introduce the boolean kill-switch.
+#[test]
+fn channel_open_direct_tcpip_uses_bounded_counter_not_single_shot_atomicbool() {
+    let src = read_src("server.rs");
+    assert!(
+        !src.contains("channel_open: std::sync::atomic::AtomicBool"),
+        "the per-handler `channel_open: AtomicBool` field is forbidden: \
+         it made every direct-tcpip past the first one fail with \
+         `administratively prohibited`, breaking multi-client ssh -L."
+    );
+    assert!(
+        !src.contains(".channel_open\n            .swap(true,")
+            && !src.contains(".channel_open.swap(true,"),
+        "the single-shot `channel_open.swap(true, ...)` gate is forbidden \
+         (broke the multi-client ssh -L workflow). Use the bounded \
+         `live_channels: AtomicUsize` counter with per-relay decrement \
+         instead."
+    );
+    assert!(
+        src.contains("live_channels: Arc<AtomicUsize>")
+            || src.contains("live_channels: std::sync::Arc<std::sync::atomic::AtomicUsize>"),
+        "channel_open_direct_tcpip MUST track in-flight channels via a \
+         bounded `live_channels: Arc<AtomicUsize>` counter so closed \
+         channels return their slot to the pool."
+    );
+    assert!(
+        src.contains("max_channels_per_session"),
+        "the per-login concurrent-channel cap MUST surface as \
+         `max_channels_per_session` (mapped to \
+         `IacsTunnelConfig::max_concurrent_channels_per_session`). 0 \
+         disables the cap."
+    );
+    assert!(
+        src.contains("live_channels.fetch_sub(1, Ordering::SeqCst)"),
+        "every early-return path in channel_open_direct_tcpip MUST \
+         decrement live_channels (validation rejection, missing auth \
+         state, upstream connect failure). A leak here would burn a \
+         slot per failed open until the SSH login ends."
+    );
+    assert!(
+        src.contains("live_channels\n            .fetch_update(")
+            || src.contains("live_channels.fetch_update("),
+        "the relay teardown MUST decrement live_channels (saturating) \
+         so the closed channel returns its slot to the pool. Without \
+         it the bug would silently re-emerge as a slow leak per closed \
+         tunnel."
+    );
+}
+
+/// `vauban-proxy-iacs` MUST honor the operator-controlled cap from
+/// `industrial.iacs_tunnel.max_concurrent_channels_per_session`,
+/// passed through the supervisor as
+/// `VAUBAN_IACS_MAX_CHANNELS_PER_SESSION`. A typo in the config or
+/// a missing env var falls back to the documented default `16` so a
+/// boot does not regress to single-shot tunnels.
+#[test]
+fn main_reads_max_channels_per_session_from_env() {
+    let src = read_src("main.rs");
+    assert!(
+        src.contains("VAUBAN_IACS_MAX_CHANNELS_PER_SESSION"),
+        "main MUST read VAUBAN_IACS_MAX_CHANNELS_PER_SESSION from the \
+         env (forwarded by the supervisor from \
+         IacsTunnelConfig::max_concurrent_channels_per_session)."
+    );
+    assert!(
+        src.contains(".unwrap_or(16)"),
+        "a malformed or missing VAUBAN_IACS_MAX_CHANNELS_PER_SESSION \
+         MUST fall back to the documented default 16, NOT to 0/1. A \
+         silent regression to 0 would disable the fan-out cap; a \
+         silent regression to 1 would re-introduce the original \
+         single-shot bug."
+    );
+    assert!(
+        src.contains("IacsTunnelServer::new(") && src.contains("accept_max_channels"),
+        "the value MUST be threaded through IacsTunnelServer::new so \
+         every accepted EWS connection observes the same cap."
+    );
+}
+
 #[test]
 fn no_hardcoded_legacy_target_in_any_proxy_iacs_source() {
     // Mirrors `vauban-proxy-iacs/scripts/check_no_hardcoded_target.sh`

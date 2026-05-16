@@ -548,6 +548,65 @@ async fn iacs_status_page_renders_canonical_ssh_command() {
         body.contains("iacs-tunnel-ssh-command-copy"),
         "copy-to-clipboard button must render next to the ssh command"
     );
+
+    // ----------------------------------------------------------------
+    // Pin the layout that prevents the copy-icon from sitting on top
+    // of the rightmost characters of long ssh commands (issue: see
+    // screenshot dated 2026-05-16). The bug class is well-known: when
+    // a `<pre overflow-x-auto>` carries the `pr-12` reservation, every
+    // browser silently drops the right padding of the scroll container
+    // (most aggressively at scroll-end, but partially at scroll-start
+    // too), so the absolute-positioned copy button ends up on top of
+    // the text. The only fix that holds across browsers is to
+    // ELIMINATE horizontal scroll on this block: wrap the command
+    // across multiple lines instead. The padding-right of the inner
+    // `<code class="block">` then becomes a stable reserved zone that
+    // text can never enter, regardless of viewport width.
+    //
+    // The clipboard payload is unaffected: the Alpine `cmd:` state
+    // holds the literal one-line command string, not the DOM
+    // textContent.
+    //
+    // We pin every part of the contract so a future regression that
+    // re-introduces horizontal scrolling, drops the padding-right
+    // reservation, or moves the padding back onto the `<pre>` fails
+    // here, before reaching production.
+    let expected_code_open = "<code class=\"block p-3 pr-12 whitespace-pre-wrap \
+                              break-all\" data-testid=\"iacs-tunnel-ssh-command\">";
+    assert!(
+        body.contains(expected_code_open),
+        "the IACS status page MUST wrap the ssh command across \
+         multiple lines (whitespace-pre-wrap + break-all) inside a \
+         block `<code>` carrying p-3 pr-12, with NO horizontal scroll \
+         on the parent `<pre>`. Anything else lets the copy icon \
+         overlap the rightmost characters of long commands. \
+         expected: {expected_code_open}; body excerpt: {}",
+        &body[..body.len().min(2000)]
+    );
+    assert!(
+        !body.contains("p-3 pr-12 overflow-x-auto"),
+        "the legacy `<pre class=\"... p-3 pr-12 overflow-x-auto\">` \
+         shape MUST NOT come back: it lets the copy icon overlap the \
+         text on long commands (browsers strip padding-right at the \
+         right end of horizontal scroll). Use a block `<code>` with \
+         whitespace-pre-wrap + break-all instead."
+    );
+    // The horizontal-scroll fallback on the SSH-command `<pre>` is
+    // forbidden: any `overflow-x-auto` on the same line as the
+    // `iacs-tunnel-ssh-command` testid means we re-introduced the
+    // overlap bug.
+    for line in body.lines() {
+        if line.contains("iacs-tunnel-ssh-command") && !line.contains("iacs-tunnel-ssh-command-copy") {
+            assert!(
+                !line.contains("overflow-x-auto"),
+                "the IACS status ssh-command code block MUST NOT carry \
+                 overflow-x-auto: it would reintroduce the copy-icon \
+                 overlap bug. Offending line: {}",
+                line
+            );
+        }
+    }
+
     assert!(
         body.contains("waiting_client") || body.contains("Waiting for EWS"),
         "initial status pill must show waiting_client"

@@ -224,6 +224,8 @@ The pump is `ProxyIacsClient::process_incoming_with_broadcast(b)` and is spawned
 
 | Threat | Mitigation | Pinned by |
 |---|---|---|
+| Multi-channel exfil: a malicious EWS opens many concurrent `direct-tcpip` channels to fan-out traffic. | Per-login bounded counter (`live_channels: AtomicUsize`), capped by `IacsTunnelConfig::max_concurrent_channels_per_session` (default 16, `0` = unlimited). Every channel still validates the SAME pinned `(asset_host, asset_port)`, so multi-channel does NOT widen the reachable target set -- it only widens in-flight TCP sockets. | `enforces_per_login_concurrent_channel_cap` (web E2E) + `channel_open_direct_tcpip_uses_bounded_counter_not_single_shot_atomicbool` (proxy structural pin). |
+| Multi-client `ssh -L` (operator legitimate use): a single SSH login serves several local TCP clients simultaneously, each via a separate `direct-tcpip`. | Bounded counter (above) accepts every channel up to the cap and releases the slot when the relay task ends, so closed channels return their slot. The pre-fix `AtomicBool::swap(true)` made the login single-shot and broke this workflow on every IACS asset. | `accepts_multiple_sequential_direct_tcpip_on_same_session`, `accepts_multiple_concurrent_direct_tcpip_on_same_session`. |
 | Compromised `vauban-web` mints `IacsTunnelOpen` for a forbidden asset. | Cryptographic session-token gate on the proxy boundary (`Verifier::Proxy`). The token's `(host, port, asset_uuid)` binding is set by `vauban-access`, NOT by `vauban-web`. | `iacs_handler_mints_session_token_with_per_asset_binding` (web pin) + `iacs_tunnel_open_handler_verifies_session_token` (proxy pin). |
 | Cross-asset target swap. EWS opens `direct-tcpip` to `10.0.0.2:502` on a session minted for `10.0.0.1:502`. | `relay::validate_target` rejects the open before brokering. | `cross_asset_target_swap_rejected`. |
 | Cross-protocol replay. Token minted for SSH replayed on IACS. | Token's `protocol` field bound at mint and re-verified at proxy boundary. | Same gate, different label. |
@@ -231,8 +233,34 @@ The pump is `ProxyIacsClient::process_incoming_with_broadcast(b)` and is spawned
 | EWS asks for a loopback target on the bastion host. | Supervisor anti-loopback guard (default-deny). | `test_iacs_broker_anti_loopback_guard_exists`. |
 | Mid-session access-rule revoke. | DB-driven watchdog dispatches `IacsTunnelTerminate` to the proxy within `revocation_poll_interval_seconds`. | `iacs_revocation_watchdog_test::watchdog_closes_tunnels_when_*`. |
 | Compromised proxy attempts a direct `connect()`. | Capsicum `cap_enter` post-listener-fd setup; every outbound goes through the supervisor broker. Lint catches `TcpStream::connect(` / `TcpListener::bind(` in `vauban-proxy-iacs/src/`. | `proxy_iacs_does_not_call_socket_or_bind`. |
-| Anti-replay of a captured `TcpConnectRequest`. | Token's session-id is consumed by the supervisor's bounded `replay_cache`. | Existing replay-cache tests in `shared/src/session_token/replay_cache.rs`. |
+| Anti-replay of a captured `TcpConnectRequest`. | For SSH/RDP (single-shot): token's `(session_id, nonce)` is consumed by the supervisor's bounded `replay_cache` on first use. For IACS (multi-use): the cache is **deliberately bypassed** (see §13); compensating controls are the per-asset crypto binding, the anti-self-listener / anti-loopback guards (§7), and the revocation watchdog (§9). | `test_supervisor_tcp_broker_records_replay` + `test_supervisor_tcp_broker_bypasses_replay_cache_for_iacs`. |
 | Legacy in-process IACS sshd silently still running. | Spawn gated on `!proxy_iacs_present`; lint catches reintroduction. | `legacy_in_process_iacs_sshd_is_gated_behind_proxy_iacs_absence`. |
+
+## 11.1 Per-target_service token TTL (`shared::session_token::token_ttl_for`)
+
+The cryptographic [`SessionToken`](mdc:shared/src/session_token/mod.rs) carries an `expires_at` field set at mint time. Until v0.7.10 every token shared a single 30 s TTL (`TOKEN_TTL_SECONDS`), which was correct for SSH and RDP -- those proxies open exactly **one** upstream TCP per session, so a single `TcpConnectRequest` reaches the supervisor and the 30 s window is the right tradeoff between latency budget and replay surface.
+
+IACS does NOT match that single-shot model. A single operator `ssh -L LP:asset:AP ... -N` session multiplexes **many** `direct-tcpip` channels over its lifetime: every TCP `accept()` on the EWS-side forwarded port spawns a new SSH channel which `vauban-proxy-iacs` upgrades into a fresh `TcpConnectRequest` to the supervisor. Each of those requests carries the **same** `session_token` bytes (`PendingTunnel::session_token` is captured once at `IacsTunnelOpen` and reused per channel; there is no per-channel re-mint round-trip with `vauban-access`).
+
+Two consequences fall out of that:
+
+1. The token must verify for the full duration of the operator session, not just the first channel-open. `TOKEN_TTL_SECONDS` (30 s) is too short -- after 30 s every subsequent channel collapses with `session token rejected: token expired; fail-closed deny` at the supervisor and the EWS sees `channel 2: open failed: administratively prohibited: Rejected`.
+2. The supervisor's anti-replay [`replay_cache`](mdc:shared/src/session_token/replay_cache.rs), keyed on `(session_id, nonce)`, MUST NOT reject the second channel. It would, because the proxy re-presents the identical `(session_id, nonce)` for every channel.
+
+The fix is two coupled changes, both narrowly scoped to `Service::ProxyIacs`:
+
+- **Long-lived TTL.** [`token_ttl_for`](mdc:shared/src/session_token/mod.rs) returns `TOKEN_TTL_SECONDS_IACS_TUNNEL = 12 * 3600` for `Service::ProxyIacs`, and `TOKEN_TTL_SECONDS = 30` for every other variant. 12 h covers a full operator shift (8 h + handover + lunch + debug spillover) without forcing re-authentication mid-session, and remains shorter than any reasonable `proxy_sessions.expires_at`. The constant is documented in the file with the exhaustive `match` expectation: a new `Service::*` variant falls back to the safe single-shot default until explicitly opted-in.
+- **Replay cache bypass.** `vauban-supervisor::handle_tcp_connect_request` skips the replay cache when `target_service == Service::ProxyIacs`. The bypass is gated by an explicit `!matches!(target_service, Service::ProxyIacs)` so a second variant cannot be added by accident; pinned by `test_supervisor_tcp_broker_bypasses_replay_cache_for_iacs`.
+
+The compensating controls that keep the IACS multi-use window safe are the **same three** that already gate every IACS request:
+
+| Control | Where | Why it bounds the multi-use blast radius |
+|---|---|---|
+| Crypto `(host, port, target_service=ProxyIacs, session_id)` binding | `Verifier::Supervisor` in `handle_tcp_connect_request` | A leaked token cannot pivot to a different asset, port, or session -- the verifier rejects on any field mismatch. |
+| Anti-loopback / anti-self-listener guards | §7 | Even within the long TTL, the supervisor will not connect to the bastion host's loopback or to the IACS sshd's own port. |
+| Revocation watchdog | §9 | DB-driven `IacsTunnelTerminate` closes the SSH login the moment the access rule, EWS row, or user is revoked, well within the 12 h TTL. |
+
+The 12 h figure is intentionally conservative: making the IACS TTL longer than the `proxy_sessions` row is unsafe (the watchdog model assumes the token cannot outlive its session), and shorter values force operators to reconnect mid-shift. The constant is unit-pinned (`iacs_token_ttl_is_long_lived`, `iacs_token_still_valid_after_default_ttl_window`, `iacs_token_eventually_expires`, `non_iacs_tokens_keep_short_single_shot_ttl`, `token_ttl_for_helper_is_exhaustive_match`) so a future tune cannot silently regress to 30 s and re-introduce the May 2026 production bug.
 
 ## 12. Test coverage
 
@@ -268,3 +296,4 @@ The pump is `ProxyIacsClient::process_incoming_with_broadcast(b)` and is spawned
 | Version | Date | Notes |
 |---------|------|-------|
 | 1.0 | 2026-05-15 | Initial release: per-asset target resolution, three-layer authorization, anti-SSRF guards, supervisor broker via SCM_RIGHTS, DB-driven IPC-dispatched revocation watchdog, real-time WebSocket fan-out. |
+| 1.1 | 2026-05-16 | §11.1 (per-target_service token TTL): `Service::ProxyIacs` gets a 12 h `TOKEN_TTL_SECONDS_IACS_TUNNEL` (vs. 30 s `TOKEN_TTL_SECONDS` for SSH/RDP/etc.) and the supervisor's replay cache is bypassed for `ProxyIacs`. Fixes the May 2026 production bug where the second `direct-tcpip` channel of a multi-client `ssh -L` failed with `session token rejected: token expired` (the operator workflow on every IACS asset). Compensating controls unchanged: crypto binding, anti-SSRF guards, watchdog. |

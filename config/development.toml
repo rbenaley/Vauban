@@ -61,5 +61,7 @@ target_addr = "127.0.0.1:4321"
 host_key_path = "vauban-proxy-iacs/certs/iacs_tunnel_host_ed25519"
 max_concurrent_per_user = 4
 max_concurrent_per_ews = 2
+# Per-login concurrent direct-tcpip cap (see vauban.conf doc).
+max_concurrent_channels_per_session = 16
 waiting_client_ttl_seconds = 300
 revocation_poll_interval_seconds = 2

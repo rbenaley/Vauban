@@ -80,12 +80,61 @@ use secrecy::{ExposeSecret, SecretBox};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
-/// Token lifetime, from `issued_at` (supervisor wall-clock seconds) to
-/// `expires_at`. 30 s comfortably covers the typical session-open
-/// latency budget (web round-trip + access policy evaluation + supervisor
-/// queue latency + proxy handshake) while keeping the replay window
-/// tight.
+/// Default token lifetime for SINGLE-SHOT session-opens (SSH, RDP,
+/// mailer-broker, every non-IACS target). 30 s comfortably covers the
+/// typical session-open latency budget (web round-trip + access policy
+/// evaluation + supervisor queue latency + proxy handshake) while
+/// keeping the replay window tight.
+///
+/// SSH / RDP open exactly ONE upstream TCP connection per session
+/// (`vauban-proxy-ssh::handle_ssh_session` / `proxy-rdp::run`), so a
+/// single `TcpConnectRequest` reaches the supervisor per session and
+/// the 30 s window is the right tradeoff between latency budget and
+/// blast radius.
 pub const TOKEN_TTL_SECONDS: u64 = 30;
+
+/// IACS-tunnel token lifetime (12 hours).
+///
+/// Unlike SSH/RDP, an IACS tunnel session multiplexes MULTIPLE
+/// `direct-tcpip` channels over a single SSH login: every time the
+/// EWS operator's local `ssh -L` accepts a new TCP connection on the
+/// forwarded port, OpenSSH opens a fresh `direct-tcpip` channel and
+/// `vauban-proxy-iacs` issues a new `TcpConnectRequest` to the
+/// supervisor. The session-token presented in each of those requests
+/// is the SAME one (no per-channel re-mint round-trip with
+/// `vauban-access`), so its TTL must outlive the whole operator
+/// session, not just the first channel-open.
+///
+/// 12 hours covers a full operator shift (8 h + handover + lunch +
+/// debug spillover) without forcing the operator to re-authenticate
+/// mid-session, while keeping the blast radius of a leaked token
+/// bounded: the `proxy_sessions` row is independently expired by
+/// `vauban-web`'s revocation watchdog and any rule revocation
+/// closes the SSH login via `IacsTunnelTerminate`. The token
+/// remains crypto-bound to `(user, asset, host, port,
+/// target_service=ProxyIacs, session_id)` so a leak grants no pivot
+/// to other assets, and the supervisor's anti-loopback /
+/// anti-self-listener guards still apply on every TCP connect.
+///
+/// CHANGING THIS VALUE: the token is multi-use ONLY for
+/// `Service::ProxyIacs` (replay cache is bypassed in the supervisor
+/// for that target_service); making it longer than the proxy_session
+/// expiration is unsafe (the watchdog model assumes the token cannot
+/// outlive its session). Pinned at 12 h to match the auth_session
+/// upper bound configured in `vauban-web`.
+pub const TOKEN_TTL_SECONDS_IACS_TUNNEL: u64 = 12 * 3600;
+
+/// Choose the right TTL for `target_service`. Centralised here so the
+/// mint path, the documentation, and the supervisor-side replay
+/// policy stay in lock-step (any new `Service` variant added to
+/// `crate::messages::Service` falls back to `TOKEN_TTL_SECONDS`
+/// automatically; that is the safe default for single-shot semantics).
+pub const fn token_ttl_for(target_service: crate::messages::Service) -> u64 {
+    match target_service {
+        crate::messages::Service::ProxyIacs => TOKEN_TTL_SECONDS_IACS_TUNNEL,
+        _ => TOKEN_TTL_SECONDS,
+    }
+}
 
 /// Tolerance for clock skew between the minter (vauban-access) and the
 /// verifier (supervisor / proxy). All four processes share a host kernel
@@ -367,6 +416,12 @@ impl SessionToken {
             port,
             target_service,
         } = params;
+        // Per-target_service TTL. SSH / RDP / mailer keep the tight
+        // 30 s single-shot window; IACS gets the long-lived multi-use
+        // window so a single `ssh -L` operator session can open many
+        // `direct-tcpip` channels over its full duration. See
+        // [`token_ttl_for`] for the rationale.
+        let ttl = token_ttl_for(target_service);
         let mut nonce = [0u8; NONCE_LENGTH];
         rand::rngs::OsRng.fill_bytes(&mut nonce);
         let mut token = Self {
@@ -379,7 +434,7 @@ impl SessionToken {
             port,
             target_service: target_service.as_token_discriminant(),
             issued_at: now,
-            expires_at: now.saturating_add(TOKEN_TTL_SECONDS),
+            expires_at: now.saturating_add(ttl),
             nonce,
             mac: [0u8; MAC_LENGTH],
         };
@@ -923,5 +978,135 @@ mod tests {
             !dbg.contains(&key.to_base64()),
             "TokenKey Debug must not leak the base64 form"
         );
+    }
+
+    // ── per-target_service TTL ────────────────────────────────────
+    //
+    // SSH / RDP / mailer / every non-IACS target use the tight 30 s
+    // single-shot TTL. IACS gets a 12 h multi-use TTL so a single
+    // operator `ssh -L` session can reopen `direct-tcpip` channels
+    // throughout a full work shift without the supervisor closing the
+    // tunnel on `token expired`. See the [`token_ttl_for`] doc-comment
+    // for the full rationale.
+
+    fn token_with_target_service(
+        key: &TokenKey,
+        now: u64,
+        target_service: crate::messages::Service,
+    ) -> SessionToken {
+        SessionToken::mint(
+            key,
+            now,
+            SessionTokenParams {
+                session_id: "11111111-1111-1111-1111-111111111111".to_string(),
+                user_uuid: "22222222-2222-2222-2222-222222222222".to_string(),
+                asset_uuid: "33333333-3333-3333-3333-333333333333".to_string(),
+                protocol: PROTOCOL_SSH.to_string(),
+                host: "host.example.test".to_string(),
+                port: 22,
+                target_service,
+            },
+        )
+    }
+
+    #[test]
+    fn iacs_token_ttl_is_long_lived() {
+        let key = fresh_key();
+        let now = 1_700_000_000;
+        let token = token_with_target_service(&key, now, crate::messages::Service::ProxyIacs);
+        assert_eq!(
+            token.expires_at - token.issued_at,
+            TOKEN_TTL_SECONDS_IACS_TUNNEL,
+            "IACS tokens MUST get the long-lived TTL so multi-channel \
+             ssh -L works without per-channel re-mint round-trips"
+        );
+        // Documented invariant: the IACS TTL must outlive the
+        // single-shot default. Pinned at compile time via a const
+        // assertion so a future tune that swaps the relation is a
+        // build break, not a silent regression.
+        const _: () = assert!(
+            TOKEN_TTL_SECONDS_IACS_TUNNEL > TOKEN_TTL_SECONDS,
+            "IACS TTL must be strictly longer than the single-shot default"
+        );
+    }
+
+    #[test]
+    fn non_iacs_tokens_keep_short_single_shot_ttl() {
+        let key = fresh_key();
+        let now = 1_700_000_000;
+        for target_service in [
+            crate::messages::Service::ProxySsh,
+            crate::messages::Service::ProxyRdp,
+            crate::messages::Service::Audit,
+        ] {
+            let token = token_with_target_service(&key, now, target_service);
+            assert_eq!(
+                token.expires_at - token.issued_at,
+                TOKEN_TTL_SECONDS,
+                "{target_service:?} tokens MUST keep the tight 30 s TTL; \
+                 only ProxyIacs is multi-use"
+            );
+        }
+    }
+
+    #[test]
+    fn iacs_token_still_valid_after_default_ttl_window() {
+        let key = fresh_key();
+        let issued = 1_700_000_000;
+        let token = token_with_target_service(&key, issued, crate::messages::Service::ProxyIacs);
+        // Anchor: well past TOKEN_TTL_SECONDS but well within the
+        // IACS TTL. This is the regression case for the bug observed
+        // in production where `ssh -L` failed on the second channel
+        // open with `session token rejected: token expired`.
+        let later = issued + TOKEN_TTL_SECONDS + 600;
+        token
+            .verify(&key, later, &supervisor_view(&token))
+            .expect(
+                "IACS token MUST still verify well past the short default \
+                 TTL: that is the entire reason it has a per-target_service \
+                 TTL in the first place",
+            );
+    }
+
+    #[test]
+    fn iacs_token_eventually_expires() {
+        let key = fresh_key();
+        let issued = 1_700_000_000;
+        let token = token_with_target_service(&key, issued, crate::messages::Service::ProxyIacs);
+        // The IACS TTL is long but NOT infinite -- a leaked token's
+        // blast radius must remain bounded.
+        let way_past = issued + TOKEN_TTL_SECONDS_IACS_TUNNEL + 1;
+        assert_eq!(
+            token.verify(&key, way_past, &supervisor_view(&token)),
+            Err(TokenError::Expired)
+        );
+    }
+
+    #[test]
+    fn token_ttl_for_helper_is_exhaustive_match() {
+        // Drift pin: every Service variant must be classified. The
+        // safe default (`_`) is the short single-shot TTL, so a new
+        // multi-use protocol MUST be added here explicitly. We
+        // double-check by enumerating the known variants.
+        assert_eq!(
+            token_ttl_for(crate::messages::Service::ProxyIacs),
+            TOKEN_TTL_SECONDS_IACS_TUNNEL
+        );
+        for s in [
+            crate::messages::Service::Supervisor,
+            crate::messages::Service::Web,
+            crate::messages::Service::Auth,
+            crate::messages::Service::Access,
+            crate::messages::Service::Vault,
+            crate::messages::Service::Audit,
+            crate::messages::Service::ProxySsh,
+            crate::messages::Service::ProxyRdp,
+        ] {
+            assert_eq!(
+                token_ttl_for(s),
+                TOKEN_TTL_SECONDS,
+                "non-IACS Service::{s:?} must keep the single-shot TTL"
+            );
+        }
     }
 }

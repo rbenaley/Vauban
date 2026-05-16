@@ -216,7 +216,40 @@
                          }
                        } }">
             <div class="relative">
-                <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm p-3 pr-12 overflow-x-auto"><code data-testid="iacs-tunnel-ssh-command">{{ self.ssh_command() }}</code></pre>
+                {# Long ssh commands MUST wrap rather than scroll
+                   horizontally: the copy button is overlaid in the
+                   top-right corner of the `<pre>` (`absolute top-2
+                   right-2`), and any horizontal scroll lets the text
+                   slide UNDER the icon -- on Chrome/Safari/Firefox the
+                   `padding-right` of an `overflow-x: auto` container
+                   is silently dropped at scroll-end (and partially at
+                   scroll-start too), so the only fix that holds is to
+                   eliminate the horizontal scroll entirely.  We wrap
+                   the command across multiple visual lines:
+
+                     - `whitespace-pre-wrap`: preserve the literal
+                       spaces of the ssh command but allow line wraps
+                       at every whitespace boundary;
+                     - `break-all`: also break inside long unbreakable
+                       tokens (UUID username, FQDN host) so an iPhone
+                       375 px viewport never spawns a horizontal
+                       scrollbar;
+                     - `block p-3 pr-12`: keeps a 48 px reserved zone
+                       on the right of the inner code block so the
+                       wrapped first line never extends underneath the
+                       absolute-positioned copy button.
+                     - the `<pre>` has NO `overflow-x-auto`: with the
+                       wrap above we never need it, and removing it
+                       guarantees no scroll-padding-eating regression.
+
+                   The clipboard payload remains the original single
+                   line because the Alpine `cmd:` state holds the
+                   literal command string, not the DOM textContent --
+                   so visual wrapping does not affect copy-paste.
+
+                   Pinned by
+                   tests/web/iacs_connect_button_test.rs::iacs_status_page_renders_canonical_ssh_command. #}
+                <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm"><code class="block p-3 pr-12 whitespace-pre-wrap break-all" data-testid="iacs-tunnel-ssh-command">{{ self.ssh_command() }}</code></pre>
                 <button type="button"
                         @click="copy()"
                         :title="copied ? 'Copied!' : 'Copy command'"

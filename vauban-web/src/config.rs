@@ -1030,6 +1030,30 @@ pub struct IacsTunnelConfig {
     #[serde(default = "IacsTunnelConfig::default_max_concurrent_per_ews")]
     pub max_concurrent_per_ews: u32,
 
+    /// Maximum number of concurrent SSH `direct-tcpip` channels per
+    /// authenticated EWS connection (i.e. per `ssh -L` login).
+    ///
+    /// Each TCP `accept()` on the EWS-side `127.0.0.1:LP` listener
+    /// makes the local SSH client open a NEW `direct-tcpip` channel
+    /// over the existing tunnel -- this is normal OpenSSH behaviour
+    /// and the only way `ssh -L` can serve more than one client at a
+    /// time. Capping the count protects against fan-out exfil while
+    /// preserving legitimate multi-client industrial traffic
+    /// (e.g. a SCADA HMI keeps a polling channel open while an
+    /// engineer attaches a Modbus diagnostic tool).
+    ///
+    /// Every channel still validates the per-session
+    /// `(asset_host, asset_port)` and flows through the supervisor's
+    /// SCM_RIGHTS broker, so multi-channel does NOT widen the
+    /// reachable set of targets -- it only widens the in-flight TCP
+    /// connections to the SAME pinned upstream.
+    ///
+    /// `0` disables the cap. Default `16` (matches the OpenSSH
+    /// `MaxSessions` default order of magnitude while leaving headroom
+    /// for short-lived diagnostic bursts).
+    #[serde(default = "IacsTunnelConfig::default_max_concurrent_channels_per_session")]
+    pub max_concurrent_channels_per_session: u32,
+
     /// Time-to-live in seconds of a `waiting_client` row before the
     /// watchdog flips it to `expired`. Default `300` (5 min).
     #[serde(default = "IacsTunnelConfig::default_waiting_client_ttl_seconds")]
@@ -1064,6 +1088,9 @@ impl IacsTunnelConfig {
     fn default_max_concurrent_per_ews() -> u32 {
         2
     }
+    fn default_max_concurrent_channels_per_session() -> u32 {
+        16
+    }
     fn default_waiting_client_ttl_seconds() -> u32 {
         300
     }
@@ -1093,6 +1120,8 @@ impl Default for IacsTunnelConfig {
             host_key_path: Self::default_host_key_path(),
             max_concurrent_per_user: Self::default_max_concurrent_per_user(),
             max_concurrent_per_ews: Self::default_max_concurrent_per_ews(),
+            max_concurrent_channels_per_session:
+                Self::default_max_concurrent_channels_per_session(),
             waiting_client_ttl_seconds: Self::default_waiting_client_ttl_seconds(),
             revocation_poll_interval_seconds: Self::default_revocation_poll_interval_seconds(),
         }

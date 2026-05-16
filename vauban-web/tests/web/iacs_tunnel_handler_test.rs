@@ -120,6 +120,18 @@ async fn spawn_test_sshd(
     app: &TestApp,
     target_addr: std::net::SocketAddr,
 ) -> (std::net::SocketAddr, TunnelRegistry) {
+    spawn_test_sshd_with_channel_cap(app, target_addr, 16).await
+}
+
+/// Same as `spawn_test_sshd` but lets the test override the
+/// per-login `direct-tcpip` channel cap. Used by
+/// `enforces_per_login_concurrent_channel_cap` to verify the cap
+/// at a small value where the boundary is exercisable in O(channels).
+async fn spawn_test_sshd_with_channel_cap(
+    app: &TestApp,
+    target_addr: std::net::SocketAddr,
+    max_concurrent_channels_per_session: u32,
+) -> (std::net::SocketAddr, TunnelRegistry) {
     let host_key_path = std::env::temp_dir().join(format!(
         "vauban_iacs_test_host_{}.key",
         Uuid::new_v4()
@@ -132,6 +144,7 @@ async fn spawn_test_sshd(
         host_key_path: host_key_path.to_string_lossy().to_string(),
         max_concurrent_per_user: 0,
         max_concurrent_per_ews: 0,
+        max_concurrent_channels_per_session,
         waiting_client_ttl_seconds: 300,
         revocation_poll_interval_seconds: 2,
     };
@@ -464,11 +477,26 @@ async fn refuses_direct_tcpip_to_wrong_target() {
     assert!(res2.is_err(), "{}", SSH_OPEN_REJECTED);
 }
 
+/// Multi-client `ssh -L`: every TCP `accept()` on the EWS-side
+/// listener spawns a NEW `direct-tcpip` channel over the existing
+/// SSH login. The IACS sshd MUST accept each successive channel up
+/// to the configured per-login cap; closed channels MUST return
+/// their slot to the pool so the operator can reconnect after every
+/// disconnect.
+///
+/// Pre-fix bug (issue: console reports
+/// `channel 2: open failed: administratively prohibited`): the
+/// handler used `AtomicBool::swap(true)` which made the SSH login
+/// effectively single-shot -- the first `nc localhost 7022`
+/// succeeded, every subsequent `nc` got rejected even after the
+/// previous TCP connection had cleanly closed. This test guards
+/// the regression.
 #[tokio::test]
-async fn refuses_second_direct_tcpip_on_same_session() {
+async fn accepts_multiple_sequential_direct_tcpip_on_same_session() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let user_id = create_simple_user(&mut conn, &unique_name("iacs_one_chan")).await;
+    let user_id =
+        create_simple_user(&mut conn, &unique_name("iacs_seq_chan")).await;
     let key = fresh_ed25519_key();
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
@@ -479,7 +507,116 @@ async fn refuses_second_direct_tcpip_on_same_session() {
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
         .expect("auth");
-    let _first = handle
+
+    // Open + close + reopen the SAME (host, port) tunnel three
+    // times, mirroring the operator workflow `nc -v localhost 7022`
+    // / Ctrl-C / `nc -v localhost 7022` / Ctrl-C / ...
+    for round in 0..3 {
+        let chan = handle
+            .channel_open_direct_tcpip(
+                target.ip().to_string(),
+                target.port() as u32,
+                "127.0.0.1",
+                0,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "round {round}: direct-tcpip MUST succeed on the same SSH \
+                     login after a previous channel closed; got {e:?}. The \
+                     pre-fix `AtomicBool::swap(true)` made every channel after \
+                     the first one return `administratively prohibited`."
+                )
+            });
+        // Closing the channel returns the slot to the per-login
+        // pool. Without the fix, the second loop iteration would
+        // already be rejected.
+        chan.close().await.expect("close channel");
+        // Yield a beat so the relay teardown can decrement the
+        // live-channel counter before the next iteration.
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+}
+
+/// Same login, multiple CONCURRENT `direct-tcpip` channels. This
+/// is what an operator running both an HMI poll AND a Modbus
+/// diagnostic tool against the same asset triggers.
+#[tokio::test]
+async fn accepts_multiple_concurrent_direct_tcpip_on_same_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_id =
+        create_simple_user(&mut conn, &unique_name("iacs_concurrent_chan")).await;
+    let key = fresh_ed25519_key();
+    let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
+    drop(conn);
+
+    let target = spawn_echo_target().await;
+    let (sshd_addr, _registry) = spawn_test_sshd(app, target).await;
+
+    let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
+        .await
+        .expect("auth");
+
+    // Hold three channels open simultaneously, then close them all.
+    let mut channels = Vec::new();
+    for round in 0..3 {
+        let chan = handle
+            .channel_open_direct_tcpip(
+                target.ip().to_string(),
+                target.port() as u32,
+                "127.0.0.1",
+                0,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "round {round}: concurrent direct-tcpip #{round} MUST \
+                     succeed on the same SSH login (cap = 16 in test cfg); \
+                     got {e:?}"
+                )
+            });
+        channels.push(chan);
+    }
+    // Round-trip a byte through each channel to confirm they are
+    // all live, independent relays (not one channel with three
+    // aliases).
+    for (i, ch) in channels.iter_mut().enumerate() {
+        let payload = format!("ping{i}");
+        ch.data(payload.as_bytes())
+            .await
+            .expect("write through concurrent channel");
+    }
+    // Tear down explicitly so the next test has a clean event loop.
+    for ch in channels {
+        let _ = ch.close().await;
+    }
+}
+
+/// The per-login cap is enforced. We rebuild a sshd whose
+/// `IacsTunnelConfig::max_concurrent_channels_per_session = 2`
+/// and verify that the third concurrent `direct-tcpip` is
+/// rejected, then that closing one of the first two channels
+/// frees a slot for a follow-up open.
+#[tokio::test]
+async fn enforces_per_login_concurrent_channel_cap() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_id =
+        create_simple_user(&mut conn, &unique_name("iacs_chan_cap")).await;
+    let key = fresh_ed25519_key();
+    let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
+    drop(conn);
+
+    let target = spawn_echo_target().await;
+    let (sshd_addr, _registry) =
+        spawn_test_sshd_with_channel_cap(app, target, 2).await;
+
+    let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
+        .await
+        .expect("auth");
+
+    let chan_a = handle
         .channel_open_direct_tcpip(
             target.ip().to_string(),
             target.port() as u32,
@@ -487,8 +624,18 @@ async fn refuses_second_direct_tcpip_on_same_session() {
             0,
         )
         .await
-        .expect("first direct-tcpip must succeed");
-    let second = handle
+        .expect("first concurrent channel within cap");
+    let chan_b = handle
+        .channel_open_direct_tcpip(
+            target.ip().to_string(),
+            target.port() as u32,
+            "127.0.0.1",
+            0,
+        )
+        .await
+        .expect("second concurrent channel within cap");
+
+    let third = handle
         .channel_open_direct_tcpip(
             target.ip().to_string(),
             target.port() as u32,
@@ -497,9 +644,32 @@ async fn refuses_second_direct_tcpip_on_same_session() {
         )
         .await;
     assert!(
-        second.is_err(),
-        "second direct-tcpip on same session must be rejected"
+        third.is_err(),
+        "the THIRD concurrent direct-tcpip MUST be rejected when the \
+         per-login cap is 2 (anti-fan-out exfil defence). The error MUST \
+         be a clean `administratively prohibited`, not a panic."
     );
+
+    // Close one of the in-flight channels and verify the slot
+    // returns to the pool: a follow-up open MUST now succeed.
+    chan_a.close().await.expect("close first");
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let chan_c = handle
+        .channel_open_direct_tcpip(
+            target.ip().to_string(),
+            target.port() as u32,
+            "127.0.0.1",
+            0,
+        )
+        .await
+        .expect(
+            "after closing one in-flight channel the slot MUST return to \
+             the pool so a new direct-tcpip can succeed -- the bug-fix \
+             contract that turned `AtomicBool::swap(true)` into a \
+             bounded counter",
+        );
+    let _ = chan_b.close().await;
+    let _ = chan_c.close().await;
 }
 
 #[tokio::test]

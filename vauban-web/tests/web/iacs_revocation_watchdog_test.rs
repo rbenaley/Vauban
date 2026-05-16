@@ -142,6 +142,7 @@ fn cfg_with_ttl(ttl: u32) -> IacsTunnelConfig {
         host_key_path: "/tmp/never_used".to_string(),
         max_concurrent_per_user: 0,
         max_concurrent_per_ews: 0,
+        max_concurrent_channels_per_session: 16,
         waiting_client_ttl_seconds: ttl,
         revocation_poll_interval_seconds: 1,
     }

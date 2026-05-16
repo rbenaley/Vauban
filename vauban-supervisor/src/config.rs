@@ -296,6 +296,14 @@ pub struct IacsTunnelSupervisorConfig {
     /// local path that the unprivileged dev user can write.
     #[serde(default = "default_iacs_tunnel_host_key_path")]
     pub host_key_path: String,
+    /// Maximum number of concurrent SSH `direct-tcpip` channels per
+    /// authenticated EWS connection. Forwarded to `vauban-proxy-iacs`
+    /// via `VAUBAN_IACS_MAX_CHANNELS_PER_SESSION`. `0` disables the
+    /// cap. Default `16`. See `IacsTunnelConfig` in `vauban-web` for
+    /// the full rationale (the supervisor only forwards this value;
+    /// it does not consume it directly).
+    #[serde(default = "default_iacs_tunnel_max_concurrent_channels_per_session")]
+    pub max_concurrent_channels_per_session: u32,
 }
 
 fn default_iacs_tunnel_enabled() -> bool {
@@ -310,6 +318,10 @@ fn default_iacs_tunnel_host_key_path() -> String {
     "/var/lib/vauban/iacs_tunnel_host_ed25519".to_string()
 }
 
+fn default_iacs_tunnel_max_concurrent_channels_per_session() -> u32 {
+    16
+}
+
 impl Default for IacsTunnelSupervisorConfig {
     fn default() -> Self {
         Self {
@@ -317,6 +329,8 @@ impl Default for IacsTunnelSupervisorConfig {
             bind_addr: default_iacs_tunnel_bind_addr(),
             allow_loopback_targets: false,
             host_key_path: default_iacs_tunnel_host_key_path(),
+            max_concurrent_channels_per_session:
+                default_iacs_tunnel_max_concurrent_channels_per_session(),
         }
     }
 }
@@ -726,6 +740,17 @@ impl SupervisorConfig {
                 vars.push((
                     "VAUBAN_IACS_HOST_KEY_PATH".to_string(),
                     self.industrial.iacs_tunnel.host_key_path.clone(),
+                ));
+                // Per-login channel cap. `vauban-proxy-iacs` reads
+                // this value at boot and bounds the number of
+                // concurrent `direct-tcpip` channels per authenticated
+                // SSH login. `0` disables the cap.
+                vars.push((
+                    "VAUBAN_IACS_MAX_CHANNELS_PER_SESSION".to_string(),
+                    self.industrial
+                        .iacs_tunnel
+                        .max_concurrent_channels_per_session
+                        .to_string(),
                 ));
             }
             _ => {}

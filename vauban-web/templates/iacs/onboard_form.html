@@ -58,8 +58,16 @@
            block; the copy button is overlaid in the top-right
            corner via `absolute top-2 right-2`, mirroring the
            "code-block + copy" affordance ChatGPT / Claude use.
-           The `<pre>` reserves `pr-12` so the button never
-           overlaps the rightmost characters of the command.
+           Long commands MUST wrap rather than scroll horizontally:
+           Chrome / Safari / Firefox all drop the `padding-right` of
+           an `overflow-x: auto` container, so a `<pre pr-12 + absolute
+           button>` pattern lets the icon sit on top of the rightmost
+           characters.  We use `whitespace-pre-wrap` + `break-all` on
+           a block `<code>` carrying the `pr-12` reservation, and we
+           drop `overflow-x-auto` from the `<pre>` so no horizontal
+           scrollbar can ever appear.  The Alpine `cmd` state holds
+           the literal one-line command, so visual wrapping does not
+           affect the clipboard payload.
            The Alpine state holds the command literal so copy()
            writes it to the clipboard without DOM scraping; the
            hidden-textarea + execCommand fallback covers older
@@ -78,7 +86,7 @@
                          }
                        } }">
             <div class="relative">
-                <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm p-3 pr-12 overflow-x-auto"><code data-testid="ssh-keygen-unix">ssh-keygen -t ed25519 -C "VAUBAN" -N "" -f ~/.ssh/id_VAUBAN</code></pre>
+                <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm"><code class="block p-3 pr-12 whitespace-pre-wrap break-all" data-testid="ssh-keygen-unix">ssh-keygen -t ed25519 -C "VAUBAN" -N "" -f ~/.ssh/id_VAUBAN</code></pre>
                 <button type="button"
                         @click="copy()"
                         :title="copied ? 'Copied!' : 'Copy command'"
@@ -114,7 +122,7 @@
                          }
                        } }">
             <div class="relative">
-                <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm p-3 pr-12 overflow-x-auto"><code data-testid="ssh-keygen-windows">ssh-keygen -t ed25519 -C "VAUBAN" -N '""' -f "$env:USERPROFILE\.ssh\id_VAUBAN"</code></pre>
+                <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm"><code class="block p-3 pr-12 whitespace-pre-wrap break-all" data-testid="ssh-keygen-windows">ssh-keygen -t ed25519 -C "VAUBAN" -N '""' -f "$env:USERPROFILE\.ssh\id_VAUBAN"</code></pre>
                 <button type="button"
                         @click="copy()"
                         :title="copied ? 'Copied!' : 'Copy command'"

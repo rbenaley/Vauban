@@ -2094,10 +2094,31 @@ fn handle_tcp_connect_request(
         };
         // Anti-replay: a valid token presented twice within its TTL is a
         // replay (or a duplicate from a buggy web). Either way we deny.
-        if !session_token_replay_cache()
-            .lock()
-            .map(|mut c| c.record(&token.session_id, &token.nonce))
-            .unwrap_or(false)
+        //
+        // SPECIAL CASE -- `Service::ProxyIacs`: industrial control
+        // tunnels are MULTI-USE by construction. A single operator
+        // `ssh -L` session multiplexes many `direct-tcpip` channels
+        // over its lifetime, and `vauban-proxy-iacs` re-presents the
+        // SAME session_token for every channel-open (no per-channel
+        // re-mint round-trip with `vauban-access`). Running this
+        // through the replay cache would reject the second channel
+        // and break the legitimate multi-connection workflow that
+        // operators rely on (Modbus polling, ICS alarms list refresh,
+        // OPCUA browse-on-demand, ...). The token is still
+        // crypto-bound to `(host, port, target_service=ProxyIacs,
+        // session_id)` and its TTL is the long-lived
+        // `TOKEN_TTL_SECONDS_IACS_TUNNEL` (12 h, see
+        // `shared::session_token::token_ttl_for`), so the blast
+        // radius is bounded by (a) the per-asset binding, (b) the
+        // supervisor's IACS anti-SSRF guards (anti-loopback,
+        // anti-self-listener), and (c) the revocation watchdog in
+        // `vauban-web` which fires `IacsTunnelTerminate` the moment
+        // the policy decision changes.
+        if !matches!(target_service, Service::ProxyIacs)
+            && !session_token_replay_cache()
+                .lock()
+                .map(|mut c| c.record(&token.session_id, &token.nonce))
+                .unwrap_or(false)
         {
             warn!(
                 session_id = %session_id,
@@ -4445,6 +4466,82 @@ mod tests {
              so a captured-but-still-fresh token cannot be reused for \
              multiple connects (DoS / pivot amplifier)."
         );
+    }
+
+    /// IACS tunnels are MULTI-USE by construction: a single SSH
+    /// `ssh -L` operator session multiplexes many `direct-tcpip`
+    /// channels, and `vauban-proxy-iacs` re-presents the SAME
+    /// session_token to the supervisor for every channel-open. Running
+    /// that token through the replay cache would reject the second
+    /// channel and break the legitimate workflow that operators rely
+    /// on. We therefore deliberately bypass the replay cache for
+    /// `Service::ProxyIacs`. This test pins that special-case so a
+    /// future refactor cannot silently re-enable replay-rejection on
+    /// IACS and re-introduce the production bug observed in May 2026
+    /// where `ssh -L` reopens failed with `administratively
+    /// prohibited: Rejected` after the first channel closed.
+    ///
+    /// Compensating controls (still in force for IACS):
+    /// 1. Crypto binding to `(host, port, target_service=ProxyIacs,
+    ///    session_id)` -- a leaked token cannot pivot to other assets.
+    /// 2. Anti-loopback / anti-self-listener guards immediately below
+    ///    (`Service::ProxyIacs` arm) prevent SSRF inside the long
+    ///    multi-use window.
+    /// 3. The `vauban-web` revocation watchdog fires
+    ///    `IacsTunnelTerminate` the moment the policy decision
+    ///    changes, closing the SSH login.
+    #[test]
+    fn test_supervisor_tcp_broker_bypasses_replay_cache_for_iacs() {
+        let source = supervisor_prod_source();
+        let handler_start = source
+            .find("fn handle_tcp_connect_request(")
+            .expect("handle_tcp_connect_request must exist");
+        let handler = &source[handler_start..];
+        let handler_end = handler
+            .find("\nfn ")
+            .or_else(|| handler.find("\nasync fn "))
+            .unwrap_or(handler.len());
+        let handler = &handler[..handler_end];
+
+        // The bypass must be explicit and tied to ProxyIacs (no
+        // wildcard). We grep for the exact gate so an accidental
+        // change to a different Service::* is loud.
+        assert!(
+            handler.contains("!matches!(target_service, Service::ProxyIacs)")
+                && handler.contains("session_token_replay_cache"),
+            "handle_tcp_connect_request MUST bypass the replay cache \
+             ONLY for Service::ProxyIacs (multi-use by design); every \
+             other target_service MUST still be replay-protected."
+        );
+
+        // The bypass MUST NOT extend to other Service variants. We
+        // forbid the obvious foot-gun: a second Service::Foo bypass.
+        for forbidden in [
+            "matches!(target_service, Service::ProxySsh)",
+            "matches!(target_service, Service::ProxyRdp)",
+            "matches!(target_service, Service::Web)",
+            "matches!(target_service, Service::Auth)",
+            "matches!(target_service, Service::Access)",
+            "matches!(target_service, Service::Vault)",
+            "matches!(target_service, Service::Audit)",
+            "matches!(target_service, Service::Supervisor)",
+        ] {
+            // The Web arm legitimately uses `Service::Web` matching for
+            // the mailer-whitelist branch above this gate (pinned by
+            // test_supervisor_tcp_broker_skips_token_for_web_target_intentionally),
+            // but it must not appear inside the replay-bypass `if`
+            // condition. Approximate by scoping to lines that also
+            // mention the cache.
+            for line in handler.lines() {
+                if line.contains("session_token_replay_cache") && line.contains(forbidden) {
+                    panic!(
+                        "Service variant `{forbidden}` appears in a line \
+                         that gates the replay cache; only ProxyIacs is \
+                         allowed to bypass it"
+                    );
+                }
+            }
+        }
     }
 
     /// Issue #10: structural pin that the mailer SSRF whitelist is
