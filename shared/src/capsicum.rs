@@ -125,6 +125,7 @@ impl CapRights {
     ///   - `event`, `fcntl` -- async I/O via kqueue + non-blocking,
     ///   - `fstat`, `getsockname`, `getsockopt`, `setsockopt` --
     ///     stdlib bookkeeping.
+    ///
     /// Rights propagated to every accepted child fd:
     ///   - `read`, `write` -- the application protocol bytes,
     ///   - `getpeername` -- so the handler can log the EWS peer IP
