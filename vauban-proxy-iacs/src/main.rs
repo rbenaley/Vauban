@@ -364,11 +364,44 @@ async fn run_service() -> Result<()> {
         ),
     };
 
-    // === 5b. Capsicum sandbox. After this point, the proxy can
+    // === 5b. Wrap the IPC pipes in tokio AsyncFd BEFORE entering
+    // Capsicum.
+    //
+    // SECURITY (FreeBSD/Capsicum): `AsyncIpcChannel::new` calls
+    // `set_nonblocking(read_fd)` which issues
+    // `fcntl(F_GETFL/F_SETFL)` on the pipe. The IPC FDs receive
+    // `CapRights::read_write()` rights from
+    // `setup_service_sandbox_with_listeners`, which deliberately do
+    // NOT include `CAP_FCNTL` (the IPC pipes are read/write/event
+    // only, no flag-toggling expected at runtime). Calling
+    // `set_nonblocking` post-`cap_enter` therefore fails with
+    // errno 93 "Capabilities insufficient", crash-looping the proxy
+    // (production-bug repro on FreeBSD 14, surfaced after the
+    // listener / host-key fixes finally let the proxy reach this
+    // step). Mirrors `vauban-proxy-ssh::main` which has historically
+    // built its `AsyncIpcChannel` instances pre-Capsicum for the
+    // same reason. The resulting non-blocking flag lives on the
+    // file table entry and survives `cap_enter` untouched; the
+    // post-Capsicum code only needs `event` (kqueue/poll) on the
+    // FD, which `read_write()` does grant.
+    //
+    // Pinned by `iacs_async_ipc_channels_constructed_before_capsicum`
+    // (source-grep) and `proxy_iacs_supervisor_async_built_before_sandbox_test`
+    // (runtime, ordering of the `Entered Capsicum sandbox` log line
+    // versus the `AsyncIpcChannel::new` call sites).
+    let supervisor_async = Arc::new(
+        AsyncIpcChannel::new(supervisor_channel)
+            .context("Failed to create async supervisor channel")?,
+    );
+    let web_async =
+        Arc::new(AsyncIpcChannel::new(web_channel).context("Failed to create async web channel")?);
+
+    // === 5c. Capsicum sandbox. After this point, the proxy can
     // ONLY read/write its IPC pipes, accept() on the inherited
     // listener FD, and recvmsg() on the FD-passing socket. No
     // new socket(), no new bind(), no new connect(), no new
-    // open() on an absolute path (errno 94 on FreeBSD).
+    // open() on an absolute path (errno 94 on FreeBSD), no new
+    // fcntl() on a tightly-scoped FD (errno 93).
     capsicum::setup_service_sandbox_with_listeners(
         &ipc_fds,
         None, // No DB connection.
@@ -500,14 +533,11 @@ async fn run_service() -> Result<()> {
     // Spawn the AccessGuard dispatcher.
     let _dispatcher_handle = access_guard.spawn_dispatcher();
 
-    // === Async wrappers + writer task for the supervisor pipe.
-    let supervisor_async = Arc::new(
-        AsyncIpcChannel::new(supervisor_channel)
-            .context("Failed to create async supervisor channel")?,
-    );
-    let web_async =
-        Arc::new(AsyncIpcChannel::new(web_channel).context("Failed to create async web channel")?);
-
+    // === Writer tasks for the supervisor and web pipes.
+    // The `AsyncIpcChannel` instances were constructed pre-Capsicum
+    // (see "=== 5b" above); we now spawn the dedicated writer tasks
+    // that drain the mpsc queues and serialise every send onto the
+    // pipe FD.
     {
         let sup_writer = Arc::clone(&supervisor_async);
         tokio::spawn(async move {
