@@ -21,6 +21,7 @@
 
 use std::io;
 use std::os::fd::OwnedFd;
+use std::os::unix::io::RawFd;
 use std::path::Path;
 
 use russh::keys::PrivateKey;
@@ -101,6 +102,40 @@ pub fn prepare_host_key_fd(path: &Path) -> io::Result<OwnedFd> {
     let _ = load_or_generate_host_key(path)?;
     let file = std::fs::OpenOptions::new().read(true).open(path)?;
     Ok(OwnedFd::from(file))
+}
+
+/// Rewind the host key FD to offset 0 before each `execv` of
+/// `vauban-proxy-iacs`.
+///
+/// SECURITY (multi-respawn correctness): the supervisor opens the
+/// host key file ONCE at boot via [`prepare_host_key_fd`] and
+/// inherits the resulting FD across `fork+execv` to every spawn of
+/// `vauban-proxy-iacs`. The Linux/FreeBSD kernel keeps the **file
+/// position in the file table entry, NOT in the file descriptor**
+/// number, so the supervisor's FD and the child's FD share the same
+/// position cursor by design.
+///
+/// On the first spawn, the proxy `read_to_string`s the FD to EOF,
+/// advancing the shared cursor past the last byte of the PEM blob.
+/// On a subsequent crash-and-respawn, the new proxy inherits the
+/// **same** FD with the cursor still parked at EOF -- it reads an
+/// empty string, and `PrivateKey::from_openssh("")` fails with
+/// "PEM preamble contains invalid data (NUL byte)".
+///
+/// Calling [`rewind_host_key_fd`] before every spawn (boot AND each
+/// `respawn_service` / `kill_and_respawn`) resets the cursor to 0
+/// so each child sees a fresh, fully-readable PEM blob. Pinned by
+/// `rewind_host_key_fd_resets_position_after_full_read` below.
+pub fn rewind_host_key_fd(fd: RawFd) -> io::Result<()> {
+    // SAFETY: `fd` MUST be a valid open FD owned by the caller.
+    // `lseek(fd, 0, SEEK_SET)` is documented to work on regular
+    // files (host key path is always a regular file) and never
+    // mutates kernel state beyond the file's position cursor.
+    let res = unsafe { libc::lseek(fd, 0, libc::SEEK_SET) };
+    if res < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Read the IACS sshd host key from an inherited [`OwnedFd`].
@@ -199,6 +234,54 @@ mod tests {
             .to_openssh(russh::keys::ssh_key::LineEnding::LF)
             .unwrap();
         assert_eq!(*s1, *s2);
+    }
+
+    /// Multi-respawn correctness: the supervisor opens the host key
+    /// once at boot and inherits the FD across every `execv` of
+    /// `vauban-proxy-iacs`. Because the kernel stores the file
+    /// position on the file table entry (shared between supervisor
+    /// and children), a first `read_to_string` to EOF in the first
+    /// child leaves the cursor at EOF, and a respawn would inherit
+    /// the same cursor -- hence the historical "PEM preamble contains
+    /// invalid data (NUL byte)" boot-loop on FreeBSD when proxy_iacs
+    /// crashed once.
+    ///
+    /// Calling [`rewind_host_key_fd`] resets the position to 0 so
+    /// the next reader (or the same FD re-used by another child)
+    /// sees the full PEM blob again.
+    #[test]
+    fn rewind_host_key_fd_resets_position_after_full_read() {
+        use std::io::Read;
+        let p = temp_path("hostkey_rewind");
+        let _ = load_or_generate_host_key(&p).expect("generate");
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .open(&p)
+            .expect("open");
+        let raw = f.as_raw_fd();
+        let mut first = String::new();
+        let mut handle = std::io::BufReader::new(f);
+        handle.read_to_string(&mut first).expect("first read");
+        assert!(first.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----"));
+
+        // Without rewind, a second read returns empty -- the
+        // production-bug repro.
+        let mut second = String::new();
+        handle.read_to_string(&mut second).expect("eof read");
+        assert!(
+            second.is_empty(),
+            "without rewind the cursor stays at EOF (this is the historical bug)"
+        );
+
+        // After rewind, the FD is fully readable again.
+        rewind_host_key_fd(raw).expect("rewind");
+        let mut third = String::new();
+        handle.read_to_string(&mut third).expect("post-rewind read");
+        assert_eq!(
+            third, first,
+            "rewind_host_key_fd must reset the cursor to byte 0; \
+             the post-rewind read must match the initial PEM blob byte-for-byte"
+        );
     }
 
     #[test]

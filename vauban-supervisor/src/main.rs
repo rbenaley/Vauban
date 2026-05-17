@@ -549,9 +549,32 @@ fn run_supervisor() -> Result<()> {
                      (industrial.iacs_tunnel.bind_addr)"
                 )
             })?;
+            // SECURITY (FreeBSD/Capsicum): the proxy hands the listener
+            // to tokio AFTER `cap_enter`, and tokio requires it to be
+            // non-blocking. Calling `set_nonblocking(true)` post-
+            // `cap_enter` issues `fcntl(F_GETFL/F_SETFL)`, which
+            // requires `CAP_FCNTL` rights on the inherited FD; the
+            // proxy's sandbox does NOT grant those rights, so the
+            // post-Capsicum call fails with "Capabilities insufficient
+            // (os error 93)" and the proxy crash-loops on boot.
+            //
+            // We set the flag here, in the supervisor, BEFORE fork.
+            // `O_NONBLOCK` lives on the file table entry and is
+            // inherited across `fork+execv` automatically, so the
+            // child receives a non-blocking listener without ever
+            // needing `CAP_FCNTL`. Pinned by
+            // `iacs_listener_pre_bind_test::supervisor_sets_nonblocking_before_execv`
+            // and the proxy-side absence of `set_nonblocking` post-
+            // sandbox.
+            listener.set_nonblocking(true).with_context(|| {
+                format!(
+                    "Failed to set O_NONBLOCK on IACS sshd listener at {addr} \
+                     before fork (required by tokio + by Capsicum)"
+                )
+            })?;
             info!(
                 iacs_bind_addr = %addr,
-                "Pre-bound IACS sshd listening socket; FD will be inherited \
+                "Pre-bound IACS sshd listening socket (non-blocking); FD will be inherited \
                  by vauban-proxy-iacs via VAUBAN_IACS_LISTENER_FD"
             );
             let listener_fd = listener.as_raw_fd();
@@ -664,6 +687,24 @@ fn run_supervisor() -> Result<()> {
                 inheritable_fds.push(("VAUBAN_IACS_LISTENER_FD", fd));
             }
             if let Some(fd) = iacs_host_key_fd {
+                // SECURITY: rewind the host key FD to byte 0 before
+                // every `execv` of vauban-proxy-iacs. The kernel
+                // stores the file position on the file table entry,
+                // which is shared between supervisor and forked
+                // children; without this rewind the very first
+                // proxy_iacs reads the PEM blob to EOF and every
+                // subsequent respawn inherits the same FD with the
+                // cursor parked at EOF, reading an empty buffer and
+                // crash-looping with "PEM preamble contains invalid
+                // data (NUL byte)". See
+                // shared::iacs_host_key::rewind_host_key_fd doc.
+                if let Err(e) = shared::iacs_host_key::rewind_host_key_fd(fd) {
+                    warn!(
+                        error = %e,
+                        host_key_fd = fd,
+                        "Failed to rewind IACS host key FD before execv (proxy_iacs may fail to parse host key on respawn)"
+                    );
+                }
                 inheritable_fds.push(("VAUBAN_IACS_HOST_KEY_FD", fd));
             }
         }
@@ -1628,6 +1669,20 @@ fn respawn_service(
             inheritable_fds.push(("VAUBAN_IACS_LISTENER_FD", fd));
         }
         if let Some(fd) = iacs_host_key_fd {
+            // Rewind the host key FD to byte 0 before this respawn:
+            // the file position cursor on the kernel file table entry
+            // is shared between supervisor and forked children, so a
+            // crashed proxy_iacs that drained the FD to EOF would
+            // otherwise hand the next spawn an empty PEM blob. See
+            // shared::iacs_host_key::rewind_host_key_fd.
+            if let Err(e) = shared::iacs_host_key::rewind_host_key_fd(fd) {
+                warn!(
+                    error = %e,
+                    host_key_fd = fd,
+                    service = %state.service_key,
+                    "Failed to rewind IACS host key FD before proxy_iacs respawn execv"
+                );
+            }
             inheritable_fds.push(("VAUBAN_IACS_HOST_KEY_FD", fd));
         }
     }
@@ -1871,6 +1926,17 @@ fn respawn_linked_group(
                     inheritable_fds.push(("VAUBAN_IACS_LISTENER_FD", fd));
                 }
                 if let Some(fd) = iacs_host_key_fd {
+                    // Rewind the host key FD to byte 0 before this
+                    // respawn (kill_and_respawn path). See
+                    // shared::iacs_host_key::rewind_host_key_fd doc.
+                    if let Err(e) = shared::iacs_host_key::rewind_host_key_fd(fd) {
+                        warn!(
+                            error = %e,
+                            host_key_fd = fd,
+                            service = %service_key,
+                            "Failed to rewind IACS host key FD before proxy_iacs kill_and_respawn execv"
+                        );
+                    }
                     inheritable_fds.push(("VAUBAN_IACS_HOST_KEY_FD", fd));
                 }
             }

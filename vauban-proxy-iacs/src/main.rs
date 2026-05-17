@@ -416,10 +416,21 @@ async fn run_service() -> Result<()> {
         // SAFETY: the FD was inherited from the supervisor across
         // fork+exec. We wrap it in a std listener and hand it to
         // tokio.
+        //
+        // CRITICAL (FreeBSD/Capsicum): we MUST NOT toggle O_NONBLOCK
+        // on this listener here. We are already post-`cap_enter`,
+        // and `fcntl(F_GETFL/F_SETFL)` is what stdlib uses under the
+        // hood to set the flag; the Capsicum sandbox refuses that
+        // syscall with errno 93 ("Capabilities insufficient")
+        // because the inherited listener FD does not carry
+        // `CAP_FCNTL` rights. The supervisor sets `O_NONBLOCK` on
+        // the listener BEFORE fork+execv (see
+        // `vauban-supervisor::main::start_supervisor`), and the
+        // flag is inherited via the kernel file table entry, so
+        // tokio receives a non-blocking listener without us needing
+        // to touch `fcntl()` post-sandbox. Pinned by
+        // `proxy_iacs_never_calls_set_nonblocking_post_capsicum`.
         let std_listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
-        std_listener
-            .set_nonblocking(true)
-            .context("set_nonblocking on inherited IACS listener")?;
         // Extract the actual bind address from the inherited FD so
         // the operator sees the bound `host:port` in the proxy log
         // (the supervisor's `Pre-bound IACS sshd listening socket`
