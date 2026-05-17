@@ -1,7 +1,7 @@
 # Vauban Privilege Separation Architecture
 
 **Version:** 1.2  
-**Date:** 21 February 2026  
+**Date:** 21 February 2026 (revised 17 May 2026 -- IACS proxy Capsicum fixes: pre-fork listener `O_NONBLOCK`, host key FD rewind on respawn, `AsyncIpcChannel` built pre-`cap_enter`, `CapRights::listening_socket` documents inheritance into accepted children; see §5.3 + §5.6.3c)  
 **Author:** Richard Ben Aleya
 
 ---
@@ -463,10 +463,23 @@ fn run_service() -> Result<()> {
 
 | Resource | Rights |
 |----------|--------|
-| IPC read pipe | `CAP_READ`, `CAP_EVENT` |
-| IPC write pipe | `CAP_WRITE` |
-| Database socket | `CAP_READ`, `CAP_WRITE`, `CAP_CONNECT` |
-| Listening socket | `CAP_ACCEPT`, `CAP_LISTEN`, `CAP_EVENT` |
+| IPC read pipe (`CapRights::read_write`) | `CAP_READ`, `CAP_WRITE`, `CAP_FSTAT`, `CAP_EVENT` |
+| IPC write pipe (`CapRights::read_write`) | `CAP_READ`, `CAP_WRITE`, `CAP_FSTAT`, `CAP_EVENT` |
+| Database socket (`CapRights::tcp_connection`) | `CAP_READ`, `CAP_WRITE`, `CAP_EVENT`, `CAP_FSTAT`, `CAP_GETSOCKOPT`, `CAP_SETSOCKOPT`, `CAP_GETPEERNAME`, `CAP_GETSOCKNAME` |
+| FD-receiver socket (`CapRights::fd_receiver_socket`) | `CAP_READ`, `CAP_EVENT`, `CAP_FSTAT`, `CAP_GETSOCKOPT` |
+| Listening socket (`CapRights::listening_socket`) | `CAP_ACCEPT`, `CAP_LISTEN`, `CAP_EVENT`, `CAP_FCNTL`, `CAP_FSTAT`, `CAP_GETSOCKNAME`, `CAP_GETSOCKOPT`, `CAP_SETSOCKOPT`, **plus** `CAP_READ`, `CAP_WRITE`, `CAP_GETPEERNAME` (inherited by every accepted child fd, see §5.6.3c) |
+
+> **CRITICAL (FreeBSD)**: `accept(2)` inherits the listening socket's
+> cap-rights into every newly-accepted fd via `cap_rights_inherit()`.
+> Therefore EVERY right that the eventual connected socket needs
+> (read, write, getpeername, ...) MUST be set on the listening
+> socket -- otherwise the very first `read()` / `write()` on the
+> accepted fd fails with errno 93 ("Capabilities insufficient") and
+> the application protocol stalls *before* the first byte is sent.
+> macOS and Linux do not enforce these caps and therefore mask the
+> regression in dev (production-bug repro on FreeBSD 14, May 2026,
+> see runbook `iacs_ews_onboarding.md` v0.7.16). Pinned by
+> `shared::capsicum::tests::test_cap_rights_listening_socket`.
 
 ### 5.4 Development Mode
 
@@ -570,7 +583,7 @@ pub fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
 | `vauban-audit` | Yes | IPC + FD passing for recording files |
 | `vauban-proxy-ssh` | Yes | IPC + pre-established connections via FD passing |
 | `vauban-proxy-rdp` | Yes | IPC + pre-established connections via FD passing |
-| `vauban-proxy-iacs` | Yes | IPC + pre-bound listening FD (`VAUBAN_IACS_LISTENER_FD`) + per-asset upstream connections via SCM_RIGHTS broker |
+| `vauban-proxy-iacs` | Yes | IPC + pre-bound listening FD with `O_NONBLOCK` (`VAUBAN_IACS_LISTENER_FD`) + pre-loaded russh Ed25519 host key FD (`VAUBAN_IACS_HOST_KEY_FD`, rewound with `lseek(0)` before each `execv`) + per-asset upstream connections via SCM_RIGHTS broker. Boot ordering is Capsicum-aware (see §5.6.3c). |
 
 ### 5.6 TCP Connection Brokering for Sandboxed Proxies
 
@@ -656,12 +669,31 @@ flowchart TB
 
 #### 5.6.3c Architecture Diagram (IACS / EWS tunnel)
 
-`vauban-proxy-iacs` is the third sandboxed proxy. Compared to SSH and RDP it has TWO additional FD-passing seams:
+`vauban-proxy-iacs` is the third sandboxed proxy. Compared to SSH and RDP it has THREE additional FD-passing seams plus a strict Capsicum-aware boot ordering:
 
-1. **Pre-bound listening FD.** The proxy is EWS-facing and accepts inbound `russh` sshd connections; under Capsicum it cannot call `bind(2)`. The supervisor binds `industrial.iacs_tunnel.bind_addr` BEFORE the proxy is forked and exports the listener FD via the `VAUBAN_IACS_LISTENER_FD` environment variable. The proxy's `main.rs` reads that FD, calls `setup_service_sandbox_with_listeners` to grant the listener `cap_listen | cap_accept`, and then enters Capsicum.
-2. **Per-asset upstream connections.** Once an EWS opens a `direct-tcpip` channel to its asset's pinned `(asset.hostname, asset.port)`, the proxy's `SupervisorBrokerOpener` emits a `TcpConnectRequest` tagged with `target_service = ProxyIacs` and the session-bound BLAKE3 token. The supervisor enforces TWO anti-SSRF guards specific to IACS:
+1. **Pre-bound listening FD (`VAUBAN_IACS_LISTENER_FD`).** The proxy is EWS-facing and accepts inbound `russh` sshd connections; under Capsicum it cannot call `bind(2)`. The supervisor binds `industrial.iacs_tunnel.bind_addr` BEFORE the proxy is forked, **sets `O_NONBLOCK` on the listener while still pre-Capsicum** (the flag lives on the kernel file table entry and is inherited across `fork+execv`; calling `set_nonblocking` later from the proxy would issue `ioctl(FIONBIO)` post-`cap_enter` and fail with errno 93 because the inherited fd lacks `CAP_IOCTL`), and exports the listener FD via the `VAUBAN_IACS_LISTENER_FD` environment variable. The proxy's `main.rs` reads that FD, calls `setup_service_sandbox_with_listeners` which grants the listener `CapRights::listening_socket()` -- including the `CAP_READ` / `CAP_WRITE` / `CAP_GETPEERNAME` rights propagated by `accept()` to every connected child fd (§5.3) -- and then enters Capsicum.
+2. **Pre-loaded sshd host key FD (`VAUBAN_IACS_HOST_KEY_FD`).** The russh server requires an OpenSSH-encoded Ed25519 host key; under Capsicum the proxy cannot `open(2)` an absolute path (errno 94). The supervisor calls `shared::iacs_host_key::prepare_host_key_fd(host_key_path)` at boot (load-or-generate with mode 0600, then `OpenOptions::new().read(true).open(path)`) and exports the resulting read-only FD via `VAUBAN_IACS_HOST_KEY_FD`. The proxy consumes it (single-shot `read_to_string` + `PrivateKey::from_openssh`) BEFORE entering Capsicum, then drops the FD. The supervisor calls `lseek(fd, 0, SEEK_SET)` BEFORE every `execv` of `proxy_iacs` (boot, `respawn_service`, and `kill_and_respawn`) because the kernel keeps the file position cursor on the file table entry shared between supervisor and forked children -- without this rewind, every respawn after the first crash-loops on `PEM preamble contains invalid data (NUL byte)` (the second proxy reads from EOF). The PEM blob is `zeroize()`d on both supervisor and proxy sides as soon as `PrivateKey` is parsed.
+3. **Per-asset upstream connections.** Once an EWS opens a `direct-tcpip` channel to its asset's pinned `(asset.hostname, asset.port)`, the proxy's `SupervisorBrokerOpener` emits a `TcpConnectRequest` tagged with `target_service = ProxyIacs` and the session-bound BLAKE3 token. The supervisor enforces TWO anti-SSRF guards specific to IACS:
    - **Anti-self-listener**: a request whose target equals the IACS sshd's own listening address is rejected.
    - **Anti-loopback**: targets that resolve to a loopback IP (`127.0.0.0/8`, `::1`) are rejected unless `industrial.iacs_tunnel.allow_loopback_targets = true` (CI-only knob).
+
+##### Boot ordering (Capsicum-aware)
+
+The proxy's `main.rs` strictly orders pre- and post-`cap_enter` work:
+
+1. Read FDs and env knobs.
+2. Initialise the BLAKE3 session-token MAC key.
+3. Wire `AccessGuard::from_env` (defense-in-depth RBAC re-check).
+4. Open the audit IPC channel.
+5. **Drain the host key FD via `read_host_key_from_fd`** (single-shot read; FD closed before sandbox).
+6. **Construct both `AsyncIpcChannel` instances** (`supervisor_channel`, `web_channel`). `AsyncIpcChannel::new` calls `set_nonblocking(read_fd)` -- a `fcntl(F_GETFL/F_SETFL)`. The IPC pipe FDs receive `CapRights::read_write()` from the sandbox, and that cap-set deliberately omits `CAP_FCNTL`; the wrapping MUST therefore happen pre-`cap_enter`. The non-blocking flag lives on the file table entry and survives the sandbox transition. (Mirrors the long-standing `vauban-proxy-ssh::main` ordering. Pinned by `iacs_async_ipc_channels_constructed_before_capsicum`.)
+7. Call `setup_service_sandbox_with_listeners(ipc_fds, None, fd_receiver_fds, listener_fds)` and enter Capsicum.
+8. Spawn the russh accept loop on the inherited listener FD (no `set_nonblocking` here -- the supervisor already set it).
+9. Spawn the `AccessGuard` dispatcher.
+10. Spawn the supervisor / web pipe writer tasks (consume the `mpsc::UnboundedReceiver`s drained by the russh handlers).
+11. Enter the main IPC event loop.
+
+Each step is pinned by source-grep tests in `vauban-proxy-iacs/tests/host_key_loaded_before_capsicum_test.rs` and `vauban-supervisor/tests/iacs_listener_pre_bind_test.rs`.
 
 ```mermaid
 flowchart TB
@@ -685,7 +717,8 @@ flowchart TB
         T["Modbus / OPC-UA / DNP3 / IEC-104 endpoint"]
     end
 
-    S -.->|"0. pre-bind listener FD<br/>(VAUBAN_IACS_LISTENER_FD)"| P
+    S -.->|"0a. pre-bind listener FD (O_NONBLOCK)<br/>(VAUBAN_IACS_LISTENER_FD)"| P
+    S -.->|"0b. pre-load host key FD (lseek 0 each spawn)<br/>(VAUBAN_IACS_HOST_KEY_FD)"| P
     W -->|"1. mint session token (asset.host, asset.port, ProxyIacs)"| supervisor
     W -->|"2. IacsTunnelOpen (token + per-asset target)"| P
     E -->|"3. SSH handshake on inherited listener"| P
@@ -1179,7 +1212,8 @@ Services are started in dependency order:
 4. `vauban-auth` - Depends on access, vault
 5. `vauban-proxy-ssh` - Depends on access, vault, audit
 6. `vauban-proxy-rdp` - Depends on access, vault, audit
-7. `vauban-web` - Depends on auth, access, vault, audit
+7. `vauban-proxy-iacs` - Depends on access, audit (gated on `industrial.enabled`; the supervisor pre-binds the IACS sshd listener FD with `O_NONBLOCK` and pre-loads the russh Ed25519 host key FD before fork; both FDs are inherited via `VAUBAN_IACS_LISTENER_FD` / `VAUBAN_IACS_HOST_KEY_FD`)
+8. `vauban-web` - Depends on auth, access, vault, audit
 
 ### 10.2 Startup Diagram
 
@@ -1203,6 +1237,7 @@ gantt
     section Phase 4
     vauban-proxy-ssh      :3, 4
     vauban-proxy-rdp      :3, 4
+    vauban-proxy-iacs     :3, 4
     
     section Phase 5
     vauban-web            :4, 5

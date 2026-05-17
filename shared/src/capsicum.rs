@@ -101,15 +101,45 @@ impl CapRights {
 
     /// Create rights for a listening socket.
     ///
-    /// Includes rights needed for async I/O (tokio/mio):
-    /// - CAP_FCNTL for non-blocking mode
-    /// - CAP_EVENT for kqueue/poll
+    /// SECURITY (FreeBSD/Capsicum): on FreeBSD, `accept()` returns a
+    /// new file descriptor that **inherits the cap rights of the
+    /// listening socket** (the kernel intersects the listener's
+    /// rights into the accepted fd at accept time -- this is the
+    /// `cap_rights_inherit()` semantics described in
+    /// [`accept(2)`](https://man.freebsd.org/accept) under "CAPABILITIES").
+    /// Therefore EVERY right that the eventual connected socket
+    /// needs MUST be set here, on the listening socket, otherwise
+    /// the very first `read()` / `write()` on the accepted fd fails
+    /// with errno 93 ("Capabilities insufficient") and the russh
+    /// handshake stalls before the SSH banner is even sent.
+    ///
+    /// Concrete prod regression on the IACS proxy (FreeBSD 14):
+    /// `nc -v 22322` would `connect()` successfully (CAP_ACCEPT was
+    /// set), but no banner was returned -- russh's `write_all` was
+    /// silently failing because the accepted socket lacked
+    /// `CAP_WRITE`. macOS does not enforce these caps, hence the
+    /// platform-asymmetric symptom.
+    ///
+    /// Rights needed by the listening fd itself:
+    ///   - `accept`, `listen` -- the obvious ones,
+    ///   - `event`, `fcntl` -- async I/O via kqueue + non-blocking,
+    ///   - `fstat`, `getsockname`, `getsockopt`, `setsockopt` --
+    ///     stdlib bookkeeping.
+    /// Rights propagated to every accepted child fd:
+    ///   - `read`, `write` -- the application protocol bytes,
+    ///   - `getpeername` -- so the handler can log the EWS peer IP
+    ///     (used by `iacs_tunnel: accepted EWS connection peer=...`).
     pub fn listening_socket() -> Self {
         Self {
             accept: true,
             listen: true,
+            // Inherited by accepted children (FreeBSD `cap_rights_inherit`):
+            read: true,
+            write: true,
+            getpeername: true,
+            // Listener-side rights:
             event: true,
-            fcntl: true, // Required for async I/O (non-blocking mode)
+            fcntl: true,
             fstat: true,
             getsockname: true,
             getsockopt: true,
@@ -470,15 +500,37 @@ mod tests {
     #[test]
     fn test_cap_rights_listening_socket() {
         let rights = CapRights::listening_socket();
+        // Listener-side bookkeeping rights.
         assert!(rights.accept);
         assert!(rights.listen);
         assert!(rights.event);
+        assert!(rights.fcntl);
         assert!(rights.fstat);
         assert!(rights.getsockname);
         assert!(rights.getsockopt);
         assert!(rights.setsockopt);
-        assert!(!rights.read);
-        assert!(!rights.write);
+
+        // SECURITY: rights propagated to every accepted child fd via
+        // FreeBSD `cap_rights_inherit()`. Without these, the russh
+        // handshake on an inherited IACS sshd listener stalls
+        // post-`accept()` because `write()` on the new fd returns
+        // errno 93 (production-bug repro on FreeBSD 14, May 2026).
+        // See doc-comment on `CapRights::listening_socket`.
+        assert!(
+            rights.read,
+            "listening_socket MUST grant CAP_READ so accepted children inherit it"
+        );
+        assert!(
+            rights.write,
+            "listening_socket MUST grant CAP_WRITE so accepted children inherit it"
+        );
+        assert!(
+            rights.getpeername,
+            "listening_socket MUST grant CAP_GETPEERNAME so accepted children can \
+             report the EWS peer IP"
+        );
+
+        // The listener itself is incoming-only -- it never connect()s.
         assert!(!rights.connect);
     }
 
