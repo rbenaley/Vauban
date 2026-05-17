@@ -73,7 +73,7 @@ max_ews_per_user = 0      # 0 = no cap; otherwise a per-user EWS quota
 # broker upstream TCP connect to a loopback IP. Flip to `true` only
 # in dev/E2E where the fake industrial server runs on `127.0.0.1`.
 [industrial.iacs_tunnel]
-enabled = false
+# `enabled` is now governed by `industrial.enabled` (single master switch).
 bind_addr = "0.0.0.0:22322"
 advertise_hostname = "localhost"
 target_addr = "127.0.0.1:4321"

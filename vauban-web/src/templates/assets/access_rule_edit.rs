@@ -44,6 +44,12 @@ pub struct AccessRuleEditTemplate {
     pub rule: AccessRuleEdit,
     pub user_groups: Vec<GroupOption>,
     pub asset_groups: Vec<GroupOption>,
+    /// Industrial-surface kill-switch. When `false`, the IACS
+    /// checkbox is hidden so the admin cannot ADD `iacs_*`
+    /// protocols to the rule. Existing `iacs_*` protocols on the
+    /// rule are PRESERVED across edits in this mode (frozen-but-
+    /// preserved), see `update_access_rule_web`.
+    pub industrial_enabled: bool,
 }
 
 #[cfg(test)]
@@ -113,6 +119,7 @@ mod tests {
                 is_virtual: false,
                 virtual_asset_count: None,
             }],
+            industrial_enabled: true,
         };
         let result = template.render();
         assert!(result.is_ok(), "AccessRuleEditTemplate should render");

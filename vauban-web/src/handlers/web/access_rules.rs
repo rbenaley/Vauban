@@ -479,6 +479,7 @@ pub async fn access_rule_create_form(
         },
         user_groups,
         asset_groups,
+        industrial_enabled: state.config.industrial.enabled,
     };
 
     match template.render() {
@@ -524,7 +525,33 @@ pub async fn create_access_rule_web(
         return flash_redirect(flash.error("Rule name is required"), "/assets/access/new");
     }
 
-    let protocols = build_protocols(&form.allowed_ssh, &form.allowed_rdp, &form.allowed_iacs);
+    // Industrial kill-switch (layer 4 of 4): refuse to create an
+    // access rule that would grant IACS protocols while the master
+    // switch is off. The form checkbox is already hidden (layer 5);
+    // a hand-crafted POST is the only way to land here. We refuse
+    // explicitly rather than silently drop, so the operator knows
+    // the IACS toggle was ignored. Mirrors
+    // `manage_assets::create_asset_web` and
+    // `manage_assets::update_asset_web`.
+    let allowed_iacs_form = if state.config.industrial.enabled {
+        form.allowed_iacs.clone()
+    } else {
+        if form
+            .allowed_iacs
+            .as_deref()
+            .is_some_and(|v| v == "true" || v == "on")
+        {
+            return flash_redirect(
+                flash.error(
+                    "IACS protocols cannot be added to an access rule while \
+                     industrial.enabled = false",
+                ),
+                "/assets/access/new",
+            );
+        }
+        None
+    };
+    let protocols = build_protocols(&form.allowed_ssh, &form.allowed_rdp, &allowed_iacs_form);
     if protocols.is_empty() {
         return flash_redirect(
             flash.error("At least one protocol must be selected"),
@@ -697,6 +724,7 @@ pub async fn access_rule_edit(
         rule: rule_edit,
         user_groups,
         asset_groups,
+        industrial_enabled: state.config.industrial.enabled,
     };
 
     match template.render() {
@@ -753,7 +781,56 @@ pub async fn update_access_rule_web(
         );
     }
 
-    let protocols = build_protocols(&form.allowed_ssh, &form.allowed_rdp, &form.allowed_iacs);
+    // Industrial kill-switch (layer 4 of 4): on edit we have to
+    // distinguish three cases:
+    //
+    //   1. industrial.enabled = true: behave as before; the checkbox
+    //      is the source of truth for whether the rule grants IACS.
+    //   2. industrial.enabled = false AND form.allowed_iacs is set
+    //      (a hand-crafted POST -- the template hides the checkbox):
+    //      refuse explicitly so the operator cannot ADD IACS protocols
+    //      while the master switch is off.
+    //   3. industrial.enabled = false AND form.allowed_iacs is unset
+    //      (the canonical case once the template is gated): we MUST
+    //      preserve the rule's existing iacs_* protocols
+    //      (frozen-but-preserved). Otherwise a no-op edit (e.g. a
+    //      title fix) would silently strip IACS from a rule that was
+    //      created back when industrial was enabled.
+    //
+    // Pinned by `access_rule_edit_preserves_existing_iacs_protocols_under_kill_switch`.
+    let allowed_iacs_form = if state.config.industrial.enabled {
+        form.allowed_iacs.clone()
+    } else {
+        if form
+            .allowed_iacs
+            .as_deref()
+            .is_some_and(|v| v == "true" || v == "on")
+        {
+            return flash_redirect(
+                flash.error(
+                    "IACS protocols cannot be added to an access rule while \
+                     industrial.enabled = false",
+                ),
+                &format!("/assets/access/{}/edit", uuid_str),
+            );
+        }
+        None
+    };
+    let mut protocols = build_protocols(&form.allowed_ssh, &form.allowed_rdp, &allowed_iacs_form);
+
+    // Frozen-but-preserved: when industrial is off, fetch the rule's
+    // current `iacs_*` protocols and merge them back in so a no-op
+    // edit does not strip them.
+    if !state.config.industrial.enabled
+        && let Ok(existing) = state.access_client.get_access_rule(&uuid_str).await
+    {
+        for p in existing.allowed_protocols.iter() {
+            if p.starts_with("iacs_") && !protocols.contains(p) {
+                protocols.push(p.clone());
+            }
+        }
+    }
+
     if protocols.is_empty() {
         return flash_redirect(
             flash.error("At least one protocol must be selected"),

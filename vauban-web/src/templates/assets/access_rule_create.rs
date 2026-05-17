@@ -82,6 +82,14 @@ pub struct AccessRuleCreateTemplate {
     pub form: AccessRuleCreateForm,
     pub user_groups: Vec<GroupOption>,
     pub asset_groups: Vec<GroupOption>,
+    /// Industrial-surface kill-switch. Mirrors
+    /// `state.config.industrial.enabled`: when `false`, the IACS
+    /// checkbox + helper paragraph are hidden so the admin cannot
+    /// add `iacs_*` protocols to a rule while the master switch is
+    /// off. The handler `create_access_rule_web` re-checks this
+    /// flag (layer 4 / defense-in-depth) and refuses a hand-crafted
+    /// POST that sets `allowed_iacs = true`.
+    pub industrial_enabled: bool,
 }
 
 #[cfg(test)]
@@ -157,6 +165,7 @@ mod tests {
                 is_virtual: false,
                 virtual_asset_count: None,
             }],
+            industrial_enabled: true,
         };
         let html = template
             .render()

@@ -186,3 +186,140 @@ async fn iacs_kill_switch_off_collapses_every_subject_to_no_access() {
         "kill-switch must NOT degrade admin_view for role:superuser"
     );
 }
+
+// ===================================================================
+// Source-grep pin tests for the four-layer Assets / Access Rules gate
+// ===================================================================
+//
+// These tests ensure the four-layer defense documented in the
+// `industrial gate hide iacs surface` plan stays in place: layer 2
+// (DB filter), layer 3 (form options), layer 4 (handler POST/GET),
+// and layer 5 (template gate). A single regression in any layer
+// (e.g. forgetting the `.filter(asset_type.ne_all(...))` clause on
+// a new list path) would silently surface IACS rows under the
+// kill-switch; these source-grep pins fail the build before such a
+// drift can land.
+
+/// Layer 2 (DB filter): every Diesel list query that exposes assets
+/// to the user / admin / API zones MUST be wrapped in a
+/// `!state.config.industrial.enabled` guard with a
+/// `.ne_all(AssetType::iacs_variants())` clause. We pin the four
+/// known list sites by counting occurrences across the three
+/// handler files; any new list path added without a matching
+/// kill-switch fence would tip the count out of bounds.
+#[test]
+fn every_iacs_db_filter_is_gated_on_industrial_enabled() {
+    let user_list = include_str!("../../src/handlers/web/assets.rs");
+    let admin_list = include_str!("../../src/handlers/web/manage_assets.rs");
+    let api_list = include_str!("../../src/handlers/api/assets.rs");
+
+    let needle = "ne_all(AssetType::iacs_variants())";
+    let user_hits = user_list.matches(needle).count();
+    let admin_hits = admin_list.matches(needle).count();
+    let api_hits = api_list.matches(needle).count();
+
+    assert!(
+        user_hits >= 2,
+        "handlers/web/assets.rs must apply the IACS DB filter to BOTH \
+         count_query AND query under !industrial.enabled (got {user_hits} site(s))"
+    );
+    assert!(
+        admin_hits >= 4,
+        "handlers/web/manage_assets.rs must apply the IACS DB filter on \
+         (manage_asset_list count + query) and (asset_deleted_list count + query) \
+         under !industrial.enabled (got {admin_hits} site(s))"
+    );
+    assert!(
+        api_hits >= 1,
+        "handlers/api/assets.rs must apply the IACS DB filter under \
+         !industrial.enabled (got {api_hits} site(s))"
+    );
+}
+
+/// Layer 4 (handler defense-in-depth): the four POST handlers that
+/// could persist IACS state -- web `create_asset_web`, web
+/// `create_access_rule_web`, web `update_access_rule_web`, and the
+/// JSON `api::manage_assets::create_asset` -- MUST re-check the
+/// industrial flag before INSERT / UPDATE. We grep the source for
+/// the canonical guard literal so a refactor that drops the check
+/// trips this test.
+#[test]
+fn every_iacs_handler_post_re_checks_industrial_enabled() {
+    let manage = include_str!("../../src/handlers/web/manage_assets.rs");
+    let access_rules = include_str!("../../src/handlers/web/access_rules.rs");
+    let api_manage = include_str!("../../src/handlers/api/manage_assets.rs");
+
+    assert!(
+        manage.contains("!state.config.industrial.enabled && parsed_asset_type.is_iacs()"),
+        "create_asset_web must re-check the industrial flag before INSERT"
+    );
+    assert!(
+        access_rules.contains("!state.config.industrial.enabled"),
+        "access_rules handlers must re-check the industrial flag (create + update)"
+    );
+    assert!(
+        api_manage.contains("!state.config.industrial.enabled && request.asset_type.is_iacs()"),
+        "api::manage_assets::create_asset must re-check the industrial flag before INSERT"
+    );
+
+    // Anti-enumeration on detail / edit / delete / API GET.
+    assert!(
+        manage.contains("!state.config.industrial.enabled && asset_model.asset_type.is_iacs()")
+            || manage.contains("!state.config.industrial.enabled && existing.asset_type.is_iacs()")
+            || manage.contains("!state.config.industrial.enabled && asset_type_val.is_iacs()"),
+        "manage_assets read/update/delete must collapse to 404 when asset is IACS \
+         and industrial is off (anti-enumeration; layer 4)"
+    );
+    assert!(
+        api_manage.contains("!state.config.industrial.enabled && asset.asset_type.is_iacs()")
+            || api_manage
+                .contains("!state.config.industrial.enabled && existing.asset_type.is_iacs()"),
+        "api::manage_assets::get_asset / update_asset must collapse to 404 when \
+         asset is IACS and industrial is off (anti-enumeration; layer 4)"
+    );
+}
+
+/// Layer 5 (template gate): the access_rule_create / access_rule_edit
+/// templates carry an `industrial_enabled: bool` field that hides the
+/// IACS checkbox + helper paragraph from the rendered form. The
+/// templates only run when the admin is creating / editing a non-IACS
+/// rule under the kill-switch, so the field MUST exist. The HTML
+/// likewise MUST gate the IACS checkbox on
+/// `{% if industrial_enabled %}`.
+#[test]
+fn template_industrial_enabled_field_pinned() {
+    let create_struct = include_str!("../../src/templates/assets/access_rule_create.rs");
+    let edit_struct = include_str!("../../src/templates/assets/access_rule_edit.rs");
+    let create_html = include_str!("../../templates/assets/access_rule_create.html");
+    let edit_html = include_str!("../../templates/assets/access_rule_edit.html");
+
+    assert!(
+        create_struct.contains("pub industrial_enabled: bool"),
+        "AccessRuleCreateTemplate must carry `pub industrial_enabled: bool`"
+    );
+    assert!(
+        edit_struct.contains("pub industrial_enabled: bool"),
+        "AccessRuleEditTemplate must carry `pub industrial_enabled: bool`"
+    );
+
+    for (name, html) in [
+        ("access_rule_create.html", create_html),
+        ("access_rule_edit.html", edit_html),
+    ] {
+        let checkbox_idx = html
+            .find("name=\"allowed_iacs\"")
+            .unwrap_or_else(|| panic!("{name}: must still carry the allowed_iacs checkbox"));
+        let prelude = &html[..checkbox_idx];
+        let last_if = prelude
+            .rfind("{% if industrial_enabled %}")
+            .unwrap_or_else(|| {
+                panic!("{name}: allowed_iacs checkbox must be wrapped in {{% if industrial_enabled %}}")
+            });
+        let last_endif = prelude.rfind("{% endif %}").unwrap_or(0);
+        assert!(
+            last_if > last_endif,
+            "{name}: the {{% if industrial_enabled %}} guard for the allowed_iacs \
+             checkbox must NOT be closed before the checkbox itself"
+        );
+    }
+}

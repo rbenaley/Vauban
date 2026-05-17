@@ -135,7 +135,6 @@ async fn spawn_test_sshd_with_channel_cap(
     let host_key_path =
         std::env::temp_dir().join(format!("vauban_iacs_test_host_{}.key", Uuid::new_v4()));
     let cfg = IacsTunnelConfig {
-        enabled: true,
         bind_addr: "127.0.0.1:0".to_string(),
         advertise_hostname: "127.0.0.1".to_string(),
         target_addr: target_addr.to_string(),
@@ -712,25 +711,17 @@ async fn refuses_streamlocal_channel() {
 // Boot-time refusals
 // ===================================================================
 
-#[tokio::test]
-async fn refuses_to_spawn_when_disabled() {
-    let app = TestApp::spawn().await;
-    let cfg = IacsTunnelConfig {
-        enabled: false,
-        ..Default::default()
-    };
-    let res = spawn_iacs_tunnel_server(TunnelRegistry::new(), app.db_pool.clone(), cfg).await;
-    assert!(
-        res.is_err(),
-        "spawn_iacs_tunnel_server must refuse when enabled=false"
-    );
-}
+// NOTE: the legacy `refuses_to_spawn_when_disabled` test was retired
+// (May 2026) together with `IacsTunnelConfig::enabled`. The single
+// gate is now `industrial.enabled`, asserted at the call site of
+// `spawn_iacs_tunnel_server` in `vauban-web/src/main.rs`. When
+// `industrial.enabled = false`, the call is never made -- there is
+// no boot-time refusal path inside the function any more.
 
 #[tokio::test]
 async fn refuses_to_spawn_when_bind_equals_target() {
     let app = TestApp::spawn().await;
     let cfg = IacsTunnelConfig {
-        enabled: true,
         bind_addr: "127.0.0.1:42424".to_string(),
         target_addr: "127.0.0.1:42424".to_string(),
         host_key_path: std::env::temp_dir()

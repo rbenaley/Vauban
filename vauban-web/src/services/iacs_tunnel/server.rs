@@ -42,6 +42,7 @@ use russh::{Channel, ChannelId, MethodKind, MethodSet};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 use crate::config::IacsTunnelConfig;
 use crate::db::DbPool;
@@ -638,10 +639,17 @@ pub fn build_server_config(host_key: PrivateKey) -> Arc<ServerConfig> {
 /// inside a writable directory.
 pub fn load_or_generate_host_key(path: &PathBuf) -> std::io::Result<PrivateKey> {
     if path.exists() {
-        let data = std::fs::read_to_string(path)?;
-        // OpenSSH-format private key.
-        return PrivateKey::from_openssh(&data)
+        // The PEM blob holds the Ed25519 private key in clear; we MUST
+        // zeroize the backing buffer before it is dropped so the secret
+        // does not linger in the process heap arena. Mirrors
+        // `shared::iacs_host_key::load_or_generate_host_key` (used by
+        // the supervisor + proxy_iacs path); the in-process variant
+        // here keeps the same hygiene.
+        let mut data = std::fs::read_to_string(path)?;
+        let parsed = PrivateKey::from_openssh(&data)
             .map_err(|e| std::io::Error::other(format!("invalid host key: {}", e)));
+        data.zeroize();
+        return parsed;
     }
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -653,6 +661,8 @@ pub fn load_or_generate_host_key(path: &PathBuf) -> std::io::Result<PrivateKey> 
         Algorithm::Ed25519,
     )
     .map_err(|e| std::io::Error::other(format!("ed25519 keygen: {}", e)))?;
+    // `to_openssh` returns `Zeroizing<String>` so `openssh` zeroes itself
+    // when it goes out of scope at the end of this function.
     let openssh = key
         .to_openssh(russh::keys::ssh_key::LineEnding::LF)
         .map_err(|e| std::io::Error::other(format!("encode host key: {}", e)))?;
@@ -702,11 +712,10 @@ pub async fn spawn_iacs_tunnel_server_with_broadcast(
     std::net::SocketAddr,
     tokio::task::JoinHandle<std::io::Result<()>>,
 )> {
-    if !config.enabled {
-        return Err(std::io::Error::other(
-            "iacs_tunnel: server is disabled in config",
-        ));
-    }
+    // The legacy gate (`config.enabled`) was removed (May 2026). The
+    // master switch is `industrial.enabled`, checked by the caller in
+    // `vauban-web/src/main.rs` BEFORE invoking this function. Passing
+    // a config to this function necessarily means industrial mode is on.
     if config.bind_addr == config.target_addr {
         return Err(std::io::Error::other(format!(
             "iacs_tunnel: bind_addr ({}) must not equal target_addr ({})",

@@ -79,6 +79,14 @@ pub async fn get_asset(
             _ => AppError::Database(e),
         })?;
 
+    // Industrial kill-switch (layer 4 of 4): anti-enumeration on
+    // IACS asset detail. Returns 404 (not 403) so the caller cannot
+    // distinguish "this UUID does not exist" from "this UUID is IACS
+    // and industrial is off". Mirrors the web `asset_detail` handler.
+    if !state.config.industrial.enabled && asset.asset_type.is_iacs() {
+        return Err(AppError::NotFound("Asset not found".to_string()));
+    }
+
     Ok(Json(asset))
 }
 
@@ -95,6 +103,17 @@ pub async fn create_asset(
 
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
+
+    // Industrial kill-switch (layer 4 of 4): refuse to create an IACS
+    // asset while the master switch is off. The DB list filters
+    // (layer 2) would hide the row, so allowing creation would make
+    // it invisible to the very admin who just created it -- confusing
+    // failure mode. Mirrors `web::manage_assets::create_asset_web`.
+    if !state.config.industrial.enabled && request.asset_type.is_iacs() {
+        return Err(AppError::Validation(
+            "Industrial assets cannot be created while industrial.enabled = false".to_string(),
+        ));
+    }
 
     let mut conn = state
         .db_pool
@@ -260,6 +279,15 @@ pub async fn update_asset(
             handle_error!(StatusCode::NOT_FOUND, "Asset not found");
         }
     };
+
+    // Industrial kill-switch (layer 4 of 4): anti-enumeration on
+    // IACS asset update. Returns 404 (not 403) so the caller cannot
+    // distinguish "this UUID does not exist" from "this UUID is IACS
+    // and industrial is off". Mirrors `get_asset` and the web
+    // `update_asset_web`.
+    if !state.config.industrial.enabled && existing.asset_type.is_iacs() {
+        handle_error!(StatusCode::NOT_FOUND, "Asset not found");
+    }
 
     let strip = |s: &str| -> String {
         ammonia::Builder::new()

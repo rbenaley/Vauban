@@ -45,4 +45,12 @@ pub mod session_token;
 #[cfg(feature = "tasks")]
 pub mod tasks;
 
+// IACS sshd Ed25519 host key persistence (load_or_generate_host_key,
+// prepare_host_key_fd, read_host_key_from_fd). Pulled in by vauban-
+// supervisor (pre-loads the key BEFORE fork and hands the FD to the
+// proxy) and by vauban-proxy-iacs (drains the FD BEFORE Capsicum so
+// the proxy never opens a path post-`cap_enter`).
+#[cfg(feature = "iacs-host-key")]
+pub mod iacs_host_key;
+
 pub use messages::{ControlMessage, Message, ServiceStats};

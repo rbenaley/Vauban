@@ -69,6 +69,16 @@ pub async fn list_assets(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let mut query = assets.filter(is_deleted.eq(false)).into_boxed();
 
+    // Industrial kill-switch (layer 2 of 4): mirrors the web list
+    // filters in `handlers::web::assets::asset_list` /
+    // `handlers::web::manage_assets::manage_asset_list`. The JSON
+    // API MUST surface the same set of rows as the HTML page or a
+    // CLI / IaC client could enumerate IACS UUIDs that the user
+    // cannot see in the browser.
+    if !state.config.industrial.enabled {
+        query = query.filter(asset_type.ne_all(AssetType::iacs_variants()));
+    }
+
     if !perms.assets_read_all {
         let user_internal_id: i32 = crate::schema::users::table
             .filter(

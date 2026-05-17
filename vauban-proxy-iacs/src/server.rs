@@ -12,12 +12,10 @@
 //! binary uses to talk to `vauban-supervisor` over IPC and receive
 //! the brokered FD via SCM_RIGHTS.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
-use russh::keys::ssh_key::Algorithm;
 use russh::keys::{PrivateKey, PublicKey};
 use russh::server::{Auth, Config as ServerConfig, Handler, Msg, Server, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet};
@@ -621,33 +619,9 @@ pub fn build_server_config(host_key: PrivateKey) -> Arc<ServerConfig> {
     })
 }
 
-/// Load (or generate-and-persist) the ed25519 host key.
-pub fn load_or_generate_host_key(path: &PathBuf) -> std::io::Result<PrivateKey> {
-    if path.exists() {
-        let data = std::fs::read_to_string(path)?;
-        return PrivateKey::from_openssh(&data)
-            .map_err(|e| std::io::Error::other(format!("invalid host key: {e}")));
-    }
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    let key = PrivateKey::random(
-        &mut russh::keys::ssh_key::rand_core::OsRng,
-        Algorithm::Ed25519,
-    )
-    .map_err(|e| std::io::Error::other(format!("ed25519 keygen: {e}")))?;
-    let openssh = key
-        .to_openssh(russh::keys::ssh_key::LineEnding::LF)
-        .map_err(|e| std::io::Error::other(format!("encode host key: {e}")))?;
-    std::fs::write(path, openssh.as_bytes())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perm = std::fs::metadata(path)?.permissions();
-        perm.set_mode(0o600);
-        std::fs::set_permissions(path, perm)?;
-    }
-    Ok(key)
-}
+// `load_or_generate_host_key` has moved to
+// `shared::iacs_host_key::load_or_generate_host_key`. The proxy NEVER
+// opens the host key path itself any more: the supervisor pre-loads
+// it BEFORE fork (`prepare_host_key_fd`) and the proxy parses the
+// inherited FD BEFORE Capsicum (`read_host_key_from_fd`). See the
+// `host_key_loaded_before_capsicum_test` pin tests for the invariant.

@@ -77,7 +77,7 @@ pub async fn asset_create_form(
         header_user,
         form,
         csrf_token,
-        asset_types: AssetType::select_options(),
+        asset_types: AssetType::select_options(state.config.industrial.enabled),
     };
 
     let html = template
@@ -165,6 +165,19 @@ pub async fn create_asset_web(
             );
         }
     };
+
+    // Industrial kill-switch (layer 4 of 4): refuse to create an IACS
+    // asset while the master switch is off. The form `<select>` is
+    // already filtered (layer 3); a hand-crafted POST is the only way
+    // to reach here, and we reject with a flash error rather than
+    // accept-then-hide. Mirrors `api::manage_assets::create_asset`.
+    if !state.config.industrial.enabled && parsed_asset_type.is_iacs() {
+        return flash_redirect(
+            flash.error("Industrial assets cannot be created while industrial.enabled = false"),
+            "/assets/manage",
+        );
+    }
+
     if let Err(msg) = validate_auth_inputs(
         parsed_asset_type,
         form.ssh_auth_type.as_deref(),
@@ -335,6 +348,17 @@ pub async fn manage_asset_list(
         .filter(schema_assets::is_deleted.eq(false))
         .into_boxed();
 
+    // Industrial kill-switch (layer 2 of 4): when `industrial.enabled
+    // = false`, every `iacs_*` row is filtered out at the DB level so
+    // the admin /assets/manage list does not surface industrial assets
+    // while the master switch is off. Anti-enumeration on detail/edit/
+    // delete is layer 4 (404 in `asset_detail` / `asset_edit_form` /
+    // `update_asset_web` / `delete_asset_web`). Pinned by
+    // `every_iacs_db_filter_is_gated_on_industrial_enabled`.
+    if !state.config.industrial.enabled {
+        count_query =
+            count_query.filter(schema_assets::asset_type.ne_all(AssetType::iacs_variants()));
+    }
     if let Some(ref search) = search_filter
         && !search.is_empty()
     {
@@ -378,6 +402,12 @@ pub async fn manage_asset_list(
         .filter(schema_assets::is_deleted.eq(false))
         .into_boxed();
 
+    // Industrial kill-switch (layer 2 of 4): same DB-level filter as
+    // applied to `count_query` above; both queries MUST stay in
+    // lock-step.
+    if !state.config.industrial.enabled {
+        query = query.filter(schema_assets::asset_type.ne_all(AssetType::iacs_variants()));
+    }
     if let Some(ref search) = search_filter
         && !search.is_empty()
     {
@@ -477,7 +507,7 @@ pub async fn manage_asset_list(
         search: search_filter,
         type_filter,
         status_filter,
-        asset_types: AssetType::filter_options(),
+        asset_types: AssetType::filter_options(state.config.industrial.enabled),
         statuses: vec![
             ("online".to_string(), "Online".to_string()),
             ("offline".to_string(), "Offline".to_string()),
@@ -534,18 +564,32 @@ pub async fn asset_deleted_list(
         .unwrap_or(1)
         .max(1);
 
-    let total_items: i64 = schema_assets::table
+    // Industrial kill-switch (layer 2 of 4): even tombstones leak the
+    // existence of the industrial surface (hostname, deletion date,
+    // IACS protocol label). The audit page hides them while the
+    // master switch is off; the rows persist in the DB and resurface
+    // automatically when industrial.enabled is flipped back to true.
+    let mut count_query = schema_assets::table
         .filter(schema_assets::is_deleted.eq(true))
-        .count()
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
+        .into_boxed();
+    if !state.config.industrial.enabled {
+        count_query =
+            count_query.filter(schema_assets::asset_type.ne_all(AssetType::iacs_variants()));
+    }
+    let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
     let total_pages = ((total_items as f64) / (ASSETS_PER_PAGE as f64))
         .ceil()
         .max(1.0) as i32;
     let page = page.min(total_pages);
     let offset = ((page - 1) as i64) * ASSETS_PER_PAGE;
 
+    let mut rows_query = schema_assets::table
+        .filter(schema_assets::is_deleted.eq(true))
+        .into_boxed();
+    if !state.config.industrial.enabled {
+        rows_query =
+            rows_query.filter(schema_assets::asset_type.ne_all(AssetType::iacs_variants()));
+    }
     #[allow(clippy::type_complexity)]
     let rows: Vec<(
         ::uuid::Uuid,
@@ -557,8 +601,7 @@ pub async fn asset_deleted_list(
         Option<chrono::DateTime<chrono::Utc>>,
         chrono::DateTime<chrono::Utc>,
         Option<i32>,
-    )> = schema_assets::table
-        .filter(schema_assets::is_deleted.eq(true))
+    )> = rows_query
         .select((
             schema_assets::uuid,
             schema_assets::name,
@@ -686,9 +729,19 @@ pub async fn asset_search(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let pattern = crate::db::like_contains(query);
 
-    let rows: Vec<(uuid::Uuid, String, String, AssetType, String)> = a::assets
+    let mut search_query = a::assets
         .filter(a::is_deleted.eq(false))
         .filter(a::name.ilike(&pattern).or(a::hostname.ilike(&pattern)))
+        .into_boxed();
+    // Industrial kill-switch (layer 2 of 4): the HTMX search-suggestion
+    // dropdown is the third gateway into the admin asset catalogue
+    // (after the page-level list and the type-filter dropdown). Without
+    // this filter, an admin could enumerate IACS hostnames by typing a
+    // few characters in the search box while industrial.enabled = false.
+    if !state.config.industrial.enabled {
+        search_query = search_query.filter(a::asset_type.ne_all(AssetType::iacs_variants()));
+    }
+    let rows: Vec<(uuid::Uuid, String, String, AssetType, String)> = search_query
         .select((a::uuid, a::name, a::hostname, a::asset_type, a::status))
         .order(a::name.asc())
         .limit(8)
@@ -799,6 +852,16 @@ pub async fn asset_detail(
             );
         }
     };
+
+    // Industrial kill-switch (layer 4 of 4): anti-enumeration on
+    // IACS asset detail. We collapse to the same "Asset not found"
+    // flash a missing UUID would yield, so the caller cannot
+    // distinguish "this UUID does not exist" from "this UUID is IACS
+    // and `industrial.enabled = false`". Mirrors `asset_edit_form`
+    // and `update_asset_web`.
+    if !state.config.industrial.enabled && asset_model.asset_type.is_iacs() {
+        return flash_redirect(flash.error("Asset not found"), "/assets/manage");
+    }
 
     let asset_name = asset_model.name.clone();
 
@@ -1014,6 +1077,16 @@ pub async fn asset_edit(
         asset_connection_config,
         ssh_username,
     ) = asset_row;
+
+    // Industrial kill-switch (layer 4 of 4): anti-enumeration on
+    // IACS asset edit. Same flash as a missing UUID; the caller
+    // cannot distinguish "this UUID does not exist" from "this UUID
+    // is IACS and `industrial.enabled = false`". Mirrors
+    // `asset_detail` and `update_asset_web`.
+    if !state.config.industrial.enabled && asset_type_val.is_iacs() {
+        return flash_redirect(flash.error("Asset not found"), "/assets/manage");
+    }
+
     let ssh_auth_type = asset_connection_config
         .get("auth_type")
         .and_then(|v| v.as_str())
@@ -1199,6 +1272,14 @@ pub async fn update_asset_web(
             return flash_redirect(flash.error("Asset not found"), "/assets/manage");
         }
     };
+
+    // Industrial kill-switch (layer 4 of 4): anti-enumeration on
+    // IACS asset update. Same flash as a missing UUID; the caller
+    // cannot distinguish "this UUID does not exist" from "this UUID
+    // is IACS and `industrial.enabled = false`".
+    if !state.config.industrial.enabled && existing.asset_type.is_iacs() {
+        return flash_redirect(flash.error("Asset not found"), "/assets/manage");
+    }
 
     if let Err(msg) = validate_auth_inputs(
         existing.asset_type,
@@ -1391,14 +1472,14 @@ pub async fn delete_asset_web(
     use crate::schema::proxy_sessions::dsl as ps;
     use chrono::Utc;
 
-    let asset_id: i32 = match a::assets
+    let asset_lookup: Result<(i32, AssetType), _> = a::assets
         .filter(a::uuid.eq(asset_uuid))
         .filter(a::is_deleted.eq(false))
-        .select(a::id)
+        .select((a::id, a::asset_type))
         .first(&mut conn)
-        .await
-    {
-        Ok(id) => id,
+        .await;
+    let (asset_id, asset_type_val): (i32, AssetType) = match asset_lookup {
+        Ok(row) => row,
         Err(diesel::result::Error::NotFound) => {
             return htmx_or_flash_redirect(
                 &headers,
@@ -1414,6 +1495,18 @@ pub async fn delete_asset_web(
             );
         }
     };
+
+    // Industrial kill-switch (layer 4 of 4): anti-enumeration on
+    // IACS asset delete. Same flash as a missing UUID; the caller
+    // cannot distinguish "this UUID does not exist" from "this UUID
+    // is IACS and `industrial.enabled = false`".
+    if !state.config.industrial.enabled && asset_type_val.is_iacs() {
+        return htmx_or_flash_redirect(
+            &headers,
+            flash.error("Asset not found or already deleted"),
+            "/assets/manage",
+        );
+    }
 
     let now = Utc::now();
     // Issue #22 — re-stamp `updated_by_id` on soft-delete: the

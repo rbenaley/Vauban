@@ -830,7 +830,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // follow-up cleanup; deletion would cascade through dozens of
     // unit tests and is out of scope for this lot.
     let proxy_iacs_present = app_state.proxy_iacs.is_some();
-    if config.industrial.enabled && config.industrial.iacs_tunnel.enabled && !proxy_iacs_present {
+    if config.industrial.enabled && !proxy_iacs_present {
         let registry = app_state.iacs_tunnel_registry.clone();
         let pool = app_state.db_pool.clone();
         let tunnel_cfg = config.industrial.iacs_tunnel.clone();
@@ -868,7 +868,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _watchdog =
             vauban_web::services::iacs_tunnel::spawn_watchdog(registry, pool, tunnel_cfg);
         tracing::info!("iacs_tunnel: revocation watchdog spawned");
-    } else if config.industrial.enabled && config.industrial.iacs_tunnel.enabled {
+    } else if config.industrial.enabled {
         // proxy_iacs_present == true: spawn the revocation watchdog
         // anyway. The watchdog is DB-backed and protocol-agnostic;
         // it runs in vauban-web (which holds the DB pool) rather
@@ -889,8 +889,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tracing::info!(
             industrial_enabled = config.industrial.enabled,
-            iacs_tunnel_enabled = config.industrial.iacs_tunnel.enabled,
-            "iacs_tunnel: sshd not started (kill-switch off)"
+            "iacs_tunnel: sshd not started (industrial.enabled = false)"
         );
     }
 

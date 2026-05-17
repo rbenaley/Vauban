@@ -978,20 +978,15 @@ impl Default for IndustrialConfig {
 /// service / no new IPC -- the sshd is a `tokio::spawn` task driven
 /// by `russh`).
 ///
-/// Two booleans gate the boot:
-///
-///   * `industrial.enabled` (parent) -- master kill-switch for the
-///     IACS module. When `false` the tunnel server never binds,
-///     regardless of this struct.
-///   * `industrial.iacs_tunnel.enabled` (this struct) -- per-feature
-///     opt-out so an operator can disable IACS tunnels while keeping
-///     the rest of the IACS UI alive.
+/// Single gate: `industrial.enabled` (parent). When `false`, the
+/// tunnel server never binds and every `/iacs/*` route returns 404.
+/// The previous per-feature `industrial.iacs_tunnel.enabled` switch
+/// has been retired (May 2026): if industrial mode is on, the IACS
+/// tunnel is on. The fields below are operational parameters
+/// (bind address, host key path, caps, ...) that are only consumed
+/// when `industrial.enabled = true`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IacsTunnelConfig {
-    /// Per-feature switch. Default `true`.
-    #[serde(default = "IacsTunnelConfig::default_enabled")]
-    pub enabled: bool,
-
     /// `host:port` the sshd listens on. Default `0.0.0.0:22322`. The
     /// canonical `22` is reserved for the regular VAUBAN proxy on
     /// the same host.
@@ -1067,9 +1062,6 @@ pub struct IacsTunnelConfig {
 }
 
 impl IacsTunnelConfig {
-    fn default_enabled() -> bool {
-        true
-    }
     fn default_bind_addr() -> String {
         "0.0.0.0:22322".to_string()
     }
@@ -1113,7 +1105,6 @@ impl IacsTunnelConfig {
 impl Default for IacsTunnelConfig {
     fn default() -> Self {
         Self {
-            enabled: Self::default_enabled(),
             bind_addr: Self::default_bind_addr(),
             advertise_hostname: Self::default_advertise_hostname(),
             target_addr: Self::default_target_addr(),

@@ -132,7 +132,6 @@ async fn read_session_status(conn: &mut AsyncPgConnection, uuid: Uuid) -> String
 
 fn cfg_with_ttl(ttl: u32) -> IacsTunnelConfig {
     IacsTunnelConfig {
-        enabled: true,
         bind_addr: "127.0.0.1:0".to_string(),
         advertise_hostname: "127.0.0.1".to_string(),
         target_addr: "127.0.0.1:65535".to_string(),

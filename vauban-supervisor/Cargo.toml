@@ -14,7 +14,11 @@ workspace = true
 # `session-token` enables the cryptographic session-token gate (key
 # generation at boot, env-var dissemination to children, MAC verification
 # in handle_tcp_connect_request before DNS+connect). Required.
-shared = { workspace = true, features = ["session-token"] }
+# `iacs-host-key` enables shared::iacs_host_key so the supervisor can
+# load-or-generate the IACS sshd Ed25519 host key BEFORE fork and pass
+# the file descriptor to vauban-proxy-iacs (the proxy is sandboxed by
+# Capsicum and cannot open paths post `cap_enter` -- errno 94).
+shared = { workspace = true, features = ["session-token", "iacs-host-key"] }
 libc.workspace = true
 nix.workspace = true
 tracing.workspace = true

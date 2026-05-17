@@ -62,7 +62,7 @@ use uuid::Uuid;
 use crate::auth::{PendingSessions, PendingTunnel};
 use crate::ipc::AsyncIpcChannel;
 use crate::registry::{SessionHandles, TunnelRegistry};
-use crate::server::{IacsTunnelServer, build_server_config, load_or_generate_host_key};
+use crate::server::{IacsTunnelServer, build_server_config};
 use crate::upstream::{PendingConnections, SupervisorBrokerOpener};
 
 /// Service runtime state (shared across async tasks).
@@ -234,9 +234,13 @@ async fn run_service() -> Result<()> {
     };
 
     // === 2. The supervisor pre-binds the IACS sshd listener and
-    // hands the FD via env. Without it the proxy stays idle but
-    // alive (heartbeats keep flowing so the supervisor does not
-    // restart us in a hot loop).
+    // pre-loads the russh host key, then hands BOTH FDs via env
+    // (analogous to the HTTPS listener for vauban-web -- a privileged
+    // port < 1024 needs a privileged binder, and Capsicum
+    // post-`cap_enter` cannot `open()` the host key path). Without
+    // these FDs we MUST refuse to start: there is no operating mode
+    // where vauban-proxy-iacs is useful but the supervisor did not
+    // pre-bind / pre-load.
     let listener_fd: Option<RawFd> = std::env::var("VAUBAN_IACS_LISTENER_FD")
         .ok()
         .and_then(|s| s.parse().ok());
@@ -245,8 +249,9 @@ async fn run_service() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok());
 
-    let host_key_path = std::env::var("VAUBAN_IACS_HOST_KEY_PATH")
-        .unwrap_or_else(|_| "/var/lib/vauban/iacs_tunnel_host_ed25519".to_string());
+    let host_key_fd: Option<RawFd> = std::env::var("VAUBAN_IACS_HOST_KEY_FD")
+        .ok()
+        .and_then(|s| s.parse().ok());
 
     // Per-login concurrent `direct-tcpip` channel cap. `0` disables
     // the cap (unlimited). A malformed value falls back to the
@@ -278,7 +283,7 @@ async fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_AUDIT_IPC_WRITE");
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
         std::env::remove_var("VAUBAN_IACS_LISTENER_FD");
-        std::env::remove_var("VAUBAN_IACS_HOST_KEY_PATH");
+        std::env::remove_var("VAUBAN_IACS_HOST_KEY_FD");
         std::env::remove_var("VAUBAN_IACS_MAX_CHANNELS_PER_SESSION");
     }
 
@@ -328,10 +333,42 @@ async fn run_service() -> Result<()> {
     let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| vec![fd]);
     let listener_fds: Option<Vec<RawFd>> = listener_fd.map(|fd| vec![fd]);
 
-    // === 5. Capsicum sandbox. After this point, the proxy can
+    // === 5a. Drain the host key FD BEFORE entering Capsicum.
+    //
+    // SECURITY (FreeBSD): post-`cap_enter` the kernel forbids any
+    // `open()` on an absolute path (errno 94, "Not permitted in
+    // capability mode"). Reading the russh sshd host key from disk
+    // -- whether by re-opening `host_key_path` or by triggering
+    // `from_openssh` on a still-unread inherited FD -- must therefore
+    // happen here, while we still hold a vanilla file descriptor
+    // table. The supervisor pre-loaded the key via
+    // `shared::iacs_host_key::prepare_host_key_fd` and inherited the
+    // read-only FD as `VAUBAN_IACS_HOST_KEY_FD`; we consume it
+    // (single-shot read + parse + drop) so the FD is closed before
+    // Capsicum locks us down.
+    //
+    // No fallback path. If the supervisor did not pre-load the key
+    // (e.g. operator started this binary directly, or
+    // `industrial.enabled = false`) we abort cleanly rather than
+    // silently fall back to opening a path under Capsicum.
+    let host_key = match host_key_fd {
+        Some(fd) => {
+            let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+            shared::iacs_host_key::read_host_key_from_fd(owned)
+                .context("Failed to read IACS host key from supervisor-provided FD")?
+        }
+        None => anyhow::bail!(
+            "VAUBAN_IACS_HOST_KEY_FD missing -- vauban-proxy-iacs MUST be \
+             spawned by vauban-supervisor with industrial.enabled = true; \
+             post-Capsicum host key load is forbidden by FreeBSD cap_enter"
+        ),
+    };
+
+    // === 5b. Capsicum sandbox. After this point, the proxy can
     // ONLY read/write its IPC pipes, accept() on the inherited
     // listener FD, and recvmsg() on the FD-passing socket. No
-    // new socket(), no new bind(), no new connect().
+    // new socket(), no new bind(), no new connect(), no new
+    // open() on an absolute path (errno 94 on FreeBSD).
     capsicum::setup_service_sandbox_with_listeners(
         &ipc_fds,
         None, // No DB connection.
@@ -372,8 +409,6 @@ async fn run_service() -> Result<()> {
         next_request_id: AtomicU64::new(1),
     });
 
-    let host_key = load_or_generate_host_key(&host_key_path.into())
-        .context("Failed to load/generate IACS sshd host key")?;
     let server_config = build_server_config(host_key);
 
     // Spawn the russh accept loop on the inherited listener FD.
@@ -446,7 +481,8 @@ async fn run_service() -> Result<()> {
     } else {
         info!(
             "VAUBAN_IACS_LISTENER_FD not set; vauban-proxy-iacs idle \
-             (industrial.iacs_tunnel.enabled = false)"
+             (supervisor did not pre-bind the listener -- check \
+             industrial.enabled in vauban.conf)"
         );
     }
 

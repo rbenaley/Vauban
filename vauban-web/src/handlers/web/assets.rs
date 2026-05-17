@@ -92,6 +92,17 @@ pub async fn asset_list(
         .into_boxed();
 
     count_query = count_query.filter(schema_assets::id.eq_any(accessible_ids.clone()));
+    // Industrial kill-switch (layer 2 of 4): when `industrial.enabled
+    // = false`, every `iacs_*` row is filtered out at the DB level so
+    // the user-zone /assets list does not leak the existence of the
+    // industrial surface. The Connect button + sidebar entry are
+    // already hidden by the PermissionContext collapse (layer 1); the
+    // form options + handler POST guards are layers 3-4. See the
+    // `industrial gate hide iacs surface` plan.
+    if !state.config.industrial.enabled {
+        count_query =
+            count_query.filter(schema_assets::asset_type.ne_all(AssetType::iacs_variants()));
+    }
     if let Some(ref search) = search_filter
         && !search.is_empty()
     {
@@ -136,6 +147,13 @@ pub async fn asset_list(
         .into_boxed();
 
     query = query.filter(schema_assets::id.eq_any(accessible_ids.clone()));
+    // Industrial kill-switch (layer 2 of 4): same DB-level filter as
+    // applied to `count_query` above. Both queries MUST stay in
+    // lock-step or pagination would surface "0 rows" on a count of
+    // N IACS rows that the user cannot actually see.
+    if !state.config.industrial.enabled {
+        query = query.filter(schema_assets::asset_type.ne_all(AssetType::iacs_variants()));
+    }
     if let Some(ref search) = search_filter
         && !search.is_empty()
     {
@@ -384,7 +402,7 @@ pub async fn asset_list(
         search: search_filter,
         type_filter,
         status_filter,
-        asset_types: AssetType::filter_options(),
+        asset_types: AssetType::filter_options(state.config.industrial.enabled),
         statuses: vec![
             ("online".to_string(), "Online".to_string()),
             ("offline".to_string(), "Offline".to_string()),

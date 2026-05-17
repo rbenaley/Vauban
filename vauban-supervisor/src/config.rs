@@ -258,27 +258,71 @@ impl MailerConfig {
 }
 
 /// Industrial control systems configuration (supervisor view).
-#[derive(Debug, Default, Clone, Deserialize)]
+///
+/// The single source of truth for the master industrial-surface
+/// switch is `industrial.enabled`. When `false`, the supervisor:
+///
+///   * does NOT spawn `vauban-proxy-iacs` (skipped in the startup
+///     loop and the watchdog respawn paths),
+///   * does NOT pre-bind the IACS sshd listener,
+///   * does NOT pre-load the host key.
+///
+/// The previous per-feature switch `industrial.iacs_tunnel.enabled`
+/// has been retired (May 2026): if industrial mode is on, the IACS
+/// tunnel is on; the supervisor warns at boot if the deprecated key
+/// is still present in the deployed TOML and ignores it.
+#[derive(Debug, Clone, Deserialize)]
 pub struct IndustrialConfig {
+    /// Master switch. Default `true` (the industrial surface ships
+    /// turned on; an operator opts out explicitly with
+    /// `enabled = false`). Read by every Vauban service that runs
+    /// industrial-only logic.
+    #[serde(default = "default_industrial_enabled")]
+    pub enabled: bool,
     #[serde(default)]
     pub iacs_tunnel: IacsTunnelSupervisorConfig,
+}
+
+fn default_industrial_enabled() -> bool {
+    true
+}
+
+impl Default for IndustrialConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_industrial_enabled(),
+            iacs_tunnel: IacsTunnelSupervisorConfig::default(),
+        }
+    }
 }
 
 /// Supervisor's view of `[industrial.iacs_tunnel]`. Only the fields
 /// the supervisor needs are deserialised here; vauban-web and
 /// vauban-proxy-iacs each parse the broader block separately.
+///
+/// There is NO active `enabled` switch here: the IACS surface is
+/// gated exclusively by `industrial.enabled`. The
+/// `_deprecated_enabled` field below exists only so the supervisor
+/// can emit a one-shot deprecation warning at boot when the legacy
+/// key is still present in a deployed TOML.
 #[derive(Debug, Clone, Deserialize)]
 pub struct IacsTunnelSupervisorConfig {
-    /// Master switch. When false, the supervisor does NOT pre-bind
-    /// the IACS sshd listener; vauban-proxy-iacs is still spawned but
-    /// observes that `VAUBAN_IACS_LISTENER_FD` is unset and stays
-    /// idle. Useful when industrial mode is licensed off.
-    #[serde(default = "default_iacs_tunnel_enabled")]
-    pub enabled: bool,
+    /// DEPRECATED (May 2026). Captured here only to allow the
+    /// supervisor to log a deprecation warning at boot. Always
+    /// ignored at runtime. Use `industrial.enabled` instead.
+    #[serde(default, rename = "enabled")]
+    pub _deprecated_enabled: Option<bool>,
     /// Listener bind address ("host:port") for the sshd that EWS
     /// hosts connect to with `ssh -L`. Defaults to `127.0.0.1:4321`
     /// for backwards compatibility with development setups; production
     /// deployments should pin a routable address.
+    ///
+    /// SECURITY / privileged-port: the supervisor binds this socket
+    /// BEFORE dropping privileges (same pattern as the HTTPS listener),
+    /// so port < 1024 is safe. The raw FD is then inherited by
+    /// `vauban-proxy-iacs` across `fork+execv` (env
+    /// `VAUBAN_IACS_LISTENER_FD`), and the proxy only needs `accept()`
+    /// after `cap_enter`.
     #[serde(default = "default_iacs_tunnel_bind_addr")]
     pub bind_addr: String,
     /// Allow brokered TCP connect to a loopback address. False in
@@ -288,12 +332,15 @@ pub struct IacsTunnelSupervisorConfig {
     #[serde(default)]
     pub allow_loopback_targets: bool,
     /// Persistent path for the russh sshd ed25519 host key consumed
-    /// by `vauban-proxy-iacs`. The supervisor doesn't read this file;
-    /// it forwards the path to the proxy via
-    /// `VAUBAN_IACS_HOST_KEY_PATH`. The proxy generates the key on
-    /// first boot if absent (mode 0600). Defaults to the production
-    /// path under `/var/lib/vauban/`; dev / CI override to a repo-
-    /// local path that the unprivileged dev user can write.
+    /// by `vauban-proxy-iacs`. The SUPERVISOR loads-or-generates the
+    /// key BEFORE fork (`shared::iacs_host_key::prepare_host_key_fd`)
+    /// and hands the file descriptor to the proxy via
+    /// `VAUBAN_IACS_HOST_KEY_FD`. The proxy never opens this path
+    /// itself: under FreeBSD Capsicum, post-`cap_enter` `open()` on
+    /// an absolute path returns `errno 94` ("Not permitted in
+    /// capability mode"). Defaults to the production path under
+    /// `/var/lib/vauban/`; dev / CI override to a repo-local path
+    /// that the unprivileged dev user can write.
     #[serde(default = "default_iacs_tunnel_host_key_path")]
     pub host_key_path: String,
     /// Maximum number of concurrent SSH `direct-tcpip` channels per
@@ -304,10 +351,6 @@ pub struct IacsTunnelSupervisorConfig {
     /// it does not consume it directly).
     #[serde(default = "default_iacs_tunnel_max_concurrent_channels_per_session")]
     pub max_concurrent_channels_per_session: u32,
-}
-
-fn default_iacs_tunnel_enabled() -> bool {
-    false
 }
 
 fn default_iacs_tunnel_bind_addr() -> String {
@@ -325,13 +368,22 @@ fn default_iacs_tunnel_max_concurrent_channels_per_session() -> u32 {
 impl Default for IacsTunnelSupervisorConfig {
     fn default() -> Self {
         Self {
-            enabled: default_iacs_tunnel_enabled(),
+            _deprecated_enabled: None,
             bind_addr: default_iacs_tunnel_bind_addr(),
             allow_loopback_targets: false,
             host_key_path: default_iacs_tunnel_host_key_path(),
             max_concurrent_channels_per_session:
                 default_iacs_tunnel_max_concurrent_channels_per_session(),
         }
+    }
+}
+
+impl IacsTunnelSupervisorConfig {
+    /// Return `Some(value)` if the deployed TOML still carries the
+    /// retired `industrial.iacs_tunnel.enabled` key, `None` otherwise.
+    /// The supervisor calls this at boot to log a deprecation warning.
+    pub fn deprecated_enabled(&self) -> Option<bool> {
+        self._deprecated_enabled
     }
 }
 
@@ -731,16 +783,17 @@ impl SupervisorConfig {
                 // -- env vars set here are strings, while the FD path
                 // also needs FD_CLOEXEC clearing).
                 //
-                // The host key path is a regular string env var,
-                // piped from `industrial.iacs_tunnel.host_key_path`
-                // so dev / CI can point at a repo-local file the
-                // unprivileged user can write (the production default
-                // `/var/lib/vauban/...` requires root or the
-                // `vauban_iacs` group).
-                vars.push((
-                    "VAUBAN_IACS_HOST_KEY_PATH".to_string(),
-                    self.industrial.iacs_tunnel.host_key_path.clone(),
-                ));
+                // The host key is also pre-loaded by the supervisor
+                // (`shared::iacs_host_key::prepare_host_key_fd` reads
+                // or generates the file at `host_key_path` BEFORE the
+                // fork) and the resulting OwnedFd is passed via
+                // `VAUBAN_IACS_HOST_KEY_FD` -- again from the
+                // inheritable_fds slot in spawn_child, NOT here. The
+                // proxy NEVER opens the host key path itself: under
+                // FreeBSD Capsicum, post-`cap_enter` `open()` on an
+                // absolute path returns errno 94 ("Not permitted in
+                // capability mode").
+                //
                 // Per-login channel cap. `vauban-proxy-iacs` reads
                 // this value at boot and bounds the number of
                 // concurrent `direct-tcpip` channels per authenticated

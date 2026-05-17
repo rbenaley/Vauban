@@ -40,6 +40,13 @@ rand = { version = "0.8", optional = true }
 subtle = { version = "2.5", optional = true }
 uuid = { version = "1.11", features = ["v4", "serde"], optional = true }
 
+# IACS sshd host key prep (load or generate Ed25519, persist 0600).
+# Behind the `iacs-host-key` feature so tokio-free crates (vault, audit,
+# auth) keep their dep tree minimal. Activated by vauban-supervisor (pre-
+# binds and pre-loads the key BEFORE fork) and by vauban-proxy-iacs (parses
+# the file contents read off the inherited FD BEFORE entering Capsicum).
+russh = { workspace = true, optional = true }
+
 [features]
 default = []
 # Enables the shared::access_guard module (defense-in-depth RBAC re-check
@@ -58,6 +65,12 @@ tasks = ["dep:tokio", "tokio/time", "tokio/rt"]
 # supervisor and every protocol proxy (verify). vauban-web does NOT
 # need this feature -- it only transports an opaque byte vector.
 session-token = ["dep:blake3", "dep:secrecy", "dep:base64", "dep:rand", "dep:subtle", "dep:uuid"]
+# Enables shared::iacs_host_key (load_or_generate_host_key,
+# prepare_host_key_fd, read_host_key_from_fd). Pulled in by vauban-
+# supervisor (pre-loads + handsover FD) and vauban-proxy-iacs (parses
+# from FD before Capsicum). Other crates do NOT need russh and stay
+# slim.
+iacs-host-key = ["dep:russh"]
 
 # Capsicum bindings for FreeBSD
 [target.'cfg(target_os = "freebsd")'.dependencies]

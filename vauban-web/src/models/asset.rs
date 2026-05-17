@@ -321,20 +321,33 @@ impl AssetType {
     /// `(value, label)` tuples suitable for the asset_type `<select>`
     /// element in the admin asset form. Single source of truth so the
     /// 7 entries cannot drift between create / edit / list templates.
-    pub fn select_options() -> Vec<(String, String)> {
+    ///
+    /// `industrial_enabled` mirrors `[industrial].enabled` from the
+    /// loaded TOML (see [`crate::config::IndustrialConfig::enabled`]).
+    /// When `false`, every `iacs_*` variant is filtered out so the
+    /// admin's create / edit form cannot surface industrial protocols
+    /// while the master switch is off. Pinned by
+    /// [`tests::test_select_options_filters_iacs_when_industrial_disabled`].
+    pub fn select_options(industrial_enabled: bool) -> Vec<(String, String)> {
         Self::ALL
             .iter()
+            .filter(|t| industrial_enabled || !t.is_iacs())
             .map(|t| (t.as_str().to_string(), t.label().to_string()))
             .collect()
     }
 
     /// `(value, label)` tuples suitable for the asset_type `<select>`
     /// element in **filter dropdowns** (the user-zone /assets, the
-    /// admin /assets/manage list, etc.). Returns the same seven
-    /// entries as [`Self::select_options`] PLUS the synthetic
+    /// admin /assets/manage list, etc.). Returns the same entries as
+    /// [`Self::select_options`] PLUS the synthetic
     /// `("iacs", "IACS - All Industrial Protocols")` row that lets
     /// the operator filter on EVERY `iacs_*` asset_type at once
     /// without ticking five entries.
+    ///
+    /// `industrial_enabled = false` filters out every `iacs_*` variant
+    /// AND the synthetic `iacs` token (see [`IACS_ALL_FILTER_TOKEN`])
+    /// so the user/admin filter dropdowns do not leak the existence
+    /// of the industrial surface while the master switch is off.
     ///
     /// The synthetic token is intentionally NOT a member of the
     /// `AssetType` enum: filter dropdowns may carry virtual entries
@@ -343,12 +356,14 @@ impl AssetType {
     /// `assets_asset_type_chk` CHECK constraint). Persistence paths
     /// keep using [`Self::select_options`] / [`Self::try_parse`];
     /// filter paths plug the synthetic row in via [`Self::parse_filter`].
-    pub fn filter_options() -> Vec<(String, String)> {
-        let mut out = Self::select_options();
-        out.push((
-            IACS_ALL_FILTER_TOKEN.to_string(),
-            "IACS - All Industrial Protocols".to_string(),
-        ));
+    pub fn filter_options(industrial_enabled: bool) -> Vec<(String, String)> {
+        let mut out = Self::select_options(industrial_enabled);
+        if industrial_enabled {
+            out.push((
+                IACS_ALL_FILTER_TOKEN.to_string(),
+                "IACS - All Industrial Protocols".to_string(),
+            ));
+        }
         out
     }
 
@@ -856,12 +871,12 @@ mod tests {
 
     /// `filter_options` must surface the synthetic `iacs` filter
     /// row right after the seven concrete variants returned by
-    /// `select_options`. Pinned so the dropdown order stays
-    /// predictable and the create-form path NEVER inherits the
-    /// synthetic row by mistake.
+    /// `select_options` when `industrial_enabled = true`. Pinned so
+    /// the dropdown order stays predictable and the create-form path
+    /// NEVER inherits the synthetic row by mistake.
     #[test]
     fn test_filter_options_carries_synthetic_iacs_all() {
-        let opts = AssetType::filter_options();
+        let opts = AssetType::filter_options(true);
         assert_eq!(
             opts.len(),
             AssetType::ALL.len() + 1,
@@ -871,7 +886,7 @@ mod tests {
         assert_eq!(last.0, IACS_ALL_FILTER_TOKEN);
         assert_eq!(last.1, "IACS - All Industrial Protocols");
         // First N rows must match select_options (no reordering).
-        for (i, sel) in AssetType::select_options().iter().enumerate() {
+        for (i, sel) in AssetType::select_options(true).iter().enumerate() {
             assert_eq!(
                 &opts[i], sel,
                 "filter_options must keep select_options order at index {i}"
@@ -885,11 +900,52 @@ mod tests {
     /// `assets_asset_type_chk` CHECK constraint would refuse it.
     #[test]
     fn test_select_options_does_not_carry_synthetic_iacs_filter() {
-        let opts = AssetType::select_options();
+        let opts = AssetType::select_options(true);
         assert!(
             !opts.iter().any(|(v, _)| v == IACS_ALL_FILTER_TOKEN),
             "select_options must not expose the synthetic 'iacs' filter token; \
              it would land on the create/edit form and violate the DB CHECK"
+        );
+    }
+
+    /// Industrial kill-switch: `select_options(false)` MUST drop
+    /// every `iacs_*` variant so the create / edit `<select>` does
+    /// not surface IACS protocols while `industrial.enabled = false`.
+    /// Mirrors the four-layer defense documented in the
+    /// `industrial gate hide iacs surface` plan.
+    #[test]
+    fn test_select_options_filters_iacs_when_industrial_disabled() {
+        let opts = AssetType::select_options(false);
+        assert!(
+            !opts.iter().any(|(v, _)| v.starts_with("iacs_")),
+            "select_options(false) must NOT expose any iacs_* variant; got {opts:?}"
+        );
+        let opts_on = AssetType::select_options(true);
+        assert!(
+            opts_on.iter().any(|(v, _)| v == "iacs_modbus"),
+            "select_options(true) must keep the legacy seven entries (regression guard)"
+        );
+        assert_eq!(
+            opts.len() + AssetType::iacs_variants().len(),
+            opts_on.len(),
+            "select_options(false) drops exactly the iacs_* variants and nothing else"
+        );
+    }
+
+    /// Industrial kill-switch: `filter_options(false)` MUST drop both
+    /// every `iacs_*` variant AND the synthetic `iacs` token, so the
+    /// /assets and /assets/manage filter dropdowns reveal nothing of
+    /// the industrial surface while the master switch is off.
+    #[test]
+    fn test_filter_options_filters_iacs_when_industrial_disabled() {
+        let opts = AssetType::filter_options(false);
+        assert!(
+            !opts.iter().any(|(v, _)| v.starts_with("iacs_")),
+            "filter_options(false) must NOT expose any iacs_* variant; got {opts:?}"
+        );
+        assert!(
+            !opts.iter().any(|(v, _)| v == IACS_ALL_FILTER_TOKEN),
+            "filter_options(false) must NOT expose the synthetic 'iacs' all-industrial token"
         );
     }
 

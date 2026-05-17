@@ -63,7 +63,6 @@ async fn spawn_test_sshd(app: &TestApp) -> (std::net::SocketAddr, TunnelRegistry
     let host_key_path =
         std::env::temp_dir().join(format!("vauban_iacs_l6_test_host_{}.key", Uuid::new_v4()));
     let cfg = IacsTunnelConfig {
-        enabled: true,
         bind_addr: "127.0.0.1:0".to_string(),
         advertise_hostname: "127.0.0.1".to_string(),
         target_addr: target.to_string(),

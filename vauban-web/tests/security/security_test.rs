@@ -5025,6 +5025,45 @@ fn test_credential_auth_uses_expose_secret() {
 }
 
 // =============================================================================
+// IACS sshd Host Key Hygiene Tests
+// =============================================================================
+
+/// The IACS sshd Ed25519 host key transits through a transient `String`
+/// buffer when read off disk (in `vauban-web`'s in-process variant) or
+/// off the supervisor-provided FD (in `shared::iacs_host_key`). Both
+/// buffers MUST be zeroized before they are dropped, mirroring the
+/// hygiene already enforced for TLS keys (`SensitiveString` +
+/// explicit `zeroize()` in `vauban-supervisor` / `vauban-web`) and SSH
+/// client keys (`SecretString` in `vauban-proxy-ssh`).
+///
+/// Without this, the OpenSSH PEM (containing the Ed25519 private key
+/// in clear) lingers in the process heap arena until the allocator
+/// reuses the slot, widening the window for a coredump or `/proc/`
+/// memory read to extract the host key.
+#[test]
+fn test_iacs_host_key_pem_is_zeroized() {
+    let shared_src = include_str!("../../../shared/src/iacs_host_key.rs");
+    assert!(
+        shared_src.contains("data.zeroize();"),
+        "shared::iacs_host_key::load_or_generate_host_key MUST zeroize the PEM `data` buffer"
+    );
+    assert!(
+        shared_src.contains("buf.zeroize();"),
+        "shared::iacs_host_key::read_host_key_from_fd MUST zeroize the PEM `buf` buffer"
+    );
+
+    let web_src = include_str!("../../src/services/iacs_tunnel/server.rs");
+    assert!(
+        web_src.contains("data.zeroize();"),
+        "vauban-web in-process IACS load_or_generate_host_key MUST zeroize the PEM `data` buffer"
+    );
+    assert!(
+        web_src.contains("use zeroize::Zeroize;"),
+        "vauban-web/src/services/iacs_tunnel/server.rs MUST import zeroize::Zeroize"
+    );
+}
+
+// =============================================================================
 // Vault Structural Regression Tests
 // =============================================================================
 

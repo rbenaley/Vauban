@@ -500,44 +500,109 @@ fn run_supervisor() -> Result<()> {
         listener
     };
 
-    // Pre-bind the IACS sshd listener (industrial.iacs_tunnel.bind_addr).
+    // Deprecation warning: log once at boot if the deployed TOML
+    // still carries the retired `industrial.iacs_tunnel.enabled`
+    // key. The supervisor ignores it at runtime; the single master
+    // switch is `industrial.enabled`.
+    if let Some(legacy) = config.industrial.iacs_tunnel.deprecated_enabled() {
+        warn!(
+            legacy_value = legacy,
+            "industrial.iacs_tunnel.enabled is DEPRECATED and ignored \
+             (May 2026); use industrial.enabled = {{true|false}} instead. \
+             Active value: industrial.enabled = {}",
+            config.industrial.enabled
+        );
+    }
+
+    // Pre-bind the IACS sshd listener AND pre-load the IACS sshd
+    // Ed25519 host key (industrial.iacs_tunnel.{bind_addr, host_key_path}).
     //
     // SECURITY: vauban-proxy-iacs runs under Capsicum after `cap_enter`,
-    // which forbids `bind()`. The supervisor (un-sandboxed) binds the
-    // listening socket here, then hands the raw FD to the proxy via
-    // env `VAUBAN_IACS_LISTENER_FD` so the proxy only needs `accept()`.
+    // which forbids both `bind()` and `open()` on absolute paths
+    // (errno 94, "Not permitted in capability mode"). The supervisor
+    // (un-sandboxed, optionally root or with CAP_NET_BIND_SERVICE)
+    // therefore performs BOTH operations here BEFORE fork+execv:
     //
-    // When `industrial.iacs_tunnel.enabled = false` we skip the bind
-    // entirely; the proxy observes the env var is unset and stays
-    // idle (its Casbin gate flips to deny anyway).
-    let iacs_listener_fd: Option<i32> = if config.industrial.iacs_tunnel.enabled {
-        let addr = &config.industrial.iacs_tunnel.bind_addr;
-        let listener = std::net::TcpListener::bind(addr).with_context(|| {
-            format!(
-                "Failed to bind IACS sshd listening socket on {addr} \
-                 (industrial.iacs_tunnel.bind_addr)"
-            )
-        })?;
-        info!(
-            iacs_bind_addr = %addr,
-            "Pre-bound IACS sshd listening socket; FD will be inherited \
-             by vauban-proxy-iacs via VAUBAN_IACS_LISTENER_FD"
-        );
-        let fd = listener.as_raw_fd();
-        std::mem::forget(listener);
-        Some(fd)
-    } else {
-        info!(
-            "industrial.iacs_tunnel.enabled = false, skipping IACS \
-             listener pre-bind; vauban-proxy-iacs will stay idle"
-        );
-        None
-    };
+    //   1. Bind the russh sshd listener on `bind_addr` (privileged
+    //      port < 1024 supported, same pattern as the HTTPS listener).
+    //      The raw FD is passed to the proxy via the env var
+    //      `VAUBAN_IACS_LISTENER_FD` -- the proxy only needs
+    //      `accept()` on this FD after `cap_enter`.
+    //
+    //   2. Load (or generate-and-persist with mode 0600) the host
+    //      key at `host_key_path`, then re-open it read-only and
+    //      inherit the FD via `VAUBAN_IACS_HOST_KEY_FD`. The proxy
+    //      consumes this FD (read_to_string + PrivateKey::from_openssh)
+    //      BEFORE entering Capsicum, so it never tries to open the
+    //      path post-sandbox.
+    //
+    // Single gate: `industrial.enabled`. When false we skip both
+    // operations AND skip the spawn of `proxy_iacs` (see the
+    // `startup_order` loop below). The legacy per-feature switch
+    // `industrial.iacs_tunnel.enabled` has been retired.
+    let (iacs_listener_fd, iacs_host_key_fd): (Option<i32>, Option<i32>) =
+        if config.industrial.enabled {
+            let addr = &config.industrial.iacs_tunnel.bind_addr;
+            let listener = std::net::TcpListener::bind(addr).with_context(|| {
+                format!(
+                    "Failed to bind IACS sshd listening socket on {addr} \
+                     (industrial.iacs_tunnel.bind_addr)"
+                )
+            })?;
+            info!(
+                iacs_bind_addr = %addr,
+                "Pre-bound IACS sshd listening socket; FD will be inherited \
+                 by vauban-proxy-iacs via VAUBAN_IACS_LISTENER_FD"
+            );
+            let listener_fd = listener.as_raw_fd();
+            std::mem::forget(listener);
+
+            let host_key_path = std::path::PathBuf::from(
+                &config.industrial.iacs_tunnel.host_key_path,
+            );
+            let host_key_owned_fd = shared::iacs_host_key::prepare_host_key_fd(&host_key_path)
+                .with_context(|| {
+                    format!(
+                        "Failed to prepare IACS sshd host key at {} \
+                         (industrial.iacs_tunnel.host_key_path)",
+                        host_key_path.display()
+                    )
+                })?;
+            // Convert to RawFd and intentionally leak the OwnedFd: the
+            // child will inherit the FD across `execv` and close it
+            // when it consumes `read_host_key_from_fd` (the supervisor
+            // does NOT keep an open handle on the secret material).
+            let host_key_fd = std::os::fd::IntoRawFd::into_raw_fd(host_key_owned_fd);
+            info!(
+                host_key_path = %host_key_path.display(),
+                "Pre-loaded IACS sshd host key; FD will be inherited \
+                 by vauban-proxy-iacs via VAUBAN_IACS_HOST_KEY_FD"
+            );
+            (Some(listener_fd), Some(host_key_fd))
+        } else {
+            info!(
+                "industrial.enabled = false, skipping IACS listener \
+                 pre-bind, host key pre-load, and proxy_iacs spawn"
+            );
+            (None, None)
+        };
 
     // Spawn all child services in dependency order
     let mut children: HashMap<String, ChildState> = HashMap::new();
 
     for service_key in config.startup_order() {
+        // Industrial master switch: when `industrial.enabled = false`
+        // the proxy_iacs binary is not spawned at all (no FDs were
+        // pre-loaded above, so attempting to bring it up would either
+        // immediately exit or, worse on FreeBSD, crash-loop on
+        // post-Capsicum file opens).
+        if service_key == "proxy_iacs" && !config.industrial.enabled {
+            info!(
+                "Skipping proxy_iacs spawn: industrial.enabled = false"
+            );
+            continue;
+        }
+
         let service_config = match config.services.get(service_key) {
             Some(sc) => sc,
             None => {
@@ -584,12 +649,23 @@ fn run_supervisor() -> Result<()> {
 
         let svc_env = service_env_with_token(&config, service_key);
         // Inheritable FDs:
-        //   * `VAUBAN_IACS_LISTENER_FD` is exposed only to vauban-proxy-iacs.
+        //   * `VAUBAN_IACS_LISTENER_FD` is the pre-bound russh sshd
+        //     listener (privileged port < 1024 supported); the proxy
+        //     does `accept()` after `cap_enter`.
+        //   * `VAUBAN_IACS_HOST_KEY_FD` is the read-only FD on the
+        //     pre-loaded Ed25519 host key file; the proxy reads its
+        //     contents BEFORE `cap_enter` and consumes the FD (so the
+        //     supervisor does not keep open handles on secret keys
+        //     for the duration of the runtime).
+        // Both are exposed only to vauban-proxy-iacs.
         let mut inheritable_fds: Vec<(&str, i32)> = Vec::new();
-        if service_key == "proxy_iacs"
-            && let Some(fd) = iacs_listener_fd
-        {
-            inheritable_fds.push(("VAUBAN_IACS_LISTENER_FD", fd));
+        if service_key == "proxy_iacs" {
+            if let Some(fd) = iacs_listener_fd {
+                inheritable_fds.push(("VAUBAN_IACS_LISTENER_FD", fd));
+            }
+            if let Some(fd) = iacs_host_key_fd {
+                inheritable_fds.push(("VAUBAN_IACS_HOST_KEY_FD", fd));
+            }
         }
         match spawn_child(
             &binary_path,
@@ -679,6 +755,7 @@ fn run_supervisor() -> Result<()> {
         watchdog_config.max_respawns_per_hour,
         listener_fd,
         iacs_listener_fd,
+        iacs_host_key_fd,
     )?;
 
     Ok(())
@@ -985,7 +1062,7 @@ fn spawn_child(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // 8 supervisor-state knobs all used together; bundling into a struct would only displace the lint
+#[allow(clippy::too_many_arguments)] // 9 supervisor-state knobs all used together; bundling into a struct would only displace the lint
 fn watchdog_loop(
     children: &mut HashMap<String, ChildState>,
     config: &SupervisorConfig,
@@ -995,6 +1072,7 @@ fn watchdog_loop(
     max_respawns_per_hour: u32,
     listener_fd: RawFd,
     iacs_listener_fd: Option<RawFd>,
+    iacs_host_key_fd: Option<RawFd>,
 ) -> Result<()> {
     let mut last_heartbeat = Instant::now();
     // Track services that need linked restart (will be processed after reaping)
@@ -1017,6 +1095,7 @@ fn watchdog_loop(
             &mut pending_linked_restarts,
             listener_fd,
             iacs_listener_fd,
+            iacs_host_key_fd,
         );
 
         // Process pending linked restarts (restart entire groups)
@@ -1033,6 +1112,7 @@ fn watchdog_loop(
                     linked_group,
                     listener_fd,
                     iacs_listener_fd,
+                    iacs_host_key_fd,
                 );
             }
         }
@@ -1070,7 +1150,14 @@ fn watchdog_loop(
                     } else {
                         let topology =
                             service_key_to_service(service_key).and_then(|s| service_pipes.get(&s));
-                        drain_and_restart(state, config, topology, listener_fd, iacs_listener_fd);
+                        drain_and_restart(
+                            state,
+                            config,
+                            topology,
+                            listener_fd,
+                            iacs_listener_fd,
+                            iacs_host_key_fd,
+                        );
                     }
                 }
                 RestartDecision::ForceNow => {
@@ -1081,7 +1168,14 @@ fn watchdog_loop(
                     } else {
                         let topology =
                             service_key_to_service(service_key).and_then(|s| service_pipes.get(&s));
-                        kill_and_respawn(state, config, topology, listener_fd, iacs_listener_fd);
+                        kill_and_respawn(
+                            state,
+                            config,
+                            topology,
+                            listener_fd,
+                            iacs_listener_fd,
+                            iacs_host_key_fd,
+                        );
                     }
                 }
             }
@@ -1101,6 +1195,7 @@ fn watchdog_loop(
                     linked_group,
                     listener_fd,
                     iacs_listener_fd,
+                    iacs_host_key_fd,
                 );
             }
         }
@@ -1175,6 +1270,7 @@ fn graceful_shutdown_children(children: &mut HashMap<String, ChildState>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors watchdog_loop's set of supervisor-state knobs
 fn reap_children(
     children: &mut HashMap<String, ChildState>,
     config: &SupervisorConfig,
@@ -1183,6 +1279,7 @@ fn reap_children(
     pending_linked_restarts: &mut Vec<String>,
     listener_fd: RawFd,
     iacs_listener_fd: Option<RawFd>,
+    iacs_host_key_fd: Option<RawFd>,
 ) {
     loop {
         match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
@@ -1214,7 +1311,7 @@ fn reap_children(
                             info!("Respawning {}", service_key);
                             let topology = service_key_to_service(&service_key)
                                 .and_then(|s| service_pipes.get(&s));
-                            respawn_service(state, config, topology, listener_fd, iacs_listener_fd);
+                            respawn_service(state, config, topology, listener_fd, iacs_listener_fd, iacs_host_key_fd);
                         }
                     } else {
                         error!("{} has crashed too many times, not respawning", service_key);
@@ -1249,7 +1346,7 @@ fn reap_children(
                             info!("Respawning {}", service_key);
                             let topology = service_key_to_service(&service_key)
                                 .and_then(|s| service_pipes.get(&s));
-                            respawn_service(state, config, topology, listener_fd, iacs_listener_fd);
+                            respawn_service(state, config, topology, listener_fd, iacs_listener_fd, iacs_host_key_fd);
                         }
                     } else {
                         error!("{} has crashed too many times, not respawning", service_key);
@@ -1440,6 +1537,7 @@ fn kill_and_respawn(
     topology_pipes: Option<&ServicePipes>,
     listener_fd: RawFd,
     iacs_listener_fd: Option<RawFd>,
+    iacs_host_key_fd: Option<RawFd>,
 ) {
     let pid = Pid::from_raw(state.pid);
 
@@ -1462,7 +1560,14 @@ fn kill_and_respawn(
         }
     }
 
-    respawn_service(state, config, topology_pipes, listener_fd, iacs_listener_fd);
+    respawn_service(
+        state,
+        config,
+        topology_pipes,
+        listener_fd,
+        iacs_listener_fd,
+        iacs_host_key_fd,
+    );
 }
 
 fn respawn_service(
@@ -1471,6 +1576,7 @@ fn respawn_service(
     topology_pipes: Option<&ServicePipes>,
     listener_fd: RawFd,
     iacs_listener_fd: Option<RawFd>,
+    iacs_host_key_fd: Option<RawFd>,
 ) {
     let uid = config.effective_uid(&state.service_key);
     let gid = config.effective_gid(&state.service_key);
@@ -1517,10 +1623,13 @@ fn respawn_service(
 
     let svc_env = service_env_with_token(config, &state.service_key);
     let mut inheritable_fds: Vec<(&str, i32)> = Vec::new();
-    if state.service_key == "proxy_iacs"
-        && let Some(fd) = iacs_listener_fd
-    {
-        inheritable_fds.push(("VAUBAN_IACS_LISTENER_FD", fd));
+    if state.service_key == "proxy_iacs" {
+        if let Some(fd) = iacs_listener_fd {
+            inheritable_fds.push(("VAUBAN_IACS_LISTENER_FD", fd));
+        }
+        if let Some(fd) = iacs_host_key_fd {
+            inheritable_fds.push(("VAUBAN_IACS_HOST_KEY_FD", fd));
+        }
     }
     match spawn_child(
         &binary_path,
@@ -1582,6 +1691,7 @@ fn respawn_service(
 /// When services share inter-process pipes (e.g., Web <-> ProxySsh),
 /// a crash of one service breaks the pipe. Both services must be
 /// restarted together with fresh pipes to re-establish communication.
+#[allow(clippy::too_many_arguments)] // mirrors watchdog_loop's set of supervisor-state knobs
 fn respawn_linked_group(
     children: &mut HashMap<String, ChildState>,
     config: &SupervisorConfig,
@@ -1589,6 +1699,7 @@ fn respawn_linked_group(
     group: &[&str],
     listener_fd: RawFd,
     iacs_listener_fd: Option<RawFd>,
+    iacs_host_key_fd: Option<RawFd>,
 ) {
     info!("Starting linked group restart for: {:?}", group);
 
@@ -1755,10 +1866,13 @@ fn respawn_linked_group(
 
             let svc_env = service_env_with_token(config, service_key);
             let mut inheritable_fds: Vec<(&str, i32)> = Vec::new();
-            if service_key == "proxy_iacs"
-                && let Some(fd) = iacs_listener_fd
-            {
-                inheritable_fds.push(("VAUBAN_IACS_LISTENER_FD", fd));
+            if service_key == "proxy_iacs" {
+                if let Some(fd) = iacs_listener_fd {
+                    inheritable_fds.push(("VAUBAN_IACS_LISTENER_FD", fd));
+                }
+                if let Some(fd) = iacs_host_key_fd {
+                    inheritable_fds.push(("VAUBAN_IACS_HOST_KEY_FD", fd));
+                }
             }
             match spawn_child(
                 &binary_path,
@@ -2673,12 +2787,14 @@ fn process_service_messages(
 ///
 /// This sends a Drain message, waits for DrainComplete with pending_requests=0,
 /// then proceeds with the standard kill_and_respawn sequence.
+#[allow(clippy::too_many_arguments)]
 fn drain_and_restart(
     state: &mut ChildState,
     config: &SupervisorConfig,
     topology_pipes: Option<&ServicePipes>,
     listener_fd: RawFd,
     iacs_listener_fd: Option<RawFd>,
+    iacs_host_key_fd: Option<RawFd>,
 ) {
     use shared::ipc::poll_readable;
 
@@ -2689,7 +2805,14 @@ fn drain_and_restart(
             "{}: failed to send Drain, proceeding with kill: {}",
             state.service_key, e
         );
-        kill_and_respawn(state, config, topology_pipes, listener_fd, iacs_listener_fd);
+        kill_and_respawn(
+            state,
+            config,
+            topology_pipes,
+            listener_fd,
+            iacs_listener_fd,
+            iacs_host_key_fd,
+        );
         return;
     }
 
@@ -2751,7 +2874,14 @@ fn drain_and_restart(
     let shutdown_msg = Message::Control(ControlMessage::Shutdown);
     let _ = state.channel.send(&shutdown_msg);
 
-    kill_and_respawn(state, config, topology_pipes, listener_fd, iacs_listener_fd);
+    kill_and_respawn(
+        state,
+        config,
+        topology_pipes,
+        listener_fd,
+        iacs_listener_fd,
+        iacs_host_key_fd,
+    );
 }
 
 /// Frontend services: drained in parallel (no dependencies between them)
