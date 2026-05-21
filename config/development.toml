@@ -1,5 +1,6 @@
 # VAUBAN - Development configuration
 # Overrides default.toml values for the development environment.
+# Structured like vauban.conf for completeness; dev values take precedence.
 
 environment = "development"
 secret_key = "CHANGE-ME-IN-PRODUCTION-32-CHARS!"
@@ -8,7 +9,6 @@ secret_key = "CHANGE-ME-IN-PRODUCTION-32-CHARS!"
 # SUPERVISOR OVERRIDES
 # ==============================================================================
 
-# Development: binaries in target/debug
 bin_path = "./target/debug"
 
 [product.brand]
@@ -16,17 +16,55 @@ name = "VAUBAN"
 
 [supervisor]
 privsep = false
+heartbeat_interval_secs = 5
+heartbeat_timeout_secs = 2
+max_missed_heartbeats = 3
+max_respawns_per_hour = 10
+drain_timeout_secs = 30
+
+[services.audit]
+name = "vauban-audit"
+binary = "vauban-audit"
+
+[services.vault]
+name = "vauban-vault"
+binary = "vauban-vault"
+
+[services.access]
+name = "vauban-access"
+binary = "vauban-access"
+
+[access]
+model_path = "config/access/model.conf"
+policy_path = "config/access/default_policy.csv"
+
+[services.auth]
+name = "vauban-auth"
+binary = "vauban-auth"
+
+[services.proxy_ssh]
+name = "vauban-proxy-ssh"
+binary = "vauban-proxy-ssh"
+
+[services.proxy_rdp]
+name = "vauban-proxy-rdp"
+binary = "vauban-proxy-rdp"
+
+[services.proxy_iacs]
+name = "vauban-proxy-iacs"
+binary = "vauban-proxy-iacs"
+
+[services.web]
+name = "vauban-web"
+binary = "vauban-web"
 
 # ==============================================================================
 # WEB OVERRIDES (vauban-web)
 # ==============================================================================
 
-[logging]
-level = "debug"
-format = "text"
-
-[cache]
-enabled = false
+[server]
+host = "0.0.0.0"
+port = 8443
 
 # Development TLS certificates (self-signed)
 # Generate with: ./vauban-web/scripts/generate-dev-certs.sh
@@ -34,13 +72,88 @@ enabled = false
 cert_path = "vauban-web/certs/dev-server.crt"
 key_path = "vauban-web/certs/dev-server.key"
 
-# Disable justification modal in development for faster iteration
-[security]
-require_justification = false
-
 # ACME disabled in development (self-signed certs used)
 [server.tls.acme]
 enabled = false
+email = ""
+domains = []
+renew_before_hours = 24
+account_key_path = "acme/account.pem"
+staging = false
+directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+[database]
+url = "postgresql://vauban:vauban@localhost/vauban"
+max_connections = 10
+min_connections = 2
+connect_timeout_secs = 10
+
+[cache]
+enabled = false
+url = "redis://localhost:6379"
+default_ttl_secs = 3600
+
+[jwt]
+access_token_lifetime_minutes = 15
+refresh_token_lifetime_days = 1
+algorithm = "HS256"
+
+# Disable justification modal in development for faster iteration
+[security]
+password_min_length = 12
+max_failed_login_attempts = 5
+session_max_duration_secs = 28800    # 8 hours (default.toml)
+session_idle_timeout_secs = 1800   # 30 minutes (default.toml)
+rate_limit_per_minute = 10
+trusted_proxies = []
+require_justification = false
+
+[security.argon2]
+memory_size_kb = 65536
+iterations = 3
+parallelism = 1
+
+[logging]
+level = "debug"
+format = "text"
+
+[assets]
+allow_multiple_groups_per_asset = true
+
+[api]
+enabled = true
+prefix = "/api/v1"
+
+[websocket]
+max_connections_per_user = 30
+
+[mailer]
+enabled = false
+from_address = ""
+from_name = "Vauban PAM"
+reply_to = ""
+base_url = "https://localhost:8443"
+smtp_host = ""
+smtp_port = 587
+smtp_encryption = "starttls"
+smtp_username = ""
+smtp_password = ""
+helo_name = ""
+poll_interval_secs = 10
+batch_size = 16
+max_attempts = 5
+smtp_timeout_secs = 30
+broker_timeout_secs = 30
+
+[rdp]
+video_bitrate_bps = 5_000_000
+
+[recording]
+enabled = true
+storage_path = "recordings"
+rdp = true
+ssh = true
 
 # ==============================================================================
 # IACS / INDUSTRIAL
@@ -65,3 +178,4 @@ max_concurrent_per_ews = 2
 max_concurrent_channels_per_session = 16
 waiting_client_ttl_seconds = 300
 revocation_poll_interval_seconds = 2
+allow_loopback_targets = true
