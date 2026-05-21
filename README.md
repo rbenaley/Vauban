@@ -15,6 +15,7 @@ vauban-vault/         # Secrets management, encryption/decryption service
 vauban-audit/         # Audit logging, session recording
 vauban-proxy-ssh/     # SSH protocol proxy (russh)
 vauban-proxy-rdp/     # RDP protocol proxy (IronRDP, H.264 encoding)
+vauban-proxy-iacs/    # Industrial Automation and Control Systems (IACS) protocols proxy
 vauban-db/            # Shared Diesel schema, migrations, table relationships
 shared/               # IPC protocol, message types, common utilities
 config/               # TOML configuration files
