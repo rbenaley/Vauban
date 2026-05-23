@@ -920,11 +920,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // after every UPDATE disconnected_at (~5s latency). At boot we
     // run a one-shot bootstrap to rattrape the backlog (legacy
     // recordings + sessions in-flight during a downtime), then
-    // schedule a daily reconciliation cron at 04:00 UTC as SAFETY
-    // NET. Requires the supervisor (FD passing for `meta.json`);
+    // schedule a daily reconciliation cron in the configured IANA timezone
+    // as SAFETY NET. Requires the supervisor (FD passing for `meta.json`);
     // silently skipped without one (development mode).
     if config.recording.hydration_enabled
         && let Some(ref sup) = supervisor_client
+        && let Ok(cron_tz) = config.recording.daily_cron_timezone()
     {
         let handle = tokio::runtime::Handle::current();
         let missing_meta_grace =
@@ -950,7 +951,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.recording.hydration_batch_size,
             config.recording.storage_path.clone(),
             missing_meta_grace,
-            config.recording.hydration_daily_cron_hour_utc,
+            cron_tz,
+            config.recording.hydration_daily_cron_hour,
             app_state.broadcast.clone(),
         );
     } else if config.recording.hydration_enabled {
@@ -959,6 +961,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     } else {
         tracing::info!("recording hydrator disabled by config");
+    }
+
+    // Recording retention reaper: purge aged / quota-exceeded recordings
+    // (TOML-only config). At boot we run a one-shot bootstrap (mirrors
+    // the hydrator), then schedule a daily cron as SAFETY NET.
+    // Requires supervisor for disk delete.
+    if config.recording.retention_enabled
+        && let Some(ref sup) = supervisor_client
+        && let Ok(cron_tz) = config.recording.daily_cron_timezone()
+    {
+        let handle = tokio::runtime::Handle::current();
+        let retention_config = vauban_web::tasks::RecordingRetentionTaskConfig {
+            retention_days: config.recording.retention_days,
+            max_size_gib: config.recording.retention_max_size_gib,
+            batch_size: config.recording.retention_batch_size,
+            storage_base: config.recording.storage_path.clone(),
+            cron_tz,
+            cron_hour: config.recording.retention_daily_cron_hour,
+        };
+        std::mem::drop(vauban_web::tasks::run_bootstrap_retention(
+            &handle,
+            db_pool.clone(),
+            Arc::clone(sup),
+            retention_config.clone(),
+        ));
+        vauban_web::tasks::start_recording_retention(
+            handle,
+            db_pool.clone(),
+            Arc::clone(sup),
+            retention_config,
+        );
+    } else if config.recording.retention_enabled {
+        tracing::info!(
+            "recording retention disabled: no supervisor (development mode without SCM_RIGHTS)"
+        );
+    } else {
+        tracing::info!("recording retention disabled by config");
     }
 
     // Start ACME certificate monitoring task (if enabled)

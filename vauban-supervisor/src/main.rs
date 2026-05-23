@@ -23,6 +23,7 @@
 mod acme;
 mod admin;
 mod config;
+mod recording_delete;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -2821,6 +2822,27 @@ fn process_service_messages(
                             read_only,
                             recording_storage_path,
                             state,
+                        );
+                    }
+                    Ok(Message::RecordingDeleteRequest {
+                        request_id,
+                        session_id,
+                        relative_path,
+                    }) => {
+                        debug!(
+                            request_id,
+                            session_id = %session_id,
+                            path = %relative_path,
+                            "Received RecordingDeleteRequest from {}",
+                            service_key
+                        );
+                        recording_delete::handle_recording_delete_request(
+                            request_id,
+                            &session_id,
+                            &relative_path,
+                            recording_storage_path,
+                            service_key,
+                            &state.channel,
                         );
                     }
                     Ok(Message::Control(ControlMessage::Pong { .. })) => {

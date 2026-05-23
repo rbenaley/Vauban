@@ -20,6 +20,7 @@
 pub mod capsicum;
 pub mod ipc;
 pub mod messages;
+pub mod recording_paths;
 pub mod totp;
 
 // Defense-in-depth RBAC re-check helper. Pulled in by every protocol

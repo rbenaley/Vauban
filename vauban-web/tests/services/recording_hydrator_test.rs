@@ -1056,8 +1056,16 @@ fn test_runbook_documents_v14_config_knobs() {
         "runbook must document the new hydration_enqueue_delay_secs knob"
     );
     assert!(
-        content.contains("hydration_daily_cron_hour_utc"),
-        "runbook must document the new hydration_daily_cron_hour_utc knob"
+        content.contains("recording_daily_cron_timezone"),
+        "runbook must document recording_daily_cron_timezone"
+    );
+    assert!(
+        content.contains("hydration_daily_cron_hour"),
+        "runbook must document hydration_daily_cron_hour"
+    );
+    assert!(
+        !content.contains("hydration_daily_cron_hour_utc"),
+        "runbook must NOT mention legacy hydration_daily_cron_hour_utc"
     );
     assert!(
         !content.contains("hydration_interval_secs"),

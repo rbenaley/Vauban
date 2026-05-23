@@ -224,6 +224,16 @@ storage_path = "recordings"
 rdp = true
 ssh = true
 
+# Retention reaper (TOML-only; no web UI or API). Deletes disk via
+# supervisor IPC and clears recording columns in proxy_sessions.
+recording_daily_cron_timezone = "Europe/Brussels"
+hydration_daily_cron_hour = 4
+retention_daily_cron_hour = 5         # 05:00 Europe/Brussels (after hydrator)
+retention_enabled = true
+retention_days = 365
+retention_max_size_gib = 0          # 0 = unlimited
+retention_batch_size = 50
+
 # ==============================================================================
 # PRODUCT / BRANDING (white-label)
 # ==============================================================================

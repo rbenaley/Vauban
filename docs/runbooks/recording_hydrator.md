@@ -16,7 +16,7 @@
 ```
 PRIMARY:   session ends -> enqueue_hydration -> sleep 5s -> finalize  (~5s latency)
 BOOTSTRAP: vauban-web boot -> one-shot scan -> finalize all backlog   (one-time)
-SAFETY:    daily cron at 04:00 UTC -> bootstrap re-run                (24h max)
+SAFETY:    daily cron at configured local hour -> bootstrap re-run        (24h max)
 ```
 
 In nominal operation the **PRIMARY** path is the one that finalizes
@@ -69,12 +69,13 @@ Call-sites instrumented (issue #29, source-level pinned):
 `skipped_missing_meta` rows remain), then exits with a single
 `bootstrap_complete { passes, finalized, ..., elapsed_ms }` log line.
 
-### SAFETY path (daily cron, 04:00 UTC)
+### SAFETY path (daily cron, local timezone)
 
 `tasks::recording_hydrator::start_daily_reconciliation` schedules a
 once-a-day re-run of `run_bootstrap_hydration` via
 `shared::tasks::spawn_periodic` (period = 86 400 s). The first
-firing window is the next `hydration_daily_cron_hour_utc:00` UTC.
+firing window is the next `hydration_daily_cron_hour:00` in
+`recording_daily_cron_timezone` (default 04:00 Europe/Brussels).
 
 In nominal operation this logs `bootstrap_complete { hydrated=0 }`
 and exits in milliseconds. See "Verifier qu'une session vient d'etre
@@ -259,7 +260,8 @@ All under the `recording.*` prefix:
 | `hydration_batch_size` | `50` | Max rows per bootstrap/cron pass |
 | `hydration_missing_meta_grace_secs` | `300` | After this delay, missing `meta.json` flips from "retry" to "marked lost" |
 | `hydration_enqueue_delay_secs` | `5` | PRIMARY grace between `UPDATE disconnected_at` and the actual hydrate call |
-| `hydration_daily_cron_hour_utc` | `4` | UTC hour (0..=23) at which the SAFETY reconciliation runs |
+| `recording_daily_cron_timezone` | `Europe/Brussels` | IANA timezone shared by hydrator + reaper SAFETY crons |
+| `hydration_daily_cron_hour` | `4` | Local hour (0..=23) at which the SAFETY reconciliation runs |
 
 ## Related references
 

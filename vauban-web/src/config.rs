@@ -597,14 +597,35 @@ pub struct RecordingConfig {
     /// values risk racing audit; longer values delay UI feedback.
     #[serde(default = "default_hydration_enqueue_delay_secs")]
     pub hydration_enqueue_delay_secs: u64,
-    /// Hour of day (UTC, 0..=23) when the daily reconciliation cron
-    /// runs. Default 4 (04:00 UTC = low traffic window). The cron is
-    /// a SAFETY NET that re-runs the bootstrap, NOT the primary
-    /// finalization path -- in nominal operation it logs
-    /// `bootstrap_complete { hydrated=0, ... }` and exits in
-    /// milliseconds. See `docs/technical/Vauban_Recording_Architecture_EN(1.3).md`.
-    #[serde(default = "default_hydration_daily_cron_hour_utc")]
-    pub hydration_daily_cron_hour_utc: u8,
+    /// IANA timezone for the hydrator and retention reaper SAFETY crons
+    /// (e.g. `"Europe/Brussels"`). Independent of the server OS TZ and
+    /// of the browser `vbn_tz` cookie. DB / logs / API stay UTC.
+    #[serde(default = "default_recording_daily_cron_timezone")]
+    pub recording_daily_cron_timezone: String,
+    /// Local hour (0..=23 in [`recording_daily_cron_timezone`]) when the
+    /// daily hydrator reconciliation cron runs. Default 4. SAFETY NET only.
+    #[serde(default = "default_hydration_daily_cron_hour")]
+    pub hydration_daily_cron_hour: u8,
+    /// Enable the daily recording retention reaper. Default true.
+    #[serde(default = "default_recording_enabled")]
+    pub retention_enabled: bool,
+    /// Delete recordings whose `disconnected_at` is older than this many
+    /// days. Default 365.
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u32,
+    /// Maximum total size (GiB) of finalized recordings on disk. `0` means
+    /// unlimited. When exceeded, oldest recordings are deleted first (FIFO
+    /// by `disconnected_at`), even if younger than `retention_days`.
+    #[serde(default = "default_retention_max_size_gib")]
+    pub retention_max_size_gib: u64,
+    /// Maximum sessions processed per retention tick (bootstrap loops until
+    /// the backlog is empty). Default 50.
+    #[serde(default = "default_retention_batch_size")]
+    pub retention_batch_size: i64,
+    /// Local hour (0..=23 in [`recording_daily_cron_timezone`]) when the
+    /// daily retention cron runs. Default 5 (one hour after hydrator).
+    #[serde(default = "default_retention_daily_cron_hour")]
+    pub retention_daily_cron_hour: u8,
 }
 
 fn default_require_justification() -> bool {
@@ -631,25 +652,83 @@ fn default_hydration_enqueue_delay_secs() -> u64 {
     5
 }
 
-fn default_hydration_daily_cron_hour_utc() -> u8 {
+fn default_recording_daily_cron_timezone() -> String {
+    "Europe/Brussels".to_string()
+}
+
+fn default_hydration_daily_cron_hour() -> u8 {
     4
 }
 
+fn default_retention_days() -> u32 {
+    365
+}
+
+fn default_retention_max_size_gib() -> u64 {
+    0
+}
+
+fn default_retention_batch_size() -> i64 {
+    50
+}
+
+fn default_retention_daily_cron_hour() -> u8 {
+    5
+}
+
 impl RecordingConfig {
+    /// Resolve [`recording_daily_cron_timezone`] into a typed IANA zone.
+    pub fn daily_cron_timezone(&self) -> Result<chrono_tz::Tz, String> {
+        crate::middleware::browser_tz::parse_browser_tz(&self.recording_daily_cron_timezone)
+            .ok_or_else(|| {
+                format!(
+                    "recording.recording_daily_cron_timezone must be a valid IANA identifier, got {:?}",
+                    self.recording_daily_cron_timezone
+                )
+            })
+    }
+
     /// Validate semantic invariants the serde defaults cannot enforce.
-    /// Currently only: `hydration_daily_cron_hour_utc` must be a valid
-    /// UTC hour (0..=23). Called from
-    /// [`Config::load_with_environment`] so an out-of-range value
-    /// fails the boot rather than silently misbehaving.
+    /// Called from [`Config::load_with_environment`] so an out-of-range
+    /// value fails the boot rather than silently misbehaving.
     pub fn validate(&self) -> Result<(), String> {
-        if !self.hydration_enabled {
-            return Ok(());
+        let needs_cron = self.hydration_enabled || self.retention_enabled;
+        if needs_cron {
+            self.daily_cron_timezone()?;
         }
-        if self.hydration_daily_cron_hour_utc > 23 {
+        if self.hydration_enabled && self.hydration_daily_cron_hour > 23 {
             return Err(format!(
-                "recording.hydration_daily_cron_hour_utc must be in 0..=23, got {}",
-                self.hydration_daily_cron_hour_utc
+                "recording.hydration_daily_cron_hour must be in 0..=23, got {}",
+                self.hydration_daily_cron_hour
             ));
+        }
+        if self.retention_enabled {
+            if self.retention_days < 1 {
+                return Err(format!(
+                    "recording.retention_days must be >= 1 when retention_enabled, got {}",
+                    self.retention_days
+                ));
+            }
+            if self.retention_batch_size < 1 {
+                return Err(format!(
+                    "recording.retention_batch_size must be >= 1, got {}",
+                    self.retention_batch_size
+                ));
+            }
+            if self.retention_daily_cron_hour > 23 {
+                return Err(format!(
+                    "recording.retention_daily_cron_hour must be in 0..=23, got {}",
+                    self.retention_daily_cron_hour
+                ));
+            }
+            if self.hydration_enabled
+                && self.retention_daily_cron_hour <= self.hydration_daily_cron_hour
+            {
+                return Err(format!(
+                    "recording.retention_daily_cron_hour ({}) must be > hydration_daily_cron_hour ({}) when both are enabled",
+                    self.retention_daily_cron_hour, self.hydration_daily_cron_hour
+                ));
+            }
         }
         Ok(())
     }
@@ -666,7 +745,13 @@ impl Default for RecordingConfig {
             hydration_batch_size: default_hydration_batch_size(),
             hydration_missing_meta_grace_secs: default_hydration_missing_meta_grace_secs(),
             hydration_enqueue_delay_secs: default_hydration_enqueue_delay_secs(),
-            hydration_daily_cron_hour_utc: default_hydration_daily_cron_hour_utc(),
+            recording_daily_cron_timezone: default_recording_daily_cron_timezone(),
+            hydration_daily_cron_hour: default_hydration_daily_cron_hour(),
+            retention_enabled: default_recording_enabled(),
+            retention_days: default_retention_days(),
+            retention_max_size_gib: default_retention_max_size_gib(),
+            retention_batch_size: default_retention_batch_size(),
+            retention_daily_cron_hour: default_retention_daily_cron_hour(),
         }
     }
 }
@@ -1611,28 +1696,29 @@ mod tests {
     #[test]
     fn test_recording_config_validate_accepts_lower_bound() {
         let cfg = RecordingConfig {
-            hydration_daily_cron_hour_utc: 0,
+            hydration_daily_cron_hour: 0,
             ..RecordingConfig::default()
         };
-        assert!(cfg.validate().is_ok(), "hour 0 (midnight UTC) is valid");
+        assert!(cfg.validate().is_ok(), "hour 0 (midnight local) is valid");
     }
 
     #[test]
     fn test_recording_config_validate_accepts_upper_bound() {
         let cfg = RecordingConfig {
-            hydration_daily_cron_hour_utc: 23,
+            hydration_daily_cron_hour: 22,
+            retention_daily_cron_hour: 23,
             ..RecordingConfig::default()
         };
         assert!(
             cfg.validate().is_ok(),
-            "hour 23 is the upper inclusive bound"
+            "hour 23 retention with hour 22 hydration is valid"
         );
     }
 
     #[test]
     fn test_recording_config_validate_rejects_24() {
         let cfg = RecordingConfig {
-            hydration_daily_cron_hour_utc: 24,
+            hydration_daily_cron_hour: 24,
             ..RecordingConfig::default()
         };
         let err = cfg.validate().expect_err("hour 24 must be rejected");
@@ -1644,18 +1730,49 @@ mod tests {
     }
 
     #[test]
+    fn test_recording_config_validate_rejects_invalid_timezone() {
+        let cfg = RecordingConfig {
+            recording_daily_cron_timezone: "Not/A/Timezone".to_string(),
+            ..RecordingConfig::default()
+        };
+        let err = cfg
+            .validate()
+            .expect_err("invalid IANA timezone must be rejected");
+        assert!(
+            err.contains("recording_daily_cron_timezone"),
+            "error must name the knob, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_recording_config_validate_rejects_retention_not_after_hydration() {
+        let cfg = RecordingConfig {
+            hydration_daily_cron_hour: 5,
+            retention_daily_cron_hour: 5,
+            ..RecordingConfig::default()
+        };
+        let err = cfg
+            .validate()
+            .expect_err("retention hour must be strictly after hydration hour");
+        assert!(
+            err.contains("must be >"),
+            "error must explain ordering, got: {err}"
+        );
+    }
+
+    #[test]
     fn test_recording_config_validate_skipped_when_disabled() {
         // When the hydrator is disabled, an out-of-range cron hour is
         // not checked (the cron will not run anyway). This avoids
         // breaking deployments that don't use the hydrator.
         let cfg = RecordingConfig {
             hydration_enabled: false,
-            hydration_daily_cron_hour_utc: 99,
+            hydration_daily_cron_hour: 99,
             ..RecordingConfig::default()
         };
         assert!(
             cfg.validate().is_ok(),
-            "validation skipped when hydration_enabled=false"
+            "hydration hour validation skipped when hydration_enabled=false"
         );
     }
 
@@ -1675,8 +1792,16 @@ mod tests {
             "SAFETY-net missing-meta grace documented as 300s (5min)"
         );
         assert_eq!(
-            cfg.hydration_daily_cron_hour_utc, 4,
-            "daily reconciliation documented at 04:00 UTC"
+            cfg.recording_daily_cron_timezone, "Europe/Brussels",
+            "daily cron timezone documented as Europe/Brussels"
+        );
+        assert_eq!(
+            cfg.hydration_daily_cron_hour, 4,
+            "daily reconciliation documented at 04:00 local cron timezone"
+        );
+        assert_eq!(
+            cfg.retention_daily_cron_hour, 5,
+            "daily retention documented at 05:00 local cron timezone"
         );
         assert_eq!(
             cfg.hydration_batch_size, 50,

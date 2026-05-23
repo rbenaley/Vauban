@@ -1763,9 +1763,30 @@ The two-layer heuristic approach provides practical security:
 | Live recording playback | MSE + server-sent fMP4 fragments (RDP); WebSocket streaming (SSH) |
 | Recording search / indexing | Extract keyframe thumbnails (RDP); command extraction (SSH) |
 | Recording download button | Direct download link with Content-Disposition: attachment |
-| Recording retention policy | Configurable auto-deletion after N days |
 | Multi-track recording | Add audio track when RDP audio is implemented |
 | SSH command indexing | Parse asciicast input events to build searchable command timeline |
+
+### 13.8 Recording retention (implemented)
+
+Event-driven reaper in `vauban-web` (`services/recording_reaper.rs`,
+`tasks/recording_reaper.rs`):
+
+```text
+BOOTSTRAP: vauban-web boot -> one-shot scan -> delete aged / quota backlog
+SAFETY:    daily cron at configured local hour -> bootstrap re-run
+```
+
+1. **Age pass** -- delete when `disconnected_at < now - retention_days`
+   (default 365). Configured only via TOML (`[recording].retention_*`).
+2. **Quota pass** -- when `retention_max_size_gib > 0`, delete oldest
+   finalized recordings (FIFO by `disconnected_at`) until total
+   `recording_size_bytes` is under the cap; quota overrides age.
+3. **Disk** -- `RecordingDeleteRequest` IPC handled by
+   `vauban-supervisor` (`shared::recording_paths::delete_recording_storage_path`).
+4. **DB** -- same transaction clears all `recording_*` columns and sets
+   `is_recorded = false`; the `proxy_sessions` row remains for session audit.
+
+Runbook: [recording_retention.md](../runbooks/recording_retention.md).
 
 ---
 
@@ -1831,7 +1852,21 @@ storage_path = "/var/db/vauban/recordings"
 # Per-protocol recording switches.
 rdp = true
 ssh = true
+
+# Retention reaper (TOML-only; no web UI or API).
+recording_daily_cron_timezone = "Europe/Brussels"
+hydration_daily_cron_hour = 4
+retention_daily_cron_hour = 5       # 05:00 local (after hydrator at 04:00)
+retention_enabled = true
+retention_days = 365
+retention_max_size_gib = 0          # 0 = unlimited
+retention_batch_size = 50
 ```
+
+The daily retention reaper runs inside `vauban-web`, deletes files via
+`RecordingDeleteRequest` IPC handled by `vauban-supervisor`, then clears
+all `recording_*` columns on `proxy_sessions`. See
+[recording_retention.md](../runbooks/recording_retention.md).
 
 ---
 

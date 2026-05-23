@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_proxy_sessions_recording_retention;

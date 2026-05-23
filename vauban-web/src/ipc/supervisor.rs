@@ -51,6 +51,19 @@ pub struct RecordingFileResult {
     pub file: Option<std::fs::File>,
 }
 
+/// Pending recording delete request waiting for response from supervisor.
+struct PendingRecordingDelete {
+    response_tx: oneshot::Sender<RecordingDeleteResult>,
+}
+
+/// Result of a recording delete request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingDeleteResult {
+    pub success: bool,
+    pub bytes_freed: u64,
+    pub error: Option<String>,
+}
+
 /// Pending SMTP broker request (Issue #10) waiting for the supervisor
 /// to come back with a connected `tokio::net::TcpStream` materialised
 /// from a SCM_RIGHTS file descriptor.
@@ -93,6 +106,8 @@ pub struct SupervisorClientInner {
     pending_tcp_connects: Mutex<HashMap<u64, PendingTcpConnect>>,
     /// Pending recording file requests.
     pending_recording_files: Mutex<HashMap<u64, PendingRecordingFile>>,
+    /// Pending recording delete requests (retention reaper).
+    pending_recording_deletes: Mutex<HashMap<u64, PendingRecordingDelete>>,
     /// Pending SMTP-broker requests (Issue #10). Distinct from
     /// `pending_tcp_connects` because the IPC loop must materialise an
     /// FD via SCM_RIGHTS into a `tokio::net::TcpStream` for these,
@@ -168,6 +183,7 @@ impl SupervisorClient {
             next_request_id: AtomicU64::new(1),
             pending_tcp_connects: Mutex::new(HashMap::new()),
             pending_recording_files: Mutex::new(HashMap::new()),
+            pending_recording_deletes: Mutex::new(HashMap::new()),
             pending_smtp_connects: Mutex::new(HashMap::new()),
             start_time: Instant::now(),
             requests_processed: AtomicU64::new(0),
@@ -426,6 +442,60 @@ impl SupervisorClient {
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&request_id);
                 Err("Recording file request timeout".to_string())
+            }
+        }
+    }
+
+    /// Request the supervisor to delete a recording directory or legacy file.
+    pub async fn request_recording_delete(
+        &self,
+        session_id: &str,
+        relative_path: &str,
+    ) -> Result<RecordingDeleteResult, String> {
+        let request_id = self.inner.next_request_id.fetch_add(1, Ordering::SeqCst);
+
+        debug!(
+            request_id,
+            session_id = %session_id,
+            path = %relative_path,
+            "Requesting recording delete from supervisor"
+        );
+
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self
+                .inner
+                .pending_recording_deletes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            pending.insert(request_id, PendingRecordingDelete { response_tx: tx });
+        }
+
+        let msg = Message::RecordingDeleteRequest {
+            request_id,
+            session_id: session_id.to_string(),
+            relative_path: relative_path.to_string(),
+        };
+
+        if let Err(e) = self.inner.channel.send(&msg) {
+            self.inner
+                .pending_recording_deletes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&request_id);
+            return Err(format!("Failed to send RecordingDeleteRequest: {}", e));
+        }
+
+        match tokio::time::timeout(Duration::from_secs(30), rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err("Response channel dropped".to_string()),
+            Err(_) => {
+                self.inner
+                    .pending_recording_deletes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&request_id);
+                Err("Recording delete request timeout".to_string())
             }
         }
     }
@@ -706,6 +776,37 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     let _ = pending.response_tx.send(result);
                 } else {
                     warn!(request_id, "No pending request for recording file response");
+                }
+            }
+            Ok(Message::RecordingDeleteResponse {
+                request_id,
+                session_id,
+                success,
+                bytes_freed,
+                error,
+            }) => {
+                debug!(
+                    request_id,
+                    session_id = %session_id,
+                    success,
+                    bytes_freed,
+                    "Recording delete response from supervisor"
+                );
+
+                let pending = inner
+                    .pending_recording_deletes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&request_id);
+                if let Some(pending) = pending {
+                    let result = RecordingDeleteResult {
+                        success,
+                        bytes_freed,
+                        error,
+                    };
+                    let _ = pending.response_tx.send(result);
+                } else {
+                    warn!(request_id, "No pending request for recording delete response");
                 }
             }
             Ok(Message::TlsCertProvision { cert_pem, key_pem }) => {

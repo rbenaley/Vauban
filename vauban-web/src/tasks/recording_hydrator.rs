@@ -6,7 +6,7 @@
 //! ```text
 //! PRIMARY:   session ends -> enqueue_hydration -> sleep 5s -> finalize
 //! BOOTSTRAP: vauban-web boot -> one-shot scan -> finalize all backlog
-//! SAFETY:    daily cron at 04:00 UTC -> bootstrap re-run
+//! SAFETY:    daily cron at configured local hour -> bootstrap re-run
 //! ```
 //!
 //! There is intentionally **no periodic 30s ticker**. The PRIMARY
@@ -36,13 +36,14 @@
 //! parameterised by `hydration_batch_size`,
 //! `hydration_missing_meta_grace_secs`,
 //! `hydration_enqueue_delay_secs`, and
-//! `hydration_daily_cron_hour_utc`. See
+//! `recording_daily_cron_timezone`, `hydration_daily_cron_hour`. See
 //! [`crate::config::RecordingConfig`].
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::Utc;
+use chrono_tz::Tz;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
@@ -50,6 +51,7 @@ use crate::db::DbPool;
 use crate::ipc::SupervisorClient;
 use crate::services::broadcast::BroadcastService;
 use crate::services::recording_hydrator::{RecordingHydrator, TASK_NAME};
+use crate::tasks::daily_cron::next_cron_instant;
 
 /// One-shot bootstrap hydration. Scans `proxy_sessions` for any
 /// `recording_finalized_at IS NULL` rows, hydrates them in batches
@@ -143,7 +145,7 @@ pub fn run_bootstrap_hydration(
 }
 
 /// Schedule the daily reconciliation cron. Sleeps until the next
-/// `hour_utc:00` UTC, then runs `run_bootstrap_hydration` once a
+/// `cron_hour:00` in `cron_tz`, then runs `run_bootstrap_hydration` once a
 /// day via `shared::tasks::spawn_periodic` (period = 86 400 s).
 ///
 /// This is a SAFETY NET, not the primary finalization path. In
@@ -168,17 +170,20 @@ pub fn start_daily_reconciliation(
     batch_size: i64,
     storage_base: String,
     missing_meta_grace: Duration,
-    hour_utc: u8,
+    cron_tz: Tz,
+    cron_hour: u8,
     broadcast: BroadcastService,
 ) {
     let now = Utc::now();
-    let delay = next_cron_instant_utc(now, hour_utc);
+    let delay = next_cron_instant(now, cron_tz, cron_hour);
     info!(
         task = TASK_NAME,
-        hour_utc,
+        cron_tz = cron_tz.name(),
+        cron_hour,
         delay_secs = delay.as_secs(),
-        "daily_reconciliation scheduled at next {:02}:00 UTC",
-        hour_utc
+        "daily_reconciliation scheduled at next {:02}:00 {}",
+        cron_hour,
+        cron_tz.name()
     );
     let handle_for_spawn = handle.clone();
     handle.spawn(async move {
@@ -228,47 +233,8 @@ pub fn start_daily_reconciliation(
     });
 }
 
-/// Compute the duration between `now` and the next `hour_utc:00:00`
-/// UTC instant. Used to align the daily reconciliation cron with a
-/// stable wall-clock anchor (e.g. 04:00 UTC). Pure function for
-/// unit-testability.
-///
-/// Examples (with `hour_utc = 4`):
-///   - `now = 10:00 UTC` -> `+18h`
-///   - `now = 02:00 UTC` -> `+2h`
-///   - `now = 04:00:01 UTC` -> `+23h59m59s` (wrap to next day)
-pub fn next_cron_instant_utc(now: DateTime<Utc>, hour_utc: u8) -> Duration {
-    let target_today = match Utc
-        .with_ymd_and_hms(now.year(), now.month(), now.day(), hour_utc as u32, 0, 0)
-        .single()
-    {
-        Some(t) => t,
-        None => {
-            // Out-of-range hour or ambiguous local time. The boot-time
-            // `RecordingConfig::validate` rejects out-of-range hours,
-            // so this branch is unreachable in practice. Defensive
-            // fallback: schedule the cron 24h in the future.
-            return Duration::from_secs(24 * 3600);
-        }
-    };
-    let target = if target_today > now {
-        target_today
-    } else {
-        target_today + chrono::Duration::days(1)
-    };
-    let delta = target - now;
-    Duration::from_secs(delta.num_seconds().max(0) as u64)
-}
-
-// `chrono::Datelike` adds `.year()/.month()/.day()` used above by
-// `with_ymd_and_hms` to anchor the cron at the start of the
-// configured UTC hour.
-use chrono::Datelike as _;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// Source-level pin restricted to the non-test portion of the
     /// file so the assertion strings below cannot match themselves.
     fn non_test_source() -> String {
@@ -329,46 +295,9 @@ mod tests {
             source.contains("shared::tasks::spawn_periodic"),
             "daily reconciliation must delegate to shared::tasks::spawn_periodic for uniform lifecycle"
         );
-    }
-
-    #[test]
-    fn test_next_cron_instant_utc_now_before_target() {
-        // 10:00 UTC, target 04:00 -> next day 04:00 = +18h
-        let now = Utc.with_ymd_and_hms(2026, 4, 30, 10, 0, 0).unwrap();
-        let d = next_cron_instant_utc(now, 4);
-        assert_eq!(d.as_secs(), 18 * 3600);
-    }
-
-    #[test]
-    fn test_next_cron_instant_utc_now_after_target() {
-        // 02:00 UTC, target 04:00 same day -> +2h
-        let now = Utc.with_ymd_and_hms(2026, 4, 30, 2, 0, 0).unwrap();
-        let d = next_cron_instant_utc(now, 4);
-        assert_eq!(d.as_secs(), 2 * 3600);
-    }
-
-    #[test]
-    fn test_next_cron_instant_utc_just_past_target() {
-        // 04:00:01 UTC, target 04:00 -> wrap to next day = ~24h - 1s
-        let now = Utc.with_ymd_and_hms(2026, 4, 30, 4, 0, 1).unwrap();
-        let d = next_cron_instant_utc(now, 4);
-        assert_eq!(d.as_secs(), 24 * 3600 - 1);
-    }
-
-    #[test]
-    fn test_next_cron_instant_utc_exactly_at_target_wraps() {
-        // 04:00:00 UTC, target 04:00 -> we MUST wrap to next day,
-        // not fire immediately (otherwise the cron double-fires).
-        let now = Utc.with_ymd_and_hms(2026, 4, 30, 4, 0, 0).unwrap();
-        let d = next_cron_instant_utc(now, 4);
-        assert_eq!(d.as_secs(), 24 * 3600);
-    }
-
-    #[test]
-    fn test_next_cron_instant_utc_handles_midnight() {
-        let now = Utc.with_ymd_and_hms(2026, 4, 30, 23, 30, 0).unwrap();
-        let d = next_cron_instant_utc(now, 0);
-        // 23:30 -> next 00:00 = +30 min
-        assert_eq!(d.as_secs(), 30 * 60);
+        assert!(
+            source.contains("daily_cron::next_cron_instant"),
+            "daily reconciliation must use timezone-aware daily_cron::next_cron_instant"
+        );
     }
 }

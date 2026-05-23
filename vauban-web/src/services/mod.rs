@@ -21,6 +21,7 @@ pub mod mailer;
 pub mod rate_limit;
 pub mod rbac;
 pub mod recording_hydrator;
+pub mod recording_reaper;
 pub mod role_invariants;
 pub mod session_access;
 pub mod smtp_client;

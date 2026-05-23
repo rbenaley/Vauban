@@ -154,6 +154,13 @@ enabled = true
 storage_path = "recordings"
 rdp = true
 ssh = true
+recording_daily_cron_timezone = "Europe/Brussels"
+hydration_daily_cron_hour = 4
+retention_daily_cron_hour = 5
+retention_enabled = true
+retention_days = 30
+retention_max_size_gib = 0
+retention_batch_size = 50
 
 # ==============================================================================
 # IACS / INDUSTRIAL

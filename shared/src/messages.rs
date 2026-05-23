@@ -1793,6 +1793,27 @@ pub enum Message {
         error: Option<String>,
     },
 
+    /// Request the supervisor to delete a recording directory or legacy flat
+    /// file under the recording storage root. Used by vauban-web retention
+    /// reaper only (web service).
+    RecordingDeleteRequest {
+        request_id: u64,
+        session_id: String,
+        /// Path relative to the recording storage root (e.g. "2026/05/uuid/"
+        /// or "2026/02/uuid.mp4").
+        relative_path: String,
+    },
+
+    /// Response to a RecordingDeleteRequest.
+    RecordingDeleteResponse {
+        request_id: u64,
+        session_id: String,
+        success: bool,
+        /// Best-effort bytes reclaimed on disk.
+        bytes_freed: u64,
+        error: Option<String>,
+    },
+
     // ========== ACME Certificate Management (Web <-> Supervisor) ==========
     /// Request the supervisor to perform ACME certificate renewal.
     /// The supervisor handles the ACME protocol (instant-acme) and coordinates
@@ -3991,6 +4012,57 @@ mod tests {
             assert_eq!(request_id, 42);
             assert_eq!(session_id, "rec-123");
             assert!(success);
+            assert!(error.is_none());
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_recording_delete_request_roundtrip() {
+        let msg = Message::RecordingDeleteRequest {
+            request_id: 7,
+            session_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            relative_path: "2026/05/550e8400-e29b-41d4-a716-446655440000/".to_string(),
+        };
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::RecordingDeleteRequest {
+            request_id,
+            session_id,
+            relative_path,
+        } = deserialized
+        {
+            assert_eq!(request_id, 7);
+            assert!(session_id.contains("550e8400"));
+            assert!(relative_path.ends_with('/'));
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_recording_delete_response_roundtrip() {
+        let msg = Message::RecordingDeleteResponse {
+            request_id: 7,
+            session_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            success: true,
+            bytes_freed: 12345,
+            error: None,
+        };
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::RecordingDeleteResponse {
+            request_id,
+            success,
+            bytes_freed,
+            error,
+            ..
+        } = deserialized
+        {
+            assert_eq!(request_id, 7);
+            assert!(success);
+            assert_eq!(bytes_freed, 12345);
             assert!(error.is_none());
         } else {
             panic!("Wrong variant");

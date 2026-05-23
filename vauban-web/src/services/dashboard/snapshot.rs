@@ -456,8 +456,7 @@ pub(crate) async fn load_evidence_chain(db_pool: &DbPool, scope: DashboardScope)
     // Diesel `sum()` on `Nullable<Int8>` returns `Numeric`; rather
     // than pulling `bigdecimal` and risking precision loss, we sum
     // bytes client-side. The `recording_finalized_at` filter caps
-    // the row count to actually finalised recordings, which is
-    // bounded by the retention policy.
+    // the row count to actually finalised recordings present on disk.
     let sizes: Vec<Option<i64>> = match scope {
         DashboardScope::Global => proxy_sessions::table
             .filter(proxy_sessions::recording_finalized_at.is_not_null())
