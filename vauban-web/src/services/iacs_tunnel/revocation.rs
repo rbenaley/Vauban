@@ -37,15 +37,64 @@ use crate::config::IacsTunnelConfig;
 use crate::db::DbPool;
 use crate::ipc::ProxyIacsClient;
 
+/// Flip every live IACS `proxy_sessions` row to `terminated` at boot.
+///
+/// SSH/RDP rows in `active` are eventually reaped by
+/// [`crate::tasks::cleanup::disconnect_stale_active_sessions`]; IACS
+/// tunnels use `tunnel_active` / `waiting_client` and rely on
+/// `IacsTunnelClosed` IPC (or the in-process handler `Drop`) to flip
+/// the row. A supervisor restart kills proxy-iacs without running
+/// those hooks, so the DB keeps stale rows on `/sessions/active`.
+///
+/// Call once during vauban-web startup whenever the IACS surface is
+/// enabled. Idempotent on a clean DB (zero rows updated).
+pub async fn reconcile_orphaned_iacs_tunnels_on_boot(pool: &DbPool) -> Result<usize, String> {
+    use diesel_async::RunQueryDsl;
+
+    let mut conn = pool.get().await.map_err(|e| e.to_string())?;
+    let now = Utc::now();
+
+    let terminated = diesel::update(
+        crate::schema::proxy_sessions::table
+            .filter(crate::schema::proxy_sessions::session_type.eq("iacs_tunnel"))
+            .filter(
+                crate::schema::proxy_sessions::status.eq_any(["tunnel_active", "waiting_client"]),
+            ),
+    )
+    .set((
+        crate::schema::proxy_sessions::status.eq("terminated"),
+        crate::schema::proxy_sessions::disconnected_at.eq(Some(now)),
+        crate::schema::proxy_sessions::updated_at.eq(now),
+    ))
+    .execute(&mut conn)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if terminated > 0 {
+        tracing::info!(
+            terminated,
+            "iacs_tunnel: reconciled orphaned IACS proxy_sessions rows after service boot"
+        );
+    }
+
+    Ok(terminated)
+}
+
 /// One pass of the watchdog. Returns `(closed, transitions)` --
 /// the number of live tunnels closed and the number of session
 /// rows transitioned (e.g. waiting_client -> expired). Public so
 /// the test suite can drive a single tick deterministically
 /// without relying on tokio time.
+///
+/// When `reconcile_registry_drift` is `true` (in-process sshd mode),
+/// any `tunnel_active` row whose uuid is absent from the live registry
+/// is flipped to `terminated`. Must be `false` when proxy-iacs holds
+/// the canonical live state (the web-side registry is always empty).
 pub async fn run_once(
     registry: &TunnelRegistry,
     pool: &DbPool,
     cfg: &IacsTunnelConfig,
+    reconcile_registry_drift: bool,
 ) -> (usize, usize) {
     let mut conn = match pool.get().await {
         Ok(c) => c,
@@ -158,6 +207,51 @@ pub async fn run_once(
         }
     }
 
+    // 4) Registry drift (in-process sshd only). After a process
+    //    restart the registry is empty but `tunnel_active` rows may
+    //    still surface on `/sessions/active`.
+    if reconcile_registry_drift {
+        use crate::schema::proxy_sessions;
+        let orphaned: Vec<Uuid> = if live_uuids.is_empty() {
+            proxy_sessions::table
+                .filter(proxy_sessions::session_type.eq("iacs_tunnel"))
+                .filter(proxy_sessions::status.eq("tunnel_active"))
+                .select(proxy_sessions::uuid)
+                .load(&mut conn)
+                .await
+                .unwrap_or_default()
+        } else {
+            proxy_sessions::table
+                .filter(proxy_sessions::session_type.eq("iacs_tunnel"))
+                .filter(proxy_sessions::status.eq("tunnel_active"))
+                .filter(proxy_sessions::uuid.ne_all(&live_uuids))
+                .select(proxy_sessions::uuid)
+                .load(&mut conn)
+                .await
+                .unwrap_or_default()
+        };
+        if !orphaned.is_empty() {
+            transitions += orphaned.len();
+            let now = Utc::now();
+            let _ = diesel::update(
+                proxy_sessions::table.filter(proxy_sessions::uuid.eq_any(&orphaned)),
+            )
+            .set((
+                proxy_sessions::status.eq("terminated"),
+                proxy_sessions::disconnected_at.eq(Some(now)),
+                proxy_sessions::updated_at.eq(now),
+            ))
+            .execute(&mut conn)
+            .await;
+            for sess_uuid in orphaned {
+                tracing::info!(
+                    session_uuid = %sess_uuid,
+                    "iacs_tunnel watchdog: terminated orphaned tunnel_active row (registry drift)"
+                );
+            }
+        }
+    }
+
     (closed_now, transitions)
 }
 
@@ -240,8 +334,14 @@ pub fn spawn_watchdog_with_proxy_iacs(
         tick.tick().await;
         loop {
             tick.tick().await;
-            let (closed, transitions) =
-                run_once_with_proxy(&registry, &pool, &cfg, proxy_iacs.as_ref()).await;
+            let (closed, transitions) = run_once_with_proxy(
+                &registry,
+                &pool,
+                &cfg,
+                proxy_iacs.as_ref(),
+                proxy_iacs.is_none(),
+            )
+            .await;
             if closed > 0 || transitions > 0 {
                 tracing::debug!(closed, transitions, "iacs_tunnel watchdog: tick complete");
             }
@@ -258,13 +358,14 @@ pub async fn run_once_with_proxy(
     pool: &DbPool,
     cfg: &IacsTunnelConfig,
     proxy_iacs: Option<&Arc<ProxyIacsClient>>,
+    reconcile_registry_drift: bool,
 ) -> (usize, usize) {
     // The in-process `TunnelRegistry` is the legacy authority. When
     // `proxy_iacs` is `Some`, we additionally pull every
     // `tunnel_active` row from the DB and relay the IPC kill --
     // proxy-iacs holds the canonical live state and only it can
     // actually close the russh channel.
-    let (closed, transitions) = run_once(registry, pool, cfg).await;
+    let (closed, transitions) = run_once(registry, pool, cfg, reconcile_registry_drift).await;
 
     if let Some(client) = proxy_iacs {
         let mut conn = match pool.get().await {

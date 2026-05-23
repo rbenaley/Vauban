@@ -693,6 +693,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("RDP proxy IPC processing task started");
     }
 
+    // ========================================================================
+    // IACS tunnel orphan reconciliation (boot)
+    // ========================================================================
+    // proxy-iacs / in-process sshd state is in-memory only. A supervisor
+    // restart leaves `tunnel_active` rows in proxy_sessions until we
+    // explicitly flip them (SSH/RDP get the same treatment via cleanup).
+    if config.industrial.enabled {
+        match vauban_web::services::iacs_tunnel::reconcile_orphaned_iacs_tunnels_on_boot(&db_pool)
+            .await
+        {
+            Ok(n) if n > 0 => tracing::info!(
+                reconciled = n,
+                "iacs_tunnel: boot reconciliation cleared stale active rows"
+            ),
+            Ok(_) => tracing::debug!("iacs_tunnel: boot reconciliation found no stale rows"),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "iacs_tunnel: boot reconciliation failed (stale rows may linger)"
+            ),
+        }
+    }
+
     // Create IACS proxy client if running under supervisor (Lot 3:
     // per-asset target resolution).
     let proxy_iacs = init_iacs_proxy_client();

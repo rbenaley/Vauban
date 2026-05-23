@@ -45,8 +45,8 @@ pub mod server;
 pub use port_mapping::derive_local_forward_port;
 pub use registry::{TunnelHandle, TunnelRegistry};
 pub use revocation::{
-    run_once as watchdog_run_once, run_once_with_proxy, spawn_watchdog,
-    spawn_watchdog_with_proxy_iacs,
+    reconcile_orphaned_iacs_tunnels_on_boot, run_once as watchdog_run_once, run_once_with_proxy,
+    spawn_watchdog, spawn_watchdog_with_proxy_iacs,
 };
 pub use server::{
     IacsTunnelHandler, IacsTunnelServer, spawn_iacs_tunnel_server,

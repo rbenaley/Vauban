@@ -23,7 +23,9 @@ use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use uuid::Uuid;
 use vauban_web::config::IacsTunnelConfig;
-use vauban_web::services::iacs_tunnel::{TunnelHandle, TunnelRegistry, watchdog_run_once};
+use vauban_web::services::iacs_tunnel::{
+    TunnelHandle, TunnelRegistry, reconcile_orphaned_iacs_tunnels_on_boot, watchdog_run_once,
+};
 
 // ===================================================================
 // Test fixtures
@@ -179,7 +181,7 @@ async fn watchdog_closes_tunnels_when_ews_disabled() {
         .expect("disable ews");
 
     let cfg = cfg_with_ttl(0);
-    let (closed, _) = watchdog_run_once(&registry, &app.db_pool, &cfg).await;
+    let (closed, _) = watchdog_run_once(&registry, &app.db_pool, &cfg, true).await;
     assert_eq!(closed, 1, "watchdog must close exactly the disabled tunnel");
     assert!(registry.get(&session_uuid).is_none(), "registry must drop");
     assert_eq!(
@@ -210,7 +212,7 @@ async fn watchdog_closes_tunnels_when_ews_offboarded() {
         .await
         .expect("offboard ews");
 
-    let (closed, _) = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(0)).await;
+    let (closed, _) = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(0), true).await;
     assert_eq!(closed, 1);
     assert!(registry.get(&session_uuid).is_none());
 }
@@ -238,7 +240,7 @@ async fn watchdog_closes_tunnels_when_user_deactivated() {
         .await
         .expect("deactivate user");
 
-    let (closed, _) = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(0)).await;
+    let (closed, _) = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(0), true).await;
     assert_eq!(closed, 1);
     assert!(registry.get(&session_uuid).is_none());
 }
@@ -267,7 +269,7 @@ async fn watchdog_does_not_touch_other_users_tunnels() {
         .await
         .expect("disable ews_a");
 
-    let (closed, _) = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(0)).await;
+    let (closed, _) = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(0), true).await;
     assert_eq!(closed, 1, "exactly one tunnel must be revoked");
     assert!(registry.get(&session_a).is_none(), "A must be revoked");
     assert!(registry.get(&session_b).is_some(), "B must survive");
@@ -302,7 +304,8 @@ async fn watchdog_expires_waiting_client_past_ttl() {
     .expect("seed stale waiting_client");
 
     let registry = TunnelRegistry::new();
-    let (_, transitions) = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(60)).await;
+    let (_, transitions) =
+        watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(60), true).await;
     assert!(transitions >= 1, "stale waiting_client must transition");
     assert_eq!(
         read_session_status(&mut conn, session_uuid).await,
@@ -335,7 +338,7 @@ async fn watchdog_does_not_expire_recent_waiting_client() {
     .expect("seed fresh waiting_client");
 
     let registry = TunnelRegistry::new();
-    let _ = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(60)).await;
+    let _ = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(60), true).await;
     assert_eq!(
         read_session_status(&mut conn, session_uuid).await,
         "waiting_client",
@@ -364,7 +367,7 @@ async fn watchdog_appends_tunnel_closed_audit_row() {
         .await
         .expect("disable");
 
-    let _ = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(0)).await;
+    let _ = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(0), true).await;
 
     #[derive(diesel::QueryableByName, Debug)]
     struct AuditRow {
@@ -383,5 +386,88 @@ async fn watchdog_appends_tunnel_closed_audit_row() {
     assert!(
         !rows.is_empty(),
         "watchdog must append a tunnel_closed audit row"
+    );
+}
+
+#[tokio::test]
+async fn boot_reconcile_terminates_stale_tunnel_active_and_waiting_client() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_id = create_simple_user(&mut conn, &unique_name("boot_reconcile")).await;
+    let asset_id = seed_iacs_asset(&mut conn, user_id).await;
+    let ews_uuid = seed_ews(&mut conn, user_id).await;
+    let active_uuid = seed_active_session(&mut conn, user_id, asset_id, ews_uuid).await;
+
+    let waiting_uuid = Uuid::new_v4();
+    diesel::sql_query(
+        "INSERT INTO proxy_sessions \
+         (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, \
+          client_ip, industrial_protocol, ews_uuid) \
+         VALUES ($1, $2, $3, '', '', 'iacs_tunnel', 'waiting_client', '127.0.0.1/32', \
+                 'modbus', $4)",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(waiting_uuid)
+    .bind::<diesel::sql_types::Integer, _>(user_id)
+    .bind::<diesel::sql_types::Integer, _>(asset_id)
+    .bind::<diesel::sql_types::Uuid, _>(ews_uuid)
+    .execute(&mut conn)
+    .await
+    .expect("seed waiting_client");
+
+    let n = reconcile_orphaned_iacs_tunnels_on_boot(&app.db_pool)
+        .await
+        .expect("reconcile");
+    assert!(
+        n >= 2,
+        "boot reconcile must terminate at least the two seeded rows (got {n})"
+    );
+
+    use vauban_web::schema::proxy_sessions;
+    for uuid in [active_uuid, waiting_uuid] {
+        let status: String = proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(uuid))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+            .expect("load status");
+        assert_eq!(
+            status, "terminated",
+            "boot reconcile must flip seeded row {uuid} to terminated"
+        );
+    }
+}
+
+#[tokio::test]
+async fn watchdog_reconciles_tunnel_active_rows_missing_from_registry() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_id = create_simple_user(&mut conn, &unique_name("registry_drift")).await;
+    let asset_id = seed_iacs_asset(&mut conn, user_id).await;
+    let ews_uuid = seed_ews(&mut conn, user_id).await;
+    let orphan_uuid = seed_active_session(&mut conn, user_id, asset_id, ews_uuid).await;
+
+    let registry = TunnelRegistry::new();
+    let (_, transitions) = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(0), true).await;
+    assert!(
+        transitions >= 1,
+        "registry drift must terminate tunnel_active rows absent from the registry"
+    );
+
+    use vauban_web::schema::proxy_sessions;
+    let status: String = proxy_sessions::table
+        .filter(proxy_sessions::uuid.eq(orphan_uuid))
+        .select(proxy_sessions::status)
+        .first(&mut conn)
+        .await
+        .expect("load status");
+    assert_eq!(status, "terminated");
+}
+
+#[test]
+fn main_boot_calls_iacs_tunnel_orphan_reconciliation() {
+    let src = include_str!("../../src/main.rs");
+    assert!(
+        src.contains("reconcile_orphaned_iacs_tunnels_on_boot"),
+        "main.rs MUST reconcile stale IACS proxy_sessions rows on boot"
     );
 }
