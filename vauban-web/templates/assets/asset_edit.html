@@ -67,29 +67,15 @@
 
     <!-- Flash messages are displayed in base.html -->
 
-    <!-- Edit Form - Native HTML form with PRG pattern -->
-    {# ===== Browser credential-prompt suppression =====
-       See asset_create.html for the full rationale. Sensitive inputs
-       carry opaque names (vbn_account / vbn_secret / vbn_secret_phrase)
-       and the @submit handler restores the real server-side names
-       (data-real-name -> name) right before the browser serialises the
-       form, so the backend still receives ssh_username / ssh_password
-       / ssh_passphrase. #}
-    {# IACS assets carry NO per-asset credentials. Strip every auth-related
-       field from the submission BEFORE the data-real-name swap so the edit
-       handler's validate_auth_inputs() never sees `ssh_auth_type=password`
-       or a stray `ssh_username` on an IACS row. #}
-    <form action="/assets/manage/{{ asset.uuid }}/edit" method="POST" class="space-y-6"
-          @submit="
-              if ('{{ asset.asset_type }}'.startsWith('iacs_')) {
-                  $el.querySelectorAll('[data-iacs-strip]').forEach(function (el) {
-                      el.disabled = true;
-                  });
-              }
-              $el.querySelectorAll('[data-real-name]').forEach(function (el) {
-                  if (!el.disabled) { el.name = el.dataset.realName; }
-              });
-          "
+    {# Edit form: HTMX POST + PRG via `htmx_or_flash_redirect` (same
+       dialect as the delete button on the asset detail page). Credential
+       inputs keep opaque DOM names (`vbn_*`); the handler accepts them
+       through serde aliases on `UpdateAssetForm`. IACS rows omit the
+       entire Authentication card server-side so no client-side strip is
+       needed. #}
+    <form hx-post="/assets/manage/{{ asset.uuid }}/edit"
+          hx-swap="none"
+          class="space-y-6"
           x-data="csrf">
     <input type="hidden" name="csrf_token" x-model="token" />
 
@@ -122,6 +108,19 @@
                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                                min="1" max="65535" required>
                     </div>
+                    {% if asset.is_iacs %}
+                    <div>
+                        <label for="asset_type" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Industrial protocol *</label>
+                        <select name="asset_type" id="asset_type"
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                                required>
+                            {% for (value, label) in iacs_asset_types %}
+                            <option value="{{ value }}" {% if asset.asset_type == *value %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Switch among industrial protocols without recreating the asset.</p>
+                    </div>
+                    {% endif %}
                 </div>
 
                 <div>
@@ -137,13 +136,8 @@
             </div>
         </div>
 
-        {# IACS assets have no per-asset credentials. Replace the
-           Authentication card with an explanatory note on edit too.
-           The card pivots on `assetType.startsWith('iacs_')`; the
-           value comes from the (READ-ONLY) server-rendered field. #}
-        <div x-data="{ assetType: '{{ asset.asset_type }}' }"
-             x-show="assetType.startsWith('iacs_')" x-cloak
-             class="rounded-md bg-blue-50 dark:bg-blue-900/30 p-4">
+        {% if asset.is_iacs %}
+        <div class="rounded-md bg-blue-50 dark:bg-blue-900/30 p-4">
             <div class="flex">
                 <div class="flex-shrink-0">
                     <svg class="h-5 w-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
@@ -158,19 +152,15 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
-        <!-- Authentication Settings (protocol-aware).
-             `assetType` is server-rendered and READ-ONLY here: edit
-             never lets the operator change the protocol of an existing
-             asset (that constraint is enforced server-side by reading
-             `existing.asset_type` instead of trusting any submitted
-             field). -->
+        {% if !asset.is_iacs %}
+        <!-- Authentication Settings (SSH/RDP only; protocol immutable after creation). -->
         <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden"
              x-data="{
                  assetType: '{{ asset.asset_type }}',
                  authType: '{{ asset.ssh_auth_type }}'
              }"
-             x-show="!assetType.startsWith('iacs_')" x-cloak
              x-effect="if (assetType === 'rdp' && authType !== 'password') { authType = 'password' }">
             <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
                 <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Authentication</h3>
@@ -179,25 +169,16 @@
             <div class="px-4 py-5 sm:p-6 space-y-6">
                 <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
                     <div>
-                        {# Opaque DOM name/id; the form's @submit handler
-                           restores name="ssh_username" before submit. #}
                         <label for="vbn_account" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Account Name</label>
                         <input type="text" name="vbn_account" id="vbn_account"
-                               data-real-name="ssh_username"
-                               data-iacs-strip
                                value="{{ asset.ssh_username }}"
                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                                placeholder="root">
                         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Account on the target system, used for authentication.</p>
                     </div>
-                    <!-- Authentication Type selector: SSH only.
-                         Hidden for RDP because the proxy only consumes
-                         password auth; private-key would be rejected by
-                         validate_auth_inputs. -->
                     <div x-show="assetType === 'ssh'" x-cloak>
                         <label for="ssh_auth_type" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Authentication Type</label>
                         <select name="ssh_auth_type" id="ssh_auth_type" x-model="authType"
-                                data-iacs-strip
                                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
                             <option value="password" {% if asset.ssh_auth_type == "password" %}selected{% endif %}>Password</option>
                             <option value="private_key" {% if asset.ssh_auth_type == "private_key" %}selected{% endif %}>Private Key</option>
@@ -205,23 +186,9 @@
                     </div>
                 </div>
 
-                <!-- Secret field: shown for RDP (always) and for SSH
-                     when auth_type=password. The input is intentionally
-                     rendered EMPTY -- we never round-trip the stored
-                     ciphertext through the browser (defense in depth +
-                     UX: a 200+ dot field is confusing). The handler
-                     preserves the existing secret when the operator
-                     leaves this blank (option A semantic).
-                     Rendered as <input type="text"> with opaque name/id
-                     so browsers do not detect a credential field. The
-                     typed value is intentionally visible -- there is no
-                     native <input type="password"> because that would
-                     re-trigger Save Password / Generate Password prompts. -->
                 <div x-show="assetType === 'rdp' || authType === 'password'" x-cloak>
                     <label for="vbn_secret" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Secret</label>
                     <input type="text" name="vbn_secret" id="vbn_secret"
-                           data-real-name="ssh_password"
-                           data-iacs-strip
                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
                            placeholder="{% if asset.has_password %}Leave blank to keep current secret{% else %}Enter secret{% endif %}">
@@ -230,15 +197,10 @@
                     </p>
                 </div>
 
-                <!-- Private key fields: SSH only AND auth_type=private_key.
-                     Same rationale as the password field above: the
-                     stored ciphertext is never exposed back to the
-                     browser; blank means "keep current". -->
                 <div x-show="assetType === 'ssh' && authType === 'private_key'" x-cloak class="space-y-4">
                     <div>
                         <label for="ssh_private_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Private Key</label>
                         <textarea name="ssh_private_key" id="ssh_private_key" rows="6"
-                                  data-iacs-strip
                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono text-xs"
                                   placeholder="{% if asset.has_private_key %}Leave blank to keep current private key{% else %}-----BEGIN OPENSSH PRIVATE KEY-----
 ...
@@ -248,12 +210,8 @@
                         </p>
                     </div>
                     <div>
-                        {# Same opaque-name + visual-mask pattern as the
-                           main secret field above. #}
                         <label for="vbn_secret_phrase" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Key Passphrase (optional)</label>
                         <input type="text" name="vbn_secret_phrase" id="vbn_secret_phrase"
-                               data-real-name="ssh_passphrase"
-                               data-iacs-strip
                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                                autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
                                placeholder="{% if asset.has_passphrase %}Leave blank to keep current passphrase{% else %}Key passphrase (if encrypted){% endif %}">
@@ -263,11 +221,9 @@
                     </div>
                 </div>
 
-                <!-- Windows AD domain: RDP only. -->
                 <div x-show="assetType === 'rdp'" x-cloak>
                     <label for="rdp_domain" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Domain (optional)</label>
                     <input type="text" name="rdp_domain" id="rdp_domain"
-                           data-iacs-strip
                            value="{{ asset.rdp_domain }}"
                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                            maxlength="255" placeholder="CORP">
@@ -275,6 +231,7 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <!-- SSH Host Key (read-only) -->
         {% if asset.asset_type == "ssh" %}

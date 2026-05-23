@@ -11,6 +11,8 @@ pub struct AssetEdit {
     pub hostname: String,
     pub port: i32,
     pub asset_type: String,
+    /// True when the row is an IACS applicative variant.
+    pub is_iacs: bool,
     /// Compact 3-char label used by the square header tile so the
     /// long IACS variants ("iacs_modbus", ...) do not overflow the
     /// `h-10 w-10` square (see `AssetType::badge_label`).
@@ -50,11 +52,14 @@ pub struct AssetEditTemplate {
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub asset: AssetEdit,
+    /// Industrial protocol choices for IACS asset edit (five variants).
+    pub iacs_asset_types: Vec<(String, String)>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::asset::AssetType;
 
     fn create_test_asset_edit() -> AssetEdit {
         AssetEdit {
@@ -63,6 +68,7 @@ mod tests {
             hostname: "prod-01.example.com".to_string(),
             port: 22,
             asset_type: "ssh".to_string(),
+            is_iacs: false,
             badge_label: "SSH".to_string(),
             status: "online".to_string(),
             description: Some("Main production server".to_string()),
@@ -128,6 +134,7 @@ mod tests {
             sidebar_content: None,
             header_user: None,
             asset: create_test_asset_edit(),
+            iacs_asset_types: AssetType::iacs_select_options(),
         };
         assert_eq!(template.title, "Edit Asset");
         assert_eq!(template.asset.name, "Production Server");
@@ -152,6 +159,7 @@ mod tests {
             sidebar_content: None,
             header_user: Some(user),
             asset: create_test_asset_edit(),
+            iacs_asset_types: AssetType::iacs_select_options(),
         };
 
         assert!(template.user.is_some());
@@ -175,6 +183,7 @@ mod tests {
             sidebar_content: None,
             header_user: None,
             asset: create_test_asset_edit(),
+            iacs_asset_types: AssetType::iacs_select_options(),
         };
 
         let result = template.render();

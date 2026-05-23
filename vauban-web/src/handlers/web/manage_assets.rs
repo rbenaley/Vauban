@@ -1117,6 +1117,7 @@ pub async fn asset_edit(
         hostname: asset_hostname,
         port: asset_port,
         asset_type: asset_type_val.to_string(),
+        is_iacs: asset_type_val.is_iacs(),
         badge_label: asset_type_val.badge_label().to_string(),
         status: asset_status,
         description: asset_description,
@@ -1150,6 +1151,7 @@ pub async fn asset_edit(
         sidebar_content,
         header_user,
         asset,
+        iacs_asset_types: AssetType::iacs_select_options(),
     };
 
     match template.render() {
@@ -1167,12 +1169,17 @@ pub struct UpdateAssetForm {
     pub status: String,
     pub description: Option<String>,
     pub csrf_token: String,
+    #[serde(alias = "vbn_account")]
     pub ssh_username: Option<String>,
     pub ssh_auth_type: Option<String>,
+    #[serde(alias = "vbn_secret")]
     pub ssh_password: Option<String>,
     pub ssh_private_key: Option<String>,
+    #[serde(alias = "vbn_secret_phrase")]
     pub ssh_passphrase: Option<String>,
     pub rdp_domain: Option<String>,
+    /// Present on IACS asset edits; selects the industrial protocol.
+    pub asset_type: Option<String>,
 }
 
 /// Form data for deleting an asset (admin web form).
@@ -1188,12 +1195,14 @@ pub struct CsrfOnlyForm {
 }
 
 /// Update asset handler (admin zone).
+#[allow(clippy::too_many_arguments)]
 pub async fn update_asset_web(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     axum::extract::Form(form): axum::extract::Form<UpdateAssetForm>,
 ) -> Response {
@@ -1205,54 +1214,61 @@ pub async fn update_asset_web(
         csrf_cookie.map(|c| c.value()),
         &form.csrf_token,
     ) {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Invalid CSRF token. Please refresh the page and try again."),
-            &format!("/assets/manage/{}/edit", uuid_str),
+            &format!("/assets/manage/{uuid_str}/edit"),
         );
     }
 
     if !perms.assets_manage {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Only administrators can modify assets"),
-            &format!("/assets/manage/{}", uuid_str),
+            &format!("/assets/manage/{uuid_str}"),
         );
     }
 
     let asset_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
         Ok(uuid) => uuid,
         Err(_) => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("Invalid asset identifier"),
-                &format!("/assets/manage/{}/edit", uuid_str),
+                &format!("/assets/manage/{uuid_str}/edit"),
             );
         }
     };
 
     if form.name.trim().is_empty() {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Asset name is required"),
-            &format!("/assets/manage/{}/edit", asset_uuid),
+            &format!("/assets/manage/{asset_uuid}/edit"),
         );
     }
     if form.hostname.trim().is_empty() {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Hostname is required"),
-            &format!("/assets/manage/{}/edit", asset_uuid),
+            &format!("/assets/manage/{asset_uuid}/edit"),
         );
     }
     if form.port < 1 || form.port > 65535 {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Port must be between 1 and 65535"),
-            &format!("/assets/manage/{}/edit", asset_uuid),
+            &format!("/assets/manage/{asset_uuid}/edit"),
         );
     }
 
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
         Err(_) => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("Database connection error. Please try again."),
-                &format!("/assets/manage/{}/edit", asset_uuid),
+                &format!("/assets/manage/{asset_uuid}/edit"),
             );
         }
     };
@@ -1269,7 +1285,11 @@ pub async fn update_asset_web(
     let existing = match existing {
         Ok(asset) => asset,
         Err(_) => {
-            return flash_redirect(flash.error("Asset not found"), "/assets/manage");
+            return htmx_or_flash_redirect(
+                &headers,
+                flash.error("Asset not found"),
+                "/assets/manage",
+            );
         }
     };
 
@@ -1278,18 +1298,31 @@ pub async fn update_asset_web(
     // cannot distinguish "this UUID does not exist" from "this UUID
     // is IACS and `industrial.enabled = false`".
     if !state.config.industrial.enabled && existing.asset_type.is_iacs() {
-        return flash_redirect(flash.error("Asset not found"), "/assets/manage");
+        return htmx_or_flash_redirect(&headers, flash.error("Asset not found"), "/assets/manage");
     }
 
+    let effective_asset_type =
+        match AssetType::resolve_edit_asset_type(existing.asset_type, form.asset_type.as_deref()) {
+            Ok(t) => t,
+            Err(e) => {
+                return htmx_or_flash_redirect(
+                    &headers,
+                    flash.error(e.to_string()),
+                    &format!("/assets/manage/{asset_uuid}/edit"),
+                );
+            }
+        };
+
     if let Err(msg) = validate_auth_inputs(
-        existing.asset_type,
+        effective_asset_type,
         form.ssh_auth_type.as_deref(),
         form.ssh_private_key.as_deref(),
         form.ssh_passphrase.as_deref(),
     ) {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error(msg),
-            &format!("/assets/manage/{}/edit", asset_uuid),
+            &format!("/assets/manage/{asset_uuid}/edit"),
         );
     }
 
@@ -1322,20 +1355,21 @@ pub async fn update_asset_web(
                 .and_then(|v| v.as_str())
         });
     if let Err(msg) = validate_required_credentials(
-        existing.asset_type,
+        effective_asset_type,
         effective_auth_type,
         effective_password,
         effective_private_key,
     ) {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error(msg),
-            &format!("/assets/manage/{}/edit", asset_uuid),
+            &format!("/assets/manage/{asset_uuid}/edit"),
         );
     }
 
     let mut connection_config = compute_updated_connection_config(
         &existing.connection_config,
-        existing.asset_type,
+        effective_asset_type,
         form.ssh_username.as_deref(),
         form.ssh_auth_type.as_deref(),
         form.ssh_password.as_deref(),
@@ -1348,9 +1382,10 @@ pub async fn update_asset_web(
         && let Err(e) = encrypt_connection_config(vault, &mut connection_config).await
     {
         tracing::error!("Failed to encrypt connection config: {}", e);
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Failed to encrypt credentials"),
-            &format!("/assets/manage/{}/edit", asset_uuid),
+            &format!("/assets/manage/{asset_uuid}/edit"),
         );
     }
 
@@ -1377,6 +1412,7 @@ pub async fn update_asset_web(
             a::name.eq(&sanitized_name),
             a::hostname.eq(&form.hostname),
             a::port.eq(form.port),
+            a::asset_type.eq(effective_asset_type),
             a::status.eq(&form.status),
             a::description.eq(sanitized_description.as_deref()),
             a::connection_config.eq(connection_config),
@@ -1388,15 +1424,17 @@ pub async fn update_asset_web(
         .await;
 
     match result {
-        Ok(_) => flash_redirect(
+        Ok(_) => htmx_or_flash_redirect(
+            &headers,
             flash.success("Asset updated successfully"),
-            &format!("/assets/manage/{}", asset_uuid),
+            &format!("/assets/manage/{asset_uuid}"),
         ),
         Err(e) => {
             tracing::error!("Failed to update asset: {}", e);
-            flash_redirect(
+            htmx_or_flash_redirect(
+                &headers,
                 flash.error("Failed to update asset. Please try again."),
-                &format!("/assets/manage/{}/edit", asset_uuid),
+                &format!("/assets/manage/{asset_uuid}/edit"),
             )
         }
     }

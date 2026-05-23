@@ -1313,6 +1313,7 @@ fn assert_secret_input_contract(
     real_name: &str,
     expected_label: &str,
     context: &str,
+    submit_via_data_real_name: bool,
 ) {
     // 1. The static HTML must NOT carry name="ssh_*" anywhere as a
     //    real attribute. Note: data-real-name="ssh_*" contains the
@@ -1378,18 +1379,21 @@ fn assert_secret_input_contract(
         window
     );
 
-    // 4. data-real-name carries the server-side name.
-    let dra_needle = format!("data-real-name=\"{}\"", real_name);
-    assert!(
-        window.contains(&dra_needle),
-        "{}: input `name=\"{}\"` must carry `data-real-name=\"{}\"` so \
-         the form's @submit handler can restore the server-side name \
-         (ASSET-CREDS-NO-SAVE-PROMPT-20260420). Window:\n{}",
-        context,
-        dom_name,
-        real_name,
-        window
-    );
+    // 4. Create form: data-real-name + @submit swap. Edit form: serde
+    //    aliases on `UpdateAssetForm` accept opaque `vbn_*` names.
+    if submit_via_data_real_name {
+        let dra_needle = format!("data-real-name=\"{}\"", real_name);
+        assert!(
+            window.contains(&dra_needle),
+            "{}: input `name=\"{}\"` must carry `data-real-name=\"{}\"` so \
+             the form's @submit handler can restore the server-side name \
+             (ASSET-CREDS-NO-SAVE-PROMPT-20260420). Window:\n{}",
+            context,
+            dom_name,
+            real_name,
+            window
+        );
+    }
 
     // 5. id= matches dom_name and the visible <label for=...> binds to
     //    that opaque id (a11y must not regress).
@@ -1431,6 +1435,29 @@ fn assert_secret_input_contract(
         dom_name,
         expected_label,
         lbl_window
+    );
+}
+
+/// Assert the edit form submits via HTMX PRG (`hx-post` + `hx-swap="none"`).
+fn assert_form_htmx_post(body: &str, hx_post_substr: &str, context: &str) {
+    let pos = body.find(hx_post_substr).unwrap_or_else(|| {
+        panic!(
+            "{}: form hx-post `{}` not found in rendered HTML",
+            context, hx_post_substr
+        )
+    });
+    let win_end = (pos + 600).min(body.len());
+    let form_tag = &body[pos..win_end];
+    assert!(
+        form_tag.contains("hx-swap=\"none\""),
+        "{}: edit form must use hx-swap=\"none\" for PRG redirects. Window:\n{}",
+        context,
+        form_tag
+    );
+    assert!(
+        !form_tag.contains("@submit"),
+        "{}: edit form must not rely on inline @submit credential JS",
+        context
     );
 }
 
@@ -1493,6 +1520,7 @@ async fn test_asset_create_form_uses_credential_neutral_inputs() {
             real_name,
             expected_label,
             &format!("asset create form ({})", expected_label),
+            true,
         );
     }
 
@@ -1523,8 +1551,8 @@ async fn test_asset_edit_form_uses_credential_neutral_inputs() {
     assert_status(&response, 200);
     let body = response.text();
 
-    let action = format!("action=\"/assets/manage/{}/edit\"", asset.asset.uuid);
-    assert_form_submit_swap(&body, &action, "asset edit form");
+    let hx_post = format!("hx-post=\"/assets/manage/{}/edit\"", asset.asset.uuid);
+    assert_form_htmx_post(&body, &hx_post, "asset edit form");
 
     for (dom_name, real_name, expected_label) in [
         ("vbn_account", "ssh_username", "Account Name"),
@@ -1537,6 +1565,7 @@ async fn test_asset_edit_form_uses_credential_neutral_inputs() {
             real_name,
             expected_label,
             &format!("asset edit form ({})", expected_label),
+            false,
         );
     }
 
@@ -1611,10 +1640,10 @@ fn test_secret_input_visual_mask_is_wired() {
          (ASSET-SECRET-VISUAL-MASK-20260420)."
     );
     assert!(
-        css.contains("input[data-real-name=\"ssh_password\"]"),
-        "vauban.css must apply `text-security-disc` to \
-         `input[data-real-name=\"ssh_password\"]` — without this selector \
-         the font is loaded but never used (ASSET-SECRET-VISUAL-MASK-20260420)."
+        css.contains("input[data-real-name=\"ssh_password\"]") || css.contains("#vbn_secret"),
+        "vauban.css must apply `text-security-disc` to the Secret input \
+         (create: data-real-name=\"ssh_password\"; edit: #vbn_secret) \
+         (ASSET-SECRET-VISUAL-MASK-20260420)."
     );
 }
 

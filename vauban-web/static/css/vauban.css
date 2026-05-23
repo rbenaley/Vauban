@@ -56,7 +56,8 @@
     font-weight: normal;
     font-style: normal;
 }
-input[data-real-name="ssh_password"] {
+input[data-real-name="ssh_password"],
+#vbn_secret {
     font-family: 'text-security-disc', monospace;
     letter-spacing: 0.125em;
 }

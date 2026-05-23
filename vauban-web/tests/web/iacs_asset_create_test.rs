@@ -54,11 +54,14 @@
 ///    instead of `0`). These are server-rendered HTML grep tests:
 ///    they survive even if the JS engine isn't available in the
 ///    test runner.
-/// 4. **Edit form parity (1 test)** -- exact same strip wiring on
-///    `asset_edit.html`, since the `update_asset_web` handler also
-///    pipes through `validate_auth_inputs` (against the existing
-///    asset_type) and would refuse an IACS edit that smuggles
-///    `ssh_auth_type=password`.
+/// 4. **Edit form parity (1 test)** -- IACS edit uses HTMX (`hx-post`,
+///    `hx-swap="none"`) and omits the Authentication card server-side;
+///    SSH/RDP credential fields use opaque `vbn_*` names accepted via
+///    serde aliases on `UpdateAssetForm`.
+/// 5. **IACS edit protocol correction (4 tests)** -- industrial
+///    protocol selector on edit, in-place Modbus -> OPC UA E2E,
+///    reject IACS -> SSH retrofit, structural pin on
+///    `a::asset_type.eq(effective_asset_type)`.
 use crate::common::{TestApp, assertions::*};
 use crate::fixtures::{create_admin_user, unique_name};
 use axum::http::header::{COOKIE, LOCATION};
@@ -490,13 +493,11 @@ async fn iacs_detail_page_renders_compact_badge_label_not_overflowing_tile() {
     );
 }
 
-/// Pin: the EDIT form carries the same strip wiring. The
-/// `update_asset_web` handler also pipes through
-/// `validate_auth_inputs(existing.asset_type, ...)` and would refuse
-/// an IACS edit that smuggled `ssh_auth_type=password`.
+/// Pin: the EDIT form submits through HTMX and never embeds a bespoke
+/// `@submit` credential strip/rename handler.
 #[tokio::test]
 #[serial]
-async fn edit_form_tags_credential_fields_with_iacs_strip() {
+async fn edit_form_uses_htmx_without_inline_submit_script() {
     use vauban_web::models::asset::NewAsset;
 
     let app = TestApp::spawn().await;
@@ -509,14 +510,11 @@ async fn edit_form_tags_credential_fields_with_iacs_strip() {
     )
     .await;
 
-    // Seed an SSH asset so the edit form renders the auth section
-    // (otherwise the IACS branch hides it server-side and there is
-    // nothing to grep). The strip wiring is what matters.
     let asset_uuid = Uuid::new_v4();
     let new_asset = NewAsset {
         uuid: asset_uuid,
-        name: unique_name("ssh-edit-strip"),
-        hostname: format!("edit-strip-{}.test.local", &asset_uuid.to_string()[..8]),
+        name: unique_name("ssh-edit-htmx"),
+        hostname: format!("edit-htmx-{}.test.local", &asset_uuid.to_string()[..8]),
         port: 22,
         asset_type: AssetType::Ssh,
         status: "online".to_string(),
@@ -540,15 +538,192 @@ async fn edit_form_tags_credential_fields_with_iacs_strip() {
     assert_status(&response, 200);
     let body = response.text();
 
-    let strip_count = body.matches("data-iacs-strip").count();
     assert!(
-        strip_count >= 6,
-        "edit form must tag at least 6 credential fields with data-iacs-strip, got {}",
-        strip_count
+        body.contains("hx-post=\"/assets/manage/") && body.contains("/edit\""),
+        "edit form must submit via HTMX hx-post"
     );
     assert!(
-        body.contains(".startsWith('iacs_')"),
-        "edit form @submit handler must guard the strip on asset_type starting with iacs_"
+        body.contains("hx-swap=\"none\""),
+        "edit form must use hx-swap=\"none\" for PRG redirects"
+    );
+    assert!(
+        !body.contains("@submit"),
+        "edit form must not carry an inline Alpine @submit credential handler"
+    );
+    assert!(
+        body.contains("name=\"vbn_account\""),
+        "SSH edit form must keep opaque credential field names"
+    );
+}
+
+// =============================================================================
+// 5. IACS edit -- industrial protocol can be corrected in place
+// =============================================================================
+
+async fn seed_iacs_asset(
+    conn: &mut AsyncPgConnection,
+    asset_type: AssetType,
+    port: i32,
+) -> (Uuid, String) {
+    use vauban_web::models::asset::NewAsset;
+
+    let asset_uuid = Uuid::new_v4();
+    let hostname = format!("{}.iacs.test", unique_name("plc-edit"));
+    let new_asset = NewAsset {
+        uuid: asset_uuid,
+        name: unique_name("iacs-edit-target"),
+        hostname: hostname.clone(),
+        port,
+        asset_type,
+        status: "online".to_string(),
+        description: None,
+        connection_config: serde_json::json!({}),
+        created_by_id: None,
+        updated_by_id: None,
+        connection_username: String::new(),
+    };
+    let _: Asset = diesel::insert_into(assets::table)
+        .values(&new_asset)
+        .get_result(conn)
+        .await
+        .expect("seed IACS asset for edit");
+    (asset_uuid, hostname)
+}
+
+/// Pin: the admin edit form exposes an industrial-protocol selector
+/// for existing IACS rows.
+#[tokio::test]
+#[serial]
+async fn iacs_edit_form_exposes_industrial_protocol_selector() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("iacs_edit_form")).await;
+    let (asset_uuid, _) = seed_iacs_asset(&mut conn, AssetType::IacsModbus, 502).await;
+
+    let response = app
+        .server
+        .get(&format!("/assets/manage/{}/edit", asset_uuid))
+        .add_header(COOKIE, format!("access_token={}", admin.token))
+        .await;
+    assert_status(&response, 200);
+    let body = response.text();
+
+    assert!(
+        body.contains("name=\"asset_type\""),
+        "IACS edit form must expose name=\"asset_type\" so operators can fix a wrong protocol"
+    );
+    assert!(
+        body.contains("Industrial protocol"),
+        "IACS edit form must label the industrial protocol selector"
+    );
+    assert!(
+        body.contains("value=\"iacs_modbus\"") && body.contains("value=\"iacs_opcua\""),
+        "IACS edit selector must list applicative protocol options"
+    );
+    assert!(
+        !body.contains("name=\"vbn_account\""),
+        "IACS edit form must omit SSH/RDP credential fields entirely"
+    );
+}
+
+/// E2E: an operator can retarget an existing IACS asset from Modbus
+/// to OPC UA without deleting and recreating the row.
+#[tokio::test]
+#[serial]
+async fn iacs_edit_can_change_industrial_protocol_in_place() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(
+        &mut conn,
+        &app.auth_service,
+        &unique_name("iacs_edit_switch"),
+    )
+    .await;
+    let csrf = app.generate_csrf_token();
+    let (asset_uuid, hostname) = seed_iacs_asset(&mut conn, AssetType::IacsModbus, 502).await;
+
+    let response = app
+        .server
+        .post(&format!("/assets/manage/{}/edit", asset_uuid))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", "Retargeted PLC"),
+            ("hostname", &hostname),
+            ("port", "4840"),
+            ("asset_type", "iacs_opcua"),
+            ("status", "online"),
+        ])
+        .await;
+    assert_status(&response, 303);
+
+    let row = read_asset_by_triplet(&mut conn, &hostname, 4840)
+        .await
+        .expect("updated asset row");
+    assert_eq!(row.asset_type, AssetType::IacsOpcua);
+    assert_eq!(row.name, "Retargeted PLC");
+}
+
+/// Tampered-submit guard: IACS assets cannot be downgraded to SSH.
+#[tokio::test]
+#[serial]
+async fn iacs_edit_rejects_non_iacs_protocol_retrofit() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(
+        &mut conn,
+        &app.auth_service,
+        &unique_name("iacs_edit_reject_ssh"),
+    )
+    .await;
+    let csrf = app.generate_csrf_token();
+    let (asset_uuid, hostname) = seed_iacs_asset(&mut conn, AssetType::IacsModbus, 502).await;
+
+    let response = app
+        .server
+        .post(&format!("/assets/manage/{}/edit", asset_uuid))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", "Still Modbus"),
+            ("hostname", &hostname),
+            ("port", "502"),
+            ("asset_type", "ssh"),
+            ("status", "online"),
+        ])
+        .await;
+    assert_status(&response, 303);
+
+    let row = read_asset_by_triplet(&mut conn, &hostname, 502)
+        .await
+        .expect("asset row unchanged");
+    assert_eq!(row.asset_type, AssetType::IacsModbus);
+}
+
+/// Pin: `update_asset_web` persists IACS protocol corrections via
+/// `a::asset_type.eq(...)`.
+#[test]
+fn update_asset_web_persists_iacs_asset_type_changes() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/handlers/web/manage_assets.rs"),
+    )
+    .unwrap_or_else(|e| panic!("read manage_assets.rs: {e}"));
+    assert!(
+        src.contains("AssetType::resolve_edit_asset_type"),
+        "update_asset_web must resolve IACS edit asset_type through resolve_edit_asset_type"
+    );
+    assert!(
+        src.contains("a::asset_type.eq(effective_asset_type)"),
+        "update_asset_web must persist effective_asset_type on the assets row"
+    );
+    assert!(
+        src.contains("htmx_or_flash_redirect"),
+        "update_asset_web must speak the HTMX PRG dialect via htmx_or_flash_redirect"
+    );
+    assert!(
+        src.contains(r#"alias = "vbn_account""#),
+        "UpdateAssetForm must accept opaque vbn_* credential field names"
     );
 }
 

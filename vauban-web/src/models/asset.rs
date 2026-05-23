@@ -388,7 +388,72 @@ impl AssetType {
     pub fn iacs_variants() -> Vec<AssetType> {
         Self::ALL.iter().copied().filter(|t| t.is_iacs()).collect()
     }
+
+    /// `(value, label)` tuples for the industrial-protocol `<select>`
+    /// on the IACS asset edit form. Only the five applicative IACS
+    /// variants -- never SSH/RDP and never the synthetic `iacs` filter
+    /// token.
+    pub fn iacs_select_options() -> Vec<(String, String)> {
+        Self::iacs_variants()
+            .into_iter()
+            .map(|t| (t.as_str().to_string(), t.label().to_string()))
+            .collect()
+    }
+
+    /// Resolve the persisted `asset_type` for an admin edit POST.
+    /// IACS rows may switch among IACS variants; IT rows are immutable.
+    pub fn resolve_edit_asset_type(
+        existing: Self,
+        submitted: Option<&str>,
+    ) -> Result<Self, AssetTypeEditError> {
+        if existing.is_iacs() {
+            let raw = submitted
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(existing.as_str());
+            let parsed = Self::parse(raw).map_err(AssetTypeEditError::Unknown)?;
+            if !parsed.is_iacs() {
+                return Err(AssetTypeEditError::IacsToNonIacs);
+            }
+            Ok(parsed)
+        } else if submitted
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_some_and(|s| s != existing.as_str())
+        {
+            Err(AssetTypeEditError::ProtocolImmutable)
+        } else {
+            Ok(existing)
+        }
+    }
 }
+
+/// Error returned when an asset edit POST proposes an invalid
+/// `asset_type` transition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssetTypeEditError {
+    Unknown(AssetTypeParseError),
+    /// An IACS asset was retargeted to SSH/RDP.
+    IacsToNonIacs,
+    /// An IT asset edit smuggled a different `asset_type`.
+    ProtocolImmutable,
+}
+
+impl std::fmt::Display for AssetTypeEditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown(e) => write!(f, "{e}"),
+            Self::IacsToNonIacs => {
+                f.write_str("IACS assets can only be switched to another industrial protocol")
+            }
+            Self::ProtocolImmutable => {
+                f.write_str("Asset protocol cannot be changed after creation")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AssetTypeEditError {}
 
 /// Synthetic `?type=` token meaning "every IACS protocol at once".
 /// Surfaces in [`AssetType::filter_options`] alongside the seven
@@ -986,6 +1051,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn iacs_select_options_lists_only_iacs_variants() {
+        let opts = AssetType::iacs_select_options();
+        assert_eq!(opts.len(), AssetType::iacs_variants().len());
+        for (value, _label) in &opts {
+            let parsed = AssetType::parse(value).expect("iacs_select_options values must parse");
+            assert!(
+                parsed.is_iacs(),
+                "iacs_select_options must only expose IACS variants"
+            );
+        }
+        assert!(!opts.iter().any(|(v, _)| v == "ssh" || v == "rdp"));
+    }
+
+    #[test]
+    fn resolve_edit_asset_type_allows_iacs_to_iacs_switch() {
+        let updated = AssetType::resolve_edit_asset_type(AssetType::IacsModbus, Some("iacs_opcua"))
+            .expect("modbus -> opcua");
+        assert_eq!(updated, AssetType::IacsOpcua);
+    }
+
+    #[test]
+    fn resolve_edit_asset_type_rejects_iacs_to_ssh() {
+        assert_eq!(
+            AssetType::resolve_edit_asset_type(AssetType::IacsModbus, Some("ssh")),
+            Err(AssetTypeEditError::IacsToNonIacs)
+        );
+    }
+
+    #[test]
+    fn resolve_edit_asset_type_rejects_it_protocol_change() {
+        assert_eq!(
+            AssetType::resolve_edit_asset_type(AssetType::Ssh, Some("rdp")),
+            Err(AssetTypeEditError::ProtocolImmutable)
+        );
+    }
+
+    #[test]
+    fn resolve_edit_asset_type_ignores_missing_submission_for_it_assets() {
+        assert_eq!(
+            AssetType::resolve_edit_asset_type(AssetType::Ssh, None).expect("unchanged"),
+            AssetType::Ssh
+        );
     }
 
     #[test]
