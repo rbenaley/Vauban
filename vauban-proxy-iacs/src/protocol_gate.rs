@@ -35,6 +35,22 @@ pub enum ProtocolGateOutcome {
     Unconfirmed,
 }
 
+fn log_protocol_unconfirmed(
+    session_uuid: Uuid,
+    expected: ExpectedProfile,
+    buffered: usize,
+    cause: &'static str,
+) -> ProtocolGateOutcome {
+    warn!(
+        session_uuid = %session_uuid,
+        expected = ?expected,
+        buffered = buffered,
+        cause = cause,
+        "iacs_protocol_unconfirmed"
+    );
+    ProtocolGateOutcome::Unconfirmed
+}
+
 /// Copy from EWS to asset with a one-time protocol recognition gate.
 pub async fn filtered_copy_with_counter<R, W>(
     read: R,
@@ -60,7 +76,7 @@ where
 
     loop {
         if handle.is_closed() {
-            return ProtocolGateOutcome::Relayed;
+            return log_protocol_unconfirmed(session_uuid, expected, buf.len(), "handle_closed");
         }
 
         let detected = classify_peek(&buf);
@@ -92,41 +108,57 @@ where
                 return ProtocolGateOutcome::ForeignProtocol { detected };
             }
             ConformityDecision::Unconfirmed => {
-                warn!(
-                    session_uuid = %session_uuid,
-                    expected = ?expected,
-                    buffered = buf.len(),
-                    "iacs_protocol_unconfirmed"
+                return log_protocol_unconfirmed(
+                    session_uuid,
+                    expected,
+                    buf.len(),
+                    "classification_failed",
                 );
-                return ProtocolGateOutcome::Unconfirmed;
             }
             ConformityDecision::NeedMoreData => {
                 if !still_classifying {
-                    warn!(
-                        session_uuid = %session_uuid,
-                        expected = ?expected,
-                        buffered = buf.len(),
-                        "iacs_protocol_unconfirmed"
+                    return log_protocol_unconfirmed(
+                        session_uuid,
+                        expected,
+                        buf.len(),
+                        "deadline_or_buffer",
                     );
-                    return ProtocolGateOutcome::Unconfirmed;
                 }
+                let mut classify_sleep = Box::pin(tokio::time::sleep_until(
+                    tokio::time::Instant::from_std(deadline),
+                ));
                 let n = tokio::select! {
                     biased;
                     _ = handle.wait_close() => break,
+                    _ = classify_sleep.as_mut() => {
+                        return log_protocol_unconfirmed(
+                            session_uuid,
+                            expected,
+                            buf.len(),
+                            "deadline_or_buffer",
+                        );
+                    },
                     n = read.read(&mut scratch) => match n {
                         Ok(n) => n,
-                        Err(_) => return ProtocolGateOutcome::Unconfirmed,
+                        Err(_) => {
+                            return log_protocol_unconfirmed(
+                                session_uuid,
+                                expected,
+                                buf.len(),
+                                "read_error",
+                            );
+                        }
                     },
                 };
                 if n == 0 {
-                    return ProtocolGateOutcome::Unconfirmed;
+                    return log_protocol_unconfirmed(session_uuid, expected, buf.len(), "eof");
                 }
                 buf.extend_from_slice(&scratch[..n]);
             }
         }
     }
 
-    ProtocolGateOutcome::Relayed
+    log_protocol_unconfirmed(session_uuid, expected, buf.len(), "peer_closed")
 }
 
 #[cfg(test)]
@@ -142,6 +174,21 @@ mod tests {
             Uuid::new_v4(),
             None,
         )
+    }
+
+    fn sample_modbus_frame() -> Vec<u8> {
+        vec![
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x03, 0x00, 0x00, 0x00, 0x0A,
+        ]
+    }
+
+    async fn assert_upstream_empty(upstream_read: &mut (impl AsyncRead + Unpin)) {
+        let mut peek = [0u8; 1];
+        assert_eq!(
+            upstream_read.read(&mut peek).await.unwrap(),
+            0,
+            "blocked gate MUST NOT forward bytes to the asset leg"
+        );
     }
 
     #[tokio::test]
@@ -194,5 +241,239 @@ mod tests {
                 detected: WireProtocol::OpcUa
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn modbus_profile_unconfirmed_when_peer_closes_on_unknown_payload() {
+        let (mut client, server) = duplex(64);
+        let (upstream, mut upstream_read) = duplex(64);
+        let counter = Arc::new(AtomicU64::new(0));
+        let h = handle();
+        let pump = tokio::spawn(async move {
+            filtered_copy_with_counter(
+                server,
+                upstream,
+                counter,
+                h,
+                ExpectedProfile::Modbus,
+                Uuid::new_v4(),
+            )
+            .await
+        });
+        client.write_all(b"not-a-modbus-payload!!").await.unwrap();
+        drop(client);
+        assert_eq!(
+            pump.await.unwrap(),
+            ProtocolGateOutcome::Unconfirmed,
+            "unknown payload + peer close MUST fail closed, not Relayed"
+        );
+        let mut peek = [0u8; 1];
+        assert_eq!(
+            upstream_read.read(&mut peek).await.unwrap(),
+            0,
+            "blocked gate MUST NOT forward bytes to the asset leg"
+        );
+    }
+
+    #[tokio::test]
+    async fn modbus_profile_unconfirmed_on_immediate_eof() {
+        let (client, server) = duplex(64);
+        let (upstream, mut upstream_read) = duplex(64);
+        let counter = Arc::new(AtomicU64::new(0));
+        let h = handle();
+        let pump = tokio::spawn(async move {
+            filtered_copy_with_counter(
+                server,
+                upstream,
+                counter,
+                h,
+                ExpectedProfile::Modbus,
+                Uuid::new_v4(),
+            )
+            .await
+        });
+        drop(client);
+        assert_eq!(pump.await.unwrap(), ProtocolGateOutcome::Unconfirmed);
+        assert_upstream_empty(&mut upstream_read).await;
+    }
+
+    /// Idle EWS client (no bytes sent): the classify deadline MUST fire
+    /// even while `read()` would block forever -- mirrors `nc` connected
+    /// with zero application payload.
+    #[tokio::test(start_paused = true)]
+    async fn modbus_profile_unconfirmed_on_idle_classify_timeout() {
+        let (_client, server) = duplex(64);
+        let (upstream, mut upstream_read) = duplex(64);
+        let counter = Arc::new(AtomicU64::new(0));
+        let h = handle();
+        let pump = tokio::spawn(async move {
+            filtered_copy_with_counter(
+                server,
+                upstream,
+                counter,
+                h,
+                ExpectedProfile::Modbus,
+                Uuid::new_v4(),
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(CLASSIFY_TIMEOUT).await;
+        assert_eq!(
+            pump.await.unwrap(),
+            ProtocolGateOutcome::Unconfirmed,
+            "idle client MUST fail closed when CLASSIFY_TIMEOUT elapses"
+        );
+        assert_upstream_empty(&mut upstream_read).await;
+    }
+
+    /// Partial unknown prefix that never completes Modbus MBAP: deadline
+    /// MUST win over a blocked `read()` (no peer close required).
+    #[tokio::test(start_paused = true)]
+    async fn modbus_profile_unconfirmed_on_partial_unknown_then_deadline() {
+        let (mut client, server) = duplex(64);
+        let (upstream, mut upstream_read) = duplex(64);
+        let counter = Arc::new(AtomicU64::new(0));
+        let h = handle();
+        let pump = tokio::spawn(async move {
+            filtered_copy_with_counter(
+                server,
+                upstream,
+                counter,
+                h,
+                ExpectedProfile::Modbus,
+                Uuid::new_v4(),
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        client.write_all(&[0x00, 0x01, 0x00, 0x00]).await.unwrap();
+        tokio::time::advance(CLASSIFY_TIMEOUT).await;
+        assert_eq!(pump.await.unwrap(), ProtocolGateOutcome::Unconfirmed);
+        assert_upstream_empty(&mut upstream_read).await;
+    }
+
+    /// Valid Modbus/TCP MUST confirm and relay before the deadline fires.
+    #[tokio::test(start_paused = true)]
+    async fn modbus_profile_confirms_and_relays_before_deadline() {
+        let (mut client, server) = duplex(256);
+        let (upstream, mut upstream_read) = duplex(256);
+        let counter = Arc::new(AtomicU64::new(0));
+        let h = handle();
+        let frame = sample_modbus_frame();
+        let pump = tokio::spawn(async move {
+            filtered_copy_with_counter(
+                server,
+                upstream,
+                counter,
+                h,
+                ExpectedProfile::Modbus,
+                Uuid::new_v4(),
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        client.write_all(&frame).await.unwrap();
+        drop(client);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert_eq!(
+            pump.await.unwrap(),
+            ProtocolGateOutcome::Relayed,
+            "valid Modbus/TCP MUST pass the gate"
+        );
+
+        let mut got = vec![0u8; frame.len()];
+        upstream_read.read_exact(&mut got).await.unwrap();
+        assert_eq!(got, frame);
+    }
+
+    /// Foreign protocol MUST fail closed immediately, without waiting for
+    /// the classify deadline.
+    #[tokio::test(start_paused = true)]
+    async fn modbus_profile_foreign_protocol_does_not_wait_for_deadline() {
+        let (mut client, server) = duplex(64);
+        let (upstream, mut upstream_read) = duplex(64);
+        let counter = Arc::new(AtomicU64::new(0));
+        let h = handle();
+        let pump = tokio::spawn(async move {
+            filtered_copy_with_counter(
+                server,
+                upstream,
+                counter,
+                h,
+                ExpectedProfile::Modbus,
+                Uuid::new_v4(),
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        client.write_all(b"HEL").await.unwrap();
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert!(matches!(
+            pump.await.unwrap(),
+            ProtocolGateOutcome::ForeignProtocol {
+                detected: WireProtocol::OpcUa
+            }
+        ));
+        assert_upstream_empty(&mut upstream_read).await;
+    }
+
+    /// EOF MUST beat a not-yet-elapsed deadline (immediate close path).
+    #[tokio::test(start_paused = true)]
+    async fn modbus_profile_eof_before_classify_timeout() {
+        let (client, server) = duplex(64);
+        let (upstream, mut upstream_read) = duplex(64);
+        let counter = Arc::new(AtomicU64::new(0));
+        let h = handle();
+        let pump = tokio::spawn(async move {
+            filtered_copy_with_counter(
+                server,
+                upstream,
+                counter,
+                h,
+                ExpectedProfile::Modbus,
+                Uuid::new_v4(),
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        drop(client);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert_eq!(pump.await.unwrap(), ProtocolGateOutcome::Unconfirmed);
+        assert_upstream_empty(&mut upstream_read).await;
+    }
+
+    #[tokio::test]
+    async fn modbus_profile_unconfirmed_when_classify_buffer_exhausted() {
+        let (mut client, server) = duplex(8192);
+        let (upstream, mut upstream_read) = duplex(8192);
+        let counter = Arc::new(AtomicU64::new(0));
+        let h = handle();
+        let pump = tokio::spawn(async move {
+            filtered_copy_with_counter(
+                server,
+                upstream,
+                counter,
+                h,
+                ExpectedProfile::Modbus,
+                Uuid::new_v4(),
+            )
+            .await
+        });
+
+        let garbage = vec![b'X'; CLASSIFY_MAX_BYTES + 1];
+        client.write_all(&garbage).await.unwrap();
+        drop(client);
+        assert_eq!(
+            pump.await.unwrap(),
+            ProtocolGateOutcome::Unconfirmed,
+            "unknown payload beyond CLASSIFY_MAX_BYTES MUST fail closed"
+        );
+        assert_upstream_empty(&mut upstream_read).await;
     }
 }

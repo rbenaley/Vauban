@@ -48,6 +48,11 @@ if [[ ! -f "$GATE" ]]; then
     fail=1
 fi
 
+if [[ -f "$GATE" ]] && ! grep -q 'sleep_until' "$GATE"; then
+    echo "FAIL: protocol gate NeedMoreData select MUST arm sleep_until(deadline)" >&2
+    fail=1
+fi
+
 if [[ "$fail" -ne 0 ]]; then
     exit 1
 fi

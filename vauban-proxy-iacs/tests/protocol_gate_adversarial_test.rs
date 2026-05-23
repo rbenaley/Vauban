@@ -36,6 +36,10 @@ fn protocol_gate_module_exports_classifier_constants() {
         "CLASSIFY_TIMEOUT",
         "iacs_protocol_mismatch",
         "iacs_protocol_confirmed",
+        "iacs_protocol_unconfirmed",
+        "log_protocol_unconfirmed",
+        "peer_closed",
+        "sleep_until",
     ] {
         assert!(
             gate.contains(needle),
