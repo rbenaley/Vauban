@@ -35,6 +35,7 @@
 
 mod auth;
 mod ipc;
+mod protocol_gate;
 mod registry;
 mod relay;
 mod server;

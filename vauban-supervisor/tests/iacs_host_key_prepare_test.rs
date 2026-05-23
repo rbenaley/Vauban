@@ -163,7 +163,10 @@ fn supervisor_rewinds_host_key_fd_between_respawns() {
 fn every_iacs_host_key_fd_push_is_preceded_by_a_rewind() {
     const SUPERVISOR_MAIN: &str = include_str!("../src/main.rs");
     let needle = "(\"VAUBAN_IACS_HOST_KEY_FD\", fd)";
-    let push_sites: Vec<usize> = SUPERVISOR_MAIN.match_indices(needle).map(|(i, _)| i).collect();
+    let push_sites: Vec<usize> = SUPERVISOR_MAIN
+        .match_indices(needle)
+        .map(|(i, _)| i)
+        .collect();
     assert!(
         push_sites.len() >= 3,
         "expected at least 3 push sites for VAUBAN_IACS_HOST_KEY_FD \

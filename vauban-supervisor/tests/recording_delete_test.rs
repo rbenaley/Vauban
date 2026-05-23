@@ -17,8 +17,8 @@ fn delete_recording_directory_removes_all_files() {
     fs::write(dir.join("session.cast"), b"cast-data").expect("write cast");
     fs::write(dir.join("meta.json"), b"{}").expect("write meta");
 
-    let freed = delete_recording_storage_path(base.path(), &rel, &uuid.to_string())
-        .expect("delete dir");
+    let freed =
+        delete_recording_storage_path(base.path(), &rel, &uuid.to_string()).expect("delete dir");
     assert!(freed >= 5);
     assert!(!dir.exists());
 }
@@ -42,8 +42,8 @@ fn delete_is_idempotent_when_path_missing() {
     let base = tempfile::tempdir().expect("tempdir");
     let uuid = Uuid::new_v4();
     let rel = format!("2026/05/{uuid}/");
-    let freed =
-        delete_recording_storage_path(base.path(), &rel, &uuid.to_string()).expect("delete missing");
+    let freed = delete_recording_storage_path(base.path(), &rel, &uuid.to_string())
+        .expect("delete missing");
     assert_eq!(freed, 0);
 }
 
@@ -52,9 +52,7 @@ fn reject_path_traversal() {
     let base = tempfile::tempdir().expect("tempdir");
     let uuid = Uuid::new_v4();
     assert!(validate_recording_delete_relative_path("../secret", &uuid.to_string()).is_err());
-    assert!(
-        delete_recording_storage_path(base.path(), "../secret", &uuid.to_string()).is_err()
-    );
+    assert!(delete_recording_storage_path(base.path(), "../secret", &uuid.to_string()).is_err());
 }
 
 #[test]
@@ -82,8 +80,7 @@ fn resolved_path_stays_under_storage_base() {
     let rel = format!("2026/05/{uuid}/");
     let dir = base.path().join(&rel);
     fs::create_dir_all(&dir).expect("mkdir");
-    let resolved =
-        shared::recording_paths::resolve_recording_path_under_base(base.path(), &rel)
-            .expect("resolve");
+    let resolved = shared::recording_paths::resolve_recording_path_under_base(base.path(), &rel)
+        .expect("resolve");
     assert!(resolved.starts_with(base.path().canonicalize().unwrap()));
 }

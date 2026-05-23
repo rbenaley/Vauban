@@ -837,6 +837,52 @@ fn protocol_match_filter(protocol: &str) -> diesel::expression::SqlLiteral<SqlBo
     ))
 }
 
+/// True when an active access_rule for `user_id` matches the IACS tunnel
+/// meta-protocol AND explicitly lists `asset_type` in `allowed_protocols`.
+async fn iacs_tunnel_rule_includes_asset_type(
+    conn: &mut DbConnection,
+    user_id: i32,
+    asset_group_ids: &[i32],
+    asset_type: &str,
+) -> bool {
+    use crate::schema::{access_rules, user_groups};
+
+    let type_literal = escape_sql_array_literal(asset_type);
+    let count: i64 = match access_rules::table
+        .inner_join(user_groups::table.on(user_groups::group_id.eq(access_rules::user_group_id)))
+        .filter(user_groups::user_id.eq(user_id))
+        .filter(access_rules::asset_group_id.eq_any(asset_group_ids))
+        .filter(access_rules::is_active.eq(true))
+        .filter(sql::<SqlBool>(
+            "(valid_from IS NULL OR valid_from <= NOW())",
+        ))
+        .filter(sql::<SqlBool>(
+            "(valid_until IS NULL OR valid_until >= NOW())",
+        ))
+        .filter(protocol_match_filter(
+            shared::access_guard::PROTOCOL_IACS_TUNNEL,
+        ))
+        .filter(sql::<SqlBool>(&format!(
+            "allowed_protocols @> ARRAY[{type_literal}]::text[]"
+        )))
+        .count()
+        .get_result(conn)
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                user_id,
+                asset_type,
+                error = %e,
+                "CheckAccessByUuid: db error checking asset_type in granting rule"
+            );
+            return false;
+        }
+    };
+    count > 0
+}
+
 /// Defence-in-depth escaper for the protocol literals threaded
 /// through [`protocol_match_filter`]. Returns a fully-quoted Postgres
 /// string literal (`'iacs_modbus'`). Any character outside
@@ -1094,14 +1140,14 @@ async fn handle_check_access_by_uuid(
         }
     };
 
-    let asset_id: i32 = match assets::table
+    let (asset_id, asset_type): (i32, String) = match assets::table
         .filter(assets::uuid.eq(asset_uuid_parsed))
         .filter(assets::is_deleted.eq(false))
-        .select(assets::id)
-        .first::<i32>(conn)
+        .select((assets::id, assets::asset_type))
+        .first(conn)
         .await
     {
-        Ok(id) => id,
+        Ok(row) => row,
         Err(diesel::result::Error::NotFound) => {
             warn!(
                 asset_uuid,
@@ -1114,6 +1160,22 @@ async fn handle_check_access_by_uuid(
             return denied();
         }
     };
+
+    // IACS tunnel transport-meta MUST NOT grant on non-IACS assets, and
+    // the granting access_rule MUST include the asset's applicative type
+    // (`iacs_modbus`, ...) -- not just any expanded `iacs_*` overlap.
+    if protocol == shared::access_guard::PROTOCOL_IACS_TUNNEL {
+        if !shared::access_guard::IACS_APPLICATIVE_PROTOCOLS.contains(&asset_type.as_str()) {
+            info!(
+                asset_uuid,
+                asset_id,
+                asset_type = %asset_type,
+                protocol,
+                "CheckAccessByUuid denied: iacs_tunnel requested for non-IACS asset"
+            );
+            return denied();
+        }
+    }
 
     let mut asset_group_ids: Vec<i32> = match asset_asset_groups::table
         .filter(asset_asset_groups::asset_id.eq(asset_id))
@@ -1174,6 +1236,20 @@ async fn handle_check_access_by_uuid(
         info!(
             user_uuid,
             asset_uuid, protocol, "CheckAccessByUuid denied: no granting access_rule"
+        );
+        return denied();
+    }
+
+    if protocol == shared::access_guard::PROTOCOL_IACS_TUNNEL
+        && !iacs_tunnel_rule_includes_asset_type(conn, user_id, &asset_group_ids, &asset_type).await
+    {
+        info!(
+            user_uuid,
+            asset_uuid,
+            asset_id,
+            asset_type = %asset_type,
+            protocol,
+            "CheckAccessByUuid denied: no granting access_rule includes asset_type"
         );
         return denied();
     }
@@ -4794,6 +4870,15 @@ mod tests {
     }
 
     async fn insert_test_asset(pool: &DbPool, name: &str) -> (i32, String) {
+        insert_test_asset_with_type(pool, name, "ssh", 22).await
+    }
+
+    async fn insert_test_asset_with_type(
+        pool: &DbPool,
+        name: &str,
+        asset_type: &str,
+        port: i32,
+    ) -> (i32, String) {
         let mut conn = pool.get().await.unwrap();
         use crate::schema::assets;
         let asset_uuid = Uuid::new_v4();
@@ -4801,13 +4886,13 @@ mod tests {
             .values((
                 assets::uuid.eq(asset_uuid),
                 assets::name.eq(name),
-                assets::hostname.eq("ssh.test.local"),
-                assets::port.eq(22),
-                assets::asset_type.eq("ssh"),
+                assets::hostname.eq("iacs.test.local"),
+                assets::port.eq(port),
+                assets::asset_type.eq(asset_type),
                 assets::status.eq("active"),
                 assets::connection_config.eq(serde_json::json!({})),
                 assets::is_deleted.eq(false),
-                assets::connection_username.eq("root"),
+                assets::connection_username.eq(""),
             ))
             .returning(assets::id)
             .get_result::<i32>(&mut conn)
@@ -5140,7 +5225,8 @@ mod tests {
         )
         .await;
         let (asset_id, asset_uuid_str) =
-            insert_test_asset(&pool, &unique_name("asset_iacs_meta")).await;
+            insert_test_asset_with_type(&pool, &unique_name("asset_iacs_meta"), "iacs_modbus", 502)
+                .await;
         link_asset_to_group(&pool, asset_id, ag.id).await;
 
         // The headline contract.
@@ -5193,12 +5279,8 @@ mod tests {
         cleanup_vauban_group(&pool, &ug.uuid).await;
     }
 
-    /// Asymmetric rules created via IPC (only one applicative IACS
-    /// protocol, e.g. `iacs_modbus` for a strict deployment) MUST
-    /// still grant `iacs_tunnel`. The transport-meta is "any IACS
-    /// applicative protocol allowed" by design -- if the rule is
-    /// deliberately scoped to one protocol, the operator can still
-    /// reach the asset via the tunnel runtime.
+    /// A rule scoped to `iacs_modbus` MUST grant `iacs_tunnel` only
+    /// when the asset row is also `iacs_modbus` (asset_type binding).
     #[tokio::test]
     async fn test_check_access_by_uuid_iacs_tunnel_grants_via_partial_rule_with_only_iacs_modbus() {
         let pool = test_pool().await;
@@ -5223,8 +5305,13 @@ mod tests {
             vec!["iacs_modbus"],
         )
         .await;
-        let (asset_id, asset_uuid_str) =
-            insert_test_asset(&pool, &unique_name("asset_iacs_partial")).await;
+        let (asset_id, asset_uuid_str) = insert_test_asset_with_type(
+            &pool,
+            &unique_name("asset_iacs_partial"),
+            "iacs_modbus",
+            502,
+        )
+        .await;
         link_asset_to_group(&pool, asset_id, ag.id).await;
 
         let resp = handle_access_request(
@@ -5240,8 +5327,136 @@ mod tests {
             AccessResponse::AccessChecked(r) => assert!(
                 r.allowed,
                 "a one-protocol IACS rule (iacs_modbus only) MUST \
-                 still grant iacs_tunnel transport-meta -- the \
-                 expansion is OR-of-applicative, not AND"
+                 grant iacs_tunnel when asset_type is also iacs_modbus"
+            ),
+            other => panic!("Expected AccessChecked, got {:?}", other),
+        }
+
+        cleanup_asset(&pool, asset_id).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::RemoveGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    #[tokio::test]
+    async fn test_check_access_by_uuid_iacs_tunnel_denied_when_rule_modbus_but_asset_profinet() {
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+
+        let ug = create_test_vauban_group(&pool, &unique_name("ug_iacs_cross")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ag_iacs_cross")).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        let rule = create_test_rule(
+            &pool,
+            &unique_name("iacs_cross_rule"),
+            ug.id,
+            ag.id,
+            vec!["iacs_modbus"],
+        )
+        .await;
+        let (asset_id, asset_uuid_str) = insert_test_asset_with_type(
+            &pool,
+            &unique_name("asset_iacs_profinet"),
+            "iacs_profinet",
+            34962,
+        )
+        .await;
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: user_uuid_str,
+                asset_uuid: asset_uuid_str,
+                protocol: "iacs_tunnel".to_string(),
+            },
+        )
+        .await;
+        match resp {
+            AccessResponse::AccessChecked(r) => assert!(
+                !r.allowed,
+                "iacs_tunnel MUST be denied when rule is modbus-only but asset is profinet"
+            ),
+            other => panic!("Expected AccessChecked, got {:?}", other),
+        }
+
+        cleanup_asset(&pool, asset_id).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::RemoveGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    #[tokio::test]
+    async fn test_check_access_by_uuid_iacs_tunnel_denied_for_non_iacs_asset() {
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+
+        let ug = create_test_vauban_group(&pool, &unique_name("ug_iacs_non")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ag_iacs_non")).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        let rule = create_test_rule(
+            &pool,
+            &unique_name("iacs_non_rule"),
+            ug.id,
+            ag.id,
+            vec![
+                "iacs_modbus",
+                "iacs_opcua",
+                "iacs_profinet",
+                "iacs_iec104",
+                "iacs_tcp",
+            ],
+        )
+        .await;
+        let (asset_id, asset_uuid_str) =
+            insert_test_asset(&pool, &unique_name("asset_ssh_only")).await;
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: user_uuid_str,
+                asset_uuid: asset_uuid_str,
+                protocol: "iacs_tunnel".to_string(),
+            },
+        )
+        .await;
+        match resp {
+            AccessResponse::AccessChecked(r) => assert!(
+                !r.allowed,
+                "iacs_tunnel MUST be denied for a classical ssh asset row"
             ),
             other => panic!("Expected AccessChecked, got {:?}", other),
         }

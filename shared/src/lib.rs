@@ -54,4 +54,9 @@ pub mod tasks;
 #[cfg(feature = "iacs-host-key")]
 pub mod iacs_host_key;
 
+// Peek-based industrial wire protocol family classification for the
+// IACS tunnel gate. Pulled in by vauban-proxy-iacs only.
+#[cfg(feature = "iacs-protocol")]
+pub mod iacs_protocol;
+
 pub use messages::{ControlMessage, Message, ServiceStats};

@@ -313,7 +313,9 @@ fn template_industrial_enabled_field_pinned() {
         let last_if = prelude
             .rfind("{% if industrial_enabled %}")
             .unwrap_or_else(|| {
-                panic!("{name}: allowed_iacs checkbox must be wrapped in {{% if industrial_enabled %}}")
+                panic!(
+                    "{name}: allowed_iacs checkbox must be wrapped in {{% if industrial_enabled %}}"
+                )
             });
         let last_endif = prelude.rfind("{% endif %}").unwrap_or(0);
         assert!(

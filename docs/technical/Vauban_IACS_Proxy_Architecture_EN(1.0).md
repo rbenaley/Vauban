@@ -21,6 +21,8 @@
 11. [Threat model](#11-threat-model)
 12. [Test coverage](#12-test-coverage)
 13. [Source of truth](#13-source-of-truth)
+14. [Protocol recognition](#14-protocol-recognition)
+15. [Test coverage (protocol recognition)](#15-test-coverage-protocol-recognition)
 
 ---
 
@@ -274,6 +276,12 @@ The 12 h figure is intentionally conservative: making the IACS TTL longer than t
 | Watchdog | `vauban-web/tests/web/iacs_revocation_watchdog_test.rs` | EWS disabled / offboarded / user deactivated / TTL expired -> tunnel killed; user A's revoke does not touch user B's tunnel; `tunnel_closed` audit row appended. |
 | Adversarial sshd | `vauban-web/tests/web/iacs_tunnel_handler_test.rs` | publickey-only auth; every other surface refused (password, kbd-int, session/x11/forwarded-tcpip, second `direct-tcpip`, wrong target, shell/exec/subsystem/pty/agent, tcpip-forward, streamlocal-forward). |
 | Drift | `vauban-web/tests/web/iacs_drift_test.rs` | Asset-type CHECK matches Rust `AssetType::ALL`; `proxy_sessions_iacs_consistency` CHECK exists; `ews_audit_log_event_chk` admits IACS events; `all_iacs` virtual asset_group seeded. |
+| Protocol recognition unit | `shared/src/iacs_protocol/` (`--features iacs-protocol`) | Peek classifiers for Modbus / OPC UA / IEC 104 / PROFINET; conformity matrix; drift pin on `WireProtocol` catalogue. |
+| Protocol recognition auth | `vauban-access/src/handlers.rs` | `iacs_tunnel_rule_includes_asset_type` binds `asset.asset_type` to granting `allowed_protocols`; cross-type and non-IACS deny tests. |
+| Protocol recognition E2E auth | `vauban-web/tests/web/iacs_protocol_auth_e2e_test.rs` | `POST /assets/{uuid}/connect-iacs` denies modbus-only rule + profinet asset; grants matching modbus asset. |
+| Protocol recognition gate lint | `vauban-proxy-iacs/scripts/check_iacs_protocol_gate.sh` | EWS -> asset leg MUST use `filtered_copy_with_counter`; `industrial_protocol` MUST reach the gate. |
+| Protocol recognition structural | `vauban-proxy-iacs/tests/protocol_gate_adversarial_test.rs`, `per_asset_target_test.rs` | Source-grep pins on `filtered_copy_with_counter`, `ExpectedProfile::from_industrial_label`. |
+| Protocol recognition runtime | `vauban-proxy-iacs/src/protocol_gate.rs` | Modbus pass / OPC UA reject on Modbus profile; passthrough profile accepts arbitrary bytes. |
 
 ## 13. Source of truth
 
@@ -285,9 +293,49 @@ The 12 h figure is intentionally conservative: making the IACS TTL longer than t
 - `vauban-web/src/services/iacs_tunnel/revocation.rs` -- `spawn_watchdog_with_proxy_iacs`
 - `shared/src/messages.rs` -- `Service::ProxyIacs` + `IacsTunnel*` message variants
 - `shared/src/access_guard.rs` -- `PROTOCOL_IACS_TUNNEL`
+- `shared/src/iacs_protocol/` -- peek classifiers + conformity (`--features iacs-protocol`)
 - `shared/src/session_token/proxy_gate.rs` -- factorized `init_from_env` / `verify_proxy` consumed verbatim by the proxy
 - `config/default.toml`, `config/vauban.conf` -- `[services.proxy_iacs]` + `[industrial.iacs_tunnel] allow_loopback_targets`
 - `docs/runbooks/iacs_ews_onboarding.md` -- operator runbook (kill-switch, audit queries, lifecycle troubleshooting, recovery paths, IACS proxy section).
+
+## 14. Protocol recognition
+
+Typed IACS assets (`iacs_modbus`, `iacs_opcua`, `iacs_profinet`, `iacs_iec104`) are no longer labels identical to `iacs_tcp`. Two independent layers enforce the contract:
+
+### 14.1 Authorization binding (`vauban-access`)
+
+When `CheckAccessByUuid(protocol="iacs_tunnel")` runs:
+
+1. Non-IACS assets (`ssh`, `rdp`) are denied immediately.
+2. Among granting access rules, at least one MUST list the asset's exact `asset_type` in `allowed_protocols` (e.g. rule `iacs_modbus` + asset `iacs_modbus`). A modbus-only rule MUST NOT grant a tunnel to an `iacs_profinet` asset in the same group.
+
+The transport-meta token mint (`SessionToken.protocol = "iacs_tunnel"`) is unchanged.
+
+### 14.2 Wire gate (`vauban-proxy-iacs`)
+
+On every `direct-tcpip` channel, the EWS -> asset relay leg peeks the first frames via `shared::iacs_protocol`:
+
+- **Typed profile** -- confirm the wire family matches `PendingTunnel.industrial_protocol`, then switch to full passthrough (no command filtering).
+- **Foreign protocol** (e.g. OPC UA `HEL` on a Modbus asset) -- close the channel; log `iacs_protocol_mismatch`.
+- **`iacs_tcp` / `tcp` label** -- passthrough unchanged (Generic TCP).
+
+Constants (v1, not configurable): `CLASSIFY_MAX_BYTES = 4096`, `CLASSIFY_TIMEOUT = 5 s`.
+
+### 14.3 Explicit non-goals
+
+- No configurable command policies (Modbus FC allow/deny, IEC 104 type IDs, OPC UA NodeIds).
+- No MITM / inspection of encrypted OPC UA payloads.
+- No L2 PROFINET IO enforcement (tunnel is TCP-only).
+
+## 15. Test coverage (protocol recognition)
+
+| Layer | Artifact | Command |
+|---|---|---|
+| L1 lint | `vauban-proxy-iacs/scripts/check_iacs_protocol_gate.sh` | `bash vauban-proxy-iacs/scripts/check_iacs_protocol_gate.sh` |
+| L2 structural pins | `protocol_gate_adversarial_test.rs`, `iacs_per_asset_target_pin_test.rs` | `cargo test -p vauban-proxy-iacs protocol_gate` |
+| L3 unit | `shared/src/iacs_protocol/` | `cargo test -p shared --features iacs-protocol iacs_protocol` |
+| L3 auth integration | `vauban-access` handlers tests | `cargo test -p vauban-access denied_when_rule_modbus` |
+| L3 E2E web | `iacs_protocol_auth_e2e_test.rs` | `cargo test -p vauban-web iacs_protocol` |
 
 ---
 
@@ -297,3 +345,4 @@ The 12 h figure is intentionally conservative: making the IACS TTL longer than t
 |---------|------|-------|
 | 1.0 | 2026-05-15 | Initial release: per-asset target resolution, three-layer authorization, anti-SSRF guards, supervisor broker via SCM_RIGHTS, DB-driven IPC-dispatched revocation watchdog, real-time WebSocket fan-out. |
 | 1.1 | 2026-05-16 | §11.1 (per-target_service token TTL): `Service::ProxyIacs` gets a 12 h `TOKEN_TTL_SECONDS_IACS_TUNNEL` (vs. 30 s `TOKEN_TTL_SECONDS` for SSH/RDP/etc.) and the supervisor's replay cache is bypassed for `ProxyIacs`. Fixes the May 2026 production bug where the second `direct-tcpip` channel of a multi-client `ssh -L` failed with `session token rejected: token expired` (the operator workflow on every IACS asset). Compensating controls unchanged: crypto binding, anti-SSRF guards, watchdog. |
+| 1.2 | 2026-05-23 | §14-15 Protocol recognition: `vauban-access` binds `iacs_tunnel` grants to `asset.asset_type`; `vauban-proxy-iacs` gates the EWS -> asset leg with `shared::iacs_protocol` peek classifiers. Battle-tested lint + structural pins + E2E auth tests. No command-level filtering; `iacs_tcp` stays passthrough. |

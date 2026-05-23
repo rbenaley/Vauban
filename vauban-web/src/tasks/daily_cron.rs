@@ -99,7 +99,10 @@ mod tests {
         let reaper = next_cron_instant(now, tz, 5);
         assert_eq!(hydrator.as_secs(), 90 * 60);
         assert_eq!(reaper.as_secs(), 150 * 60);
-        assert!(reaper > hydrator, "default retention hour must fire after hydrator");
+        assert!(
+            reaper > hydrator,
+            "default retention hour must fire after hydrator"
+        );
     }
 
     #[test]

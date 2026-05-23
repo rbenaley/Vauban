@@ -198,12 +198,8 @@ mod tests {
         let k1 = load_or_generate_host_key(&p).expect("generate");
         let k2 = load_or_generate_host_key(&p).expect("re-load");
         // Same OpenSSH-encoded blob -> same key.
-        let s1 = k1
-            .to_openssh(russh::keys::ssh_key::LineEnding::LF)
-            .unwrap();
-        let s2 = k2
-            .to_openssh(russh::keys::ssh_key::LineEnding::LF)
-            .unwrap();
+        let s1 = k1.to_openssh(russh::keys::ssh_key::LineEnding::LF).unwrap();
+        let s2 = k2.to_openssh(russh::keys::ssh_key::LineEnding::LF).unwrap();
         assert_eq!(*s1, *s2, "second call must reload, not regenerate");
     }
 

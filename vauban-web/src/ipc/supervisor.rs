@@ -806,7 +806,10 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     };
                     let _ = pending.response_tx.send(result);
                 } else {
-                    warn!(request_id, "No pending request for recording delete response");
+                    warn!(
+                        request_id,
+                        "No pending request for recording delete response"
+                    );
                 }
             }
             Ok(Message::TlsCertProvision { cert_pem, key_pem }) => {

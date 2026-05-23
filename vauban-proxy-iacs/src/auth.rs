@@ -53,10 +53,8 @@ pub struct PendingTunnel {
     pub asset_host: String,
     pub asset_port: u16,
     /// Industrial protocol label (`"modbus"`, `"opcua"`, `"tcp"`,
-    /// ...). Currently used only for forensic logs / future audit
-    /// payloads. Kept in the pending tuple so a watchdog snapshot
-    /// can attribute the closure to the right protocol bucket.
-    #[allow(dead_code)]
+    /// ...). Drives the wire protocol recognition gate on the EWS ->
+    /// asset relay leg.
     pub industrial_protocol: String,
     /// Opaque BLAKE3-keyed token bytes. The proxy verifies them
     /// LOCALLY in `Verifier::Proxy` role (no IPC) on receive, and

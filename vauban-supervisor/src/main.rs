@@ -581,9 +581,8 @@ fn run_supervisor() -> Result<()> {
             let listener_fd = listener.as_raw_fd();
             std::mem::forget(listener);
 
-            let host_key_path = std::path::PathBuf::from(
-                &config.industrial.iacs_tunnel.host_key_path,
-            );
+            let host_key_path =
+                std::path::PathBuf::from(&config.industrial.iacs_tunnel.host_key_path);
             let host_key_owned_fd = shared::iacs_host_key::prepare_host_key_fd(&host_key_path)
                 .with_context(|| {
                     format!(
@@ -621,9 +620,7 @@ fn run_supervisor() -> Result<()> {
         // immediately exit or, worse on FreeBSD, crash-loop on
         // post-Capsicum file opens).
         if service_key == "proxy_iacs" && !config.industrial.enabled {
-            info!(
-                "Skipping proxy_iacs spawn: industrial.enabled = false"
-            );
+            info!("Skipping proxy_iacs spawn: industrial.enabled = false");
             continue;
         }
 
@@ -1353,7 +1350,14 @@ fn reap_children(
                             info!("Respawning {}", service_key);
                             let topology = service_key_to_service(&service_key)
                                 .and_then(|s| service_pipes.get(&s));
-                            respawn_service(state, config, topology, listener_fd, iacs_listener_fd, iacs_host_key_fd);
+                            respawn_service(
+                                state,
+                                config,
+                                topology,
+                                listener_fd,
+                                iacs_listener_fd,
+                                iacs_host_key_fd,
+                            );
                         }
                     } else {
                         error!("{} has crashed too many times, not respawning", service_key);
@@ -1388,7 +1392,14 @@ fn reap_children(
                             info!("Respawning {}", service_key);
                             let topology = service_key_to_service(&service_key)
                                 .and_then(|s| service_pipes.get(&s));
-                            respawn_service(state, config, topology, listener_fd, iacs_listener_fd, iacs_host_key_fd);
+                            respawn_service(
+                                state,
+                                config,
+                                topology,
+                                listener_fd,
+                                iacs_listener_fd,
+                                iacs_host_key_fd,
+                            );
                         }
                     } else {
                         error!("{} has crashed too many times, not respawning", service_key);

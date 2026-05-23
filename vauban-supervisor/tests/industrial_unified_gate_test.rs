@@ -95,9 +95,7 @@ fn host_key_fd_env_attached_only_to_proxy_iacs() {
 /// `VAUBAN_IACS_LISTENER_FD` MUST also remain exclusive to `proxy_iacs`.
 #[test]
 fn listener_fd_env_attached_only_to_proxy_iacs() {
-    let occurrences: Vec<_> = MAIN_RS
-        .match_indices("VAUBAN_IACS_LISTENER_FD")
-        .collect();
+    let occurrences: Vec<_> = MAIN_RS.match_indices("VAUBAN_IACS_LISTENER_FD").collect();
     for (pos, _) in &occurrences {
         let start = pos.saturating_sub(600);
         let window = &MAIN_RS[start..*pos];

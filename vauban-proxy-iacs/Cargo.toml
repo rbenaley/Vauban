@@ -20,7 +20,7 @@ workspace = true
 # vauban-supervisor) so it can mint the supervisor-bound token piggybacked
 # on TcpConnectRequest, and verify the proxy-bound token piggybacked on
 # IacsTunnelOpen.
-shared = { workspace = true, features = ["access-guard", "session-token", "iacs-host-key"] }
+shared = { workspace = true, features = ["access-guard", "session-token", "iacs-host-key", "iacs-protocol"] }
 
 libc.workspace = true
 tracing.workspace = true

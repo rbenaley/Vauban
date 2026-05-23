@@ -127,12 +127,10 @@ fn iacs_async_ipc_channels_constructed_before_capsicum() {
             "AsyncIpcChannel::new(supervisor_channel) must be called in main.rs \
              (the proxy must wrap its supervisor pipe in an async channel).",
         );
-    let web_pos = MAIN_RS
-        .find("AsyncIpcChannel::new(web_channel)")
-        .expect(
-            "AsyncIpcChannel::new(web_channel) must be called in main.rs \
+    let web_pos = MAIN_RS.find("AsyncIpcChannel::new(web_channel)").expect(
+        "AsyncIpcChannel::new(web_channel) must be called in main.rs \
              (the proxy must wrap its web pipe in an async channel).",
-        );
+    );
 
     assert!(
         sup_pos < cap_pos,
@@ -162,9 +160,7 @@ fn iacs_async_ipc_channels_constructed_before_capsicum() {
     let sup_count = MAIN_RS
         .matches("AsyncIpcChannel::new(supervisor_channel)")
         .count();
-    let web_count = MAIN_RS
-        .matches("AsyncIpcChannel::new(web_channel)")
-        .count();
+    let web_count = MAIN_RS.matches("AsyncIpcChannel::new(web_channel)").count();
     assert_eq!(
         sup_count, 1,
         "AsyncIpcChannel::new(supervisor_channel) must appear EXACTLY once; \

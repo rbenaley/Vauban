@@ -11,8 +11,8 @@ use diesel_async::RunQueryDsl;
 use uuid::Uuid;
 use vauban_web::schema::proxy_sessions::dsl;
 use vauban_web::services::recording_reaper::{
-    clear_recording_metadata, select_age_candidates, select_quota_candidates,
-    total_finalized_bytes, TASK_NAME,
+    TASK_NAME, clear_recording_metadata, select_age_candidates, select_quota_candidates,
+    total_finalized_bytes,
 };
 
 async fn insert_recorded_session(
@@ -56,8 +56,7 @@ async fn age_candidates_select_only_sessions_older_than_cutoff() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("reap-admin")).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("reap-asset"), admin_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("reap-asset"), admin_id).await;
 
     let (_, old_uuid) = insert_recorded_session(
         &mut conn,
@@ -84,15 +83,11 @@ async fn age_candidates_select_only_sessions_older_than_cutoff() {
         .await
         .expect("select age");
     assert!(
-        candidates
-            .iter()
-            .any(|(_, u, _, _)| *u == old_uuid),
+        candidates.iter().any(|(_, u, _, _)| *u == old_uuid),
         "old session must be an age candidate"
     );
     assert!(
-        !candidates
-            .iter()
-            .any(|(_, u, _, _)| *u == recent_uuid),
+        !candidates.iter().any(|(_, u, _, _)| *u == recent_uuid),
         "recent session must not be an age candidate"
     );
 }
@@ -102,8 +97,7 @@ async fn age_candidates_skip_active_sessions() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("reap-active")).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("reap-asset2"), admin_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("reap-asset2"), admin_id).await;
 
     let (_, uuid) = insert_recorded_session(
         &mut conn,
@@ -130,8 +124,7 @@ async fn quota_candidates_ordered_fifo_and_require_finalized_size() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("reap-quota")).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("reap-asset3"), admin_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("reap-asset3"), admin_id).await;
 
     let (_, u1) = insert_recorded_session(
         &mut conn,
@@ -177,10 +170,8 @@ async fn clear_recording_metadata_nulls_all_recording_columns() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("reap-clear")).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("reap-asset4"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("reap-asset4"), admin_id).await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
 
     diesel::update(dsl::proxy_sessions.filter(dsl::id.eq(session_id)))
         .set((
@@ -279,7 +270,7 @@ fn task_name_pin() {
 #[tokio::test]
 async fn bootstrap_exits_immediately_on_empty_backlog() {
     use std::time::Duration;
-    use vauban_web::tasks::{run_bootstrap_retention, RecordingRetentionTaskConfig};
+    use vauban_web::tasks::{RecordingRetentionTaskConfig, run_bootstrap_retention};
 
     let app = TestApp::spawn().await;
     if app.app_state.supervisor.is_none() {

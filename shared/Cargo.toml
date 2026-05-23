@@ -71,6 +71,9 @@ session-token = ["dep:blake3", "dep:secrecy", "dep:base64", "dep:rand", "dep:sub
 # from FD before Capsicum). Other crates do NOT need russh and stay
 # slim.
 iacs-host-key = ["dep:russh"]
+# Peek-based industrial wire protocol classification for the IACS
+# tunnel gate in vauban-proxy-iacs. Tokio-free pure parsing.
+iacs-protocol = []
 
 # Capsicum bindings for FreeBSD
 [target.'cfg(target_os = "freebsd")'.dependencies]

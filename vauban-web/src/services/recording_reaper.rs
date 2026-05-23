@@ -111,8 +111,7 @@ impl RecordingReaper {
             if total > max_bytes as i64 {
                 let mut quota_remaining = self.batch_size;
                 while quota_remaining > 0 && total > max_bytes as i64 {
-                    let candidates =
-                        select_quota_candidates(&mut conn, quota_remaining).await?;
+                    let candidates = select_quota_candidates(&mut conn, quota_remaining).await?;
                     if candidates.is_empty() {
                         break;
                     }
@@ -146,9 +145,10 @@ impl RecordingReaper {
         let recording_path = recording_path_opt
             .ok_or_else(|| format!("missing recording_path for session id {id}"))?;
         let session_uuid = uuid.to_string();
-        let relative = recording_root_relative(&self.storage_base, &recording_path).ok_or_else(
-            || format!("invalid recording_path for session {session_uuid}: {recording_path}"),
-        )?;
+        let relative =
+            recording_root_relative(&self.storage_base, &recording_path).ok_or_else(|| {
+                format!("invalid recording_path for session {session_uuid}: {recording_path}")
+            })?;
 
         let delete_result = self
             .supervisor
@@ -200,7 +200,12 @@ pub async fn select_age_candidates(
         .filter(dsl::disconnected_at.lt(cutoff))
         .order(dsl::disconnected_at.asc())
         .limit(limit)
-        .select((dsl::id, dsl::uuid, dsl::recording_path, dsl::disconnected_at))
+        .select((
+            dsl::id,
+            dsl::uuid,
+            dsl::recording_path,
+            dsl::disconnected_at,
+        ))
         .load(conn)
         .await
         .map_err(|e| e.to_string())
@@ -222,7 +227,12 @@ pub async fn select_quota_candidates(
         .filter(dsl::recording_size_bytes.is_not_null())
         .order(dsl::disconnected_at.asc())
         .limit(limit)
-        .select((dsl::id, dsl::uuid, dsl::recording_path, dsl::disconnected_at))
+        .select((
+            dsl::id,
+            dsl::uuid,
+            dsl::recording_path,
+            dsl::disconnected_at,
+        ))
         .load(conn)
         .await
         .map_err(|e| e.to_string())

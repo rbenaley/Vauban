@@ -37,7 +37,9 @@ fn supervisor_pre_binds_iacs_listener_before_spawn() {
     // capture in a `let addr = ...; let listener = TcpListener::bind(addr)` pattern.
     let bind_pos = SUPERVISOR_MAIN
         .find("TcpListener::bind(addr)")
-        .or_else(|| SUPERVISOR_MAIN.find("TcpListener::bind(&config.industrial.iacs_tunnel.bind_addr)"))
+        .or_else(|| {
+            SUPERVISOR_MAIN.find("TcpListener::bind(&config.industrial.iacs_tunnel.bind_addr)")
+        })
         .expect(
             "vauban-supervisor MUST call TcpListener::bind on the IACS \
              listener (industrial.iacs_tunnel.bind_addr).",

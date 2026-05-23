@@ -234,3 +234,20 @@ fn no_legacy_127_0_0_1_4321_literal_in_client_source() {
          path."
     );
 }
+
+#[test]
+fn access_check_by_uuid_binds_iacs_tunnel_to_asset_type() {
+    let access_handlers = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../vauban-access/src/handlers.rs"),
+    )
+    .unwrap_or_else(|e| panic!("read vauban-access handlers: {e}"));
+    assert!(
+        access_handlers.contains("iacs_tunnel_rule_includes_asset_type"),
+        "handle_check_access_by_uuid MUST call iacs_tunnel_rule_includes_asset_type \
+         so a modbus-only rule cannot grant a profinet asset"
+    );
+    assert!(
+        access_handlers.contains("IACS_APPLICATIVE_PROTOCOLS.contains"),
+        "handle_check_access_by_uuid MUST reject iacs_tunnel on non-IACS assets"
+    );
+}

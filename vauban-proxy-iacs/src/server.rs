@@ -26,6 +26,7 @@ use tracing::{debug, error, info, warn};
 use crate::auth::{AuthOutcome, PendingSessions, PendingTunnel, verify_publickey};
 use crate::registry::{SessionHandles, TunnelHandle, TunnelRegistry};
 use crate::relay::{copy_with_counter, validate_target};
+use shared::iacs_protocol::ExpectedProfile;
 
 /// Channel used by the russh handler / relay tasks to push
 /// `IacsTunnelStatusUpdate` and `IacsTunnelClosed` IPC messages
@@ -436,6 +437,7 @@ impl Handler for IacsTunnelHandler {
             Arc::clone(&self.live_channels),
             Arc::clone(&self.session_total_bytes_in),
             Arc::clone(&self.session_total_bytes_out),
+            ExpectedProfile::from_industrial_label(&pending.industrial_protocol),
         );
         Ok(true)
     }
@@ -564,6 +566,7 @@ fn spawn_relay(
     live_channels: Arc<AtomicUsize>,
     session_total_bytes_in: Arc<AtomicUsize>,
     session_total_bytes_out: Arc<AtomicUsize>,
+    expected_profile: ExpectedProfile,
 ) {
     let stream = channel.into_stream();
     let (reader_ssh, writer_ssh) = tokio::io::split(stream);
@@ -573,8 +576,24 @@ fn spawn_relay(
     let bytes_out = handle.bytes_out.clone();
     let bytes_in = handle.bytes_in.clone();
     let h_close = handle.clone();
+    let session_uuid = handle.session_uuid;
     let outbound = tokio::spawn(async move {
-        let _ = copy_with_counter(reader_ssh, writer_tcp, bytes_out, h_out).await;
+        let outcome = crate::protocol_gate::filtered_copy_with_counter(
+            reader_ssh,
+            writer_tcp,
+            bytes_out,
+            h_out.clone(),
+            expected_profile,
+            session_uuid,
+        )
+        .await;
+        if matches!(
+            outcome,
+            crate::protocol_gate::ProtocolGateOutcome::ForeignProtocol { .. }
+                | crate::protocol_gate::ProtocolGateOutcome::Unconfirmed
+        ) {
+            h_out.close();
+        }
     });
     let inbound = tokio::spawn(async move {
         let _ = copy_with_counter(reader_tcp, writer_ssh, bytes_in, h_in).await;
