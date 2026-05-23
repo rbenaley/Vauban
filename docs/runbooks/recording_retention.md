@@ -95,7 +95,24 @@ Recording list/detail/download endpoints filter on `is_recorded AND recording_pa
 **Disk gone, DB stale (orphan metadata):**
 
 1. Confirm file missing under `storage_path`.
-2. Either wait for the next bootstrap or daily pass (supervisor returns success with `bytes_freed=0` on ENOENT) or manually UPDATE the row to clear recording columns (same as reaper).
+2. Either wait for the next bootstrap or daily pass (supervisor returns success with `bytes_freed=0` on ENOENT) or manually UPDATE the row to clear recording columns **exactly like the reaper** -- including `is_recorded = false`. Omitting that flag leaves rows counted as HYDRATING on the Bastion Watch dashboard (`is_recorded = true`, `recording_path IS NULL`, `recording_finalized_at IS NULL`) even though nothing remains to hydrate or reap.
+
+   ```sql
+   UPDATE proxy_sessions
+   SET is_recorded = false,
+       recording_path = NULL,
+       recording_blake3 = NULL,
+       recording_size_bytes = NULL,
+       recording_duration_ms = NULL,
+       recording_event_count = NULL,
+       recording_format = NULL,
+       recording_width = NULL,
+       recording_height = NULL,
+       recording_segment_count = NULL,
+       recording_codec = NULL,
+       recording_finalized_at = NULL
+   WHERE uuid = '<session-uuid>';
+   ```
 
 **Disk remains, DB cleared:**
 
