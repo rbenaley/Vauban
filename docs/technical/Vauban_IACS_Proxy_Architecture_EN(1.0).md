@@ -1,7 +1,7 @@
 # Vauban IACS Proxy Architecture
 
-**Version:** 1.0
-**Date:** 15 May 2026
+**Version:** 1.0  
+**Date:** 15 May 2026  
 **Author:** Richard Ben Aleya
 
 ---
