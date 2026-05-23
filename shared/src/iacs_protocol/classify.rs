@@ -51,7 +51,7 @@ fn try_modbus(buf: &[u8]) -> Option<WireProtocol> {
     }
     let length = u16::from_be_bytes([buf[4], buf[5]]) as usize;
     // Length field covers unit id + PDU (1 + pdu_len).
-    if length < 2 || length > 260 {
+    if !(2..=260).contains(&length) {
         return None;
     }
     if buf.len() < 6 + length {

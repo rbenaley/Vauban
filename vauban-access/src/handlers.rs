@@ -1164,17 +1164,17 @@ async fn handle_check_access_by_uuid(
     // IACS tunnel transport-meta MUST NOT grant on non-IACS assets, and
     // the granting access_rule MUST include the asset's applicative type
     // (`iacs_modbus`, ...) -- not just any expanded `iacs_*` overlap.
-    if protocol == shared::access_guard::PROTOCOL_IACS_TUNNEL {
-        if !shared::access_guard::IACS_APPLICATIVE_PROTOCOLS.contains(&asset_type.as_str()) {
-            info!(
-                asset_uuid,
-                asset_id,
-                asset_type = %asset_type,
-                protocol,
-                "CheckAccessByUuid denied: iacs_tunnel requested for non-IACS asset"
-            );
-            return denied();
-        }
+    if protocol == shared::access_guard::PROTOCOL_IACS_TUNNEL
+        && !shared::access_guard::IACS_APPLICATIVE_PROTOCOLS.contains(&asset_type.as_str())
+    {
+        info!(
+            asset_uuid,
+            asset_id,
+            asset_type = %asset_type,
+            protocol,
+            "CheckAccessByUuid denied: iacs_tunnel requested for non-IACS asset"
+        );
+        return denied();
     }
 
     let mut asset_group_ids: Vec<i32> = match asset_asset_groups::table

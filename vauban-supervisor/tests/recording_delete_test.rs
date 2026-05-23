@@ -1,5 +1,7 @@
 //! Supervisor-side recording delete tests (filesystem + path validation).
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::fs;
 
 use shared::recording_paths::{
