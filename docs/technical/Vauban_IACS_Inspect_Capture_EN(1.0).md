@@ -56,25 +56,26 @@ tree linked, byte-by-byte, to the raw hex dump.
 
 ## 2. Position in the Vauban architecture
 
-```
-EWS  --SSH+direct-tcpip-->  vauban-proxy-iacs
-                                 |
-                                 +-> vauban-audit (PCAP gz)
-                                 +-> vauban-access (re-check)
+```mermaid
+flowchart LR
+    EWS["EWS<br/>(operator)"] -->|"SSH +<br/>direct-tcpip"| Proxy["vauban-proxy-iacs"]
+    Proxy -->|"PCAP gz +<br/>meta.json"| Audit["vauban-audit"]
+    Proxy -->|"re-check"| Access["vauban-access"]
+    Audit --> FS[("recordings/YYYY/MM/UUID/<br/>meta.json<br/>channels/N.pcap.gz")]
 
-vauban-web  --IPC--> vauban-supervisor --SCM_RIGHTS--> meta.json
-vauban-web  --IPC--> vauban-supervisor --SCM_RIGHTS--> channels/<n>.pcap.gz
-            (Capsicum: vauban-web cannot open files directly)
+    subgraph Web ["vauban-web (Capsicum sandbox)"]
+        direction TB
+        Handlers["handlers::web::sessions<br/>inspect_capture / _packet_list / _packet_detail<br/>(route_layer require_admin_view + Casbin gate)"]
+        Service["services::iacs_packet_analyzer<br/>parser . flow . dissectors . mod"]
+        Tpl["Askama templates<br/>templates/sessions/inspect/"]
+        Handlers --> Service
+        Handlers --> Tpl
+    end
 
-vauban-web ::services::iacs_packet_analyzer
-            +-- parser.rs        // PCAP global+record parser, etherparse
-            +-- flow.rs          // canonical client/server inference
-            +-- dissectors/      // modbus, iec104, passthrough
-            +-- mod.rs           // analyze_channel + page_summaries
-
-vauban-web ::handlers::web::sessions::inspect_capture*
-            (3 handlers, route_layer require_admin_view + Casbin gate)
-            -> Askama templates  (templates/sessions/inspect/*.html)
+    Browser(["Operator browser<br/>(HTMX + Tailwind)"]) -->|"GET /inspect*"| Handlers
+    Handlers -->|"IPC RecordingFileRequest"| Sup["vauban-supervisor"]
+    Sup -.->|"SCM_RIGHTS<br/>read-only FD"| FS
+    Sup -->|"FD"| Service
 ```
 
 The analyzer lives entirely inside `vauban-web`, at the same trust
@@ -142,36 +143,20 @@ previous filter combination.
 
 ## 5. Pipeline
 
-```
-PCAP.gz bytes (from supervisor FD broker)
-    |
-    v
-parser::parse_pcap_gz                   -- gunzip, libpcap global header,
-                                           per-record header, etherparse
-                                           IPv4/IPv6 + TCP, payload slice
-    |
-    v  Vec<RawPacket>
-flow::ChannelEndpoints::infer_from_first_packets
-                                         -- canonical client/server tuple
-                                            from the first SYN (fall back
-                                            to first record on truncation)
-    |
-    v
-dissectors::dissect(profile, payload, direction)
-                                         -- Modbus / IEC-104 / Passthrough
-                                         -- returns Dissection { kind,
-                                            summary, tree: Vec<FieldNode> }
-    |
-    v
-PacketSummary { frame_idx, ts, direction, kind, summary, ... }
-    |
-    +------> page_summaries(filter) -> PacketListPage  (list view)
-    |
-    v
-analyze_packet(idx) -> PacketDetail { summary, tree, hex_rows,
-                                       byte_field_ids }
-                                          (detail view, with the
-                                           tree<->hex byte map)
+```mermaid
+flowchart TD
+    Bytes["PCAP.gz bytes<br/>(supervisor FD broker)"]
+    Parse["parser::parse_pcap_gz<br/><i>gunzip + libpcap global / record headers<br/>etherparse IPv4/IPv6 + TCP, payload slice</i>"]
+    Raw["Vec&lt;RawPacket&gt;"]
+    Flow["flow::ChannelEndpoints::infer_from_first_packets<br/><i>canonical client / server tuple from first SYN<br/>fallback: first record on truncation</i>"]
+    Dis["dissectors::dissect(profile, payload, direction)<br/><i>Modbus . IEC-104 . Passthrough</i><br/>-> Dissection { kind, summary, tree: Vec&lt;FieldNode&gt; }"]
+    Sum["PacketSummary { frame_idx, ts, direction, kind, summary, ... }"]
+    Page["page_summaries(filter)<br/>-> PacketListPage<br/><b>(list view)</b>"]
+    Detail["analyze_packet(idx)<br/>-> PacketDetail { summary, tree, hex_rows, byte_field_ids }<br/><b>(detail view + tree&lt;-&gt;hex byte map)</b>"]
+
+    Bytes --> Parse --> Raw --> Flow --> Dis --> Sum
+    Sum --> Page
+    Sum --> Detail
 ```
 
 The pipeline is **stateless**. Each handler call re-parses the channel
