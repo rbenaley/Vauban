@@ -61,6 +61,7 @@ pub mod pages_test;
 pub mod profile_password_test;
 pub mod recording_daily_cron_e2e_test;
 pub mod recording_detail_test;
+pub mod recording_iacs_download_e2e_test;
 pub mod recording_integrity_migration_test;
 pub mod recording_retention_e2e_test;
 pub mod responsive_templates_test;

@@ -1782,12 +1782,33 @@ pub enum Message {
 
     // ========== IACS Recording (ProxyIacs <-> Audit) ==========
     /// Signal vauban-audit to start recording a new `direct-tcpip` channel.
+    ///
+    /// `client_ip` / `client_port` carry the SSH `direct-tcpip`
+    /// originator (the EWS application's perceived local socket).
+    /// `server_ip` / `server_port` carry the resolved upstream
+    /// endpoint of the brokered TCP fd (or `target_host` /
+    /// `target_port` when the resolution is not available). These
+    /// four values feed the synthetic IPv4/IPv6 + TCP layer that
+    /// `vauban-audit` reconstructs around every captured chunk so
+    /// the resulting `.pcap` files dissect natively in
+    /// tcpdump / Wireshark / Zeek.
+    ///
+    /// `connected_at_us` is the wall-clock anchor of the tunnel's
+    /// `tunnel_active` transition (= `proxy_sessions.connected_at`).
+    /// Audit derives `YYYY/MM/UUID/` from this value rather than
+    /// `now()` so the directory layout cannot drift across a
+    /// month boundary.
     IacsRecordingChannelStart {
         session_id: String,
         channel_id: u32,
         target_host: String,
         target_port: u16,
         opened_at_us: u64,
+        client_ip: String,
+        client_port: u16,
+        server_ip: String,
+        server_port: u16,
+        connected_at_us: u64,
     },
 
     /// A batch of relay bytes for one IACS channel (ProxyIacs -> Audit).
@@ -4053,6 +4074,11 @@ mod tests {
             target_host: "plc.local".to_string(),
             target_port: 502,
             opened_at_us: 1000,
+            client_ip: "127.0.0.1".to_string(),
+            client_port: 51_234,
+            server_ip: "10.20.30.40".to_string(),
+            server_port: 502,
+            connected_at_us: 999_000,
         };
         let deserialized: Message = deserialize(&serialize(&msg));
         if let Message::IacsRecordingChannelStart {
@@ -4061,6 +4087,11 @@ mod tests {
             target_host,
             target_port,
             opened_at_us,
+            client_ip,
+            client_port,
+            server_ip,
+            server_port,
+            connected_at_us,
         } = deserialized
         {
             assert_eq!(session_id, "iacs-1");
@@ -4068,6 +4099,41 @@ mod tests {
             assert_eq!(target_host, "plc.local");
             assert_eq!(target_port, 502);
             assert_eq!(opened_at_us, 1000);
+            assert_eq!(client_ip, "127.0.0.1");
+            assert_eq!(client_port, 51_234);
+            assert_eq!(server_ip, "10.20.30.40");
+            assert_eq!(server_port, 502);
+            assert_eq!(connected_at_us, 999_000);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_iacs_recording_channel_start_ipv6_roundtrip() {
+        let msg = Message::IacsRecordingChannelStart {
+            session_id: "iacs-2".to_string(),
+            channel_id: 7,
+            target_host: "plc6.example.invalid".to_string(),
+            target_port: 4840,
+            opened_at_us: 0,
+            client_ip: "fe80::1".to_string(),
+            client_port: 49_152,
+            server_ip: "2001:db8::42".to_string(),
+            server_port: 4840,
+            connected_at_us: 1_700_000_000_000_000,
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        if let Message::IacsRecordingChannelStart {
+            client_ip,
+            server_ip,
+            connected_at_us,
+            ..
+        } = deserialized
+        {
+            assert_eq!(client_ip, "fe80::1");
+            assert_eq!(server_ip, "2001:db8::42");
+            assert_eq!(connected_at_us, 1_700_000_000_000_000);
         } else {
             panic!("Wrong variant");
         }

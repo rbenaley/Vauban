@@ -24,11 +24,12 @@ use tokio::sync::{Mutex, mpsc::UnboundedSender};
 use tracing::{debug, error, info, warn};
 
 use crate::auth::{AuthOutcome, PendingSessions, PendingTunnel, verify_publickey};
-use crate::iacs_recording::{ChannelRecorder, IacsRecordingHub};
+use crate::iacs_recording::{ChannelEndpoints, ChannelRecorder, IacsRecordingHub};
 use crate::registry::{SessionHandles, TunnelHandle, TunnelRegistry};
 use crate::relay::{copy_with_counter_and_record, validate_target};
 use shared::messages::IacsRecordingDirection;
 use shared::iacs_protocol::ExpectedProfile;
+use std::time::SystemTime;
 
 /// Channel used by the russh handler / relay tasks to push
 /// `IacsTunnelStatusUpdate` and `IacsTunnelClosed` IPC messages
@@ -120,6 +121,7 @@ impl Server for IacsTunnelServer {
             tunnel_active_emitted: Arc::new(AtomicBool::new(false)),
             session_total_bytes_in: Arc::new(AtomicUsize::new(0)),
             session_total_bytes_out: Arc::new(AtomicUsize::new(0)),
+            connected_at_us: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -171,6 +173,13 @@ pub struct IacsTunnelHandler {
     /// bytes_out }` payload at handler-drop time.
     pub session_total_bytes_in: Arc<AtomicUsize>,
     pub session_total_bytes_out: Arc<AtomicUsize>,
+    /// Wall-clock anchor (microseconds since UNIX epoch) of the
+    /// `tunnel_active` transition. Captured on the first successful
+    /// `direct-tcpip`; passed to vauban-audit on every
+    /// `IacsRecordingChannelStart` so the on-disk directory layout
+    /// (`YYYY/MM/UUID/`) matches the `proxy_sessions.connected_at`
+    /// row in the DB and cannot drift across a month boundary.
+    pub connected_at_us: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Handler for IacsTunnelHandler {
@@ -309,8 +318,8 @@ impl Handler for IacsTunnelHandler {
         channel: Channel<Msg>,
         host_to_connect: &str,
         port_to_connect: u32,
-        _originator_address: &str,
-        _originator_port: u32,
+        originator_address: &str,
+        originator_port: u32,
         _session: &mut Session,
     ) -> Result<bool, Self::Error> {
         // Acquire a slot from the per-login channel pool. Multiple
@@ -415,6 +424,23 @@ impl Handler for IacsTunnelHandler {
         // sessions surfaces (issue: 0.7.11 active-list integration
         // landed without the producer side, so the IPC hooks were
         // dormant).
+        // Capture `connected_at_us` on the first successful
+        // direct-tcpip and reuse it for every subsequent channel of
+        // this EWS login so the on-disk recording layout
+        // (`YYYY/MM/UUID/`) is anchored on the same wall-clock
+        // moment as `proxy_sessions.connected_at` in the DB.
+        let now_us = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+        let connected_at_us = match self
+            .connected_at_us
+            .compare_exchange(0, now_us, Ordering::SeqCst, Ordering::SeqCst)
+        {
+            Ok(_) => now_us,
+            Err(existing) => existing,
+        };
+
         if !self.tunnel_active_emitted.swap(true, Ordering::SeqCst)
             && let Some(tx) = self.web_reporter.as_ref()
         {
@@ -434,6 +460,27 @@ impl Handler for IacsTunnelHandler {
                 );
             }
         }
+        // Extract the resolved upstream peer address BEFORE the
+        // stream is split into reader/writer halves -- once split
+        // the address is no longer reachable. The supervisor
+        // brokered fd has already been `connect()`-ed to the asset,
+        // so `peer_addr()` returns the real industrial endpoint.
+        // Falling back to the SSH-supplied `asset_host` (which may
+        // be an FQDN) lets the synthetic IP/TCP layer still emit a
+        // sensible source/destination pair when the brokered fd
+        // somehow lost its peer info.
+        let (server_ip_str, server_port) = upstream_stream
+            .peer_addr()
+            .ok()
+            .map(|sa| (sa.ip().to_string(), sa.port()))
+            .unwrap_or_else(|| (pending.asset_host.clone(), pending.asset_port));
+        let endpoints = ChannelEndpoints {
+            client_ip: originator_address.to_string(),
+            client_port: clamp_port(originator_port),
+            server_ip: server_ip_str,
+            server_port,
+        };
+
         let handle = TunnelHandle::new(
             pending.session_uuid,
             pending.user_uuid,
@@ -449,6 +496,8 @@ impl Handler for IacsTunnelHandler {
                 channel_id,
                 &pending.asset_host,
                 pending.asset_port,
+                endpoints.clone(),
+                connected_at_us,
             );
             hub.channel_recorder(pending.session_uuid.to_string(), channel_id)
         });
@@ -684,6 +733,18 @@ fn spawn_relay(job: RelayJob) {
             "iacs_tunnel: tunnel_closed"
         );
     });
+}
+
+/// SSH `direct-tcpip` carries `originator_port` as a `u32` per RFC
+/// 4254 §7.2 even though TCP only has 16-bit ports. Clamp values
+/// above the legal range to `0` rather than truncating silently
+/// (Wireshark would otherwise display a believable but bogus port).
+fn clamp_port(port: u32) -> u16 {
+    if port <= u16::MAX as u32 {
+        port as u16
+    } else {
+        0
+    }
 }
 
 /// Build the russh server config (host key, methods, timeouts).

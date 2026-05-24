@@ -19,12 +19,11 @@
 //! - Audit log queries
 
 mod fmp4_writer;
-mod iacs_recording_manager;
 mod recording_manager;
 mod ssh_recording_manager;
 
 use anyhow::{Context, Result};
-use iacs_recording_manager::IacsRecordingManager;
+use vauban_audit::iacs_recording_manager::{self, IacsRecordingManager};
 use recording_manager::RecordingManager;
 use shared::capsicum;
 use shared::ipc::{IpcChannel, poll_readable, recv_fd};
@@ -699,9 +698,17 @@ fn handle_iacs_recording_message(
             target_host,
             target_port,
             opened_at_us,
+            client_ip,
+            client_port,
+            server_ip,
+            server_port,
+            connected_at_us,
         } => {
-            let relative_path =
-                IacsRecordingManager::compute_channel_pcap_path(&session_id, channel_id);
+            let relative_path = IacsRecordingManager::compute_channel_pcap_path(
+                &session_id,
+                channel_id,
+                connected_at_us,
+            );
             match request_file_from_supervisor(
                 supervisor_channel,
                 fd_passing_socket,
@@ -709,6 +716,12 @@ fn handle_iacs_recording_message(
                 &relative_path,
             ) {
                 Ok(file) => {
+                    let endpoints = crate::iacs_recording_manager::IacsChannelEndpoints {
+                        client_ip,
+                        client_port,
+                        server_ip,
+                        server_port,
+                    };
                     mgr.start_channel(
                         &session_id,
                         channel_id,
@@ -716,6 +729,8 @@ fn handle_iacs_recording_message(
                         target_host,
                         target_port,
                         opened_at_us,
+                        connected_at_us,
+                        endpoints,
                     );
                 }
                 Err(e) => {

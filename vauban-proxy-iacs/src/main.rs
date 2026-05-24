@@ -62,7 +62,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::auth::{PendingSessions, PendingTunnel};
-use crate::iacs_recording::{AckRouter, IacsRecordingHub};
+use crate::iacs_recording::{AckRouter, IacsRecordingHub, RecordingMetrics};
 use crate::ipc::AsyncIpcChannel;
 use crate::registry::{SessionHandles, TunnelRegistry};
 use crate::server::{IacsTunnelServer, build_server_config};
@@ -456,6 +456,7 @@ async fn run_service() -> Result<()> {
 
     let recording_hub: Option<IacsRecordingHub> = if let Some(audit) = audit_async {
         let ack_router = Arc::new(AckRouter::new());
+        let metrics = Arc::new(RecordingMetrics::default());
         let (audit_tx, mut audit_rx) = mpsc::unbounded_channel::<Message>();
         let audit_writer = Arc::clone(&audit);
         tokio::spawn(async move {
@@ -493,6 +494,7 @@ async fn run_service() -> Result<()> {
         Some(IacsRecordingHub {
             audit_tx,
             ack_router,
+            metrics,
         })
     } else {
         None
