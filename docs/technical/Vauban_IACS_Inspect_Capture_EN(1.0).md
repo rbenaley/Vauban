@@ -1,408 +1,475 @@
-# Vauban IACS Inspect Capture
+# Vauban IACS Inspect Capture Architecture
 
-**Version:** 1.0
-**Date:** 25 May 2026
+**Version:** 1.0  
+**Date:** 25 May 2026  
 **Author:** Richard Ben Aleya
 
 ---
 
 ## Table of Contents
 
-1. [Purpose](#1-purpose)
-2. [Position in the Vauban architecture](#2-position-in-the-vauban-architecture)
-3. [Authorization gates](#3-authorization-gates)
-4. [Surface and routes](#4-surface-and-routes)
-5. [Pipeline](#5-pipeline)
-6. [Dissectors](#6-dissectors)
-7. [UI / UX contract](#7-ui--ux-contract)
-8. [Battle-tested invariants](#8-battle-tested-invariants)
-9. [Threat model](#9-threat-model)
-10. [Test coverage](#10-test-coverage)
-11. [Source of truth](#11-source-of-truth)
+1. [Introduction](#1-introduction)
+2. [Architecture Overview](#2-architecture-overview)
+3. [Authorization Model](#3-authorization-model)
+4. [Pipeline](#4-pipeline)
+5. [Dissector Architecture](#5-dissector-architecture)
+6. [UI Architecture](#6-ui-architecture)
+7. [Resource Bounds & Resilience](#7-resource-bounds--resilience)
+8. [Threat Model](#8-threat-model)
+9. [Limitations & Future Work](#9-limitations--future-work)
+10. [Appendix A -- Module Layout](#appendix-a----module-layout)
+11. [Appendix B -- API Surface](#appendix-b----api-surface)
+12. [Appendix C -- Related Documents](#appendix-c----related-documents)
+13. [Appendix D -- Changelog](#appendix-d----changelog)
 
 ---
 
-## 1. Purpose
+## 1. Introduction
 
-The IACS recording feature (cf. `Vauban_Recording_Architecture_EN(1.5).md`)
-captures every TCP segment of an Engineering-Workstation-to-asset tunnel as a
-`channels/<n>.pcap.gz` file under the session's recording directory. The
-file is suitable for offline forensic analysis with Wireshark, but two
-operational shortcomings remain:
+Vauban records every IACS tunnel between an Engineering Workstation
+(EWS) and an industrial asset as a per-channel PCAP bundle (cf.
+*Session Recording Architecture* § 5). The artefact is forensically
+sound but, by itself, only consumable through an out-of-band tool such
+as Wireshark: the operator has to download the bundle, mount the right
+decoder, and find the segment of interest. The audit feedback loop is
+measured in minutes.
 
-1. **Wireshark is offline.** The investigator has to download the
-   recording, run Wireshark on a workstation, mount the right key
-   material, and find the segment of interest. The audit feedback loop
-   is measured in minutes, not seconds.
-2. **Wireshark is generic.** It does not know what the operator's
-   intent is, what the EWS endpoint is, what role each peer plays in
-   the channel, what the asset's industrial protocol is, or how the
-   `meta.json` integrity hash binds the capture to the audit trail.
+**Inspect Capture** turns the same artefact into a navigable,
+in-browser, industrial-protocol-aware analyzer. Where Wireshark is
+generic, Inspect Capture is opinionated: it knows which peer is the
+EWS and which is the asset, classifies each application frame as
+*read* / *cmd* / *exception* against the asset's industrial protocol,
+and links every parsed field to its byte range in the raw dump. The
+investigator workflow becomes one click from the recording detail
+page.
 
-`Inspect Capture` ("ICA") closes both gaps by rendering the same PCAP
-inline, in the operator's browser, with industrial-protocol awareness:
-Modbus FC and exception classification, IEC-104 ASDU type and Cause of
-Transmission, with packet-level direction inferred from the recording's
-canonical client/server tuple. The view is **read-only**, **server-rendered**
-(HTMX + Tailwind + a tiny declarative Alpine `x-data`), and intentionally
-narrower than Wireshark: no decryption, no replay, no decoder for every
-exotic protocol -- just the dimensions Vauban ops actually pivot on.
+The view is **read-only**, **server-rendered** (HTMX + Tailwind, with a
+small declarative Alpine binding for the tree<->hex highlight), and
+intentionally narrower than Wireshark: no decryption, no replay, no
+decoder for every exotic protocol -- only the dimensions Vauban ops
+actually pivot on (direction, kind, free-text search across
+dissector summaries).
 
-The investigator workflow becomes a single click: from the recording
-detail page, "Inspect Capture" opens the analyzer; the analyst filters
-by direction / kind, free-text searches across the dissector summaries
-(e.g. `FC06`, `ASDU C_SC_NA_1`), and clicks a row to see the dissection
-tree linked, byte-by-byte, to the raw hex dump.
+### 1.1 Design Goals
 
-## 2. Position in the Vauban architecture
+| Goal | Approach |
+|------|----------|
+| Zero re-parse on the operator's machine | Server parses + dissects on every request |
+| Wireshark-grade fidelity for supported protocols | Same byte format as `vauban-audit::iacs_pcap_synth`; Inspect Capture is its inverse |
+| Industrial-protocol awareness | Direction-aware (EWS<->asset) + per-protocol classification (read / cmd / exception) |
+| No client-side parser | Pagination + per-frame detail fetched on demand via HTMX |
+| CSP-strict | No inline `<script>`; only a tiny declarative Alpine `x-data` |
+| Bounded memory | Hard caps on record size, record count, decompressed bytes |
+| Anti-enumeration | All "not eligible" outcomes collapse to a single generic 404 |
+| Same trust boundary as replay | Capsicum-sandboxed; FDs brokered via `vauban-supervisor` |
+
+### 1.2 Services in the Inspect Path
+
+| Service | Role | Sandbox |
+|---------|------|---------|
+| `vauban-web` | Hosts the analyzer service, the three handlers, the templates; never opens a file directly | Capsicum |
+| `vauban-supervisor` | Brokers read-only file descriptors for `meta.json` and each `channels/N.pcap.gz` over `SCM_RIGHTS` | Root |
+| `vauban-audit` | Producer of the artefact (no role at inspection time); shares the synthetic L3/L4 byte format consumed by the analyzer | Capsicum |
+
+Inspect Capture introduces **no new IPC surface**, **no new wire
+protocol**, and **no new persistence**: it is a strictly read-side
+consumer of the recording bundle.
+
+---
+
+## 2. Architecture Overview
+
+### 2.1 Position in the Vauban Architecture
 
 ```mermaid
 flowchart LR
     EWS["EWS<br/>(operator)"] -->|"SSH +<br/>direct-tcpip"| Proxy["vauban-proxy-iacs"]
-    Proxy -->|"PCAP gz +<br/>meta.json"| Audit["vauban-audit"]
-    Proxy -->|"re-check"| Access["vauban-access"]
+    Proxy --> Audit["vauban-audit<br/>(producer)"]
     Audit --> FS[("recordings/YYYY/MM/UUID/<br/>meta.json<br/>channels/N.pcap.gz")]
 
-    subgraph Web ["vauban-web (Capsicum sandbox)"]
+    subgraph Web ["vauban-web (Capsicum)"]
         direction TB
-        Handlers["handlers::web::sessions<br/>inspect_capture / _packet_list / _packet_detail<br/>(route_layer require_admin_view + Casbin gate)"]
-        Service["services::iacs_packet_analyzer<br/>parser . flow . dissectors . mod"]
-        Tpl["Askama templates<br/>templates/sessions/inspect/"]
+        Handlers["Inspect handlers<br/>(admin gate, anti-enum)"]
+        Service["iacs_packet_analyzer<br/>(parser, flow, dissectors)"]
+        Tpl["Askama templates<br/>(HTMX + Tailwind)"]
         Handlers --> Service
         Handlers --> Tpl
     end
 
-    Browser(["Operator browser<br/>(HTMX + Tailwind)"]) -->|"GET /inspect*"| Handlers
-    Handlers -->|"IPC RecordingFileRequest"| Sup["vauban-supervisor"]
-    Sup -.->|"SCM_RIGHTS<br/>read-only FD"| FS
+    Browser(["Operator browser"]) -->|"GET /inspect*"| Handlers
+    Handlers -->|"file request"| Sup["vauban-supervisor"]
+    Sup -.->|"read-only FD<br/>(SCM_RIGHTS)"| FS
     Sup -->|"FD"| Service
 ```
 
-The analyzer lives entirely inside `vauban-web`, at the same trust
-boundary as the rest of the audit-replay surface. The Capsicum-sandboxed
-service never opens files directly: `meta.json` and each
-`channels/<n>.pcap.gz` are fetched through the supervisor's
-`SCM_RIGHTS`-brokered file-descriptor read path, exactly like the SSH /
-RDP replay viewers (cf. `Vauban_Privsep_Architecture_EN(1.2).md` § FD
-broker).
+The analyzer lives entirely inside `vauban-web` at the same trust
+boundary as the rest of the audit-replay surface. It never opens
+files directly: each request fetches `meta.json` and the targeted
+channel PCAP through the supervisor's existing FD broker, exactly
+like the SSH / RDP replay viewers (cf. *Privilege Separation
+Architecture* § FD broker).
 
-## 3. Authorization gates
+### 2.2 Stateless by Design
 
-Inspect Capture is gated by **`admin:view`** -- the same Casbin
-permission that protects the supervisor dashboard. Three layers compose:
+Each handler call re-parses the channel PCAP from scratch. There is
+no in-memory cache, no on-disk side state, no per-session worker. As
+a consequence:
 
-1. **`require_admin_view` route layer** on the
-   `/sessions/recordings/{uuid}/inspect*` sub-tree. A non-admin gets a
-   403 *before* any handler runs. Defence-in-depth pinned by
-   `inspect_capture_test::routes_are_mounted_under_admin_layer`.
-2. **`PermissionContext.admin_view`** re-checked in every handler body
-   after the layer. A misconfiguration of either layer is caught by the
-   other.
-3. **Anti-enumeration response shaping**. Every "not found / not IACS /
-   not finalized / channel index out of range / frame index out of
-   range" condition collapses to the same generic
-   `AppError::NotFound("Not found")`. A non-admin who somehow bypassed
-   the layer (or an admin probing for an unknown UUID) cannot use the
-   URL space as an oracle for session existence. Pinned by
-   `inspect_capture_test::handlers_funnel_through_resolve_inspect_target`.
+- The view is always rendered from the same byte artefact that the
+  integrity hash in `meta.json` covers; the operator cannot see a
+  stale or de-synchronised tree.
+- A poll-storm cannot exhaust supervisor FDs: each request opens and
+  drops one `meta.json` FD plus one channel PCAP FD synchronously.
+- A redeploy is transparent: there is no warmup, no cache priming,
+  no migration step.
 
-Inspect Capture is read-only and never spawns a session, never connects
-RDP/SSH, never submits an access request. The handlers carry no
-session-creation surface and no WebSocket. This is enforced by the same
-asset-zone split rule (`/assets/manage/*` is structurally session-free
--- the inspect surface follows the same convention).
+---
 
-## 4. Surface and routes
+## 3. Authorization Model
 
-| Method | Path                                                                            | Handler                          | Purpose |
-|--------|---------------------------------------------------------------------------------|----------------------------------|---------|
-| GET    | `/sessions/recordings/{uuid}/inspect`                                           | `inspect_capture`                | Initial full-page paint |
-| GET    | `/sessions/recordings/{uuid}/inspect/channels/{n}/packets`                      | `inspect_capture_packet_list`    | HTMX fragment: filtered, paginated packet list |
-| GET    | `/sessions/recordings/{uuid}/inspect/channels/{n}/packets/{idx}`                | `inspect_capture_packet_detail`  | HTMX fragment: dissection tree + hex dump |
+Inspect Capture composes three independent layers; none of them
+substitutes for the others.
 
-Channel index `n` and frame index `idx` are 1-based. `idx == 0` is
-rejected with the generic 404 (anti-enumeration). The shell page
-auto-loads the first frame of the first channel via HTMX
-`hx-trigger="load delay:50ms"` so the operator lands on a populated
-view without a second click.
+```mermaid
+flowchart LR
+    Req(["GET /inspect*"]) --> L1{"route_layer<br/>require_admin_view"}
+    L1 -- "deny" --> R403(["403"])
+    L1 -- "allow" --> L2{"handler<br/>perms.admin_view"}
+    L2 -- "deny" --> R404a(["404"])
+    L2 -- "allow" --> L3{"resolve_inspect_target<br/>session is IACS,<br/>recording finalized,<br/>indexes in range"}
+    L3 -- "deny" --> R404b(["404"])
+    L3 -- "allow" --> Body(["render"])
+```
 
-Query parameters on the list endpoint:
+1. **Route layer** -- `require_admin_view` rejects non-admins before
+   any handler runs. This is the primary capability gate.
+2. **Handler re-check** -- the same Casbin permission is evaluated
+   inside each handler body. A misconfiguration of either layer is
+   caught by the other.
+3. **Anti-enumeration** -- every "not found / not IACS / not
+   finalized / index out of range" outcome collapses to the same
+   generic 404. The URL space cannot be used as an oracle for
+   session existence.
 
-| Name        | Type   | Default | Notes |
-|-------------|--------|---------|-------|
-| `direction` | enum   | --      | `ews_to_asset` / `asset_to_ews` |
-| `kind`      | enum   | --      | `tcp` / `read` / `cmd` / `exception` |
-| `q`         | string | --      | free-text, case-insensitive, matched against the dissector summary |
-| `page`      | int    | 1       | 1-based |
-| `page_size` | int    | 100     | clamped to `[1, MAX_PAGE_SIZE]` |
+Inspect Capture is read-only by construction: the surface contains
+no session-creation paths, no terminal / RDP / WebSocket route, no
+access-request endpoint. The same structural invariant that protects
+`/assets/manage/*` from leaking session hooks applies here.
 
-Channel switch is implemented as a `<a>` tab grid (no `<select>`) so
-HTMX can `hx-include` the active filter chips without JavaScript. URL
-state is pushed via `hx-push-url` -- the back button restores the
-previous filter combination.
+---
 
-## 5. Pipeline
+## 4. Pipeline
 
 ```mermaid
 flowchart TD
     Bytes["PCAP.gz bytes<br/>(supervisor FD broker)"]
-    Parse["parser::parse_pcap_gz<br/><i>gunzip + libpcap global / record headers<br/>etherparse IPv4/IPv6 + TCP, payload slice</i>"]
+    Parse["parser<br/><i>gunzip + libpcap headers<br/>IPv4/IPv6 + TCP decode<br/>payload slice</i>"]
     Raw["Vec&lt;RawPacket&gt;"]
-    Flow["flow::ChannelEndpoints::infer_from_first_packets<br/><i>canonical client / server tuple from first SYN<br/>fallback: first record on truncation</i>"]
-    Dis["dissectors::dissect(profile, payload, direction)<br/><i>Modbus . IEC-104 . Passthrough</i><br/>-> Dissection { kind, summary, tree: Vec&lt;FieldNode&gt; }"]
-    Sum["PacketSummary { frame_idx, ts, direction, kind, summary, ... }"]
-    Page["page_summaries(filter)<br/>-> PacketListPage<br/><b>(list view)</b>"]
-    Detail["analyze_packet(idx)<br/>-> PacketDetail { summary, tree, hex_rows, byte_field_ids }<br/><b>(detail view + tree&lt;-&gt;hex byte map)</b>"]
+    Flow["flow inference<br/><i>canonical client / server tuple<br/>from the first SYN</i>"]
+    Dis["dissector<br/><i>Modbus . IEC-104 . Passthrough</i><br/>-> { kind, summary, field tree }"]
+    Sum["PacketSummary timeline"]
+    Page["filter + paginate<br/><b>list view</b>"]
+    Detail["per-frame dissection +<br/>byte&lt;-&gt;field map<br/><b>detail view</b>"]
 
     Bytes --> Parse --> Raw --> Flow --> Dis --> Sum
     Sum --> Page
     Sum --> Detail
 ```
 
-The pipeline is **stateless**. Each handler call re-parses the channel
-PCAP from scratch; there is no in-memory cache and no on-disk side
-state. The capture is therefore always rendered from the same byte
-artifact that the integrity hash in `meta.json` covers -- the operator
-cannot see a stale or de-synchronised view.
+The pipeline has four stages, each with a narrow contract:
 
-Hard limits, applied at parse time, prevent a malicious or
+1. **Parse** -- gunzip the channel PCAP, walk the libpcap global and
+   record headers, decode L3/L4 with `etherparse`. The parser is the
+   strict inverse of the synthesiser used by `vauban-audit` to wrap
+   captured chunks; the two crates share no code but pin the same
+   byte format through cross-crate fixture tests.
+2. **Flow inference** -- promote one of the two endpoints to "client"
+   (EWS) and the other to "server" (asset) by looking at the first
+   SYN of the channel. This is what lets the rest of the pipeline
+   answer "EWS->asset" vs "asset->EWS" deterministically, without
+   having to consult `meta.json` again at every frame.
+3. **Dissection** -- dispatch on the asset's industrial profile.
+   Each dissector returns a small, uniform structure: a
+   classification (`read` / `cmd` / `exception`), a one-line summary
+   for the list view, and a tree of fields with absolute byte
+   offsets for the detail view.
+4. **Project** -- two views are derived from the timeline. The list
+   view applies an optional filter (direction, kind, free-text
+   search on the summary) and pages the result. The detail view
+   re-runs the dissector on a single frame and emits a
+   byte-to-field map for the tree<->hex highlight.
+
+---
+
+## 5. Dissector Architecture
+
+A dissector is a small module that turns a TCP application payload
+into a `Dissection { kind, summary, tree }` triple. The dispatcher
+selects one based on the asset's `industrial_protocol` column,
+mapped to a typed `ExpectedProfile`. The mapping is exhaustive at
+compile time -- adding a new variant breaks the build until a
+classifier is provided.
+
+### 5.1 Classification Contract
+
+| Kind        | Meaning                                                | Example  |
+|-------------|--------------------------------------------------------|----------|
+| `Tcp`       | Pure transport / control frame, no application payload | SYN, FIN, ACK |
+| `Read`      | Observation of asset state                             | Modbus FC03, IEC-104 monitoring direction |
+| `Cmd`       | Modification of asset state                            | Modbus FC06, IEC-104 control direction |
+| `Exception` | Negative response, busy, unknown                       | Modbus FC \| 0x80, IEC-104 negative COT |
+
+`Cmd` is the dimension that sets Inspect Capture apart from a generic
+PCAP viewer: the operator can scan a 10 000-frame capture and see at
+a glance every state-changing intent the EWS sent to the asset.
+
+### 5.2 Built-in Dissectors
+
+| Profile                                              | Dissector     | Coverage |
+|------------------------------------------------------|---------------|----------|
+| Modbus/TCP                                           | `modbus`      | MBAP header, function code, request- vs response-shaped sub-tree, exception bit |
+| IEC 60870-5-104                                      | `iec104`      | APCI start byte / format / sequence numbers, ASDU type ID, Cause of Transmission |
+| OPC-UA, PROFINET, BACnet/SC, MQTT/TLS, DNP3, generic | `passthrough` | byte count + ASCII preview |
+
+### 5.3 The Passthrough Floor
+
+Protocols outside the v1.0 catalogue fall back to `passthrough`. The
+fallback is deliberately conservative:
+
+- It **never** classifies a frame as `Cmd`. A protocol the analyzer
+  cannot parse must not be allowed to silently mis-attribute a
+  state-changing operation.
+- It surfaces a one-line summary (byte count + short ASCII preview)
+  so the operator can still triage the timeline.
+- It points the operator at the offline Wireshark workflow for
+  deeper analysis.
+
+This gives the analyzer a useful answer for every IACS recording,
+including those produced before a given dissector existed.
+
+---
+
+## 6. UI Architecture
+
+### 6.1 No-JS Philosophy
+
+The page ships with **no inline `<script>`** and no bespoke
+JavaScript bundle. Two libraries handle the entire interactivity
+budget:
+
+- **HTMX** drives every state change that touches the server: filter
+  changes, channel switch, pagination, packet selection, initial
+  auto-paint. Each interaction is a normal `GET` returning an
+  HTML fragment; the URL is pushed via `hx-push-url` so the
+  back/forward buttons restore the previous filter combination.
+- **Alpine** carries one declarative `x-data` scope for the
+  tree<->hex bidirectional highlight (~10 lines, no `eval`,
+  CSP-compatible). Tree nodes and hex bytes share a `field_id` and
+  the same `highlight` reactive variable.
+
+This is enforced by a CI lint that fails on any `<script>` under
+the Inspect templates.
+
+### 6.2 Color Discipline
+
+Colors carry semantic meaning, not decoration. The palette mirrors
+Bastion Watch (the supervisor dashboard) so an operator who already
+reads Vauban dashboards reads Inspect Capture without retraining.
+
+| Visual cue                  | Meaning                                |
+|-----------------------------|----------------------------------------|
+| amber (rows)                | `Cmd` -- state-changing intent         |
+| rose (rows)                 | `Exception` -- negative / busy / unknown |
+| blue (rows)                 | `Read` -- observation                  |
+| neutral gray (rows)         | `Tcp` control / handshake              |
+| amber border-l on the row   | EWS -> asset direction                 |
+| emerald border-l on the row | asset -> EWS direction                 |
+| persistent amber banner     | Replay-safety notice (read-only view)  |
+
+### 6.3 Responsive
+
+Mobile-first. The shell uses a `grid-cols-1 lg:grid-cols-12`
+layout: panes stack on phones, sit side-by-side on desktop. Every
+top-level container in every Inspect partial carries at least one
+Tailwind breakpoint class; this is pinned by a CI lint so a
+regression cannot ship.
+
+### 6.4 Tree<->Hex Contract
+
+The bidirectional highlight is the analyzer's signature feature:
+hovering a parsed field in the tree highlights the corresponding
+bytes in the hex dump, and vice versa. The contract is:
+
+- The dissector is the single source of truth for `field_id`s and
+  byte offsets; both the tree partial and the hex partial render
+  `data-field=` from the view-model only (no literal field ids in
+  templates).
+- The `byte_field_ids` map produced by the analyzer covers every
+  byte of the payload exactly once (partition invariant).
+
+A CI lint and the partition test pin both halves so the highlight
+cannot silently misalign.
+
+---
+
+## 7. Resource Bounds & Resilience
+
+The analyzer is invoked on operator-supplied inputs (a UUID and a
+filter combination); the underlying artefacts are themselves
+operator-recorded. Three hard caps prevent a malicious or
 mis-truncated PCAP from exhausting memory:
 
-| Constant                  | Value | Purpose |
-|---------------------------|-------|---------|
-| `MAX_RECORD_LEN`          | 64 KB | reject pcap records claiming more than 64 KB on the wire |
-| `MAX_RECORDS_PER_CHANNEL` | 200_000 | hard ceiling on the number of frames the analyzer will materialise |
-| `MAX_DECOMPRESSED_BYTES`  | 256 MB | gunzip output cap |
+| Bound                     | Purpose |
+|---------------------------|---------|
+| Per-record size cap       | Reject impossibly large pcap records before allocation |
+| Per-channel record cap    | Hard ceiling on the number of frames the analyzer materialises in one pass |
+| Decompressed bytes cap    | Limit gunzip output for a single channel |
 
-Beyond these caps the parser returns `ParserError::TooLarge` and the
-handler collapses to the generic 404. The recording itself is not
-corrupted -- the operator falls back to the offline Wireshark workflow
-for these (rare) edge cases.
+Beyond these caps the parser returns a typed `TooLarge` error and
+the handler falls back to the generic 404. The recording itself is
+not corrupted -- the operator is invited to use the offline
+Wireshark workflow on those (rare) edge cases.
 
-## 6. Dissectors
+The same statelessness that makes the surface trivial to reason
+about also makes it trivial to recover from: there is no cache to
+invalidate, no worker to restart, no migration to run. If a
+deployment ships a fix, every subsequent request picks it up.
 
-Three dissectors ship in v1.0; the dispatcher in
-`services::iacs_packet_analyzer::dissectors::dissect` chooses based on
-the `industrial_protocol` column on the `proxy_sessions` row (mapped to
-`shared::iacs_protocol::ExpectedProfile`).
+---
 
-### 6.1 Modbus/TCP
+## 8. Threat Model
 
-Parses the MBAP header (Transaction ID, Protocol ID, Length, Unit ID)
-and the function code. Function-code classification:
+| Threat                                                         | Mitigation |
+|----------------------------------------------------------------|------------|
+| Non-admin enumerates session UUIDs via `/inspect*`             | Casbin `admin:view` (route layer + handler) + generic 404 on every "not eligible" path |
+| Crafted PCAP claiming a 4 GB record                            | Per-record / per-channel / decompressed-bytes caps |
+| Truncated or corrupt PCAP                                      | Typed parser error -> generic 404; the worker is never crashed |
+| Asymmetric channel fools the direction classifier              | First-SYN priority + canonical client/server tuple; fallback heuristic only for late-joining frames |
+| Operator clicks Inspect on a still-recording session           | `recording_finalized_at IS NULL` -> generic 404; no partially-written file is ever read |
+| XSS via inline `<script>`                                      | CI lint forbids any `<script>` in Inspect templates; CSP `script-src` does not allow `'unsafe-inline'` |
+| Supervisor FD exhaustion via poll-storm                        | One `meta.json` FD + one channel PCAP FD per request, dropped synchronously; no long-lived FD |
+| Tree<->hex highlight desynchronised (wrong byte highlighted)   | Dissector is the only source of truth for `field_id` + offsets; partition invariant pinned by tests + lint |
+| Replay against a live asset                                    | Inspect Capture is read-only; no upstream socket is ever opened from this surface |
 
-| FC                   | PacketKind  |
-|----------------------|-------------|
-| 1, 2, 3, 4 (reads)   | `Read`      |
-| 5, 6, 15, 16, 22, 23 | `Cmd`       |
-| FC with 0x80 bit set | `Exception` (with mapped exception label) |
+The replay-safety doctrine is reasserted in two places: the
+persistent banner on the page, and the structural absence of any
+upstream-network code in the analyzer module. Inspect Capture
+**cannot** replay; the only output of every handler is HTML.
 
-Request and response framings differ; the dissector renders the
-appropriate sub-tree for each leg using the canonical
-`ChannelEndpoints::direction_of` decision. This is what gives the
-operator a one-line "Write Single Register addr=0x10 val=0x4242" or
-"Read Holding Registers addr=0x00 qty=10" instead of "FC06 = some bytes".
+---
 
-### 6.2 IEC 60870-5-104
+## 9. Limitations & Future Work
 
-Parses the APCI start byte, length, and frame format (I-frame /
-S-frame / U-frame). For I-frames the dissector reads the ASDU Type ID
-and Cause of Transmission and classifies:
+- **Protocol coverage.** v1.0 ships dissectors for Modbus/TCP and
+  IEC-60870-5-104. OPC-UA Binary and PROFINET DCE/RPC are next
+  candidates; until they ship, those captures fall back to
+  `passthrough`.
+- **TCP cross-segment reassembly.** Industrial frames are
+  mono-segment in 99%+ of observed flows; the analyzer therefore
+  dissects per-segment. A reassembly pass is a future addition.
+- **Filter expressiveness.** Filters are bounded to direction, kind,
+  and free-text search on summaries. BPF-style expressions are
+  intentionally out of scope for v1.0.
+- **Live tail.** The analyzer operates exclusively on finalized
+  recordings; the channel PCAP is gzipped only at channel close.
+  Live streaming of in-flight industrial traffic would require a
+  different surface.
+- **Filtered export.** Exporting a sub-PCAP that matches the current
+  filter is a natural extension; v1.0 keeps the surface read-only.
 
-| ASDU type / COT                             | PacketKind   |
-|---------------------------------------------|--------------|
-| Monitoring direction (M_*) / spontaneous COT| `Read`       |
-| Control direction (C_*) / activation COT    | `Cmd`        |
-| Negative COT (deactivation / activation NACK) / unknown type | `Exception` |
+---
 
-U-frames (STARTDT/STOPDT/TESTFR) and S-frames are classified `Tcp` --
-they carry no application payload.
+## Appendix A -- Module Layout
 
-### 6.3 Passthrough
+```
+vauban-web/src/services/iacs_packet_analyzer/
+    parser.rs               libpcap + etherparse decode (inverse of audit's synthesiser)
+    flow.rs                 canonical client/server endpoint inference
+    dissectors/
+        mod.rs              registry, classification contract
+        modbus.rs           Modbus/TCP
+        iec104.rs           IEC 60870-5-104
+        passthrough.rs      conservative fallback (never `Cmd`)
+    types.rs                PacketSummary, FieldNode, filters, paging
+    mod.rs                  analyze_channel, page_summaries, analyze_packet
 
-Fallback for OPC-UA, PROFINET, BACnet/SC, MQTT/TLS, DNP3 and any
-unrecognised industrial protocol. The MVP does NOT decode these; it
-surfaces:
+vauban-web/src/handlers/web/sessions.rs
+    resolve_inspect_target  shared admin gate + DB lookup + anti-enumeration
+    inspect_capture         shell page (initial paint)
+    inspect_capture_packet_list    list fragment (HTMX)
+    inspect_capture_packet_detail  detail fragment (HTMX)
 
-- Total payload byte count.
-- ASCII preview of the first ~32 bytes.
-- A single `tcp.payload` field in the tree.
+vauban-web/src/templates/sessions/inspect_capture.rs
+                            view-models (recursive tree flattened for Askama)
 
-`PacketKind` is **always** `Read` -- a safe default that never
-mis-attributes a write to an asset for a protocol the analyzer cannot
-parse. The "Cmd" filter therefore returns 0 results on a Passthrough
-capture; Wireshark remains the right tool for those flows.
+vauban-web/templates/sessions/inspect/
+    shell.html              page shell, 3-pane responsive grid
+    _channel_selector.html  HTMX tabs (no JS state)
+    _filter_chips.html      direction / kind / search
+    _packet_list.html       filtered, paginated list
+    _packet_detail.html     dissection tree + Alpine highlight
+    _hex_dump.html          hex dump with `data-field=` per byte
+```
 
-## 7. UI / UX contract
+Storage layout follows the recording bundle (cf. *Session Recording
+Architecture* Appendix A); Inspect Capture writes nothing.
 
-The page is server-rendered Askama. Three areas:
+---
 
-1. **Header strip**: breadcrumbs, recording metadata (asset, EWS, channel
-   count, total bytes), and a persistent **replay-safety banner** ("This
-   is a read-only forensic view; no traffic is replayed to the asset").
-2. **Channel selector + filter chips**: tabs for each channel (HTMX
-   `hx-get` with `hx-include="#inspect-filters"`); direction / kind
-   radio chips; debounced search box (300 ms).
-3. **3-pane responsive grid** (`grid-cols-1` mobile, `lg:grid-cols-12`
-   desktop): packet list (5 cols), dissection tree + hex dump (7 cols).
-   On mobile the panes stack; the detail pane scrolls into view when a
-   row is tapped.
+## Appendix B -- API Surface
 
-Color coding (Tailwind):
+| Method | Path                                                              | Purpose |
+|--------|-------------------------------------------------------------------|---------|
+| GET    | `/sessions/recordings/{uuid}/inspect`                             | Initial full-page paint |
+| GET    | `/sessions/recordings/{uuid}/inspect/channels/{n}/packets`        | List fragment (HTMX) |
+| GET    | `/sessions/recordings/{uuid}/inspect/channels/{n}/packets/{idx}`  | Detail fragment (HTMX) |
 
-| Class                                   | Meaning                          |
-|-----------------------------------------|----------------------------------|
-| `bg-amber-50 text-amber-900` (row)      | `Cmd` packets                    |
-| `bg-rose-50 text-rose-900` (row)        | `Exception` packets              |
-| `bg-blue-50 text-blue-900` (row)        | `Read` packets                   |
-| `bg-gray-50 text-gray-700` (row)        | `Tcp` (control) packets          |
-| `bg-emerald-100 text-emerald-900` (chip)| highlighted (Alpine `x-data`)    |
+Channel index `n` and frame index `idx` are 1-based; `idx == 0` is
+rejected with the generic 404. The shell page auto-loads the first
+frame of the first channel via HTMX so the operator lands on a
+populated view without a second click.
 
-### 7.1 No JavaScript except a 12-line Alpine `x-data`
+List query parameters:
 
-The hard rule: no inline `<script>` tag anywhere under
-`templates/sessions/inspect/`. The interactivity ladder is:
+| Name        | Type   | Notes |
+|-------------|--------|-------|
+| `direction` | enum   | `ews_to_asset` or `asset_to_ews` |
+| `kind`      | enum   | `tcp` / `read` / `cmd` / `exception` |
+| `q`         | string | free-text, case-insensitive, matched against the dissector summary |
+| `page`      | int    | 1-based |
+| `page_size` | int    | clamped to a service-side maximum |
 
-- **HTMX** for filter changes, pagination, channel switch, packet
-  selection, and the auto-load-on-shell.
-- **Alpine.js** declarative bindings only. The dissection tree and the
-  hex dump share a single `x-data="{ highlight: null }"` scope; each
-  tree node carries `data-field="<id>"` and emits
-  `@mouseenter="highlight='<id>'"`, the matching hex byte gets a
-  conditional class. Bidirectional. ~10 lines of Alpine, declarative,
-  no `eval()`, CSP-compatible.
-- **Server-rendered tree**. The `FieldNode` is recursive in Rust but
-  flattened to a `TreeRowViewModel { depth, indent_px, ... }` list
-  before reaching the template, because Askama refuses unbounded
-  template recursion (`#include` + `with` does not converge -- it
-  triggers a `SIGBUS` at template-expansion time).
+URL state is pushed via `hx-push-url`; the back/forward buttons
+restore the previous filter combination.
 
-This is enforced by the lint
-`scripts/check_inspect_capture_no_inline_script.sh` and the
-template-test `templates_carry_no_inline_script_tag`.
+---
 
-### 7.2 Responsive
+## Appendix C -- Related Documents
 
-Mobile-first: every top-level container in the inspect partials carries
-at least one Tailwind breakpoint class (`sm:`, `md:`, `lg:`, `xl:`).
-Pinned by `scripts/check_inspect_capture_responsive.sh`.
+| Document | Relevance |
+|----------|-----------|
+| [Session Recording Architecture](Vauban_Recording_Architecture_EN(1.5).md) | PCAP file format, `meta.json`, integrity hash, FD broker contract |
+| [IACS Proxy Architecture](Vauban_IACS_Proxy_Architecture_EN(1.0).md) | Upstream proxy that produced the PCAP; protocol gates |
+| [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.2).md) | Supervisor FD broker, Capsicum sandboxing |
+| [IAM Architecture](Vauban_IAM_Architecture_EN(1.0).md) | Casbin / `PermissionContext`, three-layer authorization |
 
-### 7.3 Tree<->hex contract
+---
 
-The bidirectional highlight binds tree nodes and hex bytes by the
-shared `field_id` string. The dissectors emit `field_id`s; the
-view-model carries them; both partials reference them dynamically (no
-literal `data-field="..."` hardcoded in templates). Pinned by
-`scripts/check_inspect_capture_field_offsets.sh` and the template-tests
-`packet_detail_carries_data_field_attributes_*`.
+## Appendix D -- Changelog
 
-## 8. Battle-tested invariants
+This appendix is informational; the current sections describe the
+*current* architecture.
 
-The analyzer is a forensic surface; mis-rendering is worse than no
-rendering. Five invariants are pinned by tests and CI:
+### 1.0 (25 May 2026)
 
-1. **The dissector dispatch is exhaustive on `ExpectedProfile`.** Any
-   new variant in `shared::iacs_protocol::ExpectedProfile` must be
-   classified -- the `match` is non-`_` and the build fails on a
-   missing arm.
-2. **Frame indexing is dense and 1-based.** `analyze_channel_bytes`
-   returns one summary per record; the indexer cannot skip frames.
-   Pinned by
-   `inspect_capture_pipeline_e2e_test::analyze_channel_emits_one_summary_per_record`.
-3. **Byte-to-field map is a partition.** Every dissection-tree leaf's
-   `[offset, offset+length)` range maps to its `field_id` in
-   `byte_field_ids`; ranges never overlap. Pinned by
-   `analyze_packet_bytes_byte_field_ids_partitions_payload`.
-4. **Passthrough never returns `PacketKind::Cmd`.** A protocol the
-   analyzer cannot parse must not be misclassified. Pinned by
-   `passthrough::tests::passthrough_never_returns_cmd`.
-5. **Anti-enumeration funnels through `resolve_inspect_target`.** All
-   three handlers go through the same DB lookup + IACS-only +
-   finalized-only check; out-of-band conditions return the same generic
-   404. Pinned by `handlers_funnel_through_resolve_inspect_target`.
-
-## 9. Threat model
-
-| Threat                                                                | Mitigation |
-|-----------------------------------------------------------------------|------------|
-| Non-admin enumerates session UUIDs via `/inspect`                     | Casbin `admin:view` + generic 404 on every "not eligible" path |
-| Malicious PCAP with 4 GB record claim                                 | `MAX_RECORD_LEN` (64 KB), `MAX_RECORDS_PER_CHANNEL` (200_000), `MAX_DECOMPRESSED_BYTES` (256 MB) |
-| Truncated / corrupt PCAP                                              | Parser returns `ParserError::Truncated`; handler returns generic 404 (never crashes the worker) |
-| Direction inference fooled by an asymmetric channel                   | First-SYN priority + canonical (`client`, `server`) tuple from `meta.json`; fallback heuristic only for late-joining frames |
-| Operator clicks "Inspect" on a still-recording session                | `recording_finalized_at IS NULL` -> generic 404. Avoids reading a partially-written file. |
-| XSS / inline script injection                                         | Lint forbids `<script>` under `templates/sessions/inspect/`; CSP `script-src` does not allow `'unsafe-inline'` |
-| FD exhaustion on the supervisor by a poll-storm                       | Each handler call performs ONE `meta.json` fetch + ONE channel PCAP fetch + drops both FDs synchronously |
-| Tree<->hex desynchronisation (highlight points at the wrong byte)     | Dissector emits `field_id` + absolute offset; analyzer constructs `byte_field_ids` from the same offset; pinned by partition test |
-
-## 10. Test coverage
-
-Service / parser / dissector layer (inline `mod tests` in each module,
-fixtures generated by `vauban-audit::iacs_pcap_synth`):
-
-- `parser.rs`: round-trip through synthetic Modbus + IEC-104 captures,
-  IPv6 support, payload-offset, TCP flag labels, truncated-record and
-  corrupt-magic rejections, oversize-record rejection.
-- `flow.rs`: SYN-priority endpoint inference, fallback on missing SYN,
-  direction classification on subsequent records.
-- `dissectors/modbus.rs`: FC1-FC23 classification, exception bit,
-  request vs response framing, summary string format, field-offset
-  accuracy.
-- `dissectors/iec104.rs`: I-frame vs S-frame vs U-frame, Type ID and
-  COT label, classify-as-`Cmd` on activation COT, classify-as-`Exception`
-  on negative COT.
-- `dissectors/passthrough.rs`: never-`Cmd`, ASCII preview, panic-free on
-  arbitrary bytes.
-- `iacs_packet_analyzer/mod.rs::tests`: `analyze_channel_bytes`,
-  `page_summaries` filter (direction, kind, search) and pagination,
-  `analyze_packet_bytes` detail view, `build_byte_field_map` partition.
-
-Handler / template layer
-(`vauban-web/tests/web/inspect_capture*_test.rs`):
-
-- Pin tests on `inspect_capture`, `inspect_capture_packet_list`,
-  `inspect_capture_packet_detail`: admin gate, anti-enumeration funnel,
-  filter wiring, `frame_idx == 0` rejection, route mounting in
-  `main.rs`.
-- Template tests: HTMX wiring (`hx-get`/`-target`/`-swap`/`-include`/
-  `-push-url`/debounce), color classes, replay-safety banner, no
-  inline `<script>`, responsive grid, tree<->hex `data-field`
-  contract, Alpine `x-data` highlight.
-- Recording detail / list visibility: button visible for IACS sessions,
-  hidden for SSH / RDP, hidden for non-finalized recordings.
-
-Pipeline E2E (`inspect_capture_pipeline_e2e_test.rs`):
-
-- Generate a real Modbus + IEC-104 PCAP via `iacs_pcap_synth`, feed it
-  through `analyze_channel_bytes` + `analyze_packet_bytes`, assert
-  packet count, classification, direction, dense indexing, and the
-  byte-to-field partition.
-
-CI lint scripts:
-
-- `scripts/check_inspect_capture_no_inline_script.sh`
-- `scripts/check_inspect_capture_responsive.sh`
-- `scripts/check_inspect_capture_field_offsets.sh`
-
-## 11. Source of truth
-
-- Service: `vauban-web/src/services/iacs_packet_analyzer/` (parser,
-  flow, dissectors, mod).
-- Handlers: `vauban-web/src/handlers/web/sessions.rs`
-  (`resolve_inspect_target`, `inspect_capture*`).
-- Routes: `vauban-web/src/main.rs`
-  (`/sessions/recordings/{uuid}/inspect*`, behind
-  `require_admin_view`).
-- View-models: `vauban-web/src/templates/sessions/inspect_capture.rs`
-  (`InspectCaptureViewModel`, `PacketListViewModel`,
-  `PacketDetailViewModel`, `flatten_tree`).
-- Templates: `vauban-web/templates/sessions/inspect/*.html` (shell,
-  channel selector, filter chips, packet list, packet detail, hex
-  dump).
-- Fixtures: `vauban-audit::iacs_pcap_synth` (the inverse of this
-  analyzer; same byte format).
-- Companion docs:
-  - `Vauban_Recording_Architecture_EN(1.5).md` -- PCAP file format,
-    `meta.json`, integrity hash, FD broker contract.
-  - `Vauban_IACS_Proxy_Architecture_EN(1.0).md` -- upstream proxy
-    that produced the PCAP.
-  - `Vauban_Privsep_Architecture_EN(1.2).md` -- supervisor FD broker.
+- Initial release alongside Vauban 0.7.21.
+- In-browser PCAP analyzer with Modbus/TCP and IEC-60870-5-104
+  dissectors and a conservative passthrough fallback.
+- `admin:view` route layer + handler re-check + anti-enumeration
+  funnel.
+- Server-rendered HTMX + Tailwind UI; declarative Alpine binding
+  for the tree<->hex highlight; no inline JavaScript.
+- Hard caps on per-record size, per-channel record count, and
+  decompressed bytes; statelessly re-parsed on every request.
+- Recording List and Recording Details surface a contextual
+  Inspect action on finalized IACS recordings.
