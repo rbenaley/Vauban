@@ -215,22 +215,25 @@ broker_timeout_secs = 30
 # ==============================================================================
 
 [recording]
-# Master switch for session recording.
 enabled = true
-# Directory where recordings are stored (fMP4, asciicast, IACS PCAP bundles).
 storage_path = "recordings"
+recording_daily_cron_timezone = "Europe/Brussels"
+
+# Per-protocol switches; require enabled = true to take effect.
 rdp = true
 ssh = true
 iacs = true
 
-# Retention reaper (TOML-only; no web UI or API). Deletes disk via
-# supervisor IPC and clears recording columns in proxy_sessions.
-recording_daily_cron_timezone = "Europe/Brussels"
+# Hydrator
 hydration_daily_cron_hour = 4
-retention_daily_cron_hour = 5         # 05:00 Europe/Brussels (after hydrator)
+hydration_enqueue_delay_secs = 5
+hydration_missing_meta_grace_secs = 300
+
+# Retention reaper
+retention_daily_cron_hour = 5
 retention_enabled = true
 retention_days = 365
-retention_max_size_gib = 0          # 0 = unlimited
+retention_max_size_gib = 0       # 0 = unlimited
 retention_batch_size = 50
 
 # ==============================================================================

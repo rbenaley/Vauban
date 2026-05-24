@@ -921,6 +921,7 @@ tunnel never spans two month folders.
 [recording]
 enabled = true
 storage_path = "/var/db/vauban/recordings"
+recording_daily_cron_timezone = "Europe/Brussels"
 
 # Per-protocol switches; require enabled = true to take effect.
 rdp = true
@@ -928,12 +929,11 @@ ssh = true
 iacs = true
 
 # Hydrator
+hydration_daily_cron_hour = 4
 hydration_enqueue_delay_secs = 5
 hydration_missing_meta_grace_secs = 300
 
 # Retention reaper
-recording_daily_cron_timezone = "Europe/Brussels"
-hydration_daily_cron_hour = 4
 retention_daily_cron_hour = 5
 retention_enabled = true
 retention_days = 365
