@@ -217,12 +217,11 @@ broker_timeout_secs = 30
 [recording]
 # Master switch for session recording.
 enabled = true
-# Directory where fMP4 recordings and BLAKE3 integrity files are stored.
-# In development, relative to workspace root. In production, absolute path.
+# Directory where recordings are stored (fMP4, asciicast, IACS PCAP bundles).
 storage_path = "recordings"
-# Per-protocol recording flags.
 rdp = true
 ssh = true
+iacs = true
 
 # Retention reaper (TOML-only; no web UI or API). Deletes disk via
 # supervisor IPC and clears recording columns in proxy_sessions.

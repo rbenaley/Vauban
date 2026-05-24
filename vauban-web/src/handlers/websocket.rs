@@ -1839,7 +1839,7 @@ async fn handle_terminal_socket(
         use diesel_async::RunQueryDsl;
 
         let now = chrono::Utc::now();
-        let is_recording = state.config.recording.enabled && state.config.recording.ssh;
+        let is_recording = state.config.recording.ssh_recording_enabled();
 
         if let Ok(mut conn) = state.db_pool.get().await {
             use crate::schema::proxy_sessions::dsl;
@@ -2240,7 +2240,7 @@ async fn handle_rdp_socket(
         use diesel_async::RunQueryDsl;
 
         let now = chrono::Utc::now();
-        let is_recording = state.config.recording.enabled;
+        let is_recording = state.config.recording.rdp_recording_enabled();
 
         if let Ok(mut conn) = state.db_pool.get().await {
             use crate::schema::proxy_sessions::dsl;

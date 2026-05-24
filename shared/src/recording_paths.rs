@@ -39,6 +39,26 @@ fn validate_recording_relative_structure(relative_path: &str) -> Result<(), Stri
     Ok(())
 }
 
+/// Validate gzip source/destination paths for IACS PCAP recording.
+pub fn validate_recording_gzip_relative_paths(
+    src_relative: &str,
+    dst_relative: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    validate_recording_relative_structure(src_relative)?;
+    validate_recording_relative_structure(dst_relative)?;
+    if !src_relative.contains(session_id) || !dst_relative.contains(session_id) {
+        return Err("gzip paths must contain session_id".into());
+    }
+    if !src_relative.ends_with(".pcap") {
+        return Err("gzip source must be a .pcap file".into());
+    }
+    if !dst_relative.ends_with(".pcap.gz") {
+        return Err("gzip destination must be a .pcap.gz file".into());
+    }
+    Ok(())
+}
+
 /// Validate a relative path before the supervisor deletes anything on disk.
 pub fn validate_recording_delete_relative_path(
     relative_path: &str,

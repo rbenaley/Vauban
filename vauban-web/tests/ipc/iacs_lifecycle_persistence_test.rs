@@ -222,6 +222,8 @@ async fn persist_tunnel_closed_flips_tunnel_active_to_terminated() {
         vauban_web::ipc::proxy_iacs::persist_tunnel_closed(
             &app.db_pool,
             &session_uuid.to_string(),
+            false,
+            "",
         )
         .await
     );
@@ -258,6 +260,8 @@ async fn persist_tunnel_closed_handles_waiting_client_orphan() {
         vauban_web::ipc::proxy_iacs::persist_tunnel_closed(
             &app.db_pool,
             &session_uuid.to_string(),
+            false,
+            "",
         )
         .await
     );
@@ -292,6 +296,8 @@ async fn persist_tunnel_closed_is_idempotent() {
         vauban_web::ipc::proxy_iacs::persist_tunnel_closed(
             &app.db_pool,
             &session_uuid.to_string(),
+            false,
+            "",
         )
         .await
     );
@@ -301,6 +307,8 @@ async fn persist_tunnel_closed_is_idempotent() {
         vauban_web::ipc::proxy_iacs::persist_tunnel_closed(
             &app.db_pool,
             &session_uuid.to_string(),
+            false,
+            "",
         )
         .await
     );
@@ -329,8 +337,13 @@ async fn persist_helpers_reject_invalid_session_uuid() {
     .await;
     assert!(active_err.is_err());
 
-    let closed_err =
-        vauban_web::ipc::proxy_iacs::persist_tunnel_closed(&app.db_pool, "not-a-uuid").await;
+    let closed_err = vauban_web::ipc::proxy_iacs::persist_tunnel_closed(
+        &app.db_pool,
+        "not-a-uuid",
+        false,
+        "",
+    )
+    .await;
     assert!(closed_err.is_err());
 }
 
@@ -353,7 +366,8 @@ async fn persist_helpers_return_false_on_unknown_uuid() {
     assert!(!active);
 
     let closed = unwrap_ok!(
-        vauban_web::ipc::proxy_iacs::persist_tunnel_closed(&app.db_pool, &unknown).await
+        vauban_web::ipc::proxy_iacs::persist_tunnel_closed(&app.db_pool, &unknown, false, "")
+            .await
     );
     assert!(!closed);
 }

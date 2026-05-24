@@ -716,23 +716,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Create IACS proxy client if running under supervisor (Lot 3:
-    // per-asset target resolution).
+    // per-asset target resolution). IPC processing starts after
+    // `AppState` is built so tunnel-close can enqueue hydration.
     let proxy_iacs = init_iacs_proxy_client();
-
-    if let Some(ref client) = proxy_iacs {
-        let client_clone = Arc::clone(client);
-        let broadcast_for_iacs = broadcast.clone();
-        let pool_for_iacs = db_pool.clone();
-        tokio::spawn(async move {
-            if let Err(e) = client_clone
-                .process_incoming_with_state(broadcast_for_iacs, pool_for_iacs)
-                .await
-            {
-                tracing::error!(error = %e, "IACS proxy IPC processing task failed");
-            }
-        });
-        tracing::info!("IACS proxy IPC processing task started");
-    }
 
     // Create vault crypto client if running under supervisor
     let vault_client = init_vault_client();
@@ -834,6 +820,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         system_health_cache,
         iacs_tunnel_registry: vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
     };
+
+    if let Some(ref client) = app_state.proxy_iacs {
+        let client_clone = Arc::clone(client);
+        let state_for_iacs = app_state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = client_clone
+                .process_incoming_with_state(
+                    state_for_iacs.broadcast.clone(),
+                    state_for_iacs.db_pool.clone(),
+                    state_for_iacs,
+                )
+                .await
+            {
+                tracing::error!(error = %e, "IACS proxy IPC processing task failed");
+            }
+        });
+        tracing::info!("IACS proxy IPC processing task started");
+    }
 
     // === Lot 5: legacy in-process IACS sshd is deprecated in favour
     // of the privileged-separated `vauban-proxy-iacs` service.

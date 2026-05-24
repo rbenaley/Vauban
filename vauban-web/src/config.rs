@@ -559,6 +559,7 @@ impl Default for WebSocketConfig {
 /// Session recording configuration.
 #[derive(Clone, Deserialize)]
 pub struct RecordingConfig {
+    /// Master switch for session recording (all protocols).
     #[serde(default = "default_recording_enabled")]
     pub enabled: bool,
     #[serde(default = "default_recording_storage_path")]
@@ -567,6 +568,9 @@ pub struct RecordingConfig {
     pub rdp: bool,
     #[serde(default = "default_recording_enabled")]
     pub ssh: bool,
+    /// Enable recording of IACS tunnel sessions (PCAP bundle).
+    #[serde(default = "default_recording_enabled")]
+    pub iacs: bool,
     /// Enable the recording integrity hydrator (bootstrap at boot +
     /// per-call-site enqueue + daily reconciliation cron). Default
     /// true. When false, the Recording Details page falls back to
@@ -677,6 +681,18 @@ fn default_retention_daily_cron_hour() -> u8 {
 }
 
 impl RecordingConfig {
+    pub fn rdp_recording_enabled(&self) -> bool {
+        self.enabled && self.rdp
+    }
+
+    pub fn ssh_recording_enabled(&self) -> bool {
+        self.enabled && self.ssh
+    }
+
+    pub fn iacs_recording_enabled(&self) -> bool {
+        self.enabled && self.iacs
+    }
+
     /// Resolve [`recording_daily_cron_timezone`] into a typed IANA zone.
     pub fn daily_cron_timezone(&self) -> Result<chrono_tz::Tz, String> {
         crate::middleware::browser_tz::parse_browser_tz(&self.recording_daily_cron_timezone)
@@ -741,6 +757,7 @@ impl Default for RecordingConfig {
             storage_path: default_recording_storage_path(),
             rdp: default_recording_enabled(),
             ssh: default_recording_enabled(),
+            iacs: default_recording_enabled(),
             hydration_enabled: default_recording_enabled(),
             hydration_batch_size: default_hydration_batch_size(),
             hydration_missing_meta_grace_secs: default_hydration_missing_meta_grace_secs(),

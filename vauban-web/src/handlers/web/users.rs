@@ -2653,22 +2653,20 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
 
         // Check if recording is enabled for this session type
         let is_recording = match session.session_type {
-            SessionType::Ssh => state.config.recording.enabled && state.config.recording.ssh,
-            SessionType::Rdp => state.config.recording.enabled,
-            // IACS tunnels are never recorded.
-            SessionType::IacsTunnel => false,
+            SessionType::Ssh => state.config.recording.ssh_recording_enabled(),
+            SessionType::Rdp => state.config.recording.rdp_recording_enabled(),
+            SessionType::IacsTunnel => state.config.recording.iacs_recording_enabled(),
         };
 
         // Set recording_path + is_recorded in the same UPDATE that sets "terminated",
         // because the WebSocket cleanup handler filters on status IN ('active','connecting')
         // and would skip sessions already marked "terminated".
         if is_recording {
-            let recording_path = format!(
-                "{}/{}/{:02}/{}/",
-                state.config.recording.storage_path,
-                now.format("%Y"),
-                now.format("%m"),
-                session_uuid_str,
+            let path_anchor = session.connected_at.unwrap_or(now);
+            let recording_path = crate::services::recording_hydrator::recording_dir_for_session(
+                &state.config.recording.storage_path,
+                &session_uuid_str,
+                path_anchor,
             );
             let _ = diesel::update(proxy_sessions::table.filter(proxy_sessions::id.eq(session.id)))
                 .set((

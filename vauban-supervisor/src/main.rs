@@ -2712,6 +2712,132 @@ fn handle_recording_file_request(
         });
 }
 
+/// Gzip a PCAP recording file and remove the raw source (root-only).
+fn handle_recording_file_gzip_request(
+    request_id: u64,
+    session_id: &str,
+    src_relative: &str,
+    dst_relative: &str,
+    storage_base: &str,
+    requester_state: &ChildState,
+) {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::{Read, Write};
+
+    let fail = |error: String| {
+        let _ = requester_state
+            .channel
+            .send(&Message::RecordingFileGzipResponse {
+                request_id,
+                session_id: session_id.to_string(),
+                success: false,
+                dst_size: 0,
+                blake3_hex: None,
+                error: Some(error),
+            });
+    };
+
+    if let Err(e) =
+        shared::recording_paths::validate_recording_gzip_relative_paths(
+            src_relative,
+            dst_relative,
+            session_id,
+        )
+    {
+        fail(e);
+        return;
+    }
+
+    let src_path = std::path::Path::new(storage_base).join(src_relative);
+    let dst_path = std::path::Path::new(storage_base).join(dst_relative);
+
+    if let Some(parent) = dst_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        error!(session_id, error = %e, "Failed to create gzip destination directory");
+        fail(format!("mkdir: {e}"));
+        return;
+    }
+
+    let mut src_file = match std::fs::File::open(&src_path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!(session_id, path = %src_path.display(), error = %e, "Failed to open PCAP for gzip");
+            fail(format!("open src: {e}"));
+            return;
+        }
+    };
+
+    let dst_file = match std::fs::File::create(&dst_path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!(session_id, path = %dst_path.display(), error = %e, "Failed to create gzip destination");
+            fail(format!("create dst: {e}"));
+            return;
+        }
+    };
+
+    let mut encoder = GzEncoder::new(dst_file, Compression::default());
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match src_file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if let Err(e) = encoder.write_all(&buf[..n]) {
+                    fail(format!("gzip write: {e}"));
+                    let _ = std::fs::remove_file(&dst_path);
+                    return;
+                }
+            }
+            Err(e) => {
+                fail(format!("read src: {e}"));
+                let _ = std::fs::remove_file(&dst_path);
+                return;
+            }
+        }
+    }
+
+    if let Err(e) = encoder.finish() {
+        fail(format!("gzip finish: {e}"));
+        let _ = std::fs::remove_file(&dst_path);
+        return;
+    }
+
+    let dst_bytes = match std::fs::read(&dst_path) {
+        Ok(b) => b,
+        Err(e) => {
+            fail(format!("read dst: {e}"));
+            return;
+        }
+    };
+    let dst_size = dst_bytes.len() as u64;
+    let blake3_hex = blake3::hash(&dst_bytes).to_hex().to_string();
+
+    if let Err(e) = std::fs::remove_file(&src_path) {
+        error!(session_id, path = %src_path.display(), error = %e, "Failed to unlink raw PCAP after gzip");
+        fail(format!("unlink src: {e}"));
+        let _ = std::fs::remove_file(&dst_path);
+        return;
+    }
+
+    debug!(
+        session_id,
+        src = %src_relative,
+        dst = %dst_relative,
+        dst_size,
+        "Recording PCAP gzipped"
+    );
+    let _ = requester_state.channel.send(&Message::RecordingFileGzipResponse {
+        request_id,
+        session_id: session_id.to_string(),
+        success: true,
+        dst_size,
+        blake3_hex: Some(blake3_hex),
+        error: None,
+    });
+}
+
 /// Poll all service channels and process incoming messages.
 ///
 /// Handles TcpConnectRequest (proxies and web/mailer), RecordingFileRequest (audit),
@@ -2831,6 +2957,29 @@ fn process_service_messages(
                             &session_id,
                             &relative_path,
                             read_only,
+                            recording_storage_path,
+                            state,
+                        );
+                    }
+                    Ok(Message::RecordingFileGzipRequest {
+                        request_id,
+                        session_id,
+                        src_relative,
+                        dst_relative,
+                    }) => {
+                        debug!(
+                            request_id,
+                            session_id = %session_id,
+                            src = %src_relative,
+                            dst = %dst_relative,
+                            "Received RecordingFileGzipRequest from {}",
+                            service_key
+                        );
+                        handle_recording_file_gzip_request(
+                            request_id,
+                            &session_id,
+                            &src_relative,
+                            &dst_relative,
                             recording_storage_path,
                             state,
                         );

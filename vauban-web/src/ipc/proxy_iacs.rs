@@ -111,6 +111,7 @@ pub struct ProxyIacsClient {
     /// integration), the IACS lifecycle was visible only on the
     /// per-session viewer, never on the admin dashboard.
     db_pool: Mutex<Option<DbPool>>,
+    app_state: Mutex<Option<crate::AppState>>,
 }
 
 impl ProxyIacsClient {
@@ -131,6 +132,7 @@ impl ProxyIacsClient {
             pending_open_requests: Mutex::new(HashMap::new()),
             broadcast: Mutex::new(None),
             db_pool: Mutex::new(None),
+            app_state: Mutex::new(None),
         }))
     }
 
@@ -158,6 +160,7 @@ impl ProxyIacsClient {
         self: Arc<Self>,
         broadcast: BroadcastService,
         db_pool: DbPool,
+        app_state: crate::AppState,
     ) -> AppResult<()> {
         {
             let mut slot = self.broadcast.lock().await;
@@ -166,6 +169,10 @@ impl ProxyIacsClient {
         {
             let mut slot = self.db_pool.lock().await;
             *slot = Some(db_pool);
+        }
+        {
+            let mut slot = self.app_state.lock().await;
+            *slot = Some(app_state);
         }
         self.process_incoming().await
     }
@@ -426,8 +433,24 @@ impl ProxyIacsClient {
                     "IACS tunnel closed"
                 );
                 let mut db_persisted = false;
+                let app_state = self.app_state.lock().await.clone();
+                let iacs_recording = app_state
+                    .as_ref()
+                    .map(|s| s.config.recording.iacs_recording_enabled())
+                    .unwrap_or(false);
+                let storage_path = app_state
+                    .as_ref()
+                    .map(|s| s.config.recording.storage_path.as_str())
+                    .unwrap_or("");
                 if let Some(pool) = self.db_pool.lock().await.as_ref() {
-                    match persist_tunnel_closed(pool, &session_id).await {
+                    match persist_tunnel_closed(
+                        pool,
+                        &session_id,
+                        iacs_recording,
+                        storage_path,
+                    )
+                    .await
+                    {
                         Ok(updated) => {
                             if updated {
                                 debug!(
@@ -436,6 +459,22 @@ impl ProxyIacsClient {
                                      flipped to terminated"
                                 );
                                 db_persisted = true;
+                                if iacs_recording
+                                    && let (Some(state), Ok(session_uuid)) = (
+                                        app_state.as_ref(),
+                                        uuid::Uuid::parse_str(&session_id),
+                                    )
+                                {
+                                    std::mem::drop(
+                                        crate::services::recording_hydrator::enqueue_hydration_by_uuid(
+                                            state,
+                                            session_uuid,
+                                            std::time::Duration::from_secs(
+                                                state.config.recording.hydration_enqueue_delay_secs,
+                                            ),
+                                        ),
+                                    );
+                                }
                             } else {
                                 debug!(
                                     session_id = %session_id,
@@ -567,9 +606,16 @@ pub async fn persist_tunnel_active(
 /// Exposed publicly (with `#[doc(hidden)]`) for the integration
 /// suite -- see [`persist_tunnel_active`].
 #[doc(hidden)]
-pub async fn persist_tunnel_closed(pool: &DbPool, session_id: &str) -> AppResult<bool> {
+pub async fn persist_tunnel_closed(
+    pool: &DbPool,
+    session_id: &str,
+    iacs_recording: bool,
+    storage_path: &str,
+) -> AppResult<bool> {
     use crate::schema::proxy_sessions::dsl as ps;
     use diesel::ExpressionMethods;
+    use diesel::OptionalExtension;
+    use diesel::QueryDsl;
     use diesel_async::RunQueryDsl;
 
     let session_uuid = uuid::Uuid::parse_str(session_id)
@@ -581,13 +627,43 @@ pub async fn persist_tunnel_closed(pool: &DbPool, session_id: &str) -> AppResult
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB pool: {}", e)))?;
 
     let now = chrono::Utc::now();
-    let updated = diesel::update(ps::proxy_sessions)
+    let connected_at: Option<chrono::DateTime<chrono::Utc>> = ps::proxy_sessions
         .filter(ps::uuid.eq(session_uuid))
-        .filter(ps::status.eq_any(["waiting_client", "tunnel_active"]))
-        .set((ps::status.eq("terminated"), ps::disconnected_at.eq(now)))
-        .execute(&mut conn)
+        .select(ps::connected_at)
+        .first::<Option<chrono::DateTime<chrono::Utc>>>(&mut conn)
         .await
-        .map_err(AppError::Database)?;
+        .optional()
+        .map_err(AppError::Database)?
+        .flatten();
+
+    let path_anchor = connected_at.unwrap_or(now);
+    let updated = if iacs_recording {
+        let recording_path = crate::services::recording_hydrator::recording_dir_for_session(
+            storage_path,
+            session_id,
+            path_anchor,
+        );
+        diesel::update(ps::proxy_sessions)
+            .filter(ps::uuid.eq(session_uuid))
+            .filter(ps::status.eq_any(["waiting_client", "tunnel_active"]))
+            .set((
+                ps::status.eq("terminated"),
+                ps::disconnected_at.eq(now),
+                ps::is_recorded.eq(true),
+                ps::recording_path.eq(recording_path),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(AppError::Database)?
+    } else {
+        diesel::update(ps::proxy_sessions)
+            .filter(ps::uuid.eq(session_uuid))
+            .filter(ps::status.eq_any(["waiting_client", "tunnel_active"]))
+            .set((ps::status.eq("terminated"), ps::disconnected_at.eq(now)))
+            .execute(&mut conn)
+            .await
+            .map_err(AppError::Database)?
+    };
     Ok(updated > 0)
 }
 

@@ -1219,6 +1219,15 @@ pub enum RdpInputEvent {
     },
 }
 
+/// Direction of a captured IACS relay chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IacsRecordingDirection {
+    /// Bytes flowing from the EWS toward the industrial asset.
+    EwsToAsset,
+    /// Bytes flowing from the asset toward the EWS.
+    AssetToEws,
+}
+
 /// SSH recording event type for asciicast v2 format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SshRecordingEvent {
@@ -1771,6 +1780,45 @@ pub enum Message {
         session_id: String,
     },
 
+    // ========== IACS Recording (ProxyIacs <-> Audit) ==========
+    /// Signal vauban-audit to start recording a new `direct-tcpip` channel.
+    IacsRecordingChannelStart {
+        session_id: String,
+        channel_id: u32,
+        target_host: String,
+        target_port: u16,
+        opened_at_us: u64,
+    },
+
+    /// A batch of relay bytes for one IACS channel (ProxyIacs -> Audit).
+    IacsRecordingData {
+        session_id: String,
+        channel_id: u32,
+        batch_seq: u64,
+        direction: IacsRecordingDirection,
+        timestamp_us: u64,
+        data: Vec<u8>,
+    },
+
+    /// Acknowledgement that a batch has been durably persisted (Audit -> ProxyIacs).
+    IacsRecordingDataAck {
+        session_id: String,
+        channel_id: u32,
+        batch_seq: u64,
+    },
+
+    /// Signal vauban-audit to finalize one channel PCAP (gzip via supervisor).
+    IacsRecordingChannelEnd {
+        session_id: String,
+        channel_id: u32,
+        closed_at_us: u64,
+    },
+
+    /// Signal vauban-audit to finalize the session bundle (`meta.json`).
+    IacsRecordingSessionEnd {
+        session_id: String,
+    },
+
     // ========== Recording File Requests (Service -> Supervisor) ==========
     /// Request the supervisor to open/create a recording file and send its FD
     /// via SCM_RIGHTS. Used by audit (create, write) and web (open, read-only).
@@ -1790,6 +1838,25 @@ pub enum Message {
         request_id: u64,
         session_id: String,
         success: bool,
+        error: Option<String>,
+    },
+
+    /// Request the supervisor to gzip a PCAP file and remove the raw source.
+    /// Used by vauban-audit after a channel closes (Capsicum-safe).
+    RecordingFileGzipRequest {
+        request_id: u64,
+        session_id: String,
+        src_relative: String,
+        dst_relative: String,
+    },
+
+    /// Response to a RecordingFileGzipRequest.
+    RecordingFileGzipResponse {
+        request_id: u64,
+        session_id: String,
+        success: bool,
+        dst_size: u64,
+        blake3_hex: Option<String>,
         error: Option<String>,
     },
 
@@ -3959,6 +4026,176 @@ mod tests {
         let deserialized: Message = deserialize(&serialized);
         if let Message::SshRecordingEnd { session_id } = deserialized {
             assert_eq!(session_id, "ssh-rec-456");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    // ==================== IACS Recording Tests ====================
+
+    #[test]
+    fn test_iacs_recording_direction_roundtrip() {
+        for dir in [
+            IacsRecordingDirection::EwsToAsset,
+            IacsRecordingDirection::AssetToEws,
+        ] {
+            let serialized = serialize(&dir);
+            let deserialized: IacsRecordingDirection = deserialize(&serialized);
+            assert_eq!(dir, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_message_iacs_recording_channel_start_roundtrip() {
+        let msg = Message::IacsRecordingChannelStart {
+            session_id: "iacs-1".to_string(),
+            channel_id: 1,
+            target_host: "plc.local".to_string(),
+            target_port: 502,
+            opened_at_us: 1000,
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        if let Message::IacsRecordingChannelStart {
+            session_id,
+            channel_id,
+            target_host,
+            target_port,
+            opened_at_us,
+        } = deserialized
+        {
+            assert_eq!(session_id, "iacs-1");
+            assert_eq!(channel_id, 1);
+            assert_eq!(target_host, "plc.local");
+            assert_eq!(target_port, 502);
+            assert_eq!(opened_at_us, 1000);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_iacs_recording_data_roundtrip() {
+        let msg = Message::IacsRecordingData {
+            session_id: "iacs-1".to_string(),
+            channel_id: 2,
+            batch_seq: 7,
+            direction: IacsRecordingDirection::EwsToAsset,
+            timestamp_us: 42_000,
+            data: vec![0x00, 0x01, 0x02],
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        if let Message::IacsRecordingData {
+            batch_seq,
+            direction,
+            data,
+            ..
+        } = deserialized
+        {
+            assert_eq!(batch_seq, 7);
+            assert_eq!(direction, IacsRecordingDirection::EwsToAsset);
+            assert_eq!(data, vec![0x00, 0x01, 0x02]);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_iacs_recording_data_ack_roundtrip() {
+        let msg = Message::IacsRecordingDataAck {
+            session_id: "iacs-1".to_string(),
+            channel_id: 2,
+            batch_seq: 7,
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        if let Message::IacsRecordingDataAck {
+            session_id,
+            channel_id,
+            batch_seq,
+        } = deserialized
+        {
+            assert_eq!(session_id, "iacs-1");
+            assert_eq!(channel_id, 2);
+            assert_eq!(batch_seq, 7);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_iacs_recording_channel_end_roundtrip() {
+        let msg = Message::IacsRecordingChannelEnd {
+            session_id: "iacs-1".to_string(),
+            channel_id: 2,
+            closed_at_us: 99_000,
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        if let Message::IacsRecordingChannelEnd {
+            closed_at_us, ..
+        } = deserialized
+        {
+            assert_eq!(closed_at_us, 99_000);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_iacs_recording_session_end_roundtrip() {
+        let msg = Message::IacsRecordingSessionEnd {
+            session_id: "iacs-1".to_string(),
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        assert!(matches!(
+            deserialized,
+            Message::IacsRecordingSessionEnd { .. }
+        ));
+    }
+
+    #[test]
+    fn test_message_recording_file_gzip_request_roundtrip() {
+        let msg = Message::RecordingFileGzipRequest {
+            request_id: 9,
+            session_id: "iacs-1".to_string(),
+            src_relative: "2026/05/iacs-1/channels/001.pcap".to_string(),
+            dst_relative: "2026/05/iacs-1/channels/001.pcap.gz".to_string(),
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        if let Message::RecordingFileGzipRequest {
+            request_id,
+            src_relative,
+            dst_relative,
+            ..
+        } = deserialized
+        {
+            assert_eq!(request_id, 9);
+            assert_eq!(src_relative, "2026/05/iacs-1/channels/001.pcap");
+            assert_eq!(dst_relative, "2026/05/iacs-1/channels/001.pcap.gz");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_recording_file_gzip_response_roundtrip() {
+        let msg = Message::RecordingFileGzipResponse {
+            request_id: 9,
+            session_id: "iacs-1".to_string(),
+            success: true,
+            dst_size: 1234,
+            blake3_hex: Some("ab".repeat(32)),
+            error: None,
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        if let Message::RecordingFileGzipResponse {
+            success,
+            dst_size,
+            blake3_hex,
+            ..
+        } = deserialized
+        {
+            assert!(success);
+            assert_eq!(dst_size, 1234);
+            assert_eq!(blake3_hex.as_deref(), Some("ab".repeat(32).as_str()));
         } else {
             panic!("Wrong variant");
         }

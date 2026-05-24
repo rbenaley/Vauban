@@ -24,8 +24,10 @@ use tokio::sync::{Mutex, mpsc::UnboundedSender};
 use tracing::{debug, error, info, warn};
 
 use crate::auth::{AuthOutcome, PendingSessions, PendingTunnel, verify_publickey};
+use crate::iacs_recording::{ChannelRecorder, IacsRecordingHub};
 use crate::registry::{SessionHandles, TunnelHandle, TunnelRegistry};
-use crate::relay::{copy_with_counter, validate_target};
+use crate::relay::{copy_with_counter_and_record, validate_target};
+use shared::messages::IacsRecordingDirection;
 use shared::iacs_protocol::ExpectedProfile;
 
 /// Channel used by the russh handler / relay tasks to push
@@ -73,6 +75,8 @@ pub struct IacsTunnelServer {
     pub max_channels_per_session: usize,
     /// Outbound IPC channel to vauban-web. See [`WebReporter`].
     pub web_reporter: WebReporter,
+    /// PCAP recording hub (ProxyIacs → Audit). `None` when recording disabled.
+    pub recording: Option<IacsRecordingHub>,
 }
 
 impl IacsTunnelServer {
@@ -83,6 +87,7 @@ impl IacsTunnelServer {
         upstream: Arc<dyn UpstreamOpener>,
         max_channels_per_session: usize,
         web_reporter: WebReporter,
+        recording: Option<IacsRecordingHub>,
     ) -> Self {
         Self {
             registry,
@@ -91,6 +96,7 @@ impl IacsTunnelServer {
             upstream,
             max_channels_per_session,
             web_reporter,
+            recording,
         }
     }
 }
@@ -109,6 +115,8 @@ impl Server for IacsTunnelServer {
             live_channels: Arc::new(AtomicUsize::new(0)),
             max_channels_per_session: self.max_channels_per_session,
             web_reporter: self.web_reporter.clone(),
+            recording: self.recording.clone(),
+            channel_counter: Arc::new(AtomicUsize::new(0)),
             tunnel_active_emitted: Arc::new(AtomicBool::new(false)),
             session_total_bytes_in: Arc::new(AtomicUsize::new(0)),
             session_total_bytes_out: Arc::new(AtomicUsize::new(0)),
@@ -148,6 +156,10 @@ pub struct IacsTunnelHandler {
     pub max_channels_per_session: usize,
     /// Outbound IPC channel to vauban-web -- see [`WebReporter`].
     pub web_reporter: WebReporter,
+    /// PCAP recording hub when enabled.
+    pub recording: Option<IacsRecordingHub>,
+    /// Monotonic `channel_id` counter for this EWS SSH login.
+    pub channel_counter: Arc<AtomicUsize>,
     /// `true` once the per-EWS-login `IacsTunnelStatusUpdate { status =
     /// "tunnel_active" }` has been emitted on the web IPC. The first
     /// successful `direct-tcpip` flips it; subsequent channels do not
@@ -430,15 +442,28 @@ impl Handler for IacsTunnelHandler {
             self.peer_addr,
         );
         self.registry.insert(handle.clone());
-        spawn_relay(
+        let channel_id = self.channel_counter.fetch_add(1, Ordering::SeqCst) as u32 + 1;
+        let recorder = self.recording.as_ref().map(|hub| {
+            hub.send_channel_start(
+                &pending.session_uuid.to_string(),
+                channel_id,
+                &pending.asset_host,
+                pending.asset_port,
+            );
+            hub.channel_recorder(pending.session_uuid.to_string(), channel_id)
+        });
+        spawn_relay(RelayJob {
             channel,
-            upstream_stream,
+            upstream: upstream_stream,
             handle,
-            Arc::clone(&self.live_channels),
-            Arc::clone(&self.session_total_bytes_in),
-            Arc::clone(&self.session_total_bytes_out),
-            ExpectedProfile::from_industrial_label(&pending.industrial_protocol),
-        );
+            live_channels: Arc::clone(&self.live_channels),
+            session_total_bytes_in: Arc::clone(&self.session_total_bytes_in),
+            session_total_bytes_out: Arc::clone(&self.session_total_bytes_out),
+            expected_profile: ExpectedProfile::from_industrial_label(&pending.industrial_protocol),
+            recorder,
+            recording_hub: self.recording.clone(),
+            channel_id,
+        });
         Ok(true)
     }
 
@@ -555,11 +580,16 @@ impl Drop for IacsTunnelHandler {
                     );
                 }
             }
+            if self.tunnel_active_emitted.load(Ordering::SeqCst)
+                && let Some(ref hub) = self.recording
+            {
+                hub.send_session_end(&p.session_uuid.to_string());
+            }
         }
     }
 }
 
-fn spawn_relay(
+struct RelayJob {
     channel: Channel<Msg>,
     upstream: tokio::net::TcpStream,
     handle: TunnelHandle,
@@ -567,7 +597,24 @@ fn spawn_relay(
     session_total_bytes_in: Arc<AtomicUsize>,
     session_total_bytes_out: Arc<AtomicUsize>,
     expected_profile: ExpectedProfile,
-) {
+    recorder: Option<ChannelRecorder>,
+    recording_hub: Option<IacsRecordingHub>,
+    channel_id: u32,
+}
+
+fn spawn_relay(job: RelayJob) {
+    let RelayJob {
+        channel,
+        upstream,
+        handle,
+        live_channels,
+        session_total_bytes_in,
+        session_total_bytes_out,
+        expected_profile,
+        recorder,
+        recording_hub,
+        channel_id,
+    } = job;
     let stream = channel.into_stream();
     let (reader_ssh, writer_ssh) = tokio::io::split(stream);
     let (reader_tcp, writer_tcp) = upstream.into_split();
@@ -577,6 +624,8 @@ fn spawn_relay(
     let bytes_in = handle.bytes_in.clone();
     let h_close = handle.clone();
     let session_uuid = handle.session_uuid;
+    let session_id_str = session_uuid.to_string();
+    let recorder_out = recorder.clone();
     let outbound = tokio::spawn(async move {
         let outcome = crate::protocol_gate::filtered_copy_with_counter(
             reader_ssh,
@@ -585,6 +634,7 @@ fn spawn_relay(
             h_out.clone(),
             expected_profile,
             session_uuid,
+            recorder_out,
         )
         .await;
         if matches!(
@@ -596,10 +646,21 @@ fn spawn_relay(
         }
     });
     let inbound = tokio::spawn(async move {
-        let _ = copy_with_counter(reader_tcp, writer_ssh, bytes_in, h_in).await;
+        let _ = copy_with_counter_and_record(
+            reader_tcp,
+            writer_ssh,
+            bytes_in,
+            h_in,
+            IacsRecordingDirection::AssetToEws,
+            recorder,
+        )
+        .await;
     });
     tokio::spawn(async move {
         let _ = tokio::join!(outbound, inbound);
+        if let Some(ref hub) = recording_hub {
+            hub.send_channel_end(&session_id_str, channel_id);
+        }
         let (bin, bout) = h_close.counters();
         // Accumulate this channel's traffic into the per-EWS-login
         // totals so the `IacsTunnelClosed` IPC emitted at handler

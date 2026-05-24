@@ -377,20 +377,17 @@ pub async fn terminate_session(
 
     let now = chrono::Utc::now();
     let is_recording = match session_for_recording.session_type {
-        SessionType::Ssh => state.config.recording.enabled && state.config.recording.ssh,
-        SessionType::Rdp => state.config.recording.enabled,
-        // IACS tunnels are raw TCP forwards: no PTY, no commands,
-        // never recorded.
-        SessionType::IacsTunnel => false,
+        SessionType::Ssh => state.config.recording.ssh_recording_enabled(),
+        SessionType::Rdp => state.config.recording.rdp_recording_enabled(),
+        SessionType::IacsTunnel => state.config.recording.iacs_recording_enabled(),
     };
 
     let updated_session = if is_recording {
-        let rec_path = format!(
-            "{}/{}/{:02}/{}/",
-            state.config.recording.storage_path,
-            now.format("%Y"),
-            now.format("%m"),
-            session_for_recording.uuid,
+        let path_anchor = session_for_recording.connected_at.unwrap_or(now);
+        let rec_path = crate::services::recording_hydrator::recording_dir_for_session(
+            &state.config.recording.storage_path,
+            &session_for_recording.uuid.to_string(),
+            path_anchor,
         );
         diesel::update(proxy_sessions.filter(uuid.eq(session_uuid)))
             .set((

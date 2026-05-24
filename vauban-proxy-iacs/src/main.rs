@@ -34,6 +34,7 @@
 //! 6. Run the russh server on the inherited listener FD.
 
 mod auth;
+mod iacs_recording;
 mod ipc;
 mod protocol_gate;
 mod registry;
@@ -61,6 +62,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::auth::{PendingSessions, PendingTunnel};
+use crate::iacs_recording::{AckRouter, IacsRecordingHub};
 use crate::ipc::AsyncIpcChannel;
 use crate::registry::{SessionHandles, TunnelRegistry};
 use crate::server::{IacsTunnelServer, build_server_config};
@@ -234,6 +236,11 @@ async fn run_service() -> Result<()> {
         _ => None,
     };
 
+    let recording_enabled: bool = std::env::var("VAUBAN_RECORDING_ENABLED")
+        .ok()
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
     // === 2. The supervisor pre-binds the IACS sshd listener and
     // pre-loads the russh host key, then hands BOTH FDs via env
     // (analogous to the HTTPS listener for vauban-web -- a privileged
@@ -282,6 +289,7 @@ async fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
         std::env::remove_var("VAUBAN_AUDIT_IPC_READ");
         std::env::remove_var("VAUBAN_AUDIT_IPC_WRITE");
+        std::env::remove_var("VAUBAN_RECORDING_ENABLED");
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
         std::env::remove_var("VAUBAN_IACS_LISTENER_FD");
         std::env::remove_var("VAUBAN_IACS_HOST_KEY_FD");
@@ -397,6 +405,16 @@ async fn run_service() -> Result<()> {
     let web_async =
         Arc::new(AsyncIpcChannel::new(web_channel).context("Failed to create async web channel")?);
 
+    let audit_async = if recording_enabled {
+        audit_channel
+            .map(AsyncIpcChannel::new)
+            .transpose()
+            .context("Failed to create async audit channel")?
+            .map(Arc::new)
+    } else {
+        None
+    };
+
     // === 5c. Capsicum sandbox. After this point, the proxy can
     // ONLY read/write its IPC pipes, accept() on the inherited
     // listener FD, and recvmsg() on the FD-passing socket. No
@@ -435,6 +453,50 @@ async fn run_service() -> Result<()> {
     // race on `AsyncIpcChannel::send` and partial frames cannot
     // interleave on the wire. See [`server::WebReporter`].
     let (web_tx, mut web_rx) = mpsc::unbounded_channel::<Message>();
+
+    let recording_hub: Option<IacsRecordingHub> = if let Some(audit) = audit_async {
+        let ack_router = Arc::new(AckRouter::new());
+        let (audit_tx, mut audit_rx) = mpsc::unbounded_channel::<Message>();
+        let audit_writer = Arc::clone(&audit);
+        tokio::spawn(async move {
+            while let Some(msg) = audit_rx.recv().await {
+                if let Err(e) = audit_writer.send(&msg) {
+                    error!(error = %e, "iacs_tunnel: audit recording send failed");
+                    break;
+                }
+            }
+        });
+        let ack_for_reader = Arc::clone(&ack_router);
+        let audit_reader = audit;
+        tokio::spawn(async move {
+            loop {
+                match audit_reader.recv().await {
+                    Ok(Message::IacsRecordingDataAck {
+                        session_id,
+                        channel_id,
+                        batch_seq,
+                    }) => {
+                        ack_for_reader
+                            .complete(&session_id, channel_id, batch_seq)
+                            .await;
+                    }
+                    Ok(_) => {}
+                    Err(crate::ipc::IpcError::ConnectionClosed) => break,
+                    Err(e) => {
+                        warn!(error = %e, "iacs_tunnel: audit ack reader error");
+                        break;
+                    }
+                }
+            }
+        });
+        info!("IACS PCAP recording enabled (audit IPC wired)");
+        Some(IacsRecordingHub {
+            audit_tx,
+            ack_router,
+        })
+    } else {
+        None
+    };
 
     let upstream: Arc<dyn server::UpstreamOpener> = Arc::new(SupervisorBrokerOpener {
         supervisor_tx: sup_tx.clone(),
@@ -490,6 +552,7 @@ async fn run_service() -> Result<()> {
         let accept_bind_addr = iacs_bind_addr.clone();
         let accept_max_channels = max_channels_per_session;
         let accept_web_tx = web_tx.clone();
+        let accept_recording = recording_hub.clone();
         tokio::spawn(async move {
             info!(
                 iacs_bind_addr = %accept_bind_addr,
@@ -507,6 +570,7 @@ async fn run_service() -> Result<()> {
                             Arc::clone(&accept_upstream),
                             accept_max_channels,
                             Some(accept_web_tx.clone()),
+                            accept_recording.clone(),
                         );
                         let cfg = Arc::clone(&accept_config);
                         let handler = russh::server::Server::new_client(&mut server, Some(peer));
@@ -560,8 +624,6 @@ async fn run_service() -> Result<()> {
             }
         });
     }
-
-    drop(audit_channel);
 
     main_loop(
         supervisor_async,

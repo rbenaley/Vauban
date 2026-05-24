@@ -22,10 +22,53 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::registry::TunnelHandle;
+use crate::iacs_recording::ChannelRecorder;
+use shared::messages::IacsRecordingDirection;
+
+/// Pull bytes from `read` and push them to `write`, bumping
+/// `counter` along the way. When `recorder` is set, each chunk is
+/// durably persisted in audit **before** forwarding to `write`.
+pub async fn copy_with_counter_and_record<R, W>(
+    mut read: R,
+    mut write: W,
+    counter: Arc<AtomicU64>,
+    handle: TunnelHandle,
+    direction: IacsRecordingDirection,
+    recorder: Option<ChannelRecorder>,
+) -> std::io::Result<u64>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        if handle.is_closed() {
+            break;
+        }
+        let n = tokio::select! {
+            biased;
+            _ = handle.wait_close() => break,
+            n = read.read(&mut buf) => n?,
+        };
+        if n == 0 {
+            let _ = write.shutdown().await;
+            break;
+        }
+        if let Some(ref rec) = recorder {
+            rec.write_batch(direction, &buf[..n]).await?;
+        }
+        write.write_all(&buf[..n]).await?;
+        counter.fetch_add(n as u64, Ordering::Relaxed);
+        total += n as u64;
+    }
+    Ok(total)
+}
 
 /// Pull bytes from `read` and push them to `write`, bumping
 /// `counter` along the way. Returns the total bytes copied. Stops
 /// on EOF, error, or when `handle` flips to closed.
+#[cfg(test)]
 pub async fn copy_with_counter<R, W>(
     mut read: R,
     mut write: W,

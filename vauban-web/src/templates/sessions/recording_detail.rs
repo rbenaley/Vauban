@@ -60,6 +60,10 @@ impl IntegrityViewModel {
     pub fn is_rdp_format(&self) -> bool {
         self.format == "fmp4-dash" || self.format == "fmp4-flat"
     }
+
+    pub fn is_pcap_bundle(&self) -> bool {
+        self.format == "pcap-bundle"
+    }
 }
 
 /// Top-level view-model for the Recording Details page.
@@ -100,6 +104,8 @@ pub struct RecordingDetailViewModel {
     pub download_url: String,
     pub back_url: String,
     pub list_url: String,
+    /// False for IACS PCAP bundles (download-only, no in-browser player).
+    pub show_play_recording: bool,
 }
 
 impl RecordingDetailViewModel {
@@ -179,12 +185,23 @@ pub fn truncate_blake3(hex: &str) -> String {
     format!("{}...{}", &hex[..8], &hex[hex.len() - 8..])
 }
 
+/// Credential label for the Session Context card. IACS tunnels have no
+/// asset-level login today; show an explicit placeholder instead of blank.
+pub fn credential_display(username: &str, session_type: &str) -> String {
+    if session_type == "iacs_tunnel" && username.trim().is_empty() {
+        "Not authenticated (IACS tunnel)".to_string()
+    } else {
+        username.to_string()
+    }
+}
+
 /// Map a `recording_format` enum value to a human label.
 pub fn format_label(format: &str) -> &'static str {
     match format {
         "asciicast-v2" => "asciicast v2",
         "fmp4-dash" => "fragmented MP4 (DASH)",
         "fmp4-flat" => "MP4 (legacy)",
+        "pcap-bundle" => "PCAP bundle",
         _ => "unknown",
     }
 }
@@ -263,8 +280,9 @@ mod tests {
             download_url: "/sessions/recordings/00000000-0000-0000-0000-000000000001/download"
                 .to_string(),
             back_url: "/sessions/recordings".to_string(),
-            list_url: "/sessions/recordings".to_string(),
-        }
+        list_url: "/sessions/recordings".to_string(),
+        show_play_recording: true,
+    }
     }
 
     fn make_ssh_integrity() -> IntegrityViewModel {

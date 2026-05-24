@@ -179,6 +179,7 @@ impl Default for RdpProxyConfig {
 /// Session recording configuration.
 #[derive(Debug, Deserialize)]
 pub struct RecordingConfig {
+    /// Master switch for session recording (all protocols).
     #[serde(default = "default_recording_enabled")]
     pub enabled: bool,
     #[serde(default = "default_recording_storage_path")]
@@ -189,6 +190,9 @@ pub struct RecordingConfig {
     /// Enable recording of SSH sessions.
     #[serde(default = "default_recording_enabled")]
     pub ssh: bool,
+    /// Enable recording of IACS tunnel sessions (PCAP bundle).
+    #[serde(default = "default_recording_enabled")]
+    pub iacs: bool,
 }
 
 fn default_recording_enabled() -> bool {
@@ -199,6 +203,25 @@ fn default_recording_storage_path() -> String {
     "recordings".to_string()
 }
 
+impl RecordingConfig {
+    pub fn rdp_recording_enabled(&self) -> bool {
+        self.enabled && self.rdp
+    }
+
+    pub fn ssh_recording_enabled(&self) -> bool {
+        self.enabled && self.ssh
+    }
+
+    pub fn iacs_recording_enabled(&self) -> bool {
+        self.enabled && self.iacs
+    }
+
+    /// True when vauban-audit should accept recording IPC.
+    pub fn audit_enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
 impl Default for RecordingConfig {
     fn default() -> Self {
         Self {
@@ -206,6 +229,7 @@ impl Default for RecordingConfig {
             storage_path: default_recording_storage_path(),
             rdp: default_recording_enabled(),
             ssh: default_recording_enabled(),
+            iacs: default_recording_enabled(),
         }
     }
 }
@@ -739,14 +763,14 @@ impl SupervisorConfig {
                     "VAUBAN_RDP_VIDEO_BITRATE_BPS".to_string(),
                     self.rdp.video_bitrate_bps.to_string(),
                 ));
-                let rdp_recording = self.recording.enabled && self.recording.rdp;
+                let rdp_recording = self.recording.rdp_recording_enabled();
                 vars.push((
                     "VAUBAN_RECORDING_ENABLED".to_string(),
                     rdp_recording.to_string(),
                 ));
             }
             "proxy_ssh" => {
-                let ssh_recording = self.recording.enabled && self.recording.ssh;
+                let ssh_recording = self.recording.ssh_recording_enabled();
                 vars.push((
                     "VAUBAN_RECORDING_ENABLED".to_string(),
                     ssh_recording.to_string(),
@@ -769,7 +793,7 @@ impl SupervisorConfig {
             "audit" => {
                 vars.push((
                     "VAUBAN_RECORDING_ENABLED".to_string(),
-                    self.recording.enabled.to_string(),
+                    self.recording.audit_enabled().to_string(),
                 ));
                 vars.push((
                     "VAUBAN_RECORDING_STORAGE_PATH".to_string(),
@@ -777,27 +801,11 @@ impl SupervisorConfig {
                 ));
             }
             "proxy_iacs" => {
-                // The supervisor pre-binds the IACS sshd listener and
-                // hands the FD via VAUBAN_IACS_LISTENER_FD (set in
-                // spawn_child via the inheritable_fds slot, NOT here
-                // -- env vars set here are strings, while the FD path
-                // also needs FD_CLOEXEC clearing).
-                //
-                // The host key is also pre-loaded by the supervisor
-                // (`shared::iacs_host_key::prepare_host_key_fd` reads
-                // or generates the file at `host_key_path` BEFORE the
-                // fork) and the resulting OwnedFd is passed via
-                // `VAUBAN_IACS_HOST_KEY_FD` -- again from the
-                // inheritable_fds slot in spawn_child, NOT here. The
-                // proxy NEVER opens the host key path itself: under
-                // FreeBSD Capsicum, post-`cap_enter` `open()` on an
-                // absolute path returns errno 94 ("Not permitted in
-                // capability mode").
-                //
-                // Per-login channel cap. `vauban-proxy-iacs` reads
-                // this value at boot and bounds the number of
-                // concurrent `direct-tcpip` channels per authenticated
-                // SSH login. `0` disables the cap.
+                let iacs_recording = self.recording.iacs_recording_enabled();
+                vars.push((
+                    "VAUBAN_RECORDING_ENABLED".to_string(),
+                    iacs_recording.to_string(),
+                ));
                 vars.push((
                     "VAUBAN_IACS_MAX_CHANNELS_PER_SESSION".to_string(),
                     self.industrial
@@ -1243,6 +1251,7 @@ mod tests {
         assert!(config.recording.enabled);
         assert!(config.recording.rdp);
         assert!(config.recording.ssh);
+        assert!(config.recording.iacs);
         assert_eq!(config.recording.storage_path, "recordings");
     }
 

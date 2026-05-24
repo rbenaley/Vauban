@@ -639,6 +639,7 @@ pub async fn recording_list(
         Option<chrono::DateTime<chrono::Utc>>,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<String>,
+        Option<i64>,
     )> = query
         .select((
             proxy_sessions::id,
@@ -649,6 +650,7 @@ pub async fn recording_list(
             proxy_sessions::connected_at,
             proxy_sessions::disconnected_at,
             proxy_sessions::recording_path,
+            proxy_sessions::recording_size_bytes,
         ))
         .order(proxy_sessions::created_at.desc())
         .limit(RECORDINGS_PER_PAGE)
@@ -668,6 +670,7 @@ pub async fn recording_list(
                 connected_at,
                 disconnected_at,
                 recording_path,
+                recording_size_bytes,
             )| {
                 let duration_seconds = match (connected_at, disconnected_at) {
                     (Some(start), Some(end)) => {
@@ -675,18 +678,27 @@ pub async fn recording_list(
                     }
                     _ => None,
                 };
+                let session_type_str = session_type.to_string();
                 RecordingListItem {
                     id,
                     session_id: id,
                     session_uuid: session_uuid.to_string(),
                     asset_name,
-                    session_type: session_type.to_string(),
-                    credential_username,
+                    session_type: session_type_str.clone(),
+                    credential_username:
+                        crate::templates::sessions::recording_detail::credential_display(
+                            &credential_username,
+                            &session_type_str,
+                        ),
                     connected_at: connected_at
                         .map(|dt| crate::utils::format_local(dt, browser_tz.0)),
                     duration_seconds,
+                    size_human: recording_size_bytes.map(|b| {
+                        crate::templates::sessions::recording_detail::format_bytes_human(b)
+                    }),
                     recording_path: recording_path.unwrap_or_default(),
                     status: "ready".to_string(),
+                    show_play_recording: session_type != SessionType::IacsTunnel,
                 }
             },
         )
@@ -3162,7 +3174,10 @@ pub async fn recording_detail(
         asset_name: asset_name.clone(),
         asset_hostname,
         source_ip: s_client_ip.ip().to_string(),
-        credential_username: s_cred_username,
+        credential_username: crate::templates::sessions::recording_detail::credential_display(
+            &s_cred_username,
+            &s_type.to_string(),
+        ),
         requester_username,
         connected_at_utc: s_connected_at
             .map(|dt| crate::utils::format_local_with_seconds(dt, browser_tz.0)),
@@ -3180,6 +3195,7 @@ pub async fn recording_detail(
         download_url: format!("/sessions/recordings/{}/download", session_uuid_str),
         back_url: "/sessions/recordings".to_string(),
         list_url: "/sessions/recordings".to_string(),
+        show_play_recording: s_type != SessionType::IacsTunnel,
     };
 
     let base = BaseTemplate::new(
@@ -3309,13 +3325,9 @@ pub async fn download_recording(
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
         }
         SessionType::Rdp => stream_rdp_zip(&state, &session_uuid_db, base_dir).await,
-        // IACS tunnels are never recorded -- no asciicast, no fmp4
-        // segment archive. Reject the download with 404 so an
-        // operator who navigates to the route by accident gets a
-        // sensible error instead of a stuck stream.
-        SessionType::IacsTunnel => Err(AppError::NotFound(
-            "IACS tunnel sessions are not recorded".to_string(),
-        )),
+        SessionType::IacsTunnel => {
+            stream_iacs_pcap_zip(&state, &session_uuid_db, base_dir).await
+        }
     }
 }
 
@@ -3442,6 +3454,118 @@ async fn stream_rdp_zip(
 
         let _ = zip.close().await;
         tracing::debug!(session_uuid = %session_uuid_owned, "rdp zip stream complete");
+    });
+
+    let stream = ReaderStream::with_capacity(reader, 64 * 1024);
+    let filename = format!("{}.zip", session_uuid);
+    axum::http::Response::builder()
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename),
+        )
+        .body(Body::from_stream(stream))
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
+}
+
+/// Stream a ZIP of `meta.json` + every `channels/NNN.pcap.gz` for an IACS session.
+async fn stream_iacs_pcap_zip(
+    state: &AppState,
+    session_uuid: &::uuid::Uuid,
+    base_dir: &str,
+) -> Result<axum::response::Response, AppError> {
+    use async_zip::base::write::ZipFileWriter;
+    use async_zip::{Compression, ZipEntryBuilder};
+    use axum::body::Body;
+    use axum::http::header;
+    use futures_util::io::AsyncWriteExt as FuturesAsyncWriteExt;
+    use tokio::io::{AsyncReadExt, duplex};
+    use tokio_util::io::ReaderStream;
+
+    let supervisor = state
+        .supervisor
+        .as_ref()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("Requires supervisor")))?;
+
+    let meta_relative = format!("{}meta.json", base_dir);
+    let meta_result = supervisor
+        .request_recording_file(&session_uuid.to_string(), &meta_relative)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Supervisor failed: {}", e)))?;
+    if !meta_result.success {
+        return Err(AppError::NotFound("meta.json missing".to_string()));
+    }
+    let meta_file = meta_result
+        .file
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("No FD for meta.json")))?;
+    let mut tokio_meta = tokio::fs::File::from_std(meta_file);
+    let mut meta_buf = Vec::new();
+    tokio_meta
+        .read_to_end(&mut meta_buf)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("read meta.json: {}", e)))?;
+
+    #[derive(serde::Deserialize)]
+    struct IacsChannelFile {
+        file: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct IacsPcapBundleMeta {
+        channels: Vec<IacsChannelFile>,
+    }
+    let meta: IacsPcapBundleMeta = serde_json::from_slice(&meta_buf)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid meta.json: {}", e)))?;
+
+    let mut channel_files: Vec<(String, std::fs::File)> =
+        Vec::with_capacity(meta.channels.len());
+    for ch in &meta.channels {
+        let ch_relative = format!("{}{}", base_dir, ch.file);
+        let ch_result = supervisor
+            .request_recording_file(&session_uuid.to_string(), &ch_relative)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Supervisor failed: {}", e)))?;
+        if !ch_result.success {
+            return Err(AppError::NotFound(format!(
+                "channel file {} missing",
+                ch.file
+            )));
+        }
+        let ch_file = ch_result.file.ok_or_else(|| {
+            AppError::Internal(anyhow::anyhow!("No FD for channel {}", ch.file))
+        })?;
+        channel_files.push((ch.file.clone(), ch_file));
+    }
+
+    let (writer, reader) = duplex(64 * 1024);
+    let session_uuid_owned = *session_uuid;
+    tokio::spawn(async move {
+        let mut zip = ZipFileWriter::with_tokio(writer);
+        let entry = ZipEntryBuilder::new("meta.json".into(), Compression::Stored).build();
+        if let Ok(mut e) = zip.write_entry_stream(entry).await {
+            let _ = e.write_all(&meta_buf).await;
+            let _ = e.close().await;
+        }
+        for (name, file) in channel_files {
+            let entry = ZipEntryBuilder::new(name.into(), Compression::Stored).build();
+            let mut tokio_file = tokio::fs::File::from_std(file);
+            let mut buf = vec![0u8; 64 * 1024];
+            if let Ok(mut e) = zip.write_entry_stream(entry).await {
+                loop {
+                    match tokio_file.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if e.write_all(&buf[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = e.close().await;
+            }
+        }
+        let _ = zip.close().await;
+        tracing::debug!(session_uuid = %session_uuid_owned, "iacs pcap zip stream complete");
     });
 
     let stream = ReaderStream::with_capacity(reader, 64 * 1024);

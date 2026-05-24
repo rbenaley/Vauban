@@ -61,6 +61,7 @@
                     <option value="">All formats</option>
                     <option value="ssh" {% if format_filter.as_deref() == Some("ssh") %}selected{% endif %}>Asciinema (SSH)</option>
                     <option value="rdp" {% if format_filter.as_deref() == Some("rdp") %}selected{% endif %}>H.264/AVC (RDP)</option>
+                    <option value="iacs_tunnel" {% if format_filter.as_deref() == Some("iacs_tunnel") %}selected{% endif %}>PCAP bundle (IACS)</option>
                 </select>
             </div>
         </div>
@@ -96,6 +97,7 @@
                             <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
                                 {% if recording.session_type == "ssh" %}bg-green-100 text-green-600 dark:bg-green-900/50 dark:text-green-400
                                 {% else if recording.session_type == "rdp" %}bg-blue-100 text-blue-600 dark:bg-blue-900/50 dark:text-blue-400
+                                {% else if recording.session_type == "iacs_tunnel" %}bg-amber-100 text-amber-600 dark:bg-amber-900/50 dark:text-amber-400
                                 {% else %}bg-purple-100 text-purple-600 dark:bg-purple-900/50 dark:text-purple-400{% endif %}">
                                 {% if recording.session_type == "ssh" %}
                                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -125,6 +127,10 @@
                                 <span class="hidden sm:inline">&bull;</span>
                                 <span>{{ recording.duration_display() }}</span>
                                 {% endif %}
+                                {% if let Some(size) = recording.size_human.as_ref() %}
+                                <span class="hidden sm:inline">&bull;</span>
+                                <span>{{ size }}</span>
+                                {% endif %}
                                 <span class="hidden sm:inline">&bull;</span>
                                 <span class="break-all">{{ recording.credential_username }}</span>
                                 {% if let Some(connected) = recording.connected_at.as_ref() %}
@@ -139,10 +145,12 @@
                            class="rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
                             Details
                         </a>
+                        {% if recording.show_play_recording %}
                         <a href="/sessions/recordings/{{ recording.id }}/play"
                            class="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600">
                             Play
                         </a>
+                        {% endif %}
                     </div>
                 </div>
             </li>

@@ -18,16 +18,25 @@ pub struct RecordingListItem {
     pub credential_username: String,
     pub connected_at: Option<String>,
     pub duration_seconds: Option<i64>,
+    /// Populated after hydrator finalization; None while pending.
+    pub size_human: Option<String>,
     pub recording_path: String,
     pub status: String, // "ready", "recording", "processing"
+    /// False for IACS PCAP bundles (download-only).
+    pub show_play_recording: bool,
 }
 
 impl RecordingListItem {
+    pub fn is_iacs_tunnel(&self) -> bool {
+        self.session_type == "iacs_tunnel"
+    }
+
     /// Get display name for session type.
     pub fn session_type_display(&self) -> &str {
         match self.session_type.as_str() {
             "ssh" => "SSH",
             "rdp" => "RDP",
+            "iacs_tunnel" => "IACS",
             _ => &self.session_type,
         }
     }
@@ -37,6 +46,7 @@ impl RecordingListItem {
         match self.session_type.as_str() {
             "ssh" => "asciinema",
             "rdp" => "h264-avc",
+            "iacs_tunnel" => "pcap-bundle",
             _ => "raw",
         }
     }
@@ -46,6 +56,7 @@ impl RecordingListItem {
         match self.session_type.as_str() {
             "ssh" => "Asciinema",
             "rdp" => "H.264/AVC",
+            "iacs_tunnel" => "PCAP bundle",
             _ => "Raw",
         }
     }
@@ -92,8 +103,10 @@ mod tests {
             credential_username: "testuser".to_string(),
             connected_at: Some("2026-01-03 10:00:00".to_string()),
             duration_seconds: duration,
+            size_human: None,
             recording_path: "/recordings/test.cast".to_string(),
             status: "ready".to_string(),
+            show_play_recording: session_type != "iacs_tunnel",
         }
     }
 
@@ -108,6 +121,22 @@ mod tests {
     fn test_session_type_display_rdp() {
         let item = create_test_recording_item("rdp", None);
         assert_eq!(item.session_type_display(), "RDP");
+    }
+
+    #[test]
+    fn test_session_type_display_iacs() {
+        let item = create_test_recording_item("iacs_tunnel", Some(13));
+        assert_eq!(item.session_type_display(), "IACS");
+        assert_eq!(item.format_display(), "PCAP bundle");
+        assert!(!item.show_play_recording);
+    }
+
+    #[test]
+    fn test_credential_display_iacs_placeholder() {
+        assert_eq!(
+            crate::templates::sessions::recording_detail::credential_display("", "iacs_tunnel"),
+            "Not authenticated (IACS tunnel)"
+        );
     }
 
     #[test]

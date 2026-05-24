@@ -15,8 +15,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::iacs_recording::ChannelRecorder;
 use crate::registry::TunnelHandle;
-use crate::relay::copy_with_counter;
+use crate::relay::{copy_with_counter_and_record};
+use shared::messages::IacsRecordingDirection;
 
 /// Maximum bytes buffered while classifying a channel.
 pub const CLASSIFY_MAX_BYTES: usize = 4096;
@@ -59,13 +61,22 @@ pub async fn filtered_copy_with_counter<R, W>(
     handle: TunnelHandle,
     expected: ExpectedProfile,
     session_uuid: Uuid,
+    recorder: Option<ChannelRecorder>,
 ) -> ProtocolGateOutcome
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     if expected == ExpectedProfile::Passthrough {
-        let _ = copy_with_counter(read, write, counter, handle).await;
+        let _ = copy_with_counter_and_record(
+            read,
+            write,
+            counter,
+            handle,
+            IacsRecordingDirection::EwsToAsset,
+            recorder,
+        )
+        .await;
         return ProtocolGateOutcome::Relayed;
     }
 
@@ -84,6 +95,11 @@ where
         match evaluate_conformity(expected, detected, still_classifying) {
             ConformityDecision::AllowPassthrough | ConformityDecision::Confirmed => {
                 if !buf.is_empty() {
+                    if let Some(ref rec) = recorder {
+                        let _ = rec
+                            .write_batch(IacsRecordingDirection::EwsToAsset, &buf)
+                            .await;
+                    }
                     if write.write_all(&buf).await.is_err() {
                         return ProtocolGateOutcome::Relayed;
                     }
@@ -95,7 +111,15 @@ where
                     detected = detected.as_str(),
                     "iacs_protocol_confirmed"
                 );
-                let _ = copy_with_counter(read, write, counter, handle).await;
+                let _ = copy_with_counter_and_record(
+                    read,
+                    write,
+                    counter,
+                    handle,
+                    IacsRecordingDirection::EwsToAsset,
+                    recorder,
+                )
+                .await;
                 return ProtocolGateOutcome::Relayed;
             }
             ConformityDecision::ForeignProtocol => {
@@ -205,6 +229,7 @@ mod tests {
                 h,
                 ExpectedProfile::Passthrough,
                 Uuid::new_v4(),
+                None,
             )
             .await
         });
@@ -230,6 +255,7 @@ mod tests {
                 h,
                 ExpectedProfile::Modbus,
                 Uuid::new_v4(),
+                None,
             )
             .await
         });
@@ -257,6 +283,7 @@ mod tests {
                 h,
                 ExpectedProfile::Modbus,
                 Uuid::new_v4(),
+                None,
             )
             .await
         });
@@ -289,6 +316,7 @@ mod tests {
                 h,
                 ExpectedProfile::Modbus,
                 Uuid::new_v4(),
+                None,
             )
             .await
         });
@@ -314,6 +342,7 @@ mod tests {
                 h,
                 ExpectedProfile::Modbus,
                 Uuid::new_v4(),
+                None,
             )
             .await
         });
@@ -344,6 +373,7 @@ mod tests {
                 h,
                 ExpectedProfile::Modbus,
                 Uuid::new_v4(),
+                None,
             )
             .await
         });
@@ -371,6 +401,7 @@ mod tests {
                 h,
                 ExpectedProfile::Modbus,
                 Uuid::new_v4(),
+                None,
             )
             .await
         });
@@ -406,6 +437,7 @@ mod tests {
                 h,
                 ExpectedProfile::Modbus,
                 Uuid::new_v4(),
+                None,
             )
             .await
         });
@@ -437,6 +469,7 @@ mod tests {
                 h,
                 ExpectedProfile::Modbus,
                 Uuid::new_v4(),
+                None,
             )
             .await
         });
@@ -462,6 +495,7 @@ mod tests {
                 h,
                 ExpectedProfile::Modbus,
                 Uuid::new_v4(),
+                None,
             )
             .await
         });

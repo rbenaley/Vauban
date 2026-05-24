@@ -154,6 +154,7 @@ enabled = true
 storage_path = "recordings"
 rdp = true
 ssh = true
+iacs = true
 recording_daily_cron_timezone = "Europe/Brussels"
 hydration_daily_cron_hour = 4
 retention_daily_cron_hour = 5

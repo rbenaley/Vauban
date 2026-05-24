@@ -19,10 +19,12 @@
 //! - Audit log queries
 
 mod fmp4_writer;
+mod iacs_recording_manager;
 mod recording_manager;
 mod ssh_recording_manager;
 
 use anyhow::{Context, Result};
+use iacs_recording_manager::IacsRecordingManager;
 use recording_manager::RecordingManager;
 use shared::capsicum;
 use shared::ipc::{IpcChannel, poll_readable, recv_fd};
@@ -139,6 +141,27 @@ fn run_service() -> Result<()> {
         None
     };
 
+    let proxy_iacs_fds: Option<(RawFd, RawFd)> = if recording_enabled {
+        let r: Option<RawFd> = std::env::var("VAUBAN_PROXY_IACS_IPC_READ")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        let w: Option<RawFd> = std::env::var("VAUBAN_PROXY_IACS_IPC_WRITE")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        match (r, w) {
+            (Some(r), Some(w)) => {
+                info!("Proxy-IACS IPC channel available for recording");
+                Some((r, w))
+            }
+            _ => {
+                debug!("VAUBAN_PROXY_IACS_IPC_READ/WRITE not set (IACS recording disabled)");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // SAFETY: We are the only thread at this point, no concurrent access.
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
@@ -149,12 +172,16 @@ fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_PROXY_RDP_IPC_WRITE");
         std::env::remove_var("VAUBAN_PROXY_SSH_IPC_READ");
         std::env::remove_var("VAUBAN_PROXY_SSH_IPC_WRITE");
+        std::env::remove_var("VAUBAN_PROXY_IACS_IPC_READ");
+        std::env::remove_var("VAUBAN_PROXY_IACS_IPC_WRITE");
     }
 
     let channel = unsafe { IpcChannel::from_raw_fds(ipc_read_fd, ipc_write_fd) };
 
     let proxy_rdp_channel = proxy_rdp_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
     let proxy_ssh_channel = proxy_ssh_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
+    let proxy_iacs_channel =
+        proxy_iacs_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
 
     info!("Resources opened, preparing to enter sandbox");
 
@@ -164,6 +191,10 @@ fn run_service() -> Result<()> {
         ipc_fds.push(w);
     }
     if let Some((r, w)) = proxy_ssh_fds {
+        ipc_fds.push(r);
+        ipc_fds.push(w);
+    }
+    if let Some((r, w)) = proxy_iacs_fds {
         ipc_fds.push(r);
         ipc_fds.push(w);
     }
@@ -197,26 +228,49 @@ fn run_service() -> Result<()> {
         None
     };
 
-    main_loop(
-        &channel,
-        proxy_rdp_channel.as_ref(),
-        proxy_ssh_channel.as_ref(),
-        &mut state,
-        &mut recording_mgr,
-        &mut ssh_recording_mgr,
+    let mut iacs_recording_mgr = if recording_enabled {
+        Some(IacsRecordingManager::new())
+    } else {
+        None
+    };
+
+    main_loop(MainLoopContext {
+        channel: &channel,
+        proxy_rdp_channel: proxy_rdp_channel.as_ref(),
+        proxy_ssh_channel: proxy_ssh_channel.as_ref(),
+        proxy_iacs_channel: proxy_iacs_channel.as_ref(),
+        state: &mut state,
+        recording_mgr: &mut recording_mgr,
+        ssh_recording_mgr: &mut ssh_recording_mgr,
+        iacs_recording_mgr: &mut iacs_recording_mgr,
         fd_passing_socket,
-    )
+    })
 }
 
-fn main_loop(
-    channel: &IpcChannel,
-    proxy_rdp_channel: Option<&IpcChannel>,
-    proxy_ssh_channel: Option<&IpcChannel>,
-    state: &mut ServiceState,
-    recording_mgr: &mut Option<RecordingManager>,
-    ssh_recording_mgr: &mut Option<SshRecordingManager>,
+struct MainLoopContext<'a> {
+    channel: &'a IpcChannel,
+    proxy_rdp_channel: Option<&'a IpcChannel>,
+    proxy_ssh_channel: Option<&'a IpcChannel>,
+    proxy_iacs_channel: Option<&'a IpcChannel>,
+    state: &'a mut ServiceState,
+    recording_mgr: &'a mut Option<RecordingManager>,
+    ssh_recording_mgr: &'a mut Option<SshRecordingManager>,
+    iacs_recording_mgr: &'a mut Option<IacsRecordingManager>,
     fd_passing_socket: Option<RawFd>,
-) -> Result<()> {
+}
+
+fn main_loop(ctx: MainLoopContext<'_>) -> Result<()> {
+    let MainLoopContext {
+        channel,
+        proxy_rdp_channel,
+        proxy_ssh_channel,
+        proxy_iacs_channel,
+        state,
+        recording_mgr,
+        ssh_recording_mgr,
+        iacs_recording_mgr,
+        fd_passing_socket,
+    } = ctx;
     let mut poll_fds: Vec<RawFd> = vec![channel.read_fd()];
 
     let rdp_poll_idx = if let Some(rdp_ch) = proxy_rdp_channel {
@@ -228,6 +282,13 @@ fn main_loop(
 
     let ssh_poll_idx = if let Some(ssh_ch) = proxy_ssh_channel {
         poll_fds.push(ssh_ch.read_fd());
+        Some(poll_fds.len() - 1)
+    } else {
+        None
+    };
+
+    let iacs_poll_idx = if let Some(iacs_ch) = proxy_iacs_channel {
+        poll_fds.push(iacs_ch.read_fd());
         Some(poll_fds.len() - 1)
     } else {
         None
@@ -327,6 +388,35 @@ fn main_loop(
                 }
                 Err(e) => {
                     debug!(error = %e, "Proxy-SSH IPC receive error");
+                }
+            }
+        }
+
+        // Proxy-IACS channel (if present)
+        if let Some(idx) = iacs_poll_idx
+            && ready.contains(&idx)
+        {
+            #[allow(clippy::unwrap_used)]
+            let iacs_ch = proxy_iacs_channel.unwrap();
+            match iacs_ch.recv() {
+                Ok(msg) => {
+                    if let Err(e) = handle_iacs_recording_message(
+                        state,
+                        iacs_recording_mgr,
+                        channel,
+                        iacs_ch,
+                        fd_passing_socket,
+                        msg,
+                    ) {
+                        warn!("Error handling IACS recording message: {}", e);
+                        state.requests_failed += 1;
+                    }
+                }
+                Err(shared::ipc::IpcError::ConnectionClosed) => {
+                    info!("Proxy-IACS IPC connection closed");
+                }
+                Err(e) => {
+                    debug!(error = %e, "Proxy-IACS IPC receive error");
                 }
             }
         }
@@ -587,6 +677,224 @@ fn handle_ssh_recording_message(
     }
 
     Ok(())
+}
+
+fn handle_iacs_recording_message(
+    state: &mut ServiceState,
+    iacs_recording_mgr: &mut Option<IacsRecordingManager>,
+    supervisor_channel: &IpcChannel,
+    proxy_iacs_channel: &IpcChannel,
+    fd_passing_socket: Option<RawFd>,
+    msg: Message,
+) -> Result<()> {
+    let Some(mgr) = iacs_recording_mgr.as_mut() else {
+        debug!("IACS recording not enabled, ignoring IACS recording message");
+        return Ok(());
+    };
+
+    match msg {
+        Message::IacsRecordingChannelStart {
+            session_id,
+            channel_id,
+            target_host,
+            target_port,
+            opened_at_us,
+        } => {
+            let relative_path =
+                IacsRecordingManager::compute_channel_pcap_path(&session_id, channel_id);
+            match request_file_from_supervisor(
+                supervisor_channel,
+                fd_passing_socket,
+                &session_id,
+                &relative_path,
+            ) {
+                Ok(file) => {
+                    mgr.start_channel(
+                        &session_id,
+                        channel_id,
+                        file,
+                        target_host,
+                        target_port,
+                        opened_at_us,
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        session_id,
+                        channel_id,
+                        error = %e,
+                        "Failed to obtain IACS PCAP file from supervisor"
+                    );
+                }
+            }
+            state.requests_processed += 1;
+        }
+        Message::IacsRecordingData {
+            session_id,
+            channel_id,
+            batch_seq,
+            direction,
+            timestamp_us,
+            data,
+        } => {
+            match mgr.handle_data(
+                &session_id,
+                channel_id,
+                batch_seq,
+                direction,
+                timestamp_us,
+                &data,
+            ) {
+                Ok(acked_seq) => {
+                    proxy_iacs_channel.send(&Message::IacsRecordingDataAck {
+                        session_id: session_id.clone(),
+                        channel_id,
+                        batch_seq: acked_seq,
+                    })?;
+                }
+                Err(e) => {
+                    warn!(
+                        session_id,
+                        channel_id,
+                        batch_seq,
+                        error = ?e,
+                        "IACS recording batch rejected"
+                    );
+                    state.requests_failed += 1;
+                }
+            }
+            state.requests_processed += 1;
+        }
+        Message::IacsRecordingChannelEnd {
+            session_id,
+            channel_id,
+            closed_at_us,
+        } => {
+            if let Some(paths) = mgr.end_channel(&session_id, channel_id, closed_at_us) {
+                match request_gzip_from_supervisor(
+                    supervisor_channel,
+                    &session_id,
+                    &paths.src_relative,
+                    &paths.dst_relative,
+                ) {
+                    Ok((dst_size, blake3_hex)) => {
+                        mgr.finalize_channel_gzip(
+                            &session_id,
+                            channel_id,
+                            blake3_hex,
+                            dst_size,
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            session_id,
+                            channel_id,
+                            error = %e,
+                            "Failed to gzip IACS PCAP via supervisor"
+                        );
+                    }
+                }
+            }
+            state.requests_processed += 1;
+        }
+        Message::IacsRecordingSessionEnd { session_id } => {
+            if let Some(result) = mgr.end_session(&session_id) {
+                let meta_json = IacsRecordingManager::serialize_meta_json(&result);
+                match request_file_from_supervisor(
+                    supervisor_channel,
+                    fd_passing_socket,
+                    &session_id,
+                    &result.meta_json_relative_path,
+                ) {
+                    Ok(meta_file) => {
+                        use std::io::Write;
+                        let mut meta_file = meta_file;
+                        if let Err(e) = meta_file
+                            .write_all(meta_json.as_bytes())
+                            .and_then(|_| meta_file.flush())
+                        {
+                            error!(session_id, error = %e, "Failed to write IACS meta.json");
+                        } else {
+                            info!(session_id, "IACS meta.json written successfully");
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            session_id,
+                            error = %e,
+                            "Failed to obtain IACS meta.json file from supervisor"
+                        );
+                    }
+                }
+            }
+            state.requests_processed += 1;
+        }
+        _ => {
+            debug!("Non-IACS-recording message on IACS recording handler");
+        }
+    }
+
+    Ok(())
+}
+
+/// Request gzip of a PCAP file from the supervisor via IPC.
+fn request_gzip_from_supervisor(
+    channel: &IpcChannel,
+    session_id: &str,
+    src_relative: &str,
+    dst_relative: &str,
+) -> Result<(u64, String)> {
+    channel.send(&Message::RecordingFileGzipRequest {
+        request_id: 0,
+        session_id: session_id.to_string(),
+        src_relative: src_relative.to_string(),
+        dst_relative: dst_relative.to_string(),
+    })?;
+
+    loop {
+        match channel.recv() {
+            Ok(Message::RecordingFileGzipResponse {
+                request_id: _,
+                session_id: sid,
+                success,
+                dst_size,
+                blake3_hex,
+                error,
+            }) => {
+                if sid != session_id {
+                    warn!(expected = session_id, got = %sid, "Mismatched RecordingFileGzipResponse session_id");
+                    continue;
+                }
+                if !success {
+                    return Err(anyhow::anyhow!(
+                        "supervisor refused gzip: {}",
+                        error.unwrap_or_default()
+                    ));
+                }
+                let hash = blake3_hex
+                    .ok_or_else(|| anyhow::anyhow!("supervisor gzip succeeded but no blake3_hex"))?;
+                return Ok((dst_size, hash));
+            }
+            Ok(Message::Control(ControlMessage::Ping { seq })) => {
+                let stats = ServiceStats {
+                    uptime_secs: 0,
+                    requests_processed: 0,
+                    requests_failed: 0,
+                    active_connections: 0,
+                    pending_requests: 0,
+                };
+                let _ = channel.send(&Message::Control(ControlMessage::Pong { seq, stats }));
+            }
+            Ok(other) => {
+                debug!(msg = ?other, "Unexpected message while waiting for RecordingFileGzipResponse");
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "IPC error waiting for RecordingFileGzipResponse: {e}"
+                ));
+            }
+        }
+    }
 }
 
 /// Request a file from the supervisor via IPC + SCM_RIGHTS.
@@ -1213,6 +1521,35 @@ mod tests {
         assert!(
             source.contains("remove_var(\"VAUBAN_PROXY_SSH_IPC_WRITE\")"),
             "SSH IPC env vars must be cleaned up"
+        );
+    }
+
+    #[test]
+    fn test_iacs_recording_handler_exists() {
+        let source = prod_source();
+        assert!(
+            source.contains("fn handle_iacs_recording_message"),
+            "handle_iacs_recording_message function must exist"
+        );
+    }
+
+    #[test]
+    fn test_iacs_recording_main_loop_polls_iacs_channel() {
+        let source = prod_source();
+        let main_loop = source.find("fn main_loop").expect("main_loop must exist");
+        let main_loop_source = &source[main_loop..];
+        assert!(
+            main_loop_source.contains("iacs_poll_idx"),
+            "main_loop must poll the IACS recording channel"
+        );
+    }
+
+    #[test]
+    fn test_iacs_recording_env_vars_cleaned() {
+        let source = prod_source();
+        assert!(
+            source.contains("remove_var(\"VAUBAN_PROXY_IACS_IPC_READ\")"),
+            "IACS IPC env vars must be cleaned up"
         );
     }
 }

@@ -64,6 +64,7 @@ use crate::services::broadcast::{BroadcastService, WsChannel, WsMessage};
 pub const FORMAT_ASCIICAST_V2: &str = "asciicast-v2";
 pub const FORMAT_FMP4_DASH: &str = "fmp4-dash";
 pub const FORMAT_FMP4_FLAT: &str = "fmp4-flat";
+pub const FORMAT_PCAP_BUNDLE: &str = "pcap-bundle";
 
 /// Shape of the SSH `meta.json` produced by
 /// `vauban-audit::ssh_recording_manager::SshRecordingManager::serialize_meta_json`.
@@ -103,6 +104,30 @@ struct RdpSegment {
 #[derive(Debug, Deserialize)]
 struct RdpMeta {
     segments: Vec<RdpSegment>,
+}
+
+/// Shape of IACS `meta.json` (pcap-bundle). Only `channels.len()` is
+/// read at hydrate time; per-channel fields exist for schema fidelity.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct IacsChannelMeta {
+    index: u32,
+    target_host: String,
+    target_port: u16,
+    file: String,
+    blake3_hex: String,
+    file_size: u64,
+    packet_count: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct IacsPcapMeta {
+    format: Option<String>,
+    blake3_hex: String,
+    total_bytes: u64,
+    total_packets: u64,
+    duration_ms: u64,
+    channels: Vec<IacsChannelMeta>,
 }
 
 /// Bundle persisted on `proxy_sessions` after a successful tick.
@@ -608,6 +633,24 @@ enum HydrationOutcome {
     Error(String),
 }
 
+/// Build the on-disk recording directory for a session row.
+///
+/// Uses `anchor` (typically `connected_at`, else disconnect time) so the
+/// web DB path matches audit artefacts opened at tunnel start.
+pub fn recording_dir_for_session(
+    storage_path: &str,
+    session_uuid: &str,
+    anchor: chrono::DateTime<chrono::Utc>,
+) -> String {
+    format!(
+        "{}/{}/{:02}/{}/",
+        storage_path.trim_end_matches('/'),
+        anchor.format("%Y"),
+        anchor.format("%m"),
+        session_uuid
+    )
+}
+
 /// Compute the relative path of the `meta.json` file given the session's
 /// `recording_path` (which is either the recording directory, e.g.
 /// `recordings/2026/04/UUID/`, or a flat `.mp4` path for legacy RDP).
@@ -708,13 +751,28 @@ pub fn parse_meta(session_type: SessionType, buf: &str) -> Result<IntegrityBundl
             })
         }
         SessionType::IacsTunnel => {
-            // IACS tunnels are raw TCP forwards: no PTY, no commands,
-            // no recording. The hydrator should never be invoked on an
-            // `iacs_tunnel` row in the first place (such rows have
-            // `is_recorded = false` and never produce a meta.json),
-            // but the explicit branch is kept so the compiler
-            // exhaustiveness check stays our safety net.
-            Err("IACS tunnel sessions are not recorded; meta.json must not exist".to_string())
+            let meta: IacsPcapMeta =
+                serde_json::from_str(buf).map_err(|e| format!("iacs meta.json parse: {e}"))?;
+            if !is_valid_blake3_hex(&meta.blake3_hex) {
+                return Err("iacs meta.json: invalid blake3_hex".to_string());
+            }
+            let format = meta
+                .format
+                .unwrap_or_else(|| FORMAT_PCAP_BUNDLE.to_string());
+            if format != FORMAT_PCAP_BUNDLE {
+                return Err(format!("iacs meta.json: unexpected format {format}"));
+            }
+            Ok(IntegrityBundle {
+                blake3_hex: meta.blake3_hex,
+                size_bytes: meta.total_bytes as i64,
+                duration_ms: meta.duration_ms as i64,
+                event_count: Some(meta.total_packets as i32),
+                format,
+                width: 0,
+                height: 0,
+                segment_count: Some(meta.channels.len() as i32),
+                codec: None,
+            })
         }
     }
 }
@@ -1142,6 +1200,49 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_meta_iacs_happy_path() {
+        let json = r#"{
+            "format": "pcap-bundle",
+            "blake3_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            "total_bytes": 4096,
+            "total_packets": 42,
+            "duration_ms": 13000,
+            "channels": [{
+                "index": 1,
+                "target_host": "127.0.0.1",
+                "target_port": 502,
+                "file": "channels/001.pcap.gz",
+                "blake3_hex": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+                "file_size": 4096,
+                "packet_count": 42
+            }]
+        }"#;
+        let bundle = parse_meta(SessionType::IacsTunnel, json).unwrap();
+        assert_eq!(bundle.format, "pcap-bundle");
+        assert_eq!(bundle.size_bytes, 4096);
+        assert_eq!(bundle.duration_ms, 13000);
+        assert_eq!(bundle.event_count, Some(42));
+        assert_eq!(bundle.segment_count, Some(1));
+        assert_eq!(bundle.width, 0);
+        assert_eq!(bundle.codec, None);
+    }
+
+    #[test]
+    fn test_recording_dir_for_session_uses_anchor_month() {
+        use chrono::{TimeZone, Utc};
+        let anchor = Utc.with_ymd_and_hms(2026, 4, 15, 12, 0, 0).unwrap();
+        let path = recording_dir_for_session(
+            "recordings",
+            "00000000-0000-0000-0000-000000000001",
+            anchor,
+        );
+        assert_eq!(
+            path,
+            "recordings/2026/04/00000000-0000-0000-0000-000000000001/"
+        );
+    }
+
+    #[test]
     fn test_parse_meta_ssh_happy_path() {
         let json = r#"{
             "format": "asciicast-v2",
@@ -1269,6 +1370,7 @@ mod tests {
         assert_eq!(FORMAT_ASCIICAST_V2, "asciicast-v2");
         assert_eq!(FORMAT_FMP4_DASH, "fmp4-dash");
         assert_eq!(FORMAT_FMP4_FLAT, "fmp4-flat");
+        assert_eq!(FORMAT_PCAP_BUNDLE, "pcap-bundle");
     }
 
     // ========================================================================

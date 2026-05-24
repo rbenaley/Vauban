@@ -131,6 +131,9 @@ fn iacs_async_ipc_channels_constructed_before_capsicum() {
         "AsyncIpcChannel::new(web_channel) must be called in main.rs \
              (the proxy must wrap its web pipe in an async channel).",
     );
+    let audit_pos = MAIN_RS
+        .find("AsyncIpcChannel::new(ch)")
+        .or_else(|| MAIN_RS.find("audit_channel\n            .map(AsyncIpcChannel::new)"));
 
     assert!(
         sup_pos < cap_pos,
@@ -152,6 +155,12 @@ fn iacs_async_ipc_channels_constructed_before_capsicum() {
         web_pos,
         cap_pos
     );
+    if let Some(audit_pos) = audit_pos {
+        assert!(
+            audit_pos < cap_pos,
+            "AsyncIpcChannel for audit must be constructed before Capsicum"
+        );
+    }
 
     // Make sure no second AsyncIpcChannel::new(supervisor_channel) /
     // (web_channel) re-construction sneaks in post-sandbox (the
