@@ -1,0 +1,189 @@
+//! Offline pipeline E2E for the IACS Inspect Capture analyzer.
+//!
+//! Synthesises a real PCAP via `vauban-audit::iacs_pcap_synth`,
+//! gzips it, and drives it through the full
+//! `services::iacs_packet_analyzer` stack
+//! (`analyze_channel_bytes` + `analyze_packet_bytes`). Pins the
+//! end-to-end accuracy contract:
+//!
+//! - Modbus FC03 (read) and FC06 (write) classify correctly.
+//! - IEC-104 STARTDT, S-frame and a C_SC_NA_1 command classify correctly.
+//! - Direction is inferred from the first SYN tuple.
+//! - Frame indices match the synthesis ordering 1..=N.
+//! - The detail builder produces a per-byte field map of the
+//!   correct length (frame size).
+//!
+//! The supervisor / HTTP layer is intentionally NOT exercised here:
+//! `SupervisorClient` is a concrete type and the broker cannot be
+//! mocked without test-only infra. The handler-level pins live in
+//! `inspect_capture_test.rs`.
+
+#![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
+
+use vauban_audit::iacs_pcap_synth as synth;
+use vauban_web::services::iacs_packet_analyzer::types::{
+    Direction, PacketKind, PacketListFilter,
+};
+use vauban_web::services::iacs_packet_analyzer::{
+    analyze_channel_bytes, analyze_packet_bytes, page_summaries,
+};
+
+use shared::iacs_protocol::ExpectedProfile;
+
+fn build_modbus_capture() -> Vec<u8> {
+    let mut flow = synth::TcpFlow::new(
+        "uuid",
+        1,
+        synth::Endpoints::parse("192.0.2.10", 49_152, "198.51.100.20", 502),
+    );
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&synth::build_global_header());
+    for r in synth::build_handshake(&flow, 0) {
+        buf.extend_from_slice(&r);
+    }
+    // FC03 read holding registers (10 regs from 0).
+    let read_req = b"\x00\x01\x00\x00\x00\x06\x01\x03\x00\x00\x00\x0a";
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, read_req, 1_000) {
+        buf.extend_from_slice(&r);
+    }
+    // Read response 20 bytes payload.
+    let read_resp = b"\x00\x01\x00\x00\x00\x17\x01\x03\x14\
+                     \x00\x0a\x00\x14\x00\x1e\x00\x28\x00\x32\x00\x3c\x00\x46\x00\x50\x00\x5a\x00\x64";
+    for r in synth::build_data_records(&mut flow, synth::Direction::ServerToClient, read_resp, 2_000) {
+        buf.extend_from_slice(&r);
+    }
+    // FC06 write single register @5 = 0x002a.
+    let write = b"\x00\x02\x00\x00\x00\x06\x01\x06\x00\x05\x00\x2a";
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, write, 3_000) {
+        buf.extend_from_slice(&r);
+    }
+    for r in synth::build_close(&flow, 4_000) {
+        buf.extend_from_slice(&r);
+    }
+    buf
+}
+
+fn build_iec104_capture() -> Vec<u8> {
+    let mut flow = synth::TcpFlow::new(
+        "uuid",
+        2,
+        synth::Endpoints::parse("192.0.2.20", 49_153, "198.51.100.21", 2404),
+    );
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&synth::build_global_header());
+    for r in synth::build_handshake(&flow, 0) {
+        buf.extend_from_slice(&r);
+    }
+    // U-frame STARTDT act.
+    let startdt = vec![0x68u8, 0x04, 0x07, 0x00, 0x00, 0x00];
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &startdt, 1_000) {
+        buf.extend_from_slice(&r);
+    }
+    // I-frame C_SC_NA_1 (Single Command) -- type 45, cot 6.
+    let cmd = vec![
+        0x68, 0x0E, 0x00, 0x00, 0x00, 0x00, // APCI
+        45, 0x01, 0x06, 0x00, 0x01, 0x00, // ASDU header: type=45, vsq=1, cot=6, oa=0, ca=1
+        0x00, 0x00, 0x00, // info object addr
+    ];
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &cmd, 2_000) {
+        buf.extend_from_slice(&r);
+    }
+    for r in synth::build_close(&flow, 3_000) {
+        buf.extend_from_slice(&r);
+    }
+    buf
+}
+
+#[test]
+fn modbus_capture_round_trips_with_correct_classification() {
+    let buf = build_modbus_capture();
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Modbus).unwrap();
+
+    let cmds: Vec<_> = summaries.iter().filter(|s| s.kind == PacketKind::Cmd).collect();
+    let reads: Vec<_> = summaries.iter().filter(|s| s.kind == PacketKind::Read).collect();
+    assert_eq!(cmds.len(), 1, "exactly one FC06 write (Cmd)");
+    // FC03 request and FC03 response -> two Reads.
+    assert_eq!(reads.len(), 2, "request + response -> 2 reads");
+}
+
+#[test]
+fn modbus_first_data_frame_dissects_fc03() {
+    let buf = build_modbus_capture();
+    // Frame indices: 1..=3 handshake, 4 = first PSH+ACK c2s.
+    let detail = analyze_packet_bytes(&buf, ExpectedProfile::Modbus, 4).expect("detail");
+    assert_eq!(detail.summary.kind, PacketKind::Read);
+    assert!(detail.summary.summary.contains("FC03"));
+    // Per-byte field map matches the frame length.
+    assert_eq!(detail.byte_field_ids.len(), detail.hex.len());
+    // The FC byte (offset 47 = 40 IP+TCP + 7 MBAP) is tagged as modbus.function.
+    assert_eq!(detail.byte_field_ids[47], "modbus.function");
+}
+
+#[test]
+fn modbus_directions_are_inferred_from_first_syn() {
+    let buf = build_modbus_capture();
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Modbus).unwrap();
+    // Read request goes from EWS -> Asset.
+    let req = summaries
+        .iter()
+        .find(|s| s.kind == PacketKind::Read && s.dst_port == 502)
+        .expect("read req");
+    assert_eq!(req.direction, Direction::EwsToAsset);
+    // Read response goes Asset -> EWS.
+    let resp = summaries
+        .iter()
+        .find(|s| s.kind == PacketKind::Read && s.src_port == 502)
+        .expect("read resp");
+    assert_eq!(resp.direction, Direction::AssetToEws);
+}
+
+#[test]
+fn iec104_capture_classifies_startdt_and_command() {
+    let buf = build_iec104_capture();
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Iec104).unwrap();
+    assert!(
+        summaries
+            .iter()
+            .any(|s| s.summary.contains("STARTDT")),
+        "STARTDT U-frame must be visible in the timeline"
+    );
+    let cmds: Vec<_> = summaries.iter().filter(|s| s.kind == PacketKind::Cmd).collect();
+    assert_eq!(cmds.len(), 1, "exactly one C_SC_NA_1 (Cmd)");
+}
+
+#[test]
+fn frame_indices_are_one_based_and_dense() {
+    let buf = build_modbus_capture();
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Modbus).unwrap();
+    for (i, s) in summaries.iter().enumerate() {
+        assert_eq!(s.frame_idx, i + 1, "frame_idx must be 1-based dense");
+    }
+}
+
+#[test]
+fn page_summaries_pagination_yields_correct_page_window() {
+    let buf = build_modbus_capture();
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Modbus).unwrap();
+    let total = summaries.len();
+    let filter = PacketListFilter {
+        page: 2,
+        page_size: 5,
+        ..Default::default()
+    };
+    let page = page_summaries(summaries, filter);
+    assert_eq!(page.total, total);
+    if total > 5 {
+        assert!(!page.items.is_empty());
+        assert_eq!(page.items[0].frame_idx, 6);
+    }
+}
+
+#[test]
+fn passthrough_profile_classifies_application_payload_as_read() {
+    let buf = build_modbus_capture();
+    // Drive the same PCAP through the Passthrough profile (a generic
+    // TCP IACS asset). Application payload becomes plain Read,
+    // never Cmd.
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Passthrough).unwrap();
+    assert!(summaries.iter().all(|s| s.kind != PacketKind::Cmd));
+}

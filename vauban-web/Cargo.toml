@@ -11,7 +11,7 @@ license.workspace = true
 
 [dependencies]
 # Shared IPC library
-shared = { workspace = true, features = ["tasks", "session-token", "access-guard"] }
+shared = { workspace = true, features = ["tasks", "session-token", "access-guard", "iacs-protocol"] }
 
 # Shared Diesel schema
 vauban-db.workspace = true
@@ -136,8 +136,19 @@ webpki-roots = "1"
 # streams in fMP4.
 async_zip = { version = "0.0.17", default-features = false, features = ["tokio"] }
 
+# IACS Inspect Capture (services/iacs_packet_analyzer): inverse of the
+# synthetic L3/L4 layer written by vauban-audit. `etherparse` parses the
+# IPv4/IPv6 + TCP headers built by `iacs_pcap_synth`; `flate2` decompresses
+# the per-channel `.pcap.gz` files received via SCM_RIGHTS.
+etherparse = "0.18"
+flate2 = "1"
+
 [dev-dependencies]
 vauban-access = { path = "../vauban-access" }
+# Round-trip tests for the IACS Inspect Capture parser (services/iacs_packet_analyzer)
+# synthesise real PCAP fixtures via the audit-side `iacs_pcap_synth` builders so the
+# parser is exercised against the exact byte layout vauban-audit writes on disk.
+vauban-audit = { path = "../vauban-audit" }
 casbin.workspace = true
 tokio-test = "0.4"
 mockall = "0.14"

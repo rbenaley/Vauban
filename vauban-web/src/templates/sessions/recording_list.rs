@@ -24,6 +24,9 @@ pub struct RecordingListItem {
     pub status: String, // "ready", "recording", "processing"
     /// False for IACS PCAP bundles (download-only).
     pub show_play_recording: bool,
+    /// True for IACS PCAP bundles. Surfaces the per-row "Inspect"
+    /// link in `recording_list.html`.
+    pub show_inspect_capture: bool,
 }
 
 impl RecordingListItem {
@@ -107,6 +110,7 @@ mod tests {
             recording_path: "/recordings/test.cast".to_string(),
             status: "ready".to_string(),
             show_play_recording: session_type != "iacs_tunnel",
+            show_inspect_capture: session_type == "iacs_tunnel",
         }
     }
 

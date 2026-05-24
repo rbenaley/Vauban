@@ -1613,6 +1613,22 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/sessions/recordings/{id}/play",
             get(handlers::web::recording_play),
         )
+        // IACS Inspect Capture (in-browser packet analyzer).
+        // UUID-keyed; gated on `admin_view` with anti-enumeration 404.
+        // Path-based channel + frame index keep the URL space readable
+        // and the routes free from JS-driven query rewriting.
+        .route(
+            "/sessions/recordings/{uuid}/inspect",
+            get(handlers::web::inspect_capture),
+        )
+        .route(
+            "/sessions/recordings/{uuid}/inspect/channels/{n}/packets",
+            get(handlers::web::inspect_capture_packet_list),
+        )
+        .route(
+            "/sessions/recordings/{uuid}/inspect/channels/{n}/packets/{idx}",
+            get(handlers::web::inspect_capture_packet_detail),
+        )
         .route(
             "/recordings/{session_uuid}",
             get(handlers::web::serve_recording),

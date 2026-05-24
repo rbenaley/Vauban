@@ -1,0 +1,32 @@
+{# Hex dump pane. Each byte cell carries `data-field=` matching
+   the dissector tree so the Alpine highlight wires both sides. #}
+<div class="rounded-md bg-gray-50 dark:bg-gray-900/40 p-2 sm:p-3 max-h-72 overflow-y-auto">
+    <div class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
+        Hex
+    </div>
+    <div class="font-mono text-xs space-y-0.5">
+        {% for row in detail.hex_rows %}
+        <div class="flex items-start gap-3">
+            <span class="text-gray-400 select-none">{{ row.offset }}</span>
+            <span class="flex flex-wrap gap-x-1">
+                {% for b in row.bytes %}
+                <span data-field="{{ b.field_id }}"
+                      @mouseenter="highlight = '{{ b.field_id }}'"
+                      @mouseleave="highlight = null"
+                      :class="highlight && highlight === '{{ b.field_id }}' ? 'bg-amber-200 dark:bg-amber-700/60 rounded' : ''"
+                      class="px-0.5">{{ b.hex }}</span>
+                {% endfor %}
+            </span>
+            <span class="ml-auto hidden md:flex flex-wrap text-gray-500 dark:text-gray-400">
+                {% for b in row.ascii %}
+                <span data-field="{{ b.field_id }}"
+                      @mouseenter="highlight = '{{ b.field_id }}'"
+                      @mouseleave="highlight = null"
+                      :class="highlight && highlight === '{{ b.field_id }}' ? 'bg-amber-200 dark:bg-amber-700/60 rounded' : ''"
+                      class="px-0.5">{{ b.printable }}</span>
+                {% endfor %}
+            </span>
+        </div>
+        {% endfor %}
+    </div>
+</div>

@@ -699,6 +699,7 @@ pub async fn recording_list(
                     recording_path: recording_path.unwrap_or_default(),
                     status: "ready".to_string(),
                     show_play_recording: session_type != SessionType::IacsTunnel,
+                    show_inspect_capture: session_type == SessionType::IacsTunnel,
                 }
             },
         )
@@ -3196,6 +3197,12 @@ pub async fn recording_detail(
         back_url: "/sessions/recordings".to_string(),
         list_url: "/sessions/recordings".to_string(),
         show_play_recording: s_type != SessionType::IacsTunnel,
+        show_inspect_capture: s_type == SessionType::IacsTunnel,
+        inspect_url: if s_type == SessionType::IacsTunnel {
+            format!("/sessions/recordings/{}/inspect", session_uuid_str)
+        } else {
+            String::new()
+        },
     };
 
     let base = BaseTemplate::new(
@@ -3578,6 +3585,477 @@ async fn stream_iacs_pcap_zip(
         )
         .body(Body::from_stream(stream))
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
+}
+
+// =====================================================================
+// IACS Inspect Capture - in-browser packet analyzer.
+// =====================================================================
+//
+// Three handlers, all gated on `perms.admin_view` with anti-enumeration
+// 404 (mirroring `recording_detail`):
+//
+// - `inspect_capture`              -> full HTML shell (initial paint).
+// - `inspect_capture_packet_list`  -> HTMX fragment (filter/page/channel).
+// - `inspect_capture_packet_detail`-> HTMX fragment (row click).
+//
+// FD brokering reuses the same supervisor pattern as `stream_iacs_pcap_zip`.
+
+#[derive(serde::Deserialize, Debug, Clone)]
+struct IacsInspectChannelMeta {
+    #[serde(default)]
+    index: u32,
+    #[serde(default)]
+    target_host: String,
+    #[serde(default)]
+    target_port: u16,
+    #[serde(default)]
+    file: String,
+    #[serde(default)]
+    packet_count: u64,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+struct IacsInspectMeta {
+    #[serde(default)]
+    channels: Vec<IacsInspectChannelMeta>,
+}
+
+#[derive(serde::Deserialize, Debug, Default)]
+pub struct InspectQuery {
+    #[serde(default)]
+    pub channel: Option<u32>,
+    #[serde(default)]
+    pub direction: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub page: Option<usize>,
+    #[serde(default)]
+    pub page_size: Option<usize>,
+}
+
+/// Resolve the IACS recording identified by `session_uuid` against the
+/// caller permissions and return `(session_uuid_db, base_dir,
+/// industrial_protocol, asset_name, asset_hostname)`.
+///
+/// Returns the same generic 404 for every "not found / not IACS / not
+/// finalized" path so the URL space is unenumerable.
+async fn resolve_inspect_target(
+    state: &AppState,
+    session_uuid: ::uuid::Uuid,
+) -> Result<(::uuid::Uuid, String, String, String, String), AppError> {
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    use crate::schema::proxy_sessions::dsl as ps;
+    type InspectTargetRow = (
+        ::uuid::Uuid,
+        SessionType,
+        Option<String>,
+        bool,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
+        String,
+        String,
+    );
+    let row: InspectTargetRow = match ps::proxy_sessions
+        .inner_join(schema_assets::table)
+        .filter(ps::uuid.eq(session_uuid))
+        .filter(ps::is_recorded.eq(true))
+        .select((
+            ps::uuid,
+            ps::session_type,
+            ps::recording_path,
+            ps::is_recorded,
+            ps::recording_finalized_at,
+            ps::industrial_protocol,
+            schema_assets::name,
+            schema_assets::hostname,
+        ))
+        .first(&mut conn)
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return Err(AppError::NotFound("Not found".to_string())),
+    };
+
+    let (
+        s_uuid,
+        s_type,
+        s_path,
+        _is_recorded,
+        s_finalized_at,
+        s_industrial_protocol,
+        asset_name,
+        asset_hostname,
+    ) = row;
+
+    if s_type != SessionType::IacsTunnel || s_finalized_at.is_none() {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+    let recording_path = s_path.ok_or_else(|| AppError::NotFound("Not found".to_string()))?;
+    let storage_base = &state.config.recording.storage_path;
+    let base_dir = recording_path
+        .strip_prefix(storage_base)
+        .unwrap_or(&recording_path)
+        .trim_start_matches('/')
+        .to_string();
+
+    Ok((
+        s_uuid,
+        base_dir,
+        s_industrial_protocol.unwrap_or_else(|| "tcp".to_string()),
+        asset_name,
+        asset_hostname,
+    ))
+}
+
+/// Fetch and deserialize meta.json for the IACS recording.
+async fn fetch_inspect_meta(
+    state: &AppState,
+    session_uuid: ::uuid::Uuid,
+    base_dir: &str,
+) -> Result<IacsInspectMeta, AppError> {
+    use tokio::io::AsyncReadExt;
+    let supervisor = state
+        .supervisor
+        .as_ref()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("Requires supervisor")))?;
+    let meta_relative = format!("{}meta.json", base_dir);
+    let result = supervisor
+        .request_recording_file(&session_uuid.to_string(), &meta_relative)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Supervisor failed: {}", e)))?;
+    if !result.success {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+    let std_file = result
+        .file
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("No FD for meta.json")))?;
+    let mut tokio_file = tokio::fs::File::from_std(std_file);
+    let mut buf = Vec::new();
+    tokio_file
+        .read_to_end(&mut buf)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Read meta: {}", e)))?;
+    let meta: IacsInspectMeta = serde_json::from_slice(&buf)
+        .map_err(|_| AppError::NotFound("Not found".to_string()))?;
+    Ok(meta)
+}
+
+/// Fetch the gzipped PCAP for one channel and return the decompressed
+/// raw bytes ready for `analyze_channel_bytes` / `analyze_packet_bytes`.
+async fn fetch_inspect_channel_pcap(
+    state: &AppState,
+    session_uuid: ::uuid::Uuid,
+    base_dir: &str,
+    channel_file: &str,
+) -> Result<Vec<u8>, AppError> {
+    use std::io::Read as _;
+    use tokio::io::AsyncReadExt;
+    let supervisor = state
+        .supervisor
+        .as_ref()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("Requires supervisor")))?;
+    let relative = format!("{}{}", base_dir, channel_file);
+    let result = supervisor
+        .request_recording_file(&session_uuid.to_string(), &relative)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Supervisor failed: {}", e)))?;
+    if !result.success {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+    let std_file = result
+        .file
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("No FD for channel pcap")))?;
+    let mut tokio_file = tokio::fs::File::from_std(std_file);
+    let mut gz = Vec::new();
+    tokio_file
+        .read_to_end(&mut gz)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Read pcap.gz: {}", e)))?;
+    let mut decoder = flate2::read::GzDecoder::new(&gz[..]);
+    let mut decompressed = Vec::new();
+    decoder
+        .read_to_end(&mut decompressed)
+        .map_err(|_| AppError::NotFound("Not found".to_string()))?;
+    Ok(decompressed)
+}
+
+fn build_filter_view(query: &InspectQuery) -> crate::templates::sessions::inspect_capture::InspectFilterViewModel {
+    crate::templates::sessions::inspect_capture::InspectFilterViewModel {
+        direction: query.direction.clone().filter(|s| !s.is_empty()),
+        kind: query.kind.clone().filter(|s| !s.is_empty()),
+        search: query.search.clone().filter(|s| !s.trim().is_empty()),
+        page: query.page.unwrap_or(1),
+        page_size: query.page_size.unwrap_or(
+            crate::services::iacs_packet_analyzer::types::DEFAULT_PAGE_SIZE,
+        ),
+    }
+}
+
+fn build_packet_list_view(
+    page: crate::services::iacs_packet_analyzer::types::PacketListPage,
+    session_uuid: &str,
+    channel: u32,
+    filter: crate::templates::sessions::inspect_capture::InspectFilterViewModel,
+) -> crate::templates::sessions::inspect_capture::PacketListViewModel {
+    use crate::templates::sessions::inspect_capture::{PacketListViewModel, PacketRowViewModel};
+    let page_size = page.page_size.max(1);
+    let total_pages = page.total.div_ceil(page_size);
+    let has_prev = page.page > 1;
+    let has_next = page.page < total_pages;
+    let first_frame_idx = <[_]>::first(&page.items).map(|s| s.frame_idx);
+    let items: Vec<PacketRowViewModel> = page
+        .items
+        .iter()
+        .map(|s| PacketRowViewModel::from_summary(s, session_uuid, channel))
+        .collect();
+    PacketListViewModel {
+        session_uuid: session_uuid.to_string(),
+        channel,
+        items,
+        total: page.total,
+        page: page.page,
+        page_size: page.page_size,
+        total_pages,
+        has_prev,
+        has_next,
+        filter,
+        first_frame_idx,
+    }
+}
+
+fn industrial_to_profile(p: &str) -> shared::iacs_protocol::ExpectedProfile {
+    shared::iacs_protocol::ExpectedProfile::from_industrial_label(p)
+}
+
+/// Inspect Capture page (full HTML shell).
+//
+// allow-uuid-lookup: post-mortem recording inspector.
+pub async fn inspect_capture(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
+    axum::extract::Path(session_uuid): axum::extract::Path<::uuid::Uuid>,
+    axum::extract::Query(query): axum::extract::Query<InspectQuery>,
+) -> Result<axum::response::Response, AppError> {
+    use crate::services::iacs_packet_analyzer::{analyze_channel_bytes, page_summaries, types::PacketListFilter};
+    use crate::templates::sessions::inspect_capture::{
+        ChannelOption, InspectCaptureTemplate, InspectCaptureViewModel, industrial_protocol_label,
+    };
+
+    if !perms.admin_view {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+
+    let (s_uuid, base_dir, industrial_protocol, asset_name, asset_hostname) =
+        resolve_inspect_target(&state, session_uuid).await?;
+
+    let meta = fetch_inspect_meta(&state, s_uuid, &base_dir).await?;
+    if meta.channels.is_empty() {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+
+    let selected_channel = query
+        .channel
+        .filter(|c| meta.channels.iter().any(|m| m.index == *c))
+        .unwrap_or(meta.channels[0].index);
+
+    let target_channel = meta
+        .channels
+        .iter()
+        .find(|c| c.index == selected_channel)
+        .ok_or_else(|| AppError::NotFound("Not found".to_string()))?;
+
+    let pcap = fetch_inspect_channel_pcap(&state, s_uuid, &base_dir, &target_channel.file).await?;
+    let profile = industrial_to_profile(&industrial_protocol);
+    let summaries =
+        analyze_channel_bytes(&pcap, profile).map_err(|_| AppError::NotFound("Not found".to_string()))?;
+
+    let filter_view = build_filter_view(&query);
+    let filter = PacketListFilter {
+        direction: filter_view
+            .direction
+            .as_deref()
+            .and_then(crate::services::iacs_packet_analyzer::types::Direction::parse),
+        kind: filter_view
+            .kind
+            .as_deref()
+            .and_then(crate::services::iacs_packet_analyzer::types::PacketKind::parse),
+        search: filter_view.search.clone(),
+        page: filter_view.page,
+        page_size: filter_view.page_size,
+    };
+
+    let page = page_summaries(summaries, filter);
+    let session_uuid_str = s_uuid.to_string();
+    let initial_list = build_packet_list_view(page, &session_uuid_str, selected_channel, filter_view);
+
+    let channels: Vec<ChannelOption> = meta
+        .channels
+        .iter()
+        .map(|c| ChannelOption {
+            index: c.index,
+            label: format!("ch{:03}", c.index),
+            target: format!("{}:{}", c.target_host, c.target_port),
+            packets: c.packet_count,
+        })
+        .collect();
+
+    let view = InspectCaptureViewModel {
+        session_uuid: session_uuid_str.clone(),
+        asset_name: asset_name.clone(),
+        asset_hostname,
+        industrial_protocol_label: industrial_protocol_label(&industrial_protocol).to_string(),
+        industrial_protocol,
+        channels,
+        selected_channel,
+        back_url: format!("/sessions/recordings/{}", session_uuid_str),
+        list_url: "/sessions/recordings".to_string(),
+        recording_detail_url: format!("/sessions/recordings/{}", session_uuid_str),
+        initial_list,
+    };
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let base = BaseTemplate::new(
+        format!("Inspect Capture - {}", asset_name),
+        user.clone(),
+        browser_tz.0,
+    )
+    .with_current_path("/sessions/recordings");
+    let perms_for_template = perms.clone();
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
+
+    let template = InspectCaptureTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        perms: perms_for_template,
+        view,
+    };
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render: {}", e)))?;
+    Ok(Html(html).into_response())
+}
+
+/// HTMX fragment: paginated packet list for one channel.
+//
+// allow-uuid-lookup: post-mortem recording inspector fragment.
+pub async fn inspect_capture_packet_list(
+    State(state): State<AppState>,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
+    axum::extract::Path((session_uuid, channel)): axum::extract::Path<(::uuid::Uuid, u32)>,
+    axum::extract::Query(query): axum::extract::Query<InspectQuery>,
+) -> Result<axum::response::Response, AppError> {
+    use crate::services::iacs_packet_analyzer::{
+        analyze_channel_bytes, page_summaries, types::PacketListFilter,
+    };
+    use crate::templates::sessions::inspect_capture::PacketListPartial;
+
+    if !perms.admin_view {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+
+    let (s_uuid, base_dir, industrial_protocol, _, _) =
+        resolve_inspect_target(&state, session_uuid).await?;
+    let meta = fetch_inspect_meta(&state, s_uuid, &base_dir).await?;
+    let target = meta
+        .channels
+        .iter()
+        .find(|c| c.index == channel)
+        .ok_or_else(|| AppError::NotFound("Not found".to_string()))?;
+    let pcap = fetch_inspect_channel_pcap(&state, s_uuid, &base_dir, &target.file).await?;
+
+    let profile = industrial_to_profile(&industrial_protocol);
+    let summaries =
+        analyze_channel_bytes(&pcap, profile).map_err(|_| AppError::NotFound("Not found".to_string()))?;
+
+    let filter_view = build_filter_view(&query);
+    let filter = PacketListFilter {
+        direction: filter_view
+            .direction
+            .as_deref()
+            .and_then(crate::services::iacs_packet_analyzer::types::Direction::parse),
+        kind: filter_view
+            .kind
+            .as_deref()
+            .and_then(crate::services::iacs_packet_analyzer::types::PacketKind::parse),
+        search: filter_view.search.clone(),
+        page: filter_view.page,
+        page_size: filter_view.page_size,
+    };
+
+    let page = page_summaries(summaries, filter);
+    let session_uuid_str = s_uuid.to_string();
+    let list = build_packet_list_view(page, &session_uuid_str, channel, filter_view);
+
+    let template = PacketListPartial { list };
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render: {}", e)))?;
+    Ok(Html(html).into_response())
+}
+
+/// HTMX fragment: full dissection of one frame.
+//
+// allow-uuid-lookup: post-mortem recording inspector fragment.
+pub async fn inspect_capture_packet_detail(
+    State(state): State<AppState>,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
+    axum::extract::Path((session_uuid, channel, frame_idx)): axum::extract::Path<(
+        ::uuid::Uuid,
+        u32,
+        usize,
+    )>,
+) -> Result<axum::response::Response, AppError> {
+    use crate::services::iacs_packet_analyzer::analyze_packet_bytes;
+    use crate::templates::sessions::inspect_capture::{PacketDetailPartial, PacketDetailViewModel};
+
+    if !perms.admin_view {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+    if frame_idx == 0 {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+
+    let (s_uuid, base_dir, industrial_protocol, _, _) =
+        resolve_inspect_target(&state, session_uuid).await?;
+    let meta = fetch_inspect_meta(&state, s_uuid, &base_dir).await?;
+    let target = meta
+        .channels
+        .iter()
+        .find(|c| c.index == channel)
+        .ok_or_else(|| AppError::NotFound("Not found".to_string()))?;
+    let pcap = fetch_inspect_channel_pcap(&state, s_uuid, &base_dir, &target.file).await?;
+
+    let profile = industrial_to_profile(&industrial_protocol);
+    let detail = analyze_packet_bytes(&pcap, profile, frame_idx)
+        .ok_or_else(|| AppError::NotFound("Not found".to_string()))?;
+    let session_uuid_str = s_uuid.to_string();
+    let vm = PacketDetailViewModel::from_detail(detail, &session_uuid_str, channel);
+
+    let template = PacketDetailPartial { detail: vm };
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render: {}", e)))?;
+    Ok(Html(html).into_response())
 }
 
 /// Metadata for a recording segment (deserialized from meta.json).

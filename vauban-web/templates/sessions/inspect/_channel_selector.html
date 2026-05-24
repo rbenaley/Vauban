@@ -1,0 +1,24 @@
+{# Channel selector rendered as tabs (no JS, pure HTMX).
+   Each tab is an <a> that swaps the packet list partial. #}
+<div class="flex flex-wrap items-center gap-2 sm:gap-3">
+    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Channels</span>
+    <nav class="flex flex-wrap gap-1 sm:gap-2" aria-label="Channels">
+        {% for ch in view.channels %}
+        <a href="/sessions/recordings/{{ view.session_uuid }}/inspect?channel={{ ch.index }}"
+           hx-get="/sessions/recordings/{{ view.session_uuid }}/inspect/channels/{{ ch.index }}/packets"
+           hx-trigger="click"
+           hx-target="#inspect-packet-list"
+           hx-swap="outerHTML"
+           hx-include="[name='direction'], [name='kind'], [name='search']"
+           hx-push-url="true"
+           class="inline-flex items-center rounded-md px-3 py-1.5 text-xs sm:text-sm font-medium border
+                  {% if ch.index == view.selected_channel %}bg-vauban-600 text-white border-vauban-600
+                  {% else %}bg-white text-gray-700 border-gray-300 hover:bg-gray-50
+                  dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600 dark:hover:bg-gray-600{% endif %}">
+            {{ ch.label }}
+            <span class="ml-1.5 hidden sm:inline opacity-75">{{ ch.target }}</span>
+            <span class="ml-1.5 hidden md:inline opacity-60">{{ ch.packets }}p</span>
+        </a>
+        {% endfor %}
+    </nav>
+</div>

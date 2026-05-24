@@ -721,7 +721,7 @@ path. The template branches first on `is_ssh()`, then on
 | `ssh` | ends with `/` | asciinema-player (`session.cast`) |
 | `rdp` | ends with `/` | Shaka Player + DASH MPD |
 | `rdp` | ends with `.mp4` | Native `<video>` (legacy) |
-| `iacs_tunnel` | ends with `/` | None -- Play action is hidden |
+| `iacs_tunnel` | ends with `/` | None -- Play action is hidden; the **Inspect Capture** action opens the inline PCAP analyzer instead (see `Vauban_IACS_Inspect_Capture_EN(1.0).md`) |
 
 ### 9.2 RDP -- DASH Multi-Period
 
@@ -961,8 +961,18 @@ This appendix is informational; the current sections describe the
 *current* architecture. Each prior version of this document remains
 available alongside this one for archaeological purposes.
 
-### 1.5 (24 May 2026)
+### 1.5 (24-25 May 2026)
 
+- **Inspect Capture** (admin-only inline PCAP analyzer): the IACS
+  recording bundle can now be analysed in the browser (`/sessions/
+  recordings/{uuid}/inspect`) with industrial-protocol-aware
+  dissectors (Modbus/TCP, IEC-104; OPC-UA / PROFINET / DNP3 fall back
+  to passthrough). Server-rendered HTMX + Tailwind, ~10-line declarative
+  Alpine `x-data` for the tree<->hex bidirectional highlight, no inline
+  JavaScript. See `Vauban_IACS_Inspect_Capture_EN(1.0).md`. The
+  Recording Detail and Recordings List pages surface a contextual
+  "Inspect Capture" / "Inspect" action only on finalized IACS
+  recordings.
 - Synthetic IPv4/IPv6 + TCP layer around every IACS PCAP record;
   Modbus/TCP, OPC-UA Binary, S7, EtherNet/IP now dissect natively in
   Wireshark / tcpdump / Zeek.

@@ -147,8 +147,14 @@
                         </a>
                         {% if recording.show_play_recording %}
                         <a href="/sessions/recordings/{{ recording.id }}/play"
-                           class="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600">
+                           class="inline-flex w-20 justify-center items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600">
                             Play
+                        </a>
+                        {% endif %}
+                        {% if recording.show_inspect_capture %}
+                        <a href="/sessions/recordings/{{ recording.session_uuid }}/inspect"
+                           class="inline-flex w-20 justify-center items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600">
+                            Inspect
                         </a>
                         {% endif %}
                     </div>

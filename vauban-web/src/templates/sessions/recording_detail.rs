@@ -106,6 +106,12 @@ pub struct RecordingDetailViewModel {
     pub list_url: String,
     /// False for IACS PCAP bundles (download-only, no in-browser player).
     pub show_play_recording: bool,
+    /// True for IACS PCAP bundles -- surfaces the "Inspect Capture"
+    /// button alongside Download.
+    pub show_inspect_capture: bool,
+    /// `/sessions/recordings/{uuid}/inspect`. Empty when
+    /// `show_inspect_capture` is false.
+    pub inspect_url: String,
 }
 
 impl RecordingDetailViewModel {
@@ -282,6 +288,8 @@ mod tests {
             back_url: "/sessions/recordings".to_string(),
         list_url: "/sessions/recordings".to_string(),
         show_play_recording: true,
+        show_inspect_capture: false,
+        inspect_url: String::new(),
     }
     }
 

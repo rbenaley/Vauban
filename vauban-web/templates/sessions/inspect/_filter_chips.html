@@ -1,0 +1,76 @@
+{# Filter chip row: direction, kind, search.
+   Every change triggers a re-fetch of the packet list partial via HTMX
+   with hx-include propagating all three filters together. #}
+<div class="flex flex-wrap items-center gap-3 bg-white dark:bg-gray-800 shadow rounded-lg p-3 sm:p-4">
+    <!-- Direction chips -->
+    <div class="flex flex-wrap items-center gap-1.5">
+        <span class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            Direction
+        </span>
+        {% for opt in [("", "All"), ("ews_to_asset", "EWS->Asset"), ("asset_to_ews", "Asset->EWS")] %}
+        <label class="inline-flex items-center cursor-pointer text-sm">
+            <input type="radio" name="direction" value="{{ opt.0 }}"
+                   {% if view.initial_list.filter.direction.as_deref().unwrap_or("") == opt.0 %}checked{% endif %}
+                   hx-get="/sessions/recordings/{{ view.session_uuid }}/inspect/channels/{{ view.selected_channel }}/packets"
+                   hx-trigger="change"
+                   hx-target="#inspect-packet-list"
+                   hx-swap="outerHTML"
+                   hx-include="[name='direction'], [name='kind'], [name='search']"
+                   hx-push-url="true"
+                   class="sr-only peer">
+            <span class="rounded-full px-2.5 py-0.5 text-xs font-medium border
+                         bg-white text-gray-700 border-gray-300 hover:bg-gray-50
+                         peer-checked:bg-vauban-600 peer-checked:text-white peer-checked:border-vauban-600
+                         dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600 dark:hover:bg-gray-600">
+                {{ opt.1 }}
+            </span>
+        </label>
+        {% endfor %}
+    </div>
+
+    <!-- Kind chips -->
+    <div class="flex flex-wrap items-center gap-1.5">
+        <span class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            Kind
+        </span>
+        {% for opt in [("", "All"), ("read", "Read"), ("cmd", "Cmd"), ("excp", "Exception"), ("tcp", "TCP")] %}
+        <label class="inline-flex items-center cursor-pointer text-sm">
+            <input type="radio" name="kind" value="{{ opt.0 }}"
+                   {% if view.initial_list.filter.kind.as_deref().unwrap_or("") == opt.0 %}checked{% endif %}
+                   hx-get="/sessions/recordings/{{ view.session_uuid }}/inspect/channels/{{ view.selected_channel }}/packets"
+                   hx-trigger="change"
+                   hx-target="#inspect-packet-list"
+                   hx-swap="outerHTML"
+                   hx-include="[name='direction'], [name='kind'], [name='search']"
+                   hx-push-url="true"
+                   class="sr-only peer">
+            <span class="rounded-full px-2.5 py-0.5 text-xs font-medium border
+                         bg-white text-gray-700 border-gray-300 hover:bg-gray-50
+                         peer-checked:bg-vauban-600 peer-checked:text-white peer-checked:border-vauban-600
+                         dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600 dark:hover:bg-gray-600">
+                {{ opt.1 }}
+            </span>
+        </label>
+        {% endfor %}
+    </div>
+
+    <!-- Search box -->
+    <div class="relative ml-auto min-w-[12rem] sm:min-w-[18rem]">
+        <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
+            <svg class="h-4 w-4 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd"/>
+            </svg>
+        </div>
+        <input type="search" name="search"
+               value="{{ view.initial_list.filter.search.as_deref().unwrap_or_default() }}"
+               placeholder="Search summary, FC, hex, ASCII..."
+               autocomplete="off"
+               hx-get="/sessions/recordings/{{ view.session_uuid }}/inspect/channels/{{ view.selected_channel }}/packets"
+               hx-trigger="input changed delay:300ms, search"
+               hx-target="#inspect-packet-list"
+               hx-swap="outerHTML"
+               hx-include="[name='direction'], [name='kind'], [name='search']"
+               hx-push-url="true"
+               class="block w-full rounded-md border-0 py-1.5 pl-8 pr-3 text-sm text-gray-900 dark:text-white ring-1 ring-inset ring-gray-300 dark:ring-gray-600 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-vauban-600 dark:bg-gray-700">
+    </div>
+</div>

@@ -1,0 +1,56 @@
+{# Packet detail partial. Top-level wrapper carries an Alpine
+   `x-data` for the tree<->hex bidirectional highlight; this is
+   the only client-side state on the page (~10 lines, declarative). #}
+<div id="inspect-packet-detail"
+     x-data="{ highlight: null }"
+     class="bg-white dark:bg-gray-800 shadow rounded-xl border border-gray-200 dark:border-gray-700 p-3 sm:p-4 space-y-3">
+
+    <!-- Header strip -->
+    <div class="flex flex-wrap items-center gap-2">
+        <span class="font-mono text-xs text-gray-500 dark:text-gray-400">#{{ detail.frame_idx }}</span>
+        <span class="font-mono text-xs text-gray-500 dark:text-gray-400">{{ detail.timestamp }}</span>
+        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold {{ detail.kind_pill_class }}">
+            {{ detail.kind_label }}
+        </span>
+        <span class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            {{ detail.direction_label }}
+        </span>
+    </div>
+
+    <!-- One-liner summary -->
+    <div class="text-sm text-gray-800 dark:text-gray-100 break-words">
+        {{ detail.summary }}
+    </div>
+
+    <!-- Dissection tree (depth-first flattened, indented by `depth`). -->
+    <div class="rounded-md bg-gray-50 dark:bg-gray-900/40 p-2 sm:p-3 max-h-72 overflow-y-auto">
+        <div class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
+            Dissection
+        </div>
+        <ul class="text-sm space-y-0.5">
+            {% for n in detail.tree %}
+            <li data-field="{{ n.field_id }}"
+                @mouseenter="highlight = '{{ n.field_id }}'"
+                @mouseleave="highlight = null"
+                :class="highlight === '{{ n.field_id }}' ? 'bg-amber-200/60 dark:bg-amber-700/40 rounded' : ''"
+                class="py-0.5 px-1"
+                style="padding-left: {{ n.indent_px }}px">
+                {% if n.is_parent %}
+                <span class="text-gray-700 dark:text-gray-200 font-medium">{{ n.label }}</span>
+                {% else %}
+                <span class="text-gray-500 dark:text-gray-400">{{ n.label }}:</span>
+                <span class="font-mono text-gray-900 dark:text-gray-100 break-all">{{ n.value }}</span>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <!-- Hex dump -->
+    {% include "sessions/inspect/_hex_dump.html" %}
+
+    <!-- Mini replay-safety reminder -->
+    <p class="text-xs text-amber-700 dark:text-amber-300">
+        Forensic frame: TCP layer is synthetic, not replayable.
+    </p>
+</div>

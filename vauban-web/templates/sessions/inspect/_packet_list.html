@@ -1,0 +1,64 @@
+{# Packet list partial. Re-rendered server-side on every filter /
+   pagination / channel change. The wrapper id #inspect-packet-list
+   is the canonical hx-target across the page.
+
+   The partial expects a `list` field exposed via either:
+   - the standalone `PacketListPartial` template (HTMX swap), or
+   - an `{% let list = view.initial_list %}` block in shell.html. #}
+<div id="inspect-packet-list" class="bg-white dark:bg-gray-800 shadow rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+    {% if list.items.is_empty() %}
+    <div class="px-4 py-10 text-center">
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+            No packets match the current filters.
+        </p>
+    </div>
+    {% else %}
+    <ul role="list" class="divide-y divide-gray-100 dark:divide-gray-700 max-h-[36rem] overflow-y-auto">
+        {% for row in list.items %}
+        <li class="{{ row.direction_border_class }} {{ row.kind_row_class }} px-3 py-2 text-sm flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-1 hover:bg-vauban-50 dark:hover:bg-vauban-900/30 cursor-pointer"
+            hx-get="{{ row.detail_url }}"
+            hx-target="#inspect-packet-detail"
+            hx-swap="outerHTML"
+            hx-trigger="click"
+            hx-push-url="false">
+            <span class="font-mono text-xs text-gray-500 dark:text-gray-400 w-12 sm:w-16 truncate">#{{ row.frame_idx }}</span>
+            <span class="font-mono text-xs text-gray-500 dark:text-gray-400 w-20 sm:w-24 truncate hidden sm:inline">{{ row.timestamp }}</span>
+            <span class="text-xs font-semibold w-12 truncate">{{ row.kind_glyph }}</span>
+            <span class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 w-24 truncate hidden md:inline">{{ row.direction_label }}</span>
+            <span class="flex-1 min-w-0 break-words">{{ row.summary }}</span>
+            <span class="text-xs text-gray-400 dark:text-gray-500 hidden lg:inline">{{ row.payload_len }}B</span>
+        </li>
+        {% endfor %}
+    </ul>
+
+    <!-- Pagination footer -->
+    <div class="flex flex-wrap items-center justify-between gap-2 border-t border-gray-200 dark:border-gray-700 px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+        <span>
+            Page {{ list.page }} of {{ list.total_pages }}
+            ({{ list.total }} packet{% if list.total != 1 %}s{% endif %})
+        </span>
+        <div class="flex items-center gap-1.5">
+            {% if list.has_prev %}
+            <a href="#"
+               hx-get="/sessions/recordings/{{ list.session_uuid }}/inspect/channels/{{ list.channel }}/packets?page={{ list.page - 1 }}"
+               hx-target="#inspect-packet-list"
+               hx-swap="outerHTML"
+               hx-include="[name='direction'], [name='kind'], [name='search']"
+               class="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 hover:bg-gray-50 dark:hover:bg-gray-600">
+                Previous
+            </a>
+            {% endif %}
+            {% if list.has_next %}
+            <a href="#"
+               hx-get="/sessions/recordings/{{ list.session_uuid }}/inspect/channels/{{ list.channel }}/packets?page={{ list.page + 1 }}"
+               hx-target="#inspect-packet-list"
+               hx-swap="outerHTML"
+               hx-include="[name='direction'], [name='kind'], [name='search']"
+               class="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 hover:bg-gray-50 dark:hover:bg-gray-600">
+                Next
+            </a>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+</div>
