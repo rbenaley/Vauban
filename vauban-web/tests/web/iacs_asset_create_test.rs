@@ -814,7 +814,12 @@ async fn iacs_all_filter_appears_in_dropdowns_and_narrows_results() {
 
     let filtered = app
         .server
-        .get("/assets/manage?type=iacs")
+        // Scope the assertion to this test's seeded rows by combining
+        // the type filter with a name-prefix search. Both rows match
+        // the search; the type filter must drop the SSH row. This
+        // also makes the test robust to leaked rows in a shared test
+        // database -- pagination cannot push our seeds off page 1.
+        .get(&format!("/assets/manage?type=iacs&search={prefix}"))
         .add_header(COOKIE, format!("access_token={}", admin.token))
         .await;
     assert_status(&filtered, 200);
