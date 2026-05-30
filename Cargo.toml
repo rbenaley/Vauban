@@ -53,8 +53,20 @@ tokio-util = { version = "0.7", features = ["codec"] }
 
 # SSH client (async, pure Rust) - used by vauban-proxy-ssh
 # Note: russh 0.57+ includes keys module directly (no separate russh-keys crate)
-russh = "0.57"
+# 0.61 migrates from the internal ssh-key 0.6 fork to upstream ssh-key 0.7
+# and replaces libcrux-ml-kem with the RustCrypto ml-kem crate (drops
+# libcrux-sha3, RUSTSEC-2026-0074).
+russh = "0.61"
 async-trait = "0.1"
+
+# OS CSPRNG adapter for `ssh_key::PrivateKey::random` (Ed25519 host-key
+# generation). russh 0.61's upstream ssh-key 0.7 requires a `rand_core`
+# 0.10 `CryptoRng`; rand_core 0.10 no longer ships `OsRng`. getrandom's
+# `SysRng` is the OS entropy source (it is `TryCryptoRng`; wrap it in
+# `rand_core::UnwrapErr` to satisfy the infallible `CryptoRng` bound).
+# This is the same getrandom already pulled transitively by russh/rand,
+# so it adds no new crate to the graph.
+getrandom = { version = "0.4", features = ["sys_rng"] }
 
 
 # Secret management and memory zeroization

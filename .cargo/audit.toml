@@ -1,0 +1,36 @@
+# cargo-audit configuration (read automatically from the current working
+# directory, so it applies to BOTH invocations of `just audit`: the
+# workspace scan and the `-f vauban-proxy-rdp/Cargo.lock` scan).
+#
+# Policy: we DO NOT blanket-ignore advisories. Every entry below is a
+# documented, accepted residual risk with no upstream fix available at
+# pin time. Any NEW or FIXABLE advisory must surface as a hard failure
+# so `just audit` stays a meaningful CI gate.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 -- "Marvin Attack" timing side-channel in the
+    # `rsa` crate (key recovery via PKCS#1 v1.5 decryption timing).
+    #
+    # Why accepted:
+    #   * No fixed `rsa` release exists upstream (the advisory has no
+    #     patched version; the RustCrypto rewrite is still in the
+    #     `0.10.0-rc` pre-release line). There is nothing to upgrade to.
+    #   * Two `rsa` versions are present in the workspace lock and both
+    #     trip the same advisory ID:
+    #       - rsa 0.10.0-rc.18 : pulled transitively by `russh` 0.61
+    #         (ssh-key 0.7) ONLY to support the legacy `ssh-rsa` host /
+    #         client key algorithm on the SSH proxy paths.
+    #       - rsa 0.9.10       : pre-existing transitive dependency.
+    #   * Vauban does not perform RSA PKCS#1 v1.5 *decryption* with an
+    #     attacker-controllable oracle: the SSH usage is signature
+    #     verification / key handling, not a decryption timing oracle,
+    #     and the bastion fronts every asset behind its own access
+    #     control. The Marvin precondition (remote timing of repeated
+    #     decryptions) is not reachable in the deployed topology.
+    #
+    # Revisit when a fixed `rsa` (>= a non-vulnerable release) ships, or
+    # when `russh` drops the `rsa` feature by default. Tracked alongside
+    # the russh 0.57 -> 0.61 bump that introduced the second instance.
+    "RUSTSEC-2023-0071",
+]

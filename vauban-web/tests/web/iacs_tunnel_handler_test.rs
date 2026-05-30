@@ -27,7 +27,7 @@ use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use russh::client::{self, Handler as ClientHandler};
 use russh::keys::ssh_key::Algorithm;
-use russh::keys::ssh_key::rand_core::OsRng;
+use russh::keys::ssh_key::rand_core::UnwrapErr;
 use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKey};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -64,7 +64,8 @@ impl ClientHandler for TestClient {
 }
 
 fn fresh_ed25519_key() -> PrivateKey {
-    PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("ed25519 keygen")
+    PrivateKey::random(&mut UnwrapErr(getrandom::SysRng), Algorithm::Ed25519)
+        .expect("ed25519 keygen")
 }
 
 /// SHA-256 hex over the OpenSSH wire blob (algorithm-name +
@@ -679,7 +680,7 @@ async fn refuses_tcpip_forward() {
     let target = spawn_echo_target().await;
     let (sshd_addr, _registry) = spawn_test_sshd(app, target).await;
 
-    let mut handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
+    let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
         .expect("auth");
     let res = handle.tcpip_forward("127.0.0.1", 0).await;

@@ -7,7 +7,8 @@
 # --target-dir target ensures vauban-proxy-rdp outputs binaries into the shared
 # target/ directory where the supervisor expects them (bin_path = "./target/debug").
 
-rdp_manifest := "--manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target"
+rdp_path     := "--manifest-path vauban-proxy-rdp/Cargo.toml"
+rdp_manifest := rdp_path + " --target-dir target"
 
 # Build all crates (workspace + vauban-proxy-rdp)
 build *ARGS:
@@ -36,6 +37,25 @@ clippy *ARGS:
 release:
     cargo build --workspace --release
     cargo build {{rdp_manifest}} --release
+
+# Uses {{rdp_path}} (no --target-dir): `cargo update` only rewrites
+# Cargo.lock and rejects --target-dir.
+# Update dependencies in both lockfiles (workspace + vauban-proxy-rdp)
+update *ARGS:
+    cargo update {{ARGS}}
+    cargo update {{rdp_path}} {{ARGS}}
+
+# Scan both lockfiles for RustSec advisories (cargo audit uses -f, not
+# --manifest-path, so the rdp lock is passed explicitly). Both scans always
+# run; the recipe fails if either lockfile has advisories (CI-friendly).
+# Audit dependencies in both lockfiles (workspace + vauban-proxy-rdp)
+audit *ARGS:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    rc=0
+    cargo audit {{ARGS}} || rc=1
+    cargo audit -f vauban-proxy-rdp/Cargo.lock {{ARGS}} || rc=1
+    exit $rc
 
 # Clean all build artifacts
 clean:

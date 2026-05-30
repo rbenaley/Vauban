@@ -180,10 +180,13 @@ mod tests {
     use super::*;
     use russh::keys::PrivateKey;
     use russh::keys::ssh_key::Algorithm;
-    use russh::keys::ssh_key::rand_core::OsRng;
+    use russh::keys::ssh_key::rand_core::UnwrapErr;
 
     fn fresh_key() -> PrivateKey {
-        PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("ed25519 keygen")
+        // ssh-key 0.7 (russh 0.61) needs a rand_core 0.10 `CryptoRng`;
+        // getrandom's `SysRng` wrapped in `UnwrapErr` provides it.
+        PrivateKey::random(&mut UnwrapErr(getrandom::SysRng), Algorithm::Ed25519)
+            .expect("ed25519 keygen")
     }
 
     #[test]

@@ -54,5 +54,8 @@ base64 = "0.22"
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 nix.workspace = true
-rand_core = { version = "0.6", features = ["std"] }
+# Tests generate Ed25519 keys via `PrivateKey::random`; russh 0.61 /
+# ssh-key 0.7 needs a rand_core 0.10 `CryptoRng`. getrandom's `SysRng`
+# (OS entropy) wrapped in `rand_core::UnwrapErr` provides it.
+getrandom = { workspace = true }
 async-trait.workspace = true

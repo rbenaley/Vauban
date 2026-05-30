@@ -656,8 +656,12 @@ pub fn load_or_generate_host_key(path: &PathBuf) -> std::io::Result<PrivateKey> 
     {
         std::fs::create_dir_all(parent)?;
     }
+    // ssh-key 0.7 (russh 0.61) requires a rand_core 0.10 `CryptoRng`;
+    // rand_core 0.10 dropped `OsRng`. getrandom's `SysRng` is the OS
+    // entropy source (fallible `TryCryptoRng`), wrapped in `UnwrapErr`
+    // to satisfy the infallible `CryptoRng` bound.
     let key = PrivateKey::random(
-        &mut russh::keys::ssh_key::rand_core::OsRng,
+        &mut russh::keys::ssh_key::rand_core::UnwrapErr(getrandom::SysRng),
         Algorithm::Ed25519,
     )
     .map_err(|e| std::io::Error::other(format!("ed25519 keygen: {}", e)))?;

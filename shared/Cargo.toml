@@ -46,6 +46,9 @@ uuid = { version = "1.11", features = ["v4", "serde"], optional = true }
 # binds and pre-loads the key BEFORE fork) and by vauban-proxy-iacs (parses
 # the file contents read off the inherited FD BEFORE entering Capsicum).
 russh = { workspace = true, optional = true }
+# OS CSPRNG for Ed25519 host-key generation (see iacs_host_key.rs). Only
+# needed alongside the russh-backed `iacs-host-key` feature.
+getrandom = { workspace = true, optional = true }
 
 [features]
 default = []
@@ -70,7 +73,7 @@ session-token = ["dep:blake3", "dep:secrecy", "dep:base64", "dep:rand", "dep:sub
 # supervisor (pre-loads + handsover FD) and vauban-proxy-iacs (parses
 # from FD before Capsicum). Other crates do NOT need russh and stay
 # slim.
-iacs-host-key = ["dep:russh"]
+iacs-host-key = ["dep:russh", "dep:getrandom"]
 # Peek-based industrial wire protocol classification for the IACS
 # tunnel gate in vauban-proxy-iacs. Tokio-free pure parsing.
 iacs-protocol = []

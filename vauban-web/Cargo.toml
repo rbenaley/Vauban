@@ -101,10 +101,15 @@ nix.workspace = true
 # Security
 dashmap = "6"       # Concurrent HashMap for in-memory rate limiting
 
-# IACS tunnel sshd (in-process, lot L3). russh is already pinned at the
-# workspace level to 0.57; vauban-web previously did not consume it
-# because it only spoke HTTP. The IACS tunnel server changes that.
+# IACS tunnel sshd (in-process, lot L3). russh is pinned at the workspace
+# level (0.61); vauban-web previously did not consume it because it only
+# spoke HTTP. The IACS tunnel server changes that.
 russh = { workspace = true }
+# OS CSPRNG for the in-process sshd host-key generation. russh 0.61's
+# ssh-key 0.7 needs a rand_core 0.10 `CryptoRng`; getrandom's `SysRng`
+# (wrapped in `rand_core::UnwrapErr`) provides it. Distinct from the
+# `rand 0.8` above, which is used elsewhere on rand_core 0.6.
+getrandom = { workspace = true }
 ammonia = "4"       # HTML sanitization
 regex = "1"         # Regular expressions for input validation
 

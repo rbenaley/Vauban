@@ -173,6 +173,14 @@ impl PendingSessions {
     pub async fn len(&self) -> usize {
         self.inner.lock().await.len()
     }
+
+    /// `true` when no tunnel is currently pending. Paired with
+    /// [`len`](Self::len) so the public registry API satisfies
+    /// clippy's `len_without_is_empty` (the type became part of the
+    /// crate's public surface via `lib.rs` for the handshake tests).
+    pub async fn is_empty(&self) -> bool {
+        self.inner.lock().await.is_empty()
+    }
 }
 
 /// Verify an offered (user, public_key) pair against the pending
@@ -224,11 +232,14 @@ mod tests {
     use super::*;
     use russh::keys::PrivateKey;
     use russh::keys::ssh_key::Algorithm;
-    use russh::keys::ssh_key::rand_core::OsRng;
+    use russh::keys::ssh_key::rand_core::UnwrapErr;
     use std::time::Duration;
 
     fn fresh_key() -> PrivateKey {
-        PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("ed25519 keygen")
+        // ssh-key 0.7 wants a rand_core 0.10 `CryptoRng`; getrandom's
+        // `SysRng` is `TryCryptoRng`, wrapped here in `UnwrapErr`.
+        PrivateKey::random(&mut UnwrapErr(getrandom::SysRng), Algorithm::Ed25519)
+            .expect("ed25519 keygen")
     }
 
     fn pending_for(key: &PrivateKey, session: Uuid, deadline: Instant) -> PendingTunnel {

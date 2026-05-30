@@ -923,11 +923,15 @@ mod host_key_behavioural_tests {
     }
 
     /// Build a fresh ed25519 private key. Centralised so every test
-    /// uses the same RNG plumbing (and we only need to bump it in one
-    /// place if russh's `rand_core` major version moves).
+    /// uses the same RNG plumbing. We use the `rand_core` re-exported by
+    /// russh (`ssh_key::rand_core`) so the RNG major always matches the
+    /// `PrivateKey::random` call site, even across russh upgrades.
     fn fresh_ed25519_key() -> PrivateKey {
-        PrivateKey::random(&mut rand_core::OsRng, Algorithm::Ed25519)
-            .expect("Ed25519 key generation must succeed")
+        PrivateKey::random(
+            &mut russh::keys::ssh_key::rand_core::UnwrapErr(getrandom::SysRng),
+            Algorithm::Ed25519,
+        )
+        .expect("Ed25519 key generation must succeed")
     }
 
     /// Render a `PrivateKey`'s public part in the canonical OpenSSH
