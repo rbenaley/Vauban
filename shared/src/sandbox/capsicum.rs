@@ -39,6 +39,11 @@ pub(crate) struct CapRights {
 
 impl CapRights {
     /// Rights for a readable file descriptor.
+    ///
+    /// Retained as part of the CapRights vocabulary and exercised by the
+    /// unit tests; no `Resource` variant currently maps to a read-only fd
+    /// (IPC pipes use `read_write`), hence dead in non-test builds.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn read_only() -> Self {
         Self {
             read: true,
@@ -49,6 +54,11 @@ impl CapRights {
     }
 
     /// Rights for a writable file descriptor.
+    ///
+    /// Retained for the CapRights vocabulary and the unit tests; no
+    /// `Resource` variant maps to a write-only fd, hence dead in non-test
+    /// builds.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn write_only() -> Self {
         Self {
             write: true,
@@ -113,6 +123,11 @@ impl CapRights {
     }
 
     /// Rights for a TCP connection (database, cache, etc.).
+    ///
+    /// Retained for the CapRights vocabulary and the unit tests; a
+    /// connected DB socket arrives as a pre-opened fd mapped through
+    /// `connected_socket`, hence dead in non-test builds.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn tcp_connection() -> Self {
         Self {
             read: true,
