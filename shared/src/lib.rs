@@ -3,7 +3,7 @@
 //! This crate provides:
 //! - IPC message types for inter-process communication
 //! - Unix pipe utilities with SCM_RIGHTS support
-//! - Capsicum sandboxing wrappers for FreeBSD
+//! - Multi-OS process sandbox abstraction (Capsicum / Landlock+seccomp / pledge)
 
 // Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
 #![cfg_attr(
@@ -17,10 +17,10 @@
     )
 )]
 
-pub mod capsicum;
 pub mod ipc;
 pub mod messages;
 pub mod recording_paths;
+pub mod sandbox;
 pub mod totp;
 
 // Defense-in-depth RBAC re-check helper. Pulled in by every protocol

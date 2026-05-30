@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::registry::TunnelHandle;
 use crate::iacs_recording::ChannelRecorder;
+use crate::registry::TunnelHandle;
 use shared::messages::IacsRecordingDirection;
 
 /// Pull bytes from `read` and push them to `write`, bumping

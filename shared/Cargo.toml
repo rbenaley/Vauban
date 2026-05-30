@@ -82,6 +82,14 @@ iacs-protocol = []
 [target.'cfg(target_os = "freebsd")'.dependencies]
 capsicum = "0.4"
 
+# Linux sandbox: Landlock (path-based LSM, conceptually closest to
+# Capsicum's object-capability model) + seccomp-bpf (syscall allowlist).
+# Both are minimal-TCB, well-provenanced crates (landlock-lsm project /
+# Firecracker). cfg-gated so vault/auth/audit pay nothing off Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+seccompiler = "0.5"
+
 [dev-dependencies]
 tempfile = "3"
 # AccessGuard tests need real tokio + nix pipes. Keep this in dev-deps

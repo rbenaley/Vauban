@@ -46,9 +46,9 @@ use anyhow::{Context, Result};
 use shared::access_guard::{
     AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_IACS_TUNNEL,
 };
-use shared::capsicum;
 use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{ControlMessage, Message, ServiceStats};
+use shared::sandbox as capsicum;
 use shared::session_token::proxy_gate as session_token_gate;
 use std::collections::HashMap;
 use std::os::fd::FromRawFd;
@@ -421,7 +421,7 @@ async fn run_service() -> Result<()> {
     // new socket(), no new bind(), no new connect(), no new
     // open() on an absolute path (errno 94 on FreeBSD), no new
     // fcntl() on a tightly-scoped FD (errno 93).
-    capsicum::setup_service_sandbox_with_listeners(
+    let sealed = capsicum::setup_service_sandbox_with_listeners(
         &ipc_fds,
         None, // No DB connection.
         fd_receiver_fds.as_deref(),
@@ -628,6 +628,7 @@ async fn run_service() -> Result<()> {
     }
 
     main_loop(
+        sealed,
         supervisor_async,
         web_async,
         web_tx,
@@ -644,6 +645,7 @@ async fn run_service() -> Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 async fn main_loop(
+    _sealed: capsicum::Entered,
     supervisor: Arc<AsyncIpcChannel>,
     web: Arc<AsyncIpcChannel>,
     web_tx: mpsc::UnboundedSender<Message>,

@@ -48,11 +48,11 @@ impl AckRouter {
     }
 
     pub async fn complete(&self, session_id: &str, channel_id: u32, batch_seq: u64) {
-        if let Some(tx) = self
-            .pending
-            .lock()
-            .await
-            .remove(&(session_id.to_string(), channel_id, batch_seq))
+        if let Some(tx) =
+            self.pending
+                .lock()
+                .await
+                .remove(&(session_id.to_string(), channel_id, batch_seq))
         {
             let _ = tx.send(());
         }
@@ -191,9 +191,7 @@ impl ChannelRecorder {
                 timestamp_us: now_us(),
                 data: data.to_vec(),
             })
-            .map_err(|e| {
-                std::io::Error::other(format!("audit channel closed: {e}"))
-            })?;
+            .map_err(|e| std::io::Error::other(format!("audit channel closed: {e}")))?;
         match tokio::time::timeout(ACK_TIMEOUT, rx).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(_)) => {

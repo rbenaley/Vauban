@@ -30,9 +30,9 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use shared::capsicum;
 use shared::ipc::{IpcChannel, poll_readable};
 use shared::messages::{ControlMessage, Message, ServiceStats};
+use shared::sandbox as capsicum;
 use tracing::{error, info, warn};
 
 use vauban_vault::keyring::{Keyring, MasterKey};
@@ -162,7 +162,8 @@ fn run_service() -> Result<()> {
         peer_channels.push(("proxy_rdp", ch));
     }
 
-    capsicum::setup_service_sandbox(&all_fds, None).context("Failed to setup sandbox")?;
+    let sealed =
+        capsicum::setup_service_sandbox(&all_fds, None).context("Failed to setup sandbox")?;
 
     info!(
         "Entered Capsicum sandbox, starting main loop ({} peer channels)",
@@ -178,7 +179,7 @@ fn run_service() -> Result<()> {
         keyrings,
     };
 
-    main_loop(&supervisor_channel, &peer_channels, &mut state)
+    main_loop(sealed, &supervisor_channel, &peer_channels, &mut state)
 }
 
 /// Parse topology channel env vars for a peer service.
@@ -251,6 +252,7 @@ fn load_key_version() -> Result<u32> {
 }
 
 fn main_loop(
+    _sealed: capsicum::Entered,
     supervisor: &IpcChannel,
     peers: &[(&str, &IpcChannel)],
     state: &mut ServiceState,

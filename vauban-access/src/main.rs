@@ -22,11 +22,11 @@ use vauban_access::{admin_count, db, handlers, virtual_group};
 
 use anyhow::{Context, Result};
 use casbin::prelude::*;
-use shared::capsicum;
 use shared::ipc::{IpcChannel, poll_readable};
 use shared::messages::{
     AccessRequest, AccessResponse, ControlMessage, Message, RbacResult, ServiceStats,
 };
+use shared::sandbox as capsicum;
 use shared::session_token::TokenKey;
 use std::os::unix::io::RawFd;
 use std::process::ExitCode;
@@ -259,7 +259,8 @@ fn run_service() -> Result<()> {
     } else {
         None
     };
-    capsicum::setup_service_sandbox(&all_fds, db_fd).context("Failed to setup sandbox")?;
+    let sealed =
+        capsicum::setup_service_sandbox(&all_fds, db_fd).context("Failed to setup sandbox")?;
 
     let attached_peer_names: Vec<&str> = peer_channels.iter().map(|(n, _)| *n).collect();
 
@@ -307,7 +308,7 @@ fn run_service() -> Result<()> {
         session_token_key,
         ..ServiceState::default()
     };
-    main_loop(&supervisor_channel, &peer_channels, &mut state)
+    main_loop(sealed, &supervisor_channel, &peer_channels, &mut state)
 }
 
 /// Parse topology channel env vars for a peer service.
@@ -361,6 +362,7 @@ fn load_casbin_enforcer(model_path: Option<&str>, policy_path: Option<&str>) -> 
 }
 
 fn main_loop(
+    _sealed: capsicum::Entered,
     supervisor: &IpcChannel,
     peers: &[(&str, &IpcChannel)],
     state: &mut ServiceState,

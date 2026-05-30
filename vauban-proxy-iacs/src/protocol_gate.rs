@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::iacs_recording::ChannelRecorder;
 use crate::registry::TunnelHandle;
-use crate::relay::{copy_with_counter_and_record};
+use crate::relay::copy_with_counter_and_record;
 use shared::messages::IacsRecordingDirection;
 
 /// Maximum bytes buffered while classifying a channel.

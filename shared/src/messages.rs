@@ -4195,10 +4195,7 @@ mod tests {
             closed_at_us: 99_000,
         };
         let deserialized: Message = deserialize(&serialize(&msg));
-        if let Message::IacsRecordingChannelEnd {
-            closed_at_us, ..
-        } = deserialized
-        {
+        if let Message::IacsRecordingChannelEnd { closed_at_us, .. } = deserialized {
             assert_eq!(closed_at_us, 99_000);
         } else {
             panic!("Wrong variant");

@@ -23,16 +23,16 @@ mod recording_manager;
 mod ssh_recording_manager;
 
 use anyhow::{Context, Result};
-use vauban_audit::iacs_recording_manager::{self, IacsRecordingManager};
 use recording_manager::RecordingManager;
-use shared::capsicum;
 use shared::ipc::{IpcChannel, poll_readable, recv_fd};
 use shared::messages::{ControlMessage, Message, ServiceStats};
+use shared::sandbox as capsicum;
 use ssh_recording_manager::SshRecordingManager;
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::process::ExitCode;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
+use vauban_audit::iacs_recording_manager::{self, IacsRecordingManager};
 
 /// Service runtime state.
 struct ServiceState {
@@ -179,8 +179,7 @@ fn run_service() -> Result<()> {
 
     let proxy_rdp_channel = proxy_rdp_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
     let proxy_ssh_channel = proxy_ssh_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
-    let proxy_iacs_channel =
-        proxy_iacs_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
+    let proxy_iacs_channel = proxy_iacs_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
 
     info!("Resources opened, preparing to enter sandbox");
 
@@ -202,7 +201,8 @@ fn run_service() -> Result<()> {
         ipc_fds.push(fd);
     }
 
-    capsicum::setup_service_sandbox(&ipc_fds, None).context("Failed to setup sandbox")?;
+    let sealed =
+        capsicum::setup_service_sandbox(&ipc_fds, None).context("Failed to setup sandbox")?;
 
     if recording_enabled {
         info!(
@@ -233,17 +233,20 @@ fn run_service() -> Result<()> {
         None
     };
 
-    main_loop(MainLoopContext {
-        channel: &channel,
-        proxy_rdp_channel: proxy_rdp_channel.as_ref(),
-        proxy_ssh_channel: proxy_ssh_channel.as_ref(),
-        proxy_iacs_channel: proxy_iacs_channel.as_ref(),
-        state: &mut state,
-        recording_mgr: &mut recording_mgr,
-        ssh_recording_mgr: &mut ssh_recording_mgr,
-        iacs_recording_mgr: &mut iacs_recording_mgr,
-        fd_passing_socket,
-    })
+    main_loop(
+        MainLoopContext {
+            channel: &channel,
+            proxy_rdp_channel: proxy_rdp_channel.as_ref(),
+            proxy_ssh_channel: proxy_ssh_channel.as_ref(),
+            proxy_iacs_channel: proxy_iacs_channel.as_ref(),
+            state: &mut state,
+            recording_mgr: &mut recording_mgr,
+            ssh_recording_mgr: &mut ssh_recording_mgr,
+            iacs_recording_mgr: &mut iacs_recording_mgr,
+            fd_passing_socket,
+        },
+        sealed,
+    )
 }
 
 struct MainLoopContext<'a> {
@@ -258,7 +261,7 @@ struct MainLoopContext<'a> {
     fd_passing_socket: Option<RawFd>,
 }
 
-fn main_loop(ctx: MainLoopContext<'_>) -> Result<()> {
+fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()> {
     let MainLoopContext {
         channel,
         proxy_rdp_channel,
@@ -793,12 +796,7 @@ fn handle_iacs_recording_message(
                     &paths.dst_relative,
                 ) {
                     Ok((dst_size, blake3_hex)) => {
-                        mgr.finalize_channel_gzip(
-                            &session_id,
-                            channel_id,
-                            blake3_hex,
-                            dst_size,
-                        );
+                        mgr.finalize_channel_gzip(&session_id, channel_id, blake3_hex, dst_size);
                     }
                     Err(e) => {
                         error!(
@@ -886,8 +884,9 @@ fn request_gzip_from_supervisor(
                         error.unwrap_or_default()
                     ));
                 }
-                let hash = blake3_hex
-                    .ok_or_else(|| anyhow::anyhow!("supervisor gzip succeeded but no blake3_hex"))?;
+                let hash = blake3_hex.ok_or_else(|| {
+                    anyhow::anyhow!("supervisor gzip succeeded but no blake3_hex")
+                })?;
                 return Ok((dst_size, hash));
             }
             Ok(Message::Control(ControlMessage::Ping { seq })) => {

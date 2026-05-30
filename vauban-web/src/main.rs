@@ -658,7 +658,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // After this, no new file descriptors can be opened.
     // ========================================================================
 
-    enter_sandbox(&std_listener)?;
+    let _sealed = enter_sandbox(&std_listener)?;
 
     // ========================================================================
     // PHASE 3: Build application and serve requests
@@ -1067,36 +1067,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Enter Capsicum capability mode (FreeBSD sandbox).
+/// Enter the process sandbox (point of no return).
 ///
-/// After calling this function:
-/// - No new file descriptors can be opened from the global namespace
-/// - The process can only access pre-opened file descriptors
-/// - If any connection is lost, the process must exit for respawn
+/// Delegates to the multi-OS [`shared::sandbox`] abstraction via the
+/// canonical `web_server` profile:
+/// - FreeBSD: Capsicum `cap_enter()`. We deliberately do NOT limit per-fd
+///   rights on the listener -- tokio/axum need a hard-to-enumerate right set
+///   (accept, fcntl, ioctl, poll events, ...), so `cap_enter()` is the wall.
+/// - Linux: `PR_SET_NO_NEW_PRIVS` + Landlock + seccomp (the listener drives
+///   the `accept4` allowance).
+/// - OpenBSD: `pledge` + `unveil`.
+/// - dev platforms (macOS): warns and continues unconfined.
 ///
-/// On non-FreeBSD platforms, this is a no-op with a warning.
-#[cfg(target_os = "freebsd")]
-fn enter_sandbox(_listener: &std::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
-    use shared::capsicum;
+/// Returns the [`shared::sandbox::Entered`] witness; the caller holds it for
+/// the lifetime of the server so the request loop cannot run un-sandboxed.
+fn enter_sandbox(
+    listener: &std::net::TcpListener,
+) -> Result<shared::sandbox::Entered, Box<dyn std::error::Error>> {
+    use std::os::unix::io::AsRawFd;
 
-    // Enter capability mode - point of no return
-    // After this, no new file descriptors can be opened from global namespace.
-    //
-    // Note: We do NOT limit rights on the listening socket because tokio/axum
-    // require capabilities that are difficult to enumerate precisely (accept,
-    // fcntl, ioctl, poll events, etc.). The primary security comes from
-    // cap_enter() itself which prevents opening new files/sockets.
-    capsicum::enter_capability_mode()
-        .map_err(|e| format!("Failed to enter capability mode: {}", e))?;
+    let profile = shared::sandbox::profiles::web_server(listener.as_raw_fd());
+    let sealed = shared::sandbox::enter_sandbox(profile)
+        .map_err(|e| format!("Failed to enter sandbox: {}", e))?;
 
-    tracing::info!("Entered Capsicum capability mode - sandbox active");
-    Ok(())
-}
-
-#[cfg(not(target_os = "freebsd"))]
-fn enter_sandbox(_listener: &std::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
-    tracing::warn!("Capsicum not available on this platform - running without sandbox");
-    Ok(())
+    tracing::info!("Sandbox active");
+    Ok(sealed)
 }
 
 /// Load TLS configuration from certificate files.

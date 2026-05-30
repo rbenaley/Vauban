@@ -27,8 +27,8 @@ use crate::auth::{AuthOutcome, PendingSessions, PendingTunnel, verify_publickey}
 use crate::iacs_recording::{ChannelEndpoints, ChannelRecorder, IacsRecordingHub};
 use crate::registry::{SessionHandles, TunnelHandle, TunnelRegistry};
 use crate::relay::{copy_with_counter_and_record, validate_target};
-use shared::messages::IacsRecordingDirection;
 use shared::iacs_protocol::ExpectedProfile;
+use shared::messages::IacsRecordingDirection;
 use std::time::SystemTime;
 
 /// Channel used by the russh handler / relay tasks to push
@@ -433,10 +433,12 @@ impl Handler for IacsTunnelHandler {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros() as u64;
-        let connected_at_us = match self
-            .connected_at_us
-            .compare_exchange(0, now_us, Ordering::SeqCst, Ordering::SeqCst)
-        {
+        let connected_at_us = match self.connected_at_us.compare_exchange(
+            0,
+            now_us,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
             Ok(_) => now_us,
             Err(existing) => existing,
         };

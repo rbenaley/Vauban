@@ -36,9 +36,9 @@ use secrecy::SecretString;
 use session::{SessionConfig, SshCredential, fetch_host_key};
 use session_manager::SessionManager;
 use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_SSH};
-use shared::capsicum;
 use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{ControlMessage, Message, ServiceStats};
+use shared::sandbox as capsicum;
 use shared::session_token::proxy_gate as session_token_gate;
 use std::collections::HashMap;
 use std::os::unix::io::{OwnedFd, RawFd};
@@ -380,7 +380,7 @@ async fn run_service() -> Result<()> {
     let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| vec![fd]);
 
     // Enter Capsicum sandbox with appropriate rights for each FD type
-    capsicum::setup_service_sandbox_extended(
+    let sealed = capsicum::setup_service_sandbox_extended(
         &ipc_fds,
         None, // No database connection
         fd_receiver_fds.as_deref(),
@@ -419,6 +419,7 @@ async fn run_service() -> Result<()> {
 
     // Run the main event loop
     main_loop(
+        sealed,
         supervisor_async,
         web_async,
         state,
@@ -433,6 +434,7 @@ async fn run_service() -> Result<()> {
 
 #[allow(clippy::too_many_arguments)] // orchestration entry point; grouping these into a struct would obscure the wiring
 async fn main_loop(
+    _sealed: capsicum::Entered,
     supervisor_channel: AsyncIpcChannel,
     web_channel: AsyncIpcChannel,
     state: Arc<ServiceState>,

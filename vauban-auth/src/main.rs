@@ -22,9 +22,9 @@ use anyhow::{Context, Result};
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use rand::rngs::OsRng;
-use shared::capsicum;
 use shared::ipc::{IpcChannel, poll_readable};
 use shared::messages::{AuthResult, ControlMessage, Message, ServiceStats};
+use shared::sandbox as capsicum;
 use std::os::unix::io::RawFd;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -152,7 +152,11 @@ fn run_service() -> Result<()> {
         peer_channels.push(("web", ch));
     }
 
-    capsicum::setup_service_sandbox(&all_fds, None).context("Failed to setup sandbox")?;
+    // Typestate: `sealed` proves the sandbox was committed. It is threaded
+    // into `main_loop`, making "run the loop without entering the sandbox"
+    // a compile error.
+    let sealed =
+        capsicum::setup_service_sandbox(&all_fds, None).context("Failed to setup sandbox")?;
 
     info!(
         "Entered Capsicum sandbox, starting main loop ({} peer channels)",
@@ -160,7 +164,7 @@ fn run_service() -> Result<()> {
     );
 
     let mut state = ServiceState::new(argon2_params);
-    main_loop(&supervisor_channel, &peer_channels, &mut state)
+    main_loop(sealed, &supervisor_channel, &peer_channels, &mut state)
 }
 
 /// Parse topology channel env vars for a peer service.
@@ -196,6 +200,7 @@ fn load_argon2_params() -> Argon2Params {
 }
 
 fn main_loop(
+    _sealed: capsicum::Entered,
     supervisor: &IpcChannel,
     peers: &[(&str, &IpcChannel)],
     state: &mut ServiceState,
