@@ -1090,7 +1090,9 @@ fn enter_sandbox(
     let sealed = shared::sandbox::enter_sandbox(profile)
         .map_err(|e| format!("Failed to enter sandbox: {}", e))?;
 
-    tracing::info!("Sandbox active");
+    if sealed.is_active() {
+        tracing::info!("Entered sandbox");
+    }
     Ok(sealed)
 }
 

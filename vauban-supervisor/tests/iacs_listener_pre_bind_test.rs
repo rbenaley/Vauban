@@ -86,7 +86,7 @@ fn supervisor_pre_binds_iacs_listener_before_spawn() {
 /// `fcntl(F_GETFL/F_SETFL)` requires `CAP_FCNTL` rights that the
 /// sandbox does not grant -- the historical bug surfaced as
 /// "Capabilities insufficient (os error 93)" right after
-/// "Entered Capsicum sandbox" in the proxy's startup log.
+/// `log_main_loop_start` in the proxy's startup log.
 ///
 /// This pin guarantees:
 ///   * the supervisor calls `set_nonblocking(true)` on the bound
@@ -161,13 +161,13 @@ fn supervisor_sets_nonblocking_before_execv() {
 /// Note: brokered TCP stream FDs received by `upstream.rs` via
 /// SCM_RIGHTS are a DIFFERENT story (per-connection, not the
 /// listener) and are intentionally exempt from this pin -- this
-/// test only constrains `main.rs` between `Entered Capsicum
-/// sandbox` and the end of the listener setup block.
+/// test only constrains `main.rs` between the sandbox gate and the end
+/// of the listener setup block.
 #[test]
 fn proxy_iacs_never_calls_set_nonblocking_on_inherited_listener() {
     let cap_pos = PROXY_MAIN
-        .find("Entered Capsicum sandbox")
-        .expect("Capsicum entry log line must be present");
+        .find("setup_service_sandbox_with_listeners(")
+        .expect("sandbox gate must be present");
     let from_raw_pos = PROXY_MAIN[cap_pos..]
         .find("TcpListener::from_raw_fd")
         .map(|i| cap_pos + i)

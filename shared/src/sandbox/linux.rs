@@ -189,8 +189,7 @@ impl SandboxBackend for LinuxBackend {
         //    above are not themselves filtered). TSYNC across all threads.
         self.apply_seccomp(required)?;
 
-        tracing::info!("Entered Linux sandbox (Landlock + seccomp-bpf)");
-        Ok(Entered::witness())
+        Ok(Entered::witness(true))
     }
 }
 

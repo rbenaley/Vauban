@@ -37,7 +37,7 @@ impl SandboxBackend for NoopBackend {
             "Running without sandbox: no supported mechanism on this platform \
              (development only)"
         );
-        Ok(Entered::witness())
+        Ok(Entered::witness(false))
     }
 }
 

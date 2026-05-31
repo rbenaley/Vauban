@@ -205,12 +205,15 @@ fn run_service() -> Result<()> {
         capsicum::setup_service_sandbox(&ipc_fds, None).context("Failed to setup sandbox")?;
 
     if recording_enabled {
-        info!(
-            fd_passing = fd_passing_socket.is_some(),
-            "Entered Capsicum sandbox with recording enabled"
+        capsicum::log_main_loop_start(
+            &sealed,
+            &format!(
+                "starting main loop with recording enabled (fd_passing = {})",
+                fd_passing_socket.is_some()
+            ),
         );
     } else {
-        info!("Entered Capsicum sandbox, starting main loop");
+        capsicum::log_main_loop_start(&sealed, "starting main loop");
     }
 
     let mut state = ServiceState::default();

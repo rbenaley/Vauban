@@ -36,7 +36,6 @@
 
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
-use secrecy::ExposeSecret;
 use serial_test::serial;
 
 use shared::messages::{
@@ -45,24 +44,7 @@ use shared::messages::{
 };
 
 use crate::common::TestApp;
-use crate::common::ipc_test_service;
 use crate::fixtures::unique_name;
-
-fn test_database_url() -> String {
-    if let Ok(url) = std::env::var("DATABASE_URL") {
-        return url;
-    }
-    let config_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace root")
-        .join("config");
-    let config = vauban_web::config::Config::load_with_environment(
-        config_dir,
-        vauban_web::config::Environment::Testing,
-    )
-    .expect("load test config");
-    config.database.url.expose_secret().to_string()
-}
 
 async fn list_all_asset_groups(
     client: &vauban_web::ipc::AccessIpcClient,
@@ -103,10 +85,10 @@ async fn list_all_asset_group_options(
 #[tokio::test]
 #[serial]
 async fn c1_list_asset_groups_excludes_virtual_by_default() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
-    let groups = list_all_asset_groups(client, false).await;
+    let groups = list_all_asset_groups(&client, false).await;
     let virtual_seen = groups
         .iter()
         .any(|g| g.uuid == ALL_ASSETS_GROUP_UUID || g.kind == ASSET_GROUP_KIND_ALL);
@@ -127,10 +109,10 @@ async fn c1_list_asset_groups_excludes_virtual_by_default() {
 #[tokio::test]
 #[serial]
 async fn c2_list_asset_groups_with_virtual_includes_singleton() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
-    let groups = list_all_asset_groups(client, true).await;
+    let groups = list_all_asset_groups(&client, true).await;
     let v: Vec<&AssetGroupInfo> = groups
         .iter()
         .filter(|g| g.uuid == ALL_ASSETS_GROUP_UUID)
@@ -153,8 +135,8 @@ async fn c2_list_asset_groups_with_virtual_includes_singleton() {
 #[tokio::test]
 #[serial]
 async fn c3_asset_group_info_kind_field_correct() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     // Static
     let name = unique_name("c3_static");
@@ -193,8 +175,8 @@ async fn c3_asset_group_info_kind_field_correct() {
 async fn c4_create_access_rule_on_virtual_group() {
     use shared::messages::AccessRuleData;
 
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
@@ -257,8 +239,8 @@ async fn c4_create_access_rule_on_virtual_group() {
 #[tokio::test]
 #[serial]
 async fn c5_update_virtual_asset_group_is_refused() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let res = client
         .update_asset_group(
@@ -294,8 +276,8 @@ async fn c5_update_virtual_asset_group_is_refused() {
 #[tokio::test]
 #[serial]
 async fn c6_delete_virtual_asset_group_is_refused() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let res = client.delete_asset_group(ALL_ASSETS_GROUP_UUID).await;
     assert!(res.is_err(), "deleting the virtual group MUST fail; got Ok");
@@ -393,10 +375,10 @@ async fn c7_direct_membership_insert_on_virtual_is_refused() {
 #[tokio::test]
 #[serial]
 async fn c8_list_asset_group_options_honours_include_virtual() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
-    let opts_default = list_all_asset_group_options(client, false).await;
+    let opts_default = list_all_asset_group_options(&client, false).await;
     let leaked_default = opts_default.iter().any(|o| o.kind == ASSET_GROUP_KIND_ALL);
     assert!(
         !leaked_default,
@@ -407,7 +389,7 @@ async fn c8_list_asset_group_options_honours_include_virtual() {
             .collect::<Vec<_>>()
     );
 
-    let opts_with = list_all_asset_group_options(client, true).await;
+    let opts_with = list_all_asset_group_options(&client, true).await;
     let virt: Vec<&GroupOption> = opts_with
         .iter()
         .filter(|o| o.kind == ASSET_GROUP_KIND_ALL)

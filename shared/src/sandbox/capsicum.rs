@@ -173,7 +173,6 @@ impl CapRights {
 /// Enter capability mode (point of no return).
 pub(crate) fn enter_capability_mode() -> Result<()> {
     capsicum::enter().map_err(SandboxError::EnterFailed)?;
-    tracing::info!("Entered Capsicum capability mode");
     Ok(())
 }
 
@@ -302,7 +301,7 @@ impl SandboxBackend for FreeBSDBackend {
 
     fn commit(self, _required: bool) -> Result<Entered> {
         enter_capability_mode()?;
-        Ok(Entered::witness())
+        Ok(Entered::witness(true))
     }
 }
 

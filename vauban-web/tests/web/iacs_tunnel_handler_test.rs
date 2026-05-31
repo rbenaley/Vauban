@@ -21,6 +21,7 @@
 //! suite is the runtime counterpart.
 
 use crate::common::TestApp;
+use crate::common::iacs_tunnel_fixture::{self, EchoTarget, SpawnedIacsTunnel};
 use crate::fixtures::{create_simple_user, unique_name};
 use chrono::Utc;
 use diesel::{ExpressionMethods, QueryDsl};
@@ -32,7 +33,6 @@ use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKey};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 use tokio::time::{Duration, timeout};
 use uuid::Uuid;
 use vauban_web::config::IacsTunnelConfig;
@@ -81,47 +81,10 @@ fn fingerprint_sha256_hex(key: &PrivateKey) -> String {
     hex::encode(Sha256::digest(&bytes))
 }
 
-/// Spawn an upstream TCP echo server on `127.0.0.1:0`; returns
-/// the bound address. Used as the `target_addr` for a sshd
-/// instance under test. Echoing back lets the happy-path test
-/// verify the bidirectional relay actually moves bytes.
-async fn spawn_echo_target() -> std::net::SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind echo target");
-    let addr = listener.local_addr().expect("local_addr");
-    tokio::spawn(async move {
-        loop {
-            let (mut sock, _) = match listener.accept().await {
-                Ok(v) => v,
-                Err(_) => break,
-            };
-            tokio::spawn(async move {
-                let mut buf = [0u8; 4096];
-                loop {
-                    match sock.read(&mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            if sock.write_all(&buf[..n]).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-        }
-    });
-    addr
-}
-
 /// Spawn an IACS sshd bound on `127.0.0.1:0` with the given
-/// `target_addr`. Returns the bound address (so the test client
-/// can connect without race) and a clone of the registry.
-async fn spawn_test_sshd(
-    app: &TestApp,
-    target_addr: std::net::SocketAddr,
-) -> (std::net::SocketAddr, TunnelRegistry) {
-    spawn_test_sshd_with_channel_cap(app, target_addr, 16).await
+/// `target_addr`. The returned guard aborts the listener on drop.
+async fn spawn_test_sshd(app: &TestApp, target: &EchoTarget) -> SpawnedIacsTunnel {
+    spawn_test_sshd_with_channel_cap(app, target, 16).await
 }
 
 /// Same as `spawn_test_sshd` but lets the test override the
@@ -130,15 +93,15 @@ async fn spawn_test_sshd(
 /// at a small value where the boundary is exercisable in O(channels).
 async fn spawn_test_sshd_with_channel_cap(
     app: &TestApp,
-    target_addr: std::net::SocketAddr,
+    target: &EchoTarget,
     max_concurrent_channels_per_session: u32,
-) -> (std::net::SocketAddr, TunnelRegistry) {
+) -> SpawnedIacsTunnel {
     let host_key_path =
         std::env::temp_dir().join(format!("vauban_iacs_test_host_{}.key", Uuid::new_v4()));
     let cfg = IacsTunnelConfig {
         bind_addr: "127.0.0.1:0".to_string(),
         advertise_hostname: "127.0.0.1".to_string(),
-        target_addr: target_addr.to_string(),
+        target_addr: target.addr.to_string(),
         host_key_path: host_key_path.to_string_lossy().to_string(),
         max_concurrent_per_user: 0,
         max_concurrent_per_ews: 0,
@@ -147,13 +110,13 @@ async fn spawn_test_sshd_with_channel_cap(
         revocation_poll_interval_seconds: 2,
     };
     let registry = TunnelRegistry::new();
-    let (addr, _join) = spawn_iacs_tunnel_server(registry.clone(), app.db_pool.clone(), cfg)
+    let sshd = iacs_tunnel_fixture::spawn_iacs_tunnel(registry, app.db_pool.clone(), cfg)
         .await
         .expect("spawn sshd");
     // Give the listener a beat so a client connect cannot race
     // the bind on slow CI runners.
     tokio::time::sleep(Duration::from_millis(20)).await;
-    (addr, registry)
+    sshd
 }
 
 /// Insert a minimal IACS asset row directly. The full
@@ -289,8 +252,10 @@ async fn happy_path_relay_round_trips_bytes() {
     let (session_uuid, _ews_uuid) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
 
-    let target = spawn_echo_target().await;
-    let (sshd_addr, registry) = spawn_test_sshd(app, target).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd(app, &target).await;
+    let sshd_addr = sshd.addr;
+    let registry = sshd.registry.clone();
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
         .expect("auth must succeed");
@@ -298,8 +263,8 @@ async fn happy_path_relay_round_trips_bytes() {
     // Open a direct-tcpip to the configured target (target.host:port).
     let chan = handle
         .channel_open_direct_tcpip(
-            target.ip().to_string(),
-            target.port() as u32,
+            target.addr.ip().to_string(),
+            target.addr.port() as u32,
             "127.0.0.1",
             0,
         )
@@ -335,8 +300,9 @@ async fn happy_path_relay_round_trips_bytes() {
 #[tokio::test]
 async fn refuses_password_auth() {
     let app = TestApp::spawn().await;
-    let target = spawn_echo_target().await;
-    let (sshd_addr, _registry) = spawn_test_sshd(app, target).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd(app, &target).await;
+    let sshd_addr = sshd.addr;
 
     let mut handle = client::connect(client_config(), sshd_addr, TestClient)
         .await
@@ -351,8 +317,9 @@ async fn refuses_password_auth() {
 #[tokio::test]
 async fn refuses_publickey_for_unknown_session_uuid() {
     let app = TestApp::spawn().await;
-    let target = spawn_echo_target().await;
-    let (sshd_addr, _registry) = spawn_test_sshd(app, target).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd(app, &target).await;
+    let sshd_addr = sshd.addr;
 
     let key = fresh_ed25519_key();
     let signer = PrivateKeyWithHashAlg::new(Arc::new(key), None);
@@ -376,8 +343,9 @@ async fn refuses_publickey_with_unrelated_key_for_valid_session() {
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &real_key).await;
     drop(conn);
 
-    let target = spawn_echo_target().await;
-    let (sshd_addr, _registry) = spawn_test_sshd(app, target).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd(app, &target).await;
+    let sshd_addr = sshd.addr;
 
     // Present a different key for the same session UUID.
     let other_key = fresh_ed25519_key();
@@ -408,8 +376,9 @@ async fn refuses_publickey_when_session_in_wrong_state() {
         .expect("flip status");
     drop(conn);
 
-    let target = spawn_echo_target().await;
-    let (sshd_addr, _registry) = spawn_test_sshd(app, target).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd(app, &target).await;
+    let sshd_addr = sshd.addr;
 
     let signer = PrivateKeyWithHashAlg::new(Arc::new(key), None);
     let mut handle = client::connect(client_config(), sshd_addr, TestClient)
@@ -435,8 +404,9 @@ async fn refuses_session_channel() {
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
 
-    let target = spawn_echo_target().await;
-    let (sshd_addr, _registry) = spawn_test_sshd(app, target).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd(app, &target).await;
+    let sshd_addr = sshd.addr;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
@@ -454,8 +424,9 @@ async fn refuses_direct_tcpip_to_wrong_target() {
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
 
-    let target = spawn_echo_target().await;
-    let (sshd_addr, _registry) = spawn_test_sshd(app, target).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd(app, &target).await;
+    let sshd_addr = sshd.addr;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
@@ -464,7 +435,7 @@ async fn refuses_direct_tcpip_to_wrong_target() {
     let res = handle
         .channel_open_direct_tcpip(
             "127.0.0.1",
-            target.port().wrapping_add(1) as u32,
+            target.addr.port().wrapping_add(1) as u32,
             "127.0.0.1",
             0,
         )
@@ -472,7 +443,7 @@ async fn refuses_direct_tcpip_to_wrong_target() {
     assert!(res.is_err(), "{}", SSH_OPEN_REJECTED);
     // Different host, same port.
     let res2 = handle
-        .channel_open_direct_tcpip("8.8.8.8", target.port() as u32, "127.0.0.1", 0)
+        .channel_open_direct_tcpip("8.8.8.8", target.addr.port() as u32, "127.0.0.1", 0)
         .await;
     assert!(res2.is_err(), "{}", SSH_OPEN_REJECTED);
 }
@@ -500,8 +471,9 @@ async fn accepts_multiple_sequential_direct_tcpip_on_same_session() {
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
 
-    let target = spawn_echo_target().await;
-    let (sshd_addr, _registry) = spawn_test_sshd(app, target).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd(app, &target).await;
+    let sshd_addr = sshd.addr;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
@@ -513,8 +485,8 @@ async fn accepts_multiple_sequential_direct_tcpip_on_same_session() {
     for round in 0..3 {
         let chan = handle
             .channel_open_direct_tcpip(
-                target.ip().to_string(),
-                target.port() as u32,
+                target.addr.ip().to_string(),
+                target.addr.port() as u32,
                 "127.0.0.1",
                 0,
             )
@@ -549,8 +521,9 @@ async fn accepts_multiple_concurrent_direct_tcpip_on_same_session() {
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
 
-    let target = spawn_echo_target().await;
-    let (sshd_addr, _registry) = spawn_test_sshd(app, target).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd(app, &target).await;
+    let sshd_addr = sshd.addr;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
@@ -561,8 +534,8 @@ async fn accepts_multiple_concurrent_direct_tcpip_on_same_session() {
     for round in 0..3 {
         let chan = handle
             .channel_open_direct_tcpip(
-                target.ip().to_string(),
-                target.port() as u32,
+                target.addr.ip().to_string(),
+                target.addr.port() as u32,
                 "127.0.0.1",
                 0,
             )
@@ -605,8 +578,9 @@ async fn enforces_per_login_concurrent_channel_cap() {
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
 
-    let target = spawn_echo_target().await;
-    let (sshd_addr, _registry) = spawn_test_sshd_with_channel_cap(app, target, 2).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd_with_channel_cap(app, &target, 2).await;
+    let sshd_addr = sshd.addr;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
@@ -614,8 +588,8 @@ async fn enforces_per_login_concurrent_channel_cap() {
 
     let chan_a = handle
         .channel_open_direct_tcpip(
-            target.ip().to_string(),
-            target.port() as u32,
+            target.addr.ip().to_string(),
+            target.addr.port() as u32,
             "127.0.0.1",
             0,
         )
@@ -623,8 +597,8 @@ async fn enforces_per_login_concurrent_channel_cap() {
         .expect("first concurrent channel within cap");
     let chan_b = handle
         .channel_open_direct_tcpip(
-            target.ip().to_string(),
-            target.port() as u32,
+            target.addr.ip().to_string(),
+            target.addr.port() as u32,
             "127.0.0.1",
             0,
         )
@@ -633,8 +607,8 @@ async fn enforces_per_login_concurrent_channel_cap() {
 
     let third = handle
         .channel_open_direct_tcpip(
-            target.ip().to_string(),
-            target.port() as u32,
+            target.addr.ip().to_string(),
+            target.addr.port() as u32,
             "127.0.0.1",
             0,
         )
@@ -652,8 +626,8 @@ async fn enforces_per_login_concurrent_channel_cap() {
     tokio::time::sleep(Duration::from_millis(80)).await;
     let chan_c = handle
         .channel_open_direct_tcpip(
-            target.ip().to_string(),
-            target.port() as u32,
+            target.addr.ip().to_string(),
+            target.addr.port() as u32,
             "127.0.0.1",
             0,
         )
@@ -677,8 +651,9 @@ async fn refuses_tcpip_forward() {
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
 
-    let target = spawn_echo_target().await;
-    let (sshd_addr, _registry) = spawn_test_sshd(app, target).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd(app, &target).await;
+    let sshd_addr = sshd.addr;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
@@ -696,8 +671,9 @@ async fn refuses_streamlocal_channel() {
     let (session_uuid, _) = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
 
-    let target = spawn_echo_target().await;
-    let (sshd_addr, _registry) = spawn_test_sshd(app, target).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd(app, &target).await;
+    let sshd_addr = sshd.addr;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await

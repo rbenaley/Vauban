@@ -23,12 +23,12 @@ use russh::keys::ssh_key::rand_core::UnwrapErr;
 use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKey};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::net::TcpListener;
 use uuid::Uuid;
 use vauban_web::config::IacsTunnelConfig;
-use vauban_web::services::iacs_tunnel::{TunnelRegistry, spawn_iacs_tunnel_server};
+use vauban_web::services::iacs_tunnel::TunnelRegistry;
 
 use crate::common::TestApp;
+use crate::common::iacs_tunnel_fixture::{self, SpawnedIacsTunnel};
 
 struct TestClient;
 
@@ -48,25 +48,14 @@ fn fresh_ed25519_key() -> PrivateKey {
         .expect("ed25519 keygen")
 }
 
-async fn spawn_dummy_target() -> std::net::SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-    let addr = listener.local_addr().expect("local_addr");
-    tokio::spawn(async move {
-        while listener.accept().await.is_ok() {
-            // drop the connection straight away
-        }
-    });
-    addr
-}
-
-async fn spawn_test_sshd(app: &TestApp) -> (std::net::SocketAddr, TunnelRegistry) {
-    let target = spawn_dummy_target().await;
+async fn spawn_test_sshd(app: &TestApp) -> SpawnedIacsTunnel {
+    let target = iacs_tunnel_fixture::spawn_dummy_target().await;
     let host_key_path =
         std::env::temp_dir().join(format!("vauban_iacs_l6_test_host_{}.key", Uuid::new_v4()));
     let cfg = IacsTunnelConfig {
         bind_addr: "127.0.0.1:0".to_string(),
         advertise_hostname: "127.0.0.1".to_string(),
-        target_addr: target.to_string(),
+        target_addr: target.addr.to_string(),
         host_key_path: host_key_path.to_string_lossy().to_string(),
         max_concurrent_per_user: 0,
         max_concurrent_per_ews: 0,
@@ -75,11 +64,11 @@ async fn spawn_test_sshd(app: &TestApp) -> (std::net::SocketAddr, TunnelRegistry
         revocation_poll_interval_seconds: 2,
     };
     let registry = TunnelRegistry::new();
-    let (addr, _) = spawn_iacs_tunnel_server(registry.clone(), app.db_pool.clone(), cfg)
+    let sshd = iacs_tunnel_fixture::spawn_iacs_tunnel(registry, app.db_pool.clone(), cfg)
         .await
         .expect("spawn sshd");
     tokio::time::sleep(Duration::from_millis(20)).await;
-    (addr, registry)
+    sshd
 }
 
 fn client_config() -> Arc<client::Config> {
@@ -112,7 +101,8 @@ async fn measure_auth_fail_ms(addr: std::net::SocketAddr, user: &str, key: Priva
 #[tokio::test]
 async fn auth_rejection_is_constant_time() {
     let app = TestApp::spawn().await;
-    let (sshd_addr, _) = spawn_test_sshd(app).await;
+    let sshd = spawn_test_sshd(app).await;
+    let sshd_addr = sshd.addr;
 
     let mut samples_ms: Vec<u128> = Vec::new();
     for i in 0..6 {
@@ -173,7 +163,9 @@ async fn auth_rejection_is_constant_time() {
 #[ignore = "L6 stress test -- run with --ignored in nightly load CI"]
 async fn stress_1000_concurrent_auth_fails() {
     let app = TestApp::spawn().await;
-    let (sshd_addr, registry) = spawn_test_sshd(app).await;
+    let sshd = spawn_test_sshd(app).await;
+    let sshd_addr = sshd.addr;
+    let registry = sshd.registry.clone();
 
     const N: usize = 1000;
     const PARALLEL: usize = 50;

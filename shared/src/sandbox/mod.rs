@@ -254,13 +254,36 @@ impl SandboxProfile {
 /// constructed outside this module.
 #[must_use = "the Entered token gates the service main loop: thread it into run()/serve() so the sandbox cannot be skipped"]
 #[derive(Debug)]
-pub struct Entered(());
+pub struct Entered {
+    /// `true` when a real OS sandbox was committed (Capsicum, Landlock+seccomp,
+    /// pledge+unveil). `false` on development platforms where the noop backend
+    /// runs unconfined after the noop backend's development-only warning.
+    active: bool,
+}
 
 impl Entered {
-    /// Construct the witness. Crate-internal: only a backend that has
-    /// actually committed the sandbox may mint one.
-    pub(crate) fn witness() -> Self {
-        Entered(())
+    /// Whether an OS sandbox mechanism was actually applied.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Construct the witness. Crate-internal: only a backend `commit` may mint one.
+    pub(crate) fn witness(active: bool) -> Self {
+        Entered { active }
+    }
+}
+
+/// Log that the service main loop is about to start.
+///
+/// When [`Entered::is_active`] is true, prefixes with `Entered sandbox`.
+/// On development platforms (noop backend) only the tail is logged at INFO;
+/// the noop backend already warned that the process is unconfined.
+pub fn log_main_loop_start(sealed: &Entered, message: &str) {
+    if sealed.is_active() {
+        tracing::info!("Entered sandbox, {message}");
+    } else {
+        tracing::info!("{message}");
     }
 }
 

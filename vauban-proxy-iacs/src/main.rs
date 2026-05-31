@@ -396,7 +396,7 @@ async fn run_service() -> Result<()> {
     //
     // Pinned by `iacs_async_ipc_channels_constructed_before_capsicum`
     // (source-grep) and `proxy_iacs_supervisor_async_built_before_sandbox_test`
-    // (runtime, ordering of the `Entered Capsicum sandbox` log line
+    // (runtime, ordering of the `Entered sandbox` log line
     // versus the `AsyncIpcChannel::new` call sites).
     let supervisor_async = Arc::new(
         AsyncIpcChannel::new(supervisor_channel)
@@ -428,7 +428,7 @@ async fn run_service() -> Result<()> {
         listener_fds.as_deref(),
     )
     .context("Failed to setup sandbox")?;
-    info!("Entered Capsicum sandbox");
+    capsicum::log_main_loop_start(&sealed, "starting main loop");
 
     // === 6. Build the russh server.
     let registry = TunnelRegistry::new();

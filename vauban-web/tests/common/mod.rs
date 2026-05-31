@@ -4,6 +4,8 @@
 // Re-export test macros for all test files
 pub use vauban_web::{assert_err, assert_none, assert_ok, assert_some, unwrap_ok, unwrap_some};
 
+pub mod iacs_tunnel_fixture;
+
 use axum::{Router, extract::Path, http::HeaderValue, response::Redirect};
 use axum_test::TestServer;
 use diesel::{ExpressionMethods, QueryDsl};
@@ -299,6 +301,14 @@ impl TestApp {
         vauban_web::middleware::csrf::generate_csrf_token(
             self.config.secret_key.expose_secret().as_bytes(),
         )
+    }
+
+    /// Access IPC client backed by the singleton in-process vauban-access
+    /// service. Prefer this over [`ipc_test_service::spawn`] in IPC tests:
+    /// each `spawn` leaks pipes, threads, and Casbin file handles across the
+    /// full integration-test binary.
+    pub async fn access_ipc_client(&self) -> std::sync::Arc<vauban_web::ipc::AccessIpcClient> {
+        std::sync::Arc::clone(&self.app_state.access_client)
     }
 
     /// Get a database connection.

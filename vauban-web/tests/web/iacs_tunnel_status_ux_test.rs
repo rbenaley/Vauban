@@ -30,12 +30,13 @@ use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKey};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 use tokio::time::{Duration, timeout};
 use uuid::Uuid;
 use vauban_web::config::IacsTunnelConfig;
 use vauban_web::services::broadcast::WsChannel;
-use vauban_web::services::iacs_tunnel::{TunnelRegistry, spawn_iacs_tunnel_server_with_broadcast};
+use vauban_web::services::iacs_tunnel::TunnelRegistry;
+
+use crate::common::iacs_tunnel_fixture::{self, SpawnedIacsTunnel};
 
 use crate::common::TestApp;
 use crate::fixtures::{create_simple_user, unique_name};
@@ -73,34 +74,6 @@ fn fingerprint_sha256_hex(key: &PrivateKey) -> String {
     hex::encode(Sha256::digest(&bytes))
 }
 
-async fn spawn_echo_target() -> std::net::SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind echo target");
-    let addr = listener.local_addr().expect("local_addr");
-    tokio::spawn(async move {
-        loop {
-            let (mut sock, _) = match listener.accept().await {
-                Ok(v) => v,
-                Err(_) => break,
-            };
-            tokio::spawn(async move {
-                let mut buf = [0u8; 4096];
-                loop {
-                    match sock.read(&mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            if sock.write_all(&buf[..n]).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-        }
-    });
-    addr
-}
 
 async fn seed_iacs_asset(conn: &mut AsyncPgConnection, admin_id: i32) -> i32 {
     use vauban_web::schema::assets;
@@ -187,13 +160,13 @@ async fn seed_session_and_ews(
     session_uuid
 }
 
-async fn spawn_test_sshd(app: &TestApp, target_addr: std::net::SocketAddr) -> std::net::SocketAddr {
+async fn spawn_test_sshd(app: &TestApp, target: &iacs_tunnel_fixture::EchoTarget) -> SpawnedIacsTunnel {
     let host_key_path =
         std::env::temp_dir().join(format!("vauban_iacs_l5_test_host_{}.key", Uuid::new_v4()));
     let cfg = IacsTunnelConfig {
         bind_addr: "127.0.0.1:0".to_string(),
         advertise_hostname: "127.0.0.1".to_string(),
-        target_addr: target_addr.to_string(),
+        target_addr: target.addr.to_string(),
         host_key_path: host_key_path.to_string_lossy().to_string(),
         max_concurrent_per_user: 0,
         max_concurrent_per_ews: 0,
@@ -202,16 +175,16 @@ async fn spawn_test_sshd(app: &TestApp, target_addr: std::net::SocketAddr) -> st
         revocation_poll_interval_seconds: 2,
     };
     let registry = TunnelRegistry::new();
-    let (addr, _) = spawn_iacs_tunnel_server_with_broadcast(
+    let sshd = iacs_tunnel_fixture::spawn_iacs_tunnel_with_broadcast(
         registry,
         app.db_pool.clone(),
         cfg,
-        Some(app.broadcast.clone()),
+        app.broadcast.clone(),
     )
     .await
     .expect("spawn sshd with broadcast");
     tokio::time::sleep(Duration::from_millis(20)).await;
-    addr
+    sshd
 }
 
 // ===================================================================
@@ -227,8 +200,9 @@ async fn ws_pushes_tunnel_active_then_closed_on_handshake_lifecycle() {
     let session_uuid = seed_session_and_ews(&mut conn, user_id, &key).await;
     drop(conn);
 
-    let target = spawn_echo_target().await;
-    let sshd_addr = spawn_test_sshd(app, target).await;
+    let target = iacs_tunnel_fixture::spawn_echo_target().await;
+    let sshd = spawn_test_sshd(app, &target).await;
+    let sshd_addr = sshd.addr;
 
     // Subscribe to the SessionLive channel BEFORE we trigger the
     // handshake -- otherwise the broadcast push fires into the
@@ -254,8 +228,8 @@ async fn ws_pushes_tunnel_active_then_closed_on_handshake_lifecycle() {
     );
     let chan = handle
         .channel_open_direct_tcpip(
-            target.ip().to_string(),
-            target.port() as u32,
+            target.addr.ip().to_string(),
+            target.addr.port() as u32,
             "127.0.0.1",
             0,
         )

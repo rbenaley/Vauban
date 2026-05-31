@@ -165,9 +165,9 @@ fn run_service() -> Result<()> {
     let sealed =
         capsicum::setup_service_sandbox(&all_fds, None).context("Failed to setup sandbox")?;
 
-    info!(
-        "Entered Capsicum sandbox, starting main loop ({} peer channels)",
-        peer_channels.len()
+    capsicum::log_main_loop_start(
+        &sealed,
+        &format!("starting main loop ({} peer channels)", peer_channels.len()),
     );
 
     let mut state = ServiceState {

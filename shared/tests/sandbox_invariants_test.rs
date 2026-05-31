@@ -106,6 +106,26 @@ fn backends_have_no_wildcard_match_arm() {
     }
 }
 
+/// Services must not hard-code mechanism-specific "Entered Capsicum …"
+/// log lines; they route through [`shared::sandbox::log_main_loop_start`]
+/// (or an equivalent `is_active()` gate) so macOS/dev runs stay quiet.
+#[test]
+fn services_do_not_log_entered_capsicum() {
+    const FORBIDDEN: &[&str] = &[
+        "Entered Capsicum sandbox",
+        "Entered Capsicum capability mode",
+    ];
+    for (name, src) in ALL_SERVICES {
+        for lit in FORBIDDEN {
+            assert!(
+                !src.contains(lit),
+                "{name}/src/main.rs must not log \"{lit}\" -- use \
+                 shared::sandbox::log_main_loop_start or is_active()"
+            );
+        }
+    }
+}
+
 /// The "without sandbox" operator log line may be emitted ONLY by the noop
 /// (development) backend. A service or a real backend logging it would mean
 /// the process is running unconfined in production.

@@ -109,11 +109,10 @@ impl SandboxBackend for OpenBSDBackend {
                 return Err(err);
             }
             tracing::warn!(error = %err, "pledge failed (best-effort)");
-            return Ok(Entered::witness());
+            return Ok(Entered::witness(false));
         }
 
-        tracing::info!(promises = %joined, "Entered OpenBSD sandbox (pledge + unveil)");
-        Ok(Entered::witness())
+        Ok(Entered::witness(true))
     }
 }
 

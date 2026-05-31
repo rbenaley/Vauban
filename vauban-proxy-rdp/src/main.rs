@@ -371,7 +371,7 @@ async fn run_service() -> Result<()> {
         capsicum::setup_service_sandbox_extended(&ipc_fds, None, fd_receiver_fds.as_deref())
             .context("Failed to setup sandbox")?;
 
-    info!("Entered Capsicum sandbox, starting main loop");
+    capsicum::log_main_loop_start(&sealed, "starting main loop");
 
     let sessions = Arc::new(SessionManager::with_bitrate(video_bitrate_bps));
 

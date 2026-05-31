@@ -387,7 +387,7 @@ async fn run_service() -> Result<()> {
     )
     .context("Failed to setup sandbox")?;
 
-    info!("Entered Capsicum sandbox, starting main loop");
+    capsicum::log_main_loop_start(&sealed, "starting main loop");
 
     // Initialize session manager (state was created above so AccessGuard
     // could borrow it as its metrics sink).

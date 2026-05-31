@@ -294,12 +294,21 @@ fn run_service() -> Result<()> {
         );
     }
 
-    info!(
-        peers = ?attached_peer_names,
-        peer_count = peer_channels.len(),
-        expected_peer_count = EXPECTED_PEER_COUNT,
-        "Entered Capsicum sandbox, starting main loop"
-    );
+    if sealed.is_active() {
+        info!(
+            peers = ?attached_peer_names,
+            peer_count = peer_channels.len(),
+            expected_peer_count = EXPECTED_PEER_COUNT,
+            "Entered sandbox, starting main loop"
+        );
+    } else {
+        info!(
+            peers = ?attached_peer_names,
+            peer_count = peer_channels.len(),
+            expected_peer_count = EXPECTED_PEER_COUNT,
+            "starting main loop"
+        );
+    }
 
     let mut state = ServiceState {
         enforcer,

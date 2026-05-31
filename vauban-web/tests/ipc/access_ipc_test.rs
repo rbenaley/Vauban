@@ -6,28 +6,10 @@
 /// membership, and access evaluation.
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
-use secrecy::ExposeSecret;
 use serial_test::serial;
 
 use crate::common::TestApp;
-use crate::common::ipc_test_service;
 use crate::fixtures::unique_name;
-
-fn test_database_url() -> String {
-    if let Ok(url) = std::env::var("DATABASE_URL") {
-        return url;
-    }
-    let config_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace root")
-        .join("config");
-    let config = vauban_web::config::Config::load_with_environment(
-        config_dir,
-        vauban_web::config::Environment::Testing,
-    )
-    .expect("load test config");
-    config.database.url.expose_secret().to_string()
-}
 
 async fn ensure_test_user_exists() -> i32 {
     let app = TestApp::spawn().await;
@@ -78,8 +60,8 @@ async fn ensure_test_user_exists() -> i32 {
 #[tokio::test]
 #[serial]
 async fn test_ipc_create_and_get_vauban_group() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let name = unique_name("ipc_vg");
     let group = client
@@ -107,8 +89,8 @@ async fn test_ipc_create_and_get_vauban_group() {
 #[tokio::test]
 #[serial]
 async fn test_ipc_list_vauban_groups() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let name = unique_name("ipc_vg_list");
     let group = client
@@ -128,8 +110,8 @@ async fn test_ipc_list_vauban_groups() {
 #[tokio::test]
 #[serial]
 async fn test_ipc_update_vauban_group() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let name = unique_name("ipc_vg_upd");
     let group = client
@@ -155,8 +137,8 @@ async fn test_ipc_update_vauban_group() {
 #[tokio::test]
 #[serial]
 async fn test_ipc_create_and_get_asset_group() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let name = unique_name("ipc_ag");
     let slug = name.to_lowercase().replace('_', "-");
@@ -192,8 +174,8 @@ async fn test_ipc_create_and_get_asset_group() {
 #[tokio::test]
 #[serial]
 async fn test_ipc_list_asset_groups() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let name = unique_name("ipc_ag_list");
     let slug = name.to_lowercase().replace('_', "-");
@@ -216,8 +198,8 @@ async fn test_ipc_list_asset_groups() {
 #[tokio::test]
 #[serial]
 async fn test_ipc_create_and_get_access_rule() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let ug_name = unique_name("ipc_ug_rule");
     let ag_name = unique_name("ipc_ag_rule");
@@ -285,8 +267,8 @@ async fn test_ipc_create_and_get_access_rule() {
 #[serial]
 async fn test_ipc_group_membership() {
     let user_id = ensure_test_user_exists().await;
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let name = unique_name("ipc_vg_mem");
     let group = client
@@ -333,8 +315,8 @@ async fn test_ipc_group_membership() {
 #[tokio::test]
 #[serial]
 async fn test_ipc_check_access_denied_no_rule() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let result = client
         .check_access(99999, 99999, "ssh")
@@ -347,8 +329,8 @@ async fn test_ipc_check_access_denied_no_rule() {
 #[serial]
 async fn test_ipc_check_access_allowed_and_protocol_filter() {
     let user_id = ensure_test_user_exists().await;
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let ug_name = unique_name("ipc_ug_eval");
     let ag_name = unique_name("ipc_ag_eval");
@@ -409,8 +391,8 @@ async fn test_ipc_check_access_allowed_and_protocol_filter() {
 #[serial]
 async fn test_ipc_list_accessible_groups() {
     let user_id = ensure_test_user_exists().await;
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let ug_name = unique_name("ipc_ug_lag");
     let ag_name = unique_name("ipc_ag_lag");
@@ -470,8 +452,8 @@ async fn test_ipc_list_accessible_groups() {
 #[tokio::test]
 #[serial]
 async fn test_ipc_get_group_options() {
-    let svc = ipc_test_service::spawn(&test_database_url());
-    let client = &svc.access_client;
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
 
     let ug_name = unique_name("ipc_ug_opts");
     let ag_name = unique_name("ipc_ag_opts");
