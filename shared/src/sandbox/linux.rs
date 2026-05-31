@@ -52,6 +52,12 @@ fn base_syscalls() -> Vec<i64> {
     let mut s = vec![
         libc::SYS_read,
         libc::SYS_write,
+        // Vectored I/O: tokio / hyper / rustls write TLS records (and read
+        // request bodies) with readv/writev, not just read/write. Missing
+        // writev surfaces as EPERM mid-TLS-handshake (ServerHello never
+        // reaches the wire), which the client sees as "unexpected eof".
+        libc::SYS_readv,
+        libc::SYS_writev,
         libc::SYS_close,
         libc::SYS_recvmsg,
         libc::SYS_sendmsg,
@@ -216,7 +222,7 @@ impl LinuxBackend {
         }
 
         let status = ruleset
-            .set_no_new_privs(true)
+            .no_new_privs(true)
             .restrict_self()
             .map_err(|e| map_err("landlock restrict_self", e))?;
 
