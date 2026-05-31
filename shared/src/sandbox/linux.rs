@@ -87,6 +87,11 @@ fn base_syscalls() -> Vec<i64> {
         libc::SYS_eventfd2,
         libc::SYS_fstat,
         libc::SYS_newfstatat,
+        // Rust std `File::metadata()` issues statx (AT_EMPTY_PATH) on an
+        // already-open fd on modern Linux and only falls back to fstat on
+        // ENOSYS, not EPERM. Without statx, serving a supervisor-passed
+        // recording fd fails with "read file metadata: EPERM".
+        libc::SYS_statx,
         libc::SYS_fcntl,
         libc::SYS_ioctl,
         libc::SYS_getpid,
