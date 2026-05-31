@@ -92,6 +92,10 @@ fn base_syscalls() -> Vec<i64> {
         // ENOSYS, not EPERM. Without statx, serving a supervisor-passed
         // recording fd fails with "read file metadata: EPERM".
         libc::SYS_statx,
+        // Seeking a (supervisor-passed) file fd to serve HTTP Range
+        // requests needs lseek; it is generic enough to live in the base
+        // rather than only the WritableDir/ReadablePath deltas.
+        libc::SYS_lseek,
         libc::SYS_fcntl,
         libc::SYS_ioctl,
         libc::SYS_getpid,
