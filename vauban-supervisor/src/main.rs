@@ -465,6 +465,11 @@ fn run_supervisor() -> Result<()> {
         Service::ProxyIacs,
         Service::Audit,
         Service::Web,
+        // vauban-auth receives a brokered TCP socket for the LDAPS bind path:
+        // the supervisor connect()s to the directory and hands the
+        // connected FD to auth, which terminates TLS + binds. Always created
+        // (cheap); the broker arm is fail-closed when ldaps is disabled.
+        Service::Auth,
     ] {
         match socketpair_for_fd_passing() {
             Ok((supervisor_socket, child_socket)) => {
@@ -774,6 +779,23 @@ fn run_supervisor() -> Result<()> {
     } else {
         warn!("vauban-web not started, skipping listener FD and cert transfer");
     }
+
+    // Provision the LDAPS config + trust anchor to vauban-auth BEFORE it seals
+    // its sandbox (mirrors the TLS provisioning for web). The
+    // supervisor reads the CA bundle as root and ships the (host, port,
+    // dn_template, ca_pem) so auth can build its rustls client config pre-seal.
+    // The plaintext bind password NEVER transits the supervisor. No-op when
+    // ldaps is disabled.
+    if config.auth.ldaps.enabled {
+        if let Some(auth_state) = children.get("auth") {
+            match send_ldap_provision(&auth_state.channel, &config.auth.ldaps) {
+                Ok(()) => info!("Sent LDAP provisioning to vauban-auth via IPC"),
+                Err(e) => error!("Failed to provision LDAP to vauban-auth: {e}"),
+            }
+        } else {
+            warn!("vauban-auth not started, skipping LDAP provisioning");
+        }
+    }
     // Keep listener_fd alive for the lifetime of the supervisor.
     // The socket must remain open so vauban-web can accept() on its
     // SCM_RIGHTS copy, and so respawns can re-send the same FD
@@ -898,6 +920,28 @@ fn send_tls_cert_provision(
     channel
         .send(&msg)
         .context("Failed to send TlsCertProvision to vauban-web")
+}
+
+/// Read the LDAP CA bundle (root) and provision the LDAPS configuration to
+/// vauban-auth via IPC, BEFORE the auth child seals its sandbox
+/// (mirrors [`send_tls_cert_provision`] for web). The CA PEM is trust material,
+/// not a secret; no bind password is shipped (direct bind via `dn_template`).
+fn send_ldap_provision(channel: &IpcChannel, ldap: &config::LdapConfig) -> Result<()> {
+    let ca_pem = std::fs::read_to_string(&ldap.ca_cert_file).with_context(|| {
+        format!(
+            "Failed to read LDAP CA bundle: {} (auth.ldaps.ca_cert_file)",
+            ldap.ca_cert_file
+        )
+    })?;
+    let msg = Message::AuthLdapProvision {
+        url: ldap.url.clone(),
+        dn_template: ldap.dn_template.clone(),
+        ca_pem,
+        timeout_secs: ldap.timeout_secs,
+    };
+    channel
+        .send(&msg)
+        .context("Failed to send AuthLdapProvision to vauban-auth")
 }
 
 fn setup_signal_handlers() -> Result<()> {
@@ -1162,6 +1206,7 @@ fn watchdog_loop(
             children,
             &config.recording.storage_path,
             &config.mailer,
+            &config.auth.ldaps,
             &iacs_guards,
         );
 
@@ -1653,7 +1698,7 @@ fn respawn_service(
 
     let needs_fd_passing = matches!(
         state.service_key.as_str(),
-        "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "audit" | "web"
+        "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "audit" | "web" | "auth"
     );
     let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
         match socketpair_for_fd_passing() {
@@ -1743,6 +1788,18 @@ fn respawn_service(
                     }
                     Err(e) => {
                         error!("Failed to read TLS certs for respawned vauban-web: {}", e);
+                    }
+                }
+            }
+
+            // Re-provision LDAPS config to a respawned vauban-auth BEFORE it
+            // re-seals. Without this, a crashed/respawned auth would
+            // lose its rustls config and fail every subsequent LDAP bind.
+            if state.service_key == "auth" && config.auth.ldaps.enabled {
+                match send_ldap_provision(&state.channel, &config.auth.ldaps) {
+                    Ok(()) => info!("Sent LDAP provisioning to respawned vauban-auth"),
+                    Err(e) => {
+                        error!("Failed to provision LDAP to respawned vauban-auth: {e}")
                     }
                 }
             }
@@ -1910,7 +1967,7 @@ fn respawn_linked_group(
 
             let needs_fd_passing = matches!(
                 service_key,
-                "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "audit" | "web"
+                "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "audit" | "web" | "auth"
             );
             let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
                 match socketpair_for_fd_passing() {
@@ -2007,6 +2064,19 @@ fn respawn_linked_group(
                                     e
                                 );
                             }
+                        }
+                    }
+
+                    // Re-provision LDAPS config to a respawned vauban-auth in a
+                    // linked group BEFORE it re-seals.
+                    if service_key == "auth" && config.auth.ldaps.enabled {
+                        match send_ldap_provision(&state.channel, &config.auth.ldaps) {
+                            Ok(()) => {
+                                info!("Sent LDAP provisioning to respawned vauban-auth (linked)")
+                            }
+                            Err(e) => error!(
+                                "Failed to provision LDAP to respawned vauban-auth (linked): {e}"
+                            ),
                         }
                     }
                 }
@@ -2137,6 +2207,7 @@ fn handle_tcp_connect_request(
     requesting_service_key: &str,
     children: &HashMap<String, ChildState>,
     mailer: &crate::config::MailerConfig,
+    ldap: &crate::config::LdapConfig,
     iacs_guards: &IacsTunnelGuards,
 ) {
     let TcpConnectPayload {
@@ -2184,6 +2255,7 @@ fn handle_tcp_connect_request(
         Service::ProxyRdp => "proxy_rdp",
         Service::ProxyIacs => "proxy_iacs",
         Service::Web => "web",
+        Service::Auth => "auth",
         _ => {
             warn!(
                 "TcpConnectRequest for unsupported target service: {:?}",
@@ -2233,6 +2305,41 @@ fn handle_tcp_connect_request(
             host = %host,
             port = port,
             "Mailer broker request authorized by whitelist"
+        );
+    } else if matches!(target_service, Service::Auth) {
+        // === Step 1c: LDAPS directory whitelist.
+        //
+        // Same rationale as the mailer gate (Step 1a): vauban-auth is
+        // key-less w.r.t. the SessionToken BLAKE3 key, so the broker
+        // gate here is the supervisor-owned `[auth.ldaps]` whitelist
+        // (`ldap.allows`), a single `(host, port)` couple derived from
+        // the configured `ldaps://` URL. Token-less and EXCLUDED from
+        // the replay cache: the LDAP bind is repeatable by design (every
+        // login attempt re-connects). Fail-closed when ldaps is disabled
+        // or the destination is not the configured directory.
+        if !ldap.allows(&host, port) {
+            warn!(
+                session_id = %session_id,
+                requested_host = %host,
+                requested_port = port,
+                ldap_enabled = ldap.enabled,
+                "TcpConnectRequest target=Auth rejected by ldap whitelist; \
+                 fail-closed deny"
+            );
+            let response = Message::TcpConnectResponse {
+                request_id,
+                session_id,
+                success: false,
+                error: Some("Access denied".to_string()),
+            };
+            let _ = requesting_channel.send(&response);
+            return;
+        }
+        debug!(
+            session_id = %session_id,
+            host = %host,
+            port = port,
+            "LDAP broker request authorized by whitelist"
         );
     } else {
         // === Step 1b: Cryptographic gate for proxy targets.
@@ -2840,14 +2947,16 @@ fn handle_recording_file_gzip_request(
 
 /// Poll all service channels and process incoming messages.
 ///
-/// Handles TcpConnectRequest (proxies and web/mailer), RecordingFileRequest (audit),
-/// and ACME renewal requests (web). The `mailer` config is consulted by
-/// [`handle_tcp_connect_request`] when `target_service = Web` to enforce
-/// the SSRF whitelist (Issue #10).
+/// Handles TcpConnectRequest (proxies, web/mailer and auth/ldap),
+/// RecordingFileRequest (audit), and ACME renewal requests (web). The `mailer`
+/// config is consulted by [`handle_tcp_connect_request`] when
+/// `target_service = Web` (SSRF whitelist, Issue #10); the `ldap` config is
+/// consulted when `target_service = Auth` (LDAPS directory whitelist).
 fn process_service_messages(
     children: &HashMap<String, ChildState>,
     recording_storage_path: &str,
     mailer: &crate::config::MailerConfig,
+    ldap: &crate::config::LdapConfig,
     iacs_guards: &IacsTunnelGuards,
 ) {
     // Collect all read FDs from services
@@ -2903,6 +3012,7 @@ fn process_service_messages(
                             service_key,
                             children,
                             mailer,
+                            ldap,
                             iacs_guards,
                         );
                     }
@@ -4984,6 +5094,237 @@ mod tests {
                  mailer.allows() returns false; this is the audit trail \
                  a SOC will look for after an SSRF attempt.",
             );
+    }
+
+    // ==================== LDAPS broker arm ====================
+
+    /// Pin: the Auth broker arm exists, is gated by the supervisor-owned
+    /// `ldap.allows(host, port)` whitelist (NOT the SessionToken crypto gate,
+    /// since vauban-auth is key-less), and logs a fail-closed rejection.
+    #[test]
+    fn test_supervisor_ldap_broker_arm_uses_whitelist_gate() {
+        let source = supervisor_prod_source();
+        let handler_start = source
+            .find("fn handle_tcp_connect_request(")
+            .expect("handle_tcp_connect_request must exist");
+        let handler = &source[handler_start..];
+        let handler_end = handler
+            .find("\nfn ")
+            .or_else(|| handler.find("\nasync fn "))
+            .unwrap_or(handler.len());
+        let handler = &handler[..handler_end];
+
+        assert!(
+            handler.contains("Service::Auth =>"),
+            "handle_tcp_connect_request MUST map Service::Auth to the \"auth\" \
+             child in target_key (LDAPS broker path)."
+        );
+        let branch_idx = handler
+            .find("matches!(target_service, Service::Auth)")
+            .expect(
+                "handle_tcp_connect_request MUST have a dedicated \
+                 `else if matches!(target_service, Service::Auth)` broker arm.",
+            );
+        let allows_idx = handler[branch_idx..]
+            .find("ldap.allows(")
+            .map(|i| branch_idx + i)
+            .expect(
+                "the Service::Auth arm MUST gate on ldap.allows(host, port) \
+                 (supervisor-owned whitelist), before any DNS/connect.",
+            );
+        assert!(
+            handler[allows_idx..].contains("rejected by ldap whitelist"),
+            "the Service::Auth arm MUST log a fail-closed rejection when \
+             ldap.allows() returns false."
+        );
+        // Token-less: the Auth arm must NOT verify a SessionToken (auth is
+        // key-less); verify_bytes only appears in the proxy `else` branch,
+        // which starts after the Auth arm.
+        let else_token_idx = handler
+            .find("SessionToken::verify_bytes(")
+            .expect("proxy else branch must still verify tokens");
+        assert!(
+            branch_idx < else_token_idx,
+            "the Service::Auth whitelist arm MUST precede the token-gated \
+             proxy branch (token-less by design)."
+        );
+    }
+
+    /// Functional broker test (real socketpair + SCM_RIGHTS): an allowed
+    /// `(host, port)` connects and hands the connected FD to the auth child;
+    /// a disabled / mismatched config fail-closes with `Access denied` and
+    /// passes no FD.
+    #[test]
+    fn test_supervisor_ldap_broker_allow_passes_fd_and_deny_fails_closed() {
+        use shared::ipc::recv_fd;
+        use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+
+        // Fake directory: a bound listener (kernel completes the handshake
+        // from the listen backlog even without an explicit accept()).
+        let directory =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake directory");
+        let dir_addr = directory.local_addr().unwrap();
+
+        // Helper to build an "auth" child wired to a fresh socketpair + IPC.
+        fn build_auth_child() -> (ChildState, std::os::fd::OwnedFd, IpcChannel) {
+            let (sup_sock, child_sock) =
+                socketpair_for_fd_passing().expect("fd-passing socketpair");
+            let (sup_channel, child_channel) = IpcChannel::pair().expect("ipc pair");
+            let state = ChildState {
+                pid: 4242,
+                service_key: "auth".to_string(),
+                channel: sup_channel,
+                last_pong: Instant::now(),
+                missed_heartbeats: 0,
+                heartbeat_seq: 0,
+                respawn_count: 0,
+                last_respawn: Instant::now(),
+                last_stats: None,
+                is_draining: false,
+                drain_started: None,
+                fd_passing_socket: Some(sup_sock),
+            };
+            (state, child_sock, child_channel)
+        }
+
+        let mailer = crate::config::MailerConfig::default();
+        let guards =
+            IacsTunnelGuards::from_config(&crate::config::IacsTunnelSupervisorConfig::default());
+
+        // --- ALLOW path ---
+        {
+            let (state, child_sock, child_channel) = build_auth_child();
+            let mut children: HashMap<String, ChildState> = HashMap::new();
+            children.insert("auth".to_string(), state);
+
+            let ldap = crate::config::LdapConfig {
+                enabled: true,
+                url: format!("ldaps://127.0.0.1:{}", dir_addr.port()),
+                dn_template: "{username}@example.com".to_string(),
+                ..crate::config::LdapConfig::default()
+            };
+
+            let payload = TcpConnectPayload {
+                request_id: 7,
+                session_id: "ldap-allow".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: dir_addr.port(),
+                target_service: Service::Auth,
+                session_token: Vec::new(),
+            };
+            handle_tcp_connect_request(
+                payload,
+                &children["auth"].channel,
+                "auth",
+                &children,
+                &mailer,
+                &ldap,
+                &guards,
+            );
+
+            // FD must have been passed via SCM_RIGHTS.
+            let received = recv_fd(child_sock.as_raw_fd()).expect("recv_fd on allow path");
+            let stream = unsafe { std::net::TcpStream::from_raw_fd(received.into_raw_fd()) };
+            assert_eq!(
+                stream.peer_addr().unwrap(),
+                dir_addr,
+                "the brokered FD must be connected to the configured directory"
+            );
+
+            // Self-target: success is delivered via the step-4 fd_info on the
+            // same channel (no duplicate step-5). It MUST be success=true.
+            let notify = child_channel.recv().expect("fd_info notification");
+            match notify {
+                Message::TcpConnectResponse { success, .. } => {
+                    assert!(success, "allow path must notify success");
+                }
+                other => panic!("expected TcpConnectResponse, got {other:?}"),
+            }
+        }
+
+        // --- DENY path: disabled ldap ---
+        {
+            let (state, _child_sock, child_channel) = build_auth_child();
+            let mut children: HashMap<String, ChildState> = HashMap::new();
+            children.insert("auth".to_string(), state);
+
+            let ldap = crate::config::LdapConfig {
+                enabled: false,
+                url: format!("ldaps://127.0.0.1:{}", dir_addr.port()),
+                dn_template: "{username}@example.com".to_string(),
+                ..crate::config::LdapConfig::default()
+            };
+
+            let payload = TcpConnectPayload {
+                request_id: 8,
+                session_id: "ldap-deny-disabled".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: dir_addr.port(),
+                target_service: Service::Auth,
+                session_token: Vec::new(),
+            };
+            handle_tcp_connect_request(
+                payload,
+                &children["auth"].channel,
+                "auth",
+                &children,
+                &mailer,
+                &ldap,
+                &guards,
+            );
+
+            let resp = child_channel.recv().expect("deny response");
+            match resp {
+                Message::TcpConnectResponse { success, error, .. } => {
+                    assert!(!success, "disabled ldap must fail-closed");
+                    assert_eq!(error.as_deref(), Some("Access denied"));
+                }
+                other => panic!("expected TcpConnectResponse, got {other:?}"),
+            }
+        }
+
+        // --- DENY path: host/port mismatch (SSRF attempt) ---
+        {
+            let (state, _child_sock, child_channel) = build_auth_child();
+            let mut children: HashMap<String, ChildState> = HashMap::new();
+            children.insert("auth".to_string(), state);
+
+            // Whitelist points at the directory, but the request targets a
+            // different port -> must be refused.
+            let ldap = crate::config::LdapConfig {
+                enabled: true,
+                url: format!("ldaps://127.0.0.1:{}", dir_addr.port()),
+                dn_template: "{username}@example.com".to_string(),
+                ..crate::config::LdapConfig::default()
+            };
+
+            let payload = TcpConnectPayload {
+                request_id: 9,
+                session_id: "ldap-deny-mismatch".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: dir_addr.port().wrapping_add(1),
+                target_service: Service::Auth,
+                session_token: Vec::new(),
+            };
+            handle_tcp_connect_request(
+                payload,
+                &children["auth"].channel,
+                "auth",
+                &children,
+                &mailer,
+                &ldap,
+                &guards,
+            );
+
+            let resp = child_channel.recv().expect("deny response");
+            match resp {
+                Message::TcpConnectResponse { success, error, .. } => {
+                    assert!(!success, "host/port mismatch must fail-closed");
+                    assert_eq!(error.as_deref(), Some("Access denied"));
+                }
+                other => panic!("expected TcpConnectResponse, got {other:?}"),
+            }
+        }
     }
 
     /// Bastion Watch dashboard pin: every successful broker hand-off

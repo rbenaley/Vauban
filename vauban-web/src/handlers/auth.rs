@@ -25,9 +25,7 @@ use crate::error::{AppError, AppResult};
 use crate::middleware::browser_tz::BrowserTz;
 use crate::middleware::flash::{IncomingFlash, flash_redirect};
 use crate::models::auth_session::{AuthSession, NewAuthSession};
-#[cfg(test)]
-use crate::models::user::AuthSource;
-use crate::models::user::User;
+use crate::models::user::{AuthSource, NewUser, User};
 use crate::schema::{auth_sessions, users::dsl::*};
 use crate::services::auth::{AuthService, Claims, is_encrypted_mfa_secret};
 use crate::templates::accounts::{MfaSetupTemplate, MfaVerifyTemplate};
@@ -112,55 +110,84 @@ pub async fn login(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Database connection error: {}", e)))?;
 
-    // Find user by username
-    let user = match users
+    // Find user by username.
+    let existing_user = users
         .filter(username.eq(&request.username))
         .filter(is_deleted.eq(false))
         .first::<User>(&mut conn)
         .await
         .optional()
-        .map_err(AppError::Database)?
-    {
-        Some(u) => u,
+        .map_err(AppError::Database)?;
+
+    // SEC-04: credentials are verified BEFORE any account-state / existence
+    // check so an attacker with an invalid password only ever sees the generic
+    // "Invalid credentials" response. The routing below is by `auth_source`:
+    //
+    //  * existing `Ldap` user  -> LDAP bind only, NEVER a local fallback
+    //    (anti-downgrade) and NEVER touching the local lockout counters (the
+    //    directory owns its own lockout).
+    //  * existing `Local` user -> the historical Argon2 path, including the
+    //    progressive local lockout.
+    //  * unknown username       -> optional LDAP just-in-time provisioning when
+    //    `[auth.ldaps]` is enabled and lists "ldap"; otherwise generic failure.
+    //
+    // Every LDAP failure mode (bad password, directory down, TLS error) is
+    // collapsed to the same generic response (anti-enumeration, SEC-04/05).
+    let user = match existing_user {
+        Some(u) if u.auth_source == AuthSource::Ldap => {
+            if !ldap_bind_succeeds(&state, &request.username, &request.password).await {
+                return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
+            }
+            u
+        }
+        Some(u) => {
+            let password_valid = if let Some(ref client) = state.auth_ipc_client {
+                client
+                    .verify_password(&request.password, &u.password_hash)
+                    .await?
+            } else {
+                state
+                    .auth_service
+                    .verify_password(&request.password, &u.password_hash)?
+            };
+            if !password_valid {
+                let new_failed_attempts = u.failed_login_attempts + 1;
+                let locked_until_value = lockout_duration_for_attempts(
+                    new_failed_attempts,
+                    state.config.security.max_failed_login_attempts,
+                )
+                .map(|duration| Utc::now() + duration);
+
+                diesel::update(users.find(u.id))
+                    .set((
+                        failed_login_attempts.eq(new_failed_attempts),
+                        locked_until.eq(locked_until_value),
+                    ))
+                    .execute(&mut conn)
+                    .await
+                    .map_err(AppError::Database)?;
+
+                // SEC-04: always return generic "Invalid credentials" regardless
+                // of whether lockout was triggered, to prevent enumeration.
+                return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
+            }
+            u
+        }
         None => {
-            return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
+            // Unknown username: try LDAP JIT provisioning if configured. The
+            // bind happens against the username supplied; on success we create
+            // a directory-backed local shadow account and proceed to MFA.
+            if state.config.auth.ldaps.jit_enabled()
+                && ldap_bind_succeeds(&state, &request.username, &request.password).await
+            {
+                jit_provision_ldap_user(&mut conn, &request.username).await?
+            } else {
+                return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
+            }
         }
     };
 
-    // SEC-04: verify password BEFORE checking account state to prevent
-    // enumeration via lockout/deactivation differential responses.
-    let password_valid = if let Some(ref client) = state.auth_ipc_client {
-        client
-            .verify_password(&request.password, &user.password_hash)
-            .await?
-    } else {
-        state
-            .auth_service
-            .verify_password(&request.password, &user.password_hash)?
-    };
-    if !password_valid {
-        let new_failed_attempts = user.failed_login_attempts + 1;
-        let locked_until_value = lockout_duration_for_attempts(
-            new_failed_attempts,
-            state.config.security.max_failed_login_attempts,
-        )
-        .map(|duration| Utc::now() + duration);
-
-        diesel::update(users.find(user.id))
-            .set((
-                failed_login_attempts.eq(new_failed_attempts),
-                locked_until.eq(locked_until_value),
-            ))
-            .execute(&mut conn)
-            .await
-            .map_err(AppError::Database)?;
-
-        // SEC-04: always return generic "Invalid credentials" regardless of
-        // whether lockout was triggered, to prevent account enumeration.
-        return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
-    }
-
-    // SEC-04: account state checks after password verification -- an attacker
+    // SEC-04: account state checks after credential verification -- an attacker
     // with an invalid password only ever sees "Invalid credentials".
     if user.is_locked() || !user.is_active {
         return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
@@ -497,6 +524,90 @@ pub async fn login_web(
         return login_error_response(htmx, LoginErrorKind::InvalidCsrf);
     }
     login(State(state), client_addr, headers, jar, Json(request)).await
+}
+
+/// Password-hash sentinel stored for directory-backed accounts. It is a
+/// syntactically invalid Argon2 encoding, so the local verification path can
+/// never accept it -- LDAP users authenticate exclusively through the bind.
+const LDAP_PASSWORD_SENTINEL: &str = "!ldap-no-local-login";
+
+/// Forward an LDAP simple bind to vauban-auth and reduce the coarse outcome to
+/// a boolean. Returns `false` (fail-closed) when LDAP is disabled or the auth
+/// IPC client is unavailable. The distinct non-success outcomes are logged
+/// internally but NEVER surfaced to the caller (anti-enumeration, SEC-04/05).
+async fn ldap_bind_succeeds(state: &AppState, login_name: &str, password: &str) -> bool {
+    if !state.config.auth.ldaps.enabled {
+        return false;
+    }
+    let Some(ref client) = state.auth_ipc_client else {
+        tracing::error!("LDAP login attempted but auth IPC client is not configured");
+        return false;
+    };
+    match client.ldap_bind(login_name, password).await {
+        Ok(shared::messages::LdapBindOutcome::Success) => true,
+        Ok(outcome) => {
+            tracing::info!(?outcome, login_name, "LDAP bind rejected");
+            false
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, login_name, "LDAP bind IPC error");
+            false
+        }
+    }
+}
+
+/// Just-in-time provision a directory-backed account after a successful LDAP
+/// bind for a username Vauban had never seen. The shadow row carries
+/// `auth_source = Ldap`, the username as `external_id`, a sentinel password
+/// hash, and `is_active = true`. MFA is NOT pre-enabled, so the caller routes
+/// the user through `/mfa/setup` exactly like any other first login.
+async fn jit_provision_ldap_user(
+    conn: &mut diesel_async::AsyncPgConnection,
+    login_name: &str,
+) -> AppResult<User> {
+    // No LDAP search is performed in v1, so we have no authoritative e-mail.
+    // Derive a deterministic, non-routable placeholder (or reuse the value
+    // when the username already looks like a UPN) to satisfy the NOT NULL +
+    // UNIQUE e-mail column. Operators can edit it afterwards.
+    let email_value = if login_name.contains('@') {
+        login_name.to_lowercase()
+    } else {
+        format!("{}@ldap.local", login_name.to_lowercase())
+    };
+
+    let new_user = NewUser {
+        uuid: ::uuid::Uuid::new_v4(),
+        username: login_name.to_string(),
+        email: email_value,
+        password_hash: LDAP_PASSWORD_SENTINEL.to_string(),
+        first_name: None,
+        last_name: None,
+        phone: None,
+        is_active: true,
+        is_staff: false,
+        is_superuser: false,
+        is_service_account: false,
+        mfa_enabled: false,
+        mfa_enforced: false,
+        mfa_secret: None,
+        preferences: serde_json::json!({}),
+        auth_source: AuthSource::Ldap,
+        external_id: Some(login_name.to_string()),
+    };
+
+    let user = diesel::insert_into(crate::schema::users::table)
+        .values(&new_user)
+        .returning(User::as_returning())
+        .get_result::<User>(conn)
+        .await
+        .map_err(AppError::Database)?;
+
+    tracing::info!(
+        user_id = user.id,
+        username = %user.username,
+        "JIT-provisioned directory user on first LDAP login"
+    );
+    Ok(user)
 }
 
 #[derive(Debug, Clone, Copy)]

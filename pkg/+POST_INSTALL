@@ -83,7 +83,10 @@ for _u in ${_svc_users}; do
 done
 
 # No ACLs on certs/ -- only root (vauban-supervisor) accesses cert files.
-# vauban-web receives cert data via IPC at startup.
+# vauban-web receives cert data via IPC at startup. The optional LDAPS trust
+# anchor (certs/ldap_ca.pem, [auth.ldaps].ca_cert_file) is read here by the
+# supervisor (root) and forwarded pre-seal to vauban-auth: it lives under the
+# same 0700 root:wheel certs/ dir, so it needs no additional ACL.
 
 chown root:wheel "${PREFIX}/etc/vauban/access"
 chmod 750 "${PREFIX}/etc/vauban/access"

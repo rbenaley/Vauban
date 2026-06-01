@@ -254,12 +254,71 @@ pub struct Config {
     /// `"VAUBAN"` (no white-label).
     #[serde(default)]
     pub product: ProductConfig,
+    /// Authentication backend routing (LDAP/AD). The web layer only needs to
+    /// know whether LDAP is enabled and its precedence order; the directory
+    /// URL, trust anchor and DN template live in the supervisor config because
+    /// vauban-auth (not the web process) performs the bind. See
+    /// docs/technical/Vauban_LDAPS_Auth_Architecture.
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 debug_redacted_struct!(
     Config,
     redact: [secret_key]
 );
+
+/// Web-side authentication backend configuration (`[auth]`).
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AuthConfig {
+    #[serde(default)]
+    pub ldaps: WebLdapConfig,
+}
+
+/// Web-side LDAP routing knobs (`[auth.ldaps]`).
+///
+/// The web process never opens an LDAP connection itself; it forwards bind
+/// requests to vauban-auth over IPC. It therefore only needs to know
+/// whether LDAP is enabled and where it sits in the authentication order.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WebLdapConfig {
+    /// Master switch. When `false`, no LDAP bind is ever attempted, even for
+    /// users whose `auth_source` is `ldap` (they fail closed).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Ordered list of backends consulted for an UNKNOWN username. The presence
+    /// of `"ldap"` enables just-in-time provisioning of directory users.
+    /// Existing users are always routed by their own `auth_source`, never by
+    /// this list.
+    #[serde(default = "WebLdapConfig::default_order")]
+    pub order: Vec<String>,
+}
+
+impl Default for WebLdapConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            order: Self::default_order(),
+        }
+    }
+}
+
+impl WebLdapConfig {
+    fn default_order() -> Vec<String> {
+        vec!["local".to_string()]
+    }
+
+    /// Whether the LDAP backend participates in JIT provisioning of unknown
+    /// usernames: enabled AND `"ldap"` present in the precedence order.
+    #[must_use]
+    pub fn jit_enabled(&self) -> bool {
+        self.enabled
+            && self
+                .order
+                .iter()
+                .any(|backend| backend.eq_ignore_ascii_case("ldap"))
+    }
+}
 
 /// Asset and asset-group configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -251,3 +251,20 @@ retention_batch_size = 50
 
 [product.brand]
 name = "VAUBAN"
+
+# ==============================================================================
+# AUTHENTICATION BACKENDS (web view)
+# ==============================================================================
+#
+# The web process never opens an LDAP connection itself; it forwards bind
+# requests to vauban-auth. It only needs to know whether LDAP is
+# enabled and where it sits in the auth precedence for UNKNOWN usernames.
+# The directory URL, CA and DN template live in the supervisor config
+# (config/vauban.conf, [auth.ldaps]).
+#
+# Existing users are always routed by their own stored `auth_source`; the
+# `order` list only governs just-in-time provisioning of unknown usernames.
+
+[auth.ldaps]
+enabled = false
+order = ["local"]

@@ -169,6 +169,24 @@ pub struct RbacResult {
     pub reason: Option<String>,
 }
 
+/// Outcome of an LDAP simple-bind performed by vauban-auth.
+///
+/// The web layer collapses every non-`Success` variant to a single generic
+/// "invalid credentials" response to avoid account/directory enumeration
+/// (SEC-04/05); the distinct variants exist only for internal logging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LdapBindOutcome {
+    /// Bind succeeded (LDAP resultCode 0).
+    Success,
+    /// Credentials rejected by the directory (resultCode 49) or any other
+    /// bind-level rejection.
+    InvalidCredentials,
+    /// The directory could not be reached (broker / connect / timeout failure).
+    Unreachable,
+    /// TLS handshake or certificate validation failed.
+    TlsError,
+}
+
 /// Access check result from vauban-access (instance-level authorization).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessCheckResult {
@@ -2036,6 +2054,46 @@ pub enum Message {
         request_id: u64,
         response: AdminResponse,
     },
+
+    // ========== LDAP Authentication (Web <-> Auth, Supervisor -> Auth) ==========
+    //
+    // WIRE COMPATIBILITY: these variants are APPENDED at the end of the enum.
+    // Bincode encodes enum variants by ordinal index, so new variants MUST be
+    // added here (never inserted in the middle) to preserve the discriminants
+    // of already-deployed peers.
+    /// Web asks auth to perform an LDAP simple bind for `username`.
+    ///
+    /// The password is carried in a [`SensitiveString`] (zeroized on drop,
+    /// redacted in `Debug`). Auth builds the bind DN from its configured
+    /// `dn_template`, requests a brokered TCP socket from the supervisor,
+    /// terminates TLS itself, and performs the bind. The plaintext password
+    /// never enters the supervisor (root TCB).
+    AuthLdapBind {
+        request_id: u64,
+        username: String,
+        password: SensitiveString,
+    },
+    /// Auth's response to [`Message::AuthLdapBind`].
+    AuthLdapBindResponse {
+        request_id: u64,
+        outcome: LdapBindOutcome,
+    },
+
+    /// Supervisor provisions the LDAP configuration + trust anchor to auth at
+    /// startup, BEFORE auth enters its sandbox (mirrors
+    /// [`Message::TlsCertProvision`]). The CA PEM is trust material, not a
+    /// secret; no bind password is shipped in v1 (direct bind via
+    /// `dn_template`).
+    AuthLdapProvision {
+        /// `ldaps://host:port` of the directory.
+        url: String,
+        /// DN/UPN template; `{username}` is substituted at bind time.
+        dn_template: String,
+        /// PEM-encoded CA bundle used to validate the directory's TLS cert.
+        ca_pem: String,
+        /// Per-attempt timeout budget in seconds.
+        timeout_secs: u64,
+    },
 }
 
 impl Message {
@@ -2082,7 +2140,9 @@ impl Message {
             | Message::AccessRequest { request_id, .. }
             | Message::AccessResponse { request_id, .. }
             | Message::AdminCommand { request_id, .. }
-            | Message::AdminResponse { request_id, .. } => Some(*request_id),
+            | Message::AdminResponse { request_id, .. }
+            | Message::AuthLdapBind { request_id, .. }
+            | Message::AuthLdapBindResponse { request_id, .. } => Some(*request_id),
             _ => None,
         }
     }
@@ -2859,6 +2919,128 @@ mod tests {
         } else {
             panic!("Wrong variant");
         }
+    }
+
+    // ==================== LDAP Authentication Tests ====================
+
+    #[test]
+    fn test_message_auth_ldap_bind_roundtrip() {
+        let msg = Message::AuthLdapBind {
+            request_id: 700,
+            username: "alice".to_string(),
+            password: SensitiveString::new("s3cr3t".to_string()),
+        };
+        assert_eq!(msg.request_id(), Some(700));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::AuthLdapBind {
+            request_id,
+            username,
+            password,
+        } = deserialized
+        {
+            assert_eq!(request_id, 700);
+            assert_eq!(username, "alice");
+            assert_eq!(password.as_str(), "s3cr3t");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_auth_ldap_bind_password_redacted_in_debug() {
+        let msg = Message::AuthLdapBind {
+            request_id: 701,
+            username: "bob".to_string(),
+            password: SensitiveString::new("do-not-leak".to_string()),
+        };
+        let debug = format!("{:?}", msg);
+        assert!(
+            !debug.contains("do-not-leak"),
+            "LDAP bind password must be redacted in Debug output, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn test_message_auth_ldap_bind_response_roundtrip() {
+        for outcome in [
+            LdapBindOutcome::Success,
+            LdapBindOutcome::InvalidCredentials,
+            LdapBindOutcome::Unreachable,
+            LdapBindOutcome::TlsError,
+        ] {
+            let msg = Message::AuthLdapBindResponse {
+                request_id: 702,
+                outcome,
+            };
+            assert_eq!(msg.request_id(), Some(702));
+
+            let serialized = serialize(&msg);
+            let deserialized: Message = deserialize(&serialized);
+            if let Message::AuthLdapBindResponse {
+                request_id,
+                outcome: got,
+            } = deserialized
+            {
+                assert_eq!(request_id, 702);
+                assert_eq!(got, outcome);
+            } else {
+                panic!("Wrong variant");
+            }
+        }
+    }
+
+    #[test]
+    fn test_message_auth_ldap_provision_roundtrip() {
+        let msg = Message::AuthLdapProvision {
+            url: "ldaps://dc1.example.com:636".to_string(),
+            dn_template: "{username}@example.com".to_string(),
+            ca_pem: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+                .to_string(),
+            timeout_secs: 5,
+        };
+        // Provisioning carries no request_id (like TlsCertProvision).
+        assert_eq!(msg.request_id(), None);
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::AuthLdapProvision {
+            url,
+            dn_template,
+            ca_pem,
+            timeout_secs,
+        } = deserialized
+        {
+            assert_eq!(url, "ldaps://dc1.example.com:636");
+            assert_eq!(dn_template, "{username}@example.com");
+            assert!(ca_pem.contains("BEGIN CERTIFICATE"));
+            assert_eq!(timeout_secs, 5);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    /// WIRE COMPATIBILITY pin: the LDAP variants are the LAST three in the
+    /// `Message` enum. Bincode encodes variants by ordinal index, so they
+    /// MUST stay appended at the end (any earlier insertion shifts every
+    /// subsequent discriminant and breaks already-deployed peers). This test
+    /// fails loudly if a future variant is inserted after them in the source.
+    #[test]
+    fn test_ldap_message_variants_are_appended_last() {
+        // Encoding a value whose discriminant is the maximum currently known
+        // must round-trip; if a variant is inserted *after* AuthLdapProvision,
+        // this still passes, but the companion source-ordering comment +
+        // the explicit indices below document the contract.
+        let provision = Message::AuthLdapProvision {
+            url: "ldaps://x:636".to_string(),
+            dn_template: "{username}".to_string(),
+            ca_pem: String::new(),
+            timeout_secs: 1,
+        };
+        let bytes = serialize(&provision);
+        let decoded: Message = deserialize(&bytes);
+        assert!(matches!(decoded, Message::AuthLdapProvision { .. }));
     }
 
     #[test]

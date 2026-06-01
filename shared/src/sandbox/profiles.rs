@@ -32,8 +32,11 @@ pub enum ResourceKind {
     ReadablePath,
 }
 
-/// vauban-auth: supervisor + web IPC pipes only (CPU-bound: Argon2).
-pub const AUTH_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe];
+/// vauban-auth: supervisor + web IPC pipes, plus an SCM_RIGHTS fd receiver
+/// for the LDAPS broker path (the supervisor connects to the directory and
+/// passes the connected socket; auth terminates TLS + binds). Argon2 stays
+/// CPU-bound; no DB or listener.
+pub const AUTH_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe, ResourceKind::FdReceiver];
 
 /// vauban-vault: supervisor + peer IPC pipes only (in-memory keyrings).
 pub const VAULT_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe];

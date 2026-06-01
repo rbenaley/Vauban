@@ -7,7 +7,7 @@
 
 use crate::error::{AppError, AppResult};
 use shared::ipc::IpcChannel;
-use shared::messages::{Message, SensitiveString};
+use shared::messages::{LdapBindOutcome, Message, SensitiveString};
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
@@ -25,6 +25,9 @@ enum AuthResponse {
     Hash {
         hash: Option<String>,
         error: Option<String>,
+    },
+    LdapBind {
+        outcome: LdapBindOutcome,
     },
 }
 
@@ -114,6 +117,40 @@ impl AuthIpcClient {
         }
     }
 
+    /// Perform an LDAPS simple bind against the configured directory.
+    ///
+    /// The auth service brokers a TCP socket through the supervisor, terminates
+    /// TLS itself, and runs the bind; the plaintext password never transits the
+    /// root TCB. The returned [`LdapBindOutcome`] is coarse on purpose: callers
+    /// MUST collapse every non-`Success` variant into a single generic
+    /// "invalid credentials" response to avoid directory enumeration.
+    pub async fn ldap_bind(&self, username: &str, password: &str) -> AppResult<LdapBindOutcome> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = oneshot::channel();
+
+        self.pending_requests.lock().await.insert(request_id, tx);
+
+        let msg = Message::AuthLdapBind {
+            request_id,
+            username: username.to_string(),
+            password: SensitiveString::new(password.to_string()),
+        };
+        self.channel
+            .send(&msg)
+            .map_err(|e| AppError::Ipc(format!("auth send error: {}", e)))?;
+
+        debug!(request_id, "AuthLdapBind request sent");
+
+        let result = rx
+            .await
+            .map_err(|_| AppError::Ipc("auth response channel dropped".to_string()))?;
+
+        match result {
+            AuthResponse::LdapBind { outcome } => Ok(outcome),
+            _ => Err(AppError::Ipc("unexpected auth response type".to_string())),
+        }
+    }
+
     /// Process incoming messages from the auth service.
     ///
     /// Should be spawned as a background task via `tokio::spawn`.
@@ -158,6 +195,7 @@ impl AuthIpcClient {
             Message::AuthHashPasswordResponse { hash, error, .. } => {
                 AuthResponse::Hash { hash, error }
             }
+            Message::AuthLdapBindResponse { outcome, .. } => AuthResponse::LdapBind { outcome },
             other => {
                 warn!("Unexpected message from Auth service: {:?}", other);
                 return;

@@ -131,6 +131,12 @@ pub struct AuthConfig {
     pub argon2_iterations: u32,
     #[serde(default = "default_argon2_parallelism")]
     pub argon2_parallelism: u32,
+    /// LDAPS/AD directory authentication. When enabled, the
+    /// supervisor brokers a TCP socket to the directory on behalf of the
+    /// sandboxed `vauban-auth` (which terminates TLS + binds). Disabled by
+    /// default (`[auth.ldaps].enabled = false`).
+    #[serde(default)]
+    pub ldaps: LdapConfig,
 }
 
 fn default_argon2_memory_kb() -> u32 {
@@ -149,7 +155,152 @@ impl Default for AuthConfig {
             argon2_memory_kb: default_argon2_memory_kb(),
             argon2_iterations: default_argon2_iterations(),
             argon2_parallelism: default_argon2_parallelism(),
+            ldaps: LdapConfig::default(),
         }
+    }
+}
+
+/// LDAPS/AD directory authentication configuration (supervisor view).
+///
+/// The supervisor needs the directory endpoint (to enforce the `(host, port)`
+/// broker whitelist, exactly like [`MailerConfig::allows`] for the mailer) and
+/// the trust material (`ca_cert_file`, read as root and shipped pre-seal to
+/// `vauban-auth` via [`shared::messages::Message::AuthLdapProvision`]). The
+/// plaintext password never transits the supervisor: the bind happens inside
+/// the sandboxed auth service.
+///
+/// SECURITY: only `ldaps://` is accepted; a `url` starting with `ldap://`
+/// (plaintext) is rejected at config load (see [`LdapConfig::validate`]).
+#[derive(Debug, Clone, Deserialize)]
+pub struct LdapConfig {
+    /// Master switch. When false, the supervisor refuses to broker any TCP
+    /// connection on behalf of `vauban-auth` and ships no provisioning.
+    #[serde(default)]
+    pub enabled: bool,
+    /// `ldaps://host[:port]` of the directory (default LDAPS port is 636).
+    #[serde(default)]
+    pub url: String,
+    /// DN/UPN template; `{username}` is substituted by auth at bind time
+    /// (e.g. `{username}@example.com` or `uid={username},ou=users,dc=ex,dc=com`).
+    #[serde(default)]
+    pub dn_template: String,
+    /// Path to the PEM CA bundle validating the directory's TLS certificate.
+    /// Read by the supervisor (root) and forwarded pre-seal to auth.
+    #[serde(default = "default_ldap_ca_cert_file")]
+    pub ca_cert_file: String,
+    /// Per-attempt timeout budget in seconds (broker + TLS + bind).
+    #[serde(default = "default_ldap_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Authentication source order for unknown usernames, e.g.
+    /// `["ldap", "local"]`. Consumed by vauban-web (the supervisor does not
+    /// route logins); accepted here so the `[auth.ldaps]` block has a single
+    /// schema across services.
+    #[allow(dead_code)]
+    #[serde(default = "default_ldap_order")]
+    pub order: Vec<String>,
+}
+
+fn default_ldap_ca_cert_file() -> String {
+    "/usr/local/etc/vauban/certs/ldap_ca.pem".to_string()
+}
+
+fn default_ldap_timeout_secs() -> u64 {
+    5
+}
+
+fn default_ldap_order() -> Vec<String> {
+    vec!["ldap".to_string(), "local".to_string()]
+}
+
+impl Default for LdapConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: String::new(),
+            dn_template: String::new(),
+            ca_cert_file: default_ldap_ca_cert_file(),
+            timeout_secs: default_ldap_timeout_secs(),
+            order: default_ldap_order(),
+        }
+    }
+}
+
+impl LdapConfig {
+    /// Parse the configured `ldaps://host[:port]` URL into a `(host, port)`
+    /// couple. Returns `None` if the scheme is not `ldaps://` or the host is
+    /// empty (fail-closed). The default LDAPS port is 636.
+    ///
+    /// Bracketed IPv6 literals (`ldaps://[::1]:636`) are supported; the rare
+    /// bracketed form without an explicit port is treated as default-port.
+    pub fn endpoint(&self) -> Option<(String, u16)> {
+        let rest = self.url.strip_prefix("ldaps://")?;
+        // Drop any path/query component after the authority.
+        let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+        if authority.is_empty() {
+            return None;
+        }
+        // Bracketed IPv6 literal: [host] or [host]:port.
+        if let Some(after) = authority.strip_prefix('[') {
+            let (host, tail) = after.split_once(']')?;
+            if host.is_empty() {
+                return None;
+            }
+            return match tail.strip_prefix(':') {
+                Some(p) => Some((host.to_string(), p.parse().ok()?)),
+                None if tail.is_empty() => Some((host.to_string(), 636)),
+                None => None,
+            };
+        }
+        match authority.rsplit_once(':') {
+            Some((h, p)) => {
+                if h.is_empty() {
+                    return None;
+                }
+                Some((h.to_string(), p.parse().ok()?))
+            }
+            None => Some((authority.to_string(), 636)),
+        }
+    }
+
+    /// SSRF guard for the LDAPS broker: returns `true` iff LDAP is enabled and
+    /// `(host, port)` exactly matches the configured directory endpoint
+    /// (case-insensitive host, per RFC 1035 §2.3.3). This is the supervisor's
+    /// authoritative gate: `vauban-auth` cannot forge a `TcpConnectRequest` to
+    /// any other destination.
+    pub fn allows(&self, host: &str, port: u16) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        match self.endpoint() {
+            Some((h, p)) => port == p && !h.is_empty() && host.eq_ignore_ascii_case(&h),
+            None => false,
+        }
+    }
+
+    /// Reject transport-downgrading or malformed configurations at load time.
+    /// A disabled LDAP block is always valid. When enabled, the `url` MUST use
+    /// the `ldaps://` scheme (plaintext `ldap://` is forbidden), resolve to a
+    /// valid `(host, port)`, and a non-empty `dn_template` MUST be set.
+    pub fn validate(&self) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.url.starts_with("ldap://") {
+            anyhow::bail!(
+                "[auth.ldaps] url must use ldaps:// (plaintext ldap:// is forbidden): {}",
+                self.url
+            );
+        }
+        if self.endpoint().is_none() {
+            anyhow::bail!(
+                "[auth.ldaps] url must be a valid ldaps://host[:port] URL when enabled: {:?}",
+                self.url
+            );
+        }
+        if self.dn_template.is_empty() {
+            anyhow::bail!("[auth.ldaps] dn_template must be set when ldaps is enabled");
+        }
+        Ok(())
     }
 }
 
@@ -559,6 +710,8 @@ impl SupervisorConfig {
         let config: SupervisorConfig = toml::from_str(&contents)
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
+        config.auth.ldaps.validate()?;
+
         Ok(config)
     }
 
@@ -676,9 +829,13 @@ impl SupervisorConfig {
             .build()
             .with_context(|| "Failed to build configuration")?;
 
-        settings
+        let config: SupervisorConfig = settings
             .try_deserialize()
-            .with_context(|| "Failed to deserialize supervisor configuration")
+            .with_context(|| "Failed to deserialize supervisor configuration")?;
+
+        config.auth.ldaps.validate()?;
+
+        Ok(config)
     }
 
     /// Get effective UID for a service.
@@ -788,6 +945,16 @@ impl SupervisorConfig {
                 vars.push((
                     "VAUBAN_ARGON2_PARALLELISM".to_string(),
                     self.auth.argon2_parallelism.to_string(),
+                ));
+                // Tells vauban-auth whether to wait for an AuthLdapProvision
+                // message (and trust anchor) before sealing its sandbox. When
+                // false, auth skips the pre-seal wait entirely (no startup
+                // delay). The actual url/CA/dn_template are delivered via IPC,
+                // never as env vars (the CA could be large; the password is
+                // never shipped).
+                vars.push((
+                    "VAUBAN_LDAP_ENABLED".to_string(),
+                    self.auth.ldaps.enabled.to_string(),
                 ));
             }
             "audit" => {
@@ -1227,10 +1394,13 @@ mod tests {
     fn test_service_env_vars_auth() {
         let config = test_config();
         let vars = config.service_env_vars("auth");
-        assert_eq!(vars.len(), 3);
+        assert_eq!(vars.len(), 4);
         assert_eq!(vars[0].0, "VAUBAN_ARGON2_MEMORY_KB");
         assert_eq!(vars[1].0, "VAUBAN_ARGON2_ITERATIONS");
         assert_eq!(vars[2].0, "VAUBAN_ARGON2_PARALLELISM");
+        assert_eq!(vars[3].0, "VAUBAN_LDAP_ENABLED");
+        // Disabled by default in dev config.
+        assert_eq!(vars[3].1, "false");
     }
 
     #[test]
@@ -1343,6 +1513,160 @@ mod tests {
         assert!(
             !config.mailer.enabled,
             "default.toml ships with mailer disabled (operator must opt-in)"
+        );
+    }
+
+    // ==================== LDAPS config tests ====================
+
+    fn ldap(enabled: bool, url: &str) -> LdapConfig {
+        LdapConfig {
+            enabled,
+            url: url.to_string(),
+            dn_template: "{username}@example.com".to_string(),
+            ..LdapConfig::default()
+        }
+    }
+
+    #[test]
+    fn ldap_default_is_disabled_and_denies_everything() {
+        let l = LdapConfig::default();
+        assert!(!l.enabled);
+        assert!(!l.allows("dc1.example.com", 636));
+        assert!(!l.allows("", 0));
+        // Disabled is always a valid config.
+        assert!(l.validate().is_ok());
+    }
+
+    #[test]
+    fn ldap_loaded_from_default_toml_is_disabled() {
+        let config = test_config();
+        assert!(
+            !config.auth.ldaps.enabled,
+            "default.toml ships with ldaps disabled (operator must opt-in)"
+        );
+    }
+
+    #[test]
+    fn ldap_endpoint_parses_host_and_explicit_port() {
+        let l = ldap(true, "ldaps://dc1.example.com:3269");
+        assert_eq!(
+            l.endpoint(),
+            Some(("dc1.example.com".to_string(), 3269))
+        );
+    }
+
+    #[test]
+    fn ldap_endpoint_defaults_port_636() {
+        let l = ldap(true, "ldaps://dc1.example.com");
+        assert_eq!(l.endpoint(), Some(("dc1.example.com".to_string(), 636)));
+    }
+
+    #[test]
+    fn ldap_endpoint_supports_bracketed_ipv6() {
+        let l = ldap(true, "ldaps://[2001:db8::1]:636");
+        assert_eq!(l.endpoint(), Some(("2001:db8::1".to_string(), 636)));
+        let l2 = ldap(true, "ldaps://[2001:db8::1]");
+        assert_eq!(l2.endpoint(), Some(("2001:db8::1".to_string(), 636)));
+    }
+
+    #[test]
+    fn ldap_endpoint_rejects_plaintext_scheme() {
+        let l = ldap(true, "ldap://dc1.example.com:389");
+        assert_eq!(l.endpoint(), None);
+    }
+
+    #[test]
+    fn ldap_allows_exact_host_port_when_enabled() {
+        let l = ldap(true, "ldaps://dc1.example.com:636");
+        assert!(l.allows("dc1.example.com", 636));
+        assert!(l.allows("DC1.Example.COM", 636)); // case-insensitive
+    }
+
+    #[test]
+    fn ldap_denies_when_disabled_even_if_match() {
+        let l = ldap(false, "ldaps://dc1.example.com:636");
+        assert!(!l.allows("dc1.example.com", 636));
+    }
+
+    #[test]
+    fn ldap_denies_wrong_host_or_port() {
+        let l = ldap(true, "ldaps://dc1.example.com:636");
+        assert!(!l.allows("evil.example.com", 636));
+        assert!(!l.allows("dc1.example.com", 389));
+    }
+
+    #[test]
+    fn ldap_validate_rejects_plaintext_url_when_enabled() {
+        let l = ldap(true, "ldap://dc1.example.com");
+        let err = l.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("ldaps://"),
+            "expected scheme-downgrade rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn ldap_validate_rejects_empty_url_when_enabled() {
+        let l = ldap(true, "");
+        assert!(l.validate().is_err());
+    }
+
+    #[test]
+    fn ldap_validate_rejects_empty_dn_template_when_enabled() {
+        let l = LdapConfig {
+            enabled: true,
+            url: "ldaps://dc1.example.com:636".to_string(),
+            dn_template: String::new(),
+            ..LdapConfig::default()
+        };
+        let err = l.validate().unwrap_err().to_string();
+        assert!(err.contains("dn_template"), "got: {err}");
+    }
+
+    #[test]
+    fn ldap_validate_accepts_valid_enabled_config() {
+        let l = ldap(true, "ldaps://dc1.example.com:636");
+        assert!(l.validate().is_ok());
+    }
+
+    #[test]
+    fn config_load_rejects_plaintext_ldap_url() {
+        let toml = r#"
+bin_path = "./target/debug"
+
+[supervisor]
+privsep = false
+heartbeat_interval_secs = 5
+heartbeat_timeout_secs = 2
+max_missed_heartbeats = 3
+max_respawns_per_hour = 10
+
+[logging]
+level = "debug"
+
+[auth.ldaps]
+enabled = true
+url = "ldap://dc1.example.com:389"
+dn_template = "{username}@example.com"
+
+[services]
+"#;
+        let dir = std::env::temp_dir().join(format!(
+            "vauban-ldap-cfg-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.toml");
+        std::fs::write(&path, toml).unwrap();
+        let result = SupervisorConfig::load(&path);
+        std::fs::remove_file(&path).ok();
+        assert!(
+            result.is_err(),
+            "loading a config with a plaintext ldap:// url must fail"
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("ldaps://"),
+            "error should explain the ldaps:// requirement"
         );
     }
 }

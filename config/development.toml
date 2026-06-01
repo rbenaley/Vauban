@@ -195,3 +195,9 @@ max_concurrent_channels_per_session = 16
 waiting_client_ttl_seconds = 300
 revocation_poll_interval_seconds = 2
 allow_loopback_targets = true
+
+# Directory authentication is disabled in development by default. Enable it
+# (and point it at a test directory) only when exercising the LDAP flow.
+[auth.ldaps]
+enabled = false
+order = ["local"]

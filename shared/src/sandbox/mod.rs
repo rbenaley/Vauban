@@ -484,11 +484,14 @@ mod tests {
     fn service_builders_match_canonical_catalogues() {
         use super::profiles;
 
-        // auth / vault: IPC pipes only.
-        let auth = SandboxProfile::new().ipc_pipes(&[3, 4]);
+        // auth: IPC pipes + fd receiver (LDAPS broker hand-off).
+        let auth = SandboxProfile::new().ipc_pipes(&[3, 4]).fd_receiver(5);
         assert_eq!(unique_kinds(&auth), sorted(profiles::AUTH_KINDS));
-        assert_eq!(unique_kinds(&auth), sorted(profiles::VAULT_KINDS));
-        assert_eq!(unique_kinds(&auth), sorted(profiles::AUDIT_KINDS));
+
+        // vault / audit: IPC pipes only.
+        let vault = SandboxProfile::new().ipc_pipes(&[3, 4]);
+        assert_eq!(unique_kinds(&vault), sorted(profiles::VAULT_KINDS));
+        assert_eq!(unique_kinds(&vault), sorted(profiles::AUDIT_KINDS));
 
         // access: IPC pipes + connected DB socket.
         let access = setup_profile_only(&[3, 4], Some(5), None, None);

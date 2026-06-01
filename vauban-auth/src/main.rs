@@ -23,12 +23,15 @@ use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use rand::rngs::OsRng;
 use shared::ipc::{IpcChannel, poll_readable};
-use shared::messages::{AuthResult, ControlMessage, Message, ServiceStats};
+use shared::messages::{
+    AuthResult, ControlMessage, LdapBindOutcome, Message, SensitiveString, ServiceStats,
+};
 use shared::sandbox as capsicum;
 use std::os::unix::io::RawFd;
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
+use vauban_auth::bind::LdapRuntime;
 
 /// Argon2id parameters, read from environment before sandbox entry.
 struct Argon2Params {
@@ -55,6 +58,8 @@ struct ServiceState {
     draining: bool,
     shutdown_requested: bool,
     argon2_params: Argon2Params,
+    /// LDAPS bind runtime; `None` when LDAP auth is disabled.
+    ldap: Option<LdapRuntime>,
 }
 
 impl ServiceState {
@@ -66,6 +71,7 @@ impl ServiceState {
             draining: false,
             shutdown_requested: false,
             argon2_params,
+            ldap: None,
         }
     }
 
@@ -122,6 +128,15 @@ fn run_service() -> Result<()> {
 
     let web_channel = parse_topology_channel("WEB");
 
+    // LDAPS broker socket: the supervisor `connect()`s to the
+    // directory and hands us the connected FD over this SCM_RIGHTS socket.
+    let fd_passing_socket: Option<RawFd> = std::env::var("VAUBAN_FD_PASSING_SOCKET")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let ldap_enabled = std::env::var("VAUBAN_LDAP_ENABLED")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
     // SAFETY: We are the only thread at this point, no concurrent access.
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
@@ -131,6 +146,8 @@ fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_ARGON2_PARALLELISM");
         std::env::remove_var("VAUBAN_WEB_IPC_READ");
         std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
+        std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
+        std::env::remove_var("VAUBAN_LDAP_ENABLED");
     }
 
     // SAFETY: FDs are passed from supervisor and are valid
@@ -143,6 +160,29 @@ fn run_service() -> Result<()> {
         "Argon2id parameters loaded"
     );
 
+    // PRE-SEAL: if LDAP is enabled, the supervisor sends an AuthLdapProvision
+    // (url + dn_template + CA PEM + timeout) BEFORE we seal the sandbox, so we
+    // can build the rustls client config while filesystem/parsing is still
+    // available. Mirrors the TlsCertProvision flow in vauban-web. The CA is a
+    // trust anchor, not a secret; no bind password is ever delivered here.
+    let ldap_runtime = if ldap_enabled {
+        match build_ldap_runtime(&supervisor_channel, fd_passing_socket) {
+            Ok(rt) => {
+                info!(host = %rt.host, port = rt.port, "LDAPS bind runtime initialised");
+                Some(rt)
+            }
+            Err(e) => {
+                // Fail-closed: LDAP was promised but we could not initialise.
+                // We keep running (local accounts still work) but every LDAP
+                // bind will report Unreachable.
+                error!("Failed to initialise LDAPS runtime: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let mut all_fds = vec![ipc_read_fd, ipc_write_fd];
     let mut peer_channels: Vec<(&str, &IpcChannel)> = Vec::new();
 
@@ -152,11 +192,22 @@ fn run_service() -> Result<()> {
         peer_channels.push(("web", ch));
     }
 
+    // The fd-passing socket must survive the sandbox seal so we can recv_fd on
+    // it; declare it both in `all_fds` and as a dedicated fd-receiver.
+    let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| {
+        all_fds.push(fd);
+        vec![fd]
+    });
+
     // Typestate: `sealed` proves the sandbox was committed. It is threaded
     // into `main_loop`, making "run the loop without entering the sandbox"
     // a compile error.
-    let sealed =
-        capsicum::setup_service_sandbox(&all_fds, None).context("Failed to setup sandbox")?;
+    let sealed = capsicum::setup_service_sandbox_extended(
+        &all_fds,
+        None,
+        fd_receiver_fds.as_deref(),
+    )
+    .context("Failed to setup sandbox")?;
 
     capsicum::log_main_loop_start(
         &sealed,
@@ -164,7 +215,64 @@ fn run_service() -> Result<()> {
     );
 
     let mut state = ServiceState::new(argon2_params);
+    state.ldap = ldap_runtime;
     main_loop(sealed, &supervisor_channel, &peer_channels, &mut state)
+}
+
+/// Wait (pre-seal) for the supervisor's `AuthLdapProvision` and build the
+/// rustls client config. Bounded wait: provisioning is sent right after spawn,
+/// before any heartbeat. Control messages received in the meantime are
+/// ignored (the supervisor's heartbeat grace period is far longer than this
+/// wait). Returns an error if no fd-passing socket is available, the
+/// provisioning never arrives, or the CA / URL is unusable.
+fn build_ldap_runtime(
+    supervisor: &IpcChannel,
+    fd_passing_socket: Option<RawFd>,
+) -> Result<LdapRuntime> {
+    let fd_passing_socket = fd_passing_socket
+        .context("LDAP enabled but no VAUBAN_FD_PASSING_SOCKET provided by supervisor")?;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let provision = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            anyhow::bail!("timed out waiting for AuthLdapProvision from supervisor");
+        }
+        let ms = remaining.as_millis().min(i32::MAX as u128) as i32;
+        let ready = poll_readable(&[supervisor.read_fd()], ms)
+            .context("poll error while waiting for AuthLdapProvision")?;
+        if ready.is_empty() {
+            continue;
+        }
+        match supervisor.recv() {
+            Ok(Message::AuthLdapProvision {
+                url,
+                dn_template,
+                ca_pem,
+                timeout_secs,
+            }) => break (url, dn_template, ca_pem, timeout_secs),
+            Ok(other) => {
+                // Heartbeats etc. may interleave; ignore until provisioning.
+                warn!("Ignoring {:?} while awaiting AuthLdapProvision", std::mem::discriminant(&other));
+            }
+            Err(e) => anyhow::bail!("IPC error while awaiting AuthLdapProvision: {e}"),
+        }
+    };
+
+    let (url, dn_template, ca_pem, timeout_secs) = provision;
+    let (host, port) = vauban_auth::parse_ldaps_endpoint(&url)
+        .with_context(|| format!("invalid ldaps:// url from supervisor: {url:?}"))?;
+    let client_config = vauban_auth::tls::build_client_config(&ca_pem)
+        .context("failed to build rustls client config from provisioned CA")?;
+
+    Ok(LdapRuntime {
+        client_config,
+        host,
+        port,
+        dn_template,
+        timeout: Duration::from_secs(timeout_secs.max(1)),
+        fd_passing_socket,
+    })
 }
 
 /// Parse topology channel env vars for a peer service.
@@ -226,7 +334,7 @@ fn main_loop(
             if idx == 0 {
                 match supervisor.recv() {
                     Ok(msg) => {
-                        if let Err(e) = handle_message(supervisor, state, msg) {
+                        if let Err(e) = dispatch_message(supervisor, supervisor, state, msg) {
                             warn!("Error handling supervisor message: {}", e);
                             state.requests_failed += 1;
                         }
@@ -246,7 +354,7 @@ fn main_loop(
                     let (name, channel) = peers[peer_idx];
                     match channel.recv() {
                         Ok(msg) => {
-                            if let Err(e) = handle_message(channel, state, msg) {
+                            if let Err(e) = dispatch_message(channel, supervisor, state, msg) {
                                 warn!("Error handling message from {}: {}", name, e);
                                 state.requests_failed += 1;
                             }
@@ -263,6 +371,76 @@ fn main_loop(
             }
         }
     }
+}
+
+/// Route an inbound message. `AuthLdapBind` needs the supervisor channel (to
+/// request the brokered TCP socket) in addition to the reply channel, so it is
+/// dispatched here rather than inside [`handle_message`].
+fn dispatch_message(
+    reply: &IpcChannel,
+    supervisor: &IpcChannel,
+    state: &mut ServiceState,
+    msg: Message,
+) -> Result<()> {
+    match msg {
+        Message::AuthLdapBind {
+            request_id,
+            username,
+            password,
+        } => handle_ldap_bind(reply, supervisor, state, request_id, username, password),
+        other => handle_message(reply, state, other),
+    }
+}
+
+/// Handle an `AuthLdapBind` request from vauban-web.
+///
+/// Performs a brokered TCP connect (via the supervisor), terminates TLS, and
+/// runs an LDAP simple bind, all within a tight timeout budget. The plaintext
+/// password never leaves this sandboxed process toward the supervisor. Every
+/// failure mode maps to a coarse [`LdapBindOutcome`]; vauban-web collapses all
+/// non-success outcomes to a single generic response (anti-enumeration).
+fn handle_ldap_bind(
+    reply: &IpcChannel,
+    supervisor: &IpcChannel,
+    state: &mut ServiceState,
+    request_id: u64,
+    username: String,
+    password: SensitiveString,
+) -> Result<()> {
+    state.requests_processed += 1;
+
+    // Take an owned snapshot so we drop the borrow on `state.ldap` before the
+    // broker round-trip (whose `on_control` callback mutates `state`).
+    let runtime = state.ldap.clone();
+    let outcome = match runtime {
+        Some(rt) => vauban_auth::bind::brokered_bind(
+            supervisor,
+            &rt,
+            &username,
+            password.as_str(),
+            // Keep answering heartbeats during the (brief) blocking window.
+            |ctrl| {
+                let _ = handle_control(supervisor, state, ctrl);
+            },
+        ),
+        None => {
+            warn!(
+                request_id,
+                "AuthLdapBind received but LDAP is not configured; fail-closed"
+            );
+            LdapBindOutcome::Unreachable
+        }
+    };
+
+    if !matches!(outcome, LdapBindOutcome::Success) {
+        state.requests_failed += 1;
+    }
+
+    reply.send(&Message::AuthLdapBindResponse {
+        request_id,
+        outcome,
+    })?;
+    Ok(())
 }
 
 fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) -> Result<()> {

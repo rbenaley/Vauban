@@ -58,6 +58,26 @@ impl TestApp {
             .await
     }
 
+    /// Test application variant wired for LDAP login tests: `[auth.ldaps]` is
+    /// enabled (order `["local", "ldap"]`) and `auth_ipc_client` points at the
+    /// in-process [`auth_ipc_test_service`] stub directory. Cached in its own
+    /// singleton so the stub's threads (and the IPC pipes) stay alive for the
+    /// whole test binary -- never leaked per test.
+    pub async fn spawn_ldap() -> &'static TestApp {
+        static LDAP_APP: OnceCell<TestApp> = OnceCell::const_new();
+        LDAP_APP
+            .get_or_init(|| async {
+                static AUTH_SERVICE: OnceCell<auth_ipc_test_service::InProcessAuthService> =
+                    OnceCell::const_new();
+                let auth_service = AUTH_SERVICE
+                    .get_or_init(|| async { auth_ipc_test_service::spawn() })
+                    .await;
+                let auth_client = std::sync::Arc::clone(&auth_service.auth_client);
+                Self::create_inner(Some(auth_client)).await
+            })
+            .await
+    }
+
     /// Get the path to the workspace root config/ directory.
     fn config_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -66,13 +86,28 @@ impl TestApp {
             .join("config")
     }
 
-    /// Create test app (internal).
+    /// Create test app (internal, default shape: no Auth IPC, LDAP disabled).
     async fn create() -> Self {
+        Self::create_inner(None).await
+    }
+
+    /// Create test app with an optional Auth IPC client. When a client is
+    /// supplied, `[auth.ldaps]` is enabled with order `["local", "ldap"]` so the
+    /// login routing tests can exercise the directory path.
+    async fn create_inner(
+        auth_ipc_client: Option<std::sync::Arc<vauban_web::ipc::AuthIpcClient>>,
+    ) -> Self {
         // Load test configuration from workspace root config/testing.toml
-        let config = unwrap_ok!(Config::load_with_environment(
+        let mut config = unwrap_ok!(Config::load_with_environment(
             Self::config_dir(),
             Environment::Testing
         ));
+
+        // When an Auth IPC client is present, this is the LDAP-enabled variant.
+        if auth_ipc_client.is_some() {
+            config.auth.ldaps.enabled = true;
+            config.auth.ldaps.order = vec!["local".to_string(), "ldap".to_string()];
+        }
 
         // Create async database pool
         let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(
@@ -150,8 +185,8 @@ impl TestApp {
             proxy_iacs: None,      // No IACS proxy in tests
             supervisor: None,      // No supervisor in tests
             vault_client: None,    // No vault in tests (dev mode fallback)
-            access_client,         // Real Casbin-backed IPC client
-            auth_ipc_client: None, // No Auth IPC in tests (dev mode fallback)
+            access_client, // Real Casbin-backed IPC client
+            auth_ipc_client, // Optional in-process Auth IPC (LDAP tests only)
             mailer: vauban_web::services::mailer::Mailer::new(
                 std::sync::Arc::new(tokio::sync::Notify::new()),
                 false, // disabled in tests; Mailer::queue is a no-op
@@ -1124,6 +1159,162 @@ pub mod ipc_test_service {
                 Err(_) => continue,
                 _ => {}
             }
+        }
+    }
+}
+
+/// In-process vauban-auth stub for the LDAP login integration tests.
+///
+/// Mirrors [`ipc_test_service`] but answers [`Message::AuthLdapBind`] requests.
+/// It deliberately stubs the *directory* (a fixed credential map plus a couple
+/// of failure-injection usernames) rather than spinning a real LDAPS server:
+/// the genuine TLS + FD-passing + BER bind path is exhaustively covered by
+/// `vauban-auth/tests/ldap_bind_e2e_test.rs`. These web tests instead exercise
+/// the web<->auth IPC round-trip and, above all, the login *routing* logic
+/// (auth_source dispatch, anti-enumeration collapse, lockout exclusion, JIT
+/// provisioning, MFA enforcement).
+pub mod auth_ipc_test_service {
+    use std::os::unix::io::IntoRawFd;
+    use std::sync::Arc;
+    use std::thread::JoinHandle;
+
+    use argon2::password_hash::{
+        PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
+    };
+    use argon2::Argon2;
+    use shared::ipc::IpcChannel;
+    use shared::messages::{LdapBindOutcome, Message};
+    use vauban_web::ipc::AuthIpcClient;
+
+    fn verify_argon2(password: &str, hash: &str) -> bool {
+        match PasswordHash::new(hash) {
+            Ok(parsed) => Argon2::default()
+                .verify_password(password.as_bytes(), &parsed)
+                .is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    fn hash_argon2(password: &str) -> Result<String, String> {
+        let salt = SaltString::generate(&mut OsRng);
+        Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .map(|h| h.to_string())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Username/password the stub directory accepts (LDAP bind succeeds).
+    pub const LDAP_GOOD_PASSWORD: &str = "Directory-Pass-1!";
+    /// Username whose bind always reports the directory as unreachable, used to
+    /// prove that local accounts keep working when the DS is down.
+    pub const LDAP_DOWN_USERNAME: &str = "test_ldap_dsdown";
+
+    pub struct InProcessAuthService {
+        pub auth_client: Arc<AuthIpcClient>,
+        _service_thread: JoinHandle<()>,
+        _reader_thread: JoinHandle<()>,
+    }
+
+    /// Resolve a stubbed directory outcome for a bind attempt. Any username
+    /// equal to [`LDAP_DOWN_USERNAME`] is `Unreachable`; otherwise the
+    /// canonical password [`LDAP_GOOD_PASSWORD`] succeeds and everything else
+    /// is rejected.
+    fn stub_outcome(username: &str, password: &str) -> LdapBindOutcome {
+        if username == LDAP_DOWN_USERNAME {
+            LdapBindOutcome::Unreachable
+        } else if password == LDAP_GOOD_PASSWORD {
+            LdapBindOutcome::Success
+        } else {
+            LdapBindOutcome::InvalidCredentials
+        }
+    }
+
+    pub fn spawn() -> InProcessAuthService {
+        let (p2c_read, p2c_write) = nix::unistd::pipe().expect("pipe p2c");
+        let (c2p_read, c2p_write) = nix::unistd::pipe().expect("pipe c2p");
+
+        let web_read_fd = c2p_read.into_raw_fd();
+        let web_write_fd = p2c_write.into_raw_fd();
+        let svc_read_fd = p2c_read.into_raw_fd();
+        let svc_write_fd = c2p_write.into_raw_fd();
+
+        let svc_channel = unsafe { IpcChannel::from_raw_fds(svc_read_fd, svc_write_fd) };
+
+        let service_thread = std::thread::spawn(move || {
+            loop {
+                match svc_channel.recv() {
+                    Ok(Message::AuthLdapBind {
+                        request_id,
+                        username,
+                        password,
+                    }) => {
+                        let outcome = stub_outcome(&username, password.as_str());
+                        let msg = Message::AuthLdapBindResponse {
+                            request_id,
+                            outcome,
+                        };
+                        if svc_channel.send(&msg).is_err() {
+                            break;
+                        }
+                    }
+                    // Local Argon2 verification still flows through the auth
+                    // service in production, so the stub must answer it too --
+                    // otherwise local logins would hang awaiting a response.
+                    Ok(Message::AuthVerifyPassword {
+                        request_id,
+                        password_hash,
+                        password,
+                    }) => {
+                        let valid = verify_argon2(password.as_str(), &password_hash);
+                        let msg = Message::AuthVerifyPasswordResponse { request_id, valid };
+                        if svc_channel.send(&msg).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Message::AuthHashPassword {
+                        request_id,
+                        password,
+                    }) => {
+                        let (hash, error) = match hash_argon2(password.as_str()) {
+                            Ok(h) => (Some(h), None),
+                            Err(e) => (None, Some(e)),
+                        };
+                        let msg = Message::AuthHashPasswordResponse {
+                            request_id,
+                            hash,
+                            error,
+                        };
+                        if svc_channel.send(&msg).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Message::Control(shared::messages::ControlMessage::Shutdown)) => break,
+                    Err(shared::ipc::IpcError::ConnectionClosed) => break,
+                    Err(_) => continue,
+                    _ => {}
+                }
+            }
+        });
+
+        let (client_tx, client_rx) = std::sync::mpsc::channel::<Arc<AuthIpcClient>>();
+        let reader_thread = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("reader tokio runtime");
+            rt.block_on(async move {
+                let client =
+                    AuthIpcClient::new(web_read_fd, web_write_fd).expect("AuthIpcClient::new");
+                client_tx.send(Arc::clone(&client)).expect("send client");
+                let _ = client.process_incoming().await;
+            });
+        });
+
+        let auth_client = client_rx.recv().expect("receive auth client Arc");
+        InProcessAuthService {
+            auth_client,
+            _service_thread: service_thread,
+            _reader_thread: reader_thread,
         }
     }
 }
