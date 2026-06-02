@@ -274,6 +274,67 @@ pub async fn connect_rdp(
         }
     }
 
+    // VAU-001 -- mandatory RDP server-certificate pin pre-flight.
+    //
+    // Mirrors the SSH host-key pre-flight (web/ssh.rs). Runs AFTER the
+    // access-rule check (so a user without access hears "No access rule"
+    // first, least-info-leak) and BEFORE any session-creation work
+    // (proxy_sessions insert, token mint, supervisor TCP broker, IPC).
+    // Two refusal cases, both fail-closed:
+    //
+    // 1. `connection_config.rdp_server_cert_mismatch == true`: a previous
+    //    connection saw the live server present a SPKI disagreeing with the
+    //    stored pin. Until an admin re-fetches and pins, every new
+    //    connection is suspect (rotation vs MITM is indistinguishable).
+    //
+    // 2. `connection_config.rdp_server_cert_fingerprint` absent / empty: the
+    //    asset has no pinned certificate. Pre-fix the proxy accepted ANY
+    //    certificate (NoCertificateVerification -- trivial MITM). Pinning is
+    //    now mandatory; the admin must trigger
+    //    `/assets/manage/{uuid}/fetch-rdp-cert` first.
+    //
+    // The two literals below are pinned by
+    // `scripts/check_rdp_cert_paths.sh` and
+    // `tests/web/rdp_cert_no_silent_green_test.rs`.
+    let stored_cert_fingerprint = config
+        .get("rdp_server_cert_fingerprint")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let stored_cert_mismatch = config
+        .get("rdp_server_cert_mismatch")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if stored_cert_mismatch {
+        tracing::warn!(
+            user = %auth_user.username,
+            asset_uuid = %asset_uuid,
+            "Refusing RDP connection: server certificate mismatch detected on \
+             previous connection. Admin must re-fetch and pin the new certificate."
+        );
+        return htmx_error_response(
+            "RDP server certificate mismatch detected on previous connection. \
+             An admin must re-fetch and pin the new certificate before new \
+             sessions are allowed.",
+        );
+    }
+
+    let expected_cert_fingerprint = match stored_cert_fingerprint {
+        Some(fp) => fp.to_string(),
+        None => {
+            tracing::warn!(
+                user = %auth_user.username,
+                asset_uuid = %asset_uuid,
+                "Refusing RDP connection: no server certificate pinned for this asset. \
+                 Admin must fetch and pin the certificate first."
+            );
+            return htmx_error_response(
+                "No RDP server certificate pinned for this asset. An admin must \
+                 fetch and pin the certificate before sessions can be opened.",
+            );
+        }
+    };
+
     // Get RDP proxy client (checked after access rules to avoid leaking proxy state)
     let proxy_client = match &state.rdp_proxy {
         Some(client) => client.clone(),
@@ -399,6 +460,7 @@ pub async fn connect_rdp(
         domain: stored_domain,
         desktop_width: 1280,
         desktop_height: 720,
+        expected_cert_fingerprint: Some(expected_cert_fingerprint),
         session_token: session_token_bytes,
     };
 
@@ -420,9 +482,58 @@ pub async fn connect_rdp(
             let err = response
                 .error
                 .unwrap_or_else(|| "RDP connection failed".to_string());
+
+            // VAU-001: detect a server-certificate mismatch reported by the
+            // proxy's PinningServerCertVerifier and persist the flag so the
+            // asset detail page shows the red warning state and subsequent
+            // connections are refused fail-closed (mirror web/ssh.rs).
+            maybe_flag_rdp_cert_mismatch(&mut conn, asset_uuid, &config, &err).await;
+
             htmx_error_response(&err)
         }
-        Err(e) => htmx_error_response(&format!("RDP connection error: {}", e)),
+        Err(e) => {
+            let msg = format!("RDP connection error: {}", e);
+            maybe_flag_rdp_cert_mismatch(&mut conn, asset_uuid, &config, &msg).await;
+            htmx_error_response(&msg)
+        }
+    }
+}
+
+/// VAU-001: if `error` indicates the proxy refused the TLS handshake on a
+/// server-certificate mismatch (possible MITM), set
+/// `connection_config.rdp_server_cert_mismatch = true` so the asset detail
+/// page surfaces the red warning and the connect pre-flight refuses new
+/// sessions until an admin re-pins. Best-effort: a DB failure is logged but
+/// not surfaced (the connection already failed). Mirrors the SSH path.
+async fn maybe_flag_rdp_cert_mismatch(
+    conn: &mut diesel_async::AsyncPgConnection,
+    asset_uuid: uuid::Uuid,
+    config: &serde_json::Value,
+    error: &str,
+) {
+    use crate::schema::assets::dsl;
+
+    let is_cert_mismatch = error.contains("certificate mismatch") || error.contains("MITM");
+    if !is_cert_mismatch {
+        return;
+    }
+
+    tracing::warn!(
+        asset_uuid = %asset_uuid,
+        "Marking RDP asset as server-certificate mismatch after failed connection"
+    );
+    let mut updated = config.clone();
+    updated["rdp_server_cert_mismatch"] = serde_json::Value::Bool(true);
+    if let Err(db_err) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
+        .set(dsl::connection_config.eq(&updated))
+        .execute(conn)
+        .await
+    {
+        tracing::error!(
+            asset_uuid = %asset_uuid,
+            error = %db_err,
+            "Failed to persist RDP server-certificate mismatch flag"
+        );
     }
 }
 
@@ -511,6 +622,378 @@ pub async fn rdp_page(
         Err(e) => {
             tracing::error!("Failed to render RDP template: {}", e);
             flash_redirect(flash.error("Failed to load RDP page"), "/assets")
+        }
+    }
+}
+
+/// VAU-001: fetch (or refresh) the RDP server certificate SPKI for an asset.
+///
+/// POST /assets/manage/{uuid}/fetch-rdp-cert
+///
+/// Admin-only (gated on `assets:manage`). Performs a minimal RDP/X.224 + TLS
+/// handshake (accept-any, TOFU) to retrieve the server's SPKI. If a cert was
+/// already pinned and the new SPKI differs, returns a mismatch warning
+/// fragment (unless `?confirm=true` force-accepts the new cert). Strictly
+/// mirrors `fetch_ssh_host_key`.
+pub async fn fetch_rdp_server_cert(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    perms: crate::auth::PermissionContext,
+    axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    use uuid::Uuid;
+
+    if !perms.assets_manage {
+        return htmx_error_response("Insufficient privileges: assets:manage required");
+    }
+
+    // caller_has_assets_manage is structurally true here (just gated). We
+    // forward it so the IPC layer picks the diagnostic-token verb (bypasses
+    // the access-rule re-check; admins typically have no explicit rule).
+    let assets_manage = perms.assets_manage;
+
+    let confirm = params.get("confirm").map(|v| v == "true").unwrap_or(false);
+
+    let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {
+        Ok(u) => u,
+        Err(_) => return htmx_error_response("Invalid asset identifier"),
+    };
+
+    let proxy_client = match &state.rdp_proxy {
+        Some(client) => client.clone(),
+        None => return htmx_error_response("RDP proxy not available"),
+    };
+
+    let mut conn = match state.db_pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("DB error: {}", e);
+            return htmx_error_response("Database connection failed");
+        }
+    };
+
+    use crate::models::asset::{Asset, AssetType};
+    use crate::schema::assets::dsl;
+
+    let asset: Asset = match dsl::assets
+        .filter(dsl::uuid.eq(asset_uuid))
+        .first(&mut conn)
+        .await
+    {
+        Ok(a) => a,
+        Err(diesel::result::Error::NotFound) => {
+            return htmx_error_response("Asset not found");
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch asset: {}", e);
+            return htmx_error_response("Failed to fetch asset");
+        }
+    };
+
+    if asset.asset_type != AssetType::Rdp {
+        return htmx_error_response("Certificate fetch is only available for RDP assets");
+    }
+
+    let stored_spki = asset
+        .connection_config
+        .get("rdp_server_cert_spki")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let stored_fingerprint = asset
+        .connection_config
+        .get("rdp_server_cert_fingerprint")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let supervisor_ref = state.supervisor.as_deref();
+    let asset_uuid_str_for_token = asset_uuid.to_string();
+    let identity = crate::ipc::CertFetchIdentity {
+        access_client: state.access_client.as_ref(),
+        user_uuid: &auth_user.uuid,
+        asset_uuid: &asset_uuid_str_for_token,
+        caller_has_assets_manage: assets_manage,
+    };
+    let (server_spki, fingerprint) = match proxy_client
+        .fetch_server_cert(
+            &asset.hostname,
+            asset.port as u16,
+            supervisor_ref,
+            Some(identity),
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::error!(
+                asset_uuid = %asset_uuid,
+                error = %e,
+                "Failed to fetch RDP server certificate"
+            );
+            return htmx_error_response(&format!("Failed to fetch server certificate: {}", e));
+        }
+    };
+
+    // Detect certificate change: if a SPKI was previously pinned and the
+    // newly fetched SPKI differs, warn unless the admin explicitly confirmed.
+    if let Some(ref old_spki) = stored_spki
+        && old_spki != &server_spki
+        && !confirm
+    {
+        let old_fp = stored_fingerprint.as_deref().unwrap_or("unknown");
+
+        tracing::warn!(
+            asset_uuid = %asset_uuid,
+            old_fingerprint = %old_fp,
+            new_fingerprint = %fingerprint,
+            "RDP server certificate CHANGED on remote server - possible MITM attack"
+        );
+
+        let html =
+            include_str!("../../../templates/assets/_rdp_server_cert_mismatch_fragment.html")
+                .replace("__OLD_FINGERPRINT__", old_fp)
+                .replace("__NEW_FINGERPRINT__", &fingerprint)
+                .replace("__ASSET_UUID__", &asset_uuid.to_string());
+
+        return axum::response::Html(html).into_response();
+    }
+
+    // Persist the fingerprint + SPKI and clear any previous mismatch flag.
+    let mut config = asset.connection_config.clone();
+    config["rdp_server_cert_fingerprint"] = serde_json::Value::String(fingerprint.clone());
+    config["rdp_server_cert_spki"] = serde_json::Value::String(server_spki.clone());
+    config
+        .as_object_mut()
+        .map(|m| m.remove("rdp_server_cert_mismatch"));
+
+    let actor_id =
+        crate::services::audit_authors::resolve_actor_id(&mut conn, &auth_user.uuid).await;
+
+    use chrono::Utc;
+    if let Err(e) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
+        .set((
+            dsl::connection_config.eq(&config),
+            dsl::updated_at.eq(Utc::now()),
+            dsl::updated_by_id.eq(actor_id),
+        ))
+        .execute(&mut conn)
+        .await
+    {
+        tracing::error!(
+            asset_uuid = %asset_uuid,
+            error = %e,
+            "Failed to store RDP server certificate"
+        );
+        return htmx_error_response("Failed to store server certificate");
+    }
+
+    tracing::info!(
+        asset_uuid = %asset_uuid,
+        fingerprint = %fingerprint,
+        "RDP server certificate fetched and stored"
+    );
+
+    let html = include_str!("../../../templates/assets/_rdp_server_cert_fragment.html")
+        .replace("__FINGERPRINT__", &fingerprint)
+        .replace("__ASSET_UUID__", &asset_uuid.to_string());
+
+    axum::response::Html(html).into_response()
+}
+
+/// VAU-001: verify the pinned RDP server certificate against the live server.
+///
+/// GET /assets/{uuid}/verify-rdp-cert
+///
+/// Called via HTMX `hx-trigger="load"` on the asset detail page. Performs a
+/// lightweight TLS handshake to retrieve the server's current SPKI and
+/// compares it with the stored one. Strictly mirrors `verify_ssh_host_key`,
+/// including the "no silent green" invariant: the verified (green) fragment
+/// is returned ONLY in the branch where `old_spki == remote_spki`.
+pub async fn verify_rdp_server_cert(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    perms: crate::auth::PermissionContext,
+    axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
+) -> Response {
+    use uuid::Uuid;
+
+    // Gate on assets:read BEFORE the UUID parse so a malformed UUID does not
+    // leak a different error than an unknown asset (anti-enumeration).
+    if !perms.assets_read {
+        return htmx_error_response("Insufficient privileges: assets:read required");
+    }
+
+    // Capture assets:manage so the IPC layer can pick the diagnostic-token
+    // verb (bypasses the access-rule re-check for admins). Mirrors SSH.
+    let assets_manage = perms.assets_manage;
+
+    let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {
+        Ok(u) => u,
+        Err(_) => return htmx_error_response("Invalid asset identifier"),
+    };
+
+    let mut conn = match state.db_pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("DB error: {}", e);
+            return htmx_error_response("Database connection failed");
+        }
+    };
+
+    use crate::models::asset::{Asset, AssetType};
+    use crate::schema::assets::dsl;
+
+    let asset: Asset = match dsl::assets
+        .filter(dsl::uuid.eq(asset_uuid))
+        .first(&mut conn)
+        .await
+    {
+        Ok(a) => a,
+        Err(_) => return htmx_error_response("Asset not found"),
+    };
+
+    if asset.asset_type != AssetType::Rdp {
+        return htmx_error_response("Not an RDP asset");
+    }
+
+    let stored_spki = asset
+        .connection_config
+        .get("rdp_server_cert_spki")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let stored_fingerprint = asset
+        .connection_config
+        .get("rdp_server_cert_fingerprint")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let stored_mismatch = asset
+        .connection_config
+        .get("rdp_server_cert_mismatch")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let uuid_str = asset_uuid.to_string();
+
+    // No cert pinned yet -> no-key fragment (no point contacting the server).
+    if stored_spki.is_none() {
+        let html = include_str!("../../../templates/assets/_rdp_server_cert_no_key_fragment.html")
+            .replace("__ASSET_UUID__", &uuid_str);
+        return axum::response::Html(html).into_response();
+    }
+
+    // Mismatch flag already set (from a failed connection) -> stored mismatch
+    // state immediately. The admin must click Refresh to re-check.
+    if stored_mismatch {
+        let fp = stored_fingerprint.as_deref().unwrap_or("unknown");
+        let html = include_str!(
+            "../../../templates/assets/_rdp_server_cert_stored_mismatch_fragment.html"
+        )
+        .replace("__FINGERPRINT__", fp)
+        .replace("__ASSET_UUID__", &uuid_str);
+        return axum::response::Html(html).into_response();
+    }
+
+    let proxy_client = match &state.rdp_proxy {
+        Some(client) => client.clone(),
+        None => {
+            // Proxy unavailable: we CANNOT confirm the live cert matches the
+            // stored pin. Returning the green "Verified" fragment here would
+            // be a silent regression. Return the amber "Could not verify"
+            // fragment instead (no silent green).
+            tracing::debug!(
+                asset_uuid = %asset_uuid,
+                "RDP proxy not available; returning unverified-fallback fragment"
+            );
+            let fp = stored_fingerprint.as_deref().unwrap_or("unknown");
+            let html =
+                include_str!("../../../templates/assets/_rdp_server_cert_unverified_fragment.html")
+                    .replace("__FINGERPRINT__", fp)
+                    .replace("__ASSET_UUID__", &uuid_str);
+            return axum::response::Html(html).into_response();
+        }
+    };
+
+    let supervisor_ref = state.supervisor.as_deref();
+    let uuid_str_for_token = asset_uuid.to_string();
+    let identity = crate::ipc::CertFetchIdentity {
+        access_client: state.access_client.as_ref(),
+        user_uuid: &auth_user.uuid,
+        asset_uuid: &uuid_str_for_token,
+        caller_has_assets_manage: assets_manage,
+    };
+    match proxy_client
+        .fetch_server_cert(
+            &asset.hostname,
+            asset.port as u16,
+            supervisor_ref,
+            Some(identity),
+        )
+        .await
+    {
+        Ok((remote_spki, remote_fingerprint)) => {
+            let old_spki = stored_spki.as_deref().unwrap_or("");
+
+            if old_spki == remote_spki {
+                // Certs match - return verified (green) fragment. This is the
+                // ONLY place the green fragment is produced (no silent green).
+                let html =
+                    include_str!("../../../templates/assets/_rdp_server_cert_fragment.html")
+                        .replace("__FINGERPRINT__", &remote_fingerprint)
+                        .replace("__ASSET_UUID__", &uuid_str);
+                axum::response::Html(html).into_response()
+            } else {
+                // Certs DIFFER - set mismatch flag in DB and return red fragment.
+                let old_fp = stored_fingerprint.as_deref().unwrap_or("unknown");
+
+                tracing::warn!(
+                    asset_uuid = %asset_uuid,
+                    old_fingerprint = %old_fp,
+                    new_fingerprint = %remote_fingerprint,
+                    "RDP server certificate CHANGED on remote server (detected during page load verification)"
+                );
+
+                let mut config = asset.connection_config.clone();
+                config["rdp_server_cert_mismatch"] = serde_json::Value::Bool(true);
+                if let Err(db_err) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
+                    .set(dsl::connection_config.eq(&config))
+                    .execute(&mut conn)
+                    .await
+                {
+                    tracing::error!(
+                        asset_uuid = %asset_uuid,
+                        error = %db_err,
+                        "Failed to persist RDP server-certificate mismatch flag"
+                    );
+                }
+
+                let html = include_str!(
+                    "../../../templates/assets/_rdp_server_cert_mismatch_fragment.html"
+                )
+                .replace("__OLD_FINGERPRINT__", old_fp)
+                .replace("__NEW_FINGERPRINT__", &remote_fingerprint)
+                .replace("__ASSET_UUID__", &uuid_str);
+                axum::response::Html(html).into_response()
+            }
+        }
+        Err(e) => {
+            // Connection failed: we CANNOT confirm the live cert. Returning
+            // the green fragment would be a silent regression. Return the
+            // amber "Could not verify" fragment (no silent green).
+            tracing::debug!(
+                asset_uuid = %asset_uuid,
+                error = %e,
+                "Could not verify RDP server certificate against remote server; \
+                 returning unverified-fallback fragment"
+            );
+            let fp = stored_fingerprint.as_deref().unwrap_or("unknown");
+            let html =
+                include_str!("../../../templates/assets/_rdp_server_cert_unverified_fragment.html")
+                    .replace("__FINGERPRINT__", fp)
+                    .replace("__ASSET_UUID__", &uuid_str);
+            axum::response::Html(html).into_response()
         }
     }
 }

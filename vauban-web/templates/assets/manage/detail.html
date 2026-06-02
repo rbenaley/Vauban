@@ -265,6 +265,81 @@
     </div>
     {% endif %}
 
+    <!-- VAU-001: RDP Server Certificate Pinning - Only for RDP assets -->
+    {% if asset.asset_type == "rdp" %}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">RDP Server Certificate</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Pin the server's TLS certificate (SPKI) to prevent man-in-the-middle attacks.
+                Sessions are blocked until a certificate is pinned.
+            </p>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            {# The read-only `verify-rdp-cert` HTMX endpoint stays in the
+               user-zone URL space (`/assets/{uuid}/verify-rdp-cert`) because
+               it is gated on `assets:read`. Only the privileged
+               `fetch-rdp-cert` mutation (which pins a new certificate) lives
+               under `/assets/manage/*`. Mirrors the SSH host-key split. #}
+            {% if let Some(fp) = asset.rdp_server_cert_fingerprint %}
+            <div id="rdp-server-cert-section"
+                 hx-get="/assets/{{ asset.uuid }}/verify-rdp-cert"
+                 hx-trigger="load"
+                 hx-swap="outerHTML"
+                 class="p-4 bg-gray-50 dark:bg-gray-700/30 border border-gray-200 dark:border-gray-600 rounded-lg">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <div class="flex items-center gap-2 text-gray-500 dark:text-gray-400">
+                            <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span class="font-medium">Verifying certificate...</span>
+                            {% if asset.rdp_server_cert_mismatch %}
+                            <span class="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/50 dark:text-red-300">mismatch</span>
+                            {% endif %}
+                        </div>
+                        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400 font-mono break-all">{{ fp }}</p>
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <!-- No certificate pinned - admin can fetch it from this page. -->
+            <div id="rdp-server-cert-section" class="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"></path></svg>
+                            <span class="font-medium">No Server Certificate Pinned</span>
+                        </div>
+                        <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                            RDP connections to this server are blocked until its TLS certificate is pinned.
+                            Fetch the certificate to enable verification.
+                        </p>
+                    </div>
+                    <form hx-post="/assets/manage/{{ asset.uuid }}/fetch-rdp-cert"
+                          hx-target="#rdp-server-cert-section"
+                          hx-swap="outerHTML"
+                          hx-indicator="#rdp-cert-loading"
+                          x-data="csrf"
+                          class="flex-shrink-0">
+                        <input type="hidden" name="csrf_token" x-model="token" />
+                        <button type="submit"
+                                class="px-3 py-1.5 text-sm bg-vauban-600 hover:bg-vauban-500 text-white rounded-md transition-colors flex items-center gap-2">
+                            <svg class="w-4 h-4 htmx-indicator hidden animate-spin" id="rdp-cert-loading" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Fetch Certificate
+                        </button>
+                    </form>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
     <!-- System Information -->
     <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">

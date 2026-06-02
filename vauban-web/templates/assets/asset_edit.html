@@ -253,6 +253,26 @@
         {% endif %}
         {% endif %}
 
+        <!-- VAU-001: RDP Server Certificate (read-only) -->
+        {% if asset.asset_type == "rdp" %}
+        {% if let Some(fp) = asset.rdp_server_cert_fingerprint %}
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">RDP Server Certificate</h3>
+            </div>
+            <div class="px-4 py-5 sm:p-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-500 dark:text-gray-400">Fingerprint</label>
+                    <p class="mt-1 text-sm text-gray-900 dark:text-white font-mono break-all">{{ fp }}</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        To refresh the server certificate, use the asset detail page.
+                    </p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% endif %}
+
         <!-- System Information -->
         <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
             <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">

@@ -811,6 +811,24 @@ fn build_test_router(state: AppState) -> Router {
             "/api/v1/assets/{uuid}/ssh-host-key",
             get(handlers::api::get_ssh_host_key_status).post(handlers::api::fetch_ssh_host_key_api),
         )
+        // VAU-001: RDP server-certificate management (mirror of SSH
+        // host-key). The production router splits these between the user
+        // zone (`verify-rdp-cert`) and the admin zone (`fetch-rdp-cert`,
+        // API status/fetch); the flat test router exercises the same
+        // handlers so the E2E suite covers the pinning surface.
+        .route(
+            "/assets/{uuid}/fetch-rdp-cert",
+            post(handlers::web::fetch_rdp_server_cert),
+        )
+        .route(
+            "/assets/{uuid}/verify-rdp-cert",
+            get(handlers::web::verify_rdp_server_cert),
+        )
+        .route(
+            "/api/v1/assets/{uuid}/rdp-server-cert",
+            get(handlers::api::get_rdp_server_cert_status)
+                .post(handlers::api::fetch_rdp_server_cert_api),
+        )
         .route(
             "/sessions/terminal/{session_id}",
             get(handlers::web::terminal_page),

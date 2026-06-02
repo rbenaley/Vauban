@@ -36,6 +36,9 @@ pub struct AssetEdit {
     pub has_passphrase: bool,
     /// SSH host key fingerprint (read-only, from connection_config).
     pub ssh_host_key_fingerprint: Option<String>,
+    /// VAU-001: pinned RDP server-certificate fingerprint (read-only, from
+    /// connection_config). `None` when no certificate has been pinned yet.
+    pub rdp_server_cert_fingerprint: Option<String>,
     /// Windows AD domain extracted from connection_config (RDP only).
     pub rdp_domain: String,
 }
@@ -78,6 +81,7 @@ mod tests {
             has_private_key: false,
             has_passphrase: false,
             ssh_host_key_fingerprint: None,
+            rdp_server_cert_fingerprint: None,
             rdp_domain: String::new(),
         }
     }

@@ -344,6 +344,11 @@ The `--dry-run` flag is recommended before any production migration.
 - `POST /api/v1/assets/:uuid/ssh-host-key` - Fetch host key from remote server (detects key changes)
 - `POST /api/v1/assets/:uuid/ssh-host-key?confirm=true` - Accept a changed host key
 
+### RDP Server Certificate Pinning (RDP assets only)
+- `GET /api/v1/assets/manage/:uuid/rdp-server-cert` - Get certificate status (`verified`, `mismatch`, or `no_key`)
+- `POST /api/v1/assets/manage/:uuid/rdp-server-cert` - Fetch the server TLS certificate SPKI (detects certificate changes)
+- `POST /api/v1/assets/manage/:uuid/rdp-server-cert?confirm=true` - Accept a changed certificate
+
 ### Asset Groups (Read-Only)
 - `GET /api/v1/assets/groups` - List asset groups
 - `GET /api/v1/assets/groups/:uuid/assets` - List assets in a group

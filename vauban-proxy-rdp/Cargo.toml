@@ -1,7 +1,7 @@
 [package]
 name = "vauban-proxy-rdp"
 description = "Vauban - RDP proxy service (IronRDP)"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 rust-version = "1.89"
 authors = ["Richard Ben Aleya"]
@@ -50,6 +50,12 @@ ironrdp-tls = { version = "0.2", features = ["rustls"] }
 tokio-rustls = "0.26"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 
+# VAU-001: SPKI pinning of the target RDP server certificate. `sha2`
+# hashes the full SubjectPublicKeyInfo DER, `base64` encodes the SPKI /
+# fingerprint for storage + display (mirrors the SSH host-key pinning).
+sha2 = "0.10"
+base64 = "0.22"
+
 
 # Image encoding for bitmap streaming to browser (PNG fallback)
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -63,6 +69,9 @@ secrecy = { version = "0.10", features = ["serde"] }
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 nix = { version = "0.31", features = ["process", "signal", "poll", "fs", "user", "socket", "uio", "term"] }
+# VAU-001: generate a self-signed leaf cert for the in-process TLS server
+# used by the behavioral pinning tests (match / mismatch / fetch).
+rcgen = "0.13"
 
 # AVX2 support: upstream openh264-sys2 build.rs does not pass -DHAVE_AVX2
 # to NASM or the C++ compiler, unlike Cisco's official meson.build.

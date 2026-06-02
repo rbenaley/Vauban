@@ -6,8 +6,10 @@
 
 use crate::error::{SessionError, SessionResult};
 use crate::video_encoder::VideoEncoder;
+use base64::Engine as _;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
+use sha2::{Digest, Sha256};
 use ironrdp::connector::{
     self, ClientConnector, ConnectionResult, Credentials, DesktopSize,
     connection_activation::ConnectionActivationState,
@@ -54,6 +56,14 @@ pub struct SessionConfig {
     pub domain: Option<String>,
     pub desktop_width: u16,
     pub desktop_height: u16,
+    /// VAU-001: the pinned SHA-256 fingerprint of the target server's
+    /// TLS `SubjectPublicKeyInfo` (format `SHA256:<base64>`), sourced from
+    /// `assets.connection_config.rdp_server_cert_fingerprint`. The TLS
+    /// handshake is refused (fail-closed) unless the live server SPKI
+    /// matches this value. The session path NEVER carries an empty pin:
+    /// `vauban-proxy-rdp::main` rejects `RdpSessionOpen` before building
+    /// the `SessionConfig` when no pin was threaded.
+    pub expected_cert_fingerprint: String,
     /// Pre-established TCP connection from supervisor (for sandboxed operation).
     /// When running in Capsicum sandbox, the proxy cannot open network connections.
     /// The supervisor establishes the TCP connection and passes the FD via SCM_RIGHTS.
@@ -192,7 +202,11 @@ impl RdpSession {
             .try_into()
             .unwrap_or_else(|_| pki_types::ServerName::IpAddress(server_addr.ip().into()));
 
-        let tls_config = build_tls_config();
+        // VAU-001: pin the target server's TLS SPKI. The verifier refuses
+        // the handshake (fail-closed) on mismatch, BEFORE the server public
+        // key is extracted below for CredSSP channel binding -- so CredSSP
+        // never binds to an unverified key.
+        let tls_config = build_tls_config(&config.expected_cert_fingerprint)?;
         let tls_connector = tokio_rustls::TlsConnector::from(tls_config);
 
         let tcp_stream = framed.into_inner_no_leftover();
@@ -1096,67 +1110,329 @@ fn encode_region_as_png(
     Ok(png_data)
 }
 
-fn build_tls_config() -> Arc<rustls::ClientConfig> {
-    let mut config = rustls::client::ClientConfig::builder()
+/// VAU-001: build the TLS client config used by the **session** path.
+///
+/// Unlike the pre-fix `NoCertificateVerification` (which accepted every
+/// certificate and exposed each RDP session to a trivial MITM), this
+/// config installs a [`PinningServerCertVerifier`] that:
+///
+/// 1. refuses the handshake unless the live server's SPKI SHA-256
+///    fingerprint matches `expected_fingerprint` (the value pinned by an
+///    admin via the TOFU fetch workflow), and
+/// 2. still cryptographically verifies the handshake signature (delegated
+///    to the aws-lc-rs `CryptoProvider`), so a MITM that merely replays the
+///    pinned certificate without holding the private key is rejected.
+///
+/// RDP targets are typically self-signed and addressed by IP, so classic
+/// WebPKI chain / hostname validation is inapplicable; SPKI pinning is the
+/// SSH-host-key-equivalent trust anchor.
+fn build_tls_config(expected_fingerprint: &str) -> SessionResult<Arc<rustls::ClientConfig>> {
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let verifier = Arc::new(PinningServerCertVerifier {
+        expected_fingerprint: expected_fingerprint.to_string(),
+        provider: Arc::clone(&provider),
+    });
+
+    let mut config = rustls::client::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| SessionError::TlsUpgradeFailed(format!("TLS provider init failed: {e}")))?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
+        .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
 
     // CredSSP does not support TLS session resumption
     config.resumption = rustls::client::Resumption::disabled();
 
-    Arc::new(config)
+    Ok(Arc::new(config))
 }
 
-#[derive(Debug)]
-struct NoCertificateVerification;
+/// Compute the `SHA256:<base64>` fingerprint of a certificate's full
+/// `SubjectPublicKeyInfo` DER (algorithm identifier + public key), NOT just
+/// the raw key BIT STRING. Hashing the complete SPKI prevents key/algorithm
+/// confusion and matches the value an admin pins via the TOFU fetch flow.
+pub(crate) fn spki_sha256_fingerprint(
+    cert: &pki_types::CertificateDer<'_>,
+) -> Result<String, String> {
+    let spki = spki_der(cert)?;
+    let digest = Sha256::digest(&spki);
+    Ok(format!(
+        "SHA256:{}",
+        base64::engine::general_purpose::STANDARD.encode(digest)
+    ))
+}
 
-impl ServerCertVerifier for NoCertificateVerification {
+/// Re-encode a certificate's `SubjectPublicKeyInfo` to DER bytes.
+pub(crate) fn spki_der(cert: &pki_types::CertificateDer<'_>) -> Result<Vec<u8>, String> {
+    use x509_cert::der::{Decode as _, Encode as _};
+    let parsed = x509_cert::Certificate::from_der(cert.as_ref())
+        .map_err(|e| format!("Failed to parse X.509 certificate: {e}"))?;
+    parsed
+        .tbs_certificate
+        .subject_public_key_info
+        .to_der()
+        .map_err(|e| format!("Failed to re-encode SubjectPublicKeyInfo: {e}"))
+}
+
+/// Constant-time byte comparison (avoids leaking the position of the first
+/// differing byte of the pinned fingerprint via timing).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// VAU-001 session-path verifier: pins the server SPKI and verifies the
+/// handshake signature against the crypto provider.
+#[derive(Debug)]
+struct PinningServerCertVerifier {
+    /// Expected `SHA256:<base64>` fingerprint of the server SPKI.
+    expected_fingerprint: String,
+    /// Crypto provider used to verify the TLS handshake signature.
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl ServerCertVerifier for PinningServerCertVerifier {
     fn verify_server_cert(
         &self,
-        _: &pki_types::CertificateDer<'_>,
-        _: &[pki_types::CertificateDer<'_>],
-        _: &pki_types::ServerName<'_>,
-        _: &[u8],
-        _: pki_types::UnixTime,
+        end_entity: &pki_types::CertificateDer<'_>,
+        _intermediates: &[pki_types::CertificateDer<'_>],
+        _server_name: &pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: pki_types::UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
+        let live = spki_sha256_fingerprint(end_entity)
+            .map_err(|e| rustls::Error::General(format!("SPKI extraction failed: {e}")))?;
+
+        if constant_time_eq(live.as_bytes(), self.expected_fingerprint.as_bytes()) {
+            Ok(ServerCertVerified::assertion())
+        } else {
+            // The wording carries "certificate mismatch" and "MITM" so the
+            // vauban-web connect handler can flip rdp_server_cert_mismatch.
+            Err(rustls::Error::General(format!(
+                "RDP server certificate mismatch - possible MITM. \
+                 Expected pinned SPKI {expected}, server presented {live}. \
+                 An admin must re-fetch and pin the new certificate.",
+                expected = self.expected_fingerprint,
+            )))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// VAU-001 TOFU fetch: open a minimal RDP/X.224 + TLS handshake to the
+/// target, extract the server's `SubjectPublicKeyInfo`, and return its
+/// base64 DER + `SHA256:<base64>` fingerprint WITHOUT performing CredSSP /
+/// NLA. Used only by the admin "fetch + pin" workflow; the connection is
+/// closed as soon as the certificate is read.
+///
+/// Trust model: this path uses [`TofuAcceptAnyFetchVerifier`] (accept-any)
+/// because nothing is pinned yet -- exactly like SSH `fetch_host_key`
+/// accepting the live key on first fetch. Security is provided downstream:
+/// the admin reviews the fingerprint before pinning, and the session path
+/// ([`build_tls_config`] + [`PinningServerCertVerifier`]) enforces the pin
+/// fail-closed.
+pub async fn fetch_server_cert(
+    host: &str,
+    port: u16,
+    preconnected_fd: Option<OwnedFd>,
+) -> SessionResult<(String, String)> {
+    let stream = if let Some(fd) = preconnected_fd {
+        // SAFETY: the FD comes from the supervisor via SCM_RIGHTS and is a
+        // valid, connected TCP socket.
+        let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
+        std_stream.set_nonblocking(true).map_err(|e| {
+            SessionError::ConnectionFailed(format!("Failed to set non-blocking: {e}"))
+        })?;
+        TcpStream::from_std(std_stream).map_err(|e| {
+            SessionError::ConnectionFailed(format!("Failed to create tokio stream: {e}"))
+        })?
+    } else {
+        // Non-sandboxed mode (development/macOS): resolve + connect directly.
+        let addr_str = format!("{host}:{port}");
+        let server_addr = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::net::lookup_host(&addr_str),
+        )
+        .await
+        .map_err(|_| SessionError::ConnectionFailed("DNS resolution timed out".to_string()))?
+        .map_err(|e| SessionError::ConnectionFailed(format!("DNS resolution failed: {e}")))?
+        .next()
+        .ok_or_else(|| SessionError::ConnectionFailed("No addresses resolved".to_string()))?;
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            TcpStream::connect(server_addr),
+        )
+        .await
+        .map_err(|_| {
+            SessionError::ConnectionFailed(format!("TCP connect to {host}:{port} timed out"))
+        })?
+        .map_err(|e| SessionError::ConnectionFailed(format!("TCP connect failed: {e}")))?
+    };
+
+    let server_addr = stream
+        .peer_addr()
+        .map_err(|e| SessionError::ConnectionFailed(format!("peer addr: {e}")))?;
+    let client_addr = stream
+        .local_addr()
+        .map_err(|e| SessionError::ConnectionFailed(format!("local addr: {e}")))?;
+
+    // Dummy credentials: we negotiate up to the TLS upgrade and never run
+    // CredSSP, so credentials are never consumed.
+    let connector_config = build_connector_config(String::new(), String::new(), None, 1024, 768);
+    let mut connector = ClientConnector::new(connector_config, client_addr);
+    let mut framed = ironrdp_tokio::TokioFramed::new(stream);
+
+    let _should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector)
+        .await
+        .map_err(|e| SessionError::ConnectionFailed(format!("RDP handshake begin failed: {e}")))?;
+
+    let server_name: pki_types::ServerName<'static> = host
+        .to_string()
+        .try_into()
+        .unwrap_or_else(|_| pki_types::ServerName::IpAddress(server_addr.ip().into()));
+
+    let tls_config = build_fetch_tls_config()?;
+    let tls_connector = tokio_rustls::TlsConnector::from(tls_config);
+    let tcp_stream = framed.into_inner_no_leftover();
+    let tls_stream = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tls_connector.connect(server_name, tcp_stream),
+    )
+    .await
+    .map_err(|_| SessionError::TlsUpgradeFailed("TLS handshake timed out after 10s".to_string()))?
+    .map_err(|e| SessionError::TlsUpgradeFailed(e.to_string()))?;
+
+    let (_, client_connection) = tls_stream.get_ref();
+    let cert = client_connection
+        .peer_certificates()
+        .and_then(|certs| certs.first())
+        .ok_or_else(|| SessionError::TlsUpgradeFailed("Server presented no certificate".to_string()))?;
+
+    let spki = spki_der(cert).map_err(SessionError::TlsUpgradeFailed)?;
+    let fingerprint = spki_sha256_fingerprint(cert).map_err(SessionError::TlsUpgradeFailed)?;
+    let spki_b64 = base64::engine::general_purpose::STANDARD.encode(&spki);
+
+    // tls_stream is dropped here -> the connection is closed before CredSSP.
+    Ok((spki_b64, fingerprint))
+}
+
+/// VAU-001 fetch-only TLS config. Accepts ANY server certificate (TOFU --
+/// nothing is pinned yet) but still verifies the handshake signature
+/// against the crypto provider. Used EXCLUSIVELY by [`fetch_server_cert`];
+/// the session path uses [`build_tls_config`] (pinning). The lint
+/// `check_rdp_cert_paths.sh` forbids wiring this verifier into the session
+/// path.
+fn build_fetch_tls_config() -> SessionResult<Arc<rustls::ClientConfig>> {
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let verifier = Arc::new(TofuAcceptAnyFetchVerifier {
+        provider: Arc::clone(&provider),
+    });
+
+    let mut config = rustls::client::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| SessionError::TlsUpgradeFailed(format!("TLS provider init failed: {e}")))?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+
+    config.resumption = rustls::client::Resumption::disabled();
+
+    Ok(Arc::new(config))
+}
+
+/// TOFU accept-any verifier, confined to the fetch path (see
+/// [`build_fetch_tls_config`]).
+#[derive(Debug)]
+struct TofuAcceptAnyFetchVerifier {
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl ServerCertVerifier for TofuAcceptAnyFetchVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &pki_types::CertificateDer<'_>,
+        _intermediates: &[pki_types::CertificateDer<'_>],
+        _server_name: &pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: pki_types::UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        // TOFU: nothing is pinned yet, so accept whatever the server
+        // presents so the admin can review and pin its fingerprint. This
+        // verifier is NEVER used by the session path.
         Ok(ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
         &self,
-        _: &[u8],
-        _: &pki_types::CertificateDer<'_>,
-        _: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
         &self,
-        _: &[u8],
-        _: &pki_types::CertificateDer<'_>,
-        _: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::RSA_PKCS1_SHA1,
-            rustls::SignatureScheme::ECDSA_SHA1_Legacy,
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::RSA_PKCS1_SHA384,
-            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-            rustls::SignatureScheme::RSA_PKCS1_SHA512,
-            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-            rustls::SignatureScheme::RSA_PSS_SHA256,
-            rustls::SignatureScheme::RSA_PSS_SHA384,
-            rustls::SignatureScheme::RSA_PSS_SHA512,
-            rustls::SignatureScheme::ED25519,
-            rustls::SignatureScheme::ED448,
-        ]
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -1676,6 +1952,7 @@ mod tests {
             domain: Some("CORP".to_string()),
             desktop_width: 1920,
             desktop_height: 1080,
+            expected_cert_fingerprint: "SHA256:dGVzdA==".to_string(),
             preconnected_fd: None,
         };
 
@@ -1700,6 +1977,7 @@ mod tests {
             domain: None,
             desktop_width: 1280,
             desktop_height: 720,
+            expected_cert_fingerprint: "SHA256:dGVzdA==".to_string(),
             preconnected_fd: None,
         };
 
@@ -1726,6 +2004,7 @@ mod tests {
             domain: None,
             desktop_width: 1920,
             desktop_height: 1080,
+            expected_cert_fingerprint: "SHA256:dGVzdA==".to_string(),
             preconnected_fd: Some(fd),
         };
 
@@ -2224,5 +2503,226 @@ mod tests {
             !fn_body.contains("pixel[3]"),
             "encode_region_as_png must NOT include alpha channel (pixel[3])"
         );
+    }
+
+    // ==================== VAU-001 RDP cert pinning Tests ====================
+    //
+    // Battle-tested coverage for the SPKI pinning layer that replaced the
+    // pre-fix `NoCertificateVerification` (accept-any) verifier. These run
+    // against an in-process rustls server presenting a self-signed leaf
+    // generated by `rcgen`, isolating the pinning decision from the RDP
+    // X.224 dance. Mirror of `host_key_behavioural_tests` in
+    // vauban-proxy-ssh.
+    mod vau001_cert_pinning {
+        // Tests legitimately unwrap/expect/panic on setup failures; the
+        // crate denies these in production code only.
+        #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+        use super::super::{
+            PinningServerCertVerifier, build_tls_config, constant_time_eq, spki_der,
+            spki_sha256_fingerprint,
+        };
+        use rcgen::generate_simple_self_signed;
+        use std::sync::Arc;
+        use tokio::io::AsyncWriteExt as _;
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio_rustls::rustls;
+        use tokio_rustls::rustls::client::danger::ServerCertVerifier as _;
+        use tokio_rustls::rustls::pki_types::{
+            self, CertificateDer, PrivateKeyDer, ServerName,
+        };
+        use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+        /// Generate a fresh self-signed leaf cert + PKCS#8 key (DER).
+        fn gen_self_signed() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
+            let certified = generate_simple_self_signed(vec!["localhost".to_string()])
+                .expect("rcgen self-signed generation");
+            let cert_der = certified.cert.der().clone();
+            let key_der = PrivateKeyDer::Pkcs8(certified.key_pair.serialize_der().into());
+            (cert_der, key_der)
+        }
+
+        fn make_server_config(
+            cert: CertificateDer<'static>,
+            key: PrivateKeyDer<'static>,
+        ) -> Arc<rustls::ServerConfig> {
+            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+            let cfg = rustls::ServerConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .expect("server protocol versions")
+                .with_no_client_auth()
+                .with_single_cert(vec![cert], key)
+                .expect("server single cert");
+            Arc::new(cfg)
+        }
+
+        /// Drive a real TLS handshake from the PINNING client (built via
+        /// the production `build_tls_config`) against an in-process rustls
+        /// server presenting `cert`. Returns Ok iff the handshake -- SPKI
+        /// pin AND signature verification -- succeeds.
+        async fn run_handshake(
+            cert: CertificateDer<'static>,
+            key: PrivateKeyDer<'static>,
+            expected_fingerprint: &str,
+        ) -> Result<(), String> {
+            let server_cfg = make_server_config(cert, key);
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .map_err(|e| e.to_string())?;
+            let addr = listener.local_addr().map_err(|e| e.to_string())?;
+
+            let acceptor = TlsAcceptor::from(server_cfg);
+            // The server just completes the handshake and closes. We do NOT
+            // exchange application data: a successful `connect().await` on the
+            // client already proves the SPKI pin + signature passed, which is
+            // the whole point. (Exchanging a byte would deadlock under the
+            // current-thread test runtime if both sides blocked on read.)
+            let server = tokio::spawn(async move {
+                if let Ok((tcp, _)) = listener.accept().await
+                    && let Ok(mut tls) = acceptor.accept(tcp).await
+                {
+                    let _ = tls.shutdown().await;
+                }
+            });
+
+            let client_cfg = build_tls_config(expected_fingerprint).map_err(|e| e.to_string())?;
+            let connector = TlsConnector::from(client_cfg);
+            let tcp = TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+            let server_name = ServerName::try_from("localhost").map_err(|e| e.to_string())?;
+            let result = connector.connect(server_name, tcp).await;
+            match result {
+                Ok(mut tls) => {
+                    let _ = tls.shutdown().await;
+                    let _ = server.await;
+                    Ok(())
+                }
+                Err(e) => {
+                    server.abort();
+                    Err(e.to_string())
+                }
+            }
+        }
+
+        #[test]
+        fn spki_fingerprint_is_deterministic_and_formatted() {
+            let (cert, _key) = gen_self_signed();
+            let a = spki_sha256_fingerprint(&cert).expect("fingerprint");
+            let b = spki_sha256_fingerprint(&cert).expect("fingerprint");
+            assert_eq!(a, b, "fingerprint must be deterministic for one cert");
+            assert!(
+                a.starts_with("SHA256:"),
+                "fingerprint must be prefixed with SHA256:, got {a}"
+            );
+            let b64 = a.trim_start_matches("SHA256:");
+            assert_eq!(
+                b64.len(),
+                44,
+                "SHA-256 digest base64 must be 44 chars (32 bytes + padding), got {}",
+                b64.len()
+            );
+        }
+
+        #[test]
+        fn distinct_certs_have_distinct_fingerprints() {
+            let (c1, _) = gen_self_signed();
+            let (c2, _) = gen_self_signed();
+            assert_ne!(
+                spki_sha256_fingerprint(&c1).expect("fp1"),
+                spki_sha256_fingerprint(&c2).expect("fp2"),
+                "two independently-generated keys must hash differently"
+            );
+        }
+
+        #[test]
+        fn spki_der_is_subset_of_full_cert() {
+            let (cert, _) = gen_self_signed();
+            let spki = spki_der(&cert).expect("spki der");
+            assert!(!spki.is_empty(), "SPKI DER must be non-empty");
+            assert!(
+                spki.len() < cert.as_ref().len(),
+                "SPKI ({} bytes) must be a strict subset of the full cert \
+                 DER ({} bytes)",
+                spki.len(),
+                cert.as_ref().len()
+            );
+        }
+
+        #[test]
+        fn constant_time_eq_matches_byte_semantics() {
+            assert!(constant_time_eq(b"abc", b"abc"));
+            assert!(constant_time_eq(b"", b""));
+            assert!(!constant_time_eq(b"abc", b"abd"));
+            assert!(!constant_time_eq(b"abc", b"ab"), "length mismatch -> false");
+            assert!(!constant_time_eq(b"ab", b"abc"));
+        }
+
+        #[test]
+        fn verifier_accepts_exact_spki_match() {
+            let (cert, _) = gen_self_signed();
+            let fp = spki_sha256_fingerprint(&cert).expect("fp");
+            let verifier = PinningServerCertVerifier {
+                expected_fingerprint: fp,
+                provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+            };
+            let now = pki_types::UnixTime::now();
+            let name = ServerName::try_from("localhost").expect("server name");
+            assert!(
+                verifier
+                    .verify_server_cert(&cert, &[], &name, &[], now)
+                    .is_ok(),
+                "verifier must accept a cert whose SPKI matches the pin"
+            );
+        }
+
+        #[test]
+        fn verifier_rejects_mismatch_with_mitm_wording() {
+            let (cert, _) = gen_self_signed();
+            let verifier = PinningServerCertVerifier {
+                expected_fingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+                    .to_string(),
+                provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+            };
+            let now = pki_types::UnixTime::now();
+            let name = ServerName::try_from("localhost").expect("server name");
+            let err = verifier
+                .verify_server_cert(&cert, &[], &name, &[], now)
+                .expect_err("verifier MUST reject a mismatched pin");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("MITM") || msg.to_lowercase().contains("mismatch"),
+                "the mismatch error must carry MITM/mismatch wording so the \
+                 web connect handler can flip rdp_server_cert_mismatch. Got: {msg}"
+            );
+        }
+
+        #[tokio::test]
+        async fn pinning_handshake_succeeds_when_spki_matches() {
+            let (cert, key) = gen_self_signed();
+            let fp = spki_sha256_fingerprint(&cert).expect("fp");
+            let res = run_handshake(cert, key, &fp).await;
+            assert!(
+                res.is_ok(),
+                "TLS handshake must SUCCEED when the pinned SPKI matches the \
+                 server cert: {res:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn pinning_handshake_fails_when_spki_differs() {
+            let (cert, key) = gen_self_signed();
+            let (other_cert, _other_key) = gen_self_signed();
+            let real_fp = spki_sha256_fingerprint(&cert).expect("real fp");
+            let wrong_fp = spki_sha256_fingerprint(&other_cert).expect("wrong fp");
+            assert_ne!(real_fp, wrong_fp, "test setup: pins must differ");
+
+            let res = run_handshake(cert, key, &wrong_fp).await;
+            assert!(
+                res.is_err(),
+                "TLS handshake MUST FAIL (never silently accept a MITM) when \
+                 the pinned SPKI differs from the server cert. This is the \
+                 load-bearing VAU-001 regression: pre-fix the accept-any \
+                 verifier returned Ok here."
+            );
+        }
     }
 }

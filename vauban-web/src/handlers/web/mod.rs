@@ -542,7 +542,9 @@ pub(crate) fn compute_updated_connection_config(
 
     // Start from the existing config so any field NOT mentioned below
     // (notably `ssh_host_key`, `ssh_host_key_fingerprint`,
-    // `ssh_host_key_mismatch`, plus any forward-compat keys we don't
+    // `ssh_host_key_mismatch`, the VAU-001 RDP cert-pinning keys
+    // `rdp_server_cert_fingerprint`, `rdp_server_cert_spki`,
+    // `rdp_server_cert_mismatch`, plus any forward-compat keys we don't
     // yet know about) round-trips untouched.
     let mut obj = existing.as_object().cloned().unwrap_or_default();
 

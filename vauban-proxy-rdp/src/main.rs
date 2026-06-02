@@ -199,6 +199,18 @@ fn main() -> ExitCode {
 
     info!("vauban-proxy-rdp starting (async mode with Tokio + IronRDP)");
 
+    // VAU-001: install the aws-lc-rs CryptoProvider as the process default
+    // so the TLS server-certificate pinning verifier can delegate
+    // handshake-signature verification to it (proof-of-possession of the
+    // pinned key). Best-effort: a non-fatal failure means another provider
+    // was already installed by a dependency, which is equally acceptable.
+    if tokio_rustls::rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .is_err()
+    {
+        debug!("Default CryptoProvider already installed");
+    }
+
     // SAFETY: Tokio runtime creation is a startup invariant
     #[allow(clippy::expect_used)]
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -581,6 +593,7 @@ async fn handle_web_message(
             domain,
             desktop_width,
             desktop_height,
+            expected_cert_fingerprint,
             session_token,
         } => {
             debug!(
@@ -625,6 +638,34 @@ async fn handle_web_message(
                 return Ok(());
             }
 
+            // VAU-001: defense-in-depth fail-closed. vauban-web's connect
+            // pre-flight already refuses to open a session without a pinned
+            // certificate, but the proxy MUST NOT trust that alone: a
+            // missing / empty pin here means "no SPKI to verify against",
+            // so we refuse rather than fall back to accept-any TLS (the
+            // pre-fix MITM hole). Mirrors the SSH expected_host_key contract.
+            let expected_cert_fingerprint = match expected_cert_fingerprint {
+                Some(fp) if !fp.trim().is_empty() => fp,
+                _ => {
+                    warn!(
+                        session_id = %session_id,
+                        "RDP session refused: no pinned server certificate (fail-closed)"
+                    );
+                    let response = Message::RdpSessionOpened {
+                        request_id,
+                        session_id,
+                        success: false,
+                        desktop_width: 0,
+                        desktop_height: 0,
+                        error: Some(
+                            "No pinned RDP server certificate; refusing to connect".to_string(),
+                        ),
+                    };
+                    let _ = response_tx.send(response);
+                    return Ok(());
+                }
+            };
+
             let preconnected_fd = if let Some(ref pending) = pending_connections {
                 pending.lock().await.remove(&session_id)
             } else {
@@ -646,6 +687,7 @@ async fn handle_web_message(
                 domain,
                 desktop_width,
                 desktop_height,
+                expected_cert_fingerprint,
                 preconnected_fd,
             };
 
@@ -766,6 +808,55 @@ async fn handle_web_message(
                 warn!(session_id = %session_id, error = %e, "Failed to close session");
             }
             sessions.remove_session(&session_id).await;
+        }
+
+        Message::RdpFetchServerCert {
+            request_id,
+            asset_host,
+            asset_port,
+        } => {
+            debug!(
+                request_id,
+                host = %asset_host,
+                port = asset_port,
+                "RDP server certificate fetch request (TOFU)"
+            );
+
+            // The supervisor brokered the TCP connect under this synthetic
+            // session id (crypto-gated, mirrors the SSH host-key fetch).
+            let fetch_key = format!("fetch-rdpcert-{request_id}");
+            let preconnected_fd = if let Some(ref pending) = pending_connections {
+                pending.lock().await.remove(&fetch_key)
+            } else {
+                None
+            };
+
+            // Spawn so a slow/hung target TLS handshake cannot freeze the
+            // IPC main loop (same rationale as RdpSessionOpen).
+            let response_tx_clone = response_tx.clone();
+            tokio::spawn(async move {
+                match session::fetch_server_cert(&asset_host, asset_port, preconnected_fd).await {
+                    Ok((server_spki, cert_fingerprint)) => {
+                        let _ = response_tx_clone.send(Message::RdpServerCertResult {
+                            request_id,
+                            success: true,
+                            server_spki: Some(server_spki),
+                            cert_fingerprint: Some(cert_fingerprint),
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        warn!(request_id, error = %e, "RDP server certificate fetch failed");
+                        let _ = response_tx_clone.send(Message::RdpServerCertResult {
+                            request_id,
+                            success: false,
+                            server_spki: None,
+                            cert_fingerprint: None,
+                            error: Some(e.to_string()),
+                        });
+                    }
+                }
+            });
         }
 
         _ => {

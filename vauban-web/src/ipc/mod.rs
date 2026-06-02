@@ -17,7 +17,7 @@ pub use access::AccessIpcClient;
 pub use auth::AuthIpcClient;
 pub use clients::*;
 pub use proxy_iacs::{IacsTunnelOpenRequest, IacsTunnelOpened, ProxyIacsClient};
-pub use proxy_rdp::{ProxyRdpClient, RdpSessionOpenRequest, RdpSessionOpened};
+pub use proxy_rdp::{CertFetchIdentity, ProxyRdpClient, RdpSessionOpenRequest, RdpSessionOpened};
 pub use proxy_ssh::{
     HostKeyFetchIdentity, ProxySshClient, SshSessionOpenRequest, SshSessionOpened,
 };

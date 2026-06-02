@@ -878,6 +878,16 @@ pub async fn asset_detail(
         .get("ssh_host_key_mismatch")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    // VAU-001: surface the RDP server-certificate pinning state so the admin
+    // can fetch / re-pin the certificate from the detail page.
+    let rdp_server_cert_fingerprint = asset_connection_config
+        .get("rdp_server_cert_fingerprint")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let rdp_server_cert_mismatch = asset_connection_config
+        .get("rdp_server_cert_mismatch")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let group_rows: Vec<(String, ::uuid::Uuid)> = aag::asset_asset_groups
         .inner_join(ag::asset_groups.on(aag::asset_group_id.eq(ag::id)))
@@ -938,6 +948,8 @@ pub async fn asset_detail(
         updated_by,
         ssh_host_key_fingerprint,
         ssh_host_key_mismatch,
+        rdp_server_cert_fingerprint,
+        rdp_server_cert_mismatch,
     };
 
     let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
@@ -1105,6 +1117,10 @@ pub async fn asset_edit(
         .get("ssh_host_key_fingerprint")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let rdp_server_cert_fingerprint = asset_connection_config
+        .get("rdp_server_cert_fingerprint")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let rdp_domain = asset_connection_config
         .get("domain")
         .and_then(|v| v.as_str())
@@ -1127,6 +1143,7 @@ pub async fn asset_edit(
         has_private_key,
         has_passphrase,
         ssh_host_key_fingerprint,
+        rdp_server_cert_fingerprint,
         rdp_domain,
     };
 

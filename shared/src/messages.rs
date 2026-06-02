@@ -1558,6 +1558,14 @@ pub enum Message {
         desktop_width: u16,
         /// Requested desktop height in pixels.
         desktop_height: u16,
+        /// VAU-001: pinned SHA-256 fingerprint of the target server's TLS
+        /// `SubjectPublicKeyInfo` (format `SHA256:<base64>`), sourced from
+        /// `assets.connection_config.rdp_server_cert_fingerprint`. The proxy
+        /// MUST refuse the TLS handshake (fail-closed) unless the live
+        /// server SPKI matches. `None` / empty MUST collapse to a
+        /// fail-closed denial (no session without a pinned certificate),
+        /// mirroring the SSH `expected_host_key` contract.
+        expected_cert_fingerprint: Option<String>,
         /// SECURITY: Bincode-serialized `shared::session_token::SessionToken`
         /// minted by vauban-access. The proxy MUST verify this token
         /// (user_uuid, asset_uuid, protocol = "rdp", session_id) before
@@ -1576,6 +1584,32 @@ pub enum Message {
         desktop_width: u16,
         /// Actual desktop height negotiated with server.
         desktop_height: u16,
+        /// Error message if success is false.
+        error: Option<String>,
+    },
+
+    // ========== RDP Server Certificate (Web <-> ProxyRdp) ==========
+    /// VAU-001: request to fetch the TLS server certificate SPKI from a
+    /// target RDP server (TOFU pinning workflow). The proxy performs the
+    /// minimal RDP/X.224 negotiation + TLS upgrade with an accept-any
+    /// verifier (no certificate is pinned yet), extracts the server SPKI,
+    /// and closes the connection WITHOUT CredSSP/NLA. Mirrors
+    /// `SshFetchHostKey`.
+    RdpFetchServerCert {
+        request_id: u64,
+        asset_host: String,
+        asset_port: u16,
+    },
+
+    /// Response carrying the fetched RDP server SPKI + fingerprint.
+    /// Mirrors `SshHostKeyResult`.
+    RdpServerCertResult {
+        request_id: u64,
+        success: bool,
+        /// Base64-encoded `SubjectPublicKeyInfo` DER (forensic / display).
+        server_spki: Option<String>,
+        /// `SHA256:<base64>` fingerprint of the SPKI (comparison value).
+        cert_fingerprint: Option<String>,
         /// Error message if success is false.
         error: Option<String>,
     },
@@ -2126,6 +2160,8 @@ impl Message {
             | Message::SshHostKeyResult { request_id, .. }
             | Message::RdpSessionOpen { request_id, .. }
             | Message::RdpSessionOpened { request_id, .. }
+            | Message::RdpFetchServerCert { request_id, .. }
+            | Message::RdpServerCertResult { request_id, .. }
             | Message::IacsTunnelOpen { request_id, .. }
             | Message::IacsTunnelOpened { request_id, .. }
             | Message::IacsTunnelClosed { request_id, .. }
@@ -3500,6 +3536,7 @@ mod tests {
             domain: Some("WORKGROUP".to_string()),
             desktop_width: 1920,
             desktop_height: 1080,
+            expected_cert_fingerprint: Some("SHA256:dGVzdA==".to_string()),
             session_token: Vec::new(),
         };
         assert_eq!(msg.request_id(), Some(700));
@@ -3549,6 +3586,7 @@ mod tests {
             domain: None,
             desktop_width: 1280,
             desktop_height: 720,
+            expected_cert_fingerprint: None,
             session_token: Vec::new(),
         };
 
@@ -3945,6 +3983,7 @@ mod tests {
                 domain: Some("DOMAIN".to_string()),
                 desktop_width: 1280,
                 desktop_height: 720,
+                expected_cert_fingerprint: None,
                 session_token: Vec::new(),
             },
             Message::RdpSessionOpened {
@@ -4046,6 +4085,7 @@ mod tests {
             domain: None,
             desktop_width: 1280,
             desktop_height: 720,
+            expected_cert_fingerprint: None,
             session_token: Vec::new(),
         };
         let debug = format!("{:?}", msg);

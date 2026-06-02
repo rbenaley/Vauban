@@ -70,6 +70,8 @@ fn sample_detail() -> ManageAssetDetail {
         updated_by: None,
         ssh_host_key_fingerprint: Some("SHA256:fingerprint".to_string()),
         ssh_host_key_mismatch: false,
+        rdp_server_cert_fingerprint: None,
+        rdp_server_cert_mismatch: false,
     }
 }
 

@@ -142,6 +142,8 @@ fn render_with(sidebar: SidebarContentTemplate) -> String {
             updated_by: None,
             ssh_host_key_fingerprint: None,
             ssh_host_key_mismatch: false,
+            rdp_server_cert_fingerprint: None,
+            rdp_server_cert_mismatch: false,
         },
     };
     template.render().expect("template renders")

@@ -30,10 +30,37 @@ pub struct RdpSessionOpenRequest {
     pub domain: Option<String>,
     pub desktop_width: u16,
     pub desktop_height: u16,
+    /// VAU-001: pinned `SHA256:<base64>` fingerprint of the target server's
+    /// TLS SPKI (from `assets.connection_config.rdp_server_cert_fingerprint`).
+    /// The proxy refuses the TLS handshake fail-closed on mismatch and
+    /// refuses to connect at all when this is `None`. Mirrors the SSH
+    /// `expected_host_key` contract.
+    pub expected_cert_fingerprint: Option<String>,
     /// Cryptographic session token (BLAKE3-keyed MAC) issued by
     /// vauban-access, verified by vauban-proxy-rdp BEFORE
     /// `AccessGuard::authorize`. Mirrors `SshSessionOpenRequest`.
     pub session_token: Vec<u8>,
+}
+
+/// Identity material required to mint the crypto token that gates the
+/// supervisor TCP broker for an RDP server-certificate fetch. Mirrors
+/// [`super::proxy_ssh::HostKeyFetchIdentity`].
+///
+/// The TCP broker is crypto-gated: every connect requires a fresh token
+/// minted by vauban-access. The cert-fetch path is no exception -- without
+/// this gate a compromised vauban-web could use `RdpFetchServerCert` to
+/// enumerate the internal network.
+pub struct CertFetchIdentity<'a> {
+    pub access_client: &'a super::AccessIpcClient,
+    pub user_uuid: &'a str,
+    pub asset_uuid: &'a str,
+    /// Whether the original web caller holds Casbin `assets:manage`. When
+    /// `true`, the fetch uses
+    /// [`super::AccessIpcClient::issue_diagnostic_token`] (skips the
+    /// access-rule re-check, since admins typically have no explicit rule
+    /// per asset). When `false`, the legacy session-token verb keeps the
+    /// caller gated by their access rule.
+    pub caller_has_assets_manage: bool,
 }
 
 impl std::fmt::Debug for RdpSessionOpenRequest {
@@ -49,9 +76,16 @@ impl std::fmt::Debug for RdpSessionOpenRequest {
             .field("domain", &self.domain)
             .field("desktop_width", &self.desktop_width)
             .field("desktop_height", &self.desktop_height)
+            .field("expected_cert_fingerprint", &self.expected_cert_fingerprint)
             .finish()
     }
 }
+
+/// Sender type for pending RDP server-certificate fetch responses.
+///
+/// Carries `(success, server_spki_b64, cert_fingerprint, error)`.
+type ServerCertResponseSender =
+    oneshot::Sender<(bool, Option<String>, Option<String>, Option<String>)>;
 
 /// Response from opening an RDP session.
 #[derive(Debug, Clone)]
@@ -97,6 +131,8 @@ pub struct ProxyRdpClient {
     session_display_senders: Mutex<HashMap<String, mpsc::Sender<RdpSessionEvent>>>,
     /// Pre-created receivers waiting to be claimed by WebSocket.
     session_display_receivers: Mutex<HashMap<String, mpsc::Receiver<RdpSessionEvent>>>,
+    /// Pending RDP server-certificate fetch requests waiting for responses.
+    pending_cert_requests: Mutex<HashMap<u64, ServerCertResponseSender>>,
 }
 
 impl ProxyRdpClient {
@@ -112,6 +148,7 @@ impl ProxyRdpClient {
             pending_requests: Mutex::new(HashMap::new()),
             session_display_senders: Mutex::new(HashMap::new()),
             session_display_receivers: Mutex::new(HashMap::new()),
+            pending_cert_requests: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -189,6 +226,7 @@ impl ProxyRdpClient {
             domain: request.domain,
             desktop_width: request.desktop_width,
             desktop_height: request.desktop_height,
+            expected_cert_fingerprint: request.expected_cert_fingerprint,
             session_token: request.session_token,
         };
 
@@ -249,6 +287,155 @@ impl ProxyRdpClient {
         self.channel
             .send(&msg)
             .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
+    }
+
+    /// VAU-001: fetch the target RDP server's TLS certificate SPKI (TOFU
+    /// pinning workflow). Sends an `RdpFetchServerCert` request to the
+    /// proxy, which performs a minimal RDP/X.224 + TLS handshake (accept-any
+    /// verifier, no pin yet), extracts the SPKI, and closes the connection
+    /// WITHOUT CredSSP/NLA.
+    ///
+    /// When a `supervisor` is provided (sandboxed / Capsicum mode), the
+    /// method first asks the supervisor to broker the TCP connection to
+    /// `host:port` and pass the FD to the RDP proxy via `SCM_RIGHTS`. The
+    /// synthetic session id `"fetch-rdpcert-{request_id}"` matches the
+    /// pre-connected FD to the incoming `RdpFetchServerCert` message.
+    ///
+    /// Strictly mirrors [`super::proxy_ssh::ProxySshClient::fetch_host_key`].
+    ///
+    /// Returns `(server_spki_base64, sha256_fingerprint)` on success.
+    pub async fn fetch_server_cert(
+        &self,
+        host: &str,
+        port: u16,
+        supervisor: Option<&super::SupervisorClient>,
+        identity: Option<CertFetchIdentity<'_>>,
+    ) -> AppResult<(String, String)> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+
+        debug!(
+            request_id = request_id,
+            host = %host,
+            port = port,
+            "Fetching RDP server certificate"
+        );
+
+        // Under supervisor (Capsicum sandbox): broker the TCP connect BEFORE
+        // sending the fetch request. The broker is crypto-gated, so a token
+        // must be minted by vauban-access. Admin (`assets:manage`) callers
+        // use the diagnostic-token verb (skips access-rule re-check); other
+        // callers stay on the legacy session-token verb. Mirrors SSH.
+        if let Some(sv) = supervisor {
+            let identity = identity.ok_or_else(|| {
+                AppError::Ipc(
+                    "fetch_server_cert: identity is required when supervisor is set \
+                     (the TCP broker is crypto-gated; a session token must be minted)"
+                        .to_string(),
+                )
+            })?;
+            let fetch_session_id = format!("fetch-rdpcert-{}", request_id);
+            let token_params = shared::session_token::SessionTokenParams {
+                session_id: fetch_session_id.clone(),
+                user_uuid: identity.user_uuid.to_string(),
+                asset_uuid: identity.asset_uuid.to_string(),
+                protocol: "rdp".to_string(),
+                host: host.to_string(),
+                port,
+                target_service: shared::messages::Service::ProxyRdp,
+            };
+            let session_token = if identity.caller_has_assets_manage {
+                identity
+                    .access_client
+                    .issue_diagnostic_token(token_params, true)
+                    .await?
+            } else {
+                identity
+                    .access_client
+                    .issue_session_token(token_params)
+                    .await?
+            };
+            debug!(
+                request_id = request_id,
+                fetch_session_id = %fetch_session_id,
+                "Requesting TCP connection from supervisor for RDP cert fetch"
+            );
+            match sv
+                .request_tcp_connect(
+                    &fetch_session_id,
+                    host,
+                    port,
+                    shared::messages::Service::ProxyRdp,
+                    session_token,
+                )
+                .await
+            {
+                Ok(result) if result.success => {
+                    debug!(
+                        request_id = request_id,
+                        "Supervisor established TCP connection for RDP cert fetch"
+                    );
+                }
+                Ok(result) => {
+                    let err = result
+                        .error
+                        .unwrap_or_else(|| "TCP connect failed".to_string());
+                    warn!(
+                        request_id = request_id,
+                        error = %err,
+                        "Supervisor TCP connect failed for RDP cert fetch"
+                    );
+                    return Err(AppError::Ipc(format!(
+                        "Supervisor TCP connect failed: {}",
+                        err
+                    )));
+                }
+                Err(e) => {
+                    warn!(
+                        request_id = request_id,
+                        error = %e,
+                        "Supervisor TCP connect request failed for RDP cert fetch"
+                    );
+                    return Err(AppError::Ipc(format!(
+                        "Supervisor TCP connect request failed: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
+        let (tx, rx) = oneshot::channel::<(bool, Option<String>, Option<String>, Option<String>)>();
+        {
+            let mut pending = self.pending_cert_requests.lock().await;
+            pending.insert(request_id, tx);
+        }
+
+        let msg = Message::RdpFetchServerCert {
+            request_id,
+            asset_host: host.to_string(),
+            asset_port: port,
+        };
+
+        self.channel
+            .send(&msg)
+            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Ok(Ok((true, Some(spki), Some(fp), _))) => Ok((spki, fp)),
+            Ok(Ok((false, _, _, Some(err)))) => {
+                Err(AppError::Ipc(format!("RDP cert fetch failed: {}", err)))
+            }
+            Ok(Ok(_)) => Err(AppError::Ipc(
+                "RDP cert fetch returned unexpected response".to_string(),
+            )),
+            Ok(Err(_)) => Err(AppError::Ipc(
+                "RDP cert response channel dropped".to_string(),
+            )),
+            Err(_) => {
+                let mut pending = self.pending_cert_requests.lock().await;
+                pending.remove(&request_id);
+                Err(AppError::Ipc("RDP cert fetch timeout".to_string()))
+            }
+        }
     }
 
     /// Process incoming messages from the proxy.
@@ -314,6 +501,25 @@ impl ProxyRdpClient {
                 let mut pending = self.pending_requests.lock().await;
                 if let Some(tx) = pending.remove(&request_id) {
                     let _ = tx.send(response);
+                }
+            }
+
+            Message::RdpServerCertResult {
+                request_id,
+                success,
+                server_spki,
+                cert_fingerprint,
+                error,
+            } => {
+                debug!(
+                    request_id = request_id,
+                    success = success,
+                    "RDP server certificate result received"
+                );
+
+                let mut pending = self.pending_cert_requests.lock().await;
+                if let Some(tx) = pending.remove(&request_id) {
+                    let _ = tx.send((success, server_spki, cert_fingerprint, error));
                 }
             }
 
@@ -439,6 +645,7 @@ mod tests {
             domain: Some("WORKGROUP".to_string()),
             desktop_width: 1280,
             desktop_height: 720,
+            expected_cert_fingerprint: Some("SHA256:dGVzdA==".to_string()),
             session_token: Vec::new(),
         }
     }
@@ -933,6 +1140,7 @@ mod tests {
             domain: None,
             desktop_width: 1280,
             desktop_height: 720,
+            expected_cert_fingerprint: None,
             session_token: Vec::new(),
         };
         assert_eq!(request.asset_host, "serveur.example.com");
@@ -957,6 +1165,7 @@ mod tests {
             domain: Some(String::new()),
             desktop_width: 1280,
             desktop_height: 720,
+            expected_cert_fingerprint: None,
             session_token: Vec::new(),
         };
         assert_eq!(request.domain.as_deref(), Some(""));

@@ -801,6 +801,110 @@ Operational triage of `rbac_recheck_timeouts` and the `proxy-rdp <->
 access` pipe is in
 [docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md).
 
+### 11.6 Server-Certificate Pinning (SPKI + TOFU)
+
+Earlier, `vauban-proxy-rdp` upgraded the TCP channel to the
+target with an accept-any TLS verifier (`NoCertificateVerification`).
+Because CredSSP relays the user's domain credentials over that TLS
+channel, a network attacker positioned between the bastion and the
+asset could terminate the TLS session, present any certificate, and
+capture the relayed credentials -- a classic man-in-the-middle. The
+pre-fix verifier made this attack trivial: the proxy never checked
+*which* server it was talking to.
+
+The remediation pins the target server's **`SubjectPublicKeyInfo`
+(SPKI)** and mirrors, end-to-end, the existing SSH host-key pinning
+workflow (Trust-On-First-Use with explicit admin reconfirmation on
+change, plus a fail-closed connect-time pre-flight).
+
+#### What is pinned
+
+The pin is the `SHA256:<base64>` digest of the **complete
+`SubjectPublicKeyInfo` DER** (algorithm identifier + public key), not
+just the raw public-key BIT STRING. Hashing the full SPKI:
+
+- prevents key/algorithm-confusion across certificate renewals, and
+- stays stable when a Windows host renews its self-signed RDP
+  certificate **while reusing the same key pair**.
+
+When Windows regenerates the key pair as well, the new SPKI legitimately
+differs from the pin -- this surfaces as a mismatch and is resolved by
+the admin "Accept New Certificate" step, exactly like SSH "host key
+changed".
+
+| `connection_config` JSON key | Meaning |
+|------------------------------|---------|
+| `rdp_server_cert_fingerprint` | `SHA256:<base64>` of the pinned SPKI (comparison + display) |
+| `rdp_server_cert_spki` | base64 of the SPKI DER (forensic / display) |
+| `rdp_server_cert_mismatch` | optional bool; blocks connections + drives the red UI |
+
+#### Session path (fail-closed)
+
+`build_tls_config(expected_fingerprint)` installs a
+`PinningServerCertVerifier` that:
+
+1. extracts the live `end_entity` SPKI, computes its `SHA256:<base64>`
+   fingerprint, and compares it against the pin in **constant time**;
+   a mismatch returns a `rustls` error whose wording carries
+   `certificate mismatch` / `MITM` so the web layer can flip
+   `rdp_server_cert_mismatch`;
+2. still verifies the TLS handshake signature by delegating to the
+   `aws_lc_rs` `CryptoProvider`
+   (`verify_tls12_signature` / `verify_tls13_signature` +
+   `supported_verify_schemes`). Pinning the SPKI without verifying the
+   signature would accept a certificate the server cannot prove it owns;
+   delegating the signature check is strictly stronger than the pre-fix
+   `assertion()`.
+
+TLS resumption stays disabled (CredSSP does not support it).
+
+`vauban-web`'s `connect_rdp` enforces a **pre-flight gate** before any
+`proxy_sessions` row is created: it refuses with
+*"No RDP server certificate pinned for this asset..."* when nothing is
+pinned and *"RDP server certificate mismatch detected on previous
+connection..."* when the mismatch flag is set. The proxy therefore
+never opens an upstream session against an unverified or
+previously-mismatched target.
+
+#### Fetch path (TOFU, accept-any confined)
+
+The admin "fetch + pin" workflow uses a dedicated
+`fetch_server_cert(host, port, fd)` that drives the X.224 negotiation,
+upgrades to TLS with a **`TofuAcceptAnyFetchVerifier`** (accept-any,
+because nothing is pinned yet -- exactly like SSH `fetch_host_key`
+accepting the live key on first contact), extracts the SPKI, and closes
+the socket **without** performing CredSSP / NLA. Security is provided
+downstream: the admin reviews the fingerprint before pinning, and the
+session path enforces the pin fail-closed. The accept-any verifier is
+referenced **only** by the fetch path and is locked there by the
+`check_rdp_cert_paths.sh` lint.
+
+```mermaid
+flowchart TD
+    A["Admin: /assets/manage/{uuid} (rdp)"] --> B{Cert pinned?}
+    B -->|No| C["POST fetch-rdp-cert"]
+    B -->|Yes| D["GET verify-rdp-cert on load"]
+    C --> E["proxy-rdp: RdpFetchServerCert (TLS-only, accept-any)"]
+    E --> F{old_spki != new_spki and !confirm?}
+    F -->|Yes| G["Mismatch fragment - no DB write"]
+    F -->|No| H["Persist fingerprint+spki, clear mismatch"]
+    G --> I["Admin: Accept New Cert ?confirm=true"] --> H
+    M["User: POST connect-rdp"] --> N{Pre-flight}
+    N -->|no pin or mismatch| O["Refuse fail-closed"]
+    N -->|OK| P["expected_cert_fingerprint -> RdpSessionOpen"]
+    P --> Q{Pinning verifier: SPKI match?}
+    Q -->|No| R["Err mismatch -> web sets rdp_server_cert_mismatch"]
+    Q -->|Yes| S["TLS OK -> CredSSP"]
+```
+
+#### Privilege separation
+
+The fetch TCP connection is brokered by the supervisor under the
+`fetch-rdpcert-{request_id}` identity and authorized by a diagnostic
+token (`issue_diagnostic_token`, `protocol = "rdp"`) for callers with
+`assets:manage`, so the sandboxed proxy never opens a socket itself --
+identical to the SSH host-key fetch broker.
+
 ---
 
 ## 12. Testing Strategy
@@ -884,6 +988,19 @@ These tests inspect the source code at compile time to prevent architectural reg
 | `test_service_env_vars_other_services_empty` | Other services get no RDP env vars |
 | `test_spawn_child_accepts_service_env_vars` | Structural: `spawn_child` has the parameter |
 | `test_all_spawn_call_sites_pass_service_env_vars` | All 3 spawn sites pass `&svc_env` |
+
+### 12.6 Server-Certificate Pinning Tests
+
+Five complementary layers cover the SPKI pinning surface, mirroring the
+SSH host-key coverage:
+
+| Layer | Location | Coverage |
+|-------|----------|----------|
+| Lint + Rust wrapper | `scripts/check_rdp_cert_paths.sh`, `tests/web/rdp_cert_lints_test.rs` | Forbids `NoCertificateVerification` on the session path; requires `PinningServerCertVerifier`, the two pre-flight literals, the amber fallback fragment, and the diagnostic-token routing |
+| Source grep | `tests/web/rdp_cert_no_silent_green_test.rs` | Green fragment only inside the `old_spki == remote_spki` branch; pre-flight literals before the first `proxy_sessions` insert |
+| E2E HTTP (`proxy = None`) | `tests/web/rdp_cert_pin_e2e_test.rs` | Cases A-E: amber when proxy down, red on stored mismatch, no-key when absent; `connect-rdp` refuses (0 rows) without a pin and on mismatch |
+| Behavioural (proxy-rdp, `rcgen` TLS) | `session.rs::tests::vau001_cert_pinning` | Deterministic SPKI fingerprint, constant-time compare, verifier accept/reject (MITM wording), real handshake succeeds on match and **fails** on mismatch |
+| Satellites | `tests/security/security_test.rs` | IPC wire format, proxy verifier, web handlers and IPC client grep pins |
 
 ---
 

@@ -59,6 +59,14 @@ pub struct ManageAssetDetail {
     pub updated_by: Option<AuthorRef>,
     pub ssh_host_key_fingerprint: Option<String>,
     pub ssh_host_key_mismatch: bool,
+    /// VAU-001: pinned RDP server-certificate fingerprint (`SHA256:<base64>`)
+    /// from `connection_config.rdp_server_cert_fingerprint`. `None` when no
+    /// certificate has been pinned yet.
+    pub rdp_server_cert_fingerprint: Option<String>,
+    /// VAU-001: `true` when a previous connection detected the live server
+    /// certificate disagreed with the pinned one
+    /// (`connection_config.rdp_server_cert_mismatch`).
+    pub rdp_server_cert_mismatch: bool,
 }
 
 #[derive(Template)]

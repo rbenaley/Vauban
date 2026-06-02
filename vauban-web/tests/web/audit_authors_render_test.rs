@@ -103,6 +103,8 @@ fn make_manage_detail(
             updated_by,
             ssh_host_key_fingerprint: None,
             ssh_host_key_mismatch: false,
+            rdp_server_cert_fingerprint: None,
+            rdp_server_cert_mismatch: false,
         },
     }
 }

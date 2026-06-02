@@ -1721,6 +1721,15 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/assets/{uuid}/verify-host-key",
             get(handlers::web::verify_ssh_host_key),
         )
+        // VAU-001: RDP server-certificate live verification stays in the
+        // user zone (it powers the connect-flow mismatch indicator and the
+        // fail-closed pre-flight). The administrative counterpart
+        // (`fetch-rdp-cert`, which pins the certificate) lives under
+        // `/assets/manage/*`. Mirrors the SSH host-key split.
+        .route(
+            "/assets/{uuid}/verify-rdp-cert",
+            get(handlers::web::verify_rdp_server_cert),
+        )
         .route(
             "/sessions/terminal/{session_id}",
             get(handlers::web::terminal_page),
@@ -1768,6 +1777,13 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route(
             "/{uuid}/fetch-host-key",
             post(handlers::web::fetch_ssh_host_key),
+        )
+        // VAU-001: admin fetch + pin of the RDP server TLS certificate
+        // (TOFU). Mirrors `fetch-host-key`. Lives under `/assets/manage/*`
+        // (gated by `require_assets_manage` + an in-handler re-check).
+        .route(
+            "/{uuid}/fetch-rdp-cert",
+            post(handlers::web::fetch_rdp_server_cert),
         )
         .route_layer(axum::middleware::from_fn(
             middleware::require_assets_manage::require_assets_manage,
@@ -1926,6 +1942,12 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                         "/{uuid}/ssh-host-key",
                         get(handlers::api::get_ssh_host_key_status)
                             .post(handlers::api::fetch_ssh_host_key_api),
+                    )
+                    // VAU-001: RDP server-certificate status + fetch/pin.
+                    .route(
+                        "/{uuid}/rdp-server-cert",
+                        get(handlers::api::get_rdp_server_cert_status)
+                            .post(handlers::api::fetch_rdp_server_cert_api),
                     )
                     .route_layer(axum::middleware::from_fn(
                         middleware::require_assets_manage::require_assets_manage,

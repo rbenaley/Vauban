@@ -728,6 +728,216 @@ pub async fn get_ssh_host_key_status(
     Ok(Json(response))
 }
 
+/// VAU-001: fetch RDP server certificate API endpoint (admin zone).
+///
+/// POST /api/v1/assets/manage/{uuid}/rdp-server-cert
+///
+/// Fetches the RDP server's TLS certificate SPKI from the remote server and
+/// returns it as JSON. If a certificate was already pinned and the new SPKI
+/// differs, the response includes a `key_changed` flag set to `true` and
+/// both fingerprints; the stored value is NOT updated unless `?confirm=true`
+/// is passed. Requires `assets_manage`. Mirrors `fetch_ssh_host_key_api`.
+pub async fn fetch_rdp_server_cert_api(
+    State(state): State<AppState>,
+    user: AuthUser,
+    perms: PermissionContext,
+    Path(asset_uuid_str): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> AppResult<Json<serde_json::Value>> {
+    if !perms.assets_manage {
+        return Err(AppError::forbidden("assets:manage"));
+    }
+
+    let confirm = params.get("confirm").map(|v| v == "true").unwrap_or(false);
+
+    let asset_uuid = Uuid::parse_str(&asset_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
+
+    let proxy_client = state
+        .rdp_proxy
+        .as_ref()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("RDP proxy not available")))?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    let asset: Asset = assets
+        .filter(uuid.eq(asset_uuid))
+        .filter(is_deleted.eq(false))
+        .first::<Asset>(&mut conn)
+        .await
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+
+    if asset.asset_type != AssetType::Rdp {
+        return Err(AppError::Validation(
+            "Certificate fetch is only available for RDP assets".to_string(),
+        ));
+    }
+
+    let stored_spki = asset
+        .connection_config
+        .get("rdp_server_cert_spki")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let stored_fingerprint = asset
+        .connection_config
+        .get("rdp_server_cert_fingerprint")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let supervisor_ref = state.supervisor.as_deref();
+    let asset_uuid_str_for_token = asset_uuid.to_string();
+    let identity = crate::ipc::CertFetchIdentity {
+        access_client: state.access_client.as_ref(),
+        user_uuid: &user.uuid,
+        asset_uuid: &asset_uuid_str_for_token,
+        caller_has_assets_manage: perms.assets_manage,
+    };
+    let (server_spki, fingerprint) = proxy_client
+        .fetch_server_cert(
+            &asset.hostname,
+            asset.port as u16,
+            supervisor_ref,
+            Some(identity),
+        )
+        .await?;
+
+    if let Some(ref old_spki) = stored_spki
+        && old_spki != &server_spki
+        && !confirm
+    {
+        let old_fp = stored_fingerprint.as_deref().unwrap_or("unknown");
+        tracing::warn!(
+            asset_uuid = %asset_uuid,
+            old_fingerprint = %old_fp,
+            new_fingerprint = %fingerprint,
+            "RDP server certificate CHANGED on remote server - possible MITM attack"
+        );
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "key_changed": true,
+            "old_fingerprint": old_fp,
+            "new_fingerprint": fingerprint,
+            "message": "The remote server's RDP TLS certificate has changed. \
+                This could indicate a man-in-the-middle attack. \
+                Pass ?confirm=true to accept the new certificate."
+        })));
+    }
+
+    let mut config = asset.connection_config.clone();
+    config["rdp_server_cert_fingerprint"] = serde_json::Value::String(fingerprint.clone());
+    config["rdp_server_cert_spki"] = serde_json::Value::String(server_spki.clone());
+    config
+        .as_object_mut()
+        .map(|m| m.remove("rdp_server_cert_mismatch"));
+
+    use crate::schema::assets::dsl::connection_config as config_col;
+    use crate::schema::assets::dsl::updated_at;
+    use crate::schema::assets::dsl::updated_by_id as updated_by_col;
+    use chrono::Utc;
+
+    let actor_id = crate::services::audit_authors::resolve_actor_id(&mut conn, &user.uuid).await;
+
+    diesel::update(assets.filter(uuid.eq(asset_uuid)))
+        .set((
+            config_col.eq(&config),
+            updated_at.eq(Utc::now()),
+            updated_by_col.eq(actor_id),
+        ))
+        .execute(&mut conn)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "server_spki": server_spki,
+        "fingerprint": fingerprint,
+    })))
+}
+
+/// VAU-001: get the RDP server-certificate verification status for an asset
+/// (admin zone).
+///
+/// GET /api/v1/assets/manage/{uuid}/rdp-server-cert
+///
+/// Returns a JSON object with one of three statuses:
+/// - `"verified"`: a certificate is pinned and no mismatch has been detected.
+/// - `"mismatch"`: a certificate is pinned but a connection attempt detected
+///   that the server's certificate has changed.
+/// - `"no_key"`: no certificate has been pinned yet.
+///
+/// Mirrors `get_ssh_host_key_status`.
+pub async fn get_rdp_server_cert_status(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    perms: PermissionContext,
+    Path(asset_uuid_str): Path<String>,
+) -> AppResult<Json<serde_json::Value>> {
+    if !perms.assets_manage {
+        return Err(AppError::forbidden("assets:manage"));
+    }
+
+    let asset_uuid = Uuid::parse_str(&asset_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    let asset: Asset = assets
+        .filter(uuid.eq(asset_uuid))
+        .filter(is_deleted.eq(false))
+        .first::<Asset>(&mut conn)
+        .await
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+
+    if asset.asset_type != AssetType::Rdp {
+        return Err(AppError::Validation(
+            "Certificate status is only available for RDP assets".to_string(),
+        ));
+    }
+
+    let spki = asset
+        .connection_config
+        .get("rdp_server_cert_spki")
+        .and_then(|v| v.as_str());
+    let fingerprint = asset
+        .connection_config
+        .get("rdp_server_cert_fingerprint")
+        .and_then(|v| v.as_str());
+    let is_mismatch = asset
+        .connection_config
+        .get("rdp_server_cert_mismatch")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let response = match (spki, fingerprint) {
+        (Some(s), Some(fp)) => {
+            let cert_status = if is_mismatch { "mismatch" } else { "verified" };
+            serde_json::json!({
+                "status": cert_status,
+                "fingerprint": fp,
+                "server_spki": s,
+            })
+        }
+        _ => serde_json::json!({
+            "status": "no_key",
+        }),
+    };
+
+    Ok(Json(response))
+}
+
 #[cfg(test)]
 mod tests {
     //! Source-level invariants on this admin-only API module.

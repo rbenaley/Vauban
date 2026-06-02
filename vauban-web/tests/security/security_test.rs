@@ -4314,6 +4314,155 @@ async fn test_ipc_client_handles_host_key_result() {
     );
 }
 
+// ── VAU-001: RDP server-certificate pinning (SPKI + TOFU) ──
+//
+// Strict mirror of the SSH host-key satellite tests above. These grep
+// the IPC wire format, proxy verifier, web handlers and templates to
+// pin the end-to-end pinning surface against silent regressions.
+
+/// The proxy session path MUST pin the server SPKI and warn about MITM,
+/// and MUST NOT carry the pre-fix accept-any `NoCertificateVerification`
+/// verifier on the session path.
+#[tokio::test]
+#[serial]
+async fn test_rdp_cert_pinning_exists_in_proxy() {
+    let session_source = include_str!("../../../vauban-proxy-rdp/src/session.rs");
+
+    assert!(
+        session_source.contains("PinningServerCertVerifier"),
+        "vauban-proxy-rdp/session.rs must install PinningServerCertVerifier on the session path"
+    );
+    assert!(
+        session_source.contains("MITM"),
+        "vauban-proxy-rdp/session.rs must warn about MITM on certificate mismatch"
+    );
+    assert!(
+        !session_source.contains("struct NoCertificateVerification"),
+        "vauban-proxy-rdp/session.rs must NOT define the accept-any \
+         NoCertificateVerification verifier (the VAU-001 MITM hole)"
+    );
+    // The accept-any verifier, if present, is confined to the fetch path.
+    assert!(
+        session_source.contains("TofuAcceptAnyFetchVerifier"),
+        "vauban-proxy-rdp/session.rs must define TofuAcceptAnyFetchVerifier \
+         (TOFU fetch-only accept-any, confined to the fetch path)"
+    );
+}
+
+/// `RdpSessionOpen` must carry the pinned fingerprint, and the cert-fetch
+/// message variants must exist in the shared IPC enum.
+#[tokio::test]
+#[serial]
+async fn test_rdp_session_open_has_expected_cert_fingerprint_field() {
+    let messages_source = include_str!("../../../shared/src/messages.rs");
+
+    assert!(
+        messages_source.contains("expected_cert_fingerprint"),
+        "RdpSessionOpen must include expected_cert_fingerprint"
+    );
+    assert!(
+        messages_source.contains("RdpFetchServerCert"),
+        "Message enum must include the RdpFetchServerCert variant"
+    );
+    assert!(
+        messages_source.contains("RdpServerCertResult"),
+        "Message enum must include the RdpServerCertResult variant"
+    );
+}
+
+/// `connect_rdp` must thread the pinned fingerprint from connection_config
+/// into the open request, and flip the mismatch flag on a verification
+/// failure reported by the proxy.
+#[tokio::test]
+#[serial]
+async fn test_connect_rdp_passes_cert_and_marks_mismatch() {
+    let web_source = include_str!("../../src/handlers/web/rdp.rs");
+
+    assert!(
+        web_source.contains("expected_cert_fingerprint"),
+        "connect_rdp must pass expected_cert_fingerprint in RdpSessionOpenRequest"
+    );
+    assert!(
+        web_source.contains("rdp_server_cert_mismatch"),
+        "connect_rdp must set rdp_server_cert_mismatch on verification failure"
+    );
+    assert!(
+        web_source.contains("certificate mismatch") && web_source.contains("MITM"),
+        "connect_rdp must detect the certificate-mismatch / MITM error wording"
+    );
+}
+
+/// The proxy-rdp main loop must handle RdpFetchServerCert and answer with
+/// RdpServerCertResult via the fetch_server_cert function.
+#[tokio::test]
+#[serial]
+async fn test_proxy_rdp_handles_fetch_cert_message() {
+    let proxy_main_source = include_str!("../../../vauban-proxy-rdp/src/main.rs");
+
+    assert!(
+        proxy_main_source.contains("RdpFetchServerCert"),
+        "vauban-proxy-rdp/main.rs must handle RdpFetchServerCert messages"
+    );
+    assert!(
+        proxy_main_source.contains("RdpServerCertResult"),
+        "vauban-proxy-rdp/main.rs must send RdpServerCertResult responses"
+    );
+    assert!(
+        proxy_main_source.contains("fetch_server_cert"),
+        "vauban-proxy-rdp/main.rs must call session::fetch_server_cert"
+    );
+}
+
+/// The admin fetch handler must reject non-RDP assets, detect cert
+/// changes, support `confirm`, and store the cert in connection_config.
+#[tokio::test]
+#[serial]
+async fn test_fetch_rdp_cert_rejects_non_rdp_and_detects_change() {
+    let web_source = include_str!("../../src/handlers/web/rdp.rs");
+
+    assert!(
+        web_source.contains("Certificate fetch is only available for RDP assets"),
+        "fetch_rdp_server_cert must reject non-RDP assets with a clear message"
+    );
+    assert!(
+        web_source.contains("old_spki != &server_spki"),
+        "fetch_rdp_server_cert must compare the stored SPKI with the freshly fetched one"
+    );
+    assert!(
+        web_source.contains("_rdp_server_cert_mismatch_fragment.html"),
+        "fetch_rdp_server_cert must return the mismatch fragment when SPKIs differ"
+    );
+    assert!(
+        web_source.contains(r#"config["rdp_server_cert_fingerprint"]"#),
+        "fetch handler must store rdp_server_cert_fingerprint in connection_config"
+    );
+    assert!(
+        web_source.contains(r#"config["rdp_server_cert_spki"]"#),
+        "fetch handler must store rdp_server_cert_spki in connection_config"
+    );
+}
+
+/// The IPC client must track pending cert requests, handle
+/// RdpServerCertResult, and expose a fetch_server_cert method.
+#[tokio::test]
+#[serial]
+async fn test_ipc_client_handles_rdp_cert_result() {
+    let client_source = include_str!("../../src/ipc/proxy_rdp.rs");
+
+    assert!(
+        client_source.contains("RdpServerCertResult"),
+        "ProxyRdpClient must handle RdpServerCertResult messages"
+    );
+    assert!(
+        client_source.contains("pending_cert_requests"),
+        "ProxyRdpClient must track pending cert requests"
+    );
+    assert!(
+        client_source.contains("fetch_server_cert"),
+        "ProxyRdpClient must provide a fetch_server_cert method"
+    );
+}
+
 // ── Host Key Mismatch Detection Tests ──
 
 /// Verify that fetch_ssh_host_key handler detects key changes and returns

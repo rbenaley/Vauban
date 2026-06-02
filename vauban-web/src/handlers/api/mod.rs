@@ -34,7 +34,8 @@ pub use accounts::{create_user, get_user, list_users, update_user};
 pub use assets::list_assets;
 pub use groups::list_group_members;
 pub use manage_assets::{
-    create_asset, fetch_ssh_host_key_api, get_asset, get_ssh_host_key_status, list_asset_groups,
-    list_group_assets, update_asset,
+    create_asset, fetch_rdp_server_cert_api, fetch_ssh_host_key_api, get_asset,
+    get_rdp_server_cert_status, get_ssh_host_key_status, list_asset_groups, list_group_assets,
+    update_asset,
 };
 pub use sessions::{create_session, get_session, list_sessions, terminate_session};
