@@ -521,6 +521,71 @@ fn main_loop(
 
 ---
 
+### 4.8 Per-Peer Authorization (Capability Matrix)
+
+The vault is a pure cryptographic oracle. A naive design would serve EVERY
+`Vault*` verb identically, regardless of which peer asked, using the peer name
+only for logging and never as a decision. That would let a SINGLE compromised
+peer (web, auth, or a proxy) decrypt EVERY secret of EVERY domain
+(`credentials` and `mfa`), collapsing the defense-in-depth the split-process
+architecture is meant to provide. The vault therefore authorizes every request
+against a per-peer capability matrix.
+
+#### Trust model: the channel IS the identity
+
+No on-wire identity token is needed. Each peer reaches the vault on a
+**dedicated pipe pair** created by the supervisor at fork time (one
+`IpcChannel::pair()` per `TOPOLOGY` edge), and the vault labels each incoming
+channel `"web"` / `"auth"` / `"proxy_ssh"` / `"proxy_rdp"` at init from the
+env-var suffix the supervisor set (`parse_topology_channel`, `peer_channels`).
+That label is therefore **supervisor-attested and kernel-backed**: a peer
+cannot claim "I am web" on the wire -- it can only write into the pipe the
+supervisor handed it. Authorization is thus a pure function of
+`(peer, verb, domain)`, implemented in
+[`vauban-vault/src/authz.rs`](../../vauban-vault/src/authz.rs).
+
+#### The matrix (fail-closed)
+
+`is_authorized(VaultPeer, &Message)` is an EXHAUSTIVE match with a
+`_ => false` catch-all (no fail-open arm). Only these couples are allowed:
+
+- `web`: `Encrypt{credentials, mfa}`, `Decrypt{credentials}`, `MfaGenerate`,
+  `MfaVerify`, `MfaGetSecret`.
+- `auth`: `MfaVerify` only. Deliberately NOT `MfaGetSecret` nor
+  `Decrypt{mfa}` -- those return the TOTP secret in clear, whereas auth only
+  needs a yes/no on a submitted code.
+- `proxy_ssh`, `proxy_rdp`: `Decrypt{credentials}` (read-only).
+- `supervisor`: nothing. The supervisor channel is **control-only**; any
+  forwarded `Vault*` verb is refused (closing the pre-fix implicit
+  full-access forwarding path).
+- unknown label / any couple not listed: denied.
+
+Note the matrix is *forward-looking*: `auth` / `proxy_ssh` / `proxy_rdp` do
+not emit vault traffic yet (web decrypts and forwards plaintext over its own
+peer pipe), but their least-privilege grants are pre-declared so wiring them
+later never requires relaxing the vault.
+
+#### Enforcement and observability
+
+`handle_peer_message` (and `handle_supervisor_message`, as the `Supervisor`
+peer) call `is_authorized` **before** any crypto. On denial the vault:
+
+1. increments the `requests_denied` anomaly counter (`ServiceState`),
+2. emits a structured `warn!(peer, verb, domain, "vault request denied
+   (capability matrix)")`,
+3. replies with a typed `*Response { error: "unauthorized: ...", .. }` that
+   carries NO secret material, so the caller's pending request resolves
+   instead of hanging until timeout.
+
+Even `web` cannot `Decrypt{mfa}`: the raw TOTP secret only ever leaves through
+the dedicated `MfaGetSecret` verb. Adding a `VaultPeer` variant forces a
+compile error in the exhaustive match; `VaultPeer::COUNT` and the unit /
+behavioral / structural tests (see 9.x) plus the
+[`scripts/check_vault_authz.sh`](../../vauban-vault/scripts/check_vault_authz.sh)
+lint keep the matrix honest.
+
+---
+
 ## 5. Capsicum Sandboxing
 
 ### 5.1 Sandbox Entry Sequence

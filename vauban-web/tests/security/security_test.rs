@@ -5383,6 +5383,88 @@ fn test_vault_client_in_appstate() {
     );
 }
 
+// =============================================================================
+// VAU-002: vault per-peer authorization (capability matrix) -- structural pins
+// =============================================================================
+
+/// The vault MUST ship a per-peer capability matrix module (authz.rs) with a
+/// fail-closed `is_authorized` and the `VaultPeer` identity enum.
+#[test]
+fn test_vau002_vault_authz_module_exists_and_fail_closed() {
+    let source = include_str!("../../../vauban-vault/src/authz.rs");
+    assert!(
+        source.contains("enum VaultPeer"),
+        "vauban-vault must define a VaultPeer identity enum (authz.rs)"
+    );
+    assert!(
+        source.contains("fn is_authorized"),
+        "vauban-vault must define is_authorized (per-peer capability matrix)"
+    );
+    assert!(
+        source.contains("VaultPeer::Supervisor"),
+        "the matrix must model the Supervisor (control-only) peer"
+    );
+    // Fail-closed catch-all, never fail-open.
+    assert!(
+        source.contains("_ => false"),
+        "is_authorized must default to deny (`_ => false`)"
+    );
+    assert!(
+        !source.contains("_ => true"),
+        "is_authorized must NOT contain a fail-open `_ => true` arm"
+    );
+}
+
+/// SECURITY: even web cannot VaultDecrypt the `mfa` domain, and auth is limited
+/// to MfaVerify. Pin the documented least-privilege grants so a loosening is
+/// caught (the matrix is the single source of truth for VAU-002).
+#[test]
+fn test_vau002_matrix_denies_mfa_secret_exfiltration() {
+    let source = include_str!("../../../vauban-vault/src/authz.rs");
+    // web Decrypt is restricted to credentials (not a wildcard / mfa).
+    assert!(
+        source.contains("(VaultPeer::Web, Message::VaultDecrypt { domain, .. }) => domain == DOMAIN_CREDENTIALS"),
+        "web VaultDecrypt must be limited to the credentials domain"
+    );
+    // auth's ONLY grant is MfaVerify.
+    assert!(
+        source.contains("(VaultPeer::Auth, Message::VaultMfaVerify { .. }) => true"),
+        "auth must be granted VaultMfaVerify"
+    );
+    assert!(
+        !source.contains("VaultPeer::Auth, Message::VaultMfaGetSecret"),
+        "auth must NOT be granted VaultMfaGetSecret (TOTP secret exfiltration)"
+    );
+}
+
+/// The vault main loop MUST gate peer requests before any crypto and keep the
+/// `requests_denied` anomaly counter.
+#[test]
+fn test_vau002_vault_main_gates_and_counts() {
+    let source = include_str!("../../../vauban-vault/src/main.rs");
+    assert!(
+        source.contains("mod authz;"),
+        "vauban-vault main.rs must wire the authz module"
+    );
+    assert!(
+        source.contains("authz::is_authorized"),
+        "handle_peer_message must authorize via authz::is_authorized"
+    );
+    assert!(
+        source.contains("requests_denied"),
+        "ServiceState must carry the requests_denied anomaly counter (VAU-002)"
+    );
+    assert!(
+        source.contains("fn deny_vault_request"),
+        "vauban-vault must have a deny_vault_request helper (warn + typed denial)"
+    );
+    // The pre-fix unguarded forwarding arm must be gone.
+    assert!(
+        !source.contains("=> handle_vault_request(channel, state, other),"),
+        "vauban-vault must NOT forward vault verbs without authorization"
+    );
+}
+
 /// is_encrypted helper must check version prefix format.
 #[test]
 fn test_is_encrypted_helper_exists() {

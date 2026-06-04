@@ -22,6 +22,7 @@
 //! - All derived keys held in memory, zeroized on drop
 //! - Plaintext zeroized immediately after each operation
 
+mod authz;
 mod transit;
 
 use std::collections::HashMap;
@@ -52,6 +53,10 @@ struct ServiceState {
     /// Flag set by ControlMessage::Shutdown to break the main loop
     /// and allow Drop/Zeroize to run (MasterKey, Keyring).
     shutdown_requested: bool,
+    /// VAU-002 anomaly counter: vault requests refused by the per-peer
+    /// capability matrix (a compromised / misconfigured peer asking for a
+    /// domain/verb it is not entitled to). Surfaced via `warn!` per event.
+    requests_denied: u64,
     keyrings: HashMap<String, Keyring>,
 }
 
@@ -176,6 +181,7 @@ fn run_service() -> Result<()> {
         requests_failed: 0,
         draining: false,
         shutdown_requested: false,
+        requests_denied: 0,
         keyrings,
     };
 
@@ -329,8 +335,17 @@ fn handle_supervisor_message(
 ) -> Result<()> {
     match msg {
         Message::Control(ctrl) => handle_control(channel, state, ctrl),
-        // Supervisor may also forward vault requests in some topologies
-        other => handle_vault_request(channel, state, other),
+        // VAU-002: the supervisor channel is control-only. The supervisor peer
+        // has NO vault capability, so any forwarded vault verb is refused
+        // here (closing the pre-fix implicit full-access forwarding path).
+        // The authorization gate runs BEFORE handle_vault_request.
+        other => {
+            if !authz::is_authorized(authz::VaultPeer::Supervisor, &other) {
+                deny_vault_request(channel, state, &other, authz::VaultPeer::Supervisor.as_str());
+                return Ok(());
+            }
+            handle_vault_request(channel, state, other)
+        }
     }
 }
 
@@ -342,10 +357,45 @@ fn handle_peer_message(
 ) -> Result<()> {
     match msg {
         Message::Control(ctrl) => handle_control(channel, state, ctrl),
+        // VAU-002: authorize on the supervisor-attested channel label BEFORE
+        // any crypto. `peer_name` is the label the vault assigned the channel
+        // at init from the env-var suffix the supervisor set; it is not
+        // forgeable on the wire. An unknown label maps to `None` -> deny.
         other => {
-            tracing::debug!("Vault request from {}", peer_name);
+            let authorized = authz::VaultPeer::from_channel_label(peer_name)
+                .is_some_and(|peer| authz::is_authorized(peer, &other));
+            if !authorized {
+                deny_vault_request(channel, state, &other, peer_name);
+                return Ok(());
+            }
             handle_vault_request(channel, state, other)
         }
+    }
+}
+
+/// VAU-002: refuse a vault request denied by the per-peer capability matrix.
+///
+/// Increments the anomaly counter, logs a structured `warn!`, and replies with
+/// a typed `unauthorized` response (carrying NO secret material) so the
+/// caller's pending request resolves instead of hanging until timeout.
+fn deny_vault_request(
+    channel: &IpcChannel,
+    state: &mut ServiceState,
+    msg: &Message,
+    peer_label: &str,
+) {
+    state.requests_denied += 1;
+    let (verb, domain) = authz::verb_and_domain(msg).unwrap_or(("non-vault", "-"));
+    warn!(
+        peer = peer_label,
+        verb = verb,
+        domain = domain,
+        "vault request denied (capability matrix)"
+    );
+    if let Some(resp) = authz::denied_response(msg)
+        && let Err(e) = channel.send(&resp)
+    {
+        warn!("failed to send vault denial response: {}", e);
     }
 }
 
@@ -485,6 +535,7 @@ mod tests {
             requests_failed: 0,
             draining: false,
             shutdown_requested: false,
+            requests_denied: 0,
             keyrings: test_keyrings(),
         }
     }
@@ -720,6 +771,314 @@ mod tests {
         assert!(
             body.contains("requests_failed"),
             "handle_vault_request fail-closed branch must increment requests_failed"
+        );
+    }
+
+    // ==================== VAU-002 Per-Peer Authorization ====================
+    //
+    // Behavioral / E2E tests at the trust boundary: drive the REAL
+    // recv -> authorize -> transit -> respond path of `handle_peer_message`
+    // (and `handle_supervisor_message`) over a genuine `IpcChannel::pair()`,
+    // with a supervisor-attested peer label, and read the response on the
+    // client end. This demonstrates the capability matrix is enforced exactly
+    // where a compromised peer would cross the pipe.
+
+    /// E2E: a `web` channel may encrypt then decrypt a credential (round-trip).
+    #[test]
+    fn test_vau002_web_channel_credentials_roundtrip() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = test_state();
+
+        let enc = Message::VaultEncrypt {
+            request_id: 1,
+            domain: "credentials".to_string(),
+            plaintext: SensitiveString::new("hunter2".to_string()),
+        };
+        handle_peer_message(&service, &mut state, enc, "web").unwrap();
+        let ct = match client.recv().unwrap() {
+            Message::VaultEncryptResponse {
+                ciphertext: Some(c),
+                error: None,
+                ..
+            } => c,
+            other => panic!("expected encrypt success, got {other:?}"),
+        };
+
+        let dec = Message::VaultDecrypt {
+            request_id: 2,
+            domain: "credentials".to_string(),
+            ciphertext: ct,
+        };
+        handle_peer_message(&service, &mut state, dec, "web").unwrap();
+        match client.recv().unwrap() {
+            Message::VaultDecryptResponse {
+                plaintext: Some(pt),
+                error: None,
+                ..
+            } => assert_eq!(pt.as_str(), "hunter2"),
+            other => panic!("expected decrypt success, got {other:?}"),
+        }
+        assert_eq!(state.requests_denied, 0);
+    }
+
+    /// SECURITY E2E: a compromised `proxy_ssh` peer is REFUSED when it tries to
+    /// decrypt the `mfa` domain -- NO plaintext is returned and the anomaly
+    /// counter increments. This is the core VAU-002 property: one compromised
+    /// peer can no longer pivot to another domain's secrets.
+    #[test]
+    fn test_vau002_proxy_ssh_denied_mfa_decrypt_no_leak() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = test_state();
+
+        // web legitimately produces an mfa ciphertext.
+        let gen_msg = Message::VaultMfaGenerate {
+            request_id: 1,
+            username: "u".to_string(),
+            issuer: "VAUBAN".to_string(),
+        };
+        handle_peer_message(&service, &mut state, gen_msg, "web").unwrap();
+        let enc_secret = match client.recv().unwrap() {
+            Message::VaultMfaGenerateResponse {
+                encrypted_secret: Some(s),
+                ..
+            } => s,
+            other => panic!("expected generate success, got {other:?}"),
+        };
+
+        // proxy_ssh attempts to decrypt the mfa secret -> DENIED, no leak.
+        let dec = Message::VaultDecrypt {
+            request_id: 2,
+            domain: "mfa".to_string(),
+            ciphertext: enc_secret,
+        };
+        handle_peer_message(&service, &mut state, dec, "proxy_ssh").unwrap();
+        match client.recv().unwrap() {
+            Message::VaultDecryptResponse {
+                plaintext: None,
+                error: Some(e),
+                ..
+            } => assert!(e.contains("unauthorized"), "error was: {e}"),
+            other => panic!("expected unauthorized denial, got {other:?}"),
+        }
+        assert_eq!(state.requests_denied, 1);
+    }
+
+    /// proxy_ssh CAN decrypt the credentials domain (its read-only grant).
+    #[test]
+    fn test_vau002_proxy_ssh_allowed_credentials_decrypt() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = test_state();
+
+        let enc = Message::VaultEncrypt {
+            request_id: 1,
+            domain: "credentials".to_string(),
+            plaintext: SensitiveString::new("pw".to_string()),
+        };
+        handle_peer_message(&service, &mut state, enc, "web").unwrap();
+        let ct = match client.recv().unwrap() {
+            Message::VaultEncryptResponse {
+                ciphertext: Some(c),
+                ..
+            } => c,
+            other => panic!("got {other:?}"),
+        };
+
+        let dec = Message::VaultDecrypt {
+            request_id: 2,
+            domain: "credentials".to_string(),
+            ciphertext: ct,
+        };
+        handle_peer_message(&service, &mut state, dec, "proxy_ssh").unwrap();
+        match client.recv().unwrap() {
+            Message::VaultDecryptResponse {
+                plaintext: Some(pt),
+                error: None,
+                ..
+            } => assert_eq!(pt.as_str(), "pw"),
+            other => panic!("got {other:?}"),
+        }
+        assert_eq!(state.requests_denied, 0);
+    }
+
+    /// auth may verify an MFA code but is REFUSED MfaGetSecret (no exfiltration
+    /// of the raw TOTP secret).
+    #[test]
+    fn test_vau002_auth_can_verify_but_not_get_secret() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = test_state();
+
+        let gen_msg = Message::VaultMfaGenerate {
+            request_id: 1,
+            username: "u".to_string(),
+            issuer: "VAUBAN".to_string(),
+        };
+        handle_peer_message(&service, &mut state, gen_msg, "web").unwrap();
+        let enc_secret = match client.recv().unwrap() {
+            Message::VaultMfaGenerateResponse {
+                encrypted_secret: Some(s),
+                ..
+            } => s,
+            other => panic!("got {other:?}"),
+        };
+
+        // auth verifies a (wrong) code -> ALLOWED, returns valid=false.
+        let verify = Message::VaultMfaVerify {
+            request_id: 2,
+            encrypted_secret: enc_secret.clone(),
+            code: "000000".to_string(),
+        };
+        handle_peer_message(&service, &mut state, verify, "auth").unwrap();
+        match client.recv().unwrap() {
+            Message::VaultMfaVerifyResponse {
+                valid: false,
+                error: None,
+                ..
+            } => {}
+            other => panic!("expected verify allowed, got {other:?}"),
+        }
+        assert_eq!(state.requests_denied, 0);
+
+        // auth attempts to exfiltrate the secret -> DENIED.
+        let get = Message::VaultMfaGetSecret {
+            request_id: 3,
+            encrypted_secret: enc_secret,
+        };
+        handle_peer_message(&service, &mut state, get, "auth").unwrap();
+        match client.recv().unwrap() {
+            Message::VaultMfaGetSecretResponse {
+                plaintext_secret: None,
+                error: Some(e),
+                ..
+            } => assert!(e.contains("unauthorized"), "error was: {e}"),
+            other => panic!("expected get_secret denied, got {other:?}"),
+        }
+        assert_eq!(state.requests_denied, 1);
+    }
+
+    /// An unknown channel label is denied (defense against a mislabeled pipe).
+    #[test]
+    fn test_vau002_unknown_peer_label_denied() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = test_state();
+
+        let dec = Message::VaultDecrypt {
+            request_id: 1,
+            domain: "credentials".to_string(),
+            ciphertext: "v1:AAAA".to_string(),
+        };
+        handle_peer_message(&service, &mut state, dec, "proxy_iacs").unwrap();
+        match client.recv().unwrap() {
+            Message::VaultDecryptResponse {
+                plaintext: None,
+                error: Some(e),
+                ..
+            } => assert!(e.contains("unauthorized"), "error was: {e}"),
+            other => panic!("expected denial, got {other:?}"),
+        }
+        assert_eq!(state.requests_denied, 1);
+    }
+
+    /// The supervisor channel is control-only: a forwarded vault verb is
+    /// refused, but Control still works.
+    #[test]
+    fn test_vau002_supervisor_channel_denies_vault_verbs() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = test_state();
+
+        let enc = Message::VaultEncrypt {
+            request_id: 1,
+            domain: "credentials".to_string(),
+            plaintext: SensitiveString::new("x".to_string()),
+        };
+        handle_supervisor_message(&service, &mut state, enc).unwrap();
+        match client.recv().unwrap() {
+            Message::VaultEncryptResponse {
+                ciphertext: None,
+                error: Some(e),
+                ..
+            } => assert!(e.contains("unauthorized"), "error was: {e}"),
+            other => panic!("expected supervisor denial, got {other:?}"),
+        }
+        assert_eq!(state.requests_denied, 1);
+
+        // Control still works over the supervisor channel.
+        handle_supervisor_message(
+            &service,
+            &mut state,
+            Message::Control(ControlMessage::Ping { seq: 9 }),
+        )
+        .unwrap();
+        match client.recv().unwrap() {
+            Message::Control(ControlMessage::Pong { seq: 9, .. }) => {}
+            other => panic!("expected pong, got {other:?}"),
+        }
+    }
+
+    // ---------- VAU-002 structural regression (source pins) ----------
+
+    /// Production part of authz.rs (before #[cfg(test)]).
+    fn authz_prod_source() -> &'static str {
+        let full = include_str!("authz.rs");
+        match full.find("#[cfg(test)]") {
+            Some(idx) => &full[..idx],
+            None => full,
+        }
+    }
+
+    /// handle_peer_message MUST authorize BEFORE handling the vault request.
+    #[test]
+    fn test_vau002_peer_message_authorizes_before_handling() {
+        let source = prod_source();
+        let start = source
+            .find("fn handle_peer_message")
+            .expect("handle_peer_message must exist");
+        let body = &source[start..];
+        let authz_pos = body
+            .find("is_authorized")
+            .expect("handle_peer_message must call is_authorized");
+        let handle_pos = body
+            .find("handle_vault_request")
+            .expect("handle_peer_message must call handle_vault_request");
+        assert!(
+            authz_pos < handle_pos,
+            "is_authorized must be checked BEFORE handle_vault_request in handle_peer_message"
+        );
+    }
+
+    /// handle_supervisor_message MUST gate vault verbs as the Supervisor peer.
+    #[test]
+    fn test_vau002_supervisor_message_gates_vault_verbs() {
+        let source = prod_source();
+        let start = source
+            .find("fn handle_supervisor_message")
+            .expect("handle_supervisor_message must exist");
+        let body_full = &source[start..];
+        let end = body_full
+            .find("fn handle_peer_message")
+            .unwrap_or(body_full.len());
+        let body = &body_full[..end];
+        assert!(
+            body.contains("VaultPeer::Supervisor"),
+            "supervisor handler must authorize as the Supervisor peer (control-only)"
+        );
+        assert!(
+            body.contains("is_authorized"),
+            "supervisor handler must call is_authorized before handle_vault_request"
+        );
+    }
+
+    /// The authz matrix MUST be fail-closed: a `_ => false` catch-all and NO
+    /// fail-open `_ => true` arm.
+    #[test]
+    fn test_vau002_authz_matrix_is_fail_closed() {
+        let source = authz_prod_source();
+        assert!(
+            source.contains("_ => false"),
+            "is_authorized must end with a fail-closed `_ => false` arm"
+        );
+        assert!(
+            !source.contains("_ => true"),
+            "is_authorized must NOT contain a fail-open `_ => true` arm"
         );
     }
 }
