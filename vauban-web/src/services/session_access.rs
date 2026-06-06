@@ -121,11 +121,41 @@ pub async fn verify(
                 error = %e,
                 "session_access::verify: IPC error, fail-closed deny",
             );
+            emit_access_denied(state, session_uuid, user, intent, "ipc_error");
             return SessionAccessOutcome::Denied404;
         }
     };
 
-    apply_casbin_override(decision, perms, intent)
+    let outcome = apply_casbin_override(decision, perms, intent);
+    if matches!(
+        outcome,
+        SessionAccessOutcome::Denied404 | SessionAccessOutcome::DeniedGone
+    ) {
+        emit_access_denied(state, session_uuid, user, intent, "session_access");
+    }
+    outcome
+}
+
+/// Emit a centralized `AccessDenied` audit event for a refused session access.
+/// Fire-and-forget: a denial flood (probing) must never block the request path.
+fn emit_access_denied(
+    state: &AppState,
+    session_uuid: &str,
+    user: &AuthUser,
+    intent: SessionAccessIntent,
+    reason: &str,
+) {
+    crate::services::emit_audit(
+        state,
+        crate::ipc::AuditEvent::new(
+            shared::messages::AuditEventType::AccessDenied,
+            format!(
+                r#"{{"seam":"session_access","intent":"{intent:?}","reason":"{reason}"}}"#
+            ),
+        )
+        .user(user.uuid.to_string())
+        .session(session_uuid.to_string()),
+    );
 }
 
 /// Pure function combining the vauban-access decision with the

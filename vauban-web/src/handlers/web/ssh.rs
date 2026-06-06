@@ -805,6 +805,17 @@ pub async fn connect_ssh(
                     "SSH session initiated"
                 );
 
+                crate::services::emit_audit(
+                    &state,
+                    crate::ipc::AuditEvent::new(
+                        shared::messages::AuditEventType::SessionRequested,
+                        format!(r#"{{"protocol":"ssh","asset":"{}"}}"#, asset.name),
+                    )
+                    .user(auth_user.uuid.to_string())
+                    .session(session_id.clone())
+                    .ip(Some(client_addr.addr().ip())),
+                );
+
                 let redirect_url = format!("/sessions/terminal/{}", session_id);
 
                 if is_htmx {

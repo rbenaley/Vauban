@@ -2349,6 +2349,126 @@ For deeper analysis or export, see [`docs/runbooks/approval_audit.md`](../runboo
 
 ---
 
+## 16. Tamper-Evident Audit Log (WORM)
+
+### 16.1 Purpose
+
+`vauban-audit` is the durable, append-only, inviolable record of every
+security-relevant action on the bastion. Two complementary streams feed it:
+
+- **`vauban-web`** is the richest producer. It emits a typed `AuditEvent` at
+  every authentication, MFA, session, user, policy, asset-group, asset and
+  JIT-approval seam, plus a centralized `AccessDenied` at the cross-cutting
+  denial points (`session_access::verify`, `step_up::enforce_totp_step_up`).
+  Emission goes through `crate::services::emit_audit` (fire-and-forget,
+  bounded queue) or `emit_audit_critical().await` (auth / escalation: blocks
+  on a durable ack and fails the operation closed if the event cannot be
+  recorded).
+- The proxies (`vauban-proxy-ssh`, ...) emit session lifecycle events on their
+  own pipes.
+
+Before this work, `vauban-web` was effectively mute (it produced only an
+Apache-style `tracing` line and never an `AuditEvent`), and `vauban-audit`
+persisted nothing (the handler `info!`-logged and acked with a
+`// TODO: Write to WORM storage` stub). Both gaps are now closed.
+
+### 16.2 On-disk format (JSON-Lines segments)
+
+A segment is a JSON-Lines file (`audit/YYYY/MM/audit-<n>.jsonl`), one
+self-describing record per line. Two record kinds share one envelope
+(`core` + `hash`):
+
+- `event` -- an audit event (auth, session, policy, ...).
+- `seal` -- an Ed25519 signature over the chain head at seal time, emitted on
+  a size threshold, on segment rotation, and on drain/shutdown.
+
+Segments are obtained from the supervisor's append-only broker
+(`AuditLogFileRequest`/`Response`, opened `O_APPEND | O_CREAT`, **never**
+`O_TRUNC`) and are confined under the dedicated audit tree (`[audit] log_path`,
+e.g. `/var/vauban/audit/`) with a strict
+`^[0-9]{4}/[0-9]{2}/audit-[0-9]+\.jsonl$` name validation that rejects `..`
+(this also closes the path-traversal finding for the audit path).
+
+### 16.3 Tamper-evidence (defence in depth)
+
+1. **Hash chain (BLAKE3).** Each record carries `prev` (the previous record's
+   hash) and its own `hash = BLAKE3(prev_hash || canonical(core))`. Flipping a
+   byte, deleting a line, or reordering records breaks the chain. The head
+   crosses segment boundaries (a new segment continues the previous head). The
+   genesis `prev` is 32 zero bytes.
+2. **Sequence numbers.** Strictly monotonic `seq`, so a removed record leaves a
+   detectable gap even before the hash check.
+3. **Ed25519 seal.** `seal` records sign the raw chain head with the audit
+   signing key. An attacker who can rewrite the file but does not hold the
+   private key cannot forge a valid seal: the chain can only be silently
+   *truncated after the last seal*, never edited in place.
+
+Every append is `flush()`-ed and `sync_all()`-ed before the producer is acked,
+so an `AuditAck` strictly means "durably persisted and chained".
+
+### 16.4 Signing-key trust model
+
+The WORM log lives in its **own dedicated tree** (`[audit] log_path`),
+deliberately separate from the session-recordings tree (`[recording]
+storage_path`): the WORM log is append-only and never purged, whereas recordings
+are large media subject to the retention reaper. The default is the
+workspace-local `audit/` in dev and `/var/vauban/audit` in production, with
+dedicated ownership (`vb-audit`) so operators can apply a distinct backup /
+immutability policy (e.g. an append-only / WORM mount).
+
+The Ed25519 signing seed (32 bytes) is **sealed by the vault** under the
+dedicated `audit` keyring (AES-256-GCM) and written to
+`<log_path>/signing_key.sealed` (+ `signing_key.pub`). The on-disk location is
+**environment-configurable**, never a hard-coded absolute path: it defaults to
+`<[audit] log_path>/signing_key.sealed` and can be overridden with the optional
+`[audit] signing_key_path` TOML key.
+
+**Auto-provisioning (every environment).** On boot the supervisor checks for the
+sealed key and, when absent, generates one **automatically** -- it spawns a
+one-shot `vauban-vault seal-audit-key <path>` subprocess (so the master key
+material only ever lives in the vault process, never in the long-running
+supervisor daemon) before starting the audit service. This is idempotent (a
+no-op once the key exists) and runs identically in dev and production, so a
+fresh install gets a signed WORM log out of the box with no manual step. If the
+generation fails (e.g. the vault master key is not yet provisioned), boot
+continues and audit runs in BestEffort mode (hash-chained but unsigned). The
+same `vauban-vault seal-audit-key` command remains available for explicit
+out-of-band provisioning / key rotation; run manually it resolves the default
+path from the `VAUBAN_AUDIT_SIGNING_KEY_PATH` / `VAUBAN_AUDIT_LOG_PATH`
+environment (or an explicit path argument).
+
+The supervisor reads the sealed blob from the resolved path and passes it to the
+audit child via `VAUBAN_AUDIT_SIGNING_KEY_SEALED`. At boot
+`vauban-audit` unseals it exactly once via `VaultDecrypt{domain="audit"}` over
+the `Audit -> Vault` pipe (bounded retry), then signs locally. The per-peer
+vault matrix grants `Decrypt{audit}` to the `audit` peer **only**, and grants
+the `audit` peer nothing else, so the seed never leaves the audit process and
+no other peer can read it. In `BestEffort` mode an unavailable vault degrades
+to an unsigned hash chain with a `warn!`; `Required` mode fails closed.
+
+### 16.5 Fail-closed contract
+
+If persistence fails (no segment, broker failure, write error), the audit
+service replies `AuditNack` (never a silent `AuditAck`), bumps the
+`events_failed` anomaly counter, and `warn!`s. On the web side, critical
+producers (`emit_audit_critical`) treat an `AuditNack`/timeout as an error and
+fail the operation; fire-and-forget producers drop the event with an `error!`
+if their bounded queue is saturated, so a flood never blocks the request path.
+
+### 16.6 Offline verification
+
+`vauban-audit verify <path>` replays a segment (or a chain of segments),
+recomputing every hash, checking sequence continuity, and verifying each
+Ed25519 seal against its embedded public key. It detects sequence gaps, broken
+chain links, per-record hash tampering, and invalid/mismatched seals. The
+unit tests in [`vauban-audit/src/worm.rs`](../../vauban-audit/src/worm.rs)
+exercise build/verify round-trips, byte flips, line deletion, reordering,
+seal verification, and inter-segment chain continuity; the
+[`scripts/check_audit_worm.sh`](../../vauban-audit/scripts/check_audit_worm.sh)
+lint pins the persist-then-ack and fail-closed invariants in source.
+
+---
+
 ## Appendix A: Complete Login Flow
 
 ```mermaid

@@ -212,6 +212,15 @@ pub async fn create_asset(
             .map_err(AppError::Database)?;
     }
 
+    crate::services::emit_audit(
+        &state,
+        crate::ipc::AuditEvent::new(
+            shared::messages::AuditEventType::AssetCreated,
+            format!(r#"{{"asset":"{}","name":"{}","via":"api"}}"#, asset.uuid, asset.name),
+        )
+        .user(user.uuid.clone()),
+    );
+
     Ok(Json(asset))
 }
 
@@ -330,6 +339,15 @@ pub async fn update_asset(
             );
         }
     };
+
+    crate::services::emit_audit(
+        &state,
+        crate::ipc::AuditEvent::new(
+            shared::messages::AuditEventType::AssetUpdated,
+            format!(r#"{{"asset":"{}","via":"api"}}"#, asset_uuid),
+        )
+        .user(user.uuid.clone()),
+    );
 
     if is_htmx {
         let mut response_headers = HeaderMap::new();

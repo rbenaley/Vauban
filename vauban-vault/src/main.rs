@@ -61,6 +61,13 @@ struct ServiceState {
 }
 
 fn main() -> ExitCode {
+    // Provisioning subcommand: generate + seal the audit WORM Ed25519 signing
+    // key. Runs offline (no IPC/sandbox) using the same master key + keyring.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("seal-audit-key") {
+        return seal_audit_key_main(args.get(2).map(String::as_str));
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -98,13 +105,14 @@ fn run_service() -> Result<()> {
     let auth_channel = parse_topology_channel("AUTH");
     let proxy_ssh_channel = parse_topology_channel("PROXY_SSH");
     let proxy_rdp_channel = parse_topology_channel("PROXY_RDP");
+    let audit_channel = parse_topology_channel("AUDIT");
 
     // ── Clear ALL environment variables immediately ──
     // SAFETY: We are the only thread at this point, no concurrent access.
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
         std::env::remove_var("VAUBAN_IPC_WRITE");
-        for suffix in ["WEB", "AUTH", "PROXY_SSH", "PROXY_RDP"] {
+        for suffix in ["WEB", "AUTH", "PROXY_SSH", "PROXY_RDP", "AUDIT"] {
             std::env::remove_var(format!("VAUBAN_{}_IPC_READ", suffix));
             std::env::remove_var(format!("VAUBAN_{}_IPC_WRITE", suffix));
         }
@@ -129,6 +137,10 @@ fn run_service() -> Result<()> {
     keyrings.insert(
         "credentials".to_string(),
         Keyring::new(master_key.as_bytes(), "credentials", key_version),
+    );
+    keyrings.insert(
+        "audit".to_string(),
+        Keyring::new(master_key.as_bytes(), "audit", key_version),
     );
     // master_key is dropped here -- MasterKey::drop() zeroizes the memory
     drop(master_key);
@@ -165,6 +177,11 @@ fn run_service() -> Result<()> {
         all_fds.push(ch.read_fd());
         all_fds.push(ch.write_fd());
         peer_channels.push(("proxy_rdp", ch));
+    }
+    if let Some(ref ch) = audit_channel {
+        all_fds.push(ch.read_fd());
+        all_fds.push(ch.write_fd());
+        peer_channels.push(("audit", ch));
     }
 
     let sealed =
@@ -205,6 +222,106 @@ fn parse_topology_channel(service_suffix: &str) -> Option<IpcChannel> {
 /// The file path can be overridden with `VAUBAN_VAULT_MASTER_KEY_PATH`.
 /// In development, the file can be created with:
 /// `dd if=/dev/urandom of=master.key bs=32 count=1`
+/// Resolve the default output path for the sealed audit signing key when the
+/// operator does not pass one explicitly on the command line.
+///
+/// The sealed key MUST land where the supervisor later looks for it, i.e. under
+/// the *audit WORM log root* configured per environment (`[audit] log_path` --
+/// or the optional `[audit] signing_key_path` override -- in the TOML). Because
+/// this provisioning subcommand runs OUTSIDE the supervisor (no config file is
+/// parsed here), the path is resolved from the environment, in priority order:
+///
+/// 1. `VAUBAN_AUDIT_SIGNING_KEY_PATH` -- explicit full path (mirror of the
+///    `[audit] signing_key_path` config override).
+/// 2. `VAUBAN_AUDIT_LOG_PATH` -- the audit log root (mirror of `[audit]
+///    log_path`); the key is placed at `<root>/signing_key.sealed`, the exact
+///    location the supervisor reads.
+/// 3. relative `audit/signing_key.sealed` -- workspace-local dev fallback
+///    (matches `log_path = "audit"` in development.toml).
+///
+/// This deliberately drops the former hard-coded absolute
+/// `/var/vauban/recordings/audit/...` default, which does not exist in dev and
+/// conflated the WORM log with the deletable session-recordings tree.
+fn default_sealed_audit_key_path() -> String {
+    if let Ok(explicit) = std::env::var("VAUBAN_AUDIT_SIGNING_KEY_PATH")
+        && !explicit.trim().is_empty()
+    {
+        return explicit;
+    }
+    if let Ok(root) = std::env::var("VAUBAN_AUDIT_LOG_PATH")
+        && !root.trim().is_empty()
+    {
+        return std::path::Path::new(&root)
+            .join("signing_key.sealed")
+            .to_string_lossy()
+            .into_owned();
+    }
+    std::path::Path::new("audit")
+        .join("signing_key.sealed")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// CLI wrapper for `vauban-vault seal-audit-key [output_path]`.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+fn seal_audit_key_main(output: Option<&str>) -> ExitCode {
+    match seal_audit_key(output) {
+        Ok(path) => {
+            println!("audit signing key sealed -> {path}");
+            println!("public key written -> {path}.pub");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("seal-audit-key failed: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Generate a fresh Ed25519 seed, seal it with the `audit` keyring (AES-GCM),
+/// and write `<output>` (sealed ciphertext) + `<output>.pub` (base64 public
+/// key). The supervisor passes the sealed ciphertext to the audit child via
+/// `VAUBAN_AUDIT_SIGNING_KEY_SEALED`; audit unseals it through
+/// `VaultDecrypt{domain=audit}` at boot.
+fn seal_audit_key(output: Option<&str>) -> Result<String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use ed25519_dalek::SigningKey;
+    use zeroize::Zeroize;
+
+    let default_path = default_sealed_audit_key_path();
+    let output = output.unwrap_or(default_path.as_str());
+
+    let master_key = load_master_key()?;
+    let key_version = load_key_version()?;
+    let keyring = Keyring::new(master_key.as_bytes(), "audit", key_version);
+
+    // 32-byte random Ed25519 seed.
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(|e| anyhow::anyhow!("rng failure: {e}"))?;
+
+    // The vault transports plaintext as a UTF-8 String, so seal the seed
+    // base64-encoded (audit base64-decodes after VaultDecrypt).
+    let seed_b64 = BASE64.encode(seed);
+    let ciphertext = keyring
+        .encrypt(seed_b64.as_bytes())
+        .context("failed to seal audit signing seed")?;
+
+    let signing = SigningKey::from_bytes(&seed);
+    let pub_b64 = BASE64.encode(signing.verifying_key().to_bytes());
+    seed.zeroize();
+
+    let out_path = std::path::Path::new(output);
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent).context("failed to create output directory")?;
+    }
+    std::fs::write(out_path, ciphertext.as_bytes()).context("failed to write sealed key")?;
+    std::fs::write(format!("{output}.pub"), pub_b64.as_bytes())
+        .context("failed to write public key")?;
+
+    Ok(output.to_string())
+}
+
 fn load_master_key() -> Result<MasterKey> {
     let path = std::env::var("VAUBAN_VAULT_MASTER_KEY_PATH")
         .unwrap_or_else(|_| DEFAULT_MASTER_KEY_PATH.to_string());
@@ -537,6 +654,47 @@ mod tests {
             shutdown_requested: false,
             requests_denied: 0,
             keyrings: test_keyrings(),
+        }
+    }
+
+    /// The seal-audit-key default output must follow the configured recording
+    /// storage root (never a hard-coded absolute path), in env priority order.
+    #[test]
+    fn test_default_sealed_audit_key_path_resolution() {
+        // SAFETY: the vault test binary runs single-threaded (--test-threads=1).
+        unsafe {
+            std::env::remove_var("VAUBAN_AUDIT_SIGNING_KEY_PATH");
+            std::env::remove_var("VAUBAN_AUDIT_LOG_PATH");
+        }
+
+        // 3. No env -> workspace-local dev fallback, never /var/vauban, and NOT
+        //    under the recordings tree.
+        let fallback = default_sealed_audit_key_path();
+        assert_eq!(fallback, "audit/signing_key.sealed");
+        assert!(!fallback.starts_with("/var/vauban"));
+        assert!(!fallback.contains("recordings"));
+
+        // 2. audit log root -> derived <root>/signing_key.sealed.
+        unsafe { std::env::set_var("VAUBAN_AUDIT_LOG_PATH", "/var/vauban/audit") };
+        assert_eq!(
+            default_sealed_audit_key_path(),
+            "/var/vauban/audit/signing_key.sealed"
+        );
+
+        // 1. explicit override wins over the log root.
+        unsafe { std::env::set_var("VAUBAN_AUDIT_SIGNING_KEY_PATH", "/secrets/audit.sealed") };
+        assert_eq!(default_sealed_audit_key_path(), "/secrets/audit.sealed");
+
+        // An empty override falls through to the log-root derivation.
+        unsafe { std::env::set_var("VAUBAN_AUDIT_SIGNING_KEY_PATH", "  ") };
+        assert_eq!(
+            default_sealed_audit_key_path(),
+            "/var/vauban/audit/signing_key.sealed"
+        );
+
+        unsafe {
+            std::env::remove_var("VAUBAN_AUDIT_SIGNING_KEY_PATH");
+            std::env::remove_var("VAUBAN_AUDIT_LOG_PATH");
         }
     }
 

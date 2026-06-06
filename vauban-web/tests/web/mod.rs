@@ -13,6 +13,7 @@
 /// - sidebar_menu_test: Navigation menu
 pub mod access_control_web_test;
 pub mod access_rules_crud_web_test;
+pub mod audit_instrumentation_test;
 pub mod account_pages_test;
 pub mod asset_irreversible_delete_test;
 pub mod asset_modal_dataflow_test;

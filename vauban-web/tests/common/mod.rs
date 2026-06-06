@@ -185,6 +185,7 @@ impl TestApp {
             proxy_iacs: None,      // No IACS proxy in tests
             supervisor: None,      // No supervisor in tests
             vault_client: None,    // No vault in tests (dev mode fallback)
+            audit_client: None,    // No audit sink in tests (emissions no-op)
             access_client, // Real Casbin-backed IPC client
             auth_ipc_client, // Optional in-process Auth IPC (LDAP tests only)
             mailer: vauban_web::services::mailer::Mailer::new(

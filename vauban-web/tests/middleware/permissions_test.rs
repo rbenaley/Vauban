@@ -663,6 +663,7 @@ fn build_state_from(app: &TestApp) -> vauban_web::AppState {
         proxy_iacs: None,
         supervisor: None,
         vault_client: None,
+        audit_client: None,
         access_client: std::sync::Arc::clone(&app._access_service.access_client),
         auth_ipc_client: None,
         mailer: vauban_web::services::mailer::Mailer::new(

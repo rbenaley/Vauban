@@ -482,7 +482,7 @@ pub async fn user_create_form(
 /// Create user handler (POST /accounts/users).
 pub async fn create_user_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -615,10 +615,23 @@ pub async fn create_user_web(
         .await;
 
     match result {
-        Ok(_) => flash_redirect(
-            flash.success(format!("User '{}' created successfully", form.username)),
-            &format!("/accounts/users/{}", user_uuid),
-        ),
+        Ok(_) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::UserCreated,
+                    format!(
+                        r#"{{"target":"{}","is_staff":{},"is_superuser":{}}}"#,
+                        user_uuid, is_staff, wants_superuser
+                    ),
+                )
+                .user(auth_user.uuid.to_string()),
+            );
+            flash_redirect(
+                flash.success(format!("User '{}' created successfully", form.username)),
+                &format!("/accounts/users/{}", user_uuid),
+            )
+        }
         Err(e) => {
             tracing::error!(
                 username = %form.username,
@@ -1172,6 +1185,62 @@ pub async fn update_user_web(
 
     match tx_outcome {
         Ok(true) => {
+            // Audit: role/privilege change is a privileged escalation -> emit
+            // critical (durable ack) so it is never lost; fail the request
+            // closed if the audit log cannot record it.
+            let role_changed =
+                target_is_superuser != wants_superuser || target_is_staff != is_staff;
+            if role_changed
+                && let Err(e) = crate::services::emit_audit_critical(
+                    &state,
+                    crate::ipc::AuditEvent::new(
+                        shared::messages::AuditEventType::RoleChanged,
+                        format!(
+                            r#"{{"target":"{}","is_staff":{},"is_superuser":{}}}"#,
+                            user_uuid, is_staff, wants_superuser
+                        ),
+                    )
+                    .user(auth_user.uuid.to_string()),
+                )
+                .await
+            {
+                tracing::error!(error = %e, "update_user_web: critical audit emit failed");
+                return flash_redirect(
+                    flash.error("Audit log unavailable; change not recorded. Please retry."),
+                    &format!("/accounts/users/{}/edit", user_uuid),
+                );
+            }
+            // Activation transitions + a general update record (fire-and-forget).
+            if old_is_active != is_active {
+                let ev = if is_active {
+                    shared::messages::AuditEventType::UserActivated
+                } else {
+                    shared::messages::AuditEventType::UserDeactivated
+                };
+                crate::services::emit_audit(
+                    &state,
+                    crate::ipc::AuditEvent::new(ev, format!(r#"{{"target":"{}"}}"#, user_uuid))
+                        .user(auth_user.uuid.to_string()),
+                );
+            }
+            if password_hash.is_some() {
+                crate::services::emit_audit(
+                    &state,
+                    crate::ipc::AuditEvent::new(
+                        shared::messages::AuditEventType::PasswordChanged,
+                        format!(r#"{{"target":"{}","by":"admin"}}"#, user_uuid),
+                    )
+                    .user(auth_user.uuid.to_string()),
+                );
+            }
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::UserUpdated,
+                    format!(r#"{{"target":"{}"}}"#, user_uuid),
+                )
+                .user(auth_user.uuid.to_string()),
+            );
             // Trigger side effects on is_active change (SEC-07).
             // These are best-effort, fire-and-forget side channels
             // (revoke active sessions, broadcast deactivation) and
@@ -1459,10 +1528,25 @@ pub async fn delete_user_web(
     let _ = user_id; // user_id was only needed for permission gating above
 
     match tx_outcome {
-        Ok(true) => flash_redirect(
-            flash.success("User deleted successfully"),
-            "/accounts/users",
-        ),
+        Ok(true) => {
+            // Audit: user deletion is destructive -> critical (durable ack).
+            if let Err(e) = crate::services::emit_audit_critical(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::UserDeleted,
+                    format!(r#"{{"target":"{}"}}"#, user_uuid),
+                )
+                .user(auth_user.uuid.to_string()),
+            )
+            .await
+            {
+                tracing::error!(error = %e, "delete_user_web: critical audit emit failed");
+            }
+            flash_redirect(
+                flash.success("User deleted successfully"),
+                "/accounts/users",
+            )
+        }
         Ok(false) => flash_redirect(
             flash.error("User not found or already deleted"),
             "/accounts/users",
@@ -1674,6 +1758,14 @@ pub async fn change_own_password_web(
             tracing::info!(
                 operator = %auth_user.uuid,
                 "change_own_password_web: password rotated via self-service modal"
+            );
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::PasswordChanged,
+                    r#"{"by":"self"}"#,
+                )
+                .user(auth_user.uuid.to_string()),
             );
             // Best-effort: zeroize the plaintext we still hold on the stack
             // before returning. The Form<T> deserializer already moved the

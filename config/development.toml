@@ -172,6 +172,20 @@ retention_max_size_gib = 0       # 0 = unlimited
 retention_batch_size = 50
 
 # ==============================================================================
+# TAMPER-EVIDENT AUDIT LOG (WORM)
+# ==============================================================================
+#
+# Deliberately a SEPARATE tree from [recording]: the WORM log is append-only and
+# never deleted, whereas session recordings are large media subject to the
+# retention reaper. In dev it stays workspace-local ("audit/").
+
+[audit]
+log_path = "audit"
+# Sealed Ed25519 signing key (provisioned via `vauban-vault seal-audit-key`).
+# Defaults to "<log_path>/signing_key.sealed". Uncomment to relocate it.
+# signing_key_path = "audit/signing_key.sealed"
+
+# ==============================================================================
 # IACS / INDUSTRIAL
 # ==============================================================================
 

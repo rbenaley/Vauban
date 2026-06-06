@@ -599,10 +599,20 @@ pub async fn create_access_rule_web(
         .create_access_rule(data, Some(auth_user.uuid.clone()))
         .await
     {
-        Ok(info) => flash_redirect(
-            flash.success(format!("Access rule '{}' created", sanitized_name)),
-            &format!("/assets/access/{}", info.uuid),
-        ),
+        Ok(info) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::AccessRuleCreated,
+                    format!(r#"{{"rule":"{}","name":"{}"}}"#, info.uuid, sanitized_name),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            flash_redirect(
+                flash.success(format!("Access rule '{}' created", sanitized_name)),
+                &format!("/assets/access/{}", info.uuid),
+            )
+        }
         Err(AppError::Ipc(ref msg))
             if msg.to_lowercase().contains("unique")
                 || msg.to_lowercase().contains("duplicate")
@@ -879,10 +889,20 @@ pub async fn update_access_rule_web(
         .update_access_rule(&uuid_str, data, Some(auth_user.uuid.clone()))
         .await
     {
-        Ok(_) => flash_redirect(
-            flash.success(format!("Access rule '{}' updated", sanitized_name)),
-            &format!("/assets/access/{}", uuid_str),
-        ),
+        Ok(_) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::AccessRuleUpdated,
+                    format!(r#"{{"rule":"{}","name":"{}"}}"#, uuid_str, sanitized_name),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            flash_redirect(
+                flash.success(format!("Access rule '{}' updated", sanitized_name)),
+                &format!("/assets/access/{}", uuid_str),
+            )
+        }
         Err(AppError::Ipc(ref msg)) if msg.to_lowercase().contains("not found") => {
             flash_redirect(flash.error("Access rule not found"), "/assets/access")
         }
@@ -909,7 +929,7 @@ pub async fn update_access_rule_web(
 
 pub async fn delete_access_rule_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -945,7 +965,17 @@ pub async fn delete_access_rule_web(
 
     let client = &state.access_client;
     match client.delete_access_rule(&uuid_str).await {
-        Ok(()) => flash_redirect(flash.success("Access rule deleted"), "/assets/access"),
+        Ok(()) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::AccessRuleDeleted,
+                    format!(r#"{{"rule":"{}"}}"#, uuid_str),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            flash_redirect(flash.success("Access rule deleted"), "/assets/access")
+        }
         Err(AppError::Ipc(ref msg)) if msg.to_lowercase().contains("not found") => {
             flash_redirect(flash.error("Access rule not found"), "/assets/access")
         }

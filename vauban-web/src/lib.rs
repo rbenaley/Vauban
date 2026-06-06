@@ -92,6 +92,11 @@ pub struct AppState {
     /// Provides encrypt/decrypt and MFA operations.
     /// None if vault is not available (development mode without supervisor).
     pub vault_client: Option<Arc<VaultCryptoClient>>,
+    /// Audit client for IPC with vauban-audit (WORM tamper-evident log).
+    /// Emits typed `AuditEvent`s for security-relevant actions. `None` when
+    /// running outside the supervisor (dev/test): emissions become no-ops via
+    /// [`crate::services::audit::emit_audit`].
+    pub audit_client: Option<Arc<ipc::AuditClient>>,
     /// Access IPC client for authorization checks via vauban-access (Casbin).
     ///
     /// Mandatory: vauban-web refuses to start without a live IPC channel to

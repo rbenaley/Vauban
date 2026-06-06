@@ -9,6 +9,7 @@
 pub mod access;
 pub mod anomalies;
 pub mod asset_membership;
+pub mod audit;
 pub mod audit_authors;
 pub mod auth;
 pub mod broadcast;
@@ -31,6 +32,7 @@ pub mod virtual_group;
 
 pub use access::*;
 pub use asset_membership::*;
+pub use audit::{emit_audit, emit_audit_critical};
 pub use auth::*;
 pub use broadcast::*;
 pub use connections::*;

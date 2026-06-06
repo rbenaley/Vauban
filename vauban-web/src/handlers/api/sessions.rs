@@ -409,6 +409,13 @@ pub async fn terminate_session(
         _ => AppError::Database(e),
     })?;
 
+    crate::services::emit_audit(
+        &state,
+        crate::ipc::AuditEvent::new(shared::messages::AuditEventType::SessionTerminated, "{}")
+            .user(user.uuid.clone())
+            .session(session_uuid.to_string()),
+    );
+
     // PRIMARY hydration path (issue #29 v1.4): schedule integrity
     // bundle population after the configurable grace period so
     // vauban-audit has time to flush meta.json. Idempotent + no-op

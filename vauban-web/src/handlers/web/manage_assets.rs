@@ -280,10 +280,20 @@ pub async fn create_asset_web(
         .await;
 
     match result {
-        Ok(_) => flash_redirect(
-            flash.success(format!("Asset '{}' created successfully", sanitized_name)),
-            &format!("/assets/manage/{}", new_uuid),
-        ),
+        Ok(_) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::AssetCreated,
+                    format!(r#"{{"asset":"{}","name":"{}"}}"#, new_uuid, sanitized_name),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            flash_redirect(
+                flash.success(format!("Asset '{}' created successfully", sanitized_name)),
+                &format!("/assets/manage/{}", new_uuid),
+            )
+        }
         Err(diesel::result::Error::DatabaseError(
             diesel::result::DatabaseErrorKind::UniqueViolation,
             _,
@@ -1441,11 +1451,21 @@ pub async fn update_asset_web(
         .await;
 
     match result {
-        Ok(_) => htmx_or_flash_redirect(
-            &headers,
-            flash.success("Asset updated successfully"),
-            &format!("/assets/manage/{asset_uuid}"),
-        ),
+        Ok(_) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::AssetUpdated,
+                    format!(r#"{{"asset":"{asset_uuid}"}}"#),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            htmx_or_flash_redirect(
+                &headers,
+                flash.success("Asset updated successfully"),
+                &format!("/assets/manage/{asset_uuid}"),
+            )
+        }
         Err(e) => {
             tracing::error!("Failed to update asset: {}", e);
             htmx_or_flash_redirect(
@@ -1632,6 +1652,14 @@ pub async fn delete_asset_web(
                 tracing::error!("Failed to orphan approvals after delete: {}", err);
             }
 
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::AssetDeleted,
+                    format!(r#"{{"asset":"{}"}}"#, asset_uuid),
+                )
+                .user(auth_user.uuid.clone()),
+            );
             htmx_or_flash_redirect(
                 &headers,
                 flash.success("Asset deleted successfully"),

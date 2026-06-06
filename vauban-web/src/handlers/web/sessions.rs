@@ -1640,6 +1640,16 @@ pub async fn submit_access_request(
         "JIT access request submitted"
     );
 
+    crate::services::emit_audit(
+        &state,
+        crate::ipc::AuditEvent::new(
+            shared::messages::AuditEventType::ApprovalRequested,
+            format!(r#"{{"asset":"{}"}}"#, asset.name),
+        )
+        .user(auth_user.uuid.to_string())
+        .session(session_uuid.to_string()),
+    );
+
     // Notify admins via BroadcastService
     let _ = state
         .broadcast
@@ -1962,6 +1972,30 @@ async fn dispatch_approval_decision(
                 audit_log_id,
                 "JIT access request decision recorded via IPC"
             );
+
+            // Audit: an approval grants privileged access -> escalation.
+            // The decision is already durable on the access side, so a
+            // failed critical emit is logged (we cannot un-grant), but the
+            // WORM record is still attempted with delivery confirmation.
+            let (ev, label) = match decision {
+                shared::messages::ApprovalDecisionKind::Approve => {
+                    (shared::messages::AuditEventType::ApprovalGranted, "granted")
+                }
+                shared::messages::ApprovalDecisionKind::Reject => {
+                    (shared::messages::AuditEventType::ApprovalDenied, "denied")
+                }
+            };
+            if let Err(e) = crate::services::emit_audit_critical(
+                state,
+                crate::ipc::AuditEvent::new(ev, format!(r#"{{"decision":"{label}"}}"#))
+                    .user(auth_user.uuid.clone())
+                    .session(session_uuid.to_string())
+                    .ip(Some(resolved_ip)),
+            )
+            .await
+            {
+                tracing::error!(error = %e, "approval decision: critical audit emit failed");
+            }
 
             // Email the requester (Issue #10). Best-effort: a failure
             // here is logged but never bubbles up -- the audit row is
@@ -2304,6 +2338,13 @@ pub async fn cancel_access_request(
         session_uuid = %session_uuid,
         user = %auth_user.username,
         "JIT access request cancelled by user"
+    );
+
+    crate::services::emit_audit(
+        &state,
+        crate::ipc::AuditEvent::new(shared::messages::AuditEventType::ApprovalCancelled, "{}")
+            .user(auth_user.uuid.to_string())
+            .session(session_uuid.to_string()),
     );
 
     let _ = state

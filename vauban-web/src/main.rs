@@ -352,6 +352,49 @@ fn init_vault_client() -> Option<Arc<VaultCryptoClient>> {
     }
 }
 
+/// Initialize the audit client if running under supervisor.
+///
+/// Returns `Some(Arc<AuditClient>)` if `VAUBAN_AUDIT_IPC_READ` and
+/// `VAUBAN_AUDIT_IPC_WRITE` are set (running under supervisor), `None`
+/// otherwise. When `None`, audit emissions become no-ops (dev/test).
+fn init_audit_client() -> Option<Arc<vauban_web::ipc::AuditClient>> {
+    use std::os::unix::io::RawFd;
+
+    let read_fd: RawFd = match std::env::var("VAUBAN_AUDIT_IPC_READ") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    let write_fd: RawFd = match std::env::var("VAUBAN_AUDIT_IPC_WRITE") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    // Clear environment variables immediately for security.
+    // SAFETY: We are early in startup, before spawning async tasks.
+    unsafe {
+        std::env::remove_var("VAUBAN_AUDIT_IPC_READ");
+        std::env::remove_var("VAUBAN_AUDIT_IPC_WRITE");
+    }
+
+    match vauban_web::ipc::AuditClient::new(read_fd, write_fd) {
+        Ok(client) => {
+            tracing::info!("Audit client initialized (running under supervisor)");
+            Some(client)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize audit client: {}", e);
+            None
+        }
+    }
+}
+
 // Early startup uses eprintln! because tracing may not be initialized yet.
 // These are critical error paths that must be visible even without structured logging.
 #[allow(clippy::print_stderr)]
@@ -734,6 +777,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Vault IPC processing task started");
     }
 
+    // Create audit client if running under supervisor and spawn its ack/nack
+    // reader. Emissions flow through `services::audit::emit_audit{,_critical}`.
+    let audit_client = init_audit_client();
+    if let Some(ref client) = audit_client {
+        let client_clone = Arc::clone(client);
+        tokio::spawn(async move {
+            if let Err(e) = client_clone.process_incoming().await {
+                tracing::error!(error = %e, "Audit IPC processing task failed");
+            }
+        });
+        tracing::info!("Audit IPC processing task started");
+    }
+
     // Create Access IPC client (mandatory - hard fail if not running under
     // supervisor). Casbin is essential; there is no standalone fallback.
     let access_client = init_access_client()?;
@@ -812,6 +868,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         proxy_iacs,
         supervisor: supervisor_client.clone(),
         vault_client,
+        audit_client,
         access_client,
         auth_ipc_client,
         mailer,

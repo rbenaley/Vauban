@@ -19,3 +19,4 @@
 
 pub mod iacs_pcap_synth;
 pub mod iacs_recording_manager;
+pub mod worm;

@@ -22,7 +22,10 @@ use askama::Template;
 
 use crate::AppState;
 use crate::error::{AppError, AppResult};
+use crate::ipc::AuditEvent;
 use crate::middleware::browser_tz::BrowserTz;
+use crate::services::{emit_audit, emit_audit_critical};
+use shared::messages::AuditEventType;
 use crate::middleware::flash::{IncomingFlash, flash_redirect};
 use crate::models::auth_session::{AuthSession, NewAuthSession};
 use crate::models::user::{AuthSource, NewUser, User};
@@ -136,6 +139,15 @@ pub async fn login(
     let user = match existing_user {
         Some(u) if u.auth_source == AuthSource::Ldap => {
             if !ldap_bind_succeeds(&state, &request.username, &request.password).await {
+                emit_audit(
+                    &state,
+                    AuditEvent::new(
+                        AuditEventType::AuthFailure,
+                        r#"{"reason":"ldap_bind_failed","auth_source":"ldap"}"#,
+                    )
+                    .user(&request.username)
+                    .ip(Some(client_addr.ip())),
+                );
                 return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
             }
             u
@@ -169,6 +181,17 @@ pub async fn login(
 
                 // SEC-04: always return generic "Invalid credentials" regardless
                 // of whether lockout was triggered, to prevent enumeration.
+                // Audit: fire-and-forget (never block the login response; a
+                // brute-force flood must not be a DoS vector on the request path).
+                emit_audit(
+                    &state,
+                    AuditEvent::new(
+                        AuditEventType::AuthFailure,
+                        r#"{"reason":"invalid_password","auth_source":"local"}"#,
+                    )
+                    .user(&request.username)
+                    .ip(Some(client_addr.ip())),
+                );
                 return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
             }
             u
@@ -182,6 +205,15 @@ pub async fn login(
             {
                 jit_provision_ldap_user(&mut conn, &request.username).await?
             } else {
+                emit_audit(
+                    &state,
+                    AuditEvent::new(
+                        AuditEventType::AuthFailure,
+                        r#"{"reason":"unknown_user"}"#,
+                    )
+                    .user(&request.username)
+                    .ip(Some(client_addr.ip())),
+                );
                 return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
             }
         }
@@ -190,6 +222,15 @@ pub async fn login(
     // SEC-04: account state checks after credential verification -- an attacker
     // with an invalid password only ever sees "Invalid credentials".
     if user.is_locked() || !user.is_active {
+        emit_audit(
+            &state,
+            AuditEvent::new(
+                AuditEventType::AuthFailure,
+                r#"{"reason":"account_locked_or_inactive"}"#,
+            )
+            .user(&user.username)
+            .ip(Some(client_addr.ip())),
+        );
         return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
     }
 
@@ -279,6 +320,18 @@ pub async fn login(
             .await;
             crate::handlers::web::broadcast_admin_sessions_update(&state).await;
         }
+
+        // Audit: credentials accepted (web flow, MFA still pending). Fire-and-
+        // forget: the privileged elevation is recorded at MFA verification.
+        emit_audit(
+            &state,
+            AuditEvent::new(
+                AuditEventType::AuthSuccess,
+                r#"{"flow":"web","mfa":"pending"}"#,
+            )
+            .user(&user.username)
+            .ip(Some(client_addr.ip())),
+        );
 
         // Set cookie with temporary token
         use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -474,6 +527,21 @@ pub async fn login(
             .await;
         crate::handlers::web::broadcast_admin_sessions_update(&state).await;
     }
+
+    // Audit: a full API login (credentials + MFA) is a privileged, low-volume
+    // escalation -> fail-closed (durable ack required before we hand out the
+    // trusted session token).
+    emit_audit_critical(
+        &state,
+        AuditEvent::new(
+            AuditEventType::AuthSuccess,
+            r#"{"flow":"api","mfa":"verified"}"#,
+        )
+        .user(&user.username)
+        .ip(Some(client_addr.ip())),
+    )
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("audit emit failed: {e}")))?;
 
     // Set cookie
     use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -837,6 +905,11 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
             if deleted > 0
                 && let Some((user_id, user_uuid_val)) = user_info
             {
+                emit_audit(
+                    &state,
+                    AuditEvent::new(AuditEventType::Logout, "{}")
+                        .user(user_uuid_val.to_string()),
+                );
                 crate::handlers::web::broadcast_sessions_update(
                     &state,
                     &user_uuid_val.to_string(),
@@ -1174,6 +1247,14 @@ pub async fn mfa_setup_submit(
         .await
         .map_err(AppError::Database)?;
 
+    // Audit: MFA enrolment is a security-relevant credential change.
+    emit_audit_critical(
+        &state,
+        AuditEvent::new(AuditEventType::MfaEnrolled, "{}").user(&claims.sub),
+    )
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("audit emit failed: {e}")))?;
+
     let session_uuid = resolve_auth_session_uuid(&mut conn, &claims, &token)
         .await
         .map_err(AppError::Database)?;
@@ -1381,6 +1462,10 @@ pub async fn mfa_verify_submit(
         AuthService::verify_totp(&secret, code)
     };
     if !valid {
+        emit_audit(
+            &state,
+            AuditEvent::new(AuditEventType::MfaChallengeFailed, "{}").user(&claims.sub),
+        );
         return Ok(flash_redirect(
             flash.error("Invalid verification code. Please try again."),
             "/mfa/verify",
@@ -1402,6 +1487,16 @@ pub async fn mfa_verify_submit(
             "Migrated plaintext MFA secret to encrypted (encrypt-on-read)"
         );
     }
+
+    // Audit: TOTP challenge passed -> the session is about to be elevated to a
+    // fully-trusted (mfa_verified) token. This is the privileged escalation
+    // moment, so fail-closed (durable ack required before we mint the token).
+    emit_audit_critical(
+        &state,
+        AuditEvent::new(AuditEventType::MfaChallengePassed, "{}").user(&claims.sub),
+    )
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("audit emit failed: {e}")))?;
 
     let session_uuid = resolve_auth_session_uuid(&mut conn, &claims, &token)
         .await

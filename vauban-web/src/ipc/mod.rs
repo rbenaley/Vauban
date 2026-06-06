@@ -5,6 +5,7 @@
 //! by the supervisor.
 pub mod access;
 pub mod admin;
+pub mod audit;
 pub mod auth;
 pub mod clients;
 pub mod proxy_iacs;
@@ -14,6 +15,7 @@ pub mod supervisor;
 pub mod vault;
 
 pub use access::AccessIpcClient;
+pub use audit::{AuditClient, AuditEvent};
 pub use auth::AuthIpcClient;
 pub use clients::*;
 pub use proxy_iacs::{IacsTunnelOpenRequest, IacsTunnelOpened, ProxyIacsClient};

@@ -44,6 +44,15 @@ pub struct SupervisorConfig {
     /// Session recording configuration.
     #[serde(default)]
     pub recording: RecordingConfig,
+    /// Tamper-evident audit log (WORM) configuration.
+    ///
+    /// Deliberately a SEPARATE tree from `[recording]`: the WORM log is an
+    /// append-only, never-deleted security artefact, whereas session recordings
+    /// are large media subject to a retention reaper. Keeping them apart lets
+    /// operators apply distinct ownership, backup, and immutability policies
+    /// (e.g. mount `log_path` on an append-only / WORM filesystem).
+    #[serde(default)]
+    pub audit: AuditConfig,
     /// Database configuration (shared URL for services that need DB access).
     #[serde(default)]
     pub database: DatabaseConfig,
@@ -381,6 +390,61 @@ impl Default for RecordingConfig {
             rdp: default_recording_enabled(),
             ssh: default_recording_enabled(),
             iacs: default_recording_enabled(),
+        }
+    }
+}
+
+/// Tamper-evident audit log (WORM) configuration.
+///
+/// Kept separate from `[recording]` on purpose -- see the field doc on
+/// [`SupervisorConfig::audit`].
+#[derive(Debug, Deserialize)]
+pub struct AuditConfig {
+    /// Root directory of the append-only WORM segments
+    /// (`<log_path>/YYYY/MM/audit-<n>.jsonl`). Defaults to the workspace-local
+    /// `audit` in dev; set to an absolute path such as `/var/vauban/audit` in
+    /// production. The supervisor is the only writer (FD broker, append-only).
+    #[serde(default = "default_audit_log_path")]
+    pub log_path: String,
+    /// Optional explicit path to the sealed audit WORM signing key. When unset,
+    /// the supervisor derives `<log_path>/signing_key.sealed`. Set it to store
+    /// the sealed key in a dedicated secrets directory.
+    #[serde(default)]
+    pub signing_key_path: Option<String>,
+}
+
+fn default_audit_log_path() -> String {
+    "audit".to_string()
+}
+
+impl AuditConfig {
+    /// Filesystem root of the WORM segments. The supervisor joins the
+    /// audit-child-supplied `YYYY/MM/audit-<n>.jsonl` segment name under this
+    /// directory (after structural validation -- VAU-006 confinement).
+    pub fn log_path(&self) -> &str {
+        &self.log_path
+    }
+
+    /// Filesystem path of the sealed audit WORM signing key.
+    ///
+    /// Honours the optional `signing_key_path` override, otherwise derives
+    /// `<log_path>/signing_key.sealed`. This is the exact path the supervisor
+    /// reads to forward the sealed ciphertext to the audit child, and the same
+    /// location the vault `seal-audit-key` provisioning command targets by
+    /// default (via `VAUBAN_AUDIT_SIGNING_KEY_PATH` / `VAUBAN_AUDIT_LOG_PATH`).
+    pub fn signing_key_path(&self) -> std::path::PathBuf {
+        match &self.signing_key_path {
+            Some(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+            _ => std::path::Path::new(&self.log_path).join("signing_key.sealed"),
+        }
+    }
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            log_path: default_audit_log_path(),
+            signing_key_path: None,
         }
     }
 }
@@ -966,6 +1030,20 @@ impl SupervisorConfig {
                     "VAUBAN_RECORDING_STORAGE_PATH".to_string(),
                     self.recording.storage_path.clone(),
                 ));
+                // WORM signing: if the operator has provisioned a sealed audit
+                // signing key (`vauban-vault seal-audit-key`), hand its
+                // ciphertext to audit so it can unseal via VaultDecrypt{audit}
+                // and Ed25519-seal the WORM log. Absent -> BestEffort (hash
+                // chain only). The path honours the optional
+                // `[audit] signing_key_path` override and otherwise derives
+                // from `[audit] log_path` -- never a hard-coded absolute.
+                let sealed_path = self.audit.signing_key_path();
+                if let Ok(ciphertext) = std::fs::read_to_string(&sealed_path) {
+                    let ciphertext = ciphertext.trim().to_string();
+                    if !ciphertext.is_empty() {
+                        vars.push(("VAUBAN_AUDIT_SIGNING_KEY_SEALED".to_string(), ciphertext));
+                    }
+                }
             }
             "proxy_iacs" => {
                 let iacs_recording = self.recording.iacs_recording_enabled();
@@ -1423,6 +1501,52 @@ mod tests {
         assert!(config.recording.ssh);
         assert!(config.recording.iacs);
         assert_eq!(config.recording.storage_path, "recordings");
+    }
+
+    #[test]
+    fn test_audit_config_defaults_are_separate_from_recordings() {
+        let audit = AuditConfig::default();
+        // The WORM log lives in its OWN tree, never under recordings.
+        assert_eq!(audit.log_path(), "audit");
+        assert!(audit.signing_key_path.is_none());
+        assert_eq!(
+            audit.signing_key_path(),
+            std::path::PathBuf::from("audit/signing_key.sealed")
+        );
+    }
+
+    #[test]
+    fn test_audit_signing_key_path_derives_from_log_path() {
+        let audit = AuditConfig {
+            log_path: "/var/vauban/audit".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            audit.signing_key_path(),
+            std::path::PathBuf::from("/var/vauban/audit/signing_key.sealed")
+        );
+    }
+
+    #[test]
+    fn test_audit_signing_key_path_explicit_override_wins() {
+        let audit = AuditConfig {
+            log_path: "/var/vauban/audit".to_string(),
+            signing_key_path: Some("/secrets/audit.sealed".to_string()),
+        };
+        assert_eq!(
+            audit.signing_key_path(),
+            std::path::PathBuf::from("/secrets/audit.sealed")
+        );
+
+        // A blank override falls back to the log-path derivation.
+        let audit = AuditConfig {
+            log_path: "/var/vauban/audit".to_string(),
+            signing_key_path: Some("   ".to_string()),
+        };
+        assert_eq!(
+            audit.signing_key_path(),
+            std::path::PathBuf::from("/var/vauban/audit/signing_key.sealed")
+        );
     }
 
     // ==================== Server Bind Config Tests ====================

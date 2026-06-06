@@ -40,6 +40,9 @@ Thumbs.db
 # Session recordings (local development data)
 recordings/
 
+# Tamper-evident audit WORM log (local development data)
+audit/
+
 # FreeBSD package build artifacts
 pkg/staging/
 pkg/plist

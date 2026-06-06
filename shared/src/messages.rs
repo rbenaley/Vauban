@@ -1183,8 +1183,16 @@ pub enum AdminResponse {
 }
 
 /// Audit event types for vauban-audit.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Wire format: bincode serializes a fieldless enum by its variant INDEX, so
+/// NEW variants MUST be appended at the END (never inserted/reordered) to keep
+/// already-persisted WORM records and in-flight messages decodable.
+/// [`AuditEventType::category`] is an exhaustive match (no `_` arm) so a new
+/// variant fails to compile until it is classified; [`AuditEventType::COUNT`]
+/// + the `audit_event_type_count_is_pinned` drift test pin the cardinality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuditEventType {
+    // ---- auth (indices 0-1 frozen: emitted by proxy-ssh / web) ----
     AuthSuccess,
     AuthFailure,
     SessionStart,
@@ -1192,6 +1200,148 @@ pub enum AuditEventType {
     CommandExecuted,
     AccessDenied,
     PolicyChange,
+    // ---- appended for VAU-003 (broad web instrumentation) ----
+    Logout,
+    // MFA
+    MfaEnrolled,
+    MfaReset,
+    MfaChallengePassed,
+    MfaChallengeFailed,
+    // sessions (web-side authorization decisions)
+    SessionRequested,
+    SessionTerminated,
+    // user management
+    UserCreated,
+    UserUpdated,
+    UserDeleted,
+    UserActivated,
+    UserDeactivated,
+    RoleChanged,
+    PasswordChanged,
+    // access rules
+    AccessRuleCreated,
+    AccessRuleUpdated,
+    AccessRuleDeleted,
+    // user groups
+    GroupCreated,
+    GroupUpdated,
+    GroupDeleted,
+    GroupMemberAdded,
+    GroupMemberRemoved,
+    // asset groups
+    AssetGroupCreated,
+    AssetGroupUpdated,
+    AssetGroupDeleted,
+    AssetGroupMemberAdded,
+    AssetGroupMemberRemoved,
+    // assets
+    AssetCreated,
+    AssetUpdated,
+    AssetDeleted,
+    // JIT approvals
+    ApprovalRequested,
+    ApprovalGranted,
+    ApprovalDenied,
+    ApprovalCancelled,
+}
+
+impl AuditEventType {
+    /// Number of variants. Pinned by `audit_event_type_count_is_pinned`.
+    pub const COUNT: usize = 41;
+
+    /// Every variant, for table-driven tests and drift checks.
+    pub const ALL: [AuditEventType; Self::COUNT] = [
+        AuditEventType::AuthSuccess,
+        AuditEventType::AuthFailure,
+        AuditEventType::SessionStart,
+        AuditEventType::SessionEnd,
+        AuditEventType::CommandExecuted,
+        AuditEventType::AccessDenied,
+        AuditEventType::PolicyChange,
+        AuditEventType::Logout,
+        AuditEventType::MfaEnrolled,
+        AuditEventType::MfaReset,
+        AuditEventType::MfaChallengePassed,
+        AuditEventType::MfaChallengeFailed,
+        AuditEventType::SessionRequested,
+        AuditEventType::SessionTerminated,
+        AuditEventType::UserCreated,
+        AuditEventType::UserUpdated,
+        AuditEventType::UserDeleted,
+        AuditEventType::UserActivated,
+        AuditEventType::UserDeactivated,
+        AuditEventType::RoleChanged,
+        AuditEventType::PasswordChanged,
+        AuditEventType::AccessRuleCreated,
+        AuditEventType::AccessRuleUpdated,
+        AuditEventType::AccessRuleDeleted,
+        AuditEventType::GroupCreated,
+        AuditEventType::GroupUpdated,
+        AuditEventType::GroupDeleted,
+        AuditEventType::GroupMemberAdded,
+        AuditEventType::GroupMemberRemoved,
+        AuditEventType::AssetGroupCreated,
+        AuditEventType::AssetGroupUpdated,
+        AuditEventType::AssetGroupDeleted,
+        AuditEventType::AssetGroupMemberAdded,
+        AuditEventType::AssetGroupMemberRemoved,
+        AuditEventType::AssetCreated,
+        AuditEventType::AssetUpdated,
+        AuditEventType::AssetDeleted,
+        AuditEventType::ApprovalRequested,
+        AuditEventType::ApprovalGranted,
+        AuditEventType::ApprovalDenied,
+        AuditEventType::ApprovalCancelled,
+    ];
+
+    /// Coarse category, for log pivoting and the drift test. EXHAUSTIVE match
+    /// (no `_` arm): a new variant must be classified or the build fails.
+    #[must_use]
+    pub fn category(&self) -> &'static str {
+        match self {
+            AuditEventType::AuthSuccess
+            | AuditEventType::AuthFailure
+            | AuditEventType::Logout => "auth",
+            AuditEventType::MfaEnrolled
+            | AuditEventType::MfaReset
+            | AuditEventType::MfaChallengePassed
+            | AuditEventType::MfaChallengeFailed => "mfa",
+            AuditEventType::SessionStart
+            | AuditEventType::SessionEnd
+            | AuditEventType::SessionRequested
+            | AuditEventType::SessionTerminated
+            | AuditEventType::CommandExecuted => "session",
+            AuditEventType::UserCreated
+            | AuditEventType::UserUpdated
+            | AuditEventType::UserDeleted
+            | AuditEventType::UserActivated
+            | AuditEventType::UserDeactivated
+            | AuditEventType::RoleChanged
+            | AuditEventType::PasswordChanged => "user",
+            AuditEventType::AccessRuleCreated
+            | AuditEventType::AccessRuleUpdated
+            | AuditEventType::AccessRuleDeleted
+            | AuditEventType::GroupCreated
+            | AuditEventType::GroupUpdated
+            | AuditEventType::GroupDeleted
+            | AuditEventType::GroupMemberAdded
+            | AuditEventType::GroupMemberRemoved
+            | AuditEventType::AssetGroupCreated
+            | AuditEventType::AssetGroupUpdated
+            | AuditEventType::AssetGroupDeleted
+            | AuditEventType::AssetGroupMemberAdded
+            | AuditEventType::AssetGroupMemberRemoved
+            | AuditEventType::PolicyChange => "policy",
+            AuditEventType::AssetCreated
+            | AuditEventType::AssetUpdated
+            | AuditEventType::AssetDeleted => "asset",
+            AuditEventType::ApprovalRequested
+            | AuditEventType::ApprovalGranted
+            | AuditEventType::ApprovalDenied
+            | AuditEventType::ApprovalCancelled => "approval",
+            AuditEventType::AccessDenied => "denied",
+        }
+    }
 }
 
 /// Input events for RDP sessions, sent from browser to proxy.
@@ -1426,9 +1576,18 @@ pub enum Message {
         source_ip: Option<IpAddr>,
         details: String,
     },
-    /// Acknowledgement from audit service.
+    /// Acknowledgement from audit service: the event was durably persisted to
+    /// the WORM log (hash-chained) before this ack was sent.
     AuditAck {
         timestamp: u64,
+    },
+    /// Negative acknowledgement: the audit service could NOT persist the event
+    /// (broker failure, write error, ...). The producer MUST treat a security-
+    /// sensitive event as failed when it receives this (fail-closed). Correlated
+    /// by `timestamp` like `AuditAck`.
+    AuditNack {
+        timestamp: u64,
+        error: String,
     },
 
     /// Session recording chunk (Proxy -> Audit).
@@ -1914,6 +2073,28 @@ pub enum Message {
         error: Option<String>,
     },
 
+    // ========== Audit WORM log file (Audit -> Supervisor) ==========
+    /// Request the supervisor to open the WORM audit-log segment APPEND-ONLY
+    /// and send its FD via SCM_RIGHTS. Unlike `RecordingFileRequest`, the path
+    /// is NOT a caller-controlled relative path: the supervisor builds it from
+    /// a FIXED `audit/` subtree plus a strictly-validated `segment_name`
+    /// (no `..`, no absolute path), and opens with `O_APPEND|O_CREAT` (never
+    /// `O_TRUNC`). This is the only durable sink for the tamper-evident audit
+    /// chain and is structurally immune to the recording path-traversal class.
+    AuditLogFileRequest {
+        request_id: u64,
+        /// Segment file name relative to the audit subtree, e.g.
+        /// "2026/06/audit-0001.jsonl". Validated by the supervisor.
+        segment_name: String,
+    },
+    /// Response to an AuditLogFileRequest. On success the append-only FD has
+    /// already been sent via SCM_RIGHTS on the fd_passing socket.
+    AuditLogFileResponse {
+        request_id: u64,
+        success: bool,
+        error: Option<String>,
+    },
+
     /// Request the supervisor to gzip a PCAP file and remove the raw source.
     /// Used by vauban-audit after a channel closes (Capsicum-safe).
     RecordingFileGzipRequest {
@@ -2171,6 +2352,8 @@ impl Message {
             | Message::AcmeChallengeInstall { request_id, .. }
             | Message::AcmeChallengeRemove { request_id, .. }
             | Message::AcmeCertActivate { request_id, .. }
+            | Message::AuditLogFileRequest { request_id, .. }
+            | Message::AuditLogFileResponse { request_id, .. }
             | Message::TcpConnectRequest { request_id, .. }
             | Message::TcpConnectResponse { request_id, .. }
             | Message::AccessRequest { request_id, .. }
@@ -2453,6 +2636,8 @@ mod tests {
 
     #[test]
     fn test_audit_event_types() {
+        // The first 7 indices are FROZEN (proxy-ssh / web already emit them on
+        // the wire); new VAU-003 variants are appended after.
         let events = [
             AuditEventType::AuthSuccess,
             AuditEventType::AuthFailure,
@@ -2462,12 +2647,71 @@ mod tests {
             AuditEventType::AccessDenied,
             AuditEventType::PolicyChange,
         ];
-        assert_eq!(events.len(), 7);
 
         for event in events {
             let serialized = serialize(&event);
             let _: AuditEventType = deserialize(&serialized);
         }
+    }
+
+    #[test]
+    fn audit_event_type_count_is_pinned() {
+        // Drift guard: ALL must list every variant and match COUNT. Bump COUNT
+        // and ALL together when appending a variant (never reorder existing
+        // ones -- bincode encodes the index).
+        assert_eq!(AuditEventType::ALL.len(), AuditEventType::COUNT);
+        assert_eq!(AuditEventType::COUNT, 41);
+    }
+
+    #[test]
+    fn audit_event_type_first_seven_indices_are_frozen() {
+        // bincode encodes a fieldless enum by index; pin the wire bytes of the
+        // pre-VAU-003 variants so an inadvertent reorder is caught.
+        for (idx, ev) in AuditEventType::ALL.iter().take(7).enumerate() {
+            let bytes = serialize(ev);
+            assert_eq!(
+                bytes[0] as usize, idx,
+                "variant {ev:?} must keep wire index {idx}"
+            );
+        }
+    }
+
+    #[test]
+    fn audit_event_type_every_variant_has_a_category_and_roundtrips() {
+        for ev in AuditEventType::ALL {
+            // category() is exhaustive; just ensure it is non-empty.
+            assert!(!ev.category().is_empty());
+            let serialized = serialize(&ev);
+            let back: AuditEventType = deserialize(&serialized);
+            assert_eq!(back, ev);
+        }
+    }
+
+    #[test]
+    fn test_message_audit_nack() {
+        let msg = Message::AuditNack {
+            timestamp: 1234,
+            error: "broker unavailable".to_string(),
+        };
+        assert!(msg.request_id().is_none());
+        let serialized = serialize(&msg);
+        let back: Message = deserialize(&serialized);
+        assert!(matches!(back, Message::AuditNack { timestamp: 1234, .. }));
+    }
+
+    #[test]
+    fn test_message_audit_log_file_request_carries_request_id() {
+        let msg = Message::AuditLogFileRequest {
+            request_id: 77,
+            segment_name: "2026/06/audit-0001.jsonl".to_string(),
+        };
+        assert_eq!(msg.request_id(), Some(77));
+        let resp = Message::AuditLogFileResponse {
+            request_id: 77,
+            success: true,
+            error: None,
+        };
+        assert_eq!(resp.request_id(), Some(77));
     }
 
     // ==================== Message Tests ====================

@@ -126,6 +126,29 @@ pub async fn enforce_totp_step_up(
     operator_uuid_str: &str,
     totp_code: &str,
 ) -> Result<(), StepUpError> {
+    let result = enforce_totp_step_up_inner(state, conn, operator_uuid_str, totp_code).await;
+    if let Err(ref err) = result {
+        // Centralized AccessDenied for every step-up refusal (wrong code,
+        // replay, missing factor, ...). Fire-and-forget: never block the
+        // sensitive operation's response on the audit transport.
+        crate::services::emit_audit(
+            state,
+            crate::ipc::AuditEvent::new(
+                shared::messages::AuditEventType::AccessDenied,
+                format!(r#"{{"seam":"step_up","reason":"{err:?}"}}"#),
+            )
+            .user(operator_uuid_str.to_string()),
+        );
+    }
+    result
+}
+
+async fn enforce_totp_step_up_inner(
+    state: &AppState,
+    conn: &mut Conn,
+    operator_uuid_str: &str,
+    totp_code: &str,
+) -> Result<(), StepUpError> {
     use crate::schema::users;
 
     let trimmed_code = totp_code.trim();

@@ -88,9 +88,11 @@ flowchart LR
         VK1["master_key (32 bytes)"]
         VK2["keyring 'mfa'"]
         VK3["keyring 'credentials'"]
+        VK4["keyring 'audit'"]
         VK --- VK1
         VK --- VK2
         VK --- VK3
+        VK --- VK4
         VN["No disk -- No DB -- No network"]
     end
 
@@ -205,7 +207,7 @@ Master Key (32 bytes, from file)
 └── (future domains derived the same way)
 ```
 
-Each **domain** (e.g. `mfa`, `credentials`) has its own keyring with independently versioned derived keys. Compromising one domain's ciphertext provides zero information about another domain.
+Each **domain** (e.g. `mfa`, `credentials`, `audit`) has its own keyring with independently versioned derived keys. Compromising one domain's ciphertext provides zero information about another domain. The `audit` domain seals the WORM log's Ed25519 signing-key seed and is decryptable only by the `audit` peer (see the per-peer matrix in 4.8).
 
 ### 3.3 Ciphertext Format
 
@@ -555,10 +557,22 @@ supervisor handed it. Authorization is thus a pure function of
   `Decrypt{mfa}` -- those return the TOTP secret in clear, whereas auth only
   needs a yes/no on a submitted code.
 - `proxy_ssh`, `proxy_rdp`: `Decrypt{credentials}` (read-only).
+- `audit`: `Decrypt{audit}` only. The audit service unseals its Ed25519
+  signing-key seed (sealed with the dedicated `audit` keyring) exactly once at
+  boot, then signs WORM segment seals locally. It can do nothing else: it
+  cannot read `credentials`/`mfa`, cannot encrypt, and cannot reach any MFA
+  verb. Conversely **no other peer** may `Decrypt{audit}`, so the signing seed
+  never leaves the audit process's reach. See the WORM section of the IAM /
+  audit architecture document for how the unsealed seed is used.
 - `supervisor`: nothing. The supervisor channel is **control-only**; any
   forwarded `Vault*` verb is refused (closing the pre-fix implicit
   full-access forwarding path).
 - unknown label / any couple not listed: denied.
+
+The `audit` domain is a third keyring (`mfa`, `credentials`, `audit`) derived
+the same way (HKDF-SHA3-256 context separation): compromising the audit
+keyring's ciphertext yields zero information about credentials or MFA secrets,
+and vice-versa.
 
 Note the matrix is *forward-looking*: `auth` / `proxy_ssh` / `proxy_rdp` do
 not emit vault traffic yet (web decrypts and forwards plaintext over its own

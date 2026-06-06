@@ -366,7 +366,7 @@ pub async fn vauban_group_create_form(
 /// Create vauban group handler (POST /accounts/groups).
 pub async fn create_vauban_group_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -412,10 +412,20 @@ pub async fn create_vauban_group_web(
         .create_vauban_group(&sanitized_name, sanitized_description.clone())
         .await
     {
-        Ok(info) => flash_redirect(
-            flash.success(format!("Group '{}' created successfully", sanitized_name)),
-            &format!("/accounts/groups/{}", info.uuid),
-        ),
+        Ok(info) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::GroupCreated,
+                    format!(r#"{{"group":"{}","name":"{}"}}"#, info.uuid, sanitized_name),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            flash_redirect(
+                flash.success(format!("Group '{}' created successfully", sanitized_name)),
+                &format!("/accounts/groups/{}", info.uuid),
+            )
+        }
         Err(e) => {
             let err_msg = e.to_string();
             let is_already_exists = err_msg.to_lowercase().contains("already exists")
@@ -495,7 +505,7 @@ pub async fn vauban_group_edit_form(
 /// Update vauban group handler (POST /accounts/groups/{uuid}).
 pub async fn update_vauban_group_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -543,10 +553,20 @@ pub async fn update_vauban_group_web(
         .update_vauban_group(&uuid_str, &sanitized_name, sanitized_description)
         .await
     {
-        Ok(_) => flash_redirect(
-            flash.success("Group updated successfully"),
-            &format!("/accounts/groups/{}", uuid_str),
-        ),
+        Ok(_) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::GroupUpdated,
+                    format!(r#"{{"group":"{}","name":"{}"}}"#, uuid_str, sanitized_name),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            flash_redirect(
+                flash.success("Group updated successfully"),
+                &format!("/accounts/groups/{}", uuid_str),
+            )
+        }
         Err(_) => flash_redirect(
             flash.error("Failed to update group. Please try again."),
             &format!("/accounts/groups/{}/edit", uuid_str),
@@ -730,7 +750,7 @@ pub async fn group_member_search(
 /// Add member to group handler (POST /accounts/groups/{uuid}/members).
 pub async fn add_group_member_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -812,10 +832,20 @@ pub async fn add_group_member_web(
     };
 
     match client.add_group_member(group_info.id, user_id).await {
-        Ok(_) => flash_redirect(
-            flash.success("Member added successfully"),
-            &format!("/accounts/groups/{}", uuid_str),
-        ),
+        Ok(_) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::GroupMemberAdded,
+                    format!(r#"{{"group":"{}","member":"{}"}}"#, uuid_str, form.user_uuid),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            flash_redirect(
+                flash.success("Member added successfully"),
+                &format!("/accounts/groups/{}", uuid_str),
+            )
+        }
         Err(e) => {
             let err_msg = e.to_string();
             let is_already_member = err_msg.to_lowercase().contains("already")
@@ -845,7 +875,7 @@ pub struct RemoveMemberParams {
 #[allow(clippy::too_many_arguments)]
 pub async fn remove_group_member_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -935,11 +965,24 @@ pub async fn remove_group_member_web(
     };
 
     match client.remove_group_member(group_info.id, user_id).await {
-        Ok(_) => htmx_or_flash_redirect(
-            &headers,
-            flash.success("Member removed successfully"),
-            &format!("/accounts/groups/{}", group_uuid_str),
-        ),
+        Ok(_) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::GroupMemberRemoved,
+                    format!(
+                        r#"{{"group":"{}","member":"{}"}}"#,
+                        group_uuid_str, user_uuid_str
+                    ),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            htmx_or_flash_redirect(
+                &headers,
+                flash.success("Member removed successfully"),
+                &format!("/accounts/groups/{}", group_uuid_str),
+            )
+        }
         Err(_) => htmx_or_flash_redirect(
             &headers,
             flash.error("Failed to remove member. Please try again."),
@@ -956,7 +999,7 @@ pub async fn remove_group_member_web(
 #[allow(clippy::too_many_arguments)]
 pub async fn delete_vauban_group_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -994,11 +1037,21 @@ pub async fn delete_vauban_group_web(
 
     let client = &state.access_client;
     match client.delete_vauban_group(&uuid_str).await {
-        Ok(_) => htmx_or_flash_redirect(
-            &headers,
-            flash.success("Group deleted successfully"),
-            "/accounts/groups",
-        ),
+        Ok(_) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::GroupDeleted,
+                    format!(r#"{{"group":"{}"}}"#, uuid_str),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            htmx_or_flash_redirect(
+                &headers,
+                flash.success("Group deleted successfully"),
+                "/accounts/groups",
+            )
+        }
         Err(e) => {
             let err_msg = e.to_string();
             let has_members = err_msg.to_lowercase().contains("member")

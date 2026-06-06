@@ -467,6 +467,16 @@ pub async fn connect_rdp(
     // Request the proxy to open the RDP session
     match proxy_client.open_session(request).await {
         Ok(response) if response.success => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::SessionRequested,
+                    format!(r#"{{"protocol":"rdp","asset":"{}"}}"#, asset_uuid),
+                )
+                .user(auth_user.uuid.to_string())
+                .session(session_id.clone())
+                .ip(Some(client_addr.addr().ip())),
+            );
             let redirect_url = format!("/sessions/rdp/{}", session_id);
             if is_htmx {
                 return (

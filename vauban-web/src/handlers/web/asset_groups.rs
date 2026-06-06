@@ -495,7 +495,7 @@ impl AddAssetToGroupForm {
 /// Handle adding assets to a group (supports multiple selection).
 pub async fn asset_group_add_asset(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -677,6 +677,17 @@ pub async fn asset_group_add_asset(
         }
     }
 
+    if added > 0 {
+        crate::services::emit_audit(
+            &state,
+            crate::ipc::AuditEvent::new(
+                shared::messages::AuditEventType::AssetGroupMemberAdded,
+                format!(r#"{{"asset_group":"{}","count":{}}}"#, uuid_str, added),
+            )
+            .user(auth_user.uuid.clone()),
+        );
+    }
+
     match added {
         0 => flash_redirect(
             flash.error("No assets were added. They may already be assigned to groups."),
@@ -708,7 +719,7 @@ pub struct RemoveAssetFromGroupForm {
 #[allow(clippy::too_many_arguments)]
 pub async fn asset_group_remove_asset(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -860,6 +871,17 @@ pub async fn asset_group_remove_asset(
                 .set(a::updated_at.eq(chrono::Utc::now()))
                 .execute(&mut conn)
                 .await;
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::AssetGroupMemberRemoved,
+                    format!(
+                        r#"{{"asset_group":"{}","asset":"{}"}}"#,
+                        group_uuid, form.asset_uuid
+                    ),
+                )
+                .user(auth_user.uuid.clone()),
+            );
             htmx_or_flash_redirect(
                 &headers,
                 flash.success("Asset removed from group successfully"),
@@ -1062,10 +1084,20 @@ pub async fn update_asset_group(
         .map(|_| ());
 
     match result {
-        Ok(_) => flash_redirect(
-            flash.success("Asset group updated successfully"),
-            &format!("/assets/groups/{}", group_uuid),
-        ),
+        Ok(_) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::AssetGroupUpdated,
+                    format!(r#"{{"asset_group":"{}"}}"#, group_uuid),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            flash_redirect(
+                flash.success("Asset group updated successfully"),
+                &format!("/assets/groups/{}", group_uuid),
+            )
+        }
         Err(_) => flash_redirect(
             flash.error("Failed to update asset group. Please try again."),
             &format!("/assets/groups/{}/edit", group_uuid),
@@ -1208,10 +1240,20 @@ pub async fn create_asset_group_web(
         .await;
 
     match result {
-        Ok(info) => flash_redirect(
-            flash.success(format!("Asset group '{}' created successfully", info.name)),
-            &format!("/assets/groups/{}", info.uuid),
-        ),
+        Ok(info) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::AssetGroupCreated,
+                    format!(r#"{{"asset_group":"{}","name":"{}"}}"#, info.uuid, info.name),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            flash_redirect(
+                flash.success(format!("Asset group '{}' created successfully", info.name)),
+                &format!("/assets/groups/{}", info.uuid),
+            )
+        }
         Err(e) => {
             let msg = e.to_string();
             if msg.to_lowercase().contains("slug") || msg.to_lowercase().contains("unique") {
@@ -1246,7 +1288,7 @@ pub struct DeleteAssetGroupForm {
 #[allow(clippy::too_many_arguments)]
 pub async fn delete_asset_group_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -1337,11 +1379,21 @@ pub async fn delete_asset_group_web(
     };
 
     match result {
-        Ok(group_name) => htmx_or_flash_redirect(
-            &headers,
-            flash.success(format!("Asset group '{}' deleted successfully", group_name)),
-            "/assets/groups",
-        ),
+        Ok(group_name) => {
+            crate::services::emit_audit(
+                &state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::AssetGroupDeleted,
+                    format!(r#"{{"asset_group":"{}","name":"{}"}}"#, uuid_str, group_name),
+                )
+                .user(auth_user.uuid.clone()),
+            );
+            htmx_or_flash_redirect(
+                &headers,
+                flash.success(format!("Asset group '{}' deleted successfully", group_name)),
+                "/assets/groups",
+            )
+        }
         Err(e) => {
             tracing::error!("Failed to delete asset group: {}", e);
             htmx_or_flash_redirect(
