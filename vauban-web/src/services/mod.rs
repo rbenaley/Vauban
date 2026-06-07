@@ -26,6 +26,7 @@ pub mod recording_hydrator;
 pub mod recording_reaper;
 pub mod role_invariants;
 pub mod session_access;
+pub mod session_activity;
 pub mod smtp_client;
 pub mod system_health;
 pub mod virtual_group;

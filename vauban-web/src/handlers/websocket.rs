@@ -25,15 +25,16 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use sha3::{Digest, Sha3_256};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::interval;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::utils::format_duration;
 
 use crate::AppState;
-use crate::middleware::auth::{AuthUser, WsAuthUser};
+use crate::middleware::auth::{AuthSessionId, AuthUser, WsAuthUser};
 use crate::services::broadcast::WsChannel;
+use crate::services::session_activity::ActivityThrottle;
 use crate::services::connections::WsConnectionGuard;
 
 // ============================================================================
@@ -1633,6 +1634,8 @@ pub async fn terminal_ws(
     Path(session_id): Path<String>,
     // SECURITY: see `middleware::auth::WsAuthUser`.
     user: WsAuthUser,
+    // Login-session uuid, used to keep `last_activity` fresh on input.
+    auth_session: AuthSessionId,
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
     let user = user.0;
@@ -1641,7 +1644,9 @@ pub async fn terminal_ws(
     info!(channel = %channel_label, user = %user.username, user_uuid = %user.uuid,
           session_id = %session_id, "WebSocket connection requested");
 
-    ws.on_upgrade(move |socket| handle_terminal_socket(socket, state, session_id, user, ws_guard))
+    ws.on_upgrade(move |socket| {
+        handle_terminal_socket(socket, state, session_id, user, auth_session, ws_guard)
+    })
 }
 
 /// Handle terminal WebSocket connection for SSH sessions.
@@ -1650,12 +1655,19 @@ async fn handle_terminal_socket(
     state: AppState,
     session_id: String,
     user: AuthUser,
+    auth_session: AuthSessionId,
     _ws_guard: WsGuard,
 ) {
     let (mut sender, mut receiver) = socket.split();
     let channel = WsChannel::SessionLive(session_id.clone());
     let channel_label = channel.as_str();
     let mut close_cause: &'static str = "unknown";
+
+    // Keep the login session alive while the user is typing: refresh
+    // `auth_sessions.last_activity` at most once per minute on real
+    // terminal input. The front-end `/htmx/empty` heartbeat handles
+    // cookie renewal; this is the server-side anti-idle-reaper backstop.
+    let mut activity_throttle = ActivityThrottle::new(Duration::from_secs(60));
 
     info!(channel = %channel_label, user = %user.username, user_uuid = %user.uuid,
           session_id = %session_id, "WebSocket connected");
@@ -1692,6 +1704,12 @@ async fn handle_terminal_socket(
             msg = receiver.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
+                        // Real client input (keystrokes / resize) -> keep the
+                        // login session alive. Throttled to <=1 DB write/min;
+                        // Ping/Pong/Close arms below deliberately do NOT count.
+                        if activity_throttle.should_fire(Instant::now()) {
+                            crate::services::session_activity::touch_login_session(&state, auth_session.0).await;
+                        }
                         // Check if this is a control message (JSON with "type" field)
                         if text.starts_with('{') {
                             if let Ok(cmd) = serde_json::from_str::<TerminalCommand>(&text) {
@@ -1741,6 +1759,9 @@ async fn handle_terminal_socket(
                         }
                     }
                     Some(Ok(Message::Binary(data))) => {
+                        if activity_throttle.should_fire(Instant::now()) {
+                            crate::services::session_activity::touch_login_session(&state, auth_session.0).await;
+                        }
                         // Binary input from terminal
                         debug!(
                             session_id = %session_id,
@@ -2003,6 +2024,8 @@ pub async fn rdp_ws(
     Path(session_id): Path<String>,
     // SECURITY: see `middleware::auth::WsAuthUser`.
     user: WsAuthUser,
+    // Login-session uuid, used to keep `last_activity` fresh on input.
+    auth_session: AuthSessionId,
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
     let user = user.0;
@@ -2011,7 +2034,9 @@ pub async fn rdp_ws(
     info!(channel = %channel_label, user = %user.username, user_uuid = %user.uuid,
           session_id = %session_id, "WebSocket connection requested");
 
-    ws.on_upgrade(move |socket| handle_rdp_socket(socket, state, session_id, user, ws_guard))
+    ws.on_upgrade(move |socket| {
+        handle_rdp_socket(socket, state, session_id, user, auth_session, ws_guard)
+    })
 }
 
 /// Handle RDP WebSocket connection.
@@ -2020,6 +2045,7 @@ async fn handle_rdp_socket(
     state: AppState,
     session_id: String,
     user: AuthUser,
+    auth_session: AuthSessionId,
     _ws_guard: WsGuard,
 ) {
     use shared::messages::RdpInputEvent;
@@ -2028,6 +2054,12 @@ async fn handle_rdp_socket(
     let channel = WsChannel::SessionLive(session_id.clone());
     let channel_label = channel.as_str();
     let mut close_cause: &'static str = "unknown";
+
+    // Keep the login session alive while the user is interacting (keyboard
+    // / mouse) over the RDP socket. Refreshes `auth_sessions.last_activity`
+    // at most once per minute; cookie renewal is handled by the front-end
+    // `/htmx/empty` heartbeat. See handle_terminal_socket for rationale.
+    let mut activity_throttle = ActivityThrottle::new(Duration::from_secs(60));
 
     info!(channel = %channel_label, user = %user.username, user_uuid = %user.uuid,
           session_id = %session_id, "WebSocket connected");
@@ -2089,6 +2121,12 @@ async fn handle_rdp_socket(
                                     }
                                 }
                                 _ => {
+                                    // Real keyboard/mouse input -> keep the login
+                                    // session alive (throttled). Resize and
+                                    // Capabilities above are excluded.
+                                    if activity_throttle.should_fire(Instant::now()) {
+                                        crate::services::session_activity::touch_login_session(&state, auth_session.0).await;
+                                    }
                                     let input = match cmd {
                                         RdpCommand::MouseMove { x, y } => {
                                             RdpInputEvent::MouseMove { x, y }

@@ -47,6 +47,33 @@ where
     }
 }
 
+/// The `auth_sessions.uuid` of the current request's login session.
+///
+/// Inserted into the request extensions by [`auth_middleware`] (and the
+/// `require_auth` extractors) alongside [`AuthUser`], derived from the
+/// validated session (JWT `jti` or `token_hash` fallback). It is exposed
+/// as a standalone extension -- rather than a field on [`AuthUser`] -- so
+/// the long-lived WebSocket handlers can refresh `last_activity` for the
+/// correct session without touching the ~30 `AuthUser { .. }` construction
+/// sites across the codebase.
+#[derive(Debug, Clone, Copy)]
+pub struct AuthSessionId(pub Uuid);
+
+impl<S> FromRequestParts<S> for AuthSessionId
+where
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<AuthSessionId>()
+            .copied()
+            .ok_or_else(|| AppError::Auth("Authentication required".to_string()))
+    }
+}
+
 /// Web page authentication extractor.
 /// Requires both a valid session AND completed MFA verification.
 /// Redirects to login if not authenticated, or to MFA page if MFA is pending.
@@ -194,6 +221,7 @@ pub async fn auth_middleware(
                         is_staff: claims.is_staff,
                     };
                     request.extensions_mut().insert(user);
+                    request.extensions_mut().insert(AuthSessionId(session_uuid));
 
                     update_last_activity(&state, session_uuid).await;
 
@@ -290,8 +318,11 @@ async fn verify_session_with_timeouts(
 }
 
 /// Update the last_activity timestamp for the session.
-/// This is called on each authenticated request to track user activity.
-async fn update_last_activity(state: &AppState, session_uuid: Uuid) {
+/// This is called on each authenticated request to track user activity,
+/// and by the SSH/RDP WebSocket handlers (throttled) so input over a
+/// long-lived socket keeps the login session alive (defense-in-depth
+/// behind the front-end `/htmx/empty` heartbeat).
+pub(crate) async fn update_last_activity(state: &AppState, session_uuid: Uuid) {
     if let Ok(mut conn) = state.db_pool.get().await {
         let _ = diesel::update(auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)))
             .set(auth_sessions::last_activity.eq(chrono::Utc::now()))
@@ -427,6 +458,7 @@ pub async fn require_auth(
 
     let mut request = request;
     request.extensions_mut().insert(user);
+    request.extensions_mut().insert(AuthSessionId(session_uuid));
 
     update_last_activity(&state, session_uuid).await;
 
@@ -470,6 +502,7 @@ pub async fn require_mfa(
 
     let mut request = request;
     request.extensions_mut().insert(user);
+    request.extensions_mut().insert(AuthSessionId(session_uuid));
 
     update_last_activity(&state, session_uuid).await;
 
@@ -1119,5 +1152,38 @@ mod tests {
             err_response.headers().get("location").is_none(),
             "WsAuthUser must NEVER emit a Location header (no redirect for WS)"
         );
+    }
+
+    // ==================== AuthSessionId Tests ====================
+
+    #[tokio::test]
+    async fn test_auth_session_id_extracts_from_extension() {
+        let session_uuid = Uuid::new_v4();
+        let mut parts = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()))
+            .into_parts()
+            .0;
+        parts.extensions.insert(AuthSessionId(session_uuid));
+
+        let result = AuthSessionId::from_request_parts(&mut parts, &()).await;
+        let extracted = unwrap_ok!(result);
+        assert_eq!(
+            extracted.0, session_uuid,
+            "AuthSessionId must round-trip the session uuid from the extension"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_auth_session_id_missing_extension_is_unauthorized() {
+        let mut parts = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()))
+            .into_parts()
+            .0;
+
+        let result = AuthSessionId::from_request_parts(&mut parts, &()).await;
+        assert!(
+            result.is_err(),
+            "AuthSessionId must reject when the auth middleware did not insert it"
+        );
+        let status = result.unwrap_err().into_response().status();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }

@@ -3,6 +3,45 @@
 // This file is loaded as an external script to avoid 'unsafe-inline' in CSP.
 // Alpine.js components are registered via Alpine.data() before Alpine initializes.
 
+// Auth keepalive heartbeat (SSH/RDP sessions).
+//
+// During a live SSH/RDP session every user interaction flows over the
+// WebSocket, so the browser issues no HTTP requests and the 15-minute
+// access-token cookie is never renewed: `auth_middleware` only rotates
+// the cookie and bumps `auth_sessions.last_activity` on HTTP requests.
+// Without this, an actively-typing user is logged out (cookie expiry +
+// idle-session reaper) the moment they return to the web UI.
+//
+// This helper pings the existing no-op web route `/htmx/empty` at most
+// once per `intervalMs`, and ONLY when real keyboard/mouse activity was
+// recorded since the last tick (via `mark()`). The ping is a normal
+// same-origin GET that traverses `auth_middleware`, which renews the
+// cookie and refreshes `last_activity`. It lives in the web zone (not
+// `/api/v1`) so it is independent of the API kill-switch.
+function vaubanAuthHeartbeat(intervalMs) {
+    var dirty = false;
+    var timer = null;
+    return {
+        mark: function () { dirty = true; },
+        start: function () {
+            if (timer) return;
+            timer = setInterval(function () {
+                if (!dirty) return;
+                dirty = false;
+                fetch('/htmx/empty', {
+                    method: 'GET',
+                    credentials: 'same-origin',
+                    cache: 'no-store',
+                    keepalive: true
+                }).catch(function () { /* best-effort keepalive */ });
+            }, intervalMs);
+        },
+        stop: function () {
+            if (timer) { clearInterval(timer); timer = null; }
+        }
+    };
+}
+
 document.addEventListener('alpine:init', function () {
     // Global store for JIT access request modal (issue #34).
     //
@@ -143,9 +182,12 @@ document.addEventListener('alpine:init', function () {
             fitAddon: null,
             reconnectAttempts: 0,
             maxReconnectAttempts: 5,
+            _hb: null,
 
             init: function () {
                 var self = this;
+                this._hb = vaubanAuthHeartbeat(60000);
+                this._hb.start();
                 this.$nextTick(function () { self.initTerminal(); });
             },
 
@@ -201,6 +243,7 @@ document.addEventListener('alpine:init', function () {
                 }, 50);
 
                 this.term.onData(function (data) {
+                    self._hb.mark();
                     if (self.ws && self.ws.readyState === WebSocket.OPEN) {
                         self.ws.send(data);
                     }
@@ -217,6 +260,7 @@ document.addEventListener('alpine:init', function () {
             },
 
             destroy: function () {
+                if (this._hb) this._hb.stop();
                 if (this._resizeHandler) window.removeEventListener('resize', this._resizeHandler);
                 if (this._fullscreenHandler) document.removeEventListener('fullscreenchange', this._fullscreenHandler);
                 if (this.ws) this.ws.close(1000, 'Component destroyed');
@@ -328,9 +372,12 @@ document.addEventListener('alpine:init', function () {
             _lastMouseSend: 0,
             _pendingMouseMove: null,
             _mouseThrottleMs: 33,
+            _hb: null,
 
             init: function () {
                 var self = this;
+                this._hb = vaubanAuthHeartbeat(60000);
+                this._hb.start();
                 this._fullscreenHandler = function () {
                     self.$nextTick(function () {
                         if (document.fullscreenElement) {
@@ -351,6 +398,7 @@ document.addEventListener('alpine:init', function () {
             },
 
             destroy: function () {
+                if (this._hb) this._hb.stop();
                 if (this._fullscreenHandler) document.removeEventListener('fullscreenchange', this._fullscreenHandler);
                 if (this._pendingMouseMove) clearTimeout(this._pendingMouseMove);
                 if (this.decoder) { try { this.decoder.close(); } catch (e) { /* ignore */ } }
@@ -558,6 +606,7 @@ document.addEventListener('alpine:init', function () {
 
             onMouseMove: function (e) {
                 var self = this;
+                this._hb.mark();
                 var now = Date.now();
                 var rect = this.$refs.canvas.getBoundingClientRect();
                 var scaleX = this.desktopWidth / rect.width;
@@ -581,6 +630,7 @@ document.addEventListener('alpine:init', function () {
             },
 
             onMouseDown: function (e) {
+                this._hb.mark();
                 var rect = this.$refs.canvas.getBoundingClientRect();
                 var scaleX = this.desktopWidth / rect.width;
                 var scaleY = this.desktopHeight / rect.height;
@@ -594,6 +644,7 @@ document.addEventListener('alpine:init', function () {
             },
 
             onMouseUp: function (e) {
+                this._hb.mark();
                 var rect = this.$refs.canvas.getBoundingClientRect();
                 var scaleX = this.desktopWidth / rect.width;
                 var scaleY = this.desktopHeight / rect.height;
@@ -607,6 +658,7 @@ document.addEventListener('alpine:init', function () {
             },
 
             onWheel: function (e) {
+                this._hb.mark();
                 this.sendInput({
                     type: 'mouse_wheel',
                     delta_x: Math.round(e.deltaX),
@@ -615,6 +667,7 @@ document.addEventListener('alpine:init', function () {
             },
 
             onKeyDown: function (e) {
+                this._hb.mark();
                 this.sendInput({
                     type: 'key',
                     code: e.code,
@@ -628,6 +681,7 @@ document.addEventListener('alpine:init', function () {
             },
 
             onKeyUp: function (e) {
+                this._hb.mark();
                 this.sendInput({
                     type: 'key',
                     code: e.code,

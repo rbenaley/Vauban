@@ -910,6 +910,10 @@ fn build_test_router(state: AppState) -> Router {
         .route("/static/{*path}", get(serve_static_test))
         // Health check
         .route("/health", get(|| async { "OK" }))
+        // HTMX no-op route, reused as the SSH/RDP auth keepalive
+        // heartbeat target so the cookie-rotation + last_activity
+        // refresh path can be exercised end-to-end.
+        .route("/htmx/empty", get(handlers::web::htmx_empty))
         // Dashboard home
         .route("/", get(handlers::web::dashboard_home))
         // Fallback handler for unmatched routes
