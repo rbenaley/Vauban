@@ -192,12 +192,14 @@ fn run_service() -> Result<()> {
         peer_channels.push(("web", ch));
     }
 
-    // The fd-passing socket must survive the sandbox seal so we can recv_fd on
-    // it; declare it both in `all_fds` and as a dedicated fd-receiver.
-    let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| {
-        all_fds.push(fd);
-        vec![fd]
-    });
+    // The fd-passing socket must survive the sandbox seal so we can recv_fd
+    // on it. Declare it ONLY as a dedicated fd-receiver (SCM_RIGHTS recvmsg),
+    // never also as an IPC pipe: on FreeBSD/Capsicum the same fd would be
+    // narrowed twice with incompatible rights sets (read_write has `write`
+    // but not `getsockopt`; fd_receiver has `getsockopt` but not `write`),
+    // and the second `cap_rights_limit` fails with ENOTCAPABLE (errno 93).
+    // This matches proxy-ssh / proxy-rdp / proxy-iacs.
+    let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| vec![fd]);
 
     // Typestate: `sealed` proves the sandbox was committed. It is threaded
     // into `main_loop`, making "run the loop without entering the sandbox"

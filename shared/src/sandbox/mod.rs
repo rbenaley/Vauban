@@ -54,6 +54,25 @@ pub enum SandboxError {
     /// this kernel. The service MUST refuse to start (fail-closed).
     #[error("Sandbox required but unavailable on this platform/kernel: {0}")]
     Unavailable(String),
+
+    /// The same file descriptor was declared under two different resource
+    /// kinds. On FreeBSD/Capsicum each `cap_rights_limit` call must NARROW
+    /// the fd's rights (never widen): limiting one fd with two incompatible
+    /// rights sets makes the second call fail with ENOTCAPABLE (errno 93)
+    /// and crashes the service at boot. Caught portably at profile build so
+    /// the misconfiguration surfaces on every platform, not just FreeBSD.
+    #[error(
+        "File descriptor {fd} declared under two sandbox resource kinds \
+         ({first:?} and {second:?}); each fd may only be limited once"
+    )]
+    ConflictingFdRights {
+        /// The offending file descriptor.
+        fd: RawFd,
+        /// The first resource kind declared for this fd.
+        first: profiles::ResourceKind,
+        /// The conflicting second resource kind declared for this fd.
+        second: profiles::ResourceKind,
+    },
 }
 
 /// Result type for sandbox operations.
@@ -114,6 +133,22 @@ impl Resource {
             Resource::Listener(_) => K::Listener,
             Resource::WritableDir { .. } => K::WritableDir,
             Resource::ReadablePath(_) => K::ReadablePath,
+        }
+    }
+
+    /// The raw file descriptor this resource limits, if any.
+    ///
+    /// `ReadablePath` is purely path-based (Landlock / unveil) and carries
+    /// no fd, hence `None`. Used by [`SandboxProfile::validate`] to detect a
+    /// single fd declared under two different resource kinds.
+    pub(crate) fn raw_fd(&self) -> Option<RawFd> {
+        match self {
+            Resource::IpcPipe(fd)
+            | Resource::FdReceiver(fd)
+            | Resource::ConnectedSocket(fd)
+            | Resource::Listener(fd)
+            | Resource::WritableDir { fd, .. } => Some(*fd),
+            Resource::ReadablePath(_) => None,
         }
     }
 }
@@ -225,6 +260,41 @@ impl SandboxProfile {
         &self.resources
     }
 
+    /// Reject a profile that declares the same fd under two different
+    /// resource kinds.
+    ///
+    /// On FreeBSD/Capsicum each fd is narrowed with `cap_rights_limit`,
+    /// which may only ever NARROW the rights. Declaring one fd as both, say,
+    /// an `IpcPipe` (`read_write`) and an `FdReceiver` (`fd_receiver_socket`)
+    /// makes the second limit attempt to grant a right the first one dropped
+    /// (`getsockopt` vs `write`), so the kernel returns ENOTCAPABLE
+    /// (errno 93) and the service crash-loops at boot. The check is portable
+    /// (it runs on every platform inside [`enter_sandbox`]) so this class of
+    /// misconfiguration is caught on Linux CI instead of only in FreeBSD
+    /// production. Repeated entries of the SAME kind are harmless (the limit
+    /// is idempotent) and therefore allowed.
+    pub(crate) fn validate(&self) -> Result<()> {
+        let mut seen: Vec<(RawFd, profiles::ResourceKind)> = Vec::new();
+        for resource in &self.resources {
+            let Some(fd) = resource.raw_fd() else {
+                continue;
+            };
+            let kind = resource.kind();
+            if let Some(&(_, first)) = seen.iter().find(|&&(seen_fd, _)| seen_fd == fd) {
+                if first != kind {
+                    return Err(SandboxError::ConflictingFdRights {
+                        fd,
+                        first,
+                        second: kind,
+                    });
+                }
+            } else {
+                seen.push((fd, kind));
+            }
+        }
+        Ok(())
+    }
+
     /// Whether the Capsicum backend should limit per-fd rights. Consumed by
     /// the FreeBSD backend (hence `dead_code`-allowed on other targets).
     #[allow(dead_code)]
@@ -321,6 +391,10 @@ pub(crate) fn run_backend<B: SandboxBackend>(
 /// Consumes the profile by value so a profile cannot be reused after entry.
 /// Dispatches to the per-OS backend at compile time.
 pub fn enter_sandbox(profile: SandboxProfile) -> Result<Entered> {
+    // Fail-closed BEFORE touching the kernel: a single fd declared under two
+    // resource kinds would crash on FreeBSD with ENOTCAPABLE (errno 93). The
+    // check is platform-independent so the bug surfaces on Linux CI too.
+    profile.validate()?;
     dispatch(profile)
 }
 
@@ -509,6 +583,57 @@ mod tests {
         // web: listener only.
         let web = profiles::web_server(3);
         assert_eq!(unique_kinds(&web), sorted(profiles::WEB_KINDS));
+    }
+
+    /// REGRESSION (FreeBSD ENOTCAPABLE crash-loop): vauban-auth used to
+    /// declare its SCM_RIGHTS fd-passing socket as BOTH an ipc pipe and an
+    /// fd-receiver. On Capsicum the second `cap_rights_limit` then tried to
+    /// widen the rights (`getsockopt` was dropped by the `read_write` limit)
+    /// and the kernel returned ENOTCAPABLE (errno 93), crash-looping the
+    /// service. `validate` now rejects this portably.
+    #[test]
+    fn same_fd_under_two_kinds_is_rejected() {
+        // fd 5 is listed both as an ipc pipe AND an fd-receiver -- exactly
+        // the historic vauban-auth wiring bug.
+        let profile = setup_profile_only(&[3, 4, 5], None, Some(&[5]), None);
+        let err = profile.validate().expect_err("conflicting fd must be rejected");
+        match err {
+            SandboxError::ConflictingFdRights { fd, first, second } => {
+                assert_eq!(fd, 5);
+                assert_eq!(first, ResourceKind::IpcPipe);
+                assert_eq!(second, ResourceKind::FdReceiver);
+            }
+            other => panic!("expected ConflictingFdRights, got {other:?}"),
+        }
+    }
+
+    /// The corrected wiring (fd-receiver fd DISTINCT from the ipc pipes, as
+    /// proxy-ssh / proxy-rdp / proxy-iacs and now vauban-auth do) validates.
+    #[test]
+    fn distinct_fds_per_kind_validate() {
+        let profile = setup_profile_only(&[3, 4], None, Some(&[5]), None);
+        assert!(profile.validate().is_ok());
+
+        let with_listener = setup_profile_only(&[3, 4], None, Some(&[5]), Some(&[6]));
+        assert!(with_listener.validate().is_ok());
+    }
+
+    /// Repeating the SAME fd under the SAME kind is harmless (the Capsicum
+    /// limit is idempotent), so `validate` must accept it.
+    #[test]
+    fn duplicate_fd_same_kind_is_allowed() {
+        let profile = SandboxProfile::new().ipc_pipes(&[3, 3]);
+        assert!(profile.validate().is_ok());
+    }
+
+    /// `enter_sandbox` runs `validate` before any kernel call, so a
+    /// conflicting profile fails-closed on every platform (including the
+    /// non-FreeBSD CI) rather than only crashing in production.
+    #[test]
+    fn enter_sandbox_rejects_conflicting_fds() {
+        let profile = setup_profile_only(&[7, 8], None, Some(&[7]), None);
+        let err = enter_sandbox(profile).expect_err("must fail-closed before dispatch");
+        assert!(matches!(err, SandboxError::ConflictingFdRights { fd: 7, .. }));
     }
 
     /// Mirror of `setup_service_sandbox_with_listeners` profile construction,
