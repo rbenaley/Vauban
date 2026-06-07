@@ -9,7 +9,7 @@
 //!    `WebSocket connected`, `WebSocket closed`, `WebSocket disconnected`.
 //! 2. The `closed` line MUST carry a `cause = ` field, populated from
 //!    one of `close | stream_end | error | ping_fail | send_fail |
-//!    server_close | unknown`.
+//!    server_close | auth_expired | unknown`.
 //! 3. Every lifecycle line MUST carry `channel = `.
 //! 4. The legacy wordings "Client requested close" and "WebSocket
 //!    stream ended" MUST NOT appear in the file (they are folded into
@@ -180,6 +180,9 @@ fn close_cause_values_belong_to_the_canonical_set() {
         r#"close_cause = "ping_fail""#,
         r#"close_cause = "send_fail""#,
         r#"close_cause = "server_close""#,
+        // SSH/RDP login-session re-validation closed the socket because
+        // the auth token expired / was idle-reaped (close code 4401).
+        r#"close_cause = "auth_expired""#,
         // initial value -- never a "real" cause but acceptable on the
         // `let mut close_cause: &'static str = "unknown";` declaration.
         r#"close_cause: &'static str = "unknown""#,
@@ -195,7 +198,7 @@ fn close_cause_values_belong_to_the_canonical_set() {
             ALLOWED.iter().any(|a| line.contains(a)),
             "Forbidden close_cause assignment: `{}`. Allowed values: \
              close, stream_end, error, ping_fail, send_fail, \
-             server_close. See `.cursor/rules/websocket-logging.mdc`.",
+             server_close, auth_expired. See `.cursor/rules/websocket-logging.mdc`.",
             line
         );
         cursor = abs + 1;

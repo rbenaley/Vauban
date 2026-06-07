@@ -340,6 +340,20 @@ enum TerminalCommand {
 /// Ping interval to keep WebSocket connection alive.
 const PING_INTERVAL_SECS: u64 = 30;
 
+/// How often the SSH/RDP loops re-validate that the login session is
+/// still alive. Without this, a live socket survives token expiry / idle
+/// reaping (the auth is only checked once, at the HTTP handshake). The
+/// interval must stay well below `session_idle_timeout_secs` so an idle
+/// session is torn down promptly after expiry.
+const REVALIDATE_INTERVAL_SECS: u64 = 30;
+
+/// Application-private WebSocket close code (RFC 6455 range 4000-4999)
+/// signalling that the login session expired mid-session. The browser
+/// maps it to a redirect to `/login`. Distinct from the `1000`
+/// ("Session ended") used for admin termination / proxy exit, which must
+/// NOT redirect to login.
+const WS_CLOSE_AUTH_EXPIRED: u16 = 4401;
+
 /// Dashboard WebSocket handler (supervisor / Global view).
 ///
 /// Establishes a WebSocket connection for the supervisor-facing
@@ -930,6 +944,8 @@ pub async fn notifications_ws(
     jar: CookieJar,
     // SECURITY: see `middleware::auth::WsAuthUser`.
     user: WsAuthUser,
+    // Login-session uuid (handshake-validated) for periodic re-validation.
+    auth_session: AuthSessionId,
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
     let user = user.0;
@@ -948,7 +964,7 @@ pub async fn notifications_ws(
         .unwrap_or_default();
 
     ws.on_upgrade(move |socket| {
-        handle_notifications_socket(socket, state, user, token_hash, ws_guard)
+        handle_notifications_socket(socket, state, user, auth_session, token_hash, ws_guard)
     })
 }
 
@@ -959,6 +975,7 @@ async fn handle_notifications_socket(
     socket: WebSocket,
     state: AppState,
     user: AuthUser,
+    auth_session: AuthSessionId,
     token_hash: String,
     _ws_guard: WsGuard,
 ) {
@@ -988,6 +1005,14 @@ async fn handle_notifications_socket(
 
     // Create ping interval to keep connection alive
     let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
+    // Periodically re-validate the login session. Because /ws/notifications
+    // is present on EVERY authenticated page, this is the single global
+    // liveness signal: on expiry we push the canonical force-logout OOB
+    // fragment so the whole UI (dashboard, lists, detail) bounces to
+    // /login without waiting for a click. Consume the immediate first
+    // tick: the session was just validated at the handshake.
+    let mut reval_interval = interval(Duration::from_secs(REVALIDATE_INTERVAL_SECS));
+    reval_interval.tick().await;
     let mut should_close = false;
     let mut close_cause: &'static str = "unknown";
 
@@ -1018,6 +1043,21 @@ async fn handle_notifications_socket(
             _ = ping_interval.tick() => {
                 if sender.send(Message::Ping(vec![].into())).await.is_err() {
                     close_cause = "ping_fail";
+                    should_close = true;
+                }
+            }
+
+            // Periodically re-validate the login session. On expiry (idle
+            // timeout / max-duration / reaped), push the canonical
+            // force-logout OOB fragment so the page bounces to /login, then
+            // close. Redirect is driven by the OOB swap (same path as the
+            // admin force-logout), so no 4401 close code here.
+            _ = reval_interval.tick() => {
+                if !crate::services::session_activity::is_login_session_live(&state, auth_session.0).await {
+                    let fragment =
+                        crate::services::session_activity::force_logout_oob("session_expired");
+                    let _ = sender.send(Message::Text(fragment.into())).await;
+                    close_cause = "auth_expired";
                     should_close = true;
                 }
             }
@@ -1696,6 +1736,12 @@ async fn handle_terminal_socket(
 
     // Create ping interval
     let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
+    // Periodically re-validate the login session so an expired / idle-reaped
+    // token tears the socket down (mirrors the HTTP auth_middleware path).
+    // Consume the immediate first tick: the session was just validated at
+    // the handshake.
+    let mut reval_interval = interval(Duration::from_secs(REVALIDATE_INTERVAL_SECS));
+    reval_interval.tick().await;
     let mut should_close = false;
 
     loop {
@@ -1836,6 +1882,26 @@ async fn handle_terminal_socket(
                     warn!(channel = %channel_label, session_id = %session_id,
                           "Ping send failed");
                     close_cause = "ping_fail";
+                    should_close = true;
+                }
+            }
+
+            // Periodically re-validate the login session. If it expired
+            // (idle timeout / max-duration / reaped), tear the socket down
+            // and tell the browser to bounce to /login (close code 4401).
+            _ = reval_interval.tick() => {
+                if !crate::services::session_activity::is_login_session_live(&state, auth_session.0).await {
+                    if let Err(e) = proxy_client.close_session(&session_id) {
+                        warn!(channel = %channel_label, session_id = %session_id,
+                              error = %e, "Failed to close SSH session after auth expiry");
+                    }
+                    let _ = sender.send(Message::Close(Some(
+                        axum::extract::ws::CloseFrame {
+                            code: WS_CLOSE_AUTH_EXPIRED,
+                            reason: "auth-expired".into(),
+                        },
+                    ))).await;
+                    close_cause = "auth_expired";
                     should_close = true;
                 }
             }
@@ -2083,6 +2149,10 @@ async fn handle_rdp_socket(
     activate_proxy_session(&state, &session_id).await;
 
     let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
+    // Periodically re-validate the login session (see handle_terminal_socket).
+    // Consume the immediate first tick: validated at the handshake.
+    let mut reval_interval = interval(Duration::from_secs(REVALIDATE_INTERVAL_SECS));
+    reval_interval.tick().await;
     let mut should_close = false;
     let mut _video_mode = false;
 
@@ -2255,6 +2325,30 @@ async fn handle_rdp_socket(
                     warn!(channel = %channel_label, session_id = %session_id,
                           "Ping send failed");
                     close_cause = "ping_fail";
+                    should_close = true;
+                }
+            }
+
+            // Periodically re-validate the login session. If it expired
+            // (idle timeout / max-duration / reaped), tear the socket down
+            // and tell the browser to bounce to /login (close code 4401).
+            _ = reval_interval.tick() => {
+                if !crate::services::session_activity::is_login_session_live(&state, auth_session.0).await {
+                    let pc = proxy_client.clone();
+                    let sid = session_id.clone();
+                    if let Err(e) = tokio::task::spawn_blocking(move || {
+                        pc.close_session(&sid)
+                    }).await.unwrap_or_else(|e| Err(crate::error::AppError::Ipc(e.to_string()))) {
+                        warn!(channel = %channel_label, session_id = %session_id,
+                              error = %e, "Failed to close RDP session after auth expiry");
+                    }
+                    let _ = sender.send(Message::Close(Some(
+                        axum::extract::ws::CloseFrame {
+                            code: WS_CLOSE_AUTH_EXPIRED,
+                            reason: "auth-expired".into(),
+                        },
+                    ))).await;
+                    close_cause = "auth_expired";
                     should_close = true;
                 }
             }

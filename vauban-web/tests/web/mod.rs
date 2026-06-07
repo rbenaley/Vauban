@@ -13,6 +13,7 @@
 /// - sidebar_menu_test: Navigation menu
 pub mod access_control_web_test;
 pub mod access_rules_crud_web_test;
+pub mod auth_expiry_redirect_test;
 pub mod audit_instrumentation_test;
 pub mod account_pages_test;
 pub mod asset_irreversible_delete_test;
@@ -96,3 +97,4 @@ pub mod virtual_asset_group_policy_test;
 pub mod virtual_asset_group_ui_test;
 pub mod websocket_logging_test;
 pub mod ws_activity_keepalive_test;
+pub mod ws_auth_revalidation_test;

@@ -96,3 +96,55 @@ fn rdp_input_handlers_mark_activity() {
         );
     }
 }
+
+/// Both viewers must bounce to /login when the server closes the socket
+/// with the auth-expiry close code 4401 (login session expired
+/// mid-session). This mirrors the HTTP AuthRedirect behaviour.
+#[test]
+fn viewers_redirect_to_login_on_auth_expiry_close_code() {
+    let redirects = JS
+        .matches("window.location.href = '/login?reason=session_expired'")
+        .count();
+    assert!(
+        redirects >= 2,
+        "both the SSH and RDP onclose handlers must redirect to /login?reason=session_expired on 4401; found {redirects}"
+    );
+    let guards = JS.matches("event.code === 4401").count();
+    assert!(
+        guards >= 2,
+        "both onclose handlers must gate the /login redirect on event.code === 4401; found {guards}"
+    );
+}
+
+/// Non-regression: the /login redirect must be triggered ONLY by 4401,
+/// never by an admin termination / user-disconnect close (code 1000).
+/// Every `window.location.href = '/login'` must be preceded (within the
+/// same handler) by a `event.code === 4401` guard, and there must be no
+/// `=== 1000` branch driving a /login redirect.
+#[test]
+fn login_redirect_is_strictly_gated_on_4401_not_1000() {
+    // No /login redirect may be reached from a `code === 1000` guard.
+    assert!(
+        !JS.contains("event.code === 1000"),
+        "no onclose handler should branch on code 1000 to redirect; admin \
+         termination (1000) must keep the current behaviour (no /login bounce)"
+    );
+
+    // Each /login redirect must have a 4401 guard within the preceding
+    // window (the `if (event.code === 4401) { window.location.href ...`
+    // pattern), proving the redirect is reachable only for 4401.
+    let mut cursor = 0usize;
+    let needle = "window.location.href = '/login?reason=session_expired'";
+    while let Some(rel) = JS[cursor..].find(needle) {
+        let abs = cursor + rel;
+        let from = abs.saturating_sub(120);
+        let preceding = &JS[from..abs];
+        assert!(
+            preceding.contains("event.code === 4401"),
+            "a `{needle}` at offset {abs} is not guarded by `event.code === 4401` \
+             within the preceding 120 chars; the redirect must be exclusive to 4401 \
+             so admin-terminated (1000) sessions are not bounced to /login"
+        );
+        cursor = abs + needle.len();
+    }
+}

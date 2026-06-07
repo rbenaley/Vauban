@@ -27,6 +27,74 @@ pub async fn touch_login_session(state: &AppState, session_uuid: Uuid) {
     crate::middleware::auth::update_last_activity(state, session_uuid).await;
 }
 
+/// Returns `true` while the login session identified by `session_uuid` is
+/// still valid, mirroring the timeout checks of
+/// [`crate::middleware::auth::verify_session_with_timeouts`] but keyed on
+/// the session uuid alone (the WebSocket handlers already hold a trusted
+/// [`crate::middleware::auth::AuthSessionId`] from the handshake).
+///
+/// Returns `false` when the row was reaped, is idle past
+/// `session_idle_timeout_secs`, or is older than `session_max_duration_secs`.
+/// This is the server-side seam that lets the SSH/RDP loops terminate a
+/// live socket once its login session expires (HTTP requests already get
+/// this for free via `auth_middleware`).
+///
+/// Fail-open on a transient DB error: returns `true` so a momentary
+/// database blip does not mass-disconnect every live session. The next
+/// re-validation tick re-checks. The handshake path remains fail-closed.
+pub async fn is_login_session_live(state: &AppState, session_uuid: Uuid) -> bool {
+    use crate::schema::auth_sessions;
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
+    let Ok(mut conn) = state.db_pool.get().await else {
+        tracing::warn!(
+            session_uuid = %session_uuid,
+            "Database unavailable for WS session re-validation; keeping socket open (fail-open)"
+        );
+        return true;
+    };
+
+    let now = chrono::Utc::now();
+    let idle_cutoff =
+        now - chrono::Duration::seconds(state.config.security.session_idle_timeout_secs as i64);
+    let max_duration_cutoff =
+        now - chrono::Duration::seconds(state.config.security.session_max_duration_secs as i64);
+
+    let count: i64 = auth_sessions::table
+        .filter(auth_sessions::uuid.eq(session_uuid))
+        .filter(auth_sessions::created_at.gt(max_duration_cutoff))
+        .filter(auth_sessions::last_activity.gt(idle_cutoff))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap_or(0);
+
+    count > 0
+}
+
+/// Canonical force-logout out-of-band (OOB) fragment pushed over the
+/// always-present `/ws/notifications` channel.
+///
+/// Single source of truth for the server-driven logout redirect: the
+/// fragment targets the `#force-logout` slot in `base.html` and, once
+/// htmx applies the OOB swap, an Alpine `x-init` runs
+/// `window.location.replace('/login?reason=<reason>')` -- a real
+/// navigation (full reload, no history entry), which is the correct
+/// primitive for a logout. WebSocket frames carry no headers, so the
+/// htmx-native `HX-Redirect`/`HX-Location`/`HX-Trigger` (HTTP-only) are
+/// unavailable here.
+///
+/// Used by the admin revoke / deactivate handlers and by the
+/// notifications re-validation arm (session expiry). `reason` feeds the
+/// login-page banner taxonomy: `session_revoked`, `account_deactivated`,
+/// `session_expired`.
+pub fn force_logout_oob(reason: &str) -> String {
+    format!(
+        r#"<div id="force-logout" hx-swap-oob="innerHTML"><div x-data x-init="window.location.replace('/login?reason={reason}')"></div></div>"#
+    )
+}
+
 /// Collapses high-frequency activity into at most one "fire" per
 /// `min_interval`.
 #[derive(Debug)]

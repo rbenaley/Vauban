@@ -2821,10 +2821,11 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
     .await;
 
     // 4. Force-logout all browser sessions via WebSocket
-    let force_logout_html = r#"<div id="force-logout" hx-swap-oob="innerHTML"><div x-data x-init="window.location.replace('/login?reason=account_deactivated')"></div></div>"#;
+    let force_logout_html =
+        crate::services::session_activity::force_logout_oob("account_deactivated");
     state
         .user_connections
-        .send_personalized(user_uuid, |_token_hash| force_logout_html.to_string())
+        .send_personalized(user_uuid, |_token_hash| force_logout_html.clone())
         .await;
 
     // 5. Broadcast session updates
@@ -2938,12 +2939,12 @@ pub async fn admin_revoke_session(
     // Update all admins' "Users sessions" page
     broadcast_admin_sessions_update(&state).await;
 
-    // Force-logout the target browser via WebSocket
-    // Uses data-redirect attribute detected by vauban-components.js after OOB swap
-    let force_logout_html = r#"<div id="force-logout" hx-swap-oob="innerHTML"><div x-data x-init="window.location.replace('/login?reason=session_revoked')"></div></div>"#;
+    // Force-logout the target browser via WebSocket (OOB swap into
+    // #force-logout -> Alpine x-init window.location.replace).
+    let force_logout_html = crate::services::session_activity::force_logout_oob("session_revoked");
     state
         .user_connections
-        .send_to_matching(&target_user_uuid_str, &target_token_hash, force_logout_html)
+        .send_to_matching(&target_user_uuid_str, &target_token_hash, &force_logout_html)
         .await;
 
     Ok(Html("").into_response())

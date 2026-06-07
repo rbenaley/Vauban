@@ -309,6 +309,15 @@ document.addEventListener('alpine:init', function () {
                     self.setStatus('disconnected', 'Disconnected');
                     self.term.write('\r\n\x1b[31mConnection closed.\x1b[0m\r\n');
 
+                    // 4401 = login session expired mid-session (server-side
+                    // re-validation). Bounce to /login like the HTTP path.
+                    // NOT triggered by admin termination / user disconnect,
+                    // which close with code 1000.
+                    if (event.code === 4401) {
+                        window.location.href = '/login?reason=session_expired';
+                        return;
+                    }
+
                     if (self.reconnectAttempts < self.maxReconnectAttempts && event.code !== 1000) {
                         self.reconnectAttempts++;
                         var delay = Math.min(1000 * Math.pow(2, self.reconnectAttempts), 30000);
@@ -493,8 +502,14 @@ document.addEventListener('alpine:init', function () {
                     }
                 };
 
-                this.ws.onclose = function () {
+                this.ws.onclose = function (event) {
                     self.connected = false;
+                    // 4401 = login session expired mid-session. Bounce to
+                    // /login. Admin termination / user disconnect use 1000
+                    // and must NOT redirect.
+                    if (event && event.code === 4401) {
+                        window.location.href = '/login?reason=session_expired';
+                    }
                 };
 
                 this.ws.onerror = function () {

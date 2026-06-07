@@ -122,6 +122,20 @@
                         </div>
                     </div>
                 </template>
+                <template x-if="reason === 'session_expired'">
+                    <div class="rounded-md bg-blue-50 dark:bg-blue-900/50 p-4">
+                        <div class="flex">
+                            <div class="flex-shrink-0">
+                                <svg class="h-5 w-5 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM11 6a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
+                                </svg>
+                            </div>
+                            <div class="ml-3">
+                                <p class="text-sm font-medium text-blue-800 dark:text-blue-200">Your session expired due to inactivity. Please sign in again.</p>
+                            </div>
+                        </div>
+                    </div>
+                </template>
             </div>
             
             <!-- Result area (errors) -->
