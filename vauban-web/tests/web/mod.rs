@@ -29,6 +29,7 @@ pub mod bastion_watch_iacs_count_test;
 pub mod bastion_watch_test;
 pub mod boot_smoke_test;
 pub mod casbin_handler_eradication_web_test;
+pub mod dashboard_access_posture_test;
 pub mod dashboard_isolation_test;
 pub mod dashboard_pages_test;
 pub mod delete_confirm_flow_test;
