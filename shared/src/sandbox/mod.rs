@@ -562,13 +562,19 @@ mod tests {
         let auth = SandboxProfile::new().ipc_pipes(&[3, 4]).fd_receiver(5);
         assert_eq!(unique_kinds(&auth), sorted(profiles::AUTH_KINDS));
 
-        // vault / audit: IPC pipes only.
+        // vault: IPC pipes only.
         let vault = SandboxProfile::new().ipc_pipes(&[3, 4]);
         assert_eq!(unique_kinds(&vault), sorted(profiles::VAULT_KINDS));
-        assert_eq!(unique_kinds(&vault), sorted(profiles::AUDIT_KINDS));
 
-        // access: IPC pipes + connected DB socket.
-        let access = setup_profile_only(&[3, 4], Some(5), None, None);
+        // audit: IPC pipes + fd receiver (supervisor delegates WORM segment
+        // and recording fds via SCM_RIGHTS).
+        let audit = setup_profile_only(&[3, 4], None, Some(&[5]), None);
+        assert_eq!(unique_kinds(&audit), sorted(profiles::AUDIT_KINDS));
+
+        // access: IPC pipes only (the PostgreSQL sockets are pre-opened by
+        // the service itself before the sandbox and intentionally not
+        // declared; see ACCESS_KINDS).
+        let access = setup_profile_only(&[3, 4], None, None, None);
         assert_eq!(unique_kinds(&access), sorted(profiles::ACCESS_KINDS));
 
         // proxy-ssh / proxy-rdp: IPC pipes + fd receiver.
@@ -580,8 +586,8 @@ mod tests {
         let iacs = setup_profile_only(&[3, 4], None, Some(&[5]), Some(&[6]));
         assert_eq!(unique_kinds(&iacs), sorted(profiles::PROXY_IACS_KINDS));
 
-        // web: listener only.
-        let web = profiles::web_server(3);
+        // web: listener + supervisor fd receiver.
+        let web = profiles::web_server(3, Some(4));
         assert_eq!(unique_kinds(&web), sorted(profiles::WEB_KINDS));
     }
 
@@ -596,7 +602,9 @@ mod tests {
         // fd 5 is listed both as an ipc pipe AND an fd-receiver -- exactly
         // the historic vauban-auth wiring bug.
         let profile = setup_profile_only(&[3, 4, 5], None, Some(&[5]), None);
-        let err = profile.validate().expect_err("conflicting fd must be rejected");
+        let err = profile
+            .validate()
+            .expect_err("conflicting fd must be rejected");
         match err {
             SandboxError::ConflictingFdRights { fd, first, second } => {
                 assert_eq!(fd, 5);
@@ -633,7 +641,10 @@ mod tests {
     fn enter_sandbox_rejects_conflicting_fds() {
         let profile = setup_profile_only(&[7, 8], None, Some(&[7]), None);
         let err = enter_sandbox(profile).expect_err("must fail-closed before dispatch");
-        assert!(matches!(err, SandboxError::ConflictingFdRights { fd: 7, .. }));
+        assert!(matches!(
+            err,
+            SandboxError::ConflictingFdRights { fd: 7, .. }
+        ));
     }
 
     /// Mirror of `setup_service_sandbox_with_listeners` profile construction,

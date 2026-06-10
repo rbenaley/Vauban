@@ -576,11 +576,11 @@ pub fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
 | Service | Sandboxed | Notes |
 |---------|-----------|-------|
 | `vauban-supervisor` | No | Needs to spawn/manage children |
-| `vauban-web` | **Yes** | Fixed pool, multiplexed cache, pre-bound socket, FD passing |
-| `vauban-auth` | Yes | IPC only |
-| `vauban-access` | Yes | IPC + optional DB |
+| `vauban-web` | **Yes** | Fixed pool, multiplexed cache (incl. the rate limiter's pre-established Redis connection), pre-bound listener + supervisor SCM_RIGHTS socket declared as a dedicated fd receiver (`WEB_KINDS = [Listener, FdReceiver]`; drives the OpenBSD `recvfd` promise) |
+| `vauban-auth` | Yes | IPC + SCM_RIGHTS fd receiver (LDAPS broker) |
+| `vauban-access` | Yes | IPC only (`ACCESS_KINDS = [IpcPipe]`); the PostgreSQL sockets are pre-opened by the service itself before the sandbox and intentionally not rights-limited per fd -- the wall is `cap_enter`/seccomp, no reconnection is possible |
 | `vauban-vault` | Yes | IPC only (no DB, no network) |
-| `vauban-audit` | Yes | IPC + FD passing for recording files |
+| `vauban-audit` | Yes | IPC + SCM_RIGHTS socket declared as a dedicated fd receiver (`AUDIT_KINDS = [IpcPipe, FdReceiver]`; WORM segment / recording fds delegated by the supervisor) |
 | `vauban-proxy-ssh` | Yes | IPC + pre-established connections via FD passing |
 | `vauban-proxy-rdp` | Yes | IPC + pre-established connections via FD passing |
 | `vauban-proxy-iacs` | Yes | IPC + pre-bound listening FD with `O_NONBLOCK` (`VAUBAN_IACS_LISTENER_FD`) + pre-loaded russh Ed25519 host key FD (`VAUBAN_IACS_HOST_KEY_FD`, rewound with `lseek(0)` before each `execv`) + per-asset upstream connections via SCM_RIGHTS broker. Boot ordering is Capsicum-aware (see §5.6.3c). |

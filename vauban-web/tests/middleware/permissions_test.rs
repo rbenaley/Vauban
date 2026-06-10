@@ -79,7 +79,7 @@ fn make_user(is_superuser: bool, is_staff: bool) -> AuthUser {
 #[serial]
 async fn check_rbac_superuser_grants_everything() {
     let app = TestApp::spawn().await;
-    let state = build_state_from(app);
+    let state = build_state_from(app).await;
     let user = make_user(true, true);
 
     for (resource, action) in TRACKED_PERMS {
@@ -96,7 +96,7 @@ async fn check_rbac_superuser_grants_everything() {
 #[serial]
 async fn check_rbac_staff_grants_admin_set_only() {
     let app = TestApp::spawn().await;
-    let state = build_state_from(app);
+    let state = build_state_from(app).await;
     let user = make_user(false, true);
 
     // Matches `config/access/default_policy.csv` for role:staff. Note that
@@ -138,7 +138,7 @@ async fn check_rbac_staff_grants_admin_set_only() {
 #[serial]
 async fn check_rbac_user_grants_only_self_serve_set() {
     let app = TestApp::spawn().await;
-    let state = build_state_from(app);
+    let state = build_state_from(app).await;
     let user = make_user(false, false);
 
     // Matches `config/access/default_policy.csv` for role:user.
@@ -183,7 +183,7 @@ async fn check_rbac_user_grants_only_self_serve_set() {
 #[serial]
 async fn check_rbac_user_denied_assets_read_all() {
     let app = TestApp::spawn().await;
-    let state = build_state_from(app);
+    let state = build_state_from(app).await;
     let user = make_user(false, false);
 
     assert!(
@@ -200,7 +200,7 @@ async fn check_rbac_user_denied_assets_read_all() {
 #[serial]
 async fn check_rbac_staff_denied_groups_write() {
     let app = TestApp::spawn().await;
-    let state = build_state_from(app);
+    let state = build_state_from(app).await;
     let user = make_user(false, true);
 
     assert!(
@@ -222,7 +222,7 @@ async fn check_rbac_staff_denied_groups_write() {
 #[serial]
 async fn check_rbac_staff_denied_sessions_bypass_access_rules() {
     let app = TestApp::spawn().await;
-    let state = build_state_from(app);
+    let state = build_state_from(app).await;
     let user = make_user(false, true);
 
     assert!(
@@ -240,7 +240,7 @@ async fn check_rbac_staff_denied_sessions_bypass_access_rules() {
 #[serial]
 async fn check_rbac_user_denied_assets_manage() {
     let app = TestApp::spawn().await;
-    let state = build_state_from(app);
+    let state = build_state_from(app).await;
     let user = make_user(false, false);
 
     assert!(
@@ -264,7 +264,7 @@ async fn check_rbac_user_denied_assets_manage() {
 #[serial]
 async fn check_rbac_staff_granted_assets_manage() {
     let app = TestApp::spawn().await;
-    let state = build_state_from(app);
+    let state = build_state_from(app).await;
     let user = make_user(false, true);
 
     assert!(
@@ -285,7 +285,7 @@ async fn check_rbac_staff_granted_assets_manage() {
 #[serial]
 async fn check_rbac_assets_write_not_required_by_any_handler() {
     let app = TestApp::spawn().await;
-    let state = build_state_from(app);
+    let state = build_state_from(app).await;
 
     // The wildcard line `p, role:superuser, *, *` makes superuser
     // match `assets:write` too, but no handler reads that result.
@@ -311,7 +311,7 @@ async fn check_rbac_assets_write_not_required_by_any_handler() {
 #[serial]
 async fn check_rbac_staff_denied_users_manage_admins() {
     let app = TestApp::spawn().await;
-    let state = build_state_from(app);
+    let state = build_state_from(app).await;
     let user = make_user(false, true);
 
     assert!(
@@ -328,7 +328,7 @@ async fn check_rbac_staff_denied_users_manage_admins() {
 #[serial]
 async fn permission_context_load_matches_per_check_rbac() {
     let app = TestApp::spawn().await;
-    let state = build_state_from(app);
+    let state = build_state_from(app).await;
 
     for (label, user) in [
         ("superuser", make_user(true, false)),
@@ -549,7 +549,7 @@ async fn profile_edit_button_shown_for_admin_user() {
 #[serial]
 async fn permission_context_load_perf_budget() {
     let app = TestApp::spawn().await;
-    let state = build_state_from(app);
+    let state = build_state_from(app).await;
     let user = make_user(true, true);
 
     // Warm-up
@@ -644,7 +644,7 @@ async fn manual_load(state: &vauban_web::AppState, user: &AuthUser) -> Permissio
 /// spawns a real in-process vauban-access service with a real Casbin
 /// enforcer; we reuse its `access_client` so the matrix tests exercise
 /// the exact same authorization logic as production.
-fn build_state_from(app: &TestApp) -> vauban_web::AppState {
+async fn build_state_from(app: &TestApp) -> vauban_web::AppState {
     use vauban_web::AppState;
     use vauban_web::cache::CacheConnection;
     use vauban_web::services::rate_limit::RateLimiter;
@@ -657,7 +657,7 @@ fn build_state_from(app: &TestApp) -> vauban_web::AppState {
         broadcast: app.broadcast.clone(),
         user_connections: app.user_connections.clone(),
         ws_counter: app.ws_counter.clone(),
-        rate_limiter: unwrap_ok!(RateLimiter::new(false, None, 1000)),
+        rate_limiter: unwrap_ok!(RateLimiter::new(false, None, 1000).await),
         ssh_proxy: None,
         rdp_proxy: None,
         proxy_iacs: None,

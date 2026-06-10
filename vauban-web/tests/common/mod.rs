@@ -136,10 +136,13 @@ impl TestApp {
 
         // Create rate limiter (in-memory for tests, with higher limit)
         // Use 1000 requests per minute in tests to avoid rate limiting interference
-        let rate_limiter = unwrap_ok!(RateLimiter::new(
-            false, // Don't use Redis in tests
-            None, 1000, // High limit for tests
-        ));
+        let rate_limiter = unwrap_ok!(
+            RateLimiter::new(
+                false, // Don't use Redis in tests
+                None, 1000, // High limit for tests
+            )
+            .await
+        );
 
         // Initialize vauban-web's virtual-group OnceLock so the
         // web-side resolver in `services::access` knows the virtual
@@ -180,14 +183,14 @@ impl TestApp {
             user_connections: user_connections.clone(),
             ws_counter: ws_counter.clone(),
             rate_limiter,
-            ssh_proxy: None,       // No SSH proxy in tests
-            rdp_proxy: None,       // No RDP proxy in tests
-            proxy_iacs: None,      // No IACS proxy in tests
-            supervisor: None,      // No supervisor in tests
-            vault_client: None,    // No vault in tests (dev mode fallback)
-            audit_client: None,    // No audit sink in tests (emissions no-op)
-            access_client, // Real Casbin-backed IPC client
-            auth_ipc_client, // Optional in-process Auth IPC (LDAP tests only)
+            ssh_proxy: None,    // No SSH proxy in tests
+            rdp_proxy: None,    // No RDP proxy in tests
+            proxy_iacs: None,   // No IACS proxy in tests
+            supervisor: None,   // No supervisor in tests
+            vault_client: None, // No vault in tests (dev mode fallback)
+            audit_client: None, // No audit sink in tests (emissions no-op)
+            access_client,      // Real Casbin-backed IPC client
+            auth_ipc_client,    // Optional in-process Auth IPC (LDAP tests only)
             mailer: vauban_web::services::mailer::Mailer::new(
                 std::sync::Arc::new(tokio::sync::Notify::new()),
                 false, // disabled in tests; Mailer::queue is a no-op
@@ -1201,10 +1204,10 @@ pub mod auth_ipc_test_service {
     use std::sync::Arc;
     use std::thread::JoinHandle;
 
+    use argon2::Argon2;
     use argon2::password_hash::{
         PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
     };
-    use argon2::Argon2;
     use shared::ipc::IpcChannel;
     use shared::messages::{LdapBindOutcome, Message};
     use vauban_web::ipc::AuthIpcClient;

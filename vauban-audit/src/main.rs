@@ -314,8 +314,7 @@ fn run_service() -> Result<()> {
 
     // Sealed Ed25519 signing-key seed (ciphertext `v1:...`) and fail-closed
     // switch. Both provisioned by the supervisor.
-    let sealed_signing_key: Option<String> =
-        std::env::var("VAUBAN_AUDIT_SIGNING_KEY_SEALED").ok();
+    let sealed_signing_key: Option<String> = std::env::var("VAUBAN_AUDIT_SIGNING_KEY_SEALED").ok();
     let audit_required: bool = std::env::var("VAUBAN_AUDIT_REQUIRED")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -372,13 +371,15 @@ fn run_service() -> Result<()> {
         ipc_fds.push(r);
         ipc_fds.push(w);
     }
-    // The fd_passing socket needs fd_receiver_socket rights for SCM_RIGHTS
-    if let Some(fd) = fd_passing_socket {
-        ipc_fds.push(fd);
-    }
+    // The fd_passing socket only ever receives fds via SCM_RIGHTS (recvmsg):
+    // declare it as a dedicated fd-receiver so Capsicum narrows it to
+    // fd_receiver_socket rights (no write) and OpenBSD gets the `recvfd`
+    // pledge promise. It MUST NOT also appear in `ipc_fds` (one fd, one kind).
+    let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| vec![fd]);
 
     let sealed =
-        capsicum::setup_service_sandbox(&ipc_fds, None).context("Failed to setup sandbox")?;
+        capsicum::setup_service_sandbox_extended(&ipc_fds, None, fd_receiver_fds.as_deref())
+            .context("Failed to setup sandbox")?;
 
     if recording_enabled {
         capsicum::log_main_loop_start(
@@ -661,7 +662,8 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
             let web_ch = web_channel.unwrap();
             match web_ch.recv() {
                 Ok(msg) => {
-                    if let Err(e) = route_audit_event(web_ch, channel, fd_passing_socket, state, msg)
+                    if let Err(e) =
+                        route_audit_event(web_ch, channel, fd_passing_socket, state, msg)
                     {
                         warn!("Error handling web audit message: {}", e);
                         state.requests_failed += 1;
@@ -875,8 +877,7 @@ fn handle_audit_event(
                 .as_ref()
                 .is_some_and(|w| w.records_in_segment().is_multiple_of(SEAL_THRESHOLD));
             if should_seal
-                && let (Some(worm), Some(key)) =
-                    (state.worm.as_mut(), state.signing_key.as_ref())
+                && let (Some(worm), Some(key)) = (state.worm.as_mut(), state.signing_key.as_ref())
                 && let Err(e) = worm.seal(key, timestamp)
             {
                 warn!(error = %e, "audit: failed to seal WORM segment");
@@ -922,8 +923,11 @@ fn rotate_segment(
     }
     let next_index = state.rotations + 1;
     let segment_name = segment_name_for(state, next_index);
-    match request_audit_log_file_from_supervisor(supervisor_channel, fd_passing_socket, &segment_name)
-    {
+    match request_audit_log_file_from_supervisor(
+        supervisor_channel,
+        fd_passing_socket,
+        &segment_name,
+    ) {
         Ok(file) => {
             if let Some(worm) = state.worm.as_mut()
                 && let Err(e) = worm.rotate(file, segment_name)
@@ -1022,7 +1026,10 @@ fn unseal_signing_key(
             })
             .is_err()
         {
-            warn!(attempt, "audit: failed to send VaultDecrypt for signing key");
+            warn!(
+                attempt,
+                "audit: failed to send VaultDecrypt for signing key"
+            );
             continue;
         }
         match vault.recv() {
@@ -1659,7 +1666,13 @@ mod tests {
 
         let response: Message = client.recv().unwrap();
         assert!(
-            matches!(response, Message::AuditNack { timestamp: 1706140800, .. }),
+            matches!(
+                response,
+                Message::AuditNack {
+                    timestamp: 1706140800,
+                    ..
+                }
+            ),
             "expected AuditNack, got {response:?}"
         );
     }
@@ -1695,7 +1708,12 @@ mod tests {
 
         let response: Message = client.recv().unwrap();
         assert!(
-            matches!(response, Message::AuditAck { timestamp: 1706140800 }),
+            matches!(
+                response,
+                Message::AuditAck {
+                    timestamp: 1706140800
+                }
+            ),
             "expected AuditAck, got {response:?}"
         );
     }

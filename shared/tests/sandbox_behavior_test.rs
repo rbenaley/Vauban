@@ -114,6 +114,135 @@ fn pre_opened_fd_survives_but_new_objects_are_denied() {
     );
 }
 
+/// THE DELEGATED-FD LIFECYCLE TEST.
+///
+/// The parent (not sandboxed -- it plays the supervisor) opens a temp file
+/// and delegates it to a sandboxed child via SCM_RIGHTS. The child then
+/// exercises EVERY operation the real services perform on delegated fds:
+///
+///   * `write_all` + `flush`        -- all writers
+///   * `sync_all` (fsync)           -- audit WORM appender (the "worm io:
+///     EPERM" bug: fsync was missing from the Linux seccomp base)
+///   * `sync_data` (fdatasync)      -- IACS recording writer
+///   * `metadata()` (fstat/statx)   -- recording download handler
+///   * `seek` + `read_exact` (lseek)-- HTTP Range serving
+///
+/// and verifies that path-based `File::open` stays denied. This pins the
+/// fsync/fdatasync seccomp-base fix and kills the whole regression class
+/// (a delegated fd must support its full lifecycle, not just read/write).
+#[test]
+fn delegated_fd_lifecycle_operations_all_work() {
+    use std::io::{Seek, SeekFrom};
+
+    // SCM_RIGHTS channel (parent -> child) + an IPC pipe pair so the child
+    // profile mirrors a real service shape (IpcPipe + FdReceiver).
+    let (parent_sock, child_sock) = socketpair();
+    let (ipc_a, ipc_b) = socketpair();
+
+    let path =
+        std::env::temp_dir().join(format!("vauban_sandbox_lifecycle_{}", std::process::id()));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("create temp file");
+
+    const PAYLOAD: &[u8] = b"audit-record\n";
+
+    // SAFETY: fork in a test; the child only runs the closure below and
+    // `_exit`s without returning into the harness.
+    match unsafe { libc::fork() } {
+        -1 => panic!("fork() failed: {}", std::io::Error::last_os_error()),
+        0 => {
+            let ok = (|| -> bool {
+                let profile = SandboxProfile::new()
+                    .ipc_pipes(&[ipc_a, ipc_b])
+                    .fd_receiver(child_sock);
+                if enter_sandbox(profile).is_err() {
+                    eprintln!("enter_sandbox failed");
+                    return false;
+                }
+
+                // Receive the delegated fd (recvmsg + SCM_RIGHTS) AFTER the
+                // sandbox is sealed, exactly like the real services.
+                let owned = match shared::ipc::recv_fd(child_sock) {
+                    Ok(fd) => fd,
+                    Err(e) => {
+                        eprintln!("recv_fd failed post-sandbox: {e}");
+                        return false;
+                    }
+                };
+                let mut f = std::fs::File::from(owned);
+
+                if f.write_all(PAYLOAD).is_err() {
+                    eprintln!("write_all on delegated fd failed");
+                    return false;
+                }
+                if f.flush().is_err() {
+                    eprintln!("flush on delegated fd failed");
+                    return false;
+                }
+                if f.sync_all().is_err() {
+                    eprintln!("sync_all (fsync) on delegated fd failed -- WORM regression");
+                    return false;
+                }
+                if f.sync_data().is_err() {
+                    eprintln!("sync_data (fdatasync) on delegated fd failed -- recording");
+                    return false;
+                }
+                match f.metadata() {
+                    Ok(m) if m.len() == PAYLOAD.len() as u64 => {}
+                    Ok(m) => {
+                        eprintln!("metadata length mismatch: {}", m.len());
+                        return false;
+                    }
+                    Err(e) => {
+                        eprintln!("metadata (fstat/statx) on delegated fd failed: {e}");
+                        return false;
+                    }
+                }
+                if f.seek(SeekFrom::Start(0)).is_err() {
+                    eprintln!("seek (lseek) on delegated fd failed -- HTTP Range");
+                    return false;
+                }
+                let mut buf = [0u8; PAYLOAD.len()];
+                if f.read_exact(&mut buf).is_err() || buf != PAYLOAD {
+                    eprintln!("read-back on delegated fd failed");
+                    return false;
+                }
+
+                // Path-based open MUST stay denied: the delegation is the
+                // only door.
+                if std::fs::File::open("/etc/hosts").is_ok() {
+                    eprintln!("File::open by path succeeded (should be denied)");
+                    return false;
+                }
+
+                true
+            })();
+            // SAFETY: terminate the child immediately without unwinding.
+            unsafe { libc::_exit(i32::from(!ok)) };
+        }
+        pid => {
+            // Parent = supervisor: delegate the file fd, then reap the child.
+            shared::ipc::send_fd(parent_sock, file.as_raw_fd()).expect("send_fd failed");
+            let mut status: libc::c_int = 0;
+            // SAFETY: valid pid and status pointer.
+            let rc = unsafe { libc::waitpid(pid, &mut status, 0) };
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            assert_eq!(rc, pid, "waitpid failed");
+            assert!(
+                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+                "delegated-fd lifecycle violated in the sandboxed child \
+                 (see child stderr above)"
+            );
+        }
+    }
+}
+
 /// A listener pre-bound before the sandbox can still `accept()`, proving the
 /// `Listener` resource projection grants the right capability.
 #[test]

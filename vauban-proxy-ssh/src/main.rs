@@ -83,6 +83,16 @@ struct FdPassingState {
 ///
 /// The FD and IPC notification travel on separate channels, so there's a race condition.
 /// This function polls the socket and retries until the FD arrives or timeout.
+///
+/// SAFETY INVARIANT: this function MUST NOT make a blocking syscall on the
+/// FD-passing socket under any circumstance. The socket is blocking by
+/// default (`socketpair_for_fd_passing` -- `SockFlag::empty()`), so a
+/// fall-through `recv_fd(socket_fd)` after all polls returned "not ready"
+/// would park the calling tokio worker indefinitely on `recvmsg(2)`,
+/// starving the main loop's heartbeats until the supervisor force-restarts
+/// the service. When no SCM_RIGHTS FD arrives in time we fail closed with
+/// a `TimedOut` error instead (same invariant as proxy-iacs; pinned by
+/// `tests/no_blocking_recv_fd_test.rs`).
 async fn receive_fd_with_retry(
     socket_fd: RawFd,
     max_retries: u32,
@@ -112,8 +122,17 @@ async fn receive_fd_with_retry(
         }
     }
 
-    // Final attempt without poll
-    recv_fd(socket_fd)
+    // All retries exhausted with no SCM_RIGHTS FD ready: fail closed.
+    // NEVER fall through to a blocking `recv_fd(socket_fd)` -- see the
+    // safety invariant in this function's doc comment.
+    Err(shared::ipc::IpcError::Io(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!(
+            "ssh_proxy: receive_fd_with_retry timed out after {} attempts \
+             ({} ms each); refusing to fall through to a blocking recv_fd",
+            max_retries, delay_ms
+        ),
+    )))
 }
 
 impl Default for ServiceState {

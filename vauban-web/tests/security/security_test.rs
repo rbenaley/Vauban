@@ -1135,7 +1135,7 @@ async fn test_rate_limiting() {
     use vauban_web::services::rate_limit::RateLimiter;
 
     // Create a rate limiter with a low limit for testing
-    let limiter = unwrap_ok!(RateLimiter::new(false, None, 3));
+    let limiter = unwrap_ok!(RateLimiter::new(false, None, 3).await);
 
     // First 3 requests should be allowed
     for i in 1..=3 {
@@ -5423,7 +5423,9 @@ fn test_vau002_matrix_denies_mfa_secret_exfiltration() {
     let source = include_str!("../../../vauban-vault/src/authz.rs");
     // web Decrypt is restricted to credentials (not a wildcard / mfa).
     assert!(
-        source.contains("(VaultPeer::Web, Message::VaultDecrypt { domain, .. }) => domain == DOMAIN_CREDENTIALS"),
+        source.contains(
+            "(VaultPeer::Web, Message::VaultDecrypt { domain, .. }) => domain == DOMAIN_CREDENTIALS"
+        ),
         "web VaultDecrypt must be limited to the credentials domain"
     );
     // auth's ONLY grant is MfaVerify.

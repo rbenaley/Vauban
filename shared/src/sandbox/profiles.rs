@@ -41,12 +41,18 @@ pub const AUTH_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe, ResourceKind::F
 /// vauban-vault: supervisor + peer IPC pipes only (in-memory keyrings).
 pub const VAULT_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe];
 
-/// vauban-access: peer IPC pipes + an optional connected DB socket.
-pub const ACCESS_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe, ResourceKind::ConnectedSocket];
+/// vauban-access: peer IPC pipes only. The PostgreSQL connections are
+/// pre-opened by the service itself (r2d2 pool warm-up) before the sandbox
+/// and intentionally not declared / rights-limited per fd: the wall is
+/// `cap_enter` / seccomp itself, which makes any reconnection impossible.
+/// `ConnectedSocket` stays in the [`ResourceKind`] vocabulary for backend
+/// exhaustiveness but no service currently delegates such an fd.
+pub const ACCESS_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe];
 
-/// vauban-audit: peer IPC pipes (incl. the SCM_RIGHTS fd-passing socket,
-/// which the legacy code limits as a plain read/write pipe).
-pub const AUDIT_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe];
+/// vauban-audit: peer IPC pipes, plus the SCM_RIGHTS fd-passing socket on
+/// which the supervisor delegates WORM segment / recording file descriptors
+/// (recvmsg only, hence a dedicated fd receiver).
+pub const AUDIT_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe, ResourceKind::FdReceiver];
 
 /// vauban-proxy-ssh: IPC pipes + an SCM_RIGHTS fd receiver.
 pub const PROXY_SSH_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe, ResourceKind::FdReceiver];
@@ -61,20 +67,30 @@ pub const PROXY_IACS_KINDS: &[ResourceKind] = &[
 /// vauban-proxy-rdp: IPC pipes + an SCM_RIGHTS fd receiver.
 pub const PROXY_RDP_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe, ResourceKind::FdReceiver];
 
-/// vauban-web: a pre-bound HTTP listener. The web runtime keeps `cap_enter`
-/// as its only FreeBSD wall (no per-fd limiting).
-pub const WEB_KINDS: &[ResourceKind] = &[ResourceKind::Listener];
+/// vauban-web: a pre-bound HTTP listener, plus the supervisor SCM_RIGHTS
+/// fd-passing socket (recording fds, brokered SMTP streams). The web runtime
+/// keeps `cap_enter` as its only FreeBSD wall (no per-fd limiting).
+pub const WEB_KINDS: &[ResourceKind] = &[ResourceKind::Listener, ResourceKind::FdReceiver];
 
 /// Canonical profile for the vauban-web HTTP server.
 ///
 /// On FreeBSD this enters `cap_enter()` without limiting per-fd rights (the
-/// tokio/axum listener needs a hard-to-enumerate right set). On Linux /
-/// OpenBSD the listener drives the `accept4` / `inet` allowances.
+/// tokio/axum listener needs a hard-to-enumerate right set). On Linux the
+/// listener drives the `accept4` allowance; on OpenBSD it drives `inet` and
+/// the fd receiver drives `recvfd` (web receives recording / SMTP fds from
+/// the supervisor via SCM_RIGHTS after the sandbox is sealed).
+///
+/// `fd_passing_fd` is `None` only in development without a supervisor (no
+/// SCM_RIGHTS delegation happens in that mode).
 #[must_use]
-pub fn web_server(listener_fd: RawFd) -> SandboxProfile {
-    SandboxProfile::new()
+pub fn web_server(listener_fd: RawFd, fd_passing_fd: Option<RawFd>) -> SandboxProfile {
+    let mut profile = SandboxProfile::new()
         .listener(listener_fd)
-        .without_capsicum_fd_limiting()
+        .without_capsicum_fd_limiting();
+    if let Some(fd) = fd_passing_fd {
+        profile = profile.fd_receiver(fd);
+    }
+    profile
 }
 
 #[cfg(test)]
@@ -83,10 +99,20 @@ mod tests {
 
     #[test]
     fn web_profile_matches_catalogue() {
-        let p = web_server(3);
-        assert_eq!(p.kinds(), WEB_KINDS.to_vec());
+        let mut expected = WEB_KINDS.to_vec();
+        expected.sort_unstable();
+        let p = web_server(3, Some(4));
+        assert_eq!(p.kinds(), expected);
         // web relies on cap_enter only.
         assert!(!p.capsicum_limit_fds());
+    }
+
+    #[test]
+    fn web_profile_without_supervisor_drops_fd_receiver() {
+        // Development without a supervisor: no SCM_RIGHTS socket exists, so
+        // the profile degrades to the listener alone.
+        let p = web_server(3, None);
+        assert_eq!(p.kinds(), vec![ResourceKind::Listener]);
     }
 
     #[test]

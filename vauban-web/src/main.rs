@@ -673,12 +673,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "WebSocket connection counter initialized"
     );
 
-    // 7. Create rate limiter (may open Redis connection)
+    // 7. Create rate limiter. When cache is enabled this establishes and
+    // validates (PING) the Redis connection NOW, in PHASE 1: after the
+    // sandbox gate below, socket()/connect() are denied by the OS sandbox.
     let rate_limiter = RateLimiter::new(
         config.cache.enabled,
         Some(config.cache.url.expose_secret()),
         config.security.rate_limit_per_minute,
-    )?;
+    )
+    .await?;
     tracing::info!(
         "Rate limiter initialized (backend: {}, limit: {}/min)",
         if config.cache.enabled {
@@ -701,7 +704,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // After this, no new file descriptors can be opened.
     // ========================================================================
 
-    let _sealed = enter_sandbox(&std_listener)?;
+    let _sealed = enter_sandbox(
+        &std_listener,
+        supervisor_client
+            .as_ref()
+            .and_then(|s| s.fd_passing_socket()),
+    )?;
 
     // ========================================================================
     // PHASE 3: Build application and serve requests
@@ -914,6 +922,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // unit tests and is out of scope for this lot.
     let proxy_iacs_present = app_state.proxy_iacs.is_some();
     if config.industrial.enabled && !proxy_iacs_present {
+        if _sealed.is_active() {
+            // Dev-only branch running under a REAL OS sandbox: the
+            // in-process sshd needs to bind a listener and open upstream
+            // TCP connections, both of which are denied post-sandbox
+            // (EPERM on Linux seccomp, ECAPMODE on FreeBSD Capsicum).
+            // Surface it loudly at boot instead of letting every tunnel
+            // fail at first use.
+            tracing::warn!(
+                "iacs_tunnel: in-process sshd branch active under an ACTIVE \
+                 OS sandbox -- listener bind and upstream connects WILL fail. \
+                 Run under vauban-supervisor (proxy-iacs) in production."
+            );
+        }
         let registry = app_state.iacs_tunnel_registry.clone();
         let pool = app_state.db_pool.clone();
         let tunnel_cfg = config.industrial.iacs_tunnel.clone();
@@ -1140,10 +1161,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// the lifetime of the server so the request loop cannot run un-sandboxed.
 fn enter_sandbox(
     listener: &std::net::TcpListener,
+    fd_passing_socket: Option<std::os::unix::io::RawFd>,
 ) -> Result<shared::sandbox::Entered, Box<dyn std::error::Error>> {
     use std::os::unix::io::AsRawFd;
 
-    let profile = shared::sandbox::profiles::web_server(listener.as_raw_fd());
+    // The fd-passing socket receives delegated fds (recordings, SMTP) via
+    // SCM_RIGHTS after the sandbox is sealed: it must be declared as an
+    // fd receiver so OpenBSD keeps the `recvfd` pledge promise.
+    let profile = shared::sandbox::profiles::web_server(listener.as_raw_fd(), fd_passing_socket);
     let sealed = shared::sandbox::enter_sandbox(profile)
         .map_err(|e| format!("Failed to enter sandbox: {}", e))?;
 

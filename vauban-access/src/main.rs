@@ -251,16 +251,14 @@ fn run_service() -> Result<()> {
         peer_channels.push(("auth", ch));
     }
 
-    let db_fd = if db_pool.is_some() {
-        database_url
-            .as_ref()
-            .and_then(|_| std::env::var("VAUBAN_DB_FD").ok())
-            .and_then(|v| v.parse::<RawFd>().ok())
-    } else {
-        None
-    };
+    // The PostgreSQL connections are pre-opened by this service itself
+    // (r2d2 pool warm-up above) BEFORE entering the sandbox, and are
+    // intentionally NOT rights-limited per fd: the wall is cap_enter /
+    // seccomp itself (no `socket()`/`connect()` post-sandbox means no
+    // reconnection is ever possible). The supervisor never delegates a DB
+    // fd to access, so no `VAUBAN_DB_FD` env contract exists.
     let sealed =
-        capsicum::setup_service_sandbox(&all_fds, db_fd).context("Failed to setup sandbox")?;
+        capsicum::setup_service_sandbox(&all_fds, None).context("Failed to setup sandbox")?;
 
     let attached_peer_names: Vec<&str> = peer_channels.iter().map(|(n, _)| *n).collect();
 

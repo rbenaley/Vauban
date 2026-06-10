@@ -96,6 +96,14 @@ fn base_syscalls() -> Vec<i64> {
         // requests needs lseek; it is generic enough to live in the base
         // rather than only the WritableDir/ReadablePath deltas.
         libc::SYS_lseek,
+        // The audit WORM appender fsyncs the supervisor-passed segment fd
+        // after every record (the AuditAck means "persisted"). fsync /
+        // fdatasync only act on already-open fds and grant no new FS reach
+        // (openat stays denied, Landlock stays the wall), so they belong in
+        // the base rather than only the WritableDir delta. Missing fsync
+        // surfaces as "worm io: EPERM" and a NACK on every audit emission.
+        libc::SYS_fsync,
+        libc::SYS_fdatasync,
         libc::SYS_fcntl,
         libc::SYS_ioctl,
         libc::SYS_getpid,

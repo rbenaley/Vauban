@@ -26,8 +26,14 @@ pub struct RateLimitResult {
 #[derive(Clone)]
 pub enum RateLimiter {
     /// Redis/Valkey backend for distributed rate limiting.
+    ///
+    /// Holds a pre-established [`redis::aio::MultiplexedConnection`], NOT a
+    /// `redis::Client`: vauban-web enters an OS sandbox right after boot
+    /// (`socket()`/`connect()` are denied afterwards), so the TCP connection
+    /// MUST be opened in [`RateLimiter::new`] before the sandbox gate. The
+    /// type makes a lazy post-sandbox reconnection impossible to write.
     Redis {
-        client: redis::Client,
+        conn: redis::aio::MultiplexedConnection,
         limit_per_minute: u32,
     },
     /// In-memory backend using DashMap for development.
@@ -54,11 +60,18 @@ impl RateLimiter {
     /// # Fail-closed behavior
     ///
     /// - If `cache_enabled` is true and `redis_url` is provided, the Redis
-    ///   client **must** be created successfully.  On failure an error is
-    ///   returned instead of silently falling back to in-memory.
+    ///   connection **must** be established AND validated (PING) here, at
+    ///   boot, before the sandbox gate.  On failure an error is returned
+    ///   instead of silently falling back to in-memory.
     /// - If `cache_enabled` is false, in-memory storage is used (explicit
     ///   choice by the administrator).
-    pub fn new(
+    ///
+    /// # Sandbox contract
+    ///
+    /// This is the ONLY place in this module allowed to open a Redis
+    /// connection (`get_multiplexed_async_connection`); `check_redis` only
+    /// clones the multiplexed handle.  A structural test pins this.
+    pub async fn new(
         cache_enabled: bool,
         redis_url: Option<&str>,
         limit_per_minute: u32,
@@ -73,9 +86,31 @@ impl RateLimiter {
                         e
                     ))
                 })?;
-                debug!("Rate limiter using Redis backend");
+                let mut conn = client
+                    .get_multiplexed_async_connection()
+                    .await
+                    .map_err(|e| {
+                        AppError::Config(format!(
+                            "Rate limiter: cache is enabled but cannot connect to \
+                             Redis/Valkey: {}. Set cache.enabled = false to use \
+                             in-memory rate limiting.",
+                            e
+                        ))
+                    })?;
+                let pong: String = redis::cmd("PING")
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(AppError::Cache)?;
+                if pong != "PONG" {
+                    return Err(AppError::Config(format!(
+                        "Rate limiter: unexpected PING response from Redis: \
+                         expected 'PONG', got '{}'",
+                        pong
+                    )));
+                }
+                debug!("Rate limiter using Redis backend (connection validated)");
                 return Ok(Self::Redis {
-                    client,
+                    conn,
                     limit_per_minute,
                 });
             }
@@ -106,9 +141,9 @@ impl RateLimiter {
     pub async fn check(&self, key: &str) -> AppResult<RateLimitResult> {
         match self {
             Self::Redis {
-                client,
+                conn,
                 limit_per_minute,
-            } => self.check_redis(client, key, *limit_per_minute).await,
+            } => self.check_redis(conn, key, *limit_per_minute).await,
             Self::InMemory {
                 store,
                 limit_per_minute,
@@ -145,19 +180,21 @@ return { count, ttl }
 "#;
 
     /// Check rate limit using Redis with an atomic Lua script.
+    ///
+    /// Clones the pre-established multiplexed connection (cheap: it shares
+    /// an internal channel). NEVER opens a new connection here -- vauban-web
+    /// runs sandboxed and `socket()`/`connect()` would fail with EPERM
+    /// (Linux seccomp) / ECAPMODE (FreeBSD Capsicum).
     async fn check_redis(
         &self,
-        client: &redis::Client,
+        conn: &redis::aio::MultiplexedConnection,
         key: &str,
         limit: u32,
     ) -> AppResult<RateLimitResult> {
         let redis_key = format!("rate_limit:login:{}", key);
         let window_secs: u64 = 60;
 
-        let mut conn = client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(AppError::Cache)?;
+        let mut conn = conn.clone();
 
         // Execute the atomic Lua script: INCR + conditional EXPIRE in one call.
         let (count, ttl): (u32, i64) = redis::Script::new(Self::RATE_LIMIT_LUA)
@@ -263,7 +300,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_rate_limiter_allows_within_limit() {
-        let limiter = unwrap_ok!(RateLimiter::new(false, None, 5));
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 5).await);
 
         for i in 1..=5 {
             let result = unwrap_ok!(limiter.check("test_ip").await);
@@ -274,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_rate_limiter_blocks_over_limit() {
-        let limiter = unwrap_ok!(RateLimiter::new(false, None, 3));
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 3).await);
 
         // Use up the limit
         for _ in 0..3 {
@@ -290,7 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_rate_limiter_different_keys() {
-        let limiter = unwrap_ok!(RateLimiter::new(false, None, 2));
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 2).await);
 
         // First IP
         let result1 = unwrap_ok!(limiter.check("ip1").await);
@@ -318,9 +355,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_cleanup_expired_entries() {
-        let limiter = unwrap_ok!(RateLimiter::new(false, None, 10));
+    #[tokio::test]
+    async fn test_cleanup_expired_entries() {
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 10).await);
 
         if let RateLimiter::InMemory { store, .. } = &limiter {
             // Add an entry with old timestamp
@@ -359,7 +396,7 @@ mod tests {
     async fn test_reset_in_secs_does_not_overflow_after_window_reset() {
         // This test ensures that reset_in_secs calculation doesn't panic
         // when the window has been reset (elapsed was >= window_duration)
-        let limiter = unwrap_ok!(RateLimiter::new(false, None, 10));
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 10).await);
 
         if let RateLimiter::InMemory { store, .. } = &limiter {
             // Simulate an entry with an old window that will trigger a reset
@@ -385,7 +422,7 @@ mod tests {
     #[tokio::test]
     async fn test_reset_in_secs_with_very_old_entry() {
         // Test with an extremely old entry to ensure no overflow
-        let limiter = unwrap_ok!(RateLimiter::new(false, None, 5));
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 5).await);
 
         if let RateLimiter::InMemory { store, .. } = &limiter {
             // Entry from a very long time ago (1 hour)
@@ -422,7 +459,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiter_reset_in_secs_is_reasonable() {
-        let limiter = unwrap_ok!(RateLimiter::new(false, None, 10));
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 10).await);
 
         // First request
         let result = unwrap_ok!(limiter.check("new_ip").await);
@@ -437,7 +474,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiter_multiple_requests_reset_time_decreases() {
-        let limiter = unwrap_ok!(RateLimiter::new(false, None, 100));
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 100).await);
 
         let result1 = unwrap_ok!(limiter.check("timing_ip").await);
         let first_reset = result1.reset_in_secs;
@@ -459,43 +496,63 @@ mod tests {
 
     // ==================== Fail-closed rate limiter tests ====================
 
-    #[test]
-    fn test_cache_disabled_returns_in_memory() {
+    #[tokio::test]
+    async fn test_cache_disabled_returns_in_memory() {
         // When cache_enabled = false, the rate limiter must use InMemory.
         // This is the current dev/testing path and must never break.
-        let limiter = unwrap_ok!(RateLimiter::new(false, None, 10));
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 10).await);
         assert!(
             matches!(limiter, RateLimiter::InMemory { .. }),
             "cache_enabled = false must return InMemory rate limiter"
         );
     }
 
-    #[test]
-    fn test_cache_disabled_with_url_returns_in_memory() {
+    #[tokio::test]
+    async fn test_cache_disabled_with_url_returns_in_memory() {
         // Even when a URL is provided, cache_enabled = false -> InMemory.
-        let limiter = unwrap_ok!(RateLimiter::new(false, Some("redis://localhost:6379"), 10));
+        let limiter = unwrap_ok!(RateLimiter::new(false, Some("redis://localhost:6379"), 10).await);
         assert!(
             matches!(limiter, RateLimiter::InMemory { .. }),
             "cache_enabled = false must return InMemory even with a URL"
         );
     }
 
-    #[test]
-    fn test_cache_enabled_valid_url_returns_redis() {
-        // cache_enabled = true + valid URL format -> Redis variant.
-        // Note: Client::open only validates the URL format, it does not
-        // actually connect (that happens in check_redis).
-        let limiter = unwrap_ok!(RateLimiter::new(true, Some("redis://localhost:6379"), 10));
+    /// Optional integration test: requires a reachable Redis/Valkey.
+    /// Gated by TEST_REDIS_URL (same pattern as TEST_DATABASE_URL) so the
+    /// suite stays green on machines without a local Redis.
+    #[tokio::test]
+    async fn test_cache_enabled_reachable_redis_returns_redis() {
+        let Ok(url) = std::env::var("TEST_REDIS_URL") else {
+            eprintln!("TEST_REDIS_URL not set; skipping Redis integration test");
+            return;
+        };
+        let limiter = unwrap_ok!(RateLimiter::new(true, Some(&url), 10).await);
         assert!(
             matches!(limiter, RateLimiter::Redis { .. }),
-            "cache_enabled = true + valid URL must return Redis rate limiter"
+            "cache_enabled = true + reachable Redis must return Redis rate limiter"
+        );
+        // The pre-established connection must serve checks without opening
+        // any new socket.
+        let result = unwrap_ok!(limiter.check("integration_ip").await);
+        assert!(result.allowed);
+    }
+
+    #[tokio::test]
+    async fn test_cache_enabled_unreachable_redis_returns_error() {
+        // cache_enabled = true + well-formed URL but nothing listening ->
+        // error at boot (fail-closed), NOT a deferred failure at check().
+        // 127.0.0.1:1 is reserved (tcpmux) and never runs Redis.
+        let result = RateLimiter::new(true, Some("redis://127.0.0.1:1"), 10).await;
+        assert!(
+            result.is_err(),
+            "cache_enabled = true + unreachable Redis must fail at construction"
         );
     }
 
-    #[test]
-    fn test_cache_enabled_bad_url_returns_error() {
+    #[tokio::test]
+    async fn test_cache_enabled_bad_url_returns_error() {
         // cache_enabled = true + malformed URL -> error (fail-closed).
-        let result = RateLimiter::new(true, Some("not-a-valid-redis-url"), 10);
+        let result = RateLimiter::new(true, Some("not-a-valid-redis-url"), 10).await;
         let err = match result {
             Err(e) => e,
             Ok(_) => panic!("cache_enabled = true + bad URL must return Err"),
@@ -514,10 +571,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_cache_enabled_no_url_returns_error() {
+    #[tokio::test]
+    async fn test_cache_enabled_no_url_returns_error() {
         // cache_enabled = true but no URL -> error (fail-closed).
-        let result = RateLimiter::new(true, None, 10);
+        let result = RateLimiter::new(true, None, 10).await;
         let err = match result {
             Err(e) => e,
             Ok(_) => panic!("cache_enabled = true + no URL must return Err"),
@@ -534,7 +591,7 @@ mod tests {
     #[tokio::test]
     async fn test_in_memory_rate_limiter_still_functional() {
         // Regression: the in-memory backend must still work.
-        let limiter = unwrap_ok!(RateLimiter::new(false, None, 3));
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 3).await);
 
         // Use up the limit
         for i in 1..=3 {
@@ -655,11 +712,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_connection_is_established_only_in_new() {
+        // SANDBOX PIN: vauban-web seals its OS sandbox right after boot;
+        // socket()/connect() are denied afterwards.  The ONLY place allowed
+        // to open the Redis connection is RateLimiter::new (pre-sandbox).
+        // The needle is split so this test's own source does not match.
+        let source = include_str!("rate_limit.rs");
+        let needle = concat!("get_multiplexed_async_connection", "()");
+        assert_eq!(
+            source.matches(needle).count(),
+            1,
+            "the multiplexed-connection opener must appear EXACTLY once \
+             (in RateLimiter::new, before the sandbox gate); a second call \
+             site means a lazy post-sandbox reconnection crept back in"
+        );
+        // And the Redis variant must store the connection, not a client.
+        // (Needle split so this test's own source does not match.)
+        let client_field = concat!("client: ", "redis::Client");
+        assert!(
+            !source.contains(client_field),
+            "RateLimiter::Redis must hold a MultiplexedConnection, never a \
+             bare redis::Client (lazy connections are forbidden post-sandbox)"
+        );
+    }
+
     #[tokio::test]
     async fn test_in_memory_backend_unaffected_by_lua_script() {
         // Regression: the in-memory backend must still function correctly
         // after the Redis path was changed to use Lua scripting.
-        let limiter = unwrap_ok!(RateLimiter::new(false, None, 5));
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 5).await);
 
         // Verify basic rate limiting still works
         for i in 1..=5 {
