@@ -1078,16 +1078,47 @@ fn spawn_child(
                 std::process::exit(1);
             }
 
-            // Clear FD_CLOEXEC on FD passing socket so it survives exec
-            // This must be done before exec because the socket was created with FD_CLOEXEC
-            if let Some(fd) = fd_passing_socket {
-                use nix::fcntl::{FcntlArg, FdFlag, fcntl};
-                use std::os::unix::io::BorrowedFd;
-                let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-                if let Err(e) = fcntl(borrowed, FcntlArg::F_SETFD(FdFlag::empty())) {
-                    eprintln!("Failed to clear FD_CLOEXEC on fd_passing_socket: {}", e);
+            // FD hygiene (VAU-005, INV-3): every IPC pipe is created with
+            // FD_CLOEXEC (see shared::ipc::IpcChannel::pair, INV-1), so by
+            // default NOTHING survives execv. Here, and only here
+            // (INV-2: shared::ipc::clear_cloexec is the single door), we
+            // re-enable inheritance for the minimal allowlist destined to
+            // THIS child: its supervisor channel, its topology pipe ends,
+            // its FD-passing socket, and its declared inheritable FDs.
+            // Foreign services' pipe ends keep FD_CLOEXEC and close at exec.
+
+            // Supervisor IPC channel (read + write).
+            for fd in [read_fd, write_fd] {
+                if let Err(e) = shared::ipc::clear_cloexec(fd) {
+                    eprintln!(
+                        "Failed to clear FD_CLOEXEC on supervisor IPC fd {}: {}",
+                        fd, e
+                    );
                     std::process::exit(1);
                 }
+            }
+
+            // Topology pipe ends for this service (outgoing + incoming).
+            // `topology_pipes` was allocated before fork; iterating it is
+            // allocation-free (async-signal-safe enough for post-fork).
+            if let Some(pipes) = topology_pipes {
+                for (_, r_fd, w_fd) in pipes.outgoing.iter().chain(pipes.incoming.iter()) {
+                    for fd in [*r_fd, *w_fd] {
+                        if let Err(e) = shared::ipc::clear_cloexec(fd) {
+                            eprintln!("Failed to clear FD_CLOEXEC on topology fd {}: {}", fd, e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+
+            // Clear FD_CLOEXEC on FD passing socket so it survives exec
+            // This must be done before exec because the socket was created with FD_CLOEXEC
+            if let Some(fd) = fd_passing_socket
+                && let Err(e) = shared::ipc::clear_cloexec(fd)
+            {
+                eprintln!("Failed to clear FD_CLOEXEC on fd_passing_socket: {}", e);
+                std::process::exit(1);
             }
 
             // Same FD_CLOEXEC clearing for any extra inheritable FD (e.g.
@@ -1095,10 +1126,7 @@ fn spawn_child(
             // the proxy `accept()`s on this FD post-Capsicum and never
             // calls `bind()` itself).
             for (_env_name, fd) in inheritable_fds {
-                use nix::fcntl::{FcntlArg, FdFlag, fcntl};
-                use std::os::unix::io::BorrowedFd;
-                let borrowed = unsafe { BorrowedFd::borrow_raw(*fd) };
-                if let Err(e) = fcntl(borrowed, FcntlArg::F_SETFD(FdFlag::empty())) {
+                if let Err(e) = shared::ipc::clear_cloexec(*fd) {
                     eprintln!("Failed to clear FD_CLOEXEC on inheritable fd {}: {}", fd, e);
                     std::process::exit(1);
                 }
@@ -2939,11 +2967,13 @@ fn handle_audit_log_file_request(
     use std::os::unix::io::AsRawFd;
 
     let fail = |error: String| {
-        let _ = requester_state.channel.send(&Message::AuditLogFileResponse {
-            request_id,
-            success: false,
-            error: Some(error),
-        });
+        let _ = requester_state
+            .channel
+            .send(&Message::AuditLogFileResponse {
+                request_id,
+                success: false,
+                error: Some(error),
+            });
     };
 
     if let Err(e) = validate_audit_segment_name(segment_name) {
@@ -2992,11 +3022,13 @@ fn handle_audit_log_file_request(
     }
 
     debug!(path = %full_path.display(), "Audit segment fd sent (append-only)");
-    let _ = requester_state.channel.send(&Message::AuditLogFileResponse {
-        request_id,
-        success: true,
-        error: None,
-    });
+    let _ = requester_state
+        .channel
+        .send(&Message::AuditLogFileResponse {
+            request_id,
+            success: true,
+            error: None,
+        });
 }
 
 /// Gzip a PCAP recording file and remove the raw source (root-only).
@@ -3025,13 +3057,11 @@ fn handle_recording_file_gzip_request(
             });
     };
 
-    if let Err(e) =
-        shared::recording_paths::validate_recording_gzip_relative_paths(
-            src_relative,
-            dst_relative,
-            session_id,
-        )
-    {
+    if let Err(e) = shared::recording_paths::validate_recording_gzip_relative_paths(
+        src_relative,
+        dst_relative,
+        session_id,
+    ) {
         fail(e);
         return;
     }
@@ -3115,14 +3145,16 @@ fn handle_recording_file_gzip_request(
         dst_size,
         "Recording PCAP gzipped"
     );
-    let _ = requester_state.channel.send(&Message::RecordingFileGzipResponse {
-        request_id,
-        session_id: session_id.to_string(),
-        success: true,
-        dst_size,
-        blake3_hex: Some(blake3_hex),
-        error: None,
-    });
+    let _ = requester_state
+        .channel
+        .send(&Message::RecordingFileGzipResponse {
+            request_id,
+            session_id: session_id.to_string(),
+            success: true,
+            dst_size,
+            blake3_hex: Some(blake3_hex),
+            error: None,
+        });
 }
 
 /// Poll all service channels and process incoming messages.
@@ -3649,15 +3681,15 @@ mod tests {
             "2026/06/../../../etc/passwd",
             "/etc/2026/06/audit-1.jsonl",
             "2026/06/audit-1.jsonl/../../x",
-            "2026/6/audit-1.jsonl",         // month not 2 digits
-            "26/06/audit-1.jsonl",          // year not 4 digits
-            "2026/06/audit-.jsonl",         // empty counter
-            "2026/06/audit-1.txt",          // wrong suffix
-            "2026/06/recording-1.jsonl",    // wrong prefix
-            "2026/06/audit-1a.jsonl",       // non-digit counter
-            "2026/06/audit-1.jsonl\0",      // NUL byte
-            "2026\\06\\audit-1.jsonl",      // backslash
-            "audit-1.jsonl",                // missing date dirs
+            "2026/6/audit-1.jsonl",      // month not 2 digits
+            "26/06/audit-1.jsonl",       // year not 4 digits
+            "2026/06/audit-.jsonl",      // empty counter
+            "2026/06/audit-1.txt",       // wrong suffix
+            "2026/06/recording-1.jsonl", // wrong prefix
+            "2026/06/audit-1a.jsonl",    // non-digit counter
+            "2026/06/audit-1.jsonl\0",   // NUL byte
+            "2026\\06\\audit-1.jsonl",   // backslash
+            "audit-1.jsonl",             // missing date dirs
         ] {
             assert!(
                 validate_audit_segment_name(bad).is_err(),
@@ -3671,7 +3703,8 @@ mod tests {
     /// the key, which would orphan every previously signed segment).
     #[test]
     fn ensure_audit_signing_key_is_noop_when_key_exists() {
-        let dir = std::env::temp_dir().join(format!("vauban-audit-key-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("vauban-audit-key-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let key_path = dir.join("signing_key.sealed");
         std::fs::write(&key_path, b"v1:EXISTING-SEALED-KEY").unwrap();
@@ -5490,8 +5523,7 @@ mod tests {
 
         // Fake directory: a bound listener (kernel completes the handshake
         // from the listen backlog even without an explicit accept()).
-        let directory =
-            std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake directory");
+        let directory = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake directory");
         let dir_addr = directory.local_addr().unwrap();
 
         // Helper to build an "auth" child wired to a fresh socketpair + IPC.

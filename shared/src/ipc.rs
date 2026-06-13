@@ -64,13 +64,32 @@ impl IpcChannel {
     /// Returns (parent_channel, child_channel).
     /// Both channels have their read file descriptors set to non-blocking mode
     /// to support `try_recv()`.
+    ///
+    /// # Invariant INV-1 (creation, fail-closed)
+    ///
+    /// Every file descriptor produced by this function carries `FD_CLOEXEC`.
+    /// No code path may create an IPC pipe that is inheritable across
+    /// `execv` by default: a forked-and-exec'd child only keeps the pipe
+    /// ends that the supervisor explicitly re-enables via [`clear_cloexec`]
+    /// (post-fork, pre-exec). A forgotten descriptor therefore closes
+    /// itself at exec instead of leaking to a foreign service (VAU-005).
+    ///
+    /// Note: `pipe()` + `fcntl(F_SETFD)` is used instead of `pipe2(O_CLOEXEC)`
+    /// because macOS (dev platform) has no `pipe2(2)`. The subsequent
+    /// `F_SETFL(O_NONBLOCK)` only touches the file *status* flags, never the
+    /// *fd* flags, so `FD_CLOEXEC` survives.
     pub fn pair() -> Result<(Self, Self)> {
-        use nix::fcntl::{FcntlArg, OFlag, fcntl};
+        use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 
         // Create two pipes: one for each direction
         // nix::unistd::pipe() returns (read_fd, write_fd) as OwnedFd
         let (p2c_read, p2c_write) = pipe().map_err(|e| IpcError::Io(e.into()))?;
         let (c2p_read, c2p_write) = pipe().map_err(|e| IpcError::Io(e.into()))?;
+
+        // INV-1: every IPC pipe end is FD_CLOEXEC at creation (fail-closed).
+        for fd in [&p2c_read, &p2c_write, &c2p_read, &c2p_write] {
+            fcntl(fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(|e| IpcError::Io(e.into()))?;
+        }
 
         // Set read file descriptors to non-blocking mode for try_recv() support
         fcntl(&p2c_read, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))
@@ -176,6 +195,31 @@ impl IpcChannel {
             bincode::serde::decode_from_slice(&data, bincode::config::standard())?;
         Ok(msg)
     }
+}
+
+/// Make a file descriptor inheritable across `execv` (clears `FD_CLOEXEC`).
+///
+/// # Invariant INV-2 (single door)
+///
+/// This is the ONLY function allowed to make an IPC file descriptor
+/// inheritable across `execv`. It must be called exclusively by the
+/// supervisor's `spawn_child`, post-`fork()` and pre-`execv()`, on the
+/// minimal allowlist of descriptors destined for THAT child (its
+/// supervisor channel, its topology pipe ends, its FD-passing socket,
+/// its declared inheritable FDs). Calling it anywhere else re-opens the
+/// VAU-005 cross-service FD leak; the supervisor pin test
+/// `single_door_no_raw_fsetfd_empty_outside_clear_cloexec` enforces this.
+///
+/// Async-signal-safety: this function only performs a single `fcntl(2)`
+/// call (no allocation), so it is safe to call between `fork` and `exec`.
+pub fn clear_cloexec(fd: RawFd) -> Result<()> {
+    use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+
+    // SAFETY: We borrow the fd for the duration of this function.
+    // The caller ensures the fd is valid.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    fcntl(borrowed, FcntlArg::F_SETFD(FdFlag::empty())).map_err(|e| IpcError::Io(e.into()))?;
+    Ok(())
 }
 
 /// Try to read exact number of bytes without blocking.
@@ -573,6 +617,79 @@ mod tests {
         // FDs should be different
         assert_ne!(parent.read_fd(), parent.write_fd());
         assert_ne!(child.read_fd(), child.write_fd());
+    }
+
+    /// Helper: read the fd-flags (`F_GETFD`) of a raw fd.
+    fn fd_flags(fd: RawFd) -> nix::fcntl::FdFlag {
+        use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        let bits = fcntl(borrowed, FcntlArg::F_GETFD).expect("F_GETFD");
+        FdFlag::from_bits_truncate(bits)
+    }
+
+    /// Helper: read the status-flags (`F_GETFL`) of a raw fd.
+    fn fl_flags(fd: RawFd) -> nix::fcntl::OFlag {
+        use nix::fcntl::{FcntlArg, OFlag, fcntl};
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        let bits = fcntl(borrowed, FcntlArg::F_GETFL).expect("F_GETFL");
+        OFlag::from_bits_truncate(bits)
+    }
+
+    /// INV-1: every one of the four pipe ends produced by `pair()` carries
+    /// `FD_CLOEXEC` (fail-closed). A forked-and-exec'd child only keeps the
+    /// ends the supervisor explicitly re-enables.
+    #[test]
+    fn pair_sets_cloexec_on_all_four_ends() {
+        use nix::fcntl::FdFlag;
+        let (parent, child) = IpcChannel::pair().unwrap();
+
+        for fd in [
+            parent.read_fd(),
+            parent.write_fd(),
+            child.read_fd(),
+            child.write_fd(),
+        ] {
+            assert!(
+                fd_flags(fd).contains(FdFlag::FD_CLOEXEC),
+                "fd {fd} must carry FD_CLOEXEC (INV-1)"
+            );
+        }
+    }
+
+    /// Regression on the F_SETFL/F_SETFD coupling: setting `O_NONBLOCK` on the
+    /// read ends (status flags) must NOT clear `FD_CLOEXEC` (fd flags). Both
+    /// hold simultaneously.
+    #[test]
+    fn pair_preserves_nonblock_on_read_ends() {
+        use nix::fcntl::{FdFlag, OFlag};
+        let (parent, child) = IpcChannel::pair().unwrap();
+
+        for fd in [parent.read_fd(), child.read_fd()] {
+            assert!(
+                fl_flags(fd).contains(OFlag::O_NONBLOCK),
+                "read fd {fd} must be O_NONBLOCK (try_recv support)"
+            );
+            assert!(
+                fd_flags(fd).contains(FdFlag::FD_CLOEXEC),
+                "read fd {fd} must keep FD_CLOEXEC after F_SETFL(O_NONBLOCK)"
+            );
+        }
+    }
+
+    /// INV-2 mechanics: `clear_cloexec` removes `FD_CLOEXEC` so the fd becomes
+    /// inheritable across `execv`.
+    #[test]
+    fn clear_cloexec_makes_fd_inheritable() {
+        use nix::fcntl::FdFlag;
+        let (parent, _child) = IpcChannel::pair().unwrap();
+        let fd = parent.read_fd();
+
+        assert!(fd_flags(fd).contains(FdFlag::FD_CLOEXEC));
+        clear_cloexec(fd).expect("clear_cloexec");
+        assert!(
+            !fd_flags(fd).contains(FdFlag::FD_CLOEXEC),
+            "clear_cloexec must remove FD_CLOEXEC"
+        );
     }
 
     #[test]
