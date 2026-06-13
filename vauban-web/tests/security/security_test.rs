@@ -68,7 +68,7 @@ async fn test_sql_injection_prevention_user_creation() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "username": "' OR '1'='1",
             "email": "hacker@example.com",
@@ -88,7 +88,7 @@ async fn test_sql_injection_prevention_user_creation() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "username": "admin'--",
             "email": "test@example.com",
@@ -122,7 +122,7 @@ async fn test_sql_injection_prevention_user_search() {
     let response = app
         .server
         .get("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Should return valid response, not crash
@@ -515,7 +515,10 @@ async fn test_regular_user_cannot_create_user() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&regular_user.api_key),
+        )
         .json(&json!({
             "username": "should_fail",
             "email": "shouldfail@test.io",
@@ -544,7 +547,10 @@ async fn test_regular_user_cannot_update_user() {
     let response = app
         .server
         .put(&format!("/api/v1/accounts/{}", target.user.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&regular_user.api_key),
+        )
         .json(&json!({
             "first_name": "Hacked"
         }))
@@ -568,7 +574,10 @@ async fn test_regular_user_cannot_list_users() {
     let response = app
         .server
         .get("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&regular_user.api_key),
+        )
         .await;
 
     assert_status(&response, 403);
@@ -589,7 +598,10 @@ async fn test_regular_user_cannot_create_asset() {
     let response = app
         .server
         .post("/api/v1/assets/manage")
-        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&regular_user.api_key),
+        )
         .json(&json!({
             "name": "Unauthorized Asset",
             "hostname": "evil.example.com",
@@ -618,7 +630,10 @@ async fn test_regular_user_cannot_create_session() {
     let response = app
         .server
         .post("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&regular_user.api_key),
+        )
         .json(&json!({
             "asset_id": "00000000-0000-0000-0000-000000000000",
             "credential_id": "cred-123",
@@ -655,7 +670,10 @@ async fn test_regular_user_cannot_list_sessions() {
     let response = app
         .server
         .get("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&regular_user.api_key),
+        )
         .await;
 
     assert_status(&response, 200);
@@ -683,7 +701,7 @@ async fn test_admin_user_can_access_protected_endpoints() {
     let response = app
         .server
         .get("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
     assert_status(&response, 200);
 
@@ -691,7 +709,7 @@ async fn test_admin_user_can_access_protected_endpoints() {
     let response = app
         .server
         .get("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
     assert_status(&response, 200);
 
@@ -700,7 +718,7 @@ async fn test_admin_user_can_access_protected_endpoints() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "username": new_username,
             "email": format!("{}@test.io", new_username),
@@ -731,7 +749,10 @@ async fn test_regular_user_can_list_assets() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&regular_user.api_key),
+        )
         .await;
 
     assert_status(&response, 200);
@@ -758,7 +779,10 @@ async fn test_input_validation_user_creation() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .json(&json!({
             "username": "",
             "email": "test@example.com",
@@ -772,7 +796,10 @@ async fn test_input_validation_user_creation() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .json(&json!({
             "username": "testuser",
             "email": "not-an-email",
@@ -786,7 +813,10 @@ async fn test_input_validation_user_creation() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .json(&json!({
             "username": "testuser",
             "email": "test@example.com",
@@ -801,7 +831,10 @@ async fn test_input_validation_user_creation() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .json(&json!({
             "username": long_username,
             "email": "test@example.com",
@@ -829,7 +862,10 @@ async fn test_input_validation_asset_creation() {
     let response = app
         .server
         .post("/api/v1/assets/manage")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .json(&json!({
             "name": "Invalid Asset",
             "hostname": "invalid-host",
@@ -844,7 +880,10 @@ async fn test_input_validation_asset_creation() {
     let response = app
         .server
         .post("/api/v1/assets/manage")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .json(&json!({
             "name": "",
             "hostname": "host",
@@ -882,7 +921,10 @@ async fn test_xss_prevention_user_fields() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .json(&json!({
             "username": "<script>alert('xss')</script>",
             "email": "xss1@example.com",
@@ -903,7 +945,10 @@ async fn test_xss_prevention_user_fields() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .json(&json!({
             "username": "testuser_xss2",
             "email": "xss2@example.com",
@@ -1260,15 +1305,9 @@ async fn test_jwt_expiration() {
     let body: serde_json::Value = response.json();
     assert!(body.get("access_token").is_some());
 
-    // Token should be valid immediately after login
-    let token = unwrap_some!(body["access_token"].as_str());
-    let response = app
-        .server
-        .get("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(token))
-        .await;
-
-    assert_status(&response, 200);
+    // VAU-007: the freshly minted session JWT is a human credential and is
+    // intentionally NOT accepted on the M2M `/api/v1/*` surface (API-key-only).
+    // Its acceptance on web routes is covered by the web session tests.
 
     test_db::cleanup(&mut conn).await;
 }
@@ -1295,7 +1334,10 @@ async fn test_password_complexity() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .json(&json!({
             "username": "newuser1",
             "email": "new1@example.com",
@@ -1315,7 +1357,10 @@ async fn test_password_complexity() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .json(&json!({
             "username": "newuser2",
             "email": "new2@example.com",
@@ -1355,7 +1400,10 @@ async fn test_data_sanitization() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .json(&json!({
             "username": new_username,
             "email": format!("{}@example.com", new_username),
@@ -1376,7 +1424,10 @@ async fn test_data_sanitization() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .json(&json!({
             "username": html_username,
             "email": format!("{}@example.com", html_username),
@@ -2378,56 +2429,6 @@ async fn test_login_ignores_spoofed_xff_header() {
 // Before the fix, require_auth only validated the JWT signature without checking
 // the database, allowing revoked tokens to remain valid.
 
-/// Test that an API request with a valid JWT but a revoked session is rejected.
-/// This is the core regression test.
-#[tokio::test]
-#[serial]
-async fn test_revoked_session_token_rejected_on_api() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await;
-
-    // Create an admin user with a valid session
-    let username = unique_name("test_revoked_api");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
-
-    // Verify the token works before revocation
-    let response = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .await;
-    assert_status(&response, 200);
-
-    // Revoke the session by deleting it from the database
-    {
-        use diesel::{ExpressionMethods, QueryDsl};
-        use diesel_async::RunQueryDsl;
-        use vauban_web::schema::auth_sessions;
-
-        unwrap_ok!(
-            diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),)
-                .execute(&mut conn)
-                .await
-        );
-    }
-
-    // The same token should now be rejected (JWT is still valid, but session is revoked)
-    let response = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .await;
-
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 401 || status == 403,
-        "Expected 401 or 403 for revoked session token on API, got {}",
-        status
-    );
-
-    test_db::cleanup(&mut conn).await;
-}
-
 /// Test that a web page request with a revoked session redirects to login.
 #[tokio::test]
 #[serial]
@@ -2482,265 +2483,6 @@ async fn test_revoked_session_token_redirects_on_web() {
         "Expected redirect (303) or 401 for revoked session on web page, got {}",
         status
     );
-
-    test_db::cleanup(&mut conn).await;
-}
-
-/// Test that re-creating a session after revocation restores access.
-/// This verifies that the system correctly handles session lifecycle.
-#[tokio::test]
-#[serial]
-async fn test_new_session_works_after_revocation() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await;
-
-    let username = unique_name("test_reauth");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
-
-    // Revoke the session
-    {
-        use diesel::{ExpressionMethods, QueryDsl};
-        use diesel_async::RunQueryDsl;
-        use vauban_web::schema::auth_sessions;
-
-        unwrap_ok!(
-            diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),)
-                .execute(&mut conn)
-                .await
-        );
-    }
-
-    // Old token should be rejected
-    let response = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .await;
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 401 || status == 403,
-        "Old token should be rejected after revocation, got {}",
-        status
-    );
-
-    // Generate a new token and session for the same user
-    let new_token = app
-        .generate_test_token(
-            &admin.user.uuid.to_string(),
-            &admin.user.username,
-            true,
-            true,
-        )
-        .await;
-
-    // New token should work
-    let response = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&new_token))
-        .await;
-    assert_status(&response, 200);
-
-    test_db::cleanup(&mut conn).await;
-}
-
-/// Test that an idle-expired session is rejected even with a valid JWT.
-/// Sessions that exceed the idle timeout should be treated as invalid.
-#[tokio::test]
-#[serial]
-async fn test_idle_expired_session_rejected_on_api() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await;
-
-    let username = unique_name("test_idle_api");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
-
-    // Verify token works
-    let response = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .await;
-    assert_status(&response, 200);
-
-    // Set last_activity to 2 hours ago (exceeds idle timeout)
-    {
-        use chrono::{Duration, Utc};
-        use diesel::{ExpressionMethods, QueryDsl};
-        use diesel_async::RunQueryDsl;
-        use vauban_web::schema::auth_sessions;
-
-        unwrap_ok!(
-            diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),)
-                .set(auth_sessions::last_activity.eq(Utc::now() - Duration::hours(2)))
-                .execute(&mut conn)
-                .await
-        );
-    }
-
-    // Token should be rejected due to idle timeout
-    let response = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .await;
-
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 401 || status == 403,
-        "Expected 401/403 for idle-expired session on API, got {}",
-        status
-    );
-
-    test_db::cleanup(&mut conn).await;
-}
-
-/// Test that a session that exceeded max duration is rejected.
-#[tokio::test]
-#[serial]
-async fn test_max_duration_exceeded_session_rejected_on_api() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await;
-
-    let username = unique_name("test_maxdur_api");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
-
-    // Verify token works
-    let response = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .await;
-    assert_status(&response, 200);
-
-    // Set created_at to 10 hours ago (exceeds max_duration of 8h)
-    {
-        use chrono::{Duration, Utc};
-        use diesel::{ExpressionMethods, QueryDsl};
-        use diesel_async::RunQueryDsl;
-        use vauban_web::schema::auth_sessions;
-
-        unwrap_ok!(
-            diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),)
-                .set(auth_sessions::created_at.eq(Utc::now() - Duration::hours(10)))
-                .execute(&mut conn)
-                .await
-        );
-    }
-
-    // Token should be rejected due to max duration
-    let response = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .await;
-
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 401 || status == 403,
-        "Expected 401/403 for max-duration-exceeded session on API, got {}",
-        status
-    );
-
-    test_db::cleanup(&mut conn).await;
-}
-
-/// Test that a valid session with recent activity is accepted.
-/// This is a positive test to ensure session validation doesn't block valid sessions.
-#[tokio::test]
-#[serial]
-async fn test_valid_session_accepted_on_api() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await;
-
-    let username = unique_name("test_valid_sess");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
-
-    // Token with fresh session should work on API
-    let response = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .await;
-    assert_status(&response, 200);
-
-    // Also works on web pages
-    let response = app
-        .server
-        .get("/accounts/login-sessions")
-        .add_header(
-            header::COOKIE,
-            format!("access_token={}", admin.token)
-                .parse::<header::HeaderValue>()
-                .unwrap(),
-        )
-        .await;
-    assert_status(&response, 200);
-
-    test_db::cleanup(&mut conn).await;
-}
-
-/// Test that revoking one session doesn't affect other users' sessions.
-#[tokio::test]
-#[serial]
-async fn test_revoking_one_user_doesnt_affect_other() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await;
-
-    // Create two users
-    let username1 = unique_name("test_revoke_u1");
-    let username2 = unique_name("test_revoke_u2");
-    let admin1 = create_admin_user(&mut conn, &app.auth_service, &username1).await;
-    let admin2 = create_admin_user(&mut conn, &app.auth_service, &username2).await;
-
-    // Both should work initially
-    let response1 = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin1.token))
-        .await;
-    assert_status(&response1, 200);
-
-    let response2 = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin2.token))
-        .await;
-    assert_status(&response2, 200);
-
-    // Revoke user1's session only
-    {
-        use diesel::{ExpressionMethods, QueryDsl};
-        use diesel_async::RunQueryDsl;
-        use vauban_web::schema::auth_sessions;
-
-        unwrap_ok!(
-            diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(admin1.user.id)),)
-                .execute(&mut conn)
-                .await
-        );
-    }
-
-    // User1 should be rejected
-    let response1 = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin1.token))
-        .await;
-    let status1 = response1.status_code().as_u16();
-    assert!(
-        status1 == 401 || status1 == 403,
-        "User1 should be rejected after revocation, got {}",
-        status1
-    );
-
-    // User2 should still work
-    let response2 = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin2.token))
-        .await;
-    assert_status(&response2, 200);
 
     test_db::cleanup(&mut conn).await;
 }
@@ -2989,7 +2731,7 @@ async fn test_xss_sanitized_in_api_create_user() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, format!("Bearer {}", admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "username": new_username,
             "email": format!("{}@test.vauban.io", new_username),
@@ -3051,7 +2793,7 @@ async fn test_xss_sanitized_in_api_update_user() {
     let response = app
         .server
         .put(&format!("/api/v1/accounts/{}", target.user.uuid))
-        .add_header(header::AUTHORIZATION, format!("Bearer {}", admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "first_name": "<iframe src=evil.com></iframe>Bob",
             "last_name": "<svg/onload=alert(1)>Jones"
@@ -3276,7 +3018,7 @@ async fn test_xss_sanitized_in_api_create_asset() {
     let response = app
         .server
         .post("/api/v1/assets/manage")
-        .add_header(header::AUTHORIZATION, format!("Bearer {}", admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "name": "<script>alert('xss')</script>APIServer",
             "hostname": asset_hostname,
@@ -6988,7 +6730,10 @@ async fn test_api_endpoints_unaffected_by_web_mfa_enforcement() {
     let response = app
         .server
         .get("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(
+            header::AUTHORIZATION,
+            app.api_key_header(&test_user.api_key),
+        )
         .await;
 
     let status = response.status_code().as_u16();

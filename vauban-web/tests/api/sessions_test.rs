@@ -24,7 +24,7 @@ async fn test_list_sessions_as_admin() {
     let response = app
         .server
         .get("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Assert: 200 OK
@@ -49,7 +49,7 @@ async fn test_list_sessions_user_forbidden() {
     let response = app
         .server
         .get("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     // Assert: 200 OK with an EMPTY list. Regular users now have
@@ -86,7 +86,7 @@ async fn test_list_sessions_filter_status() {
     let response = app
         .server
         .get("/api/v1/sessions?status=active")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Assert: 200 OK
@@ -113,7 +113,7 @@ async fn test_create_session_success() {
     let response = app
         .server
         .post("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .json(&json!({
             "asset_uuid": asset.asset.uuid.to_string(),
             "session_type": "ssh",
@@ -151,7 +151,7 @@ async fn test_create_session_asset_not_found() {
     let response = app
         .server
         .post("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .json(&json!({
             "asset_uuid": fake_asset_uuid.to_string(),
             "session_type": "ssh",
@@ -190,7 +190,7 @@ async fn test_get_session_exists() {
     let response = app
         .server
         .get(&format!("/api/v1/sessions/{}", fake_session_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Assert: 404 Not Found
@@ -222,7 +222,7 @@ async fn test_get_session_not_owner() {
     let response = app
         .server
         .get(&format!("/api/v1/sessions/{}", fake_session_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&other.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&other.api_key))
         .await;
 
     // Assert: 403 Forbidden or 404 Not Found
@@ -250,7 +250,7 @@ async fn test_delete_session_returns_501_not_implemented() {
     let response = app
         .server
         .delete(&format!("/api/v1/sessions/{}", Uuid::new_v4()))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     assert_status(&response, 501);

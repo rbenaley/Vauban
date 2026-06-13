@@ -16,14 +16,15 @@
 //! whether the proxy backend is wired (test harness has no
 //! ssh_proxy/rdp_proxy and that path is a no-op).
 
-use axum::http::header::COOKIE;
+use axum::http::header::{self, COOKIE};
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use uuid::Uuid;
+use vauban_web::models::api_key::ApiKeyScope;
 
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
-    create_simple_admin_user, create_simple_ssh_asset, create_simple_user,
+    create_real_api_key, create_simple_admin_user, create_simple_ssh_asset, create_simple_user,
     create_test_session_with_uuid, grant_user_access_to_asset, unique_name,
 };
 
@@ -115,8 +116,6 @@ async fn test_owner_can_terminate_own_session_via_api() {
 
     let owner_name = unique_name("term_owner_api");
     let owner_id = create_simple_user(&mut conn, &owner_name).await;
-    let owner_uuid = get_user_uuid(&mut conn, owner_id).await;
-
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("term_owner_api_adm")).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("term_owner_api_ast"), admin_id).await;
@@ -131,19 +130,13 @@ async fn test_owner_can_terminate_own_session_via_api() {
     let (session_id, session_uuid) =
         create_test_session_with_uuid(&mut conn, owner_id, asset_id, "ssh", "active").await;
 
-    let token = app
-        .generate_test_token(&owner_uuid.to_string(), &owner_name, false, false)
-        .await;
-    let csrf_token = app.generate_csrf_token();
+    let (_key_uuid, api_key) =
+        create_real_api_key(&mut conn, owner_id, &[ApiKeyScope::Write], None).await;
 
     let response = app
         .server
         .post(&format!("/api/v1/sessions/{}/terminate", session_uuid))
-        .add_header(
-            COOKIE,
-            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
-        )
-        .add_header("X-CSRF-Token", csrf_token.as_str())
+        .add_header(header::AUTHORIZATION, app.api_key_header(&api_key))
         .await;
 
     let status = response.status_code().as_u16();
@@ -169,7 +162,6 @@ async fn test_admin_with_sessions_write_can_terminate_others_session_via_api() {
     let owner_id = create_simple_user(&mut conn, &owner_name).await;
     let admin_name = unique_name("term_admin_other_adm");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
-    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("term_admin_other_ast"), admin_id).await;
@@ -184,19 +176,13 @@ async fn test_admin_with_sessions_write_can_terminate_others_session_via_api() {
     let (session_id, session_uuid) =
         create_test_session_with_uuid(&mut conn, owner_id, asset_id, "ssh", "active").await;
 
-    let token = app
-        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
-        .await;
-    let csrf_token = app.generate_csrf_token();
+    let (_key_uuid, api_key) =
+        create_real_api_key(&mut conn, admin_id, &[ApiKeyScope::Write], None).await;
 
     let response = app
         .server
         .post(&format!("/api/v1/sessions/{}/terminate", session_uuid))
-        .add_header(
-            COOKIE,
-            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
-        )
-        .add_header("X-CSRF-Token", csrf_token.as_str())
+        .add_header(header::AUTHORIZATION, app.api_key_header(&api_key))
         .await;
 
     assert_status(&response, 200);
@@ -223,7 +209,6 @@ async fn test_user_without_sessions_write_cannot_terminate_others_session() {
     let owner_id = create_simple_user(&mut conn, &owner_name).await;
     let attacker_name = unique_name("term_other_atk");
     let attacker_id = create_simple_user(&mut conn, &attacker_name).await;
-    let attacker_uuid = get_user_uuid(&mut conn, attacker_id).await;
 
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("term_other_adm")).await;
     let asset_id =
@@ -239,19 +224,13 @@ async fn test_user_without_sessions_write_cannot_terminate_others_session() {
     let (session_id, session_uuid) =
         create_test_session_with_uuid(&mut conn, owner_id, asset_id, "ssh", "active").await;
 
-    let token = app
-        .generate_test_token(&attacker_uuid.to_string(), &attacker_name, false, false)
-        .await;
-    let csrf_token = app.generate_csrf_token();
+    let (_key_uuid, api_key) =
+        create_real_api_key(&mut conn, attacker_id, &[ApiKeyScope::Write], None).await;
 
     let response = app
         .server
         .post(&format!("/api/v1/sessions/{}/terminate", session_uuid))
-        .add_header(
-            COOKIE,
-            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
-        )
-        .add_header("X-CSRF-Token", csrf_token.as_str())
+        .add_header(header::AUTHORIZATION, app.api_key_header(&api_key))
         .await;
 
     assert_eq!(
@@ -282,8 +261,6 @@ async fn test_terminate_session_stamps_disconnected_at() {
 
     let owner_name = unique_name("term_proxy_owner");
     let owner_id = create_simple_user(&mut conn, &owner_name).await;
-    let owner_uuid = get_user_uuid(&mut conn, owner_id).await;
-
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("term_proxy_adm")).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("term_proxy_ast"), admin_id).await;
@@ -298,19 +275,13 @@ async fn test_terminate_session_stamps_disconnected_at() {
     let (session_id, session_uuid) =
         create_test_session_with_uuid(&mut conn, owner_id, asset_id, "ssh", "active").await;
 
-    let token = app
-        .generate_test_token(&owner_uuid.to_string(), &owner_name, false, false)
-        .await;
-    let csrf_token = app.generate_csrf_token();
+    let (_key_uuid, api_key) =
+        create_real_api_key(&mut conn, owner_id, &[ApiKeyScope::Write], None).await;
 
     let response = app
         .server
         .post(&format!("/api/v1/sessions/{}/terminate", session_uuid))
-        .add_header(
-            COOKIE,
-            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
-        )
-        .add_header("X-CSRF-Token", csrf_token.as_str())
+        .add_header(header::AUTHORIZATION, app.api_key_header(&api_key))
         .await;
     assert_status(&response, 200);
 
@@ -352,7 +323,6 @@ async fn test_api_terminate_does_not_panic_when_supervisor_absent() {
 
     let owner_name = unique_name("term_v14_owner");
     let owner_id = create_simple_user(&mut conn, &owner_name).await;
-    let owner_uuid = get_user_uuid(&mut conn, owner_id).await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("term_v14_adm")).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_v14_ast"), admin_id).await;
     let _ = grant_user_access_to_asset(
@@ -366,19 +336,13 @@ async fn test_api_terminate_does_not_panic_when_supervisor_absent() {
     let (session_id, session_uuid) =
         create_test_session_with_uuid(&mut conn, owner_id, asset_id, "ssh", "active").await;
 
-    let token = app
-        .generate_test_token(&owner_uuid.to_string(), &owner_name, false, false)
-        .await;
-    let csrf_token = app.generate_csrf_token();
+    let (_key_uuid, api_key) =
+        create_real_api_key(&mut conn, owner_id, &[ApiKeyScope::Write], None).await;
 
     let response = app
         .server
         .post(&format!("/api/v1/sessions/{}/terminate", session_uuid))
-        .add_header(
-            COOKIE,
-            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
-        )
-        .add_header("X-CSRF-Token", csrf_token.as_str())
+        .add_header(header::AUTHORIZATION, app.api_key_header(&api_key))
         .await;
     assert_status(&response, 200);
 

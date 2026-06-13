@@ -239,6 +239,18 @@ impl TestApp {
         unwrap_ok!(HeaderValue::from_str(&format!("Bearer {}", token)))
     }
 
+    /// Generate an `Authorization` header carrying a raw API key.
+    ///
+    /// VAU-007: the `/api/v1/*` zone is API-key-only. The middleware
+    /// accepts `Authorization: Bearer vbn_...` (the `vbn_` prefix is what
+    /// distinguishes a key from a JWT), so the integration suites send the
+    /// key through the same `header::AUTHORIZATION` slot they used for the
+    /// JWT, swapping `auth_header(&user.token)` for
+    /// `api_key_header(&user.api_key)`.
+    pub fn api_key_header(&self, raw_key: &str) -> HeaderValue {
+        unwrap_ok!(HeaderValue::from_str(&format!("Bearer {}", raw_key)))
+    }
+
     /// Generate a valid JWT for a test user and create a session in database.
     /// This is required because the middleware now validates sessions exist in DB.
     pub async fn generate_test_token(
@@ -942,6 +954,15 @@ fn build_test_router(state: AppState) -> Router {
                 state.config.secret_key.expose_secret().as_bytes().to_vec(),
             ),
             middleware::flash::flash_middleware,
+        ))
+        // VAU-007: mirror production -- enforce the API key scope on
+        // `/api/v1` requests authenticated by a key. Added before `auth`
+        // in the chain so it runs AFTER `auth_middleware` populates
+        // `ApiKeyAuth`. Pure pass-through for any request without an
+        // `ApiKeyAuth` extension (every web/ws route, and any API request
+        // that failed key auth).
+        .layer(axum::middleware::from_fn(
+            middleware::api_key::api_scope_enforcement,
         ))
         // Add Casbin PermissionContext middleware BEFORE auth in the `.layer()`
         // chain so that after Router's reverse-order wrapping it ends up INSIDE

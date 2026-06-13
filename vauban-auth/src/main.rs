@@ -204,12 +204,9 @@ fn run_service() -> Result<()> {
     // Typestate: `sealed` proves the sandbox was committed. It is threaded
     // into `main_loop`, making "run the loop without entering the sandbox"
     // a compile error.
-    let sealed = capsicum::setup_service_sandbox_extended(
-        &all_fds,
-        None,
-        fd_receiver_fds.as_deref(),
-    )
-    .context("Failed to setup sandbox")?;
+    let sealed =
+        capsicum::setup_service_sandbox_extended(&all_fds, None, fd_receiver_fds.as_deref())
+            .context("Failed to setup sandbox")?;
 
     capsicum::log_main_loop_start(
         &sealed,
@@ -255,7 +252,10 @@ fn build_ldap_runtime(
             }) => break (url, dn_template, ca_pem, timeout_secs),
             Ok(other) => {
                 // Heartbeats etc. may interleave; ignore until provisioning.
-                warn!("Ignoring {:?} while awaiting AuthLdapProvision", std::mem::discriminant(&other));
+                warn!(
+                    "Ignoring {:?} while awaiting AuthLdapProvision",
+                    std::mem::discriminant(&other)
+                );
             }
             Err(e) => anyhow::bail!("IPC error while awaiting AuthLdapProvision: {e}"),
         }

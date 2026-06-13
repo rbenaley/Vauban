@@ -1299,9 +1299,9 @@ impl AuditEventType {
     #[must_use]
     pub fn category(&self) -> &'static str {
         match self {
-            AuditEventType::AuthSuccess
-            | AuditEventType::AuthFailure
-            | AuditEventType::Logout => "auth",
+            AuditEventType::AuthSuccess | AuditEventType::AuthFailure | AuditEventType::Logout => {
+                "auth"
+            }
             AuditEventType::MfaEnrolled
             | AuditEventType::MfaReset
             | AuditEventType::MfaChallengePassed
@@ -2696,7 +2696,13 @@ mod tests {
         assert!(msg.request_id().is_none());
         let serialized = serialize(&msg);
         let back: Message = deserialize(&serialized);
-        assert!(matches!(back, Message::AuditNack { timestamp: 1234, .. }));
+        assert!(matches!(
+            back,
+            Message::AuditNack {
+                timestamp: 1234,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -3276,8 +3282,7 @@ mod tests {
         let msg = Message::AuthLdapProvision {
             url: "ldaps://dc1.example.com:636".to_string(),
             dn_template: "{username}@example.com".to_string(),
-            ca_pem: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
-                .to_string(),
+            ca_pem: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_string(),
             timeout_secs: 5,
         };
         // Provisioning carries no request_id (like TlsCertProvision).

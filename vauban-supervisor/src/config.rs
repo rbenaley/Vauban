@@ -1673,10 +1673,7 @@ mod tests {
     #[test]
     fn ldap_endpoint_parses_host_and_explicit_port() {
         let l = ldap(true, "ldaps://dc1.example.com:3269");
-        assert_eq!(
-            l.endpoint(),
-            Some(("dc1.example.com".to_string(), 3269))
-        );
+        assert_eq!(l.endpoint(), Some(("dc1.example.com".to_string(), 3269)));
     }
 
     #[test]
@@ -1775,10 +1772,7 @@ dn_template = "{username}@example.com"
 
 [services]
 "#;
-        let dir = std::env::temp_dir().join(format!(
-            "vauban-ldap-cfg-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("vauban-ldap-cfg-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("bad.toml");
         std::fs::write(&path, toml).unwrap();

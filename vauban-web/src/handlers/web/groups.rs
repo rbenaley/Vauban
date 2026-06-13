@@ -837,7 +837,10 @@ pub async fn add_group_member_web(
                 &state,
                 crate::ipc::AuditEvent::new(
                     shared::messages::AuditEventType::GroupMemberAdded,
-                    format!(r#"{{"group":"{}","member":"{}"}}"#, uuid_str, form.user_uuid),
+                    format!(
+                        r#"{{"group":"{}","member":"{}"}}"#,
+                        uuid_str, form.user_uuid
+                    ),
                 )
                 .user(auth_user.uuid.clone()),
             );

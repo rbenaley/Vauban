@@ -94,10 +94,19 @@ async fn create_staff_user(
         .await
         .ok();
 
+    let (_api_key_uuid, api_key) = crate::fixtures::create_real_api_key(
+        conn,
+        user.id,
+        &[vauban_web::models::api_key::ApiKeyScope::Admin],
+        None,
+    )
+    .await;
+
     crate::fixtures::TestUser {
         user,
         password: password.to_string(),
         token,
+        api_key,
     }
 }
 
@@ -176,10 +185,19 @@ async fn create_superuser_only(
         .await
         .ok();
 
+    let (_api_key_uuid, api_key) = crate::fixtures::create_real_api_key(
+        conn,
+        user.id,
+        &[vauban_web::models::api_key::ApiKeyScope::Admin],
+        None,
+    )
+    .await;
+
     crate::fixtures::TestUser {
         user,
         password: password.to_string(),
         token,
+        api_key,
     }
 }
 
@@ -207,7 +225,7 @@ async fn test_user_with_access_rule_sees_assets() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -239,7 +257,7 @@ async fn test_user_without_access_rule_sees_no_assets() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -280,7 +298,7 @@ async fn test_user_in_multiple_groups_sees_union() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -314,7 +332,7 @@ async fn test_superuser_sees_all_assets() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&su.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&su.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -343,7 +361,7 @@ async fn test_staff_sees_all_assets() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&staff.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&staff.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -377,7 +395,7 @@ async fn test_asset_without_group_not_visible_via_access_rules() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -399,7 +417,7 @@ async fn test_asset_without_group_not_visible_via_access_rules() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&su.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&su.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -457,7 +475,7 @@ async fn test_ssh_only_rule_hides_rdp_assets() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -521,7 +539,7 @@ async fn test_rdp_only_rule_hides_ssh_assets() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -585,7 +603,7 @@ async fn test_dual_protocol_rule_shows_both_types() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -636,7 +654,7 @@ async fn test_expired_access_rule_hides_assets() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -669,7 +687,7 @@ async fn test_future_access_rule_hides_assets() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -702,7 +720,7 @@ async fn test_inactive_access_rule_hides_assets() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -741,7 +759,7 @@ async fn test_session_creation_with_valid_access_rule() {
     let response = app
         .server
         .post("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .json(&json!({
             "asset_id": asset_uuid.to_string(),
             "credential_id": "cred-test",
@@ -781,7 +799,7 @@ async fn test_session_creation_wrong_protocol_denied() {
     let response = app
         .server
         .post("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .json(&json!({
             "asset_id": asset_uuid.to_string(),
             "credential_id": "cred-test",
@@ -815,7 +833,7 @@ async fn test_session_creation_without_access_rule_denied() {
     let response = app
         .server
         .post("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .json(&json!({
             "asset_id": asset_uuid.to_string(),
             "credential_id": "cred-test",
@@ -848,7 +866,7 @@ async fn test_session_creation_superuser_bypass() {
     let response = app
         .server
         .post("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&su.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&su.api_key))
         .json(&json!({
             "asset_id": asset_uuid.to_string(),
             "credential_id": "cred-test",
@@ -890,7 +908,7 @@ async fn test_session_creation_justification_required() {
     let response = app
         .server
         .post("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .json(&json!({
             "asset_id": asset_uuid.to_string(),
             "credential_id": "cred-test",
@@ -909,7 +927,7 @@ async fn test_session_creation_justification_required() {
     let response = app
         .server
         .post("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .json(&json!({
             "asset_id": asset_uuid.to_string(),
             "credential_id": "cred-test",
@@ -960,7 +978,7 @@ async fn test_deleted_asset_not_visible_with_access_rule() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     assert_status(&response, 200);

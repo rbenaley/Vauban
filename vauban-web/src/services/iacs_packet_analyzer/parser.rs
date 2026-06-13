@@ -345,7 +345,9 @@ mod tests {
             buf.extend_from_slice(&r);
         }
         let modbus = b"\x00\x01\x00\x00\x00\x06\x01\x03\x00\x00\x00\x0a";
-        for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, modbus, 2_000) {
+        for r in
+            synth::build_data_records(&mut flow, synth::Direction::ClientToServer, modbus, 2_000)
+        {
             buf.extend_from_slice(&r);
         }
         for r in synth::build_close(&flow, 3_000) {
@@ -431,7 +433,11 @@ mod tests {
             buf.extend_from_slice(&r);
         }
         let parsed = parse_pcap_bytes(&buf).expect("parse");
-        assert!(parsed.iter().all(|p| matches!(p.src_ip, std::net::IpAddr::V6(_))));
+        assert!(
+            parsed
+                .iter()
+                .all(|p| matches!(p.src_ip, std::net::IpAddr::V6(_)))
+        );
     }
 
     #[test]
@@ -445,7 +451,8 @@ mod tests {
         buf.extend_from_slice(&synth::build_global_header());
         // Payload bigger than IPv4 max segment.
         let payload = vec![0xAB; synth::MAX_IPV4_PAYLOAD + 100];
-        for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &payload, 0) {
+        for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &payload, 0)
+        {
             buf.extend_from_slice(&r);
         }
         let parsed = parse_pcap_bytes(&buf).expect("parse");
@@ -455,15 +462,45 @@ mod tests {
 
     #[test]
     fn tcp_flags_label_maps_known_combinations() {
-        let f = TcpFlags { fin: false, syn: true, rst: false, psh: false, ack: false };
+        let f = TcpFlags {
+            fin: false,
+            syn: true,
+            rst: false,
+            psh: false,
+            ack: false,
+        };
         assert_eq!(f.label(), "[SYN]");
-        let f = TcpFlags { fin: false, syn: true, rst: false, psh: false, ack: true };
+        let f = TcpFlags {
+            fin: false,
+            syn: true,
+            rst: false,
+            psh: false,
+            ack: true,
+        };
         assert_eq!(f.label(), "[SYN, ACK]");
-        let f = TcpFlags { fin: true, syn: false, rst: false, psh: false, ack: true };
+        let f = TcpFlags {
+            fin: true,
+            syn: false,
+            rst: false,
+            psh: false,
+            ack: true,
+        };
         assert_eq!(f.label(), "[FIN, ACK]");
-        let f = TcpFlags { fin: false, syn: false, rst: false, psh: true, ack: true };
+        let f = TcpFlags {
+            fin: false,
+            syn: false,
+            rst: false,
+            psh: true,
+            ack: true,
+        };
         assert_eq!(f.label(), "[PSH, ACK]");
-        let f = TcpFlags { fin: false, syn: false, rst: false, psh: false, ack: true };
+        let f = TcpFlags {
+            fin: false,
+            syn: false,
+            rst: false,
+            psh: false,
+            ack: true,
+        };
         assert_eq!(f.label(), "[ACK]");
     }
 
@@ -485,10 +522,7 @@ mod tests {
         let client_ip: std::net::IpAddr = "192.0.2.10".parse().unwrap();
         let server_ip: std::net::IpAddr = "198.51.100.20".parse().unwrap();
         // PSH+ACK from client to server.
-        let data = parsed
-            .iter()
-            .find(|p| !p.payload.is_empty())
-            .expect("data");
+        let data = parsed.iter().find(|p| !p.payload.is_empty()).expect("data");
         let dir = infer_direction(data, client_ip, 49_152, server_ip, 502);
         assert_eq!(dir, Direction::EwsToAsset);
     }

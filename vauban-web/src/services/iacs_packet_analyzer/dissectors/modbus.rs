@@ -113,11 +113,19 @@ pub fn dissect(payload: &[u8], payload_offset: usize, direction: Direction) -> D
     } else {
         match fc {
             0x01..=0x04 => match direction {
-                Direction::EwsToAsset => render_read_request(&mut children, payload, payload_offset, fc),
-                Direction::AssetToEws => render_read_response(&mut children, payload, payload_offset, fc),
+                Direction::EwsToAsset => {
+                    render_read_request(&mut children, payload, payload_offset, fc)
+                }
+                Direction::AssetToEws => {
+                    render_read_response(&mut children, payload, payload_offset, fc)
+                }
             },
-            0x05 | 0x06 => render_write_single(&mut children, payload, payload_offset, fc, direction),
-            0x0F | 0x10 => render_write_multiple(&mut children, payload, payload_offset, fc, direction),
+            0x05 | 0x06 => {
+                render_write_single(&mut children, payload, payload_offset, fc, direction)
+            }
+            0x0F | 0x10 => {
+                render_write_multiple(&mut children, payload, payload_offset, fc, direction)
+            }
             _ => format!("{} FC{:02x} {}", direction.arrow(), fc, fc_label(raw_fc)),
         }
     };
@@ -129,7 +137,13 @@ pub fn dissect(payload: &[u8], payload_offset: usize, direction: Direction) -> D
         MBAP_LEN,
         children.drain(..4).collect(),
     );
-    let pdu = FieldNode::parent("PDU", "modbus.pdu", payload_offset + MBAP_LEN, payload.len() - MBAP_LEN, children);
+    let pdu = FieldNode::parent(
+        "PDU",
+        "modbus.pdu",
+        payload_offset + MBAP_LEN,
+        payload.len() - MBAP_LEN,
+        children,
+    );
 
     Dissection {
         kind,
@@ -138,7 +152,12 @@ pub fn dissect(payload: &[u8], payload_offset: usize, direction: Direction) -> D
     }
 }
 
-fn render_read_request(children: &mut Vec<FieldNode>, payload: &[u8], offset: usize, fc: u8) -> String {
+fn render_read_request(
+    children: &mut Vec<FieldNode>,
+    payload: &[u8],
+    offset: usize,
+    fc: u8,
+) -> String {
     if payload.len() < MBAP_LEN + 5 {
         return format!("FC{:02x} Read (truncated)", fc);
     }
@@ -167,7 +186,12 @@ fn render_read_request(children: &mut Vec<FieldNode>, payload: &[u8], offset: us
     )
 }
 
-fn render_read_response(children: &mut Vec<FieldNode>, payload: &[u8], offset: usize, fc: u8) -> String {
+fn render_read_response(
+    children: &mut Vec<FieldNode>,
+    payload: &[u8],
+    offset: usize,
+    fc: u8,
+) -> String {
     if payload.len() < MBAP_LEN + 2 {
         return format!("FC{:02x} Read response (truncated)", fc);
     }

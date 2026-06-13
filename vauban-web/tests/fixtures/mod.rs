@@ -1,18 +1,19 @@
 /// VAUBAN Web - Test fixtures.
 ///
 /// Factory functions for creating test data.
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use sha3::{Digest, Sha3_256};
 use uuid::Uuid;
 
 use vauban_web::models::access_rule::NewAccessRule;
+use vauban_web::models::api_key::{ApiKey, ApiKeyScope, NewApiKey};
 use vauban_web::models::asset::{Asset, AssetType, NewAsset, NewAssetAssetGroup};
 use vauban_web::models::auth_session::NewAuthSession;
 use vauban_web::models::session::SessionType;
 use vauban_web::models::user::{AuthSource, NewUser, User};
-use vauban_web::schema::{access_rules, assets, auth_sessions, users};
+use vauban_web::schema::{access_rules, api_keys, assets, auth_sessions, users};
 use vauban_web::services::auth::AuthService;
 
 use crate::common::{unwrap_ok, unwrap_some};
@@ -67,6 +68,56 @@ pub struct TestUser {
     pub user: User,
     pub password: String,
     pub token: String,
+    /// A real, admin-scoped API key (raw `vbn_...`) owned by this user.
+    ///
+    /// VAU-007: the `/api/v1/*` zone is API-key-only, so the integration
+    /// suites authenticate with this key (via `TestApp::api_key_header`)
+    /// instead of the human JWT. The `admin` scope is deliberately
+    /// transparent -- it satisfies every `required_scope`, leaving the
+    /// owner's Casbin role as the sole authorization gate, exactly as the
+    /// JWT-based tests assumed.
+    pub api_key: String,
+}
+
+/// Create a real, usable API key owned by `user_id`.
+///
+/// Returns `(uuid, raw_key)`; `raw_key` (prefix `vbn_`) is what a client
+/// sends in `X-API-Key` or `Authorization: Bearer`. The hash stored in DB
+/// is the production `ApiKey::hash_key`, so this exercises the real
+/// authentication seam ([`vauban_web::middleware::api_key`]).
+pub async fn create_real_api_key(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    scopes: &[ApiKeyScope],
+    expires_at: Option<DateTime<Utc>>,
+) -> (Uuid, String) {
+    let (prefix, full_key, hash) = ApiKey::generate_key();
+    let key_uuid = Uuid::new_v4();
+    let scopes_json = serde_json::Value::Array(
+        scopes
+            .iter()
+            .map(|s| serde_json::Value::String(s.as_str().to_string()))
+            .collect(),
+    );
+
+    let new_key = NewApiKey {
+        uuid: key_uuid,
+        user_id,
+        name: format!("test-key-{}", &key_uuid.to_string()[..8]),
+        key_prefix: prefix,
+        key_hash: hash,
+        scopes: scopes_json,
+        expires_at,
+    };
+
+    unwrap_ok!(
+        diesel::insert_into(api_keys::table)
+            .values(&new_key)
+            .execute(conn)
+            .await
+    );
+
+    (key_uuid, full_key)
 }
 
 /// Create a standard test user.
@@ -119,10 +170,14 @@ pub async fn create_test_user(
     // Create session in database for middleware validation
     create_session_for_token(conn, user.id, session_uuid, &token).await;
 
+    let (_api_key_uuid, api_key) =
+        create_real_api_key(conn, user.id, &[ApiKeyScope::Admin], None).await;
+
     TestUser {
         user,
         password: password.to_string(),
         token,
+        api_key,
     }
 }
 
@@ -176,10 +231,14 @@ pub async fn create_admin_user(
     // Create session in database for middleware validation
     create_session_for_token(conn, user.id, session_uuid, &token).await;
 
+    let (_api_key_uuid, api_key) =
+        create_real_api_key(conn, user.id, &[ApiKeyScope::Admin], None).await;
+
     TestUser {
         user,
         password: password.to_string(),
         token,
+        api_key,
     }
 }
 
@@ -235,10 +294,14 @@ pub async fn create_staff_only_user(
 
     create_session_for_token(conn, user.id, session_uuid, &token).await;
 
+    let (_api_key_uuid, api_key) =
+        create_real_api_key(conn, user.id, &[ApiKeyScope::Admin], None).await;
+
     TestUser {
         user,
         password: password.to_string(),
         token,
+        api_key,
     }
 }
 
@@ -294,10 +357,14 @@ pub async fn create_mfa_user(
     // Create session in database for middleware validation
     create_session_for_token(conn, user.id, session_uuid, &token).await;
 
+    let (_api_key_uuid, api_key) =
+        create_real_api_key(conn, user.id, &[ApiKeyScope::Admin], None).await;
+
     TestUser {
         user,
         password: password.to_string(),
         token,
+        api_key,
     }
 }
 

@@ -74,7 +74,6 @@ fn fingerprint_sha256_hex(key: &PrivateKey) -> String {
     hex::encode(Sha256::digest(&bytes))
 }
 
-
 async fn seed_iacs_asset(conn: &mut AsyncPgConnection, admin_id: i32) -> i32 {
     use vauban_web::schema::assets;
     let label = unique_name("iacs_l5_asset");
@@ -160,7 +159,10 @@ async fn seed_session_and_ews(
     session_uuid
 }
 
-async fn spawn_test_sshd(app: &TestApp, target: &iacs_tunnel_fixture::EchoTarget) -> SpawnedIacsTunnel {
+async fn spawn_test_sshd(
+    app: &TestApp,
+    target: &iacs_tunnel_fixture::EchoTarget,
+) -> SpawnedIacsTunnel {
     let host_key_path =
         std::env::temp_dir().join(format!("vauban_iacs_l5_test_host_{}.key", Uuid::new_v4()));
     let cfg = IacsTunnelConfig {

@@ -31,7 +31,18 @@ pub struct AuthUser {
 }
 
 /// Implement FromRequestParts for AuthUser to extract from request extensions.
-/// Used by API endpoints - returns JSON 401 error if not authenticated.
+///
+/// Returns JSON errors (never a redirect), so it suits both the M2M API
+/// (`/api/v1/*`, fed by an API key with `mfa_verified = true`) and the
+/// HTMX/JSON web action handlers that consume the bare `AuthUser`
+/// (`connect_ssh`, RDP, IACS tunnel).
+///
+/// VAU-007: a principal is accepted ONLY when `mfa_verified` is true. A
+/// half-authenticated human (pre-MFA session JWT) is an incomplete
+/// credential and must not act on any protected surface; it is rejected
+/// with `403` (no `Location`, so API clients do not follow a redirect).
+/// API keys always carry `mfa_verified = true`, so M2M access is
+/// unaffected.
 impl<S> FromRequestParts<S> for AuthUser
 where
     S: Send + Sync,
@@ -39,11 +50,13 @@ where
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts
-            .extensions
-            .get::<AuthUser>()
-            .cloned()
-            .ok_or_else(|| AppError::Auth("Authentication required".to_string()))
+        match parts.extensions.get::<AuthUser>().cloned() {
+            Some(user) if user.mfa_verified => Ok(user),
+            Some(_) => Err(AppError::Authorization(
+                "MFA verification required".to_string(),
+            )),
+            None => Err(AppError::Auth("Authentication required".to_string())),
+        }
     }
 }
 
@@ -205,6 +218,15 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
+    // VAU-007 (INV-1): the `/api/*` zone is machine-to-machine. It
+    // authenticates EXCLUSIVELY via API keys; a human session JWT (Bearer
+    // or `access_token` cookie) never produces an `AuthUser` here. The JWT
+    // path below is therefore not even reached for API requests, and an
+    // API key is honored ONLY in this zone.
+    if request.uri().path().starts_with("/api/") {
+        return Ok(api_key_auth(&state, request, next).await);
+    }
+
     let token_info = extract_token_with_source(&jar, &request)?;
 
     if let Some((source, token)) = token_info {
@@ -248,6 +270,47 @@ pub async fn auth_middleware(
     }
 
     Ok(next.run(request).await)
+}
+
+/// API-key-only authentication for the `/api/*` zone (VAU-007, INV-1/INV-2).
+///
+/// Tries to authenticate the request via an API key
+/// ([`crate::middleware::api_key`]); on success injects the synthesized
+/// [`AuthUser`] (`mfa_verified = true`) and the key's
+/// [`crate::middleware::api_key::ApiKeyAuth`] scopes. On any failure
+/// (absent / malformed / invalid / revoked / expired key, inactive owner)
+/// nothing is injected and the request falls through unauthenticated, so
+/// the downstream `AuthUser` extractor returns `401`. A human JWT is never
+/// consulted here.
+async fn api_key_auth(state: &AppState, mut request: Request, next: Next) -> Response {
+    use crate::middleware::api_key::{ApiKeyAuth, authenticate_api_key, extract_api_key};
+
+    if let Some(raw_key) = extract_api_key(request.headers()) {
+        let client_ip = api_client_ip(state, &request);
+        if let Some((user, scopes)) = authenticate_api_key(state, &raw_key, client_ip).await {
+            request.extensions_mut().insert(user);
+            request.extensions_mut().insert(ApiKeyAuth { scopes });
+        }
+    }
+
+    next.run(request).await
+}
+
+/// Resolve the client IP for API-key usage bookkeeping (best-effort).
+///
+/// Returns `None` when `ConnectInfo` is unavailable (e.g. in tests), in
+/// which case `last_used_ip` simply stays NULL.
+fn api_client_ip(state: &AppState, request: &Request) -> Option<ipnetwork::IpNetwork> {
+    let connect = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0)?;
+    let trusted = state.config.security.parsed_trusted_proxies();
+    Some(crate::middleware::client_addr::extract_client_ip(
+        request.headers(),
+        connect,
+        &trusted,
+    ))
 }
 
 /// Verify that the session exists in the database and check timeout constraints.

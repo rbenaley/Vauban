@@ -31,8 +31,7 @@ use self::dissectors::Dissection;
 use self::flow::ChannelEndpoints;
 use self::parser::{ParserError, RawPacket};
 use self::types::{
-    Direction, FieldNode, PacketDetail, PacketKind, PacketListFilter, PacketListPage,
-    PacketSummary,
+    Direction, FieldNode, PacketDetail, PacketKind, PacketListFilter, PacketListPage, PacketSummary,
 };
 
 pub use self::parser::parse_pcap_bytes;
@@ -234,13 +233,7 @@ fn detail_from_raw(
                 0,
                 0,
             ),
-            FieldNode::leaf(
-                "Sequence",
-                format!("{}", p.seq),
-                "frame.seq",
-                0,
-                0,
-            ),
+            FieldNode::leaf("Sequence", format!("{}", p.seq), "frame.seq", 0, 0),
             FieldNode::leaf("Acknowledgment", format!("{}", p.ack), "frame.ack", 0, 0),
         ],
     );
@@ -305,11 +298,15 @@ mod tests {
         }
         // FC06 Write Single Register -> Cmd.
         let modbus = b"\x00\x01\x00\x00\x00\x06\x01\x06\x00\x05\x00\x2a";
-        for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, modbus, 2_000) {
+        for r in
+            synth::build_data_records(&mut flow, synth::Direction::ClientToServer, modbus, 2_000)
+        {
             buf.extend_from_slice(&r);
         }
         // Response (echo).
-        for r in synth::build_data_records(&mut flow, synth::Direction::ServerToClient, modbus, 3_000) {
+        for r in
+            synth::build_data_records(&mut flow, synth::Direction::ServerToClient, modbus, 3_000)
+        {
             buf.extend_from_slice(&r);
         }
         for r in synth::build_close(&flow, 4_000) {
@@ -324,7 +321,10 @@ mod tests {
         let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Modbus).unwrap();
         // 3 handshake + (PSH+ACK + cumulative ACK) c2s + (PSH+ACK + cumulative ACK) s2c
         // + 4 close = 11 records.
-        let cmds: Vec<_> = summaries.iter().filter(|s| s.kind == PacketKind::Cmd).collect();
+        let cmds: Vec<_> = summaries
+            .iter()
+            .filter(|s| s.kind == PacketKind::Cmd)
+            .collect();
         assert_eq!(cmds.len(), 2, "two PSH+ACK frames carry the FC06 payload");
         assert_eq!(summaries.len(), 11);
     }
@@ -351,7 +351,11 @@ mod tests {
             ..Default::default()
         };
         let page = page_summaries(summaries, filter);
-        assert!(page.items.iter().all(|s| s.direction == Direction::AssetToEws));
+        assert!(
+            page.items
+                .iter()
+                .all(|s| s.direction == Direction::AssetToEws)
+        );
     }
 
     #[test]

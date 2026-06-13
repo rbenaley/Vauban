@@ -169,7 +169,11 @@ async fn spawn_test_sshd(
 /// as the per-session `(asset_host, asset_port)`, with a generous
 /// deadline. `industrial_protocol = "tcp"` selects the Passthrough
 /// gate so the echo bytes relay unaltered.
-fn make_pending(session_uuid: Uuid, key: &PrivateKey, target: std::net::SocketAddr) -> PendingTunnel {
+fn make_pending(
+    session_uuid: Uuid,
+    key: &PrivateKey,
+    target: std::net::SocketAddr,
+) -> PendingTunnel {
     PendingTunnel {
         session_uuid,
         user_uuid: Uuid::new_v4(),
@@ -218,14 +222,21 @@ async fn happy_path_real_handshake_relays_bytes() {
     let target = spawn_echo_target().await;
     let pending = PendingSessions::new();
     let (sshd_addr, registry) = spawn_test_sshd(pending.clone(), target, 16).await;
-    pending.insert(make_pending(session_uuid, &key, target)).await;
+    pending
+        .insert(make_pending(session_uuid, &key, target))
+        .await;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
         .expect("auth must succeed against the production sshd");
 
     let chan = handle
-        .channel_open_direct_tcpip(target.ip().to_string(), target.port() as u32, "127.0.0.1", 0)
+        .channel_open_direct_tcpip(
+            target.ip().to_string(),
+            target.port() as u32,
+            "127.0.0.1",
+            0,
+        )
         .await
         .expect("direct-tcpip to the pinned target must succeed");
 
@@ -367,7 +378,9 @@ async fn refuses_session_channel() {
     let target = spawn_echo_target().await;
     let pending = PendingSessions::new();
     let (sshd_addr, _registry) = spawn_test_sshd(pending.clone(), target, 16).await;
-    pending.insert(make_pending(session_uuid, &key, target)).await;
+    pending
+        .insert(make_pending(session_uuid, &key, target))
+        .await;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
@@ -383,7 +396,9 @@ async fn refuses_direct_tcpip_to_wrong_target() {
     let target = spawn_echo_target().await;
     let pending = PendingSessions::new();
     let (sshd_addr, _registry) = spawn_test_sshd(pending.clone(), target, 16).await;
-    pending.insert(make_pending(session_uuid, &key, target)).await;
+    pending
+        .insert(make_pending(session_uuid, &key, target))
+        .await;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
@@ -412,7 +427,9 @@ async fn refuses_tcpip_forward() {
     let target = spawn_echo_target().await;
     let pending = PendingSessions::new();
     let (sshd_addr, _registry) = spawn_test_sshd(pending.clone(), target, 16).await;
-    pending.insert(make_pending(session_uuid, &key, target)).await;
+    pending
+        .insert(make_pending(session_uuid, &key, target))
+        .await;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
@@ -428,7 +445,9 @@ async fn refuses_streamlocal_channel() {
     let target = spawn_echo_target().await;
     let pending = PendingSessions::new();
     let (sshd_addr, _registry) = spawn_test_sshd(pending.clone(), target, 16).await;
-    pending.insert(make_pending(session_uuid, &key, target)).await;
+    pending
+        .insert(make_pending(session_uuid, &key, target))
+        .await;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
@@ -453,23 +472,40 @@ async fn enforces_per_login_concurrent_channel_cap() {
     let target = spawn_echo_target().await;
     let pending = PendingSessions::new();
     let (sshd_addr, _registry) = spawn_test_sshd(pending.clone(), target, 2).await;
-    pending.insert(make_pending(session_uuid, &key, target)).await;
+    pending
+        .insert(make_pending(session_uuid, &key, target))
+        .await;
 
     let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
         .await
         .expect("auth");
 
     let chan_a = handle
-        .channel_open_direct_tcpip(target.ip().to_string(), target.port() as u32, "127.0.0.1", 0)
+        .channel_open_direct_tcpip(
+            target.ip().to_string(),
+            target.port() as u32,
+            "127.0.0.1",
+            0,
+        )
         .await
         .expect("first concurrent channel within cap");
     let chan_b = handle
-        .channel_open_direct_tcpip(target.ip().to_string(), target.port() as u32, "127.0.0.1", 0)
+        .channel_open_direct_tcpip(
+            target.ip().to_string(),
+            target.port() as u32,
+            "127.0.0.1",
+            0,
+        )
         .await
         .expect("second concurrent channel within cap");
 
     let third = handle
-        .channel_open_direct_tcpip(target.ip().to_string(), target.port() as u32, "127.0.0.1", 0)
+        .channel_open_direct_tcpip(
+            target.ip().to_string(),
+            target.port() as u32,
+            "127.0.0.1",
+            0,
+        )
         .await;
     assert!(
         third.is_err(),
@@ -481,7 +517,12 @@ async fn enforces_per_login_concurrent_channel_cap() {
     chan_a.close().await.expect("close first");
     tokio::time::sleep(Duration::from_millis(80)).await;
     let chan_c = handle
-        .channel_open_direct_tcpip(target.ip().to_string(), target.port() as u32, "127.0.0.1", 0)
+        .channel_open_direct_tcpip(
+            target.ip().to_string(),
+            target.port() as u32,
+            "127.0.0.1",
+            0,
+        )
         .await
         .expect("a freed slot must allow a new direct-tcpip");
     let _ = chan_b.close().await;

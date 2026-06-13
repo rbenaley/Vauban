@@ -149,9 +149,7 @@ fn emit_access_denied(
         state,
         crate::ipc::AuditEvent::new(
             shared::messages::AuditEventType::AccessDenied,
-            format!(
-                r#"{{"seam":"session_access","intent":"{intent:?}","reason":"{reason}"}}"#
-            ),
+            format!(r#"{{"seam":"session_access","intent":"{intent:?}","reason":"{reason}"}}"#),
         )
         .user(user.uuid.to_string())
         .session(session_uuid.to_string()),

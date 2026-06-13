@@ -41,7 +41,9 @@
 /// Concurrency (TOCTOU guard):
 /// - concurrent_demotions_keep_at_least_one_superuser
 use crate::common::{TestApp, unwrap_ok, unwrap_some};
-use crate::fixtures::{create_admin_user, create_simple_admin_user, unique_name};
+use crate::fixtures::{
+    create_admin_user, create_simple_admin_user, create_staff_only_user, unique_name,
+};
 use axum::http::header::{self, COOKIE, LOCATION, SET_COOKIE};
 use chrono::Utc;
 use diesel::{ExpressionMethods, QueryDsl};
@@ -489,7 +491,7 @@ async fn superuser_cannot_self_deactivate_via_api() {
     let response = app
         .server
         .put(&format!("/api/v1/accounts/{}", admin.user.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({ "is_active": false }))
         .await;
 
@@ -666,7 +668,13 @@ async fn cannot_deactivate_last_active_superuser_via_api() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let op = create_admin_user(
+    // VAU-007: the M2M API authenticates by API key and re-checks that the
+    // key owner is `is_active` (INV-2). The operator must therefore stay
+    // active, so it is a STAFF user (users:write, not a superuser): the
+    // isolation step below only deactivates superusers, leaving `op` active
+    // and able to drive the request, while `target` becomes the sole active
+    // superuser so the last-active-superuser fence still fires.
+    let op = create_staff_only_user(
         &mut conn,
         &app.auth_service,
         &unique_name("last_super_deact_api_op"),
@@ -676,11 +684,8 @@ async fn cannot_deactivate_last_active_superuser_via_api() {
     let target_username = unique_name("last_super_deact_api_target");
     let target_id = create_simple_admin_user(&mut conn, &target_username).await;
 
-    // The token is already populated by `create_admin_user`; the
-    // isolation step deactivates the operator AND every other active
-    // superuser, leaving target as the sole active one. The operator
-    // can still drive the request because the auth middleware does
-    // not re-check `is_active` on every request.
+    // Deactivate every active superuser, leaving `target` as the sole
+    // active one. `op` is staff (not a superuser), so it is untouched.
     let (touched, when) = isolate_as_only_active_superuser(&mut conn, target_id).await;
     let before = read_snapshot(&mut conn, target_id).await;
     let target_uuid = get_user_uuid(&mut conn, target_id).await;
@@ -689,7 +694,7 @@ async fn cannot_deactivate_last_active_superuser_via_api() {
     let response = app
         .server
         .put(&format!("/api/v1/accounts/{}", target_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&op.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&op.api_key))
         .json(&json!({ "is_active": false }))
         .await;
 

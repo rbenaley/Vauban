@@ -15,7 +15,9 @@ use tracing::debug;
 pub fn emit_audit(state: &AppState, event: AuditEvent) {
     match &state.audit_client {
         Some(client) => client.emit(event),
-        None => debug!(event_type = ?event.event_type, "audit: no client; event not emitted (dev mode)"),
+        None => {
+            debug!(event_type = ?event.event_type, "audit: no client; event not emitted (dev mode)")
+        }
     }
 }
 

@@ -21,9 +21,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
 use vauban_audit::iacs_pcap_synth as synth;
-use vauban_web::services::iacs_packet_analyzer::types::{
-    Direction, PacketKind, PacketListFilter,
-};
+use vauban_web::services::iacs_packet_analyzer::types::{Direction, PacketKind, PacketListFilter};
 use vauban_web::services::iacs_packet_analyzer::{
     analyze_channel_bytes, analyze_packet_bytes, page_summaries,
 };
@@ -43,13 +41,19 @@ fn build_modbus_capture() -> Vec<u8> {
     }
     // FC03 read holding registers (10 regs from 0).
     let read_req = b"\x00\x01\x00\x00\x00\x06\x01\x03\x00\x00\x00\x0a";
-    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, read_req, 1_000) {
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, read_req, 1_000)
+    {
         buf.extend_from_slice(&r);
     }
     // Read response 20 bytes payload.
     let read_resp = b"\x00\x01\x00\x00\x00\x17\x01\x03\x14\
                      \x00\x0a\x00\x14\x00\x1e\x00\x28\x00\x32\x00\x3c\x00\x46\x00\x50\x00\x5a\x00\x64";
-    for r in synth::build_data_records(&mut flow, synth::Direction::ServerToClient, read_resp, 2_000) {
+    for r in synth::build_data_records(
+        &mut flow,
+        synth::Direction::ServerToClient,
+        read_resp,
+        2_000,
+    ) {
         buf.extend_from_slice(&r);
     }
     // FC06 write single register @5 = 0x002a.
@@ -76,7 +80,8 @@ fn build_iec104_capture() -> Vec<u8> {
     }
     // U-frame STARTDT act.
     let startdt = vec![0x68u8, 0x04, 0x07, 0x00, 0x00, 0x00];
-    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &startdt, 1_000) {
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &startdt, 1_000)
+    {
         buf.extend_from_slice(&r);
     }
     // I-frame C_SC_NA_1 (Single Command) -- type 45, cot 6.
@@ -99,8 +104,14 @@ fn modbus_capture_round_trips_with_correct_classification() {
     let buf = build_modbus_capture();
     let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Modbus).unwrap();
 
-    let cmds: Vec<_> = summaries.iter().filter(|s| s.kind == PacketKind::Cmd).collect();
-    let reads: Vec<_> = summaries.iter().filter(|s| s.kind == PacketKind::Read).collect();
+    let cmds: Vec<_> = summaries
+        .iter()
+        .filter(|s| s.kind == PacketKind::Cmd)
+        .collect();
+    let reads: Vec<_> = summaries
+        .iter()
+        .filter(|s| s.kind == PacketKind::Read)
+        .collect();
     assert_eq!(cmds.len(), 1, "exactly one FC06 write (Cmd)");
     // FC03 request and FC03 response -> two Reads.
     assert_eq!(reads.len(), 2, "request + response -> 2 reads");
@@ -142,12 +153,13 @@ fn iec104_capture_classifies_startdt_and_command() {
     let buf = build_iec104_capture();
     let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Iec104).unwrap();
     assert!(
-        summaries
-            .iter()
-            .any(|s| s.summary.contains("STARTDT")),
+        summaries.iter().any(|s| s.summary.contains("STARTDT")),
         "STARTDT U-frame must be visible in the timeline"
     );
-    let cmds: Vec<_> = summaries.iter().filter(|s| s.kind == PacketKind::Cmd).collect();
+    let cmds: Vec<_> = summaries
+        .iter()
+        .filter(|s| s.kind == PacketKind::Cmd)
+        .collect();
     assert_eq!(cmds.len(), 1, "exactly one C_SC_NA_1 (Cmd)");
 }
 

@@ -266,7 +266,9 @@ mod tests {
                 _ => false,
             },
             VaultPeer::Auth => verb == "MfaVerify",
-            VaultPeer::ProxySsh | VaultPeer::ProxyRdp => verb == "Decrypt" && domain == "credentials",
+            VaultPeer::ProxySsh | VaultPeer::ProxyRdp => {
+                verb == "Decrypt" && domain == "credentials"
+            }
             VaultPeer::Audit => verb == "Decrypt" && domain == "audit",
             VaultPeer::Supervisor => false,
         }
@@ -358,9 +360,15 @@ mod tests {
     /// SECURITY: the supervisor control channel has NO vault capability.
     #[test]
     fn supervisor_is_denied_everything() {
-        assert!(!is_authorized(VaultPeer::Supervisor, &encrypt("credentials")));
+        assert!(!is_authorized(
+            VaultPeer::Supervisor,
+            &encrypt("credentials")
+        ));
         assert!(!is_authorized(VaultPeer::Supervisor, &encrypt("mfa")));
-        assert!(!is_authorized(VaultPeer::Supervisor, &decrypt("credentials")));
+        assert!(!is_authorized(
+            VaultPeer::Supervisor,
+            &decrypt("credentials")
+        ));
         assert!(!is_authorized(VaultPeer::Supervisor, &decrypt("mfa")));
         assert!(!is_authorized(VaultPeer::Supervisor, &mfa_generate()));
         assert!(!is_authorized(VaultPeer::Supervisor, &mfa_verify()));
@@ -456,7 +464,12 @@ mod tests {
             other => panic!("expected denied GetSecretResponse, got {other:?}"),
         }
         // A non-vault message yields no response (dropped by catch-all).
-        assert!(denied_response(&Message::Control(shared::messages::ControlMessage::Ping { seq: 1 })).is_none());
+        assert!(
+            denied_response(&Message::Control(shared::messages::ControlMessage::Ping {
+                seq: 1
+            }))
+            .is_none()
+        );
     }
 
     #[test]
@@ -465,7 +478,10 @@ mod tests {
             verb_and_domain(&encrypt("credentials")),
             Some(("VaultEncrypt", "credentials"))
         );
-        assert_eq!(verb_and_domain(&decrypt("mfa")), Some(("VaultDecrypt", "mfa")));
+        assert_eq!(
+            verb_and_domain(&decrypt("mfa")),
+            Some(("VaultDecrypt", "mfa"))
+        );
         assert_eq!(
             verb_and_domain(&mfa_verify()),
             Some(("VaultMfaVerify", "mfa"))

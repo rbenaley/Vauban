@@ -2048,6 +2048,15 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             )
     };
 
+    // VAU-007 (INV-3): enforce the API key scope (read/write/admin) on
+    // every request authenticated by an API key. Runs after
+    // `auth_middleware` (which sets `ApiKeyAuth`) since it is inner to the
+    // shared `common_layers`. No-op for requests without an `ApiKeyAuth`
+    // extension (the downstream `AuthUser` extractor then yields 401).
+    let api_routes = api_routes.layer(axum::middleware::from_fn(
+        middleware::api_key::api_scope_enforcement,
+    ));
+
     // Common middleware layers (applied to all routes)
     let flash_key = middleware::flash::FlashSecretKey(flash_secret);
     let common_layers = ServiceBuilder::new()

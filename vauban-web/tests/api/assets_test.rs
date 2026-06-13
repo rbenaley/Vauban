@@ -31,7 +31,7 @@ async fn test_list_assets_authenticated() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     // Assert: 200 OK with array
@@ -72,7 +72,7 @@ async fn test_list_assets_filter_by_type() {
     let response = app
         .server
         .get("/api/v1/assets?type=ssh")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     // Assert: 200 OK
@@ -99,7 +99,7 @@ async fn test_list_assets_filter_by_status() {
     let response = app
         .server
         .get("/api/v1/assets?status=online")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     // Assert: 200 OK
@@ -126,7 +126,7 @@ async fn test_create_asset_success() {
     let response = app
         .server
         .post("/api/v1/assets/manage")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "name": asset_name,
             "hostname": format!("{}.test.vauban.io", asset_name),
@@ -163,7 +163,7 @@ async fn test_create_asset_invalid_port() {
     let response = app
         .server
         .post("/api/v1/assets/manage")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "name": "test-invalid-port",
             "hostname": "port.test.vauban.io",
@@ -199,7 +199,7 @@ async fn test_get_asset_exists() {
     let response = app
         .server
         .get(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -227,7 +227,7 @@ async fn test_get_asset_not_found() {
     let response = app
         .server
         .get(&format!("/api/v1/assets/manage/{}", fake_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     assert_status(&response, 404);
@@ -252,7 +252,7 @@ async fn test_update_asset_success() {
     let response = app
         .server
         .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "name": "updated-asset-name",
             "status": "maintenance"
@@ -283,7 +283,7 @@ async fn test_update_asset_with_multiple_fields_persists_to_database() {
     let response = app
         .server
         .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "name": "multi-updated-asset",
             "port": 2222,
@@ -334,7 +334,7 @@ async fn test_update_asset_with_string_port() {
     let response = app
         .server
         .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&serde_json::json!({
             "port": "2222"
         }))
@@ -374,7 +374,7 @@ async fn test_update_asset_simple_field() {
     let response = app
         .server
         .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&serde_json::json!({
             "status": "maintenance"
         }))
@@ -417,7 +417,7 @@ async fn test_update_asset_full_form_submission() {
     let response = app
         .server
         .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&serde_json::json!({
             "name": updated_name,
             "hostname": updated_hostname,
@@ -483,7 +483,7 @@ async fn test_get_asset_malformed_uuid_returns_validation_error() {
         let response = app
             .server
             .get(&format!("/api/v1/assets/manage/{}", bad_uuid))
-            .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+            .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
             .await;
 
         let status = response.status_code().as_u16();
@@ -538,7 +538,7 @@ async fn test_ssh_host_key_status_no_key() {
             "/api/v1/assets/manage/{}/ssh-host-key",
             asset.asset.uuid
         ))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -585,7 +585,7 @@ async fn test_ssh_host_key_status_verified() {
             "/api/v1/assets/manage/{}/ssh-host-key",
             asset.asset.uuid
         ))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -639,7 +639,7 @@ async fn test_ssh_host_key_status_mismatch() {
             "/api/v1/assets/manage/{}/ssh-host-key",
             asset.asset.uuid
         ))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -675,7 +675,7 @@ async fn test_ssh_host_key_status_rejects_non_ssh() {
             "/api/v1/assets/manage/{}/ssh-host-key",
             rdp_asset.asset.uuid
         ))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     let status = response.status_code().as_u16();
@@ -735,7 +735,7 @@ async fn test_ssh_host_key_status_not_found() {
     let response = app
         .server
         .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", fake_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     assert_status(&response, 404);
@@ -770,7 +770,7 @@ async fn test_get_asset_exposes_mismatch_in_connection_config() {
     let response = app
         .server
         .get(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     assert_status(&response, 200);
@@ -831,7 +831,7 @@ async fn test_mismatch_flag_cleared_after_update() {
             "/api/v1/assets/manage/{}/ssh-host-key",
             asset.asset.uuid
         ))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
     assert_status(&response, 200);
     let json: serde_json::Value = response.json();
@@ -859,7 +859,7 @@ async fn test_mismatch_flag_cleared_after_update() {
             "/api/v1/assets/manage/{}/ssh-host-key",
             asset.asset.uuid
         ))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
     assert_status(&response, 200);
     let json: serde_json::Value = response.json();
@@ -898,7 +898,7 @@ async fn test_update_asset_malformed_uuid_returns_validation_error() {
     let response = app
         .server
         .put("/api/v1/assets/manage/invalid-uuid-here")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&serde_json::json!({
             "name": "Test Asset"
         }))
@@ -927,7 +927,7 @@ async fn test_delete_asset_returns_501_not_implemented() {
     let response = app
         .server
         .delete(&format!("/api/v1/assets/{}", Uuid::new_v4()))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     assert_status(&response, 501);
@@ -968,7 +968,7 @@ async fn test_create_asset_api_stamps_audit_actor_pair() {
     let response = app
         .server
         .post("/api/v1/assets/manage")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "name": asset_name,
             "hostname": format!("{}.audit.test", asset_name),
@@ -1029,7 +1029,7 @@ async fn test_update_asset_api_restamps_only_updated_by() {
     let create_resp = app
         .server
         .post("/api/v1/assets/manage")
-        .add_header(header::AUTHORIZATION, app.auth_header(&creator.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&creator.api_key))
         .json(&json!({
             "name": asset_name,
             "hostname": format!("{}.audit.test", asset_name),
@@ -1050,7 +1050,7 @@ async fn test_update_asset_api_restamps_only_updated_by() {
     let update_resp = app
         .server
         .put(&format!("/api/v1/assets/manage/{}", asset_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&editor.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&editor.api_key))
         .json(&json!({
             "status": "maintenance"
         }))
@@ -1102,7 +1102,7 @@ async fn test_asset_detail_html_renders_audit_usernames() {
     let create_resp = app
         .server
         .post("/api/v1/assets/manage")
-        .add_header(header::AUTHORIZATION, app.auth_header(&creator.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&creator.api_key))
         .json(&json!({
             "name": asset_name,
             "hostname": format!("{}.audit.test", asset_name),
@@ -1121,14 +1121,14 @@ async fn test_asset_detail_html_renders_audit_usernames() {
     let _ = app
         .server
         .put(&format!("/api/v1/assets/manage/{}", asset_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&editor.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&editor.api_key))
         .json(&json!({ "status": "maintenance" }))
         .await;
 
     let html_resp = app
         .server
         .get(&format!("/assets/manage/{}", asset_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&editor.token))
+        .add_header(COOKIE, format!("access_token={}", editor.token))
         .await;
     assert_status(&html_resp, 200);
     let body = html_resp.text();
@@ -1186,7 +1186,7 @@ async fn test_deleted_list_surfaces_deleting_operator_username() {
     let create_resp = app
         .server
         .post("/api/v1/assets/manage")
-        .add_header(header::AUTHORIZATION, app.auth_header(&creator.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&creator.api_key))
         .json(&json!({
             "name": asset_name,
             "hostname": format!("{}.audit.test", asset_name),

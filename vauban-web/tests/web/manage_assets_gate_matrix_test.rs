@@ -21,7 +21,7 @@
 //! new admin route MUST update this test (defence-in-depth: a
 //! forgotten route would otherwise silently dodge the matrix).
 
-use axum::http::header::COOKIE;
+use axum::http::header::{self, COOKIE};
 use serial_test::serial;
 use uuid::Uuid;
 
@@ -160,6 +160,24 @@ async fn send(app: &TestApp, route: &Route, token: Option<&str>) -> u16 {
     req.await.status_code().as_u16()
 }
 
+/// Send `route` authenticated with an API key (`Authorization: Bearer
+/// vbn_...`). The `/api/v1/assets/manage/*` zone is M2M-only
+/// (API-key-only) after VAU-007, so the matrix exercises it with a
+/// real key rather than a human JWT cookie.
+async fn send_api(app: &TestApp, route: &Route, api_key: Option<&str>) -> u16 {
+    let url = url_for(route);
+    let req = match route.method {
+        Method::Get => app.server.get(&url),
+        Method::Post => app.server.post(&url),
+        Method::Put => app.server.put(&url),
+    };
+    let req = match api_key {
+        Some(k) => req.add_header(header::AUTHORIZATION, app.api_key_header(k)),
+        None => req,
+    };
+    req.await.status_code().as_u16()
+}
+
 /// Sanity guard: if a contributor adds (or accidentally drops) an
 /// admin asset route in `main.rs`, the count below MUST be updated
 /// in lock-step. This is the only mechanism that prevents a new
@@ -290,7 +308,7 @@ async fn api_routes_deny_regular_user() {
     let user = create_test_user(&mut conn, &app.auth_service, &user_name).await;
 
     for route in API_ROUTES {
-        let status = send(app, route, Some(&user.token)).await;
+        let status = send_api(app, route, Some(&user.api_key)).await;
         assert_eq!(
             status,
             403,
@@ -311,7 +329,7 @@ async fn api_routes_clear_gate_for_staff() {
     let staff = create_staff_only_user(&mut conn, &app.auth_service, &staff_name).await;
 
     for route in API_ROUTES {
-        let status = send(app, route, Some(&staff.token)).await;
+        let status = send_api(app, route, Some(&staff.api_key)).await;
         assert_ne!(
             status,
             403,

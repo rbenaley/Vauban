@@ -34,8 +34,8 @@ use crate::utils::format_duration;
 use crate::AppState;
 use crate::middleware::auth::{AuthSessionId, AuthUser, WsAuthUser};
 use crate::services::broadcast::WsChannel;
-use crate::services::session_activity::ActivityThrottle;
 use crate::services::connections::WsConnectionGuard;
+use crate::services::session_activity::ActivityThrottle;
 
 // ============================================================================
 // WebSocket connection limit middleware + guard extractor

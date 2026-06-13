@@ -14,9 +14,10 @@
 use std::path::PathBuf;
 
 fn src(rel: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src").join(rel);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join(rel);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
 /// Assert `file` references every needle (the emitter + each expected event
@@ -51,7 +52,10 @@ fn audit_client_module_exists() {
         "AuditAck",
         "AuditNack",
     ] {
-        assert!(body.contains(needle), "ipc/audit.rs must reference `{needle}`");
+        assert!(
+            body.contains(needle),
+            "ipc/audit.rs must reference `{needle}`"
+        );
     }
     // Wired into main and spawned.
     assert!(src("main.rs").contains("init_audit_client"));
@@ -164,6 +168,9 @@ fn sessions_and_approvals_seams_are_instrumented() {
 
 #[test]
 fn central_denial_seams_emit_access_denied() {
-    assert_seam("services/session_access.rs", &["AuditEventType::AccessDenied"]);
+    assert_seam(
+        "services/session_access.rs",
+        &["AuditEventType::AccessDenied"],
+    );
     assert_seam("auth/step_up.rs", &["AuditEventType::AccessDenied"]);
 }

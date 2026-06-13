@@ -458,7 +458,12 @@ fn handle_supervisor_message(
         // The authorization gate runs BEFORE handle_vault_request.
         other => {
             if !authz::is_authorized(authz::VaultPeer::Supervisor, &other) {
-                deny_vault_request(channel, state, &other, authz::VaultPeer::Supervisor.as_str());
+                deny_vault_request(
+                    channel,
+                    state,
+                    &other,
+                    authz::VaultPeer::Supervisor.as_str(),
+                );
                 return Ok(());
             }
             handle_vault_request(channel, state, other)

@@ -1,27 +1,15 @@
 /// VAUBAN Web - Vauban Groups API Tests.
 ///
 /// Tests for /api/v1/groups/* endpoints (user groups, not asset groups).
-use axum::http::header::COOKIE;
-use diesel::{ExpressionMethods, QueryDsl};
-use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use axum::http::header;
 use uuid::Uuid;
+use vauban_web::models::api_key::ApiKeyScope;
 
 use crate::common::{TestApp, assertions::assert_status};
 use crate::fixtures::{
-    add_user_to_vauban_group, create_simple_admin_user, create_simple_user,
+    add_user_to_vauban_group, create_real_api_key, create_simple_admin_user, create_simple_user,
     create_test_vauban_group, unique_name,
 };
-
-/// Helper to get user UUID from user_id.
-async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
-    use vauban_web::schema::users;
-    users::table
-        .filter(users::id.eq(user_id))
-        .select(users::uuid)
-        .first(conn)
-        .await
-        .expect("User should exist")
-}
 
 // =============================================================================
 // Group Members API Tests
@@ -41,16 +29,13 @@ async fn test_api_list_group_members_success() {
     // Create admin user for authentication
     let admin_name = unique_name("api_members_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
-    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-
-    let token = app
-        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
-        .await;
+    let (_key_uuid, token) =
+        create_real_api_key(&mut conn, admin_id, &[ApiKeyScope::Admin], None).await;
 
     let response = app
         .server
         .get(&format!("/api/v1/groups/{}/members", group_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .await;
 
     assert_status(&response, 200);
@@ -73,17 +58,14 @@ async fn test_api_list_group_members_not_found() {
     // Create admin user for authentication
     let admin_name = unique_name("api_members_404_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
-    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-
-    let token = app
-        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
-        .await;
+    let (_key_uuid, token) =
+        create_real_api_key(&mut conn, admin_id, &[ApiKeyScope::Admin], None).await;
 
     let fake_uuid = Uuid::new_v4();
     let response = app
         .server
         .get(&format!("/api/v1/groups/{}/members", fake_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .await;
 
     assert_status(&response, 404);
@@ -99,16 +81,13 @@ async fn test_api_list_group_members_empty() {
     // Create admin user for authentication
     let admin_name = unique_name("api_empty_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
-    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-
-    let token = app
-        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
-        .await;
+    let (_key_uuid, token) =
+        create_real_api_key(&mut conn, admin_id, &[ApiKeyScope::Admin], None).await;
 
     let response = app
         .server
         .get(&format!("/api/v1/groups/{}/members", group_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .await;
 
     assert_status(&response, 200);

@@ -56,22 +56,26 @@ async fn rdp_page_get(app: &TestApp, session_uuid: &str, token: &str) -> axum_te
 }
 
 /// API metadata read (`GET /api/v1/sessions/{uuid}`).
+///
+/// VAU-007: the `/api/v1/*` zone is API-key-only, so the M2M caller
+/// authenticates with a `vbn_` key (the owner's Casbin role still drives
+/// the session-access decision).
 async fn api_get_session(
     app: &TestApp,
     session_uuid: &str,
-    token: &str,
+    api_key: &str,
 ) -> axum_test::TestResponse {
     app.server
         .get(&format!("/api/v1/sessions/{}", session_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(api_key))
         .await
 }
 
 /// API list sessions (`GET /api/v1/sessions`).
-async fn api_list_sessions(app: &TestApp, token: &str) -> axum_test::TestResponse {
+async fn api_list_sessions(app: &TestApp, api_key: &str) -> axum_test::TestResponse {
     app.server
         .get("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(api_key))
         .await
 }
 
@@ -226,7 +230,7 @@ async fn test_user_b_cannot_terminate_user_a_session_via_api() {
     let resp = app
         .server
         .post(&format!("/api/v1/sessions/{}/terminate", session_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&attacker.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&attacker.api_key))
         .await;
     let status = resp.status_code().as_u16();
     // 404 is the anti-enum collapse for NotOwner-without-write. Some
@@ -278,7 +282,7 @@ async fn test_user_b_cannot_get_user_a_session_metadata() {
 
     drop(conn);
 
-    let resp = api_get_session(app, &session_uuid.to_string(), &attacker.token).await;
+    let resp = api_get_session(app, &session_uuid.to_string(), &attacker.api_key).await;
     let status = resp.status_code().as_u16();
     assert_eq!(
         status, 404,
@@ -330,7 +334,7 @@ async fn test_list_sessions_api_filters_to_caller_unless_supervise() {
 
     drop(conn);
 
-    let resp = api_list_sessions(app, &owner.token).await;
+    let resp = api_list_sessions(app, &owner.api_key).await;
     assert_eq!(resp.status_code().as_u16(), 200, "list must succeed");
     let body = resp.text();
 
@@ -383,22 +387,19 @@ async fn test_list_sessions_api_supervisor_sees_everything() {
     let (_sid_b, session_uuid_b) =
         create_test_session_with_uuid(&mut conn, other.user.id, asset_id, "ssh", "active").await;
 
-    use diesel::{ExpressionMethods, QueryDsl};
-    use diesel_async::RunQueryDsl;
-    use vauban_web::schema::users;
-    let admin_uuid = users::table
-        .filter(users::id.eq(admin_id))
-        .select(users::uuid)
-        .first::<uuid::Uuid>(&mut conn)
-        .await
-        .expect("admin uuid");
+    // VAU-007: the supervisor authenticates to the M2M API with an
+    // admin-scoped API key. The `sessions:supervise` capability still comes
+    // from the owner's superuser Casbin role, not from the key scope.
+    let (_admin_key_uuid, admin_api_key) = crate::fixtures::create_real_api_key(
+        &mut conn,
+        admin_id,
+        &[vauban_web::models::api_key::ApiKeyScope::Admin],
+        None,
+    )
+    .await;
     drop(conn);
 
-    let admin_token = app
-        .generate_test_token(&admin_uuid.to_string(), "listsup_admin", true, true)
-        .await;
-
-    let resp = api_list_sessions(app, &admin_token).await;
+    let resp = api_list_sessions(app, &admin_api_key).await;
     assert_eq!(resp.status_code().as_u16(), 200, "list must succeed");
     let body = resp.text();
 

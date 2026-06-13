@@ -1,16 +1,17 @@
 /// VAUBAN Web - Access Rules API Integration Tests.
 ///
 /// Tests for /api/v1/access-rules/* endpoints.
-use axum::http::header::COOKIE;
+use axum::http::header;
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use serde_json::json;
 use uuid::Uuid;
+use vauban_web::models::api_key::ApiKeyScope;
 
 use crate::common::TestApp;
 use crate::common::assertions::assert_status;
 use crate::fixtures::{
-    create_simple_admin_user, create_simple_user, create_test_asset_group,
+    create_real_api_key, create_simple_admin_user, create_simple_user, create_test_asset_group,
     create_test_vauban_group, unique_name,
 };
 
@@ -33,9 +34,8 @@ async fn setup_admin(app: &TestApp, prefix: &str) -> (String, Uuid) {
     let admin_name = unique_name(prefix);
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let token = app
-        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
-        .await;
+    let (_key_uuid, token) =
+        create_real_api_key(&mut conn, admin_id, &[ApiKeyScope::Admin], None).await;
     (token, admin_uuid)
 }
 
@@ -59,7 +59,7 @@ async fn test_api_create_access_rule_success() {
     let response = app
         .server
         .post("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({
             "name": "test-rule-create",
             "user_group_uuid": ug.to_string(),
@@ -99,7 +99,7 @@ async fn test_api_create_access_rule_validation_error_empty_name() {
     let response = app
         .server
         .post("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({
             "name": "",
             "user_group_uuid": ug.to_string(),
@@ -125,7 +125,7 @@ async fn test_api_create_access_rule_invalid_user_group_uuid() {
     let response = app
         .server
         .post("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({
             "name": "rule-bad-ug",
             "user_group_uuid": Uuid::new_v4().to_string(),
@@ -146,7 +146,7 @@ async fn test_api_create_access_rule_invalid_asset_group_uuid() {
     let response = app
         .server
         .post("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({
             "name": "rule-bad-ag",
             "user_group_uuid": ug.to_string(),
@@ -173,7 +173,7 @@ async fn test_api_create_access_rule_duplicate() {
     let first = app
         .server
         .post("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&payload)
         .await;
     assert_status(&first, 200);
@@ -181,7 +181,7 @@ async fn test_api_create_access_rule_duplicate() {
     let second = app
         .server
         .post("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({
             "name": "rule-dup-second",
             "user_group_uuid": ug.to_string(),
@@ -207,7 +207,7 @@ async fn test_api_list_access_rules_success() {
     let create_resp = app
         .server
         .post("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({
             "name": "rule-for-listing",
             "user_group_uuid": ug.to_string(),
@@ -220,7 +220,7 @@ async fn test_api_list_access_rules_success() {
     let response = app
         .server
         .get("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .await;
 
     assert_status(&response, 200);
@@ -242,7 +242,7 @@ async fn test_api_get_access_rule_success() {
     let create_resp = app
         .server
         .post("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({
             "name": "rule-for-get",
             "user_group_uuid": ug.to_string(),
@@ -258,7 +258,7 @@ async fn test_api_get_access_rule_success() {
     let response = app
         .server
         .get(&format!("/api/v1/access-rules/{}", rule_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .await;
 
     assert_status(&response, 200);
@@ -276,7 +276,7 @@ async fn test_api_get_access_rule_not_found() {
     let response = app
         .server
         .get(&format!("/api/v1/access-rules/{}", Uuid::new_v4()))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .await;
 
     assert_status(&response, 404);
@@ -291,7 +291,7 @@ async fn test_api_update_access_rule_success() {
     let create_resp = app
         .server
         .post("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({
             "name": "rule-before-update",
             "user_group_uuid": ug.to_string(),
@@ -306,7 +306,7 @@ async fn test_api_update_access_rule_success() {
     let response = app
         .server
         .put(&format!("/api/v1/access-rules/{}", rule_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({
             "name": "rule-after-update"
         }))
@@ -327,7 +327,7 @@ async fn test_api_update_access_rule_toggle_active() {
     let create_resp = app
         .server
         .post("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({
             "name": "rule-toggle-active",
             "user_group_uuid": ug.to_string(),
@@ -343,7 +343,7 @@ async fn test_api_update_access_rule_toggle_active() {
     let response = app
         .server
         .put(&format!("/api/v1/access-rules/{}", rule_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({ "is_active": false }))
         .await;
 
@@ -362,7 +362,7 @@ async fn test_api_delete_access_rule_success() {
     let create_resp = app
         .server
         .post("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({
             "name": "rule-to-delete",
             "user_group_uuid": ug.to_string(),
@@ -377,7 +377,7 @@ async fn test_api_delete_access_rule_success() {
     let response = app
         .server
         .delete(&format!("/api/v1/access-rules/{}", rule_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .await;
 
     assert_status(&response, 200);
@@ -385,7 +385,7 @@ async fn test_api_delete_access_rule_success() {
     let get_resp = app
         .server
         .get(&format!("/api/v1/access-rules/{}", rule_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .await;
     assert_status(&get_resp, 404);
 }
@@ -398,7 +398,7 @@ async fn test_api_delete_access_rule_not_found() {
     let response = app
         .server
         .delete(&format!("/api/v1/access-rules/{}", Uuid::new_v4()))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .await;
 
     assert_status(&response, 404);
@@ -415,10 +415,9 @@ async fn test_api_access_rules_requires_staff() {
 
     let user_name = unique_name("ar_nostaff");
     let user_id = create_simple_user(&mut conn, &user_name).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id).await;
-    let token = app
-        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
-        .await;
+    let _user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let (_key_uuid, token) =
+        create_real_api_key(&mut conn, user_id, &[ApiKeyScope::Admin], None).await;
 
     let fake_uuid = Uuid::new_v4();
 
@@ -426,7 +425,7 @@ async fn test_api_access_rules_requires_staff() {
     let resp = app
         .server
         .post("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({
             "name": "forbidden-rule",
             "user_group_uuid": Uuid::new_v4().to_string(),
@@ -439,7 +438,7 @@ async fn test_api_access_rules_requires_staff() {
     let resp = app
         .server
         .get("/api/v1/access-rules")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .await;
     assert_status(&resp, 403);
 
@@ -447,7 +446,7 @@ async fn test_api_access_rules_requires_staff() {
     let resp = app
         .server
         .get(&format!("/api/v1/access-rules/{}", fake_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .await;
     assert_status(&resp, 403);
 
@@ -455,7 +454,7 @@ async fn test_api_access_rules_requires_staff() {
     let resp = app
         .server
         .put(&format!("/api/v1/access-rules/{}", fake_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .json(&json!({ "name": "updated" }))
         .await;
     assert_status(&resp, 403);
@@ -464,7 +463,7 @@ async fn test_api_access_rules_requires_staff() {
     let resp = app
         .server
         .delete(&format!("/api/v1/access-rules/{}", fake_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&token))
         .await;
     assert_status(&resp, 403);
 }

@@ -2944,7 +2944,11 @@ pub async fn admin_revoke_session(
     let force_logout_html = crate::services::session_activity::force_logout_oob("session_revoked");
     state
         .user_connections
-        .send_to_matching(&target_user_uuid_str, &target_token_hash, &force_logout_html)
+        .send_to_matching(
+            &target_user_uuid_str,
+            &target_token_hash,
+            &force_logout_html,
+        )
         .await;
 
     Ok(Html("").into_response())

@@ -190,7 +190,7 @@ async fn test_asset_edit_to_detail_navigation_flow() {
     let update_response = app
         .server
         .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .add_header("HX-Request", "true")
         .json(&serde_json::json!({
             "name": unique_name("updated-nav-test")

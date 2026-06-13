@@ -305,10 +305,7 @@ pub fn build_data_records(
                 // `bytes_c2s + chunk.len()` bytes.
                 let new_bytes = flow.bytes_c2s.wrapping_add(chunk.len() as u32);
                 let ack_seq = flow.next_seq_s2c();
-                let ack_ack = flow
-                    .isn_client
-                    .wrapping_add(1)
-                    .wrapping_add(new_bytes);
+                let ack_ack = flow.isn_client.wrapping_add(1).wrapping_add(new_bytes);
                 (s, a, ack_seq, ack_ack)
             }
             Direction::ServerToClient => {
@@ -316,10 +313,7 @@ pub fn build_data_records(
                 let a = flow.ack_to_client();
                 let new_bytes = flow.bytes_s2c.wrapping_add(chunk.len() as u32);
                 let ack_seq = flow.next_seq_c2s();
-                let ack_ack = flow
-                    .isn_server
-                    .wrapping_add(1)
-                    .wrapping_add(new_bytes);
+                let ack_ack = flow.isn_server.wrapping_add(1).wrapping_add(new_bytes);
                 (s, a, ack_seq, ack_ack)
             }
         };
@@ -768,8 +762,7 @@ mod tests {
         // First record after global header should be SYN.
         let first_rec_offset = PCAP_GLOBAL_HEADER_LEN + PCAP_RECORD_HEADER_LEN;
         // Strip libpcap headers and parse the first IP packet.
-        let p = PacketHeaders::from_ip_slice(&all[first_rec_offset..])
-            .expect("parse first record");
+        let p = PacketHeaders::from_ip_slice(&all[first_rec_offset..]).expect("parse first record");
         if let Some(etherparse::TransportHeader::Tcp(t)) = p.transport {
             assert!(t.syn, "first record must be SYN");
             assert_eq!(t.destination_port, 502);
@@ -875,7 +868,11 @@ mod tests {
 
     #[test]
     fn loopback_to_loopback_pair_dissects() {
-        let mut flow = TcpFlow::new("s", 1, Endpoints::parse("127.0.0.1", 49_152, "127.0.0.1", 502));
+        let mut flow = TcpFlow::new(
+            "s",
+            1,
+            Endpoints::parse("127.0.0.1", 49_152, "127.0.0.1", 502),
+        );
         let recs = build_data_records(&mut flow, Direction::ClientToServer, b"x", 0);
         let p = parse_payload(&recs[0]);
         assert!(matches!(p.net, Some(etherparse::NetHeaders::Ipv4(_, _))));

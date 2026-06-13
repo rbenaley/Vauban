@@ -1245,7 +1245,10 @@ pub async fn create_asset_group_web(
                 &state,
                 crate::ipc::AuditEvent::new(
                     shared::messages::AuditEventType::AssetGroupCreated,
-                    format!(r#"{{"asset_group":"{}","name":"{}"}}"#, info.uuid, info.name),
+                    format!(
+                        r#"{{"asset_group":"{}","name":"{}"}}"#,
+                        info.uuid, info.name
+                    ),
                 )
                 .user(auth_user.uuid.clone()),
             );
@@ -1384,7 +1387,10 @@ pub async fn delete_asset_group_web(
                 &state,
                 crate::ipc::AuditEvent::new(
                     shared::messages::AuditEventType::AssetGroupDeleted,
-                    format!(r#"{{"asset_group":"{}","name":"{}"}}"#, uuid_str, group_name),
+                    format!(
+                        r#"{{"asset_group":"{}","name":"{}"}}"#,
+                        uuid_str, group_name
+                    ),
                 )
                 .user(auth_user.uuid.clone()),
             );

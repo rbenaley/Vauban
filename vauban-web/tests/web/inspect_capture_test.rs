@@ -143,15 +143,11 @@ fn three_inspect_routes_are_mounted_in_main_rs() {
         "shell route must be mounted"
     );
     assert!(
-        MAIN_RS.contains(
-            "/sessions/recordings/{uuid}/inspect/channels/{n}/packets\""
-        ),
+        MAIN_RS.contains("/sessions/recordings/{uuid}/inspect/channels/{n}/packets\""),
         "list route must be mounted"
     );
     assert!(
-        MAIN_RS.contains(
-            "/sessions/recordings/{uuid}/inspect/channels/{n}/packets/{idx}\""
-        ),
+        MAIN_RS.contains("/sessions/recordings/{uuid}/inspect/channels/{n}/packets/{idx}\""),
         "detail route must be mounted"
     );
     assert!(
@@ -170,9 +166,7 @@ fn three_inspect_routes_are_mounted_in_main_rs() {
 
 #[test]
 fn fetch_inspect_meta_collapses_invalid_json_to_404() {
-    let start = SESSIONS_RS
-        .find("async fn fetch_inspect_meta(")
-        .unwrap();
+    let start = SESSIONS_RS.find("async fn fetch_inspect_meta(").unwrap();
     let body = &SESSIONS_RS[start..];
     let end = body[1..].find("\nasync fn ").unwrap_or(body.len() - 1);
     let body = &body[..end];
@@ -199,9 +193,7 @@ fn fetch_inspect_channel_pcap_decompresses_via_flate2() {
 #[test]
 fn industrial_to_profile_uses_shared_classifier() {
     assert!(
-        SESSIONS_RS.contains(
-            "shared::iacs_protocol::ExpectedProfile::from_industrial_label"
-        ),
+        SESSIONS_RS.contains("shared::iacs_protocol::ExpectedProfile::from_industrial_label"),
         "profile resolution must go through the shared classifier so a new \
          protocol gate (e.g. opcua) is automatically dispatched correctly"
     );
@@ -209,9 +201,7 @@ fn industrial_to_profile_uses_shared_classifier() {
 
 #[test]
 fn build_packet_list_view_caps_pagination_and_propagates_filter() {
-    let start = SESSIONS_RS
-        .find("fn build_packet_list_view(")
-        .unwrap();
+    let start = SESSIONS_RS.find("fn build_packet_list_view(").unwrap();
     let body = &SESSIONS_RS[start..];
     let end = body[1..].find("\nfn ").unwrap_or(body.len() - 1);
     let body = &body[..end];

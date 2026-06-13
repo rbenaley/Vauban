@@ -67,7 +67,10 @@ pub async fn spawn_echo_target() -> EchoTarget {
             }
         });
     });
-    EchoTarget { addr, _guard: guard }
+    EchoTarget {
+        addr,
+        _guard: guard,
+    }
 }
 
 /// Accept-and-drop target for auth stress tests.
@@ -75,7 +78,10 @@ pub async fn spawn_dummy_target() -> EchoTarget {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let guard = spawn_listener_task(listener, |_| {});
-    EchoTarget { addr, _guard: guard }
+    EchoTarget {
+        addr,
+        _guard: guard,
+    }
 }
 
 /// In-process IACS sshd for integration tests; aborted when dropped.
@@ -104,13 +110,9 @@ pub async fn spawn_iacs_tunnel_with_broadcast(
     config: IacsTunnelConfig,
     broadcast: BroadcastService,
 ) -> std::io::Result<SpawnedIacsTunnel> {
-    let (addr, join) = spawn_iacs_tunnel_server_with_broadcast(
-        registry.clone(),
-        db_pool,
-        config,
-        Some(broadcast),
-    )
-    .await?;
+    let (addr, join) =
+        spawn_iacs_tunnel_server_with_broadcast(registry.clone(), db_pool, config, Some(broadcast))
+            .await?;
     Ok(SpawnedIacsTunnel {
         addr,
         registry,

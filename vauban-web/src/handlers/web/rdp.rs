@@ -949,10 +949,9 @@ pub async fn verify_rdp_server_cert(
             if old_spki == remote_spki {
                 // Certs match - return verified (green) fragment. This is the
                 // ONLY place the green fragment is produced (no silent green).
-                let html =
-                    include_str!("../../../templates/assets/_rdp_server_cert_fragment.html")
-                        .replace("__FINGERPRINT__", &remote_fingerprint)
-                        .replace("__ASSET_UUID__", &uuid_str);
+                let html = include_str!("../../../templates/assets/_rdp_server_cert_fragment.html")
+                    .replace("__FINGERPRINT__", &remote_fingerprint)
+                    .replace("__ASSET_UUID__", &uuid_str);
                 axum::response::Html(html).into_response()
             } else {
                 // Certs DIFFER - set mismatch flag in DB and return red fragment.

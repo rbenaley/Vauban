@@ -216,7 +216,10 @@ pub async fn create_asset(
         &state,
         crate::ipc::AuditEvent::new(
             shared::messages::AuditEventType::AssetCreated,
-            format!(r#"{{"asset":"{}","name":"{}","via":"api"}}"#, asset.uuid, asset.name),
+            format!(
+                r#"{{"asset":"{}","name":"{}","via":"api"}}"#,
+                asset.uuid, asset.name
+            ),
         )
         .user(user.uuid.clone()),
     );

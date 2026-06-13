@@ -140,7 +140,9 @@ fn ws_loops_wire_revalidation_arm() {
         checks >= 2,
         "both the SSH and RDP loops must re-validate via is_login_session_live; found {checks}"
     );
-    let expiries = WEBSOCKET_SRC.matches("close_cause = \"auth_expired\"").count();
+    let expiries = WEBSOCKET_SRC
+        .matches("close_cause = \"auth_expired\"")
+        .count();
     assert!(
         expiries >= 2,
         "both loops must set close_cause = auth_expired on expiry; found {expiries}"

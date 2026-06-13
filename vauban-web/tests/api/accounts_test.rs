@@ -54,7 +54,7 @@ async fn test_list_users_as_admin() {
     let response = app
         .server
         .get("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Assert: 200 OK with array
@@ -81,7 +81,7 @@ async fn test_list_users_as_regular_user() {
     let response = app
         .server
         .get("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     // Assert: 403 Forbidden (or 200 with limited results depending on implementation)
@@ -116,7 +116,7 @@ async fn test_list_users_pagination() {
     let response = app
         .server
         .get("/api/v1/accounts?limit=2&offset=0")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Assert: 200 OK
@@ -144,7 +144,7 @@ async fn test_list_users_search() {
     let response = app
         .server
         .get(&format!("/api/v1/accounts?search={}", target_name))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Assert: 200 OK
@@ -171,7 +171,7 @@ async fn test_create_user_as_admin() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "username": new_username,
             "email": format!("{}@test.vauban.io", new_username),
@@ -211,7 +211,7 @@ async fn test_create_user_duplicate_email() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "username": unique_name("test_dup"),
             "email": existing_user.user.email,
@@ -248,7 +248,7 @@ async fn test_create_user_invalid_data() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "username": "ab",  // Too short
             "email": "not-an-email",
@@ -281,7 +281,7 @@ async fn test_get_user_exists() {
     let response = app
         .server
         .get(&format!("/api/v1/accounts/{}", target.user.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Assert: 200 OK
@@ -309,7 +309,7 @@ async fn test_get_user_not_found() {
     let response = app
         .server
         .get(&format!("/api/v1/accounts/{}", fake_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Assert: 404 Not Found
@@ -337,7 +337,7 @@ async fn test_update_user_success() {
     let response = app
         .server
         .put(&format!("/api/v1/accounts/{}", target.user.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "first_name": "Updated",
             "last_name": "Name"
@@ -368,7 +368,7 @@ async fn test_update_user_not_found() {
     let response = app
         .server
         .put(&format!("/api/v1/accounts/{}", fake_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "first_name": "Updated"
         }))
@@ -411,7 +411,7 @@ async fn test_get_user_malformed_uuid_returns_validation_error() {
         let response = app
             .server
             .get(&format!("/api/v1/accounts/{}", bad_uuid))
-            .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+            .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
             .await;
 
         let status = response.status_code().as_u16();
@@ -451,7 +451,7 @@ async fn test_update_user_malformed_uuid_returns_validation_error() {
     let response = app
         .server
         .put("/api/v1/accounts/not-a-valid-uuid")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "first_name": "Test"
         }))
@@ -480,7 +480,7 @@ async fn test_delete_account_returns_501_not_implemented() {
     let response = app
         .server
         .delete(&format!("/api/v1/accounts/{}", Uuid::new_v4()))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     assert_status(&response, 501);

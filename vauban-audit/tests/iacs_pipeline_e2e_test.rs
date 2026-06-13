@@ -1,9 +1,5 @@
 // Integration tests legitimately use unwrap/expect/panic.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! End-to-end PCAP pipeline tests for the IACS recording layer.
 //!
@@ -38,8 +34,7 @@ use vauban_audit::iacs_recording_manager::{
 
 /// Modbus/TCP "Read Holding Registers" PDU (function code 0x03).
 /// 7-byte MBAP header (txid/protoid/len/uid) + 5-byte PDU.
-const MODBUS_READ_HOLDING: &[u8] =
-    b"\x00\x01\x00\x00\x00\x06\x01\x03\x00\x00\x00\x0a";
+const MODBUS_READ_HOLDING: &[u8] = b"\x00\x01\x00\x00\x00\x06\x01\x03\x00\x00\x00\x0a";
 
 /// OPC-UA "Hello" message (HELF + length + protocol fields).
 /// First 4 bytes "HELF" identify the OPC-UA Binary protocol.

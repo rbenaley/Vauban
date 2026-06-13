@@ -1231,11 +1231,8 @@ mod tests {
     fn test_recording_dir_for_session_uses_anchor_month() {
         use chrono::{TimeZone, Utc};
         let anchor = Utc.with_ymd_and_hms(2026, 4, 15, 12, 0, 0).unwrap();
-        let path = recording_dir_for_session(
-            "recordings",
-            "00000000-0000-0000-0000-000000000001",
-            anchor,
-        );
+        let path =
+            recording_dir_for_session("recordings", "00000000-0000-0000-0000-000000000001", anchor);
         assert_eq!(
             path,
             "recordings/2026/04/00000000-0000-0000-0000-000000000001/"

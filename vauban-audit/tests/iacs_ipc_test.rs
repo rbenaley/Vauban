@@ -1,9 +1,5 @@
 // Integration tests legitimately use unwrap/expect/panic.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Integration tests for the IACS PCAP recording pipeline driven
 //! through `IacsRecordingManager`'s public API.

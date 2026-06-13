@@ -34,12 +34,10 @@ const PACKET_LIST_HTML: &str = include_str!("../../templates/sessions/inspect/_p
 const PACKET_DETAIL_HTML: &str =
     include_str!("../../templates/sessions/inspect/_packet_detail.html");
 const HEX_DUMP_HTML: &str = include_str!("../../templates/sessions/inspect/_hex_dump.html");
-const FILTER_CHIPS_HTML: &str =
-    include_str!("../../templates/sessions/inspect/_filter_chips.html");
+const FILTER_CHIPS_HTML: &str = include_str!("../../templates/sessions/inspect/_filter_chips.html");
 const CHANNEL_SELECTOR_HTML: &str =
     include_str!("../../templates/sessions/inspect/_channel_selector.html");
-const RECORDING_DETAIL_HTML: &str =
-    include_str!("../../templates/sessions/recording_detail.html");
+const RECORDING_DETAIL_HTML: &str = include_str!("../../templates/sessions/recording_detail.html");
 const RECORDING_LIST_HTML: &str = include_str!("../../templates/sessions/recording_list.html");
 
 fn make_vauban() -> VaubanConfig {
@@ -179,7 +177,10 @@ fn render_packet_detail() -> String {
 #[test]
 fn shell_extends_base_html_and_carries_replay_banner() {
     let html = render_shell();
-    assert!(html.contains("Forensic view"), "replay-safety banner present");
+    assert!(
+        html.contains("Forensic view"),
+        "replay-safety banner present"
+    );
     assert!(html.contains("border-amber-500"), "banner has amber accent");
     assert!(html.contains("Inspect Capture"), "page title present");
 }
@@ -300,7 +301,10 @@ fn htmx_uses_outer_html_swap_and_propagates_filters() {
         html.contains("hx-include=\"[name='direction'], [name='kind'], [name='search']\""),
         "filter propagation via hx-include"
     );
-    assert!(html.contains("hx-push-url=\"true\""), "push URL on filter change");
+    assert!(
+        html.contains("hx-push-url=\"true\""),
+        "push URL on filter change"
+    );
 }
 
 #[test]
@@ -479,6 +483,8 @@ mod recording_visibility {
             make_list_item("ssh", false),
             make_list_item("rdp", false),
         ]);
-        assert!(!html.contains("/sessions/recordings/00000000-0000-0000-0000-000000000100/inspect"));
+        assert!(
+            !html.contains("/sessions/recordings/00000000-0000-0000-0000-000000000100/inspect")
+        );
     }
 }

@@ -343,7 +343,12 @@ fn ldap_bind_happy_path_returns_success() {
         BrokerBehavior::ConnectAndPass(server.addr),
     );
 
-    let rt = runtime(&pki.ca_pem, "localhost", server.addr.port(), auth_fd.as_raw_fd());
+    let rt = runtime(
+        &pki.ca_pem,
+        "localhost",
+        server.addr.port(),
+        auth_fd.as_raw_fd(),
+    );
     let outcome = brokered_bind(&auth_chan, &rt, "alice", "s3cret", |_| {});
 
     assert_eq!(outcome, LdapBindOutcome::Success);
@@ -363,7 +368,12 @@ fn ldap_bind_wrong_password_returns_invalid_credentials() {
         BrokerBehavior::ConnectAndPass(server.addr),
     );
 
-    let rt = runtime(&pki.ca_pem, "localhost", server.addr.port(), auth_fd.as_raw_fd());
+    let rt = runtime(
+        &pki.ca_pem,
+        "localhost",
+        server.addr.port(),
+        auth_fd.as_raw_fd(),
+    );
     let outcome = brokered_bind(&auth_chan, &rt, "alice", "wrong-password", |_| {});
 
     assert_eq!(outcome, LdapBindOutcome::InvalidCredentials);
@@ -383,7 +393,12 @@ fn ldap_bind_unknown_user_returns_invalid_credentials() {
         BrokerBehavior::ConnectAndPass(server.addr),
     );
 
-    let rt = runtime(&pki.ca_pem, "localhost", server.addr.port(), auth_fd.as_raw_fd());
+    let rt = runtime(
+        &pki.ca_pem,
+        "localhost",
+        server.addr.port(),
+        auth_fd.as_raw_fd(),
+    );
     let outcome = brokered_bind(&auth_chan, &rt, "mallory", "whatever", |_| {});
 
     assert_eq!(outcome, LdapBindOutcome::InvalidCredentials);
@@ -437,7 +452,12 @@ fn ldap_bind_untrusted_ca_returns_tls_error() {
         BrokerBehavior::ConnectAndPass(server.addr),
     );
 
-    let rt = runtime(&other.ca_pem, "localhost", server.addr.port(), auth_fd.as_raw_fd());
+    let rt = runtime(
+        &other.ca_pem,
+        "localhost",
+        server.addr.port(),
+        auth_fd.as_raw_fd(),
+    );
     let outcome = brokered_bind(&auth_chan, &rt, "alice", "s3cret", |_| {});
 
     assert_eq!(outcome, LdapBindOutcome::TlsError);
@@ -484,7 +504,12 @@ fn ldap_bind_missing_fd_does_not_block_and_fails_closed() {
         BrokerBehavior::SuccessWithoutFd(server.addr),
     );
 
-    let rt = runtime(&pki.ca_pem, "localhost", server.addr.port(), auth_fd.as_raw_fd());
+    let rt = runtime(
+        &pki.ca_pem,
+        "localhost",
+        server.addr.port(),
+        auth_fd.as_raw_fd(),
+    );
     let started = Instant::now();
     let outcome = brokered_bind(&auth_chan, &rt, "alice", "s3cret", |_| {});
     let elapsed = started.elapsed();

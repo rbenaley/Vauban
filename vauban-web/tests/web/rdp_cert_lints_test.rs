@@ -24,7 +24,11 @@ fn script_path() -> PathBuf {
 #[test]
 fn check_rdp_cert_paths_passes() {
     let script = script_path();
-    assert!(script.exists(), "lint script not found: {}", script.display());
+    assert!(
+        script.exists(),
+        "lint script not found: {}",
+        script.display()
+    );
 
     let out = Command::new("bash")
         .arg(&script)

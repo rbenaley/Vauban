@@ -297,8 +297,12 @@ impl IacsRecordingManager {
                 IacsRecordingDirection::EwsToAsset => Direction::ClientToServer,
                 IacsRecordingDirection::AssetToEws => Direction::ServerToClient,
             };
-            let records =
-                iacs_pcap_synth::build_data_records(&mut channel.flow, synth_dir, data, timestamp_us);
+            let records = iacs_pcap_synth::build_data_records(
+                &mut channel.flow,
+                synth_dir,
+                data,
+                timestamp_us,
+            );
             for record in &records {
                 channel.batch_buf.extend_from_slice(record);
             }
@@ -404,11 +408,7 @@ impl IacsRecordingManager {
         let Some(session) = self.sessions.get_mut(session_id) else {
             return;
         };
-        if let Some(meta) = session
-            .completed
-            .iter_mut()
-            .find(|m| m.index == channel_id)
-        {
+        if let Some(meta) = session.completed.iter_mut().find(|m| m.index == channel_id) {
             meta.blake3_hex = blake3_hex;
             meta.file_size = file_size;
         }
@@ -619,24 +619,10 @@ mod tests {
         let mut mgr = IacsRecordingManager::new();
         let (f, _) = temp_pair();
         mgr.start_channel("s1", 1, f, "h".into(), 502, 0, 0, endpoints());
-        mgr.handle_data(
-            "s1",
-            1,
-            0,
-            IacsRecordingDirection::EwsToAsset,
-            0,
-            b"a",
-        )
-        .unwrap();
+        mgr.handle_data("s1", 1, 0, IacsRecordingDirection::EwsToAsset, 0, b"a")
+            .unwrap();
         let err = mgr
-            .handle_data(
-                "s1",
-                1,
-                2,
-                IacsRecordingDirection::EwsToAsset,
-                0,
-                b"b",
-            )
+            .handle_data("s1", 1, 2, IacsRecordingDirection::EwsToAsset, 0, b"b")
             .unwrap_err();
         assert_eq!(
             err,
@@ -653,16 +639,7 @@ mod tests {
         let (f, _) = temp_pair();
         // 1714521600_000_000 = 2024-05-01 00:00:00 UTC
         let connected_at_us: u64 = 1_714_521_600_000_000;
-        mgr.start_channel(
-            "s1",
-            1,
-            f,
-            "h".into(),
-            502,
-            0,
-            connected_at_us,
-            endpoints(),
-        );
+        mgr.start_channel("s1", 1, f, "h".into(), 502, 0, connected_at_us, endpoints());
         let base_dir = mgr.session_base_dir("s1").expect("session");
         assert_eq!(base_dir, "2024/05/s1");
         mgr.end_channel("s1", 1, 1_000);
@@ -846,15 +823,8 @@ mod tests {
         let (f, reader) = temp_pair();
         mgr.start_channel("s1", 1, f, "h".into(), 502, 0, 0, endpoints());
         let payload = vec![0xAB; 40];
-        mgr.handle_data(
-            "s1",
-            1,
-            0,
-            IacsRecordingDirection::EwsToAsset,
-            0,
-            &payload,
-        )
-        .unwrap();
+        mgr.handle_data("s1", 1, 0, IacsRecordingDirection::EwsToAsset, 0, &payload)
+            .unwrap();
         let bytes = read_all(reader);
         // Global header + handshake (3 records) + at least the
         // 40-byte data record plus its IPv4+TCP headers + cumulative
@@ -866,29 +836,15 @@ mod tests {
     fn unknown_session_and_channel_errors() {
         let mut mgr = IacsRecordingManager::new();
         assert_eq!(
-            mgr.handle_data(
-                "missing",
-                1,
-                0,
-                IacsRecordingDirection::EwsToAsset,
-                0,
-                b"x"
-            )
-            .unwrap_err(),
+            mgr.handle_data("missing", 1, 0, IacsRecordingDirection::EwsToAsset, 0, b"x")
+                .unwrap_err(),
             IacsRecordingError::UnknownSession
         );
         let (f, _) = temp_pair();
         mgr.start_channel("s1", 1, f, "h".into(), 502, 0, 0, endpoints());
         assert_eq!(
-            mgr.handle_data(
-                "s1",
-                9,
-                0,
-                IacsRecordingDirection::EwsToAsset,
-                0,
-                b"x"
-            )
-            .unwrap_err(),
+            mgr.handle_data("s1", 9, 0, IacsRecordingDirection::EwsToAsset, 0, b"x")
+                .unwrap_err(),
             IacsRecordingError::UnknownChannel
         );
     }

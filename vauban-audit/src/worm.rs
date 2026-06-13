@@ -466,7 +466,10 @@ mod tests {
             .unwrap();
         bytes[pos] ^= 0x20;
         let err = verify_reader(Cursor::new(bytes), GENESIS_HASH, 0).unwrap_err();
-        assert!(matches!(err, VerifyError::HashMismatch { .. }), "got {err:?}");
+        assert!(
+            matches!(err, VerifyError::HashMismatch { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]

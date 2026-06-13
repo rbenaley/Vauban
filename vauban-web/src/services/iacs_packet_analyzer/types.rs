@@ -140,7 +140,13 @@ impl FieldNode {
         }
     }
 
-    pub fn parent(label: &str, field_id: &str, offset: usize, len: usize, children: Vec<FieldNode>) -> Self {
+    pub fn parent(
+        label: &str,
+        field_id: &str,
+        offset: usize,
+        len: usize,
+        children: Vec<FieldNode>,
+    ) -> Self {
         FieldNode {
             label: label.to_string(),
             value: String::new(),

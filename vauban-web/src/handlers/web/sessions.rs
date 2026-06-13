@@ -3373,9 +3373,7 @@ pub async fn download_recording(
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
         }
         SessionType::Rdp => stream_rdp_zip(&state, &session_uuid_db, base_dir).await,
-        SessionType::IacsTunnel => {
-            stream_iacs_pcap_zip(&state, &session_uuid_db, base_dir).await
-        }
+        SessionType::IacsTunnel => stream_iacs_pcap_zip(&state, &session_uuid_db, base_dir).await,
     }
 }
 
@@ -3564,8 +3562,7 @@ async fn stream_iacs_pcap_zip(
     let meta: IacsPcapBundleMeta = serde_json::from_slice(&meta_buf)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid meta.json: {}", e)))?;
 
-    let mut channel_files: Vec<(String, std::fs::File)> =
-        Vec::with_capacity(meta.channels.len());
+    let mut channel_files: Vec<(String, std::fs::File)> = Vec::with_capacity(meta.channels.len());
     for ch in &meta.channels {
         let ch_relative = format!("{}{}", base_dir, ch.file);
         let ch_result = supervisor
@@ -3578,9 +3575,9 @@ async fn stream_iacs_pcap_zip(
                 ch.file
             )));
         }
-        let ch_file = ch_result.file.ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!("No FD for channel {}", ch.file))
-        })?;
+        let ch_file = ch_result
+            .file
+            .ok_or_else(|| AppError::Internal(anyhow::anyhow!("No FD for channel {}", ch.file)))?;
         channel_files.push((ch.file.clone(), ch_file));
     }
 
@@ -3784,8 +3781,8 @@ async fn fetch_inspect_meta(
         .read_to_end(&mut buf)
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Read meta: {}", e)))?;
-    let meta: IacsInspectMeta = serde_json::from_slice(&buf)
-        .map_err(|_| AppError::NotFound("Not found".to_string()))?;
+    let meta: IacsInspectMeta =
+        serde_json::from_slice(&buf).map_err(|_| AppError::NotFound("Not found".to_string()))?;
     Ok(meta)
 }
 
@@ -3828,15 +3825,17 @@ async fn fetch_inspect_channel_pcap(
     Ok(decompressed)
 }
 
-fn build_filter_view(query: &InspectQuery) -> crate::templates::sessions::inspect_capture::InspectFilterViewModel {
+fn build_filter_view(
+    query: &InspectQuery,
+) -> crate::templates::sessions::inspect_capture::InspectFilterViewModel {
     crate::templates::sessions::inspect_capture::InspectFilterViewModel {
         direction: query.direction.clone().filter(|s| !s.is_empty()),
         kind: query.kind.clone().filter(|s| !s.is_empty()),
         search: query.search.clone().filter(|s| !s.trim().is_empty()),
         page: query.page.unwrap_or(1),
-        page_size: query.page_size.unwrap_or(
-            crate::services::iacs_packet_analyzer::types::DEFAULT_PAGE_SIZE,
-        ),
+        page_size: query
+            .page_size
+            .unwrap_or(crate::services::iacs_packet_analyzer::types::DEFAULT_PAGE_SIZE),
     }
 }
 
@@ -3887,7 +3886,9 @@ pub async fn inspect_capture(
     axum::extract::Path(session_uuid): axum::extract::Path<::uuid::Uuid>,
     axum::extract::Query(query): axum::extract::Query<InspectQuery>,
 ) -> Result<axum::response::Response, AppError> {
-    use crate::services::iacs_packet_analyzer::{analyze_channel_bytes, page_summaries, types::PacketListFilter};
+    use crate::services::iacs_packet_analyzer::{
+        analyze_channel_bytes, page_summaries, types::PacketListFilter,
+    };
     use crate::templates::sessions::inspect_capture::{
         ChannelOption, InspectCaptureTemplate, InspectCaptureViewModel, industrial_protocol_label,
     };
@@ -3917,8 +3918,8 @@ pub async fn inspect_capture(
 
     let pcap = fetch_inspect_channel_pcap(&state, s_uuid, &base_dir, &target_channel.file).await?;
     let profile = industrial_to_profile(&industrial_protocol);
-    let summaries =
-        analyze_channel_bytes(&pcap, profile).map_err(|_| AppError::NotFound("Not found".to_string()))?;
+    let summaries = analyze_channel_bytes(&pcap, profile)
+        .map_err(|_| AppError::NotFound("Not found".to_string()))?;
 
     let filter_view = build_filter_view(&query);
     let filter = PacketListFilter {
@@ -3937,7 +3938,8 @@ pub async fn inspect_capture(
 
     let page = page_summaries(summaries, filter);
     let session_uuid_str = s_uuid.to_string();
-    let initial_list = build_packet_list_view(page, &session_uuid_str, selected_channel, filter_view);
+    let initial_list =
+        build_packet_list_view(page, &session_uuid_str, selected_channel, filter_view);
 
     let channels: Vec<ChannelOption> = meta
         .channels
@@ -4024,8 +4026,8 @@ pub async fn inspect_capture_packet_list(
     let pcap = fetch_inspect_channel_pcap(&state, s_uuid, &base_dir, &target.file).await?;
 
     let profile = industrial_to_profile(&industrial_protocol);
-    let summaries =
-        analyze_channel_bytes(&pcap, profile).map_err(|_| AppError::NotFound("Not found".to_string()))?;
+    let summaries = analyze_channel_bytes(&pcap, profile)
+        .map_err(|_| AppError::NotFound("Not found".to_string()))?;
 
     let filter_view = build_filter_view(&query);
     let filter = PacketListFilter {

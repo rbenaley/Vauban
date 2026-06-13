@@ -51,7 +51,7 @@ async fn test_update_asset_group_success() {
     let response = app
         .server
         .post(&format!("/api/v1/assets/groups/{}", group_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .add_header(header::COOKIE, format!("__vauban_csrf={}", csrf_token))
         .form(&form)
         .await;
@@ -95,7 +95,7 @@ async fn test_update_asset_group_not_found() {
     let response = app
         .server
         .post(&format!("/api/v1/assets/groups/{}", fake_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .add_header(header::COOKIE, format!("__vauban_csrf={}", csrf_token))
         .form(&form)
         .await;
@@ -140,7 +140,7 @@ async fn test_update_asset_group_invalid_data() {
     let response = app
         .server
         .post(&format!("/api/v1/assets/groups/{}", group_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .add_header(header::COOKIE, format!("__vauban_csrf={}", csrf_token))
         .form(&form)
         .await;
@@ -180,7 +180,7 @@ async fn test_api_list_asset_groups() {
     let response = app
         .server
         .get("/api/v1/assets/manage/groups")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Assert: 200 OK with JSON array
@@ -264,7 +264,7 @@ async fn test_api_list_group_assets() {
             "/api/v1/assets/manage/groups/{}/assets",
             group_uuid
         ))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Assert: 200 OK with JSON array
@@ -309,7 +309,7 @@ async fn test_api_list_group_assets_not_found() {
             "/api/v1/assets/manage/groups/{}/assets",
             fake_uuid
         ))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Assert: 404 Not Found
@@ -373,7 +373,7 @@ async fn test_api_list_group_assets_empty() {
             "/api/v1/assets/manage/groups/{}/assets",
             group_uuid
         ))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .await;
 
     // Assert: 200 OK with empty array

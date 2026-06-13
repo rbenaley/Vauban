@@ -24,15 +24,15 @@ use crate::AppState;
 use crate::error::{AppError, AppResult};
 use crate::ipc::AuditEvent;
 use crate::middleware::browser_tz::BrowserTz;
-use crate::services::{emit_audit, emit_audit_critical};
-use shared::messages::AuditEventType;
 use crate::middleware::flash::{IncomingFlash, flash_redirect};
 use crate::models::auth_session::{AuthSession, NewAuthSession};
 use crate::models::user::{AuthSource, NewUser, User};
 use crate::schema::{auth_sessions, users::dsl::*};
 use crate::services::auth::{AuthService, Claims, is_encrypted_mfa_secret};
+use crate::services::{emit_audit, emit_audit_critical};
 use crate::templates::accounts::{MfaSetupTemplate, MfaVerifyTemplate};
 use crate::templates::base::BaseTemplate;
+use shared::messages::AuditEventType;
 
 /// Local alias preserved so the call sites below stay readable. The actual
 /// classification logic lives in [`crate::services::auth::is_encrypted_mfa_secret`]
@@ -207,12 +207,9 @@ pub async fn login(
             } else {
                 emit_audit(
                     &state,
-                    AuditEvent::new(
-                        AuditEventType::AuthFailure,
-                        r#"{"reason":"unknown_user"}"#,
-                    )
-                    .user(&request.username)
-                    .ip(Some(client_addr.ip())),
+                    AuditEvent::new(AuditEventType::AuthFailure, r#"{"reason":"unknown_user"}"#)
+                        .user(&request.username)
+                        .ip(Some(client_addr.ip())),
                 );
                 return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
             }
@@ -907,8 +904,7 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
             {
                 emit_audit(
                     &state,
-                    AuditEvent::new(AuditEventType::Logout, "{}")
-                        .user(user_uuid_val.to_string()),
+                    AuditEvent::new(AuditEventType::Logout, "{}").user(user_uuid_val.to_string()),
                 );
                 crate::handlers::web::broadcast_sessions_update(
                     &state,

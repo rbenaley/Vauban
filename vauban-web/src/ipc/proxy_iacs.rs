@@ -443,13 +443,8 @@ impl ProxyIacsClient {
                     .map(|s| s.config.recording.storage_path.as_str())
                     .unwrap_or("");
                 if let Some(pool) = self.db_pool.lock().await.as_ref() {
-                    match persist_tunnel_closed(
-                        pool,
-                        &session_id,
-                        iacs_recording,
-                        storage_path,
-                    )
-                    .await
+                    match persist_tunnel_closed(pool, &session_id, iacs_recording, storage_path)
+                        .await
                     {
                         Ok(updated) => {
                             if updated {
@@ -460,10 +455,8 @@ impl ProxyIacsClient {
                                 );
                                 db_persisted = true;
                                 if iacs_recording
-                                    && let (Some(state), Ok(session_uuid)) = (
-                                        app_state.as_ref(),
-                                        uuid::Uuid::parse_str(&session_id),
-                                    )
+                                    && let (Some(state), Ok(session_uuid)) =
+                                        (app_state.as_ref(), uuid::Uuid::parse_str(&session_id))
                                 {
                                     std::mem::drop(
                                         crate::services::recording_hydrator::enqueue_hydration_by_uuid(

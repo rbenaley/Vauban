@@ -117,7 +117,11 @@ fn notifications_handler_wires_revalidation_arm() {
 #[test]
 fn notifications_handler_preserves_lifecycle_logs() {
     let src = notifications_handler_src();
-    for literal in ["WebSocket connected", "WebSocket closed", "WebSocket disconnected"] {
+    for literal in [
+        "WebSocket connected",
+        "WebSocket closed",
+        "WebSocket disconnected",
+    ] {
         assert!(
             src.contains(literal),
             "lifecycle log literal `{literal}` must remain in the notifications handler"
@@ -135,15 +139,18 @@ fn notifications_handler_preserves_lifecycle_logs() {
 async fn force_logout_is_delivered_to_registered_connection() {
     let registry = UserConnectionRegistry::default();
     let user_uuid = "11111111-1111-1111-1111-111111111111";
-    let (_conn_id, mut rx) = registry.register(user_uuid, "token-hash-a".to_string()).await;
-
-    registry
-        .send_personalized(user_uuid, |_token_hash| {
-            force_logout_oob("session_expired")
-        })
+    let (_conn_id, mut rx) = registry
+        .register(user_uuid, "token-hash-a".to_string())
         .await;
 
-    let received = rx.recv().await.expect("connection must receive the fragment");
+    registry
+        .send_personalized(user_uuid, |_token_hash| force_logout_oob("session_expired"))
+        .await;
+
+    let received = rx
+        .recv()
+        .await
+        .expect("connection must receive the fragment");
     assert_eq!(received, force_logout_oob("session_expired"));
     assert!(received.contains("window.location.replace('/login?reason=session_expired')"));
 }
@@ -163,11 +170,16 @@ async fn force_logout_to_matching_targets_only_the_revoked_browser() {
         .await;
 
     assert_eq!(
-        rx_match.recv().await.expect("matching browser receives redirect"),
+        rx_match
+            .recv()
+            .await
+            .expect("matching browser receives redirect"),
         fragment
     );
     assert_eq!(
-        rx_other.try_recv().expect_err("non-matching browser must receive nothing"),
+        rx_other
+            .try_recv()
+            .expect_err("non-matching browser must receive nothing"),
         TryRecvError::Empty
     );
 }

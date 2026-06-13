@@ -58,7 +58,7 @@ async fn assets_read_all_filters_for_regular_user() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
     assert_status(&response, 200);
 
@@ -103,7 +103,7 @@ async fn assets_read_all_returns_everything_for_staff() {
     let response = app
         .server
         .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&staff.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&staff.api_key))
         .await;
     assert_status(&response, 200);
 
@@ -140,7 +140,7 @@ async fn sessions_bypass_access_rules_staff_denied_without_rule() {
     let response = app
         .server
         .post("/api/v1/sessions")
-        .add_header(header::AUTHORIZATION, app.auth_header(&staff.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&staff.api_key))
         .json(&json!({
             "asset_id": asset.asset.uuid.to_string(),
             "credential_id": "battle-test-cred",
@@ -185,7 +185,7 @@ async fn ssh_fetch_host_key_requires_assets_manage() {
             "/api/v1/assets/manage/{}/ssh-host-key",
             asset.asset.uuid
         ))
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
         .await;
 
     assert_status(&response, 403);
@@ -214,7 +214,7 @@ async fn ssh_fetch_host_key_passes_gate_for_staff() {
             "/api/v1/assets/manage/{}/ssh-host-key",
             asset.asset.uuid
         ))
-        .add_header(header::AUTHORIZATION, app.auth_header(&staff.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&staff.api_key))
         .await;
 
     assert_ne!(
@@ -248,7 +248,7 @@ async fn users_promote_superuser_requires_manage_admins() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&staff.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&staff.api_key))
         .json(&json!({
             "username": target_username,
             "email": format!("{}@test.vauban.io", target_username),
@@ -268,7 +268,7 @@ async fn users_promote_superuser_requires_manage_admins() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&staff.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&staff.api_key))
         .json(&json!({
             "username": plain_username,
             "email": format!("{}@test.vauban.io", plain_username),
@@ -303,7 +303,7 @@ async fn users_promote_superuser_allowed_for_superuser() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "username": target_username,
             "email": format!("{}@test.vauban.io", target_username),

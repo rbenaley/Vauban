@@ -286,11 +286,11 @@ mod tests {
             download_url: "/sessions/recordings/00000000-0000-0000-0000-000000000001/download"
                 .to_string(),
             back_url: "/sessions/recordings".to_string(),
-        list_url: "/sessions/recordings".to_string(),
-        show_play_recording: true,
-        show_inspect_capture: false,
-        inspect_url: String::new(),
-    }
+            list_url: "/sessions/recordings".to_string(),
+            show_play_recording: true,
+            show_inspect_capture: false,
+            inspect_url: String::new(),
+        }
     }
 
     fn make_ssh_integrity() -> IntegrityViewModel {

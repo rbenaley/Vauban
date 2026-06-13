@@ -82,11 +82,7 @@ async fn session_count(conn: &mut AsyncPgConnection, user_id: i32) -> i64 {
 }
 
 /// POST the HTMX web-login form (CSRF-protected) and return the response.
-async fn login_web_htmx(
-    app: &TestApp,
-    username: &str,
-    password: &str,
-) -> axum_test::TestResponse {
+async fn login_web_htmx(app: &TestApp, username: &str, password: &str) -> axum_test::TestResponse {
     let csrf = app.generate_csrf_token();
     app.server
         .post("/auth/login")
@@ -163,7 +159,10 @@ async fn ldap_user_wrong_password_is_generic_and_skips_lockout() {
 
     let response = login_web_htmx(app, &username, LDAP_WRONG_PASSWORD).await;
     assert_eq!(response.status_code().as_u16(), 200);
-    assert!(hx_redirect(&response).is_none(), "must not redirect on failure");
+    assert!(
+        hx_redirect(&response).is_none(),
+        "must not redirect on failure"
+    );
     let ldap_body = response.text();
 
     // Same request shape for a username that does not exist at all.

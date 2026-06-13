@@ -316,7 +316,7 @@ async fn test_api_create_collision_on_active_triplet_returns_409() {
     let create1 = app
         .server
         .post("/api/v1/assets/manage")
-        .add_header(AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&body)
         .await;
     let s = create1.status_code().as_u16();
@@ -329,7 +329,7 @@ async fn test_api_create_collision_on_active_triplet_returns_409() {
     let create2 = app
         .server
         .post("/api/v1/assets/manage")
-        .add_header(AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
             "name": unique_name("api-collide-b"),
             "hostname": hostname,

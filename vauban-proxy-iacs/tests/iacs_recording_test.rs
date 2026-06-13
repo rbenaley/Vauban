@@ -102,7 +102,8 @@ fn send_channel_start_signature_carries_endpoints_and_anchor() {
         "send_channel_start must accept connected_at_us"
     );
     assert!(
-        RECORDING_RS.contains("connected_at_us,") && RECORDING_RS.contains("client_ip: endpoints.client_ip"),
+        RECORDING_RS.contains("connected_at_us,")
+            && RECORDING_RS.contains("client_ip: endpoints.client_ip"),
         "the IPC message must carry the new fields verbatim"
     );
 }

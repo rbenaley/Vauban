@@ -17,7 +17,7 @@
 //! and every body MUST be byte-identical so even a content-length
 //! oracle cannot leak.
 
-use axum::http::header::COOKIE;
+use axum::http::header::{self, COOKIE};
 use serial_test::serial;
 use uuid::Uuid;
 
@@ -100,7 +100,7 @@ async fn api_admin_routes_do_not_leak_asset_existence() {
         let resp = app
             .server
             .get(&url)
-            .add_header(COOKIE, format!("access_token={}", user.token))
+            .add_header(header::AUTHORIZATION, app.api_key_header(&user.api_key))
             .await;
         assert_status(&resp, 403);
         bodies.push((url, resp.text()));

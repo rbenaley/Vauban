@@ -268,8 +268,8 @@ pub fn parse_bind_request(message: &[u8]) -> io::Result<(i64, String, Vec<u8>)> 
     if n_tag != TAG_OCTET_STRING {
         return Err(invalid("expected name OCTET STRING"));
     }
-    let dn = String::from_utf8(dn_bytes.to_vec())
-        .map_err(|_| invalid("bind DN is not valid UTF-8"))?;
+    let dn =
+        String::from_utf8(dn_bytes.to_vec()).map_err(|_| invalid("bind DN is not valid UTF-8"))?;
     // authentication [0] simple.
     let (a_tag, password, _) = read_tlv(after_n)?;
     if a_tag != TAG_SIMPLE_AUTH {
@@ -468,7 +468,10 @@ mod tests {
         let (tag, _content, _) = read_tlv(&stream.written).unwrap();
         assert_eq!(tag, TAG_SEQUENCE);
         assert!(
-            stream.written.windows(20).any(|w| w == b"uid=bob,dc=ex,dc=com"),
+            stream
+                .written
+                .windows(20)
+                .any(|w| w == b"uid=bob,dc=ex,dc=com"),
             "request must embed the bind DN"
         );
     }

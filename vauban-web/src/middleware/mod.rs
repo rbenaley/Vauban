@@ -1,3 +1,4 @@
+pub mod api_key;
 pub mod audit;
 /// VAUBAN Web - Middleware module.
 pub mod auth;
