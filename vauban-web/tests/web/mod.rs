@@ -64,6 +64,7 @@ pub mod manage_assets_anti_enumeration_test;
 pub mod manage_assets_gate_matrix_test;
 pub mod manage_assets_invariants_test;
 pub mod manage_assets_render_snapshot_test;
+pub mod mfa_setup_vau008_test;
 pub mod mfa_test;
 pub mod pages_test;
 pub mod profile_password_test;

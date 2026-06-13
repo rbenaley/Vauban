@@ -1243,11 +1243,17 @@ pub enum AuditEventType {
     ApprovalGranted,
     ApprovalDenied,
     ApprovalCancelled,
+    // ---- appended for VAU-008 (MFA setup hardening) ----
+    // A TOTP secret was (re)generated during MFA setup (POST /mfa/setup/init,
+    // CSRF + password step-up gated). Distinct from `MfaEnrolled`, which marks
+    // the user confirming a valid code. Appended at the end to keep existing
+    // wire discriminants stable.
+    MfaSecretGenerated,
 }
 
 impl AuditEventType {
     /// Number of variants. Pinned by `audit_event_type_count_is_pinned`.
-    pub const COUNT: usize = 41;
+    pub const COUNT: usize = 42;
 
     /// Every variant, for table-driven tests and drift checks.
     pub const ALL: [AuditEventType; Self::COUNT] = [
@@ -1292,6 +1298,7 @@ impl AuditEventType {
         AuditEventType::ApprovalGranted,
         AuditEventType::ApprovalDenied,
         AuditEventType::ApprovalCancelled,
+        AuditEventType::MfaSecretGenerated,
     ];
 
     /// Coarse category, for log pivoting and the drift test. EXHAUSTIVE match
@@ -1305,7 +1312,8 @@ impl AuditEventType {
             AuditEventType::MfaEnrolled
             | AuditEventType::MfaReset
             | AuditEventType::MfaChallengePassed
-            | AuditEventType::MfaChallengeFailed => "mfa",
+            | AuditEventType::MfaChallengeFailed
+            | AuditEventType::MfaSecretGenerated => "mfa",
             AuditEventType::SessionStart
             | AuditEventType::SessionEnd
             | AuditEventType::SessionRequested
@@ -2660,7 +2668,7 @@ mod tests {
         // and ALL together when appending a variant (never reorder existing
         // ones -- bincode encodes the index).
         assert_eq!(AuditEventType::ALL.len(), AuditEventType::COUNT);
-        assert_eq!(AuditEventType::COUNT, 41);
+        assert_eq!(AuditEventType::COUNT, 42);
     }
 
     #[test]

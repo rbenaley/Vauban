@@ -455,6 +455,7 @@ fn build_test_router(state: AppState) -> Router {
             "/mfa/setup",
             get(handlers::auth::mfa_setup_page).post(handlers::auth::mfa_setup_submit),
         )
+        .route("/mfa/setup/init", post(handlers::auth::mfa_setup_init))
         .route(
             "/mfa/verify",
             get(handlers::auth::mfa_verify_page).post(handlers::auth::mfa_verify_submit),
@@ -743,6 +744,7 @@ fn build_test_router(state: AppState) -> Router {
         )
         // Account pages (profile, login sessions and API keys)
         .route("/accounts/profile", get(handlers::web::profile))
+        .route("/accounts/mfa", get(handlers::web::mfa_setup))
         // Self-service password rotation modal handler (mirror production
         // main.rs). POST-only on purpose: the form is rendered inline on
         // /accounts/profile via Alpine.js modal.

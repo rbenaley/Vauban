@@ -1471,6 +1471,9 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/mfa/setup",
             get(handlers::auth::mfa_setup_page).post(handlers::auth::mfa_setup_submit),
         )
+        // VAU-008: secret (re)generation is gated behind a CSRF + password
+        // step-up POST, split out of the (now read-only) GET above.
+        .route("/mfa/setup/init", post(handlers::auth::mfa_setup_init))
         .route(
             "/mfa/verify",
             get(handlers::auth::mfa_verify_page).post(handlers::auth::mfa_verify_submit),

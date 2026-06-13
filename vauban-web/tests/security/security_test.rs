@@ -5265,15 +5265,32 @@ fn test_encrypt_on_read_in_auth() {
     );
 }
 
-/// mfa_setup_page must handle plaintext existing secrets with encrypt-on-read.
+/// VAU-008: `mfa_setup_page` no longer performs encrypt-on-read (or any write)
+/// on GET. Backward-compat rendering of a legacy plaintext secret is handled
+/// read-only by `mfa_qr_from_secret`, which branches on `is_encrypted`.
 #[test]
 fn test_mfa_setup_page_backward_compat() {
     let source = include_str!("../../src/handlers/auth.rs");
-    // The mfa_setup_page handler must check is_encrypted on existing secrets
-    // and encrypt-on-read if they are plaintext
+    // The read-only QR helper must still cope with both encrypted (vault) and
+    // plaintext (legacy / dev) secrets.
     assert!(
-        source.contains("Plaintext secret (pre-migration)"),
-        "mfa_setup_page must handle plaintext secrets with encrypt-on-read"
+        source.contains("fn mfa_qr_from_secret("),
+        "mfa_qr_from_secret must exist to render the QR read-only"
+    );
+    // The GET must NOT carry the old encrypt-on-read migration that mutated the
+    // row on a mere page view (the VAU-008 regression we removed).
+    let page_start = source
+        .find("pub async fn mfa_setup_page(")
+        .expect("mfa_setup_page must exist");
+    let page_end = source[page_start..]
+        .find("async fn mfa_qr_from_secret")
+        .map(|i| page_start + i)
+        .unwrap_or(source.len());
+    let page_body = &source[page_start..page_end];
+    assert!(
+        !page_body.contains("Plaintext secret (pre-migration)")
+            && !page_body.contains("diesel::update"),
+        "GET mfa_setup_page must be side-effect free (no encrypt-on-read, no write)"
     );
 }
 

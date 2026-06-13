@@ -2,7 +2,10 @@
 ///
 /// Tests for MFA setup and verification pages (/mfa/setup, /mfa/verify).
 use axum::http::header::{self, COOKIE};
+use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use serial_test::serial;
+use vauban_web::schema::users;
 
 use crate::common::{TestApp, assertions::*, test_db};
 use crate::fixtures::{create_mfa_user, create_test_user, unique_name};
@@ -29,7 +32,8 @@ async fn test_mfa_setup_page_requires_auth() {
     );
 }
 
-/// Test MFA setup page renders for authenticated user.
+/// Test MFA setup page renders the password step-up form for an authenticated
+/// user with no pending secret (VAU-008: GET is read-only, no QR until init).
 #[tokio::test]
 #[serial]
 async fn test_mfa_setup_page_renders() {
@@ -60,27 +64,29 @@ async fn test_mfa_setup_page_renders() {
         .add_header(COOKIE, format!("access_token={}", temp_token))
         .await;
 
-    // Assert: 200 OK with MFA setup content
+    // Assert: 200 OK rendering the step-up form (no secret/QR leaked).
     assert_status(&response, 200);
     let body = response.text();
     assert!(
-        body.contains("Two-Factor Authentication"),
-        "Should contain MFA setup title"
+        body.contains("Confirm your password to start setup"),
+        "Should render the password step-up prompt"
     );
     assert!(
-        body.contains("QR code"),
-        "Should contain QR code instructions"
+        body.contains("/mfa/setup/init"),
+        "Step-up form must post to /mfa/setup/init"
     );
     assert!(
-        body.contains("totp_code"),
-        "Should contain TOTP input field"
+        !body.contains("data:image/png;base64,"),
+        "GET must NOT leak a QR code when no secret is pending"
     );
 
     // Cleanup
     test_db::cleanup(&mut conn).await;
 }
 
-/// Test MFA setup page shows QR code.
+/// Test MFA setup page shows the QR code once a candidate secret is pending
+/// (i.e. after `POST /mfa/setup/init` has run). We seed `pending_mfa_secret`
+/// directly to assert the read-only GET renders the QR from it.
 #[tokio::test]
 #[serial]
 async fn test_mfa_setup_page_shows_qr_code() {
@@ -102,6 +108,19 @@ async fn test_mfa_setup_page_shows_qr_code() {
         )
         .unwrap();
 
+    // Seed a pending (candidate) secret as POST /mfa/setup/init would. Tests
+    // run without a vault, so the candidate is plaintext Base32.
+    // 32 Base32 chars = 20 bytes, satisfying the RFC 6238 minimum secret
+    // length enforced by TOTP::new.
+    diesel::update(users::table.filter(users::id.eq(test_user.user.id)))
+        .set((
+            users::pending_mfa_secret.eq(Some("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP")),
+            users::pending_mfa_generated_at.eq(Some(chrono::Utc::now())),
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
     // Execute: GET /mfa/setup
     let response = app
         .server
@@ -109,12 +128,16 @@ async fn test_mfa_setup_page_shows_qr_code() {
         .add_header(COOKIE, format!("access_token={}", temp_token))
         .await;
 
-    // Assert: Contains base64 QR code image
+    // Assert: Contains base64 QR code image rendered from the pending secret.
     assert_status(&response, 200);
     let body = response.text();
     assert!(
         body.contains("data:image/png;base64,"),
         "Should contain base64 QR code image"
+    );
+    assert!(
+        body.contains("totp_code"),
+        "Should contain the confirmation TOTP input"
     );
 
     // Cleanup

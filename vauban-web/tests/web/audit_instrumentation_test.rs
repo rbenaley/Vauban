@@ -74,6 +74,7 @@ fn auth_seam_is_instrumented() {
             "AuditEventType::MfaEnrolled",
             "AuditEventType::MfaChallengePassed",
             "AuditEventType::MfaChallengeFailed",
+            "AuditEventType::MfaSecretGenerated",
         ],
     );
     // The privileged elevation (MFA pass + API login) must be fail-closed.

@@ -240,13 +240,18 @@ async fn test_mfa_setup_page_success() {
         .add_header(header::COOKIE, format!("access_token={}", temp_token))
         .await;
 
-    // Assert: 200 OK with MFA setup page
+    // Assert: 200 OK. VAU-008: with no pending candidate the page renders the
+    // read-only password step-up form (no secret/QR is generated on GET).
     let status = response.status_code().as_u16();
     assert_eq!(status, 200, "MFA setup page should load, got {}", status);
     let body = response.text();
     assert!(
-        body.contains("Two-Factor Authentication"),
-        "Should show MFA setup page"
+        body.contains("Confirm your password to start setup"),
+        "Should show the password step-up prompt"
+    );
+    assert!(
+        !body.contains("data:image/png;base64,"),
+        "GET must not leak a QR with no pending secret"
     );
 
     // Cleanup

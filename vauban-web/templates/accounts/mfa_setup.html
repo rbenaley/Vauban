@@ -6,6 +6,39 @@
 <div class="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 py-12 px-4 sm:px-6 lg:px-8">
     <div class="max-w-md w-full space-y-8">
         <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-6 space-y-6">
+        {% if !pending %}
+            <!-- VAU-008: no candidate secret is generated until the user
+                 re-authenticates with their password (step-up). This GET is
+                 strictly read-only; the secret is created by POST
+                 /mfa/setup/init. -->
+            <div>
+                <h3 class="text-lg font-medium text-gray-900 dark:text-white mb-2">
+                    Confirm your password to start setup
+                </h3>
+                <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                    To set up two-factor authentication we first need to confirm
+                    it's you. Enter your account password to generate a new
+                    authenticator secret.
+                </p>
+                <form action="/mfa/setup/init" method="POST" class="space-y-4" x-data="csrf">
+                    <input type="hidden" name="csrf_token" x-model="token" />
+                    <div>
+                        <label for="password" class="sr-only">Password</label>
+                        <input id="password"
+                               name="password"
+                               type="password"
+                               required
+                               autocomplete="current-password"
+                               class="appearance-none relative block w-full px-3 py-3 border border-gray-300 dark:border-gray-600 placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-vauban-500 focus:border-vauban-500 dark:bg-gray-700"
+                               placeholder="Your password">
+                    </div>
+                    <button type="submit"
+                            class="group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-vauban-600 hover:bg-vauban-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-vauban-500">
+                        Generate authenticator secret
+                    </button>
+                </form>
+            </div>
+        {% else %}
             <!-- Step 1: Scan QR Code -->
             <div>
                 <h3 class="text-lg font-medium text-gray-900 dark:text-white mb-2">
@@ -79,6 +112,7 @@
                     </button>
                 </form>
             </div>
+        {% endif %}
         </div>
 
     </div>

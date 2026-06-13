@@ -172,6 +172,16 @@ pub struct User {
     /// `services::auth::AuthService::verify_and_consume_totp`.
     #[serde(skip_serializing)]
     pub last_totp_used_window: Option<i64>,
+    /// VAU-008: candidate TOTP secret awaiting confirmation. Written by the
+    /// CSRF + password step-up gated `POST /mfa/setup/init`, promoted to
+    /// `mfa_secret` only by `POST /mfa/setup` after a valid code. `None`
+    /// when no setup is in progress.
+    #[serde(skip_serializing)]
+    pub pending_mfa_secret: Option<String>,
+    /// VAU-008: UTC timestamp of the pending secret generation, used to
+    /// expire a stale candidate at confirmation time.
+    #[serde(skip_serializing)]
+    pub pending_mfa_generated_at: Option<DateTime<Utc>>,
 }
 
 /// New user for insertion.
@@ -353,6 +363,8 @@ mod tests {
             is_deleted: false,
             deleted_at: None,
             last_totp_used_window: None,
+            pending_mfa_secret: None,
+            pending_mfa_generated_at: None,
         }
     }
 
