@@ -2770,7 +2770,30 @@ fn handle_recording_file_request(
 ) {
     use std::os::unix::io::AsRawFd;
 
-    let full_path = std::path::Path::new(storage_base).join(relative_path);
+    // VAU-006 (INV-1/INV-2/INV-3): validate + anchor + confine the
+    // untrusted relative_path through the single shared seam BEFORE any
+    // filesystem syscall. Rejects `..`, absolute paths, session_id
+    // mismatch, and symlink escapes (canonical containment when the target
+    // already exists). Fail-closed: a rejected request touches no disk.
+    let full_path = match shared::recording_paths::resolve_recording_file_target(
+        std::path::Path::new(storage_base),
+        relative_path,
+        session_id,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            error!(session_id, path = %relative_path, error = %e, "Rejected recording file request (path validation)");
+            let _ = requester_state
+                .channel
+                .send(&Message::RecordingFileResponse {
+                    request_id,
+                    session_id: session_id.to_string(),
+                    success: false,
+                    error: Some(format!("invalid path: {e}")),
+                });
+            return;
+        }
+    };
 
     let file = if read_only {
         match std::fs::File::open(&full_path) {

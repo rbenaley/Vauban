@@ -71,6 +71,52 @@ pub fn validate_recording_delete_relative_path(
     Ok(())
 }
 
+/// Validate a relative path before the supervisor opens/creates a recording
+/// file on behalf of a sandboxed peer (VAU-006).
+///
+/// # Invariant INV-1 (confinement)
+///
+/// Enforces no traversal (`..`), no absolute path, no empty path, and that
+/// the path is anchored to `session_id`. This is the structural half of
+/// the file-broker gate; the canonical containment check lives in
+/// [`resolve_recording_file_target`].
+pub fn validate_recording_file_relative_path(
+    relative_path: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    validate_recording_relative_structure(relative_path)?;
+    if !relative_path.contains(session_id) {
+        return Err("relative_path must contain session_id".into());
+    }
+    Ok(())
+}
+
+/// Resolve the on-disk target for a supervisor recording-file request.
+///
+/// # Invariant INV-3 (single seam)
+///
+/// This is the ONE function the supervisor's recording-file broker
+/// (`handle_recording_file_request`) uses to turn an untrusted
+/// `(storage_base, relative_path, session_id)` triple into a concrete
+/// path. It MUST be called before any filesystem syscall (open / create /
+/// create_dir_all): a forgotten call re-opens the VAU-006 path traversal.
+///
+/// Validates structure + `session_id` anchoring (INV-1), then resolves
+/// under `storage_base`. When the target exists (read / playback path) the
+/// result is canonicalized and checked to stay under the canonical base,
+/// which also defeats symlink escapes. When the target does not yet exist
+/// (create path) the result is the lexical join, which is bounded under
+/// the base because the structural validation already rejected `..` and
+/// absolute paths.
+pub fn resolve_recording_file_target(
+    storage_base: &Path,
+    relative_path: &str,
+    session_id: &str,
+) -> Result<PathBuf, String> {
+    validate_recording_file_relative_path(relative_path, session_id)?;
+    resolve_recording_path_under_base(storage_base, relative_path)
+}
+
 /// Resolve `storage_base.join(relative_path)` and ensure it stays under base.
 pub fn resolve_recording_path_under_base(
     storage_base: &Path,
@@ -175,5 +221,82 @@ mod tests {
     #[test]
     fn validate_requires_session_id_substring() {
         assert!(validate_recording_delete_relative_path("2026/05/other/", "uuid").is_err());
+    }
+
+    // ==================== Recording file broker (VAU-006) ====================
+
+    const UUID: &str = "11111111-2222-3333-4444-555555555555";
+
+    #[test]
+    fn validate_recording_file_rejects_parent_dir() {
+        assert!(validate_recording_file_relative_path("../etc/passwd", UUID).is_err());
+    }
+
+    #[test]
+    fn validate_recording_file_rejects_absolute() {
+        assert!(validate_recording_file_relative_path("/etc/passwd", UUID).is_err());
+    }
+
+    #[test]
+    fn validate_recording_file_rejects_empty() {
+        assert!(validate_recording_file_relative_path("", UUID).is_err());
+    }
+
+    #[test]
+    fn validate_recording_file_rejects_session_id_mismatch() {
+        assert!(
+            validate_recording_file_relative_path("2026/05/other-uuid/session.cast", UUID).is_err()
+        );
+    }
+
+    #[test]
+    fn validate_recording_file_accepts_legit_layouts() {
+        for rel in [
+            format!("2026/05/{UUID}/session.cast"),
+            format!("2026/05/{UUID}/meta.json"),
+            format!("2026/05/{UUID}/001.mp4"),
+            format!("2026/05/{UUID}/channels/000.pcap"),
+            // Legacy flat RDP layout.
+            format!("2026/02/{UUID}.mp4"),
+        ] {
+            assert!(
+                validate_recording_file_relative_path(&rel, UUID).is_ok(),
+                "legit layout must be accepted: {rel}"
+            );
+        }
+    }
+
+    /// Adversarial: `..` buried mid-path still escapes and must be rejected,
+    /// even when the path also contains the session_id (so the substring
+    /// anchor alone is not enough -- the component scan catches it).
+    #[test]
+    fn validate_recording_file_rejects_buried_traversal_even_with_session_id() {
+        for rel in [
+            format!("2026/05/{UUID}/../../../etc/passwd"),
+            format!("{UUID}/../../etc/{UUID}"),
+            format!("2026/05/{UUID}/sub/../../../../etc/shadow"),
+        ] {
+            assert!(
+                validate_recording_file_relative_path(&rel, UUID).is_err(),
+                "buried traversal must be rejected: {rel}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_recording_file_target_accepts_legit_under_base() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let rel = format!("2026/05/{UUID}/session.cast");
+        let resolved = resolve_recording_file_target(base.path(), &rel, UUID).expect("resolve");
+        // Create path (target does not exist yet): lexical join under base.
+        assert!(resolved.starts_with(base.path()));
+        assert!(resolved.ends_with("session.cast"));
+    }
+
+    #[test]
+    fn resolve_recording_file_target_rejects_traversal_and_absolute() {
+        let base = tempfile::tempdir().expect("tempdir");
+        assert!(resolve_recording_file_target(base.path(), "../escape", UUID).is_err());
+        assert!(resolve_recording_file_target(base.path(), "/etc/passwd", UUID).is_err());
     }
 }
