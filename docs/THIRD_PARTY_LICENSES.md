@@ -114,3 +114,55 @@ DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
+
+---
+
+## Self-hosted front-end libraries (MIT)
+
+These JavaScript/CSS libraries used to be loaded from public CDNs
+(`cdn.tailwindcss.com`, `unpkg.com`, `cdn.jsdelivr.net`). They are now
+vendored verbatim (pinned versions, no source change) under
+`vauban-web/static/js/vendor/` and `vauban-web/static/css/vendor/` so the
+browser never reaches a third-party origin at runtime. Refresh them with
+`vauban-web/scripts/vendor_assets.sh`.
+
+| Library | Version | File(s) | Upstream |
+|---|---|---|---|
+| Tailwind CSS (JIT Play CDN bundle) | 3.4.17 | `js/vendor/tailwindcss.js` | <https://github.com/tailwindlabs/tailwindcss> |
+| htmx | 1.9.12 | `js/vendor/htmx.min.js`, `js/vendor/htmx-ext-ws.js`, `js/vendor/htmx-ext-json-enc.js` | <https://github.com/bigskysoftware/htmx> |
+| Alpine.js (standard build) | 3.14.0 | `js/vendor/alpine.min.js` | <https://github.com/alpinejs/alpine> |
+| @xterm/xterm | 5.5.0 | `js/vendor/xterm.min.js`, `css/vendor/xterm.min.css` | <https://github.com/xtermjs/xterm.js> |
+| @xterm/addon-fit | 0.10.0 | `js/vendor/xterm-addon-fit.min.js` | <https://github.com/xtermjs/xterm.js> |
+| @xterm/addon-web-links | 0.11.0 | `js/vendor/xterm-addon-web-links.min.js` | <https://github.com/xtermjs/xterm.js> |
+
+All of the above are distributed under the MIT License. Copyright belongs to
+their respective authors:
+
+- Tailwind CSS: Copyright (c) Tailwind Labs, Inc.
+- htmx: Copyright (c) Big Sky Software
+- Alpine.js: Copyright (c) Caleb Porzio and contributors
+- xterm.js and addons: Copyright (c) The xterm.js authors
+
+The MIT License text (common to all of the above):
+
+```
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

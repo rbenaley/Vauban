@@ -90,6 +90,62 @@ pub static STATIC_FILES: &[StaticAsset] = &[
         content: include_bytes!("../static/js/asciinema-init.js"),
         content_type: "application/javascript; charset=utf-8",
     },
+    // ── Vendored front-end libraries (self-hosted, no runtime CDN) ─────────
+    // These were previously loaded from cdn.tailwindcss.com / unpkg.com /
+    // cdn.jsdelivr.net. They are vendored verbatim (no minification change,
+    // pinned versions) so the browser never reaches a third-party origin at
+    // runtime. Refresh with `scripts/vendor_assets.sh`. Versions and licenses
+    // are documented in docs/THIRD_PARTY_LICENSES.md.
+    //
+    // tailwindcss.js is the Tailwind *JIT runtime compiler* (Play CDN bundle,
+    // v3.4.17), NOT a pre-compiled stylesheet: utility classes are still
+    // compiled in the browser, which is why the CSP keeps 'unsafe-eval'.
+    StaticAsset {
+        path: "js/vendor/tailwindcss.js",
+        content: include_bytes!("../static/js/vendor/tailwindcss.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
+    StaticAsset {
+        path: "js/vendor/htmx.min.js",
+        content: include_bytes!("../static/js/vendor/htmx.min.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
+    StaticAsset {
+        path: "js/vendor/htmx-ext-ws.js",
+        content: include_bytes!("../static/js/vendor/htmx-ext-ws.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
+    StaticAsset {
+        path: "js/vendor/htmx-ext-json-enc.js",
+        content: include_bytes!("../static/js/vendor/htmx-ext-json-enc.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
+    // Alpine.js standard build (3.14.0). NOT the @alpinejs/csp build: keeping
+    // the standard build preserves every existing inline x-data expression
+    // (it relies on `new Function`, hence the CSP 'unsafe-eval').
+    StaticAsset {
+        path: "js/vendor/alpine.min.js",
+        content: include_bytes!("../static/js/vendor/alpine.min.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
+    // xterm 5.5.0 + addons. xterm injects <style> elements at runtime for
+    // terminal sizing/theming, which is why the CSP keeps 'unsafe-inline' on
+    // style-src.
+    StaticAsset {
+        path: "js/vendor/xterm.min.js",
+        content: include_bytes!("../static/js/vendor/xterm.min.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
+    StaticAsset {
+        path: "js/vendor/xterm-addon-fit.min.js",
+        content: include_bytes!("../static/js/vendor/xterm-addon-fit.min.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
+    StaticAsset {
+        path: "js/vendor/xterm-addon-web-links.min.js",
+        content: include_bytes!("../static/js/vendor/xterm-addon-web-links.min.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
     // ── CSS ───────────────────────────────────────────────────────────────
     StaticAsset {
         path: "css/vauban.css",
@@ -104,6 +160,12 @@ pub static STATIC_FILES: &[StaticAsset] = &[
     StaticAsset {
         path: "css/asciinema-player.css",
         content: include_bytes!("../static/css/asciinema-player.css"),
+        content_type: "text/css; charset=utf-8",
+    },
+    // Vendored xterm stylesheet (5.5.0), self-hosted alongside the JS above.
+    StaticAsset {
+        path: "css/vendor/xterm.min.css",
+        content: include_bytes!("../static/css/vendor/xterm.min.css"),
         content_type: "text/css; charset=utf-8",
     },
     // ── Fonts ─────────────────────────────────────────────────────────────
@@ -227,6 +289,53 @@ mod tests {
         assert!(
             content.contains("Alpine"),
             "vauban-components.js must contain 'Alpine'"
+        );
+    }
+
+    /// The vendored front-end libraries replacing the runtime CDNs MUST all be
+    /// registered so `/static/...` serves them same-origin (no CDN fetch).
+    #[test]
+    fn test_vendored_front_assets_are_registered() {
+        for path in [
+            "js/vendor/tailwindcss.js",
+            "js/vendor/htmx.min.js",
+            "js/vendor/htmx-ext-ws.js",
+            "js/vendor/htmx-ext-json-enc.js",
+            "js/vendor/alpine.min.js",
+            "js/vendor/xterm.min.js",
+            "js/vendor/xterm-addon-fit.min.js",
+            "js/vendor/xterm-addon-web-links.min.js",
+            "css/vendor/xterm.min.css",
+        ] {
+            let asset = lookup(path).unwrap_or_else(|| panic!("missing vendored asset: {path}"));
+            assert!(!asset.content.is_empty(), "vendored asset {path} is empty");
+        }
+    }
+
+    /// Pin the pinned upstream versions: a silent CDN refresh that swapped the
+    /// bytes for a different major would break the inline expressions / JIT
+    /// contract this self-hosting was built around.
+    #[test]
+    fn test_vendored_assets_pin_expected_versions() {
+        let tailwind = lookup("js/vendor/tailwindcss.js").expect("tailwindcss.js must exist");
+        let tailwind = std::str::from_utf8(tailwind.content).expect("JS must be valid UTF-8");
+        assert!(
+            tailwind.contains("3.4.17"),
+            "tailwindcss.js must be the pinned 3.4.17 JIT bundle"
+        );
+
+        let alpine = lookup("js/vendor/alpine.min.js").expect("alpine.min.js must exist");
+        let alpine = std::str::from_utf8(alpine.content).expect("JS must be valid UTF-8");
+        assert!(
+            alpine.contains("3.14.0") && alpine.contains("Alpine"),
+            "alpine.min.js must be the pinned 3.14.0 standard build"
+        );
+
+        let xterm = lookup("js/vendor/xterm.min.js").expect("xterm.min.js must exist");
+        let xterm = std::str::from_utf8(xterm.content).expect("JS must be valid UTF-8");
+        assert!(
+            xterm.contains("5.5.0"),
+            "xterm.min.js must be the pinned 5.5.0 build"
         );
     }
 }

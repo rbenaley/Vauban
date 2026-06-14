@@ -17,17 +17,17 @@
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="/static/img/favicon.svg">
 
-    <!-- Tailwind CSS (via CDN for dev, to compile for prod) -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tailwind JIT runtime compiler (self-hosted, v3.4.17) -->
+    <script src="/static/js/vendor/tailwindcss.js"></script>
     <script src="/static/js/tailwind-config.js"></script>
 
-    <!-- HTMX -->
-    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/ws.js"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/json-enc.js"></script>
+    <!-- HTMX (self-hosted, v1.9.12) -->
+    <script src="/static/js/vendor/htmx.min.js"></script>
+    <script src="/static/js/vendor/htmx-ext-ws.js"></script>
+    <script src="/static/js/vendor/htmx-ext-json-enc.js"></script>
 
-    <!-- Alpine.js -->
-    <script defer src="https://unpkg.com/alpinejs@3.14.0/dist/cdn.min.js"></script>
+    <!-- Alpine.js (self-hosted, standard build v3.14.0) -->
+    <script defer src="/static/js/vendor/alpine.min.js"></script>
 
     <!-- Alpine.js components + HTMX event handlers (external, no unsafe-inline needed) -->
     <script src="/static/js/vauban-components.js"></script>
