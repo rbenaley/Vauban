@@ -28,9 +28,16 @@ use axum::{
 /// Every front-end dependency is **self-hosted** under `/static/` (htmx,
 /// Alpine.js, the xterm stack and the Tailwind JIT compiler are vendored in
 /// `static/js/vendor` and `static/css/vendor`). The CSP therefore carries **no
-/// CDN origin**: `script-src`/`style-src`/`connect-src` are scoped to `'self'`
-/// (plus `wss:` for WebSockets), so the browser never reaches a third-party
-/// server at runtime.
+/// CDN origin**: `script-src`/`style-src`/`connect-src` are scoped to `'self'`,
+/// so the browser never reaches a third-party server at runtime.
+///
+/// `connect-src 'self'` covers every WebSocket: the SSH/RDP terminals and the
+/// htmx notification channel all dial `window.location.host` (same origin), and
+/// CSP Level 3 matches same-origin `ws:`/`wss:` under `'self'`. The previous
+/// blanket `wss:` source (any host) has been dropped.
+///
+/// `object-src 'none'` forbids `<object>`/`<embed>`/applets outright (no plugin
+/// surface), tightening the `default-src 'self'` fallback to a hard block.
 ///
 /// `'unsafe-inline'` is kept in `style-src` because:
 /// - the vendored Tailwind JIT compiler injects a generated `<style>` block,
@@ -79,7 +86,10 @@ pub async fn security_headers_middleware(request: Request<Body>, next: Next) -> 
     // - media-src:           Allow media from same origin and blob: URIs
     //                        (blob: needed for Shaka Player / MSE segmented playback)
     // - font-src 'self':     Allow fonts from same origin only
-    // - connect-src:         Allow XHR/fetch to self and WebSocket connections
+    // - connect-src 'self':  XHR/fetch + WebSockets to same origin only. The
+    //                        SSH/RDP terminals and htmx notifications all dial
+    //                        window.location.host, which 'self' covers (CSP3).
+    // - object-src 'none':   Forbid <object>/<embed>/applets (no plugin surface)
     // - base-uri 'self':     Prevent <base> tag hijacking
     // - form-action 'self':  Restrict form submissions to same origin
     // - frame-ancestors:     Prevent framing (mirrors X-Frame-Options)
@@ -92,7 +102,8 @@ pub async fn security_headers_middleware(request: Request<Body>, next: Next) -> 
              img-src 'self' data: blob:; \
              media-src 'self' blob:; \
              font-src 'self'; \
-             connect-src 'self' wss:; \
+             connect-src 'self'; \
+             object-src 'none'; \
              base-uri 'self'; \
              form-action 'self'; \
              frame-ancestors 'none'",
@@ -319,8 +330,13 @@ mod tests {
         );
     }
 
+    /// connect-src is scoped to same origin only. Same-origin `ws:`/`wss:`
+    /// (SSH/RDP terminals + htmx notifications dial `window.location.host`) is
+    /// covered by `'self'` under CSP Level 3, so the blanket `wss:` source has
+    /// been dropped and MUST NOT come back (it would re-allow XHR/WS to any
+    /// host).
     #[tokio::test]
-    async fn test_csp_connect_src_allows_wss() {
+    async fn test_csp_connect_src_has_no_blanket_wss() {
         let app = Router::new()
             .route("/", get(test_handler))
             .layer(axum::middleware::from_fn(security_headers_middleware));
@@ -346,8 +362,9 @@ mod tests {
             .expect("CSP must contain connect-src directive");
 
         assert!(
-            connect_src.contains("wss:"),
-            "connect-src MUST include wss: for RDP/SSH WebSocket connections, got: {}",
+            !connect_src.contains("wss:"),
+            "connect-src MUST NOT carry a blanket wss: source; 'self' covers \
+             same-origin WebSockets, got: {}",
             connect_src
         );
     }
@@ -419,10 +436,10 @@ mod tests {
         );
     }
 
-    /// connect-src is scoped to 'self' + wss: only (no CDN), so no XHR/fetch can
-    /// reach a third party at runtime.
+    /// connect-src is scoped to exactly 'self' (no CDN, no blanket wss:), so no
+    /// XHR/fetch/WebSocket can reach a third party at runtime.
     #[tokio::test]
-    async fn test_csp_connect_src_is_self_and_wss_only() {
+    async fn test_csp_connect_src_is_exactly_self() {
         let csp = csp_header().await;
         let connect_src = csp
             .split(';')
@@ -430,8 +447,24 @@ mod tests {
             .expect("CSP must contain connect-src directive")
             .trim();
         assert_eq!(
-            connect_src, "connect-src 'self' wss:",
-            "connect-src must be exactly self + wss:, got: {connect_src}"
+            connect_src, "connect-src 'self'",
+            "connect-src must be exactly 'self', got: {connect_src}"
+        );
+    }
+
+    /// object-src is locked to 'none': no <object>/<embed>/applet plugin surface
+    /// (a stricter hard block than the default-src 'self' fallback).
+    #[tokio::test]
+    async fn test_csp_object_src_is_none() {
+        let csp = csp_header().await;
+        let object_src = csp
+            .split(';')
+            .find(|d| d.trim().starts_with("object-src"))
+            .expect("CSP must contain object-src directive")
+            .trim();
+        assert_eq!(
+            object_src, "object-src 'none'",
+            "object-src must be exactly 'none', got: {object_src}"
         );
     }
 }

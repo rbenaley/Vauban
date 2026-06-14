@@ -118,6 +118,43 @@ async fn login_csp_drops_cdn_but_keeps_unsafe_directives() {
     );
 }
 
+/// The CSP served on `/login` must scope `connect-src` to exactly `'self'`
+/// (no blanket `wss:` source) and lock `object-src` to `'none'`. Same-origin
+/// WebSockets (SSH/RDP terminals, htmx notifications) are covered by `'self'`.
+#[tokio::test]
+async fn login_csp_locks_connect_src_self_and_object_src_none() {
+    let app = TestApp::spawn().await;
+
+    let response = app.server.get("/login").await;
+    let csp = response
+        .headers()
+        .get("content-security-policy")
+        .expect("CSP header must be present")
+        .to_str()
+        .expect("CSP header must be valid UTF-8")
+        .to_string();
+
+    let connect_src = csp
+        .split(';')
+        .find(|d| d.trim().starts_with("connect-src"))
+        .expect("CSP must contain connect-src")
+        .trim();
+    assert_eq!(
+        connect_src, "connect-src 'self'",
+        "connect-src must be exactly 'self' (no blanket wss:); got: {connect_src}"
+    );
+
+    let object_src = csp
+        .split(';')
+        .find(|d| d.trim().starts_with("object-src"))
+        .expect("CSP must contain object-src")
+        .trim();
+    assert_eq!(
+        object_src, "object-src 'none'",
+        "object-src must be exactly 'none'; got: {object_src}"
+    );
+}
+
 /// Every vendored JS asset must be served (200 + JS content-type + body).
 #[tokio::test]
 async fn vendored_js_assets_are_served() {
