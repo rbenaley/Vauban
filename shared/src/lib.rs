@@ -19,6 +19,7 @@
 
 pub mod ipc;
 pub mod messages;
+pub mod privdrop;
 pub mod recording_paths;
 pub mod sandbox;
 pub mod totp;

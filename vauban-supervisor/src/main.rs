@@ -30,7 +30,7 @@ use clap::{Parser, Subcommand};
 use config::SupervisorConfig;
 use nix::sys::signal::{Signal, kill};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
-use nix::unistd::{ForkResult, Gid, Pid, Uid, execv, fork, setgid, setuid};
+use nix::unistd::{ForkResult, Pid, execv, fork};
 use shared::ipc::{IpcChannel, poll_readable, send_fd, socketpair_for_fd_passing};
 use shared::messages::{ControlMessage, Message, SensitiveString, Service, ServiceStats};
 use shared::session_token::replay_cache::ReplayCache;
@@ -1062,19 +1062,12 @@ fn spawn_child(
                 std::process::exit(1);
             }
 
-            // Drop privileges if configured (production mode)
-            // Must set GID before UID
-            if let Some(g) = gid
-                && let Err(e) = setgid(Gid::from_raw(g))
-            {
-                eprintln!("Failed to setgid({}): {}", g, e);
-                std::process::exit(1);
-            }
-
-            if let Some(u) = uid
-                && let Err(e) = setuid(Uid::from_raw(u))
-            {
-                eprintln!("Failed to setuid({}): {}", u, e);
+            // Drop privileges if configured (production mode). VAU-009: the
+            // single drop seam purges the supplementary group list before
+            // changing gid then uid, so a child never keeps root's secondary
+            // groups. Fail-closed: any error aborts the child before execv.
+            if let Err(e) = shared::privdrop::drop_privileges(uid, gid) {
+                eprintln!("Failed to drop privileges: {}", e);
                 std::process::exit(1);
             }
 
