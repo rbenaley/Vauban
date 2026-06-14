@@ -66,6 +66,10 @@ binary = "vauban-web"
 host = "0.0.0.0"
 port = 8443
 
+# CORS allowlist (see default.toml). Browser cross-origin requests are
+# accepted only for these exact origins; never derived from the Host header.
+public_origins = ["https://localhost:8443"]
+
 # Development TLS certificates (self-signed)
 # Generate with: ./vauban-web/scripts/generate-dev-certs.sh
 [server.tls]

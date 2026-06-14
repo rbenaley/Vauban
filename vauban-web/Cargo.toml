@@ -165,6 +165,8 @@ insta = { version = "1.40", features = ["yaml"] }
 tokio-tungstenite = "0.28"
 serde_urlencoded = "0.7.1"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+# VAU-010: `ServiceExt::oneshot` for the in-crate CORS layer E2E tests.
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

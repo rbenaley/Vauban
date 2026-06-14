@@ -81,6 +81,14 @@ host = "0.0.0.0"
 port = 8443
 # workers = 4  # Optional, left to Tokio by default
 
+# CORS allowlist. Cross-origin browser requests are accepted only when their
+# `Origin` header EXACTLY matches one of these origins. This is the single
+# source of truth for the CORS decision; it is NEVER derived from the
+# client-controlled `Host` header. Format: `https://host[:port]` (no trailing
+# slash). In production this MUST be set to the bastion's real public
+# origin(s) (startup fails otherwise).
+public_origins = ["https://localhost:8443"]
+
 # TLS configuration (required - HTTPS only, TLS 1.3)
 # Development: certificates are in vauban-web/certs/ (relative to workspace root)
 # Production: certificates are in /usr/local/etc/vauban/certs/

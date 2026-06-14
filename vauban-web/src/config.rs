@@ -380,6 +380,51 @@ pub struct ServerConfig {
     pub workers: Option<usize>,
     /// TLS configuration (required - HTTPS only).
     pub tls: TlsConfig,
+    /// VAU-010: fixed CORS allowlist. Cross-origin browser requests are
+    /// accepted only when their `Origin` header EXACTLY matches one of these
+    /// origins. This list is the single source of truth for the CORS
+    /// decision; it is NEVER derived from the client-controlled `Host`
+    /// header. Format: `https://host[:port]` (no trailing slash, no path).
+    #[serde(default)]
+    pub public_origins: Vec<String>,
+}
+
+impl ServerConfig {
+    /// Normalize the configured CORS origins: trim a trailing `/` (browsers
+    /// never send one on the `Origin` header, but operators routinely add
+    /// it) and drop empty entries. Returns owned `String`s so the config
+    /// layer stays decoupled from the `http` crate.
+    pub fn parsed_public_origins(&self) -> Vec<String> {
+        self.public_origins
+            .iter()
+            .map(|o| o.trim().trim_end_matches('/').to_string())
+            .filter(|o| !o.is_empty())
+            .collect()
+    }
+
+    /// Validate the CORS allowlist (VAU-010, INV-4). Fail-closed in
+    /// production: the list must be non-empty and every entry must be an
+    /// `https://` origin. No-op outside production so dev/testing can run
+    /// with the inherited `default.toml` value (or none).
+    pub fn validate(&self, environment: Environment) -> Result<(), String> {
+        if environment != Environment::Production {
+            return Ok(());
+        }
+        let origins = self.parsed_public_origins();
+        if origins.is_empty() {
+            return Err(
+                "server.public_origins must list at least one https:// origin in production \
+                 (VAU-010: the CORS allowlist is never derived from the Host header)."
+                    .to_string(),
+            );
+        }
+        if let Some(bad) = origins.iter().find(|o| !o.starts_with("https://")) {
+            return Err(format!(
+                "server.public_origins entry {bad:?} must be an https:// origin (VAU-010)."
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// TLS configuration for HTTPS.
@@ -1586,6 +1631,13 @@ impl Config {
             .validate(config.environment)
             .map_err(crate::error::AppError::Config)?;
 
+        // VAU-010: fail-closed on the CORS allowlist in production (must be a
+        // non-empty list of https:// origins; never derived from Host).
+        config
+            .server
+            .validate(config.environment)
+            .map_err(crate::error::AppError::Config)?;
+
         Ok(config)
     }
 
@@ -1683,6 +1735,66 @@ mod tests {
     fn product_config_default_brand_is_vauban() {
         let cfg = ProductConfig::default();
         assert_eq!(cfg.brand.name, "VAUBAN");
+    }
+
+    // ==================== VAU-010: CORS allowlist (server.public_origins) ====================
+
+    fn server_config_with_origins(origins: &[&str]) -> ServerConfig {
+        ServerConfig {
+            host: "0.0.0.0".to_string(),
+            port: 8443,
+            workers: None,
+            tls: TlsConfig {
+                cert_path: String::new(),
+                key_path: String::new(),
+                ca_chain_path: None,
+                acme: None,
+            },
+            public_origins: origins.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn parsed_public_origins_trims_trailing_slash_and_skips_empty() {
+        let cfg = server_config_with_origins(&[
+            "https://bastion.example.com/",
+            "  https://b.example.com  ",
+            "",
+            "   ",
+        ]);
+        assert_eq!(
+            cfg.parsed_public_origins(),
+            vec![
+                "https://bastion.example.com".to_string(),
+                "https://b.example.com".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn server_validate_is_noop_outside_production() {
+        // Empty list is tolerated in dev/testing (default.toml supplies one).
+        let cfg = server_config_with_origins(&[]);
+        assert!(cfg.validate(Environment::Development).is_ok());
+        assert!(cfg.validate(Environment::Testing).is_ok());
+    }
+
+    #[test]
+    fn server_validate_production_rejects_empty_allowlist() {
+        let cfg = server_config_with_origins(&[]);
+        assert!(cfg.validate(Environment::Production).is_err());
+    }
+
+    #[test]
+    fn server_validate_production_rejects_non_https_origin() {
+        let cfg = server_config_with_origins(&["http://bastion.example.com"]);
+        assert!(cfg.validate(Environment::Production).is_err());
+    }
+
+    #[test]
+    fn server_validate_production_accepts_https_allowlist() {
+        let cfg = server_config_with_origins(&["https://bastion.example.com"]);
+        assert!(cfg.validate(Environment::Production).is_ok());
     }
 
     /// Helper: parse `<toml_str>` through the SAME parser the

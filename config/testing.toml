@@ -41,6 +41,11 @@ enabled = false
 [assets]
 allow_multiple_groups_per_asset = false
 
+# CORS allowlist (see default.toml). Browser cross-origin requests are
+# accepted only for these exact origins; never derived from the Host header.
+[server]
+public_origins = ["https://localhost:8443"]
+
 # Testing TLS certificates (use dev certs for tests)
 [server.tls]
 cert_path = "vauban-web/certs/dev-server.crt"
