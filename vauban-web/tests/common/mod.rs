@@ -212,6 +212,7 @@ impl TestApp {
                 ),
             ),
             iacs_tunnel_registry: vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
+            pending_mfa: vauban_web::services::pending_mfa::PendingMfaStore::new(),
         };
 
         // Build router

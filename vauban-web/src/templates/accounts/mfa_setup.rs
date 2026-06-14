@@ -18,15 +18,21 @@ pub struct MfaSetupTemplate {
     pub sidebar_content:
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
-    /// VAU-008: whether a candidate secret is currently pending confirmation.
-    /// When `false`, the template renders the password step-up form (which
-    /// posts to `/mfa/setup/init`) and NO secret/QR is shown. When `true`, it
-    /// renders the QR code and the confirmation form.
-    pub pending: bool,
-    /// The TOTP secret key in Base32 format. Empty unless `pending`.
+    /// VAU-008: a candidate secret is currently pending confirmation for THIS
+    /// session. When `true`, the template renders the QR code and the
+    /// confirmation form. The candidate lives only in the in-memory store, it
+    /// is never persisted before confirmation.
+    pub show_qr: bool,
+    /// VAU-008: the user already has an active second factor (rotation flow,
+    /// reached via `/accounts/mfa`). When `true` (and `show_qr` is `false`),
+    /// the template renders a step-up form asking for the CURRENT TOTP code
+    /// before a new candidate can be generated. Mutually exclusive with the
+    /// first-enrolment button (rendered when both flags are `false`).
+    pub needs_totp_stepup: bool,
+    /// The TOTP secret key in Base32 format. Empty unless `show_qr`.
     pub secret: String,
     /// The QR code as a Base64-encoded PNG image (without data URI prefix).
-    /// Empty unless `pending`.
+    /// Empty unless `show_qr`.
     pub qr_code_base64: String,
 }
 
@@ -53,7 +59,8 @@ mod tests {
             language_code: "en".to_string(),
             sidebar_content: None,
             header_user: None,
-            pending: true,
+            show_qr: true,
+            needs_totp_stepup: false,
             secret: "JBSWY3DPEHPK3PXP".to_string(),
             qr_code_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==".to_string(),
         };
@@ -71,7 +78,8 @@ mod tests {
             language_code: "en".to_string(),
             sidebar_content: None,
             header_user: None,
-            pending: true,
+            show_qr: true,
+            needs_totp_stepup: false,
             secret: "ABCDEF".to_string(),
             qr_code_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==".to_string(),
         };
@@ -92,7 +100,8 @@ mod tests {
             language_code: "en".to_string(),
             sidebar_content: None,
             header_user: None,
-            pending: true,
+            show_qr: true,
+            needs_totp_stepup: false,
             secret: "TESTSECRET".to_string(),
             qr_code_base64: "base64data".to_string(),
         };
@@ -103,10 +112,11 @@ mod tests {
         assert!(html.contains("base64data"));
     }
 
-    /// VAU-008: with no pending candidate, the page renders the password
-    /// step-up form (posting to `/mfa/setup/init`) and leaks NO secret/QR.
+    /// VAU-008 (ephemeral): first enrolment with no candidate renders the
+    /// "Configure 2FA" button posting to `/mfa/setup/init`, and asks for NO
+    /// password (the step-up at first enrolment was removed) and shows NO QR.
     #[test]
-    fn test_mfa_setup_template_no_pending_shows_password_form() {
+    fn test_mfa_setup_template_first_enrolment_shows_button_no_password() {
         let template = MfaSetupTemplate {
             title: "MFA Setup".to_string(),
             user: None,
@@ -115,17 +125,49 @@ mod tests {
             language_code: "en".to_string(),
             sidebar_content: None,
             header_user: None,
-            pending: false,
+            show_qr: false,
+            needs_totp_stepup: false,
             secret: String::new(),
             qr_code_base64: String::new(),
         };
         let result = template.render();
         assert!(result.is_ok());
         let html = unwrap_ok!(result);
-        // The step-up form targets the init endpoint and asks for a password.
+        // The init form targets the init endpoint...
         assert!(html.contains("/mfa/setup/init"));
-        assert!(html.contains("type=\"password\""));
-        // No QR image must be present when nothing is pending.
+        // ...but NEVER asks for a password (no double password entry).
+        assert!(!html.contains("type=\"password\""));
+        // No TOTP step-up field (that is the rotation path).
+        assert!(!html.contains("name=\"totp_code\""));
+        // No QR image when nothing is pending.
+        assert!(!html.contains("data:image/png;base64,"));
+    }
+
+    /// VAU-008 (ephemeral): rotation (already enrolled) with no candidate
+    /// renders a current-TOTP step-up form posting to `/mfa/setup/init`, with
+    /// NO password and NO QR.
+    #[test]
+    fn test_mfa_setup_template_rotation_shows_totp_stepup() {
+        let template = MfaSetupTemplate {
+            title: "MFA Setup".to_string(),
+            user: None,
+            vauban: create_test_vauban_config(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            show_qr: false,
+            needs_totp_stepup: true,
+            secret: String::new(),
+            qr_code_base64: String::new(),
+        };
+        let result = template.render();
+        assert!(result.is_ok());
+        let html = unwrap_ok!(result);
+        assert!(html.contains("/mfa/setup/init"));
+        // Rotation asks for the CURRENT TOTP code, never a password.
+        assert!(html.contains("name=\"totp_code\""));
+        assert!(!html.contains("type=\"password\""));
         assert!(!html.contains("data:image/png;base64,"));
     }
 }

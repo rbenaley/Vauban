@@ -346,9 +346,6 @@ diesel::table! {
         is_deleted -> Bool,
         deleted_at -> Nullable<Timestamptz>,
         last_totp_used_window -> Nullable<Int8>,
-        #[max_length = 255]
-        pending_mfa_secret -> Nullable<Varchar>,
-        pending_mfa_generated_at -> Nullable<Timestamptz>,
     }
 }
 

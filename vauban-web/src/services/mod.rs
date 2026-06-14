@@ -20,6 +20,7 @@ pub mod iacs;
 pub mod iacs_packet_analyzer;
 pub mod iacs_tunnel;
 pub mod mailer;
+pub mod pending_mfa;
 pub mod rate_limit;
 pub mod rbac;
 pub mod recording_hydrator;

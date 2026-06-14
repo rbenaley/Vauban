@@ -135,6 +135,12 @@ pub struct AppState {
     /// Empty by default; populated by the russh server task when
     /// `[industrial.iacs_tunnel].enabled` is `true`.
     pub iacs_tunnel_registry: services::iacs_tunnel::TunnelRegistry,
+    /// VAU-008: process-local, per-session store of candidate MFA secrets
+    /// awaiting enrolment confirmation. The candidate is NEVER persisted to
+    /// `users` before a valid code is submitted, and is isolated per login
+    /// session (keyed by the JWT `jti` / `auth_sessions.uuid`). See
+    /// [`services::pending_mfa::PendingMfaStore`].
+    pub pending_mfa: services::pending_mfa::PendingMfaStore,
 }
 
 #[cfg(test)]

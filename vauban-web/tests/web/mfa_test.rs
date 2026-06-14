@@ -2,10 +2,7 @@
 ///
 /// Tests for MFA setup and verification pages (/mfa/setup, /mfa/verify).
 use axum::http::header::{self, COOKIE};
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use serial_test::serial;
-use vauban_web::schema::users;
 
 use crate::common::{TestApp, assertions::*, test_db};
 use crate::fixtures::{create_mfa_user, create_test_user, unique_name};
@@ -32,19 +29,21 @@ async fn test_mfa_setup_page_requires_auth() {
     );
 }
 
-/// Test MFA setup page renders the password step-up form for an authenticated
-/// user with no pending secret (VAU-008: GET is read-only, no QR until init).
+/// Test MFA setup page renders the first-enrolment button for an authenticated
+/// user with no pending candidate (VAU-008: GET is read-only, no QR until init,
+/// and first enrolment asks for NO password).
 #[tokio::test]
 #[serial]
 async fn test_mfa_setup_page_renders() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Setup: create user with temporary token (mfa_verified = false)
+    // Setup: create user with temporary token (mfa_verified = false), carrying
+    // a session jti (the in-memory candidate store key).
     let username = unique_name("mfa_setup");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
-    // Generate a temporary token with mfa_verified = false
+    let session_uuid = uuid::Uuid::new_v4();
     let temp_token = app
         .auth_service
         .generate_access_token(
@@ -53,7 +52,7 @@ async fn test_mfa_setup_page_renders() {
             false,
             false,
             false,
-            None,
+            Some(session_uuid),
         )
         .unwrap();
 
@@ -64,20 +63,20 @@ async fn test_mfa_setup_page_renders() {
         .add_header(COOKIE, format!("access_token={}", temp_token))
         .await;
 
-    // Assert: 200 OK rendering the step-up form (no secret/QR leaked).
+    // Assert: 200 OK rendering the init form (no password, no QR leaked).
     assert_status(&response, 200);
     let body = response.text();
     assert!(
-        body.contains("Confirm your password to start setup"),
-        "Should render the password step-up prompt"
+        body.contains("/mfa/setup/init"),
+        "Init form must post to /mfa/setup/init"
     );
     assert!(
-        body.contains("/mfa/setup/init"),
-        "Step-up form must post to /mfa/setup/init"
+        !body.contains("type=\"password\""),
+        "First enrolment must NOT ask for a password"
     );
     assert!(
         !body.contains("data:image/png;base64,"),
-        "GET must NOT leak a QR code when no secret is pending"
+        "GET must NOT leak a QR code when no candidate is pending"
     );
 
     // Cleanup
@@ -85,17 +84,18 @@ async fn test_mfa_setup_page_renders() {
 }
 
 /// Test MFA setup page shows the QR code once a candidate secret is pending
-/// (i.e. after `POST /mfa/setup/init` has run). We seed `pending_mfa_secret`
-/// directly to assert the read-only GET renders the QR from it.
+/// (i.e. after `POST /mfa/setup/init` has run). We seed the in-memory
+/// per-session candidate store to assert the read-only GET renders the QR.
 #[tokio::test]
 #[serial]
 async fn test_mfa_setup_page_shows_qr_code() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Setup: create user with temporary token
+    // Setup: create user with temporary token carrying a session jti.
     let username = unique_name("mfa_qr");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let session_uuid = uuid::Uuid::new_v4();
     let temp_token = app
         .auth_service
         .generate_access_token(
@@ -104,22 +104,19 @@ async fn test_mfa_setup_page_shows_qr_code() {
             false,
             false,
             false,
-            None,
+            Some(session_uuid),
         )
         .unwrap();
 
-    // Seed a pending (candidate) secret as POST /mfa/setup/init would. Tests
-    // run without a vault, so the candidate is plaintext Base32.
-    // 32 Base32 chars = 20 bytes, satisfying the RFC 6238 minimum secret
-    // length enforced by TOTP::new.
-    diesel::update(users::table.filter(users::id.eq(test_user.user.id)))
-        .set((
-            users::pending_mfa_secret.eq(Some("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP")),
-            users::pending_mfa_generated_at.eq(Some(chrono::Utc::now())),
-        ))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+    // Seed a pending (candidate) secret in the in-memory store as
+    // POST /mfa/setup/init would. Tests run without a vault, so the candidate
+    // is plaintext Base32. 32 Base32 chars = 20 bytes, satisfying the RFC 6238
+    // minimum secret length enforced by TOTP::new.
+    app.app_state.pending_mfa.put(
+        &test_user.user.uuid.to_string(),
+        &session_uuid.to_string(),
+        "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP".to_string(),
+    );
 
     // Execute: GET /mfa/setup
     let response = app

@@ -884,7 +884,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         live_session_history,
         system_health_cache,
         iacs_tunnel_registry: vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
+        pending_mfa: vauban_web::services::pending_mfa::PendingMfaStore::new(),
     };
+
+    // VAU-008: periodically evict abandoned MFA enrolment candidates so the
+    // in-memory store cannot grow unbounded. Lazy eviction on read already
+    // covers correctness; this sweep just bounds memory.
+    {
+        let pending_mfa = app_state.pending_mfa.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                pending_mfa.sweep();
+            }
+        });
+    }
 
     if let Some(ref client) = app_state.proxy_iacs {
         let client_clone = Arc::clone(client);

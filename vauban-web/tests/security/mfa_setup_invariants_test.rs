@@ -30,7 +30,7 @@ fn slice_fn(src: &str, start_marker: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// INV-1: GET handlers are side-effect free
+// INV-1: GET handlers are side-effect free + the column is gone everywhere
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -44,6 +44,10 @@ fn inv1_get_mfa_setup_page_has_no_db_write() {
     assert!(
         !body.contains("diesel::insert_into"),
         "GET mfa_setup_page must not insert (INV-1)"
+    );
+    assert!(
+        !body.contains(".put("),
+        "GET mfa_setup_page must not write to the candidate store (INV-1)"
     );
 }
 
@@ -59,10 +63,27 @@ fn inv1_get_accounts_mfa_has_no_db_write() {
         !body.contains("diesel::insert_into"),
         "GET /accounts/mfa (mfa_setup) must not insert (INV-1)"
     );
+    assert!(
+        !body.contains(".put("),
+        "GET /accounts/mfa must not write to the candidate store (INV-1)"
+    );
+}
+
+/// The persisted candidate column is fully retired: no handler may reference
+/// `pending_mfa_secret` (it no longer exists in the schema).
+#[test]
+fn inv1_pending_column_is_retired_from_handlers() {
+    for rel in ["src/handlers/auth.rs", "src/handlers/web/users.rs"] {
+        let src = read_src(rel);
+        assert!(
+            !src.contains("pending_mfa_secret"),
+            "{rel} must not reference the retired pending_mfa_secret column (INV-1)"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
-// INV-2: secret generation is confined to the CSRF + step-up POST
+// INV-2: secret generation is confined to the CSRF-gated POST
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -87,8 +108,11 @@ fn inv2_get_handlers_never_generate_a_secret() {
     }
 }
 
+/// The init POST is the sole generation site, gated by CSRF. First enrolment
+/// takes NO password (the double-password regression), while rotation proves
+/// the current factor with a TOTP code.
 #[test]
-fn inv2_init_is_gated_by_csrf_and_password_stepup() {
+fn inv2_init_is_gated_by_csrf_and_generates() {
     let auth = read_src("src/handlers/auth.rs");
     let init = slice_fn(&auth, "pub async fn mfa_setup_init(");
     assert!(
@@ -96,8 +120,16 @@ fn inv2_init_is_gated_by_csrf_and_password_stepup() {
         "init must validate CSRF (INV-2)"
     );
     assert!(
-        init.contains("verify_password"),
-        "init must enforce a password step-up (INV-2)"
+        !init.contains("verify_password"),
+        "init must NOT ask for a password (first enrolment is password-free) (INV-3)"
+    );
+    assert!(
+        init.contains("verify_totp"),
+        "init must verify the current TOTP for rotation step-up (INV-3)"
+    );
+    assert!(
+        init.contains("mfa_already_enabled"),
+        "init must branch on whether MFA is already enabled (INV-3)"
     );
     assert!(
         init.contains("mfa_generate") || init.contains("generate_totp_secret"),
@@ -106,39 +138,54 @@ fn inv2_init_is_gated_by_csrf_and_password_stepup() {
 }
 
 // ---------------------------------------------------------------------------
-// INV-3: pending isolation; mfa_secret promoted only on confirm
+// INV-1/INV-2: candidate lives only in the per-session in-memory store
 // ---------------------------------------------------------------------------
 
 #[test]
-fn inv3_init_writes_only_pending() {
+fn inv3_init_writes_only_the_store_never_mfa_secret() {
     let auth = read_src("src/handlers/auth.rs");
     let init = slice_fn(&auth, "pub async fn mfa_setup_init(");
     assert!(
-        init.contains("pending_mfa_secret.eq("),
-        "init must write the pending secret (INV-3)"
+        init.contains("pending_mfa") && init.contains(".put("),
+        "init must store the candidate in the in-memory store (INV-1)"
     );
     assert!(
         !init.contains("users::mfa_secret.eq("),
-        "init must NOT write mfa_secret -- only pending_mfa_secret (INV-3)"
+        "init must NOT write mfa_secret -- only the in-memory store (INV-1)"
     );
 }
 
 #[test]
-fn inv3_confirm_promotes_and_clears_pending() {
+fn inv2_store_is_keyed_by_session_jti() {
+    let auth = read_src("src/handlers/auth.rs");
+    for marker in [
+        "pub async fn mfa_setup_init(",
+        "pub async fn mfa_setup_submit(",
+        "pub async fn mfa_setup_page(",
+    ] {
+        let body = slice_fn(&auth, marker);
+        assert!(
+            body.contains("claims.jti") || body.contains("session_jti"),
+            "{marker} must key the candidate store on the session jti (INV-2)"
+        );
+    }
+}
+
+#[test]
+fn inv3_confirm_promotes_and_evicts_from_store() {
     let auth = read_src("src/handlers/auth.rs");
     let confirm = slice_fn(&auth, "pub async fn mfa_setup_submit(");
     assert!(
         confirm.contains("users::mfa_secret.eq("),
-        "confirm must promote the secret to mfa_secret (INV-3)"
+        "confirm must promote the secret to mfa_secret (INV-1)"
     );
     assert!(
-        confirm.contains("pending_mfa_secret.eq(None"),
-        "confirm must clear the pending secret (INV-3)"
+        confirm.contains("pending_mfa") && confirm.contains(".get("),
+        "confirm must read the candidate from the in-memory store (INV-1)"
     );
-    // The candidate is read from pending, never from mfa_secret.
     assert!(
-        confirm.contains("pending_mfa_secret"),
-        "confirm must read the candidate from pending_mfa_secret (INV-3)"
+        confirm.contains(".evict("),
+        "confirm must evict the candidate from the store after enrolment (INV-1)"
     );
 }
 

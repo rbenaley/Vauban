@@ -1933,9 +1933,16 @@ pub async fn profile(
 }
 
 /// MFA setup page (for authenticated users viewing their MFA status).
+///
+/// VAU-008 (ephemeral): entry point for the ROTATION flow (the user is already
+/// enrolled). Strictly READ-ONLY -- no secret production and no DB write. The
+/// candidate secret is created exclusively by `POST /mfa/setup/init` (CSRF
+/// gated, current-TOTP step-up for rotation) and lives ONLY in the per-session
+/// in-memory store. Renders the same three states as `mfa_setup_page`.
 pub async fn mfa_setup(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    session_id: crate::middleware::auth::AuthSessionId,
     browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     use ::uuid::Uuid as UuidType;
@@ -1956,31 +1963,29 @@ pub async fn mfa_setup(
     let user_uuid = UuidType::parse_str(&auth_user.uuid)
         .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
 
-    // VAU-008: this GET is strictly READ-ONLY -- no secret production and no
-    // DB write. The candidate secret is created exclusively by
-    // `POST /mfa/setup/init` (CSRF + password step-up) and stored in
-    // `pending_mfa_secret`. Here we only render the QR for an in-progress
-    // setup, or the step-up form when none is pending.
-    let user_data: (String, Option<String>) = crate::schema::users::table
+    let (user_username, mfa_already_enabled): (String, bool) = crate::schema::users::table
         .filter(crate::schema::users::uuid.eq(user_uuid))
         .filter(crate::schema::users::is_deleted.eq(false))
         .select((
             crate::schema::users::username,
-            crate::schema::users::pending_mfa_secret,
+            crate::schema::users::mfa_enabled,
         ))
         .first(&mut conn)
         .await
         .map_err(AppError::Database)?;
 
-    let (user_username, pending_secret) = user_data;
+    // The candidate is keyed by the login session (= auth_sessions.uuid, which
+    // is the JWT `jti`). On a web flow this is always present.
+    let session_jti = session_id.0.to_string();
+    let candidate = state.pending_mfa.get(&auth_user.uuid, &session_jti);
 
-    let (pending, secret, mut qr_code_base64) = match pending_secret {
+    let (show_qr, needs_totp_stepup, secret, mut qr_code_base64) = match candidate {
         Some(ref s) => {
             let (plaintext_secret, qr) =
                 crate::handlers::auth::mfa_qr_from_secret(&state, s, &user_username).await?;
-            (true, plaintext_secret, qr)
+            (true, false, plaintext_secret, qr)
         }
-        None => (false, String::new(), String::new()),
+        None => (false, mfa_already_enabled, String::new(), String::new()),
     };
 
     let template = MfaSetupTemplate {
@@ -1991,7 +1996,8 @@ pub async fn mfa_setup(
         language_code,
         sidebar_content,
         header_user,
-        pending,
+        show_qr,
+        needs_totp_stepup,
         secret,
         qr_code_base64: qr_code_base64.clone(),
     };

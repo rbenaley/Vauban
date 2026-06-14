@@ -967,28 +967,17 @@ pub struct MfaCodeForm {
     pub csrf_token: String,
 }
 
-/// Time-to-live for a pending (candidate) MFA secret, in minutes. After this
-/// window a candidate produced by `POST /mfa/setup/init` can no longer be
-/// confirmed and is cleared (VAU-008).
-const PENDING_MFA_TTL_MINUTES: i64 = 15;
-
-/// Form for the MFA setup initialisation (step-up). The `password` re-auth is
-/// mandatory before any secret is generated (VAU-008).
+/// Form for the MFA setup initialisation (POST /mfa/setup/init).
 ///
-/// `Debug` is implemented by hand to redact the password.
-#[derive(Deserialize)]
+/// VAU-008 (ephemeral): the `password` field is GONE. First enrolment needs
+/// only a valid CSRF token (the user just logged in). For ROTATION (already
+/// enrolled) the caller must prove the current factor with a valid
+/// `totp_code`; it is `Option` because first enrolment omits it.
+#[derive(Deserialize, Debug)]
 pub struct MfaInitForm {
-    pub password: String,
     pub csrf_token: String,
-}
-
-impl std::fmt::Debug for MfaInitForm {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MfaInitForm")
-            .field("password", &"[REDACTED]")
-            .field("csrf_token", &self.csrf_token)
-            .finish()
-    }
+    #[serde(default)]
+    pub totp_code: Option<String>,
 }
 
 /// MFA setup page handler (GET /mfa/setup).
@@ -1017,31 +1006,44 @@ pub async fn mfa_setup_page(
     let user_uuid = UuidType::parse_str(&claims.sub)
         .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
 
-    // VAU-008: this GET is strictly READ-ONLY. The candidate TOTP secret is
-    // created exclusively by `POST /mfa/setup/init` (CSRF + password step-up)
-    // and stored in `pending_mfa_secret`. Here we only render the QR for an
-    // in-progress setup, or the step-up form when none is pending. No secret
-    // is ever produced or persisted on this path (no DB write, no generation),
-    // which is what closes the GET-side-effect / CSRF vector.
-    let user_data: (String, Option<String>) = users
+    // VAU-008 (ephemeral): this GET is strictly READ-ONLY. The candidate TOTP
+    // secret is created exclusively by `POST /mfa/setup/init` (CSRF gated) and
+    // lives ONLY in the per-session in-memory store, never in `users`. Here we
+    // render one of three states without ever producing or persisting a secret
+    // (no DB write, no generation), which is what closes the GET-side-effect /
+    // CSRF vector:
+    //   (a) a candidate is in flight for THIS session -> QR + confirm form;
+    //   (b) not enrolled, no candidate -> "Configure 2FA" button (no password);
+    //   (c) already enrolled, no candidate -> current-TOTP step-up (rotation).
+    let (user_username, mfa_already_enabled): (String, bool) = users
         .filter(uuid.eq(user_uuid))
         .filter(is_deleted.eq(false))
         .select((
             crate::schema::users::username,
-            crate::schema::users::pending_mfa_secret,
+            crate::schema::users::mfa_enabled,
         ))
         .first(&mut conn)
         .await
         .map_err(AppError::Database)?;
 
-    let (user_username, pending_secret) = user_data;
+    // The per-session candidate is keyed by the JWT `jti` (= auth_sessions.uuid
+    // on the pre-MFA token). A web flow always carries one; its absence means a
+    // malformed/non-web token, so steer back to login rather than leaking a
+    // shared candidate.
+    let Some(ref session_jti) = claims.jti else {
+        return Ok(Redirect::to("/login").into_response());
+    };
 
-    let (pending, secret, mut qr_code_base64) = match pending_secret {
+    let candidate = state.pending_mfa.get(&claims.sub, session_jti);
+
+    let (show_qr, needs_totp_stepup, secret, mut qr_code_base64) = match candidate {
         Some(ref s) => {
             let (plaintext_secret, qr) = mfa_qr_from_secret(&state, s, &user_username).await?;
-            (true, plaintext_secret, qr)
+            (true, false, plaintext_secret, qr)
         }
-        None => (false, String::new(), String::new()),
+        // No candidate: rotation (enrolled) needs a current-TOTP step-up;
+        // first enrolment just needs the CSRF-protected button.
+        None => (false, mfa_already_enabled, String::new(), String::new()),
     };
 
     // Build template without sidebar (user not fully authenticated yet)
@@ -1067,7 +1069,8 @@ pub async fn mfa_setup_page(
         language_code,
         sidebar_content,
         header_user,
-        pending,
+        show_qr,
+        needs_totp_stepup,
         secret,
         qr_code_base64: qr_code_base64.clone(),
     };
@@ -1108,12 +1111,21 @@ pub(crate) async fn mfa_qr_from_secret(
 
 /// MFA setup initialisation handler (POST /mfa/setup/init).
 ///
-/// VAU-008: the ONLY place a TOTP secret is (re)generated. Gated by CSRF and a
-/// mandatory password step-up. On success it writes the candidate to
-/// `pending_mfa_secret` (never `mfa_secret`), stamps `pending_mfa_generated_at`,
-/// emits `MfaSecretGenerated`, then redirects back to `GET /mfa/setup`
-/// (Post/Redirect/Get). On any failure (CSRF or wrong password) no write occurs
-/// and no secret is disclosed.
+/// VAU-008 (ephemeral): the ONLY place a TOTP secret is (re)generated. Gated by
+/// CSRF. The generated candidate is written ONLY to the per-session in-memory
+/// store ([`AppState::pending_mfa`]), NEVER to `users` -- so a GET can never
+/// enrol a factor and two sessions of the same account get distinct secrets.
+///
+/// Step-up policy:
+///   * FIRST enrolment (`mfa_enabled == false`): no step-up. The user just
+///     authenticated with their password at login; a second password prompt
+///     was redundant and hostile to UX.
+///   * ROTATION (`mfa_enabled == true`): proof of the CURRENT factor is
+///     required (a valid `totp_code` verified against the active `mfa_secret`).
+///
+/// On success it stores the candidate, emits `MfaSecretGenerated`, then
+/// redirects back to `GET /mfa/setup` (Post/Redirect/Get). On any failure
+/// (CSRF, missing session, wrong current code) no candidate is created.
 pub async fn mfa_setup_init(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1143,6 +1155,13 @@ pub async fn mfa_setup_init(
         .ok_or_else(|| AppError::Auth("Not authenticated".to_string()))?;
     let claims = state.auth_service.verify_token(&token)?;
 
+    // The candidate is keyed by the login session (JWT `jti`). Without one we
+    // cannot isolate it per session, so refuse rather than fall back to a
+    // shared candidate.
+    let Some(session_jti) = claims.jti.clone() else {
+        return Ok(Redirect::to("/login").into_response());
+    };
+
     let mut conn = state
         .db_pool
         .get()
@@ -1152,35 +1171,75 @@ pub async fn mfa_setup_init(
     let user_uuid = UuidType::parse_str(&claims.sub)
         .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
 
-    let (user_id, user_username, password_hash_val): (i32, String, String) = users
+    let (user_id, user_username, mfa_already_enabled, current_secret): (
+        i32,
+        String,
+        bool,
+        Option<String>,
+    ) = users
         .filter(uuid.eq(user_uuid))
         .filter(is_deleted.eq(false))
         .select((
             crate::schema::users::id,
             crate::schema::users::username,
-            crate::schema::users::password_hash,
+            crate::schema::users::mfa_enabled,
+            crate::schema::users::mfa_secret,
         ))
         .first(&mut conn)
         .await
         .map_err(AppError::Database)?;
 
-    // Mandatory password step-up. On failure: NO write, NO secret generated.
-    // The message is deliberately generic so it cannot be used as an oracle.
-    let password_ok = state
-        .auth_service
-        .verify_password(&form.password, &password_hash_val)
-        .unwrap_or(false);
-    if !password_ok {
-        tracing::warn!(user_id, "mfa setup init: password step-up failed");
-        return Ok(flash_redirect(
-            flash.error("Incorrect password. Please try again."),
-            "/mfa/setup",
-        ));
+    // ROTATION step-up: prove the CURRENT factor. On failure: NO candidate
+    // generated. The message is deliberately generic so it is not an oracle.
+    if mfa_already_enabled {
+        let code = form.totp_code.as_deref().unwrap_or("").trim().to_string();
+        let Some(ref active_secret) = current_secret else {
+            tracing::error!(user_id, "mfa rotation: mfa_enabled but mfa_secret is NULL");
+            return Ok(flash_redirect(
+                flash.error("Two-factor is in an inconsistent state. Contact an administrator."),
+                "/mfa/setup",
+            ));
+        };
+        // Refuse explicitly when the secret is an encrypted envelope but the
+        // vault IPC is unavailable (issue #11 hardening): never call
+        // `verify_totp` on ciphertext (would loop a correct code as invalid).
+        if is_encrypted(active_secret) && state.vault_client.is_none() {
+            tracing::error!(
+                user_id,
+                "mfa rotation: active secret is encrypted but vault client is not configured"
+            );
+            return Ok(flash_redirect(
+                flash.error(
+                    "MFA backend is temporarily unavailable. Please try again \
+                     in a moment, or contact an administrator if the problem persists.",
+                ),
+                "/mfa/setup",
+            ));
+        }
+        let current_ok = if let Some(ref vault) = state.vault_client
+            && is_encrypted(active_secret)
+        {
+            vault
+                .mfa_verify(active_secret, &code)
+                .await
+                .unwrap_or(false)
+        } else {
+            AuthService::verify_totp(active_secret, &code)
+        };
+        if !current_ok {
+            tracing::warn!(user_id, "mfa rotation: current-code step-up failed");
+            return Ok(flash_redirect(
+                flash.error("Invalid verification code. Please try again."),
+                "/mfa/setup",
+            ));
+        }
     }
 
     // Generate a fresh candidate secret. Encrypted at rest when a vault is
-    // configured; plaintext Base32 in dev. Written ONLY to pending_mfa_secret,
-    // so an existing mfa_secret is never overwritten without a fresh confirm.
+    // configured; plaintext Base32 in dev. Stored ONLY in the per-session
+    // in-memory store -- never in `users` -- so it is never persisted before
+    // confirmation and never shared across sessions. A previous candidate for
+    // this session is overwritten (regenerate as many times as necessary).
     let candidate = if let Some(ref vault) = state.vault_client {
         let (encrypted_secret, _plaintext) = vault
             .mfa_generate(&user_username, "VAUBAN")
@@ -1192,15 +1251,7 @@ pub async fn mfa_setup_init(
         new_secret
     };
 
-    diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
-        .set((
-            crate::schema::users::pending_mfa_secret.eq(Some(&candidate)),
-            crate::schema::users::pending_mfa_generated_at.eq(Some(Utc::now())),
-            crate::schema::users::updated_at.eq(Utc::now()),
-        ))
-        .execute(&mut conn)
-        .await
-        .map_err(AppError::Database)?;
+    state.pending_mfa.put(&claims.sub, &session_jti, candidate);
 
     // Audit (INV-4): a (re)generation of a second-factor secret is
     // security-relevant. Fire-and-forget so a missing audit sink cannot wedge
@@ -1259,27 +1310,18 @@ pub async fn mfa_setup_submit(
     let user_uuid = UuidType::parse_str(&claims.sub)
         .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
 
-    // VAU-008: confirmation reads the CANDIDATE secret from pending_mfa_secret,
-    // never mfa_secret. The candidate is created only by POST /mfa/setup/init
-    // (CSRF + password step-up). Promotion to mfa_secret happens here, and only
-    // here, after a valid TOTP code -- so a GET can never enrol a factor and a
-    // generation never overwrites an already-enrolled secret.
-    type ConfirmRow = (
-        i32,
-        String,
-        Option<String>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        bool,
-        bool,
-    );
-    let user_data: ConfirmRow = users
+    // VAU-008 (ephemeral): confirmation reads the CANDIDATE secret from the
+    // per-session in-memory store, never from `users`. The candidate is created
+    // only by POST /mfa/setup/init (CSRF gated). Promotion to `users.mfa_secret`
+    // happens here, and only here, after a valid TOTP code -- so a GET can never
+    // enrol a factor and a generation never overwrites an already-enrolled
+    // secret.
+    let (user_id, user_username, is_super, is_staff_user): (i32, String, bool, bool) = users
         .filter(uuid.eq(user_uuid))
         .filter(is_deleted.eq(false))
         .select((
             crate::schema::users::id,
             crate::schema::users::username,
-            crate::schema::users::pending_mfa_secret,
-            crate::schema::users::pending_mfa_generated_at,
             crate::schema::users::is_superuser,
             crate::schema::users::is_staff,
         ))
@@ -1287,39 +1329,22 @@ pub async fn mfa_setup_submit(
         .await
         .map_err(AppError::Database)?;
 
-    let (user_id, user_username, pending_opt, pending_at, is_super, is_staff_user) = user_data;
+    // The candidate is bound to THIS login session (JWT `jti`).
+    let Some(session_jti) = claims.jti.clone() else {
+        return Ok(Redirect::to("/login").into_response());
+    };
 
-    // No candidate in flight: nothing to confirm. Steer the user back to the
-    // step-up form (the GET renders it) instead of erroring on a missing
-    // secret.
-    let Some(secret) = pending_opt else {
+    // Fetch the candidate. `get` enforces the TTL: an absent or stale entry
+    // (older than `PendingMfaStore::TTL`) returns `None` and is evicted, so a
+    // forgotten setup cannot be confirmed much later. In both "never started"
+    // and "expired" cases we steer the user back to the GET (which renders the
+    // start/step-up form) instead of erroring on a missing secret.
+    let Some(secret) = state.pending_mfa.get(&claims.sub, &session_jti) else {
         return Ok(flash_redirect(
-            flash.error("Start two-factor setup first."),
+            flash.error("Two-factor setup expired or not started. Please start again."),
             "/mfa/setup",
         ));
     };
-
-    // TTL: a stale candidate (generated too long ago) is rejected and cleared,
-    // so a forgotten setup cannot be confirmed much later.
-    let expired = pending_at
-        .map(|t| Utc::now().signed_duration_since(t) > Duration::minutes(PENDING_MFA_TTL_MINUTES))
-        .unwrap_or(true);
-    if expired {
-        diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
-            .set((
-                crate::schema::users::pending_mfa_secret.eq(None::<String>),
-                crate::schema::users::pending_mfa_generated_at
-                    .eq(None::<chrono::DateTime<chrono::Utc>>),
-                crate::schema::users::updated_at.eq(Utc::now()),
-            ))
-            .execute(&mut conn)
-            .await
-            .map_err(AppError::Database)?;
-        return Ok(flash_redirect(
-            flash.error("Two-factor setup expired. Please start again."),
-            "/mfa/setup",
-        ));
-    }
 
     // Validate TOTP code against the CANDIDATE secret.
     // Verify via vault when available (encrypted secrets), or directly (dev).
@@ -1357,21 +1382,22 @@ pub async fn mfa_setup_submit(
     }
 
     // Promote the candidate to the active secret and enable MFA in a single
-    // update, clearing the pending columns. `mfa_secret` is mutated ONLY here
-    // (INV-3). The candidate is already encrypted at rest when a vault is
-    // configured (it was produced by `vault.mfa_generate` in the init step).
+    // update. `mfa_secret` is mutated ONLY here (INV-1/INV-3). The candidate is
+    // already encrypted at rest when a vault is configured (it was produced by
+    // `vault.mfa_generate` in the init step).
     diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
         .set((
             crate::schema::users::mfa_secret.eq(Some(&secret)),
             crate::schema::users::mfa_enabled.eq(true),
-            crate::schema::users::pending_mfa_secret.eq(None::<String>),
-            crate::schema::users::pending_mfa_generated_at
-                .eq(None::<chrono::DateTime<chrono::Utc>>),
             crate::schema::users::updated_at.eq(Utc::now()),
         ))
         .execute(&mut conn)
         .await
         .map_err(AppError::Database)?;
+
+    // Candidate consumed: drop it from the in-memory store so it cannot be
+    // re-confirmed and to bound memory.
+    state.pending_mfa.evict(&claims.sub, &session_jti);
 
     // Audit: MFA enrolment is a security-relevant credential change.
     emit_audit_critical(

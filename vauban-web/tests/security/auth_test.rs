@@ -221,16 +221,18 @@ async fn test_mfa_setup_page_success() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Setup: create test user with temporary token (mfa_verified = false)
+    // Setup: create test user with temporary token (mfa_verified = false),
+    // carrying a session jti (the in-memory candidate store key).
     let username = unique_name("test_mfa_setup");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let session_uuid = uuid::Uuid::new_v4();
     let temp_token = unwrap_ok!(app.auth_service.generate_access_token(
         &test_user.user.uuid.to_string(),
         &username,
         false,
         false,
         false,
-        None,
+        Some(session_uuid),
     ));
 
     // Execute: GET /mfa/setup with cookie auth
@@ -240,18 +242,23 @@ async fn test_mfa_setup_page_success() {
         .add_header(header::COOKIE, format!("access_token={}", temp_token))
         .await;
 
-    // Assert: 200 OK. VAU-008: with no pending candidate the page renders the
-    // read-only password step-up form (no secret/QR is generated on GET).
+    // Assert: 200 OK. VAU-008 (ephemeral): with no pending candidate the page
+    // renders the read-only first-enrolment button (NO password step-up, no
+    // secret/QR is generated on GET).
     let status = response.status_code().as_u16();
     assert_eq!(status, 200, "MFA setup page should load, got {}", status);
     let body = response.text();
     assert!(
-        body.contains("Confirm your password to start setup"),
-        "Should show the password step-up prompt"
+        body.contains("/mfa/setup/init"),
+        "Should render the CSRF-gated init form"
+    );
+    assert!(
+        !body.contains("type=\"password\""),
+        "First enrolment must NOT ask for a password"
     );
     assert!(
         !body.contains("data:image/png;base64,"),
-        "GET must not leak a QR with no pending secret"
+        "GET must not leak a QR with no pending candidate"
     );
 
     // Cleanup
