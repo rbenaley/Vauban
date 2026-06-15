@@ -1179,12 +1179,12 @@ async fn test_account_lockout() {
 async fn test_rate_limiting() {
     use vauban_web::services::rate_limit::RateLimiter;
 
-    // Create a rate limiter with a low limit for testing
-    let limiter = unwrap_ok!(RateLimiter::new(false, None, 3).await);
+    // Create an in-memory rate limiter; the limit is supplied per call.
+    let limiter = RateLimiter::in_memory();
 
     // First 3 requests should be allowed
     for i in 1..=3 {
-        let result = unwrap_ok!(limiter.check("test_ip").await);
+        let result = unwrap_ok!(limiter.check("test_ip", 3).await);
         assert!(
             result.allowed,
             "Request {} should be allowed, remaining: {}",
@@ -1193,7 +1193,7 @@ async fn test_rate_limiting() {
     }
 
     // 4th request should be blocked
-    let result = unwrap_ok!(limiter.check("test_ip").await);
+    let result = unwrap_ok!(limiter.check("test_ip", 3).await);
     assert!(
         !result.allowed,
         "Request 4 should be blocked (rate limited)"
@@ -2315,6 +2315,10 @@ fn test_security_config_parsed_trusted_proxies() {
             parallelism: 1,
         },
         require_justification: true,
+        session_create_rate_per_minute: 12,
+        session_create_rate_global_per_minute: 120,
+        max_concurrent_sessions_per_user: 10,
+        max_concurrent_sessions_per_asset: 20,
         trusted_proxies: vec![
             "127.0.0.1".to_string(),
             "::1".to_string(),
@@ -2351,6 +2355,10 @@ fn test_security_config_empty_trusted_proxies() {
             parallelism: 1,
         },
         require_justification: true,
+        session_create_rate_per_minute: 12,
+        session_create_rate_global_per_minute: 120,
+        max_concurrent_sessions_per_user: 10,
+        max_concurrent_sessions_per_asset: 20,
         trusted_proxies: vec![],
     };
 
@@ -5587,214 +5595,11 @@ fn test_toml_secret_key_path_preserved() {
     );
 }
 
-// ==================== Silent cache fallback -> fail-closed ====================
-
-#[test]
-fn test_cache_no_silent_fallback_to_mock() {
-    // The old pattern "falling back to mock cache" must no longer appear in
-    // create_cache_client().  When cache.enabled = true and Redis fails,
-    // an error must be returned, not a silent MockCache.
-    let source = include_str!("../../src/cache.rs");
-    assert!(
-        !source.contains("falling back to mock"),
-        "cache.rs must not contain 'falling back to mock' (fail-closed when enabled)"
-    );
-}
-
-#[test]
-fn test_cache_disabled_mock_path_preserved() {
-    // Regression: the explicit cache.enabled = false -> MockCache path must remain.
-    let source = include_str!("../../src/cache.rs");
-    assert!(
-        source.contains("Cache is disabled - using mock cache"),
-        "regression: cache.rs must still have the disabled -> mock path"
-    );
-}
-
-#[test]
-fn test_cache_enabled_uses_error_propagation() {
-    // When cache.enabled = true, errors must propagate via ? (not match/Ok(Mock)).
-    // Look for the fail-closed pattern: map_err + AppError::Config.
-    let source = include_str!("../../src/cache.rs");
-
-    // The function must return AppError::Config on Redis client creation failure
-    assert!(
-        source.contains("Cache is enabled but Redis client creation failed"),
-        "cache.rs must return Config error on Redis client creation failure"
-    );
-
-    // The function must return AppError::Config on Redis connection failure
-    assert!(
-        source.contains("Cache is enabled but cannot connect to Redis"),
-        "cache.rs must return Config error on Redis connection failure"
-    );
-}
-
-#[test]
-fn test_cache_error_messages_suggest_disabling() {
-    // Error messages must tell the operator how to recover.
-    let source = include_str!("../../src/cache.rs");
-
-    let error_count = source
-        .matches("Set cache.enabled = false to run without cache")
-        .count();
-    assert!(
-        error_count >= 2,
-        "both cache error paths must suggest 'Set cache.enabled = false' (found {})",
-        error_count
-    );
-}
-
-#[test]
-fn test_rate_limiter_no_silent_fallback() {
-    // The old "Falling back to in-memory" pattern must be gone.
-    let source = include_str!("../../src/services/rate_limit.rs");
-    assert!(
-        !source.contains("Falling back to in-memory"),
-        "rate_limit.rs must not silently fall back to in-memory when cache is enabled"
-    );
-}
-
-#[test]
-fn test_rate_limiter_fail_closed_on_bad_client() {
-    // When cache_enabled = true, Redis client creation failure must return
-    // an error via AppError::Config, not a warn + fallback.
-    let source = include_str!("../../src/services/rate_limit.rs");
-    assert!(
-        source.contains("cache is enabled but Redis client creation failed"),
-        "rate_limit.rs must return Config error on Redis client failure"
-    );
-}
-
-#[test]
-fn test_rate_limiter_fail_closed_on_no_url() {
-    // When cache_enabled = true but no URL, must return an error.
-    let source = include_str!("../../src/services/rate_limit.rs");
-    assert!(
-        source.contains("cache is enabled but no Redis URL provided"),
-        "rate_limit.rs must return error when cache enabled but no URL"
-    );
-}
-
-#[test]
-fn test_rate_limiter_in_memory_path_preserved() {
-    // Regression: the cache_enabled = false -> InMemory path must remain.
-    let source = include_str!("../../src/services/rate_limit.rs");
-    assert!(
-        source.contains("Rate limiter using in-memory backend"),
-        "regression: rate_limit.rs must still have the in-memory backend path"
-    );
-}
-
-// ==================== Atomic Redis rate limiting (Lua script) ====================
-
-#[test]
-fn test_no_separate_incr_expire_in_check_redis() {
-    // The old non-atomic pattern used separate INCR then EXPIRE commands.
-    // After the Lua-script refactor, check_redis must NOT contain individual redis::cmd("INCR")
-    // or conn.expire() calls -- only the atomic Lua script.
-    let source = include_str!("../../src/services/rate_limit.rs");
-
-    // Find the check_redis function body
-    let fn_start = source
-        .find("async fn check_redis")
-        .expect("check_redis function must exist");
-    let fn_body = &source[fn_start..];
-    // Find the end of the function (next "fn " at same indentation level)
-    let fn_end = fn_body[1..]
-        .find("\n    /// ")
-        .or_else(|| fn_body[1..].find("\n    pub fn"))
-        .or_else(|| fn_body[1..].find("\n    fn "))
-        .unwrap_or(800);
-    let fn_body = &fn_body[..fn_end + 1];
-
-    assert!(
-        !fn_body.contains("redis::cmd(\"INCR\")"),
-        "check_redis must not use separate INCR command (use Lua script instead)"
-    );
-    assert!(
-        !fn_body.contains(".expire("),
-        "check_redis must not use separate expire() call (use Lua script instead)"
-    );
-}
-
-#[test]
-fn test_uses_lua_script_constant() {
-    // The rate limiter must define and use a RATE_LIMIT_LUA constant.
-    let source = include_str!("../../src/services/rate_limit.rs");
-    assert!(
-        source.contains("RATE_LIMIT_LUA"),
-        "rate_limit.rs must define RATE_LIMIT_LUA constant"
-    );
-    assert!(
-        source.contains("Script::new(Self::RATE_LIMIT_LUA)"),
-        "check_redis must use Script::new(Self::RATE_LIMIT_LUA)"
-    );
-}
-
-#[test]
-fn test_lua_script_is_atomic() {
-    // The Lua script must contain INCR, TTL, and EXPIRE in a single script body.
-    // This guarantees atomicity on the Redis server.
-    let source = include_str!("../../src/services/rate_limit.rs");
-
-    // Extract the Lua script content (between r#" and "#)
-    let lua_start = source
-        .find("RATE_LIMIT_LUA")
-        .expect("RATE_LIMIT_LUA not found");
-    let after = &source[lua_start..];
-    // Find the raw string delimiters
-    let script_start = after
-        .find("r#\"")
-        .expect("Lua script must be a raw string literal");
-    let script_end = after[script_start + 3..]
-        .find("\"#")
-        .expect("Lua script raw string must be closed");
-    let lua_body = &after[script_start + 3..script_start + 3 + script_end];
-
-    assert!(
-        lua_body.contains("redis.call('INCR'"),
-        "Lua script must call INCR"
-    );
-    assert!(
-        lua_body.contains("redis.call('EXPIRE'"),
-        "Lua script must call EXPIRE"
-    );
-    assert!(
-        lua_body.contains("redis.call('TTL'"),
-        "Lua script must call TTL"
-    );
-}
-
-#[test]
-fn test_lua_script_recovers_stale_keys() {
-    // The Lua script must handle the case where a key exists without TTL
-    // (ttl == -1), which could happen from the old non-atomic code or a crash.
-    let source = include_str!("../../src/services/rate_limit.rs");
-
-    let lua_start = source.find("RATE_LIMIT_LUA").unwrap();
-    let after = &source[lua_start..];
-    let script_start = after.find("r#\"").unwrap();
-    let script_end = after[script_start + 3..].find("\"#").unwrap();
-    let lua_body = &after[script_start + 3..script_start + 3 + script_end];
-
-    assert!(
-        lua_body.contains("ttl == -1"),
-        "Lua script must check for ttl == -1 (missing TTL / crash recovery)"
-    );
-}
-
-#[test]
-fn test_check_redis_uses_invoke_async() {
-    // The script must be executed via invoke_async for async compatibility.
-    let source = include_str!("../../src/services/rate_limit.rs");
-    assert!(
-        source.contains("invoke_async"),
-        "check_redis must use invoke_async for the Lua script"
-    );
-}
-
-// ==================== No Mutex serialization on Redis cache ====================
+// ==================== Cache / rate-limiter: no external dependency =========
+//
+// Redis/Valkey was fully removed (VAU-012 follow-up): the cache is an
+// in-process no-op and the rate limiter is in-memory only. These pins guard
+// against a network cache dependency creeping back in.
 
 /// Return only the production (non-test) portion of cache.rs source.
 fn cache_prod_source() -> &'static str {
@@ -5803,53 +5608,40 @@ fn cache_prod_source() -> &'static str {
 }
 
 #[test]
-fn test_no_mutex_on_multiplexed_connection() {
-    // MultiplexedConnection handles multiplexing internally and is Clone.
-    // Wrapping it in a Mutex serializes all cache operations unnecessarily.
+fn test_cache_opens_no_network_connection() {
     let source = cache_prod_source();
     assert!(
-        !source.contains("Mutex<redis"),
-        "CacheConnection::Redis must not wrap MultiplexedConnection in Mutex"
+        !source.contains("get_multiplexed_async_connection"),
+        "cache.rs must not open any network connection"
+    );
+    assert!(
+        !source.contains("redis::"),
+        "cache.rs must not reference the redis crate"
     );
 }
 
 #[test]
-fn test_no_lock_await_in_cache() {
-    // With the Mutex removed, no .lock().await should remain in production code.
-    let source = cache_prod_source();
+fn test_rate_limiter_opens_no_network_connection() {
+    // Scan only the production portion: the in-file unit tests name the
+    // forbidden symbols in negative assertions on purpose.
+    let full = include_str!("../../src/services/rate_limit.rs");
+    let source = full.split("#[cfg(test)]").next().unwrap_or(full);
     assert!(
-        !source.contains(".lock().await"),
-        "cache.rs production code must not call .lock().await"
+        !source.contains("get_multiplexed_async_connection"),
+        "rate_limit.rs must not open any network connection"
+    );
+    assert!(
+        !source.contains("redis::"),
+        "rate_limit.rs must not reference the redis crate"
     );
 }
 
 #[test]
-fn test_no_tokio_mutex_import() {
-    // The tokio::sync::Mutex import should be gone from production code.
-    let source = cache_prod_source();
+fn test_rate_limiter_in_memory_path_preserved() {
+    let source = include_str!("../../src/services/rate_limit.rs");
     assert!(
-        !source.contains("tokio::sync::Mutex"),
-        "cache.rs must not import tokio::sync::Mutex"
-    );
-}
-
-#[test]
-fn test_uses_connection_clone() {
-    // Cache operations must clone the MultiplexedConnection for concurrent access.
-    let source = cache_prod_source();
-    assert!(
-        source.contains("conn.clone()"),
-        "cache operations must use conn.clone() for concurrent access"
-    );
-}
-
-#[test]
-fn test_redis_variant_stores_connection_directly() {
-    // The Redis variant must store MultiplexedConnection directly, not Arc<Mutex<...>>.
-    let source = cache_prod_source();
-    assert!(
-        source.contains("Redis(redis::aio::MultiplexedConnection)"),
-        "CacheConnection::Redis must store MultiplexedConnection directly"
+        source.contains("Rate limiter using in-memory backend"),
+        "regression: rate_limit.rs must still have the in-memory backend path"
     );
 }
 

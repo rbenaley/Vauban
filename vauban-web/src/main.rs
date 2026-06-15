@@ -23,7 +23,6 @@ use axum::{
 };
 use axum_server::tls_rustls::RustlsConfig;
 use rustls::server::ResolvesServerCert;
-use secrecy::ExposeSecret;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceBuilder;
@@ -636,23 +635,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sup.set_tokio_handle(tokio::runtime::Handle::current());
     }
 
-    // 4. Create cache client and validate connection
+    // 4. Create cache client (in-memory no-op; opens no socket).
     let cache = create_cache_client(&config).await.map_err(|e| {
         eprintln!("Failed to create cache client: {}", e);
         e
     })?;
-
-    // Validate cache connection before entering sandbox
-    cache.validate_connection().await.map_err(|e| {
-        eprintln!("Failed to validate cache connection: {}", e);
-        e
-    })?;
-
-    if cache.is_redis() {
-        tracing::info!("Cache enabled and validated (Redis/Valkey)");
-    } else {
-        tracing::info!("Cache disabled - using mock cache (no-op)");
-    }
+    tracing::info!("Cache initialized (in-memory no-op)");
 
     // 5. Create auth service (may open files for key material)
     let auth_service = AuthService::new(config.clone()).map_err(|e| {
@@ -673,22 +661,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "WebSocket connection counter initialized"
     );
 
-    // 7. Create rate limiter. When cache is enabled this establishes and
-    // validates (PING) the Redis connection NOW, in PHASE 1: after the
-    // sandbox gate below, socket()/connect() are denied by the OS sandbox.
-    let rate_limiter = RateLimiter::new(
-        config.cache.enabled,
-        Some(config.cache.url.expose_secret()),
-        config.security.rate_limit_per_minute,
-    )
-    .await?;
+    // 7. Create rate limiter. In-memory, single-process, sandbox-safe: it
+    // never opens a socket, so there is nothing to pre-establish before the
+    // sandbox gate below.
+    let rate_limiter = RateLimiter::in_memory();
     tracing::info!(
-        "Rate limiter initialized (backend: {}, limit: {}/min)",
-        if config.cache.enabled {
-            "Redis"
-        } else {
-            "in-memory"
-        },
+        "Rate limiter initialized (backend: in-memory, login limit: {}/min)",
         config.security.rate_limit_per_minute
     );
 
@@ -2159,7 +2137,7 @@ async fn api_disabled_handler() -> (axum::http::StatusCode, &'static str) {
 ///
 /// Returns:
 /// - 200 OK with "OK" if all services are healthy
-/// - 503 Service Unavailable if database or cache is unreachable
+/// - 503 Service Unavailable if the database is unreachable
 ///
 /// In sandbox mode, a failing health check may indicate the service
 /// needs to be respawned.
@@ -2174,13 +2152,7 @@ async fn health_check(
         return (StatusCode::SERVICE_UNAVAILABLE, "DB unavailable");
     }
 
-    // Check cache connectivity (if Redis is enabled)
-    if state.cache.is_redis()
-        && let Err(e) = state.cache.validate_connection().await
-    {
-        tracing::warn!("Health check failed: cache unavailable: {}", e);
-        return (StatusCode::SERVICE_UNAVAILABLE, "Cache unavailable");
-    }
+    // Cache is an in-memory no-op (no external dependency to probe).
 
     (StatusCode::OK, "OK")
 }

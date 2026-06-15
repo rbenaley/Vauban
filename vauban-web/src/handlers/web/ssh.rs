@@ -622,6 +622,42 @@ pub async fn connect_ssh(
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    // VAU-012: enforce session-creation rate limits and concurrency quotas
+    // BEFORE allocating any backend resource (INSERT + token + TCP + IPC).
+    // Placed AFTER authorization so a denial cannot be used to enumerate
+    // assets (anti-enumeration).
+    match crate::services::session_limits::enforce_session_creation(
+        &state,
+        &mut conn,
+        user_id,
+        asset.id,
+        client_addr.addr().ip(),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(denied)) => {
+            return crate::services::session_limits::connect_limit_response(
+                &headers,
+                &denied.message,
+            );
+        }
+        Err(e) => {
+            tracing::error!("Failed to evaluate session-creation limits: {}", e);
+            let msg = "Unable to start session";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg.to_string()),
+            })
+            .into_response();
+        }
+    }
+
     // Record the session in the database for ownership tracking.
     // This allows the ws_session_guard middleware to verify that the
     // WebSocket client owns the session before allowing the upgrade.

@@ -35,7 +35,7 @@ docs/                 # Technical architecture documentation
 
 - **Web Framework**: Axum
 - **Database**: PostgreSQL with Diesel ORM
-- **Cache**: Valkey/Redis
+- **Cache**: in-process no-op (no external cache server)
 - **Templates**: Askama (compile-time verified)
 - **IPC**: Unix pipes for inter-service communication
 - **Authentication**: JWT, Argon2id, TOTP
@@ -87,7 +87,6 @@ Vauban's security is built on defense in depth:
 - [just](https://github.com/casey/just) command runner
 - NASM (for OpenH264 assembly compilation)
 - PostgreSQL 18+
-- Valkey/Redis (optional - for caching, can be disabled for development)
 - FreeBSD (for Capsicum sandbox; builds on macOS/Linux without sandboxing)
 
 ### Build
@@ -192,14 +191,18 @@ secret_key = "generated-at-install-time"
 
 ### Cache
 
-Cache can be disabled for development in the TOML config:
+Vauban uses an in-process no-op cache and depends on no external cache
+server. The `[cache]` section only carries placeholders for a future
+in-memory backend:
 
 ```toml
 [cache]
 enabled = false
+default_ttl_secs = 3600
 ```
 
-**Note**: If cache is disabled or Valkey/Redis is unavailable, the application automatically uses a mock (no-op) cache.
+**Note**: cache operations are no-ops today (reads always miss); the rate
+limiter is fully in-memory and single-process.
 
 ## Database Setup
 

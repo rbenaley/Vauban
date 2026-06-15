@@ -341,6 +341,32 @@ pub async fn connect_rdp(
         None => return htmx_error_response("RDP proxy not available"),
     };
 
+    // VAU-012: enforce session-creation rate limits and concurrency quotas
+    // BEFORE allocating any backend resource (INSERT + token + TCP + IPC).
+    // Placed AFTER authorization so a denial cannot be used to enumerate
+    // assets (anti-enumeration).
+    match crate::services::session_limits::enforce_session_creation(
+        &state,
+        &mut conn,
+        user_id,
+        asset_id,
+        client_addr.addr().ip(),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(denied)) => {
+            return crate::services::session_limits::connect_limit_response(
+                &headers,
+                &denied.message,
+            );
+        }
+        Err(e) => {
+            tracing::error!("Failed to evaluate session-creation limits: {}", e);
+            return htmx_error_response("Unable to start session");
+        }
+    }
+
     // Record the session in the database so that ws_session_guard can verify
     // WebSocket ownership before allowing the upgrade.
     {

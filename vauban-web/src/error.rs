@@ -47,9 +47,6 @@ pub enum AppError {
     #[error("IPC error: {0}")]
     Ipc(String),
 
-    #[error("Cache error: {0}")]
-    Cache(#[from] redis::RedisError),
-
     #[error("Configuration error: {0}")]
     Config(String),
 }
@@ -101,13 +98,6 @@ impl IntoResponse for AppError {
             AppError::Ipc(e) => {
                 tracing::error!("IPC error: {}", e);
                 (StatusCode::BAD_GATEWAY, "Service unavailable".to_string())
-            }
-            AppError::Cache(e) => {
-                tracing::warn!("Cache error: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Cache operation failed".to_string(),
-                )
             }
             AppError::Config(msg) => {
                 tracing::error!("Configuration error: {}", msg);

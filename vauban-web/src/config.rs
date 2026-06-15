@@ -358,18 +358,22 @@ debug_redacted_struct!(
     redact: [url]
 );
 
-/// Cache (Valkey/Redis) configuration.
-#[derive(Clone, Deserialize)]
+/// Cache configuration.
+///
+/// Vauban uses an in-process no-op cache; there is no external cache server
+/// and therefore no connection URL. `enabled` / `default_ttl_secs` are kept
+/// for a future in-memory backend and do not open any socket.
+#[derive(Debug, Clone, Deserialize)]
 pub struct CacheConfig {
+    #[serde(default)]
     pub enabled: bool,
-    pub url: secrecy::SecretString,
+    #[serde(default = "default_cache_ttl_secs")]
     pub default_ttl_secs: u64,
 }
 
-debug_redacted_struct!(
-    CacheConfig,
-    redact: [url]
-);
+fn default_cache_ttl_secs() -> u64 {
+    3600
+}
 
 /// Server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -567,6 +571,38 @@ pub struct SecurityConfig {
     /// Require users to provide a justification before connecting to an asset.
     #[serde(default = "default_require_justification")]
     pub require_justification: bool,
+    /// VAU-012: per-user rate limit on session creation (all protocols),
+    /// requests per minute. `0` disables the control.
+    #[serde(default = "default_session_create_rate_per_minute")]
+    pub session_create_rate_per_minute: u32,
+    /// VAU-012: global (service-wide) defense rate limit on session creation,
+    /// requests per minute. `0` disables the control.
+    #[serde(default = "default_session_create_rate_global_per_minute")]
+    pub session_create_rate_global_per_minute: u32,
+    /// VAU-012: maximum number of concurrent live sessions a single user may
+    /// hold across all assets. `0` disables the control.
+    #[serde(default = "default_max_concurrent_sessions_per_user")]
+    pub max_concurrent_sessions_per_user: i64,
+    /// VAU-012: maximum number of concurrent live sessions targeting a single
+    /// asset, across all users. `0` disables the control.
+    #[serde(default = "default_max_concurrent_sessions_per_asset")]
+    pub max_concurrent_sessions_per_asset: i64,
+}
+
+fn default_session_create_rate_per_minute() -> u32 {
+    12
+}
+
+fn default_session_create_rate_global_per_minute() -> u32 {
+    120
+}
+
+fn default_max_concurrent_sessions_per_user() -> i64 {
+    10
+}
+
+fn default_max_concurrent_sessions_per_asset() -> i64 {
+    20
 }
 
 impl SecurityConfig {

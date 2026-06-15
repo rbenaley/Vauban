@@ -657,7 +657,7 @@ async fn build_state_from(app: &TestApp) -> vauban_web::AppState {
         broadcast: app.broadcast.clone(),
         user_connections: app.user_connections.clone(),
         ws_counter: app.ws_counter.clone(),
-        rate_limiter: unwrap_ok!(RateLimiter::new(false, None, 1000).await),
+        rate_limiter: RateLimiter::in_memory(),
         ssh_proxy: None,
         rdp_proxy: None,
         proxy_iacs: None,

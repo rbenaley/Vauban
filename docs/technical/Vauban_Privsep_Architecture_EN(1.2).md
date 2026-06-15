@@ -96,7 +96,6 @@ flowchart TB
 
     subgraph external [External Resources]
         DB[(PostgreSQL)]
-        Cache[(Valkey)]
         S3[(MinIO/S3)]
         HSM[HSM]
     end
@@ -111,7 +110,6 @@ flowchart TB
     S --> IACS
 
     Web --> DB
-    Web --> Cache
     Auth --> DB
     Access --> DB
     Audit --> DB
@@ -504,8 +502,7 @@ Before entering capability mode, vauban-web must:
 1. **Bind the HTTPS listening socket** - Network namespace access required
 2. **Load TLS certificates** - File system access required
 3. **Pre-establish all database connections** - Fixed-size pool
-4. **Establish Redis/Valkey connection** - Multiplexed connection
-5. **Initialize rate limiter** - May use Redis
+4. **Initialize rate limiter** - In-memory, single-process (opens no socket)
 
 ```rust
 // Simplified startup sequence
@@ -519,9 +516,8 @@ async fn main() -> Result<()> {
     // 3. Create fixed-size database pool (all connections pre-established)
     let db_pool = create_pool_sandboxed(&config)?;
     
-    // 4. Create and validate cache connection
-    let cache = create_cache_client(&config).await?;
-    cache.validate_connection().await?;
+    // 4. Create the in-memory rate limiter (no network, sandbox-safe)
+    let rate_limiter = RateLimiter::in_memory();
     
     // 5. Enter sandbox
     enter_sandbox(&listener)?;
@@ -553,7 +549,7 @@ pub fn create_pool_sandboxed(config: &Config) -> AppResult<DbPool> {
 
 #### 5.5.3 Connection Loss Handling
 
-If a database or cache connection is lost after `cap_enter()`:
+If a database connection is lost after `cap_enter()`:
 
 1. The health check endpoint (`/health`) returns 503 Service Unavailable
 2. The service continues to operate with degraded functionality
@@ -576,7 +572,7 @@ pub fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
 | Service | Sandboxed | Notes |
 |---------|-----------|-------|
 | `vauban-supervisor` | No | Needs to spawn/manage children |
-| `vauban-web` | **Yes** | Fixed pool, multiplexed cache (incl. the rate limiter's pre-established Redis connection), pre-bound listener + supervisor SCM_RIGHTS socket declared as a dedicated fd receiver (`WEB_KINDS = [Listener, FdReceiver]`; drives the OpenBSD `recvfd` promise) |
+| `vauban-web` | **Yes** | Fixed pool, in-memory rate limiter (no external cache; opens no socket), pre-bound listener + supervisor SCM_RIGHTS socket declared as a dedicated fd receiver (`WEB_KINDS = [Listener, FdReceiver]`; drives the OpenBSD `recvfd` promise) |
 | `vauban-auth` | Yes | IPC + SCM_RIGHTS fd receiver (LDAPS broker) |
 | `vauban-access` | Yes | IPC only (`ACCESS_KINDS = [IpcPipe]`); the PostgreSQL sockets are pre-opened by the service itself before the sandbox and intentionally not rights-limited per fd -- the wall is `cap_enter`/seccomp, no reconnection is possible |
 | `vauban-vault` | Yes | IPC only (no DB, no network) |

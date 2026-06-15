@@ -134,15 +134,9 @@ impl TestApp {
             config.websocket.max_connections_per_user,
         );
 
-        // Create rate limiter (in-memory for tests, with higher limit)
-        // Use 1000 requests per minute in tests to avoid rate limiting interference
-        let rate_limiter = unwrap_ok!(
-            RateLimiter::new(
-                false, // Don't use Redis in tests
-                None, 1000, // High limit for tests
-            )
-            .await
-        );
+        // Create rate limiter (in-memory). The per-call limit is supplied by
+        // each handler, so the limiter itself is just the in-memory backend.
+        let rate_limiter = RateLimiter::in_memory();
 
         // Initialize vauban-web's virtual-group OnceLock so the
         // web-side resolver in `services::access` knows the virtual

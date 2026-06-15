@@ -1,117 +1,61 @@
-/// VAUBAN Web - Cache (Valkey/Redis) connection.
+/// VAUBAN Web - In-memory no-op cache.
 ///
-/// Provides Redis client for caching and session storage.
-/// Supports a no-op mock cache when cache is disabled.
-///
-/// For Capsicum sandbox mode, connections must be established before
-/// entering capability mode. Use `validate_connection()` to verify
-/// the connection is working, and `check_or_shutdown()` for periodic
-/// health checks that exit on failure.
-use redis::AsyncCommands;
-use redis::Client;
-use secrecy::ExposeSecret;
+/// Vauban does not depend on any external cache server. This module keeps a
+/// minimal, in-process no-op cache abstraction (`CacheConnection` /
+/// `MockCache`) so future code can opt into a real in-memory backend without
+/// re-introducing a network dependency. Every operation is a no-op today
+/// (`get` -> miss, `set`/`delete` -> ignored, `exists` -> false).
 use std::sync::Arc;
-use tracing::warn;
+
+use tracing::debug;
 
 use crate::config::Config;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 
-/// Exit code used when cache connection is lost in sandbox mode.
-/// The supervisor will respawn the service when it sees this exit code.
-pub const EXIT_CODE_CONNECTION_LOST: i32 = 100;
-
-/// Cache connection enum - can be real Redis or mock.
+/// Cache connection handle.
 ///
-/// # Concurrency
-///
-/// The Redis variant stores a [`MultiplexedConnection`] directly (no `Mutex`).
-/// `MultiplexedConnection` is `Clone`-cheap (it shares an internal channel
-/// sender) and handles request multiplexing over a single TCP connection
-/// internally, so no external lock is needed.
+/// Single in-process backend (`Mock`). The enum shape is retained so a real
+/// in-memory backend can be added later without churning every construction
+/// site, and so `AppState.cache` keeps a stable type.
 #[derive(Clone)]
 pub enum CacheConnection {
-    Redis(redis::aio::MultiplexedConnection),
+    /// No-op in-memory cache.
     Mock(Arc<MockCache>),
 }
 
 impl CacheConnection {
     /// Validate that the cache connection is working.
     ///
-    /// This sends a PING command to Redis and verifies the response.
-    /// For mock cache, this always succeeds.
-    ///
-    /// Call this after creating the cache client but before entering
-    /// Capsicum capability mode to ensure the connection is established.
+    /// The in-memory backend always succeeds (no network involved).
     pub async fn validate_connection(&self) -> AppResult<()> {
         match self {
-            CacheConnection::Redis(conn) => {
-                let mut conn = conn.clone();
-                let pong: String = redis::cmd("PING")
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(AppError::Cache)?;
-
-                if pong != "PONG" {
-                    return Err(AppError::Internal(anyhow::anyhow!(
-                        "Unexpected PING response from cache: expected 'PONG', got '{}'",
-                        pong
-                    )));
-                }
-
-                tracing::debug!("Cache connection validated (PING/PONG successful)");
-                Ok(())
-            }
             CacheConnection::Mock(_) => {
-                tracing::debug!("Mock cache connection validated (always succeeds)");
+                debug!("In-memory cache validated (always succeeds)");
                 Ok(())
             }
         }
     }
 
-    /// Check if the cache connection is still alive, trigger shutdown if not (sandbox mode).
-    ///
-    /// This is designed for Capsicum sandbox mode where the service cannot
-    /// recover from a lost cache connection. If the connection check fails,
-    /// a graceful shutdown is triggered via the server handle to allow
-    /// all Drop/Zeroize destructors to run.
-    ///
-    /// For mock cache, this always succeeds without triggering shutdown.
+    /// Periodic health check hook. The in-memory backend never fails, so this
+    /// is a no-op kept for call-site compatibility.
     pub async fn check_or_shutdown(
         &self,
-        server_handle: Option<&axum_server::Handle<std::net::SocketAddr>>,
+        _server_handle: Option<&axum_server::Handle<std::net::SocketAddr>>,
     ) {
         match self {
-            CacheConnection::Redis(conn) => {
-                let mut conn = conn.clone();
-                if let Err(e) = redis::cmd("PING").query_async::<String>(&mut conn).await {
-                    tracing::error!(
-                        "Cache connection lost in sandbox mode: {}. Triggering graceful shutdown for respawn.",
-                        e
-                    );
-                    // Trigger graceful shutdown instead of exit().
-                    if let Some(handle) = server_handle {
-                        handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
-                    }
-                }
-            }
             CacheConnection::Mock(_) => {
-                // Mock cache never fails
+                // In-memory cache never fails.
             }
         }
     }
 
-    /// Check if this is a real Redis connection or a mock.
-    pub fn is_redis(&self) -> bool {
-        matches!(self, CacheConnection::Redis(_))
-    }
-
-    /// Check if this is a mock cache.
+    /// Whether this is the in-memory no-op backend (always true today).
     pub fn is_mock(&self) -> bool {
         matches!(self, CacheConnection::Mock(_))
     }
 }
 
-/// Mock cache implementation (no-op) for development.
+/// No-op in-memory cache implementation.
 #[derive(Debug, Clone, Default)]
 pub struct MockCache;
 
@@ -121,45 +65,14 @@ impl MockCache {
     }
 }
 
-/// Create a cache client (Redis or mock based on configuration).
+/// Create the cache client.
 ///
-/// # Fail-closed behavior
-///
-/// When `cache.enabled = true`, Redis **must** be reachable.  If the client
-/// cannot be created or the connection fails, an error is returned instead of
-/// silently falling back to a no-op mock.  This prevents rate limiting from
-/// being silently disabled in production.
-///
-/// When `cache.enabled = false`, a [`MockCache`] is returned (explicit choice
-/// by the administrator, not a silent fallback).
-pub async fn create_cache_client(config: &Config) -> AppResult<CacheConnection> {
-    if !config.cache.enabled {
-        warn!("Cache is disabled - using mock cache (no-op)");
-        return Ok(CacheConnection::Mock(Arc::new(MockCache::new())));
-    }
-
-    // cache.enabled = true -> Redis MUST be available (fail-closed).
-    let client = Client::open(config.cache.url.expose_secret()).map_err(|e| {
-        AppError::Config(format!(
-            "Cache is enabled but Redis client creation failed: {}. \
-             Set cache.enabled = false to run without cache.",
-            e
-        ))
-    })?;
-
-    let manager = client
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|e| {
-            AppError::Config(format!(
-                "Cache is enabled but cannot connect to Redis/Valkey: {}. \
-                 Set cache.enabled = false to run without cache.",
-                e
-            ))
-        })?;
-
-    tracing::info!("Cache enabled - connected to Redis/Valkey");
-    Ok(CacheConnection::Redis(manager))
+/// Vauban always uses the in-process no-op cache; no network connection is
+/// ever opened (sandbox-friendly). The `config` argument is accepted for
+/// signature stability but no longer selects a backend.
+pub async fn create_cache_client(_config: &Config) -> AppResult<CacheConnection> {
+    debug!("Using in-memory no-op cache");
+    Ok(CacheConnection::Mock(Arc::new(MockCache::new())))
 }
 
 /// Cache operations trait for type safety.
@@ -184,24 +97,7 @@ impl CacheOps for CacheConnection {
         T: serde::de::DeserializeOwned,
     {
         match self {
-            CacheConnection::Redis(conn) => {
-                let mut conn = conn.clone();
-                let value: Option<String> = conn.get(key).await.map_err(AppError::Cache)?;
-
-                match value {
-                    Some(v) => {
-                        let deserialized: T = serde_json::from_str(&v).map_err(|e| {
-                            AppError::Internal(anyhow::anyhow!("Deserialization error: {}", e))
-                        })?;
-                        Ok(Some(deserialized))
-                    }
-                    None => Ok(None),
-                }
-            }
-            CacheConnection::Mock(_) => {
-                // Mock cache always returns None (cache miss)
-                Ok(None)
-            }
+            CacheConnection::Mock(cache) => cache.get(key).await,
         }
     }
 
@@ -210,55 +106,19 @@ impl CacheOps for CacheConnection {
         T: serde::Serialize,
     {
         match self {
-            CacheConnection::Redis(conn) => {
-                let mut conn = conn.clone();
-                let serialized = serde_json::to_string(value).map_err(|e| {
-                    AppError::Internal(anyhow::anyhow!("Serialization error: {}", e))
-                })?;
-
-                if let Some(ttl) = ttl_secs {
-                    let _: () = conn
-                        .set_ex(key, &serialized, ttl)
-                        .await
-                        .map_err(AppError::Cache)?;
-                } else {
-                    let _: () = conn.set(key, &serialized).await.map_err(AppError::Cache)?;
-                }
-
-                Ok(())
-            }
-            CacheConnection::Mock(_) => {
-                // Mock cache silently ignores set operations
-                Ok(())
-            }
+            CacheConnection::Mock(cache) => cache.set(key, value, ttl_secs).await,
         }
     }
 
     async fn delete(&self, key: &str) -> AppResult<()> {
         match self {
-            CacheConnection::Redis(conn) => {
-                let mut conn = conn.clone();
-                let _: () = conn.del(key).await.map_err(AppError::Cache)?;
-                Ok(())
-            }
-            CacheConnection::Mock(_) => {
-                // Mock cache silently ignores delete operations
-                Ok(())
-            }
+            CacheConnection::Mock(cache) => cache.delete(key).await,
         }
     }
 
     async fn exists(&self, key: &str) -> AppResult<bool> {
         match self {
-            CacheConnection::Redis(conn) => {
-                let mut conn = conn.clone();
-                let result: bool = conn.exists(key).await.map_err(AppError::Cache)?;
-                Ok(result)
-            }
-            CacheConnection::Mock(_) => {
-                // Mock cache always returns false (key doesn't exist)
-                Ok(false)
-            }
+            CacheConnection::Mock(cache) => cache.exists(key).await,
         }
     }
 }
@@ -297,7 +157,6 @@ mod tests {
     #[test]
     fn test_mock_cache_new() {
         let cache = MockCache::new();
-        // Just verify it can be created
         assert!(std::mem::size_of_val(&cache) == 0); // Zero-sized type
     }
 
@@ -305,7 +164,6 @@ mod tests {
     fn test_mock_cache_clone() {
         let cache = MockCache::new();
         let cloned = cache.clone();
-        // Both should be identical ZSTs
         assert!(std::mem::size_of_val(&cloned) == 0);
     }
 
@@ -332,28 +190,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mock_cache_get_with_different_keys() {
-        let cache = MockCache::new();
-
-        let result1: Option<String> = unwrap_ok!(cache.get("key1").await);
-        let result2: Option<i32> = unwrap_ok!(cache.get("key2").await);
-        let result3: Option<TestData> = unwrap_ok!(cache.get("key3").await);
-
-        assert!(result1.is_none());
-        assert!(result2.is_none());
-        assert!(result3.is_none());
-    }
-
-    #[tokio::test]
     async fn test_mock_cache_set_succeeds() {
         let cache = MockCache::new();
         let data = TestData {
             id: 1,
             name: "test".to_string(),
         };
-
-        let result = cache.set("test_key", &data, None).await;
-        assert!(result.is_ok());
+        assert!(cache.set("test_key", &data, None).await.is_ok());
     }
 
     #[tokio::test]
@@ -363,40 +206,30 @@ mod tests {
             id: 1,
             name: "test".to_string(),
         };
-
-        let result = cache.set("test_key", &data, Some(3600)).await;
-        assert!(result.is_ok());
+        assert!(cache.set("test_key", &data, Some(3600)).await.is_ok());
     }
 
     #[tokio::test]
     async fn test_mock_cache_delete_succeeds() {
         let cache = MockCache::new();
-
-        let result = cache.delete("any_key").await;
-        assert!(result.is_ok());
+        assert!(cache.delete("any_key").await.is_ok());
     }
 
     #[tokio::test]
     async fn test_mock_cache_exists_returns_false() {
         let cache = MockCache::new();
-
-        let result = unwrap_ok!(cache.exists("any_key").await);
-        assert!(!result);
+        assert!(!unwrap_ok!(cache.exists("any_key").await));
     }
 
     #[tokio::test]
     async fn test_mock_cache_set_then_get_returns_none() {
-        // Mock cache doesn't actually store - this verifies behavior
         let cache = MockCache::new();
         let data = TestData {
             id: 42,
             name: "important".to_string(),
         };
-
         unwrap_ok!(cache.set("my_key", &data, None).await);
         let result: Option<TestData> = unwrap_ok!(cache.get("my_key").await);
-
-        // Mock always returns None even after set
         assert!(result.is_none());
     }
 
@@ -412,274 +245,55 @@ mod tests {
     #[tokio::test]
     async fn test_cache_connection_mock_set() {
         let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
-        let result = conn.set("key", &"value", None).await;
-        assert!(result.is_ok());
+        assert!(conn.set("key", &"value", None).await.is_ok());
     }
 
     #[tokio::test]
     async fn test_cache_connection_mock_delete() {
         let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
-        let result = conn.delete("key").await;
-        assert!(result.is_ok());
+        assert!(conn.delete("key").await.is_ok());
     }
 
     #[tokio::test]
     async fn test_cache_connection_mock_exists() {
         let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
-        let result = unwrap_ok!(conn.exists("key").await);
-        assert!(!result);
+        assert!(!unwrap_ok!(conn.exists("key").await));
     }
 
     #[tokio::test]
     async fn test_cache_connection_clone() {
         let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
         let cloned = conn.clone();
-
-        // Both should work independently
-        let result1 = unwrap_ok!(conn.exists("key").await);
-        let result2 = unwrap_ok!(cloned.exists("key").await);
-
-        assert!(!result1);
-        assert!(!result2);
+        assert!(!unwrap_ok!(conn.exists("key").await));
+        assert!(!unwrap_ok!(cloned.exists("key").await));
     }
-
-    // ==================== MockCache Additional Tests ====================
 
     #[test]
     fn test_mock_cache_is_zst() {
-        // MockCache should be a zero-sized type
         assert_eq!(std::mem::size_of::<MockCache>(), 0);
     }
 
-    #[tokio::test]
-    async fn test_mock_cache_get_primitives() {
-        let cache = MockCache::new();
-
-        let str_result: Option<String> = unwrap_ok!(cache.get("key").await);
-        let int_result: Option<i64> = unwrap_ok!(cache.get("key").await);
-        let bool_result: Option<bool> = unwrap_ok!(cache.get("key").await);
-
-        assert!(str_result.is_none());
-        assert!(int_result.is_none());
-        assert!(bool_result.is_none());
-    }
+    // ==================== create_cache_client always returns in-memory ====
 
     #[tokio::test]
-    async fn test_mock_cache_set_various_types() {
-        let cache = MockCache::new();
-
-        assert!(cache.set("str_key", &"value", None).await.is_ok());
-        assert!(cache.set("int_key", &42i64, None).await.is_ok());
-        assert!(cache.set("bool_key", &true, None).await.is_ok());
-        assert!(cache.set("vec_key", &vec![1, 2, 3], None).await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_mock_cache_operations_idempotent() {
-        let cache = MockCache::new();
-
-        // Multiple deletes should all succeed
-        for _ in 0..10 {
-            assert!(cache.delete("key").await.is_ok());
-        }
-    }
-
-    #[tokio::test]
-    async fn test_mock_cache_exists_always_false() {
-        let cache = MockCache::new();
-
-        // Set a value, but exists should still return false
-        unwrap_ok!(cache.set("key", &"value", None).await);
-        assert!(!unwrap_ok!(cache.exists("key").await));
-    }
-
-    // ==================== CacheConnection Pattern Tests ====================
-
-    #[test]
-    fn test_cache_connection_mock_construction() {
-        let mock = MockCache::new();
-        let conn = CacheConnection::Mock(Arc::new(mock));
-
-        match conn {
-            CacheConnection::Mock(_) => (),
-            _ => panic!("Expected Mock variant"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_cache_connection_mock_set_with_various_ttl() {
-        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
-
-        // No TTL
-        assert!(conn.set("key1", &"value", None).await.is_ok());
-        // Short TTL
-        assert!(conn.set("key2", &"value", Some(1)).await.is_ok());
-        // Long TTL
-        assert!(conn.set("key3", &"value", Some(86400)).await.is_ok());
-        // Max TTL
-        assert!(conn.set("key4", &"value", Some(u64::MAX)).await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_cache_connection_arc_sharing() {
-        let mock = Arc::new(MockCache::new());
-        let conn1 = CacheConnection::Mock(Arc::clone(&mock));
-        let conn2 = CacheConnection::Mock(Arc::clone(&mock));
-
-        // Both connections should work
-        assert!(conn1.exists("key").await.is_ok());
-        assert!(conn2.exists("key").await.is_ok());
-    }
-
-    // ==================== Edge Case Tests ====================
-
-    #[tokio::test]
-    async fn test_cache_empty_key() {
-        let cache = MockCache::new();
-        assert!(cache.get::<String>("").await.is_ok());
-        assert!(cache.set("", &"value", None).await.is_ok());
-        assert!(cache.delete("").await.is_ok());
-        assert!(cache.exists("").await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_cache_long_key() {
-        let cache = MockCache::new();
-        let long_key = "k".repeat(10000);
-
-        assert!(cache.get::<String>(&long_key).await.is_ok());
-        assert!(cache.set(&long_key, &"value", None).await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_cache_unicode_key() {
-        let cache = MockCache::new();
-        let unicode_key = "键_key_clé_Schlüssel_\u{1F600}";
-
-        assert!(cache.get::<String>(unicode_key).await.is_ok());
-        assert!(cache.set(unicode_key, &"value", None).await.is_ok());
-    }
-
-    // ==================== Sandbox Mode Tests ====================
-
-    #[test]
-    fn test_exit_code_connection_lost_value() {
-        assert_eq!(EXIT_CODE_CONNECTION_LOST, 100);
-    }
-
-    #[tokio::test]
-    async fn test_mock_cache_validate_connection() {
-        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
-        let result = conn.validate_connection().await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_mock_cache_check_or_shutdown() {
-        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
-        // This should not trigger shutdown for mock cache
-        conn.check_or_shutdown(None).await;
-        // If we reach here, the test passed
-    }
-
-    #[test]
-    fn test_cache_connection_is_redis() {
-        let mock_conn = CacheConnection::Mock(Arc::new(MockCache::new()));
-        assert!(!mock_conn.is_redis());
-        assert!(mock_conn.is_mock());
-    }
-
-    #[test]
-    fn test_cache_connection_is_mock() {
-        let mock_conn = CacheConnection::Mock(Arc::new(MockCache::new()));
-        assert!(mock_conn.is_mock());
-        assert!(!mock_conn.is_redis());
-    }
-
-    // ==================== Fail-closed cache creation tests ====================
-
-    /// Helper: build a Config with specific cache settings.
-    fn config_with_cache(url: &str, enabled: bool) -> Config {
+    async fn test_create_cache_client_returns_mock_regardless_of_config() {
+        // With cache.enabled in either state, the backend is always in-memory:
+        // Vauban no longer depends on any external cache server.
         let base = crate::config::test_fixtures::base_config();
         let testing = crate::config::test_fixtures::testing_config();
         let mut config = unwrap_ok!(Config::from_toml_with_overlay(base, testing));
-        config.cache.enabled = enabled;
-        config.cache.url = secrecy::SecretString::from(url.to_string());
-        config
-    }
 
-    #[tokio::test]
-    async fn test_cache_disabled_returns_mock() {
-        // When cache.enabled = false, a MockCache must be returned (no error).
-        // This is the current dev/testing path and must never break.
-        let config = config_with_cache("redis://localhost:6379", false);
-        assert!(!config.cache.enabled);
+        config.cache.enabled = false;
+        assert!(unwrap_ok!(create_cache_client(&config).await).is_mock());
 
-        let result = create_cache_client(&config).await;
-        let cache = unwrap_ok!(result);
+        config.cache.enabled = true;
         assert!(
-            cache.is_mock(),
-            "cache.enabled = false must return MockCache"
+            unwrap_ok!(create_cache_client(&config).await).is_mock(),
+            "cache.enabled = true must still yield the in-memory backend (no network)"
         );
     }
 
-    #[tokio::test]
-    async fn test_cache_enabled_invalid_url_returns_error() {
-        // When cache.enabled = true but the URL is unreachable, the function
-        // must return an error (fail-closed), NOT a silent MockCache fallback.
-        let config = config_with_cache("redis://invalid-host-that-does-not-exist:9999", true);
-        assert!(config.cache.enabled);
-
-        let result = create_cache_client(&config).await;
-        let err = match result {
-            Err(e) => e,
-            Ok(ref c) => panic!(
-                "cache.enabled = true + unreachable Redis must return Err, got Ok({})",
-                if c.is_mock() { "Mock" } else { "Redis" }
-            ),
-        };
-
-        let err_msg = format!("{}", err);
-        assert!(
-            err_msg.contains("Cache is enabled"),
-            "Error message should mention 'Cache is enabled', got: {}",
-            err_msg
-        );
-    }
-
-    #[tokio::test]
-    async fn test_cache_enabled_bad_scheme_returns_error() {
-        // A malformed URL scheme must also fail, not silently fallback.
-        let config = config_with_cache("not-a-valid-redis-url", true);
-
-        let result = create_cache_client(&config).await;
-        let err = match result {
-            Err(e) => e,
-            Ok(_) => panic!("cache.enabled = true + bad URL scheme must return Err"),
-        };
-
-        let err_msg = format!("{}", err);
-        assert!(
-            err_msg.contains("cache.enabled = false"),
-            "Error message should suggest setting cache.enabled = false, got: {}",
-            err_msg
-        );
-    }
-
-    #[tokio::test]
-    async fn test_cache_disabled_with_bad_url_still_returns_mock() {
-        // Even with a garbage URL, cache.enabled = false must return MockCache.
-        // The URL is never contacted.
-        let config = config_with_cache("completely-invalid-garbage", false);
-
-        let cache = unwrap_ok!(create_cache_client(&config).await);
-        assert!(
-            cache.is_mock(),
-            "cache.enabled = false must return MockCache regardless of URL"
-        );
-    }
-
-    // ==================== No Mutex on MultiplexedConnection ====================
+    // ==================== Sandbox / no-network guarantees ====================
 
     /// Return only the production (non-test) portion of cache.rs source.
     fn cache_prod_source() -> &'static str {
@@ -688,71 +302,55 @@ mod tests {
     }
 
     #[test]
-    fn test_source_no_mutex_on_connection() {
-        // Structural test: CacheConnection::Redis must NOT wrap the connection
-        // in a Mutex.  MultiplexedConnection is Clone and handles multiplexing
-        // internally -- a Mutex serializes all cache operations unnecessarily.
+    fn test_source_opens_no_network_connection() {
+        // Structural guard: the cache must never open a socket. No external
+        // cache crate import, no connection opener.
         let source = cache_prod_source();
         assert!(
-            !source.contains("Mutex<redis"),
-            "CacheConnection must not wrap MultiplexedConnection in a Mutex"
+            !source.contains("get_multiplexed_async_connection"),
+            "cache.rs must not open any network connection"
         );
-    }
-
-    #[test]
-    fn test_source_no_lock_calls() {
-        // Structural test: there must be no .lock().await calls in production code
-        // since we no longer use a Mutex.
-        let source = cache_prod_source();
         assert!(
-            !source.contains(".lock().await"),
-            "cache.rs production code must not contain .lock().await"
-        );
-    }
-
-    #[test]
-    fn test_source_uses_clone_for_connection() {
-        // The new pattern clones the MultiplexedConnection for each operation.
-        let source = cache_prod_source();
-        assert!(
-            source.contains("conn.clone()"),
-            "cache operations must clone the MultiplexedConnection"
-        );
-    }
-
-    #[test]
-    fn test_source_no_tokio_mutex_import() {
-        // tokio::sync::Mutex should no longer be imported in production code.
-        let source = cache_prod_source();
-        assert!(
-            !source.contains("tokio::sync::Mutex"),
-            "cache.rs must not import tokio::sync::Mutex"
+            !source.contains("::Client"),
+            "cache.rs must not construct an external cache client"
         );
     }
 
     #[tokio::test]
-    async fn test_mock_cache_still_works() {
-        // Regression: MockCache must still function after the Mutex removal.
+    async fn test_mock_cache_validate_connection() {
+        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
+        assert!(conn.validate_connection().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_check_or_shutdown() {
+        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
+        conn.check_or_shutdown(None).await;
+    }
+
+    #[test]
+    fn test_cache_connection_is_mock() {
         let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
         assert!(conn.is_mock());
-
-        // All operations must succeed
-        let get_result: Option<String> = unwrap_ok!(conn.get("key").await);
-        assert!(get_result.is_none());
-        unwrap_ok!(conn.set("key", &"value", None).await);
-        unwrap_ok!(conn.delete("key").await);
-        assert!(!unwrap_ok!(conn.exists("key").await));
-        unwrap_ok!(conn.validate_connection().await);
     }
 
     #[tokio::test]
     async fn test_mock_cache_clone_independent() {
-        // Cloned MockCache connections must work independently.
         let conn1 = CacheConnection::Mock(Arc::new(MockCache::new()));
         let conn2 = conn1.clone();
-
         unwrap_ok!(conn1.set("key", &"value", None).await);
         let result: Option<String> = unwrap_ok!(conn2.get("key").await);
-        assert!(result.is_none()); // Mock always returns None
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cache_edge_case_keys() {
+        let cache = MockCache::new();
+        assert!(cache.get::<String>("").await.is_ok());
+        assert!(cache.set("", &"value", None).await.is_ok());
+        let long_key = "k".repeat(10000);
+        assert!(cache.set(&long_key, &"value", None).await.is_ok());
+        let unicode_key = "键_key_clé_Schlüssel_\u{1F600}";
+        assert!(cache.set(unicode_key, &"value", None).await.is_ok());
     }
 }

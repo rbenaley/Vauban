@@ -95,8 +95,11 @@ pub async fn login(
     let htmx = is_htmx_request(&headers);
 
     // Rate limiting check
-    let rate_key = client_addr.ip().to_string();
-    let rate_result = state.rate_limiter.check(&rate_key).await?;
+    let rate_key = format!("login:{}", client_addr.ip());
+    let rate_result = state
+        .rate_limiter
+        .check(&rate_key, state.config.security.rate_limit_per_minute)
+        .await?;
     if !rate_result.allowed {
         return rate_limit_response(htmx, rate_result.reset_in_secs);
     }

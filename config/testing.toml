@@ -59,6 +59,9 @@ enabled = false
 # connect tests are not broken. SEC-03 specific tests override this.
 [security]
 require_justification = false
+# High login rate limit so brute-force / lockout tests are not throttled by
+# the per-IP login limiter (mirrors the pre-VAU-012 test limiter of 1000/min).
+rate_limit_per_minute = 1000
 
 # Lightweight Argon2 parameters for faster tests
 [security.argon2]

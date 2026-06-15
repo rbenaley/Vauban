@@ -328,6 +328,37 @@ pub async fn connect_iacs(
         }
     }
 
+    // VAU-012: shared session-creation controls (global + per-user rate
+    // limits, per-user and per-asset concurrent-session quotas) on top of the
+    // IACS-specific per-user / per-EWS caps above. Runs AFTER authorization and
+    // BEFORE the INSERT so a denial neither leaks resources nor enumerates
+    // assets.
+    match crate::services::session_limits::enforce_session_creation(
+        &state,
+        &mut conn,
+        user_id,
+        asset.id,
+        client_addr.addr().ip(),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(denied)) => {
+            return crate::services::session_limits::connect_limit_response(
+                &headers,
+                &denied.message,
+            );
+        }
+        Err(e) => {
+            tracing::error!("Failed to evaluate session-creation limits: {}", e);
+            return iacs_tunnel_error_response(
+                &headers,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to start session",
+            );
+        }
+    }
+
     // ----- proxy_sessions row + tunnel_opened audit -----
     let session_uuid = Uuid::new_v4();
     let client_ip: ipnetwork::IpNetwork = ipnetwork::IpNetwork::from(client_addr.addr().ip());

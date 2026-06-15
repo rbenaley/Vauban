@@ -38,7 +38,6 @@ flowchart TD
     subgraph DataLayer["🏗️ DATA LAYER"]
         direction LR
         PG[("PostgreSQL 18+<br/>(TDE Encrypted)")]
-        Valkey[("Valkey<br/>(Sessions/Cache)")]
         S3[("MinIO/S3<br/>(Recordings)")]
     end
 
@@ -67,12 +66,10 @@ flowchart TD
     Web <-->|"IPC"| Auth
     Web <-->|"IPC"| Access
     Web --> PG
-    Web --> Valkey
 
     %% Auth connections
     Auth <-->|"IPC"| Access
     Auth --> PG
-    Auth --> Valkey
 
     %% Proxy connections (IPC via Unix pipes)
     ProxySSH <-->|"IPC"| Access
@@ -96,7 +93,6 @@ flowchart TD
 
     %% Access data
     Access --> PG
-    Access --> Valkey
 
     %% Styling
     classDef rustWeb fill:#0d6efd,stroke:#0a58ca,color:#fff
@@ -108,7 +104,7 @@ flowchart TD
 
     class Web,Auth rustWeb
     class Access,ProxySSH,ProxyRDP,Vault,Audit rust
-    class PG,Valkey,S3,HVault,StepCA infra
+    class PG,S3,HVault,StepCA infra
     class Browser,SSHClient,RDPClient client
     class LinuxServers,WindowsServers,NetworkDevices target
     class RobustMQ messaging
