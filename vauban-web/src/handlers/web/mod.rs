@@ -698,19 +698,53 @@ pub async fn fallback_handler() -> Redirect {
     Redirect::to("/")
 }
 
+/// Query string for the login page.
+///
+/// `reason` is set by the session-expiry / revoke / deactivate redirects
+/// (`/login?reason=session_expired`, ...). Its presence is the signal that
+/// the previous browser session is over, so we force a fresh CSRF token
+/// instead of reusing a possibly-stale one (defense against the post-expiry
+/// CSRF desync loop; the self-heal in `login_web` is the primary fix).
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct LoginPageQuery {
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Canonical redirect reasons that warrant a forced CSRF rotation. Kept in
+/// lockstep with the `force_logout_oob` taxonomy and the login-page banners.
+fn is_canonical_login_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "session_expired" | "session_revoked" | "account_deactivated"
+    )
+}
+
 /// Login page.
 pub async fn login_page(
     State(state): State<AppState>,
     jar: CookieJar,
+    Query(query): Query<LoginPageQuery>,
     browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     let base = BaseTemplate::new("Login".to_string(), None, browser_tz.0);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
-    // Get or generate CSRF token
+    // Get or generate CSRF token. When the page is reached via a canonical
+    // post-expiry redirect (`?reason=...`), always mint a fresh token so the
+    // cookie and the form's hidden field start aligned for the new sign-in.
     let secret = state.config.secret_key.expose_secret().as_bytes();
-    let (csrf_token, new_cookie) = get_or_create_csrf_token(&jar, secret);
+    let force_rotate = query
+        .reason
+        .as_deref()
+        .is_some_and(is_canonical_login_reason);
+    let (csrf_token, new_cookie) = if force_rotate {
+        let (token, cookie) = mint_csrf_token(secret);
+        (token, Some(cookie))
+    } else {
+        get_or_create_csrf_token(&jar, secret)
+    };
 
     let template = LoginTemplate {
         title,
@@ -756,4 +790,14 @@ fn get_or_create_csrf_token(
     let token = generate_csrf_token(secret);
     let cookie = build_csrf_cookie(&token);
     (token, Some(cookie))
+}
+
+/// Unconditionally mint a fresh CSRF token and its cookie, ignoring any
+/// existing one. Used by `login_page` on a canonical post-expiry redirect so
+/// the new sign-in starts from a clean, aligned double-submit pair.
+fn mint_csrf_token(secret: &[u8]) -> (String, axum_extra::extract::cookie::Cookie<'static>) {
+    use crate::middleware::csrf::{build_csrf_cookie, generate_csrf_token};
+    let token = generate_csrf_token(secret);
+    let cookie = build_csrf_cookie(&token);
+    (token, cookie)
 }

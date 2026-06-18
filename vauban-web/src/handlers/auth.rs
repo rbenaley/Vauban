@@ -589,7 +589,15 @@ pub async fn login_web(
         csrf_cookie.map(|c| c.value()),
         csrf_value,
     ) {
-        return login_error_response(htmx, LoginErrorKind::InvalidCsrf);
+        // Self-heal: a stale or desynchronized double-submit pair (typical
+        // after a session-expiry redirect to `/login?reason=...`) would
+        // otherwise loop forever, because `csrf_cookie_middleware` re-mints
+        // the cookie on the error response WITHOUT updating the form's hidden
+        // field. We mint a fresh token here and ship BOTH the new cookie and
+        // an OOB swap of the hidden input, so the very next submit succeeds
+        // without a manual page reload. The user-facing message is unchanged
+        // (SEC-04).
+        return login_csrf_error_response(htmx, jar, secret);
     }
     login(State(state), client_addr, headers, jar, Json(request)).await
 }
@@ -707,6 +715,42 @@ fn login_error_response(htmx: bool, kind: LoginErrorKind) -> AppResult<Response>
         Ok(Html(login_error_html(kind)).into_response())
     } else {
         Err(AppError::Auth(kind.message().to_string()))
+    }
+}
+
+/// HTMX error fragment for a CSRF failure, augmented with an out-of-band swap
+/// that refreshes the form's hidden `csrf_token` field with `new_token`.
+///
+/// The leading `#login-result` div keeps the existing red banner (SEC-04
+/// wording unchanged); the trailing `<input>` carries `hx-swap-oob` so HTMX
+/// replaces the stale hidden field in place. `new_token` is server-minted
+/// (base64 + signature), so it never contains HTML-significant characters.
+fn login_csrf_error_html(new_token: &str) -> String {
+    format!(
+        r#"{}<input type="hidden" name="csrf_token" id="login-csrf-token" value="{}" hx-swap-oob="outerHTML" />"#,
+        login_error_html(LoginErrorKind::InvalidCsrf),
+        new_token
+    )
+}
+
+/// CSRF-failure response for the web login form.
+///
+/// HTMX path: mints a fresh CSRF token, sets the cookie AND returns the OOB
+/// hidden-field swap so cookie and form stay synchronized and the next submit
+/// succeeds without a manual reload. The handler-set cookie suppresses the
+/// middleware's own re-mint (`csrf_cookie_middleware` checks
+/// `handler_set_cookie`).
+///
+/// Non-HTMX path: unchanged `AppError::Auth` (JSON/API surface).
+fn login_csrf_error_response(htmx: bool, jar: CookieJar, secret: &[u8]) -> AppResult<Response> {
+    if htmx {
+        use crate::middleware::csrf::{build_csrf_cookie, generate_csrf_token};
+        let new_token = generate_csrf_token(secret);
+        let cookie = build_csrf_cookie(&new_token);
+        let body = login_csrf_error_html(&new_token);
+        Ok((jar.add(cookie), Html(body)).into_response())
+    } else {
+        Err(AppError::Auth(LoginErrorKind::InvalidCsrf.message().to_string()))
     }
 }
 

@@ -90,7 +90,7 @@
               hx-indicator="#loading-spinner"
               hx-disabled-elt="button[type='submit']"
               hx-ext="json-enc">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <input type="hidden" name="csrf_token" id="login-csrf-token" value="{{ csrf_token }}" />
             
             <!-- Reason banner (session revoked, account deactivated) -->
             <div x-data="{ reason: new URLSearchParams(window.location.search).get('reason') }" x-cloak>
@@ -130,8 +130,9 @@
                                     <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM11 6a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
                                 </svg>
                             </div>
-                            <div class="ml-3">
-                                <p class="text-sm font-medium text-blue-800 dark:text-blue-200">Your session expired due to inactivity. Please sign in again.</p>
+                            <div class="ml-3 min-w-0">
+                                <p class="text-sm font-medium text-blue-800 dark:text-blue-200">Your session expired due to inactivity.</p>
+                                <p class="text-sm font-medium text-blue-800 dark:text-blue-200">Please sign in again.</p>
                             </div>
                         </div>
                     </div>
