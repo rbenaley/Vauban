@@ -48,6 +48,7 @@ mkdir -p "${STAGING}/usr/local/libexec/vauban"
 mkdir -p "${STAGING}/usr/local/etc/vauban/certs"
 mkdir -p "${STAGING}/usr/local/etc/vauban/access"
 mkdir -p "${STAGING}/usr/local/etc/rc.d"
+mkdir -p "${STAGING}/usr/local/etc/newsyslog.conf.d"
 mkdir -p "${STAGING}/usr/local/share/vauban/migrations"
 
 for _svc in vauban-access vauban-audit vauban-auth vauban-proxy-iacs vauban-proxy-rdp \
@@ -62,6 +63,12 @@ install -m 644 "${PROJECT_ROOT}/config/access/default_policy.csv" "${STAGING}/us
 cp -R "${PROJECT_ROOT}/vauban-db/migrations/"* "${STAGING}/usr/local/share/vauban/migrations/"
 
 install -m 555 "${SCRIPT_DIR}/rc.d/vauban" "${STAGING}/usr/local/etc/rc.d/vauban"
+
+# newsyslog(8) rotation policy for the daemon(8) log (/var/log/vauban.log,
+# pidfile /var/run/vauban.pid -- see pkg/rc.d/vauban). Dropped into the
+# base newsyslog include dir so rotation is active out of the box.
+install -m 644 "${SCRIPT_DIR}/newsyslog.conf.d/vauban.conf" \
+    "${STAGING}/usr/local/etc/newsyslog.conf.d/vauban.conf"
 
 # ---- Generate plist from staged migrations ---------------------------------
 echo "==> Generating plist..."
@@ -92,6 +99,11 @@ for _mig_dir in $(ls -d "${STAGING}/usr/local/share/vauban/migrations"/*/ 2>/dev
 done
 
 echo "etc/rc.d/vauban" >> "${PLIST}"
+
+# newsyslog drop-in: @config so an operator's local edits survive upgrades
+# (pkg writes .pkgnew instead of clobbering) and the file is removed on
+# deinstall when unmodified.
+echo "@config etc/newsyslog.conf.d/vauban.conf" >> "${PLIST}"
 
 echo "@dir libexec/vauban" >> "${PLIST}"
 echo "@dir etc/vauban/access" >> "${PLIST}"
