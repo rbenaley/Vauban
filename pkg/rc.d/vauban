@@ -16,7 +16,7 @@ load_rc_config $name
 
 pidfile="/var/run/${name}.pid"
 command="/usr/sbin/daemon"
-command_args="-P ${pidfile} -r -t ${name} -o /var/log/${name}.log /usr/local/libexec/vauban/vauban-supervisor"
+command_args="-P ${pidfile} -r -H -t ${name} -o /var/log/${name}.log /usr/local/libexec/vauban/vauban-supervisor"
 
 start_precmd="${name}_prestart"
 stop_postcmd="${name}_poststop"
