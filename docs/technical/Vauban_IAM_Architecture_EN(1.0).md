@@ -1361,13 +1361,13 @@ by `permission_context_middleware`. The full catalogue is:
 | `assets`       | `assets_read_all`            | staff, superuser    |
 | `assets`       | `assets_manage`              | staff, superuser    |
 | `groups`       | `groups_read`                | staff, superuser    |
-| `groups`       | `groups_write`               | superuser only      |
+| `groups`       | `groups_write`               | staff, superuser    |
 | `groups`       | `groups_manage_members`      | staff, superuser    |
 | `access_rules` | `access_rules_read`          | staff, superuser    |
 | `access_rules` | `access_rules_write`         | staff, superuser    |
 | `auth_sessions`| `auth_sessions_read`         | staff, superuser    |
 | `auth_sessions`| `auth_sessions_write`        | staff, superuser    |
-| `sessions`     | `sessions_read`              | staff, superuser    |
+| `sessions`     | `sessions_read`              | user (API only), staff, superuser |
 | `sessions`     | `sessions_write`             | staff, superuser    |
 | `sessions`     | `sessions_supervise`         | staff, superuser    |
 | `sessions`     | `sessions_bypass_access_rules` | superuser only    |
@@ -1375,13 +1375,45 @@ by `permission_context_middleware`. The full catalogue is:
 | `profile`      | `profile_read`               | user, staff, superuser |
 | `profile`      | `profile_write`              | user, staff, superuser |
 
-The `manage_admins`, `groups:write`, `bypass_access_rules` triple is
-the privilege-separation boundary between `role:staff` and
+The `manage_admins`, `bypass_access_rules` pair is the
+privilege-separation boundary between `role:staff` and
 `role:superuser`: staff can run the day-to-day operations
-(`users:write`, `groups:manage_members`, `sessions:supervise`) but the
-sensitive lifecycle operations (mint another superuser, mutate the
-group entity itself, bypass instance-level access rules when opening a
+(`users:write`, `groups:write`, `groups:manage_members`,
+`sessions:supervise`) but the sensitive lifecycle operations (mint
+another superuser, bypass instance-level access rules when opening a
 session) remain reserved to superusers via the policy wildcard.
+
+##### `sessions:read` for `role:user` -- API-only grant
+
+Web and API authentication are split (human JWT cookie vs M2M API key;
+see `vauban-web/src/middleware/api_key.rs`), but both planes evaluate the
+**same** `default_policy.csv`. The line `p, role:user, sessions, read` exists
+primarily for the REST API:
+
+- `GET /api/v1/sessions` -- list (including API keys owned by a
+  regular user with a `read` scope)
+- `GET /api/v1/sessions/{uuid}` -- metadata read
+
+Today, `perms.sessions_read` is checked **only** in
+`handlers/api/sessions.rs`. The HTML session catalogue at `/sessions`
+is gated by `admin:view`, not `sessions:read`.
+
+Granting `sessions:read` to `role:user` answers only the functional
+question ("may this role invoke session-read endpoints?"). It does
+**not** decide which `proxy_sessions` rows are visible. Without the
+instance-level layer, a holder of `sessions:read` could enumerate every
+user's sessions via the API. Two compensating controls apply:
+
+1. **List filter** (`handlers/api/sessions.rs::list_sessions`): without
+   `sessions:supervise`, the query is force-filtered to
+   `user_id == caller`; optional `user_id` query params pointing at
+   another account are ignored or replaced.
+2. **Row access** (`services::session_access::verify` with intent
+   `ReadMetadata`): per-UUID reads go through vauban-access ownership
+   and access-rule re-check, with `sessions:supervise` as a Casbin
+   OR-override on cross-user paths.
+
+See section 9.8 for the full session-access layer.
 
 ##### `assets:read` vs `assets:manage` -- the asset zone split (issue #27)
 

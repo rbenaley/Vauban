@@ -512,10 +512,9 @@ impl MailerConfig {
 /// is still present in the deployed TOML and ignores it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct IndustrialConfig {
-    /// Master switch. Default `true` (the industrial surface ships
-    /// turned on; an operator opts out explicitly with
-    /// `enabled = false`). Read by every Vauban service that runs
-    /// industrial-only logic.
+    /// Master switch. Default `false` -- IACS is opt-in; set
+    /// `enabled = true` in TOML to expose the industrial surface.
+    /// Read by every Vauban service that runs industrial-only logic.
     #[serde(default = "default_industrial_enabled")]
     pub enabled: bool,
     #[serde(default)]
@@ -523,7 +522,7 @@ pub struct IndustrialConfig {
 }
 
 fn default_industrial_enabled() -> bool {
-    true
+    false
 }
 
 impl Default for IndustrialConfig {

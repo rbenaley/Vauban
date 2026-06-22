@@ -1,31 +1,31 @@
 p, role:superuser, *, *
-p, role:staff, users, read
-p, role:staff, users, write
-p, role:staff, assets, read
-p, role:staff, assets, read_all
-p, role:staff, assets, manage
-p, role:staff, sessions, read
-p, role:staff, sessions, write
-p, role:staff, sessions, supervise
-p, role:staff, groups, read
-p, role:staff, groups, manage_members
+p, role:staff, admin, view
 p, role:staff, access_rules, read
 p, role:staff, access_rules, write
+p, role:staff, assets, connect_iacs
+p, role:staff, assets, manage
+p, role:staff, assets, read
+p, role:staff, assets, read_all
 p, role:staff, auth_sessions, read
 p, role:staff, auth_sessions, write
-p, role:staff, admin, view
+p, role:staff, groups, manage_members
+p, role:staff, groups, read
+p, role:staff, groups, write
+p, role:staff, iacs, manage
+p, role:staff, iacs, read
+p, role:staff, iacs, request
+p, role:staff, profile, read
+p, role:staff, profile, write
+p, role:staff, sessions, read
+p, role:staff, sessions, supervise
+p, role:staff, sessions, write
+p, role:staff, users, read
+p, role:staff, users, write
+p, role:user, assets, connect_iacs
 p, role:user, assets, read
+p, role:user, iacs, read
+p, role:user, iacs, request
 p, role:user, profile, read
 p, role:user, profile, write
-p, role:user, iacs, request
-p, role:user, iacs, read
-p, role:staff, iacs, manage
-p, role:user, assets, connect_iacs
-# SECURITY: read-only access to the sessions API is granted to every
-# authenticated user so they can list their own sessions and read their
-# own metadata. Cross-user visibility is enforced at the instance
-# level by `services::session_access::verify(ReadMetadata)` in
-# vauban-web (force-filter to caller_id unless the caller also holds
-# `sessions, supervise`); the Casbin gate alone is not enough.
-p, role:user, sessions, read
+# role:user sessions:read -- API only (GET /api/v1/sessions); instance filter in session_access
 p, role:user, sessions, read

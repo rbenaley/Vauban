@@ -15,16 +15,15 @@ use crate::fixtures::{
 };
 
 // ---------------------------------------------------------------------------
-// 5. groups:write -- staff lost the ability to CRUD a group; superuser
-//    keeps it. Mirrors test 5 of the plan ("groups CRUD requires
-//    groups:write").
+// 5. groups:write -- staff and superuser can both CRUD a group. Mirrors
+//    test 5 of the plan ("groups CRUD requires groups:write").
 // ---------------------------------------------------------------------------
 
 /// `GET /accounts/groups/new` is gated by `perms.groups_write`. Staff
-/// (without `groups_write` after the resserrement) MUST receive 403.
+/// (granted `groups_write`) MUST be able to render the create form.
 #[tokio::test]
 #[serial]
-async fn groups_create_form_denied_for_staff() {
+async fn groups_create_form_allowed_for_staff() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
@@ -37,7 +36,7 @@ async fn groups_create_form_denied_for_staff() {
         .add_header(COOKIE, format!("access_token={}", staff.token))
         .await;
 
-    assert_status(&response, 403);
+    assert_status(&response, 200);
 }
 
 /// Same form, superuser caller: must render the create form (200 OK).

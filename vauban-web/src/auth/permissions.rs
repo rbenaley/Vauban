@@ -56,8 +56,8 @@ pub struct PermissionContext {
     /// deleted audit) so a "manage" semantic is more accurate.
     pub assets_manage: bool,
     pub groups_read: bool,
-    /// CRUD on the group itself (create, edit, delete). Resserre par rapport
-    /// au comportement legacy: seul le superuser (wildcard) le possede.
+    /// CRUD on the group itself (create, edit, delete). Granted to staff and
+    /// superuser.
     pub groups_write: bool,
     /// Add or remove members of an existing group. Granted to staff and
     /// superuser.
@@ -80,8 +80,8 @@ pub struct PermissionContext {
     /// Submit a new EWS onboarding request (`POST /iacs/onboard`),
     /// edit a pending request, cancel a pending request, or
     /// auto-offboard one of the caller's own approved EWS. Granted to
-    /// every `role:user` by default; the per-deployment Casbin policy
-    /// can narrow the scope further.
+    /// every `role:user` and `role:staff` by default; the per-deployment
+    /// Casbin policy can narrow the scope further.
     ///
     /// Subject to the global kill-switch: when
     /// `config.industrial.enabled == false`, this flag is forced to
@@ -90,7 +90,8 @@ pub struct PermissionContext {
     pub iacs_request: bool,
     /// Read the caller's own EWS catalogue (in `/sessions/my-requests`
     /// and equivalent self-service pages). Granted to every
-    /// `role:user`. Subject to the same kill-switch as `iacs_request`.
+    /// `role:user` and `role:staff`. Subject to the same kill-switch as
+    /// `iacs_request`.
     pub iacs_read: bool,
     /// Admin CRUD on the IACS / EWS surface (admin list, approve,
     /// reject with reason, disable, enable, offboard). Granted to
@@ -98,8 +99,8 @@ pub struct PermissionContext {
     /// the same kill-switch as `iacs_request`.
     pub iacs_manage: bool,
     /// Open an IACS tunnel session against an asset (`POST
-    /// /assets/{uuid}/connect-iacs`). Granted to `role:user` by
-    /// default; gated by the in-process `services::iacs_tunnel`
+    /// /assets/{uuid}/connect-iacs`). Granted to `role:user` and
+    /// `role:staff` by default; gated by the in-process `services::iacs_tunnel`
     /// pipeline AND the `assets:read` + access-rule chain just like
     /// SSH/RDP `Connect`. Subject to the global kill-switch:
     /// `[industrial].enabled = false` forces the flag to `false`,

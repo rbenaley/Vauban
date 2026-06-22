@@ -848,14 +848,21 @@ mod tests {
             ("assets", "read"),
             ("assets", "read_all"),
             ("assets", "manage"),
+            ("assets", "connect_iacs"),
             ("sessions", "read"),
             ("sessions", "write"),
             ("sessions", "supervise"),
             ("groups", "read"),
+            ("groups", "write"),
             ("groups", "manage_members"),
             ("access_rules", "read"),
             ("access_rules", "write"),
             ("admin", "view"),
+            ("profile", "read"),
+            ("profile", "write"),
+            ("iacs", "request"),
+            ("iacs", "read"),
+            ("iacs", "manage"),
         ];
 
         for (obj, act) in allowed {
@@ -876,7 +883,6 @@ mod tests {
         }
 
         let denied = [
-            ("groups", "write"),
             ("sessions", "bypass_access_rules"),
             ("users", "manage_admins"),
         ];

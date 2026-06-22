@@ -1176,8 +1176,8 @@ impl std::fmt::Debug for MailerConfig {
 /// only affects the UI / API surface). Re-enabling exposes them again.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IndustrialConfig {
-    /// Master switch. Default `true` -- the IACS module is part of the
-    /// shipped feature set.
+    /// Master switch. Default `false` -- IACS is opt-in; set
+    /// `enabled = true` in TOML to expose the industrial surface.
     #[serde(default = "IndustrialConfig::default_enabled")]
     pub enabled: bool,
 
@@ -1197,7 +1197,7 @@ pub struct IndustrialConfig {
 
 impl IndustrialConfig {
     fn default_enabled() -> bool {
-        true
+        false
     }
 
     fn default_max_ews_per_user() -> u32 {
@@ -1771,6 +1771,50 @@ mod tests {
     fn product_config_default_brand_is_vauban() {
         let cfg = ProductConfig::default();
         assert_eq!(cfg.brand.name, "VAUBAN");
+    }
+
+    #[test]
+    fn industrial_config_defaults_to_disabled() {
+        assert!(!IndustrialConfig::default().enabled);
+    }
+
+    #[test]
+    fn industrial_enabled_omitted_from_toml_defaults_to_false() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default)]
+            industrial: IndustrialConfig,
+        }
+        let settings = config::Config::builder()
+            .add_source(config::File::from_str(
+                "[industrial]\nmax_ews_per_user = 0\n",
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("toml builds");
+        let wrapped: Wrapper = settings.try_deserialize().expect("deserialize");
+        assert!(!wrapped.industrial.enabled);
+    }
+
+    #[test]
+    fn default_toml_sets_industrial_disabled() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default)]
+            industrial: IndustrialConfig,
+        }
+        let settings = config::Config::builder()
+            .add_source(config::File::from_str(
+                test_fixtures::base_config(),
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("default.toml builds");
+        let wrapped: Wrapper = settings.try_deserialize().expect("deserialize");
+        assert!(
+            !wrapped.industrial.enabled,
+            "config/default.toml must set [industrial] enabled = false (opt-in)"
+        );
     }
 
     // ==================== VAU-010: CORS allowlist (server.public_origins) ====================

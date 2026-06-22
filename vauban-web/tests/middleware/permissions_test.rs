@@ -100,25 +100,32 @@ async fn check_rbac_staff_grants_admin_set_only() {
     let user = make_user(false, true);
 
     // Matches `config/access/default_policy.csv` for role:staff. Note that
-    // `groups:write`, `users:manage_admins` and `sessions:bypass_access_rules`
-    // are deliberately superuser-only; staff retains the `manage_members`
-    // and `supervise` scopes instead.
+    // `users:manage_admins` and `sessions:bypass_access_rules` are deliberately
+    // superuser-only. Staff now also holds `groups:write` (full group CRUD) and
+    // the self-service `profile:*` / `iacs:request` / `iacs:read` /
+    // `assets:connect_iacs` scopes.
     let staff_allowed: &[(&str, &str)] = &[
         ("users", "read"),
         ("users", "write"),
         ("assets", "read"),
         ("assets", "read_all"),
         ("assets", "manage"),
+        ("assets", "connect_iacs"),
         ("sessions", "read"),
         ("sessions", "write"),
         ("sessions", "supervise"),
         ("groups", "read"),
+        ("groups", "write"),
         ("groups", "manage_members"),
         ("access_rules", "read"),
         ("access_rules", "write"),
         ("auth_sessions", "read"),
         ("auth_sessions", "write"),
         ("admin", "view"),
+        ("profile", "read"),
+        ("profile", "write"),
+        ("iacs", "request"),
+        ("iacs", "read"),
         ("iacs", "manage"),
     ];
 
@@ -193,20 +200,19 @@ async fn check_rbac_user_denied_assets_read_all() {
     );
 }
 
-/// `groups:write` (CRUD on the group itself) was deliberately resserre to
-/// superuser-only after the migration. Staff retains `manage_members` but
-/// MUST NOT be able to create/rename/delete a group.
+/// `groups:write` (CRUD on the group itself) is granted to staff as well as
+/// superuser. Staff can both create/rename/delete a group AND manage its
+/// membership.
 #[tokio::test]
 #[serial]
-async fn check_rbac_staff_denied_groups_write() {
+async fn check_rbac_staff_granted_groups_write() {
     let app = TestApp::spawn().await;
     let state = build_state_from(app).await;
     let user = make_user(false, true);
 
     assert!(
-        !check_rbac(&state, &user, "groups", "write").await,
-        "staff must NOT have groups:write after the migration (CRUD on \
-         the group entity is reserved to superusers)"
+        check_rbac(&state, &user, "groups", "write").await,
+        "staff must have groups:write (full CRUD on the group entity)"
     );
     assert!(
         check_rbac(&state, &user, "groups", "manage_members").await,

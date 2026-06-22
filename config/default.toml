@@ -61,9 +61,8 @@ binary = "vauban-proxy-rdp"
 # IACS tunnel proxy: hosts the russh sshd that EWS hosts connect to with
 # `ssh -L`, brokers upstream TCP to industrial assets via the supervisor.
 # Lives in its own UID (908) so the russh process is privsep-isolated
-# from vauban-web. Requires `[industrial.iacs_tunnel].enabled = true`
-# below for the supervisor to pre-bind the listener; without it the
-# proxy starts but stays idle.
+# from vauban-web. Spawned only when `[industrial].enabled = true`
+# (default `false` in default.toml; override in environment-specific TOML).
 [services.proxy_iacs]
 name = "vauban-proxy-iacs"
 binary = "vauban-proxy-iacs"
@@ -281,6 +280,29 @@ log_path = "audit"
 
 [product.brand]
 name = "VAUBAN"
+
+# ==============================================================================
+# IACS / INDUSTRIAL
+# ==============================================================================
+#
+# Master switch for the entire industrial surface (UI, sshd tunnel, EWS
+# onboarding, future protocols). Default `false` (opt-in). Environment-
+# specific files (development.toml, vauban.conf, testing.toml) may override.
+
+[industrial]
+enabled = false
+max_ews_per_user = 0      # 0 = no cap; otherwise a per-user EWS quota
+
+[industrial.iacs_tunnel]
+bind_addr = "0.0.0.0:22322"
+advertise_hostname = "localhost"
+host_key_path = "vauban-proxy-iacs/certs/iacs_tunnel_host_ed25519"
+max_concurrent_per_user = 4
+max_concurrent_per_ews = 2
+max_concurrent_channels_per_session = 16
+waiting_client_ttl_seconds = 300
+revocation_poll_interval_seconds = 2
+allow_loopback_targets = false
 
 # ==============================================================================
 # AUTHENTICATION BACKENDS (web view)

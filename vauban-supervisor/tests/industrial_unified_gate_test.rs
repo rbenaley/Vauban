@@ -146,15 +146,14 @@ fn iacs_tunnel_supervisor_config_has_no_active_enabled_field() {
     );
 }
 
-/// `IndustrialConfig::enabled` MUST default to `true` so deployments
-/// that never wrote the field keep the industrial surface alive after
-/// upgrade.
+/// `IndustrialConfig::enabled` MUST default to `false` so deployments
+/// that never wrote the field keep IACS disabled until explicitly
+/// opted in.
 #[test]
-fn industrial_enabled_defaults_to_true() {
+fn industrial_enabled_defaults_to_false() {
     assert!(
-        CONFIG_RS.contains("fn default_industrial_enabled() -> bool {\n    true\n}"),
-        "industrial.enabled MUST default to true (single master switch \
-         shipped on by default; opt-out is explicit via enabled = false)."
+        CONFIG_RS.contains("fn default_industrial_enabled() -> bool {\n    false\n}"),
+        "industrial.enabled MUST default to false (opt-in via enabled = true)."
     );
 }
 

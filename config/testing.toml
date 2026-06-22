@@ -74,7 +74,7 @@ parallelism = 1
 # ==============================================================================
 
 [industrial]
-enabled = true            # set to false to fully hide the IACS surface
+enabled = true            # explicit opt-in for the integration test suite (default is false)
 max_ews_per_user = 0      # 0 = no cap; otherwise a per-user EWS quota
 
 # Anti-SSRF: `allow_loopback_targets = false` (default) refuses to
