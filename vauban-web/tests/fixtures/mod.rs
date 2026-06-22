@@ -244,8 +244,8 @@ pub async fn create_admin_user(
 
 /// Create a `is_staff=true, is_superuser=false` user. Designed for the
 /// fine-grained Casbin tests that exercise the privilege boundary
-/// between staff and superusers (e.g. `groups:write` requires
-/// superuser even though staff retains `manage_members`).
+/// between staff and superusers (e.g. `users:manage_admins` remains
+/// superuser-only while staff retains `groups:write` and `manage_members`).
 pub async fn create_staff_only_user(
     conn: &mut AsyncPgConnection,
     auth_service: &AuthService,

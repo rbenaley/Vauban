@@ -6,11 +6,11 @@
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
     add_user_to_vauban_group, count_vauban_group_members, create_approval_request,
-    create_recorded_session, create_simple_admin_user, create_simple_ssh_asset, create_simple_user,
-    create_test_asset_group, create_test_asset_in_group, create_test_session,
-    create_test_vauban_group, get_asset_uuid, unique_name,
+    create_recorded_session, create_admin_user, create_simple_admin_user, create_simple_ssh_asset,
+    create_simple_user, create_test_asset_group, create_test_asset_in_group, create_test_session,
+    create_staff_only_user, create_test_vauban_group, get_asset_uuid, unique_name,
 };
-use axum::http::header::COOKIE;
+use axum::http::header::{COOKIE, LOCATION, SET_COOKIE};
 use diesel::{
     BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl, TextExpressionMethods,
 };
@@ -29,6 +29,16 @@ async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
             .first(conn)
             .await
     )
+}
+
+/// Superuser with a persisted auth session — avoids `generate_test_token`
+/// with a random UUID + fixed username, which collides across test runs and
+/// yields 303 redirects when the auto-insert fallback attaches the session
+/// to the wrong `user_id`.
+async fn group_admin_token(app: &TestApp, conn: &mut AsyncPgConnection, prefix: &str) -> String {
+    create_admin_user(conn, &app.auth_service, &unique_name(prefix))
+        .await
+        .token
 }
 
 /// Create an admin (is_staff + is_superuser) WITH a freshly-generated TOTP
@@ -1519,14 +1529,7 @@ async fn test_vauban_group_edit_form_loads() {
     let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("edit-form-group")).await;
-    let token = app
-        .generate_test_token(
-            &Uuid::new_v4().to_string(),
-            "test_vgroup_edit_form",
-            true,
-            true,
-        )
-        .await;
+    let token = group_admin_token(&app, &mut conn, "vgroup_edit_form").await;
 
     let response = app
         .server
@@ -1545,14 +1548,7 @@ async fn test_vauban_group_update_success() {
     let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("update-group")).await;
-    let token = app
-        .generate_test_token(
-            &Uuid::new_v4().to_string(),
-            "test_vgroup_update",
-            true,
-            true,
-        )
-        .await;
+    let token = group_admin_token(&app, &mut conn, "vgroup_update").await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -1583,14 +1579,7 @@ async fn test_vauban_group_add_member_form_loads() {
     let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("add-member-form")).await;
-    let token = app
-        .generate_test_token(
-            &Uuid::new_v4().to_string(),
-            "test_add_member_form",
-            true,
-            true,
-        )
-        .await;
+    let token = group_admin_token(&app, &mut conn, "add_member_form").await;
 
     let response = app
         .server
@@ -1615,9 +1604,7 @@ async fn test_vauban_group_add_member_success() {
     let user_id = create_simple_user(&mut conn, &unique_name("new-member")).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app
-        .generate_test_token(&Uuid::new_v4().to_string(), "test_add_member", true, true)
-        .await;
+    let token = group_admin_token(&app, &mut conn, "add_member").await;
     let csrf_token = app.generate_csrf_token();
 
     // Verify no members initially
@@ -1664,14 +1651,7 @@ async fn test_vauban_group_remove_member_success() {
     let count_before = count_vauban_group_members(&mut conn, &group_uuid).await;
     assert_eq!(count_before, 1, "Group should have 1 member initially");
 
-    let token = app
-        .generate_test_token(
-            &Uuid::new_v4().to_string(),
-            "test_remove_member",
-            true,
-            true,
-        )
-        .await;
+    let token = group_admin_token(&app, &mut conn, "remove_member").await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -1706,9 +1686,7 @@ async fn test_vauban_group_delete_empty_success() {
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("delete-empty-grp")).await;
 
-    let token = app
-        .generate_test_token(&Uuid::new_v4().to_string(), "test_delete_empty", true, true)
-        .await;
+    let token = group_admin_token(&app, &mut conn, "delete_empty").await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -1752,14 +1730,7 @@ async fn test_vauban_group_delete_with_members_fails() {
     // Add member to group
     add_user_to_vauban_group(&mut conn, user_id, &group_uuid).await;
 
-    let token = app
-        .generate_test_token(
-            &Uuid::new_v4().to_string(),
-            "test_delete_members",
-            true,
-            true,
-        )
-        .await;
+    let token = group_admin_token(&app, &mut conn, "delete_members").await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -1800,13 +1771,11 @@ async fn test_vauban_group_delete_requires_admin() {
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("delete-nonadmin")).await;
 
     // Regular user (not staff, not superuser)
+    let username = unique_name("delete_nonadmin");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let token = app
-        .generate_test_token(
-            &Uuid::new_v4().to_string(),
-            "test_delete_nonadmin",
-            false,
-            false,
-        )
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
         .await;
     let csrf_token = app.generate_csrf_token();
 
@@ -5020,6 +4989,34 @@ async fn test_user_delete_rejects_csrf_invalid() {
 // Group Create Tests
 // =============================================================================
 
+/// Extract the signed `__vauban_flash` cookie from a PRG redirect response.
+fn extract_flash_cookie(response: &axum_test::TestResponse) -> Option<String> {
+    response
+        .headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .filter_map(|c| c.to_str().ok())
+        .find(|c| c.contains("__vauban_flash"))
+        .and_then(|c| c.split(';').next())
+        .map(|s| s.to_string())
+}
+
+/// Assert a 302/303 redirect and return the `Location` header value.
+fn assert_redirect(response: &axum_test::TestResponse) -> String {
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect, got {}",
+        status
+    );
+    response
+        .headers()
+        .get(LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .expect("redirect must carry a Location header")
+        .to_string()
+}
+
 #[tokio::test]
 async fn test_vauban_group_create_form_loads_for_superuser() {
     let app = TestApp::spawn().await;
@@ -5050,25 +5047,38 @@ async fn test_vauban_group_create_form_loads_for_superuser() {
 }
 
 #[tokio::test]
-async fn test_vauban_group_create_form_requires_superuser() {
+async fn test_vauban_group_create_form_allowed_for_staff() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Create a staff user (not superuser) in the database
-    let staff_username = unique_name("grp_create_staff");
-    let staff_id = create_simple_user(&mut conn, &staff_username).await;
-    // Update user to be staff but not superuser
-    use vauban_web::schema::users;
-    diesel::update(users::table.filter(users::id.eq(staff_id)))
-        .set((users::is_staff.eq(true), users::is_superuser.eq(false)))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
+    let staff_name = unique_name("grp_create_staff");
+    let staff = create_staff_only_user(&mut conn, &app.auth_service, &staff_name).await;
 
-    // Staff member cannot access create form
+    let response = app
+        .server
+        .get("/accounts/groups/new")
+        .add_header(COOKIE, format!("access_token={}", staff.token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Create New Group"),
+        "Staff with groups:write must see the create form"
+    );
+}
+
+#[tokio::test]
+async fn test_vauban_group_create_form_denied_for_regular_user() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("grp_create_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
     let token = app
-        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
         .await;
 
     let response = app
@@ -5077,11 +5087,10 @@ async fn test_vauban_group_create_form_requires_superuser() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    // Should get authorization error (500 because AppError::Authorization maps to internal error)
     let status = response.status_code().as_u16();
     assert!(
         status == 401 || status == 403 || status == 500,
-        "Staff should not access group create, got {}",
+        "Regular user must not access group create form, got {}",
         status
     );
 }
@@ -5116,12 +5125,7 @@ async fn test_vauban_group_create_success() {
         ])
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 303 || status == 302,
-        "Expected redirect after create, got {}",
-        status
-    );
+    assert_redirect(&response);
 
     // Verify group was created
     use vauban_web::schema::vauban_groups;
@@ -5139,26 +5143,12 @@ async fn test_vauban_group_create_success() {
 }
 
 #[tokio::test]
-async fn test_vauban_group_create_staff_cannot_create() {
+async fn test_vauban_group_create_staff_success() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Create a staff user (not superuser) in the database
-    let staff_username = unique_name("grp_create_staff2");
-    let staff_id = create_simple_user(&mut conn, &staff_username).await;
-    // Update user to be staff but not superuser
-    use vauban_web::schema::users;
-    diesel::update(users::table.filter(users::id.eq(staff_id)))
-        .set((users::is_staff.eq(true), users::is_superuser.eq(false)))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
-
-    // Staff member attempts to create group
-    let token = app
-        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
-        .await;
+    let staff_name = unique_name("grp_create_staff2");
+    let staff = create_staff_only_user(&mut conn, &app.auth_service, &staff_name).await;
     let csrf_token = app.generate_csrf_token();
 
     let group_name = unique_name("staff-create-grp");
@@ -5167,19 +5157,21 @@ async fn test_vauban_group_create_staff_cannot_create() {
         .post("/accounts/groups")
         .add_header(
             COOKIE,
-            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+            format!(
+                "access_token={}; __vauban_csrf={}",
+                staff.token, csrf_token
+            ),
         )
         .form(&[("csrf_token", csrf_token.as_str()), ("name", &group_name)])
         .await;
 
-    let status = response.status_code().as_u16();
+    let location = assert_redirect(&response);
     assert!(
-        status == 303 || status == 302,
-        "Expected redirect, got {}",
-        status
+        location.starts_with("/accounts/groups/"),
+        "Create must redirect to detail page, got {}",
+        location
     );
 
-    // Verify group was NOT created
     use vauban_web::schema::vauban_groups;
     let exists: bool = vauban_groups::table
         .filter(vauban_groups::name.eq(&group_name))
@@ -5190,31 +5182,87 @@ async fn test_vauban_group_create_staff_cannot_create() {
         .unwrap()
         .is_some();
 
-    assert!(!exists, "Staff should NOT be able to create group");
+    assert!(exists, "Staff with groups:write must be able to create a group");
 }
 
 #[tokio::test]
-async fn test_vauban_group_edit_requires_superuser() {
+async fn test_vauban_group_create_regular_user_cannot_create() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("grp_create_user2");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let group_name = unique_name("user-create-grp");
+    let response = app
+        .server
+        .post("/accounts/groups")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str()), ("name", &group_name)])
+        .await;
+
+    assert_redirect(&response);
+
+    use vauban_web::schema::vauban_groups;
+    let exists: bool = vauban_groups::table
+        .filter(vauban_groups::name.eq(&group_name))
+        .select(vauban_groups::id)
+        .first::<i32>(&mut conn)
+        .await
+        .optional()
+        .unwrap()
+        .is_some();
+
+    assert!(
+        !exists,
+        "Regular user without groups:write must not create a group"
+    );
+}
+
+#[tokio::test]
+async fn test_vauban_group_edit_allowed_for_staff() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("edit-staff-grp")).await;
+    let staff_name = unique_name("grp_edit_staff");
+    let staff = create_staff_only_user(&mut conn, &app.auth_service, &staff_name).await;
 
-    // Create a staff user (not superuser) in the database
-    let staff_username = unique_name("grp_edit_staff");
-    let staff_id = create_simple_user(&mut conn, &staff_username).await;
-    // Update user to be staff but not superuser
-    use vauban_web::schema::users;
-    diesel::update(users::table.filter(users::id.eq(staff_id)))
-        .set((users::is_staff.eq(true), users::is_superuser.eq(false)))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
+    let response = app
+        .server
+        .get(&format!("/accounts/groups/{}/edit", group_uuid))
+        .add_header(COOKIE, format!("access_token={}", staff.token))
+        .await;
 
-    // Staff member attempts to access edit form
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Edit Group"),
+        "Staff with groups:write must access the edit form"
+    );
+}
+
+#[tokio::test]
+async fn test_vauban_group_edit_denied_for_regular_user() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let group_uuid = create_test_vauban_group(&mut conn, &unique_name("edit-user-grp")).await;
+    let username = unique_name("grp_edit_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
     let token = app
-        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
         .await;
 
     let response = app
@@ -5226,56 +5274,43 @@ async fn test_vauban_group_edit_requires_superuser() {
     let status = response.status_code().as_u16();
     assert!(
         status == 401 || status == 403 || status == 500,
-        "Staff should not access group edit, got {}",
+        "Regular user must not access group edit form, got {}",
         status
     );
 }
 
 #[tokio::test]
-async fn test_vauban_group_update_requires_superuser() {
+async fn test_vauban_group_update_staff_success() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
     let original_name = unique_name("update-staff-grp");
     let group_uuid = create_test_vauban_group(&mut conn, &original_name).await;
-
-    // Create a staff user (not superuser) in the database
-    let staff_username = unique_name("grp_update_staff");
-    let staff_id = create_simple_user(&mut conn, &staff_username).await;
-    // Update user to be staff but not superuser
-    use vauban_web::schema::users;
-    diesel::update(users::table.filter(users::id.eq(staff_id)))
-        .set((users::is_staff.eq(true), users::is_superuser.eq(false)))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
-
-    // Staff member attempts to update group
-    let token = app
-        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
-        .await;
+    let staff_name = unique_name("grp_update_staff");
+    let staff = create_staff_only_user(&mut conn, &app.auth_service, &staff_name).await;
     let csrf_token = app.generate_csrf_token();
 
-    let new_name = "staff-updated-name-should-fail";
+    let new_name = unique_name("staff-updated-name");
     let response = app
         .server
         .post(&format!("/accounts/groups/{}", group_uuid))
         .add_header(
             COOKIE,
-            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+            format!(
+                "access_token={}; __vauban_csrf={}",
+                staff.token, csrf_token
+            ),
         )
-        .form(&[("csrf_token", csrf_token.as_str()), ("name", new_name)])
+        .form(&[("csrf_token", csrf_token.as_str()), ("name", &new_name)])
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 303 || status == 302,
-        "Expected redirect, got {}",
-        status
+    let location = assert_redirect(&response);
+    assert_eq!(
+        location,
+        format!("/accounts/groups/{}", group_uuid),
+        "Update must redirect to detail page"
     );
 
-    // Verify group was NOT updated to the new name
     use vauban_web::schema::vauban_groups;
     let current_name: String = vauban_groups::table
         .filter(vauban_groups::uuid.eq(group_uuid))
@@ -5284,39 +5319,71 @@ async fn test_vauban_group_update_requires_superuser() {
         .await
         .unwrap();
 
-    assert_ne!(
+    assert_eq!(
         current_name, new_name,
-        "Staff should NOT be able to update group to new name"
-    );
-    assert!(
-        current_name.starts_with("update-staff-grp"),
-        "Group name should still have original prefix"
+        "Staff with groups:write must be able to rename the group"
     );
 }
 
 #[tokio::test]
-async fn test_vauban_group_delete_requires_superuser_not_staff() {
+async fn test_vauban_group_update_denied_for_regular_user() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let original_name = unique_name("update-user-grp");
+    let group_uuid = create_test_vauban_group(&mut conn, &original_name).await;
+    let username = unique_name("grp_update_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let new_name = unique_name("user-updated-name-should-fail");
+
+    use vauban_web::schema::vauban_groups;
+    let name_before: String = vauban_groups::table
+        .filter(vauban_groups::uuid.eq(group_uuid))
+        .select(vauban_groups::name)
+        .first(&mut conn)
+        .await
+        .unwrap();
+
+    let response = app
+        .server
+        .post(&format!("/accounts/groups/{}", group_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str()), ("name", &new_name)])
+        .await;
+
+    assert_redirect(&response);
+
+    let current_name: String = vauban_groups::table
+        .filter(vauban_groups::uuid.eq(group_uuid))
+        .select(vauban_groups::name)
+        .first(&mut conn)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        current_name, name_before,
+        "Regular user must not change the group name"
+    );
+}
+
+#[tokio::test]
+async fn test_vauban_group_delete_staff_empty_success() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("delete-staff-grp")).await;
-
-    // Create a staff user (not superuser) in the database
-    let staff_username = unique_name("grp_del_staff");
-    let staff_id = create_simple_user(&mut conn, &staff_username).await;
-    // Update user to be staff but not superuser
-    use vauban_web::schema::users;
-    diesel::update(users::table.filter(users::id.eq(staff_id)))
-        .set((users::is_staff.eq(true), users::is_superuser.eq(false)))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
-
-    // Staff member attempts to delete group
-    let token = app
-        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
-        .await;
+    let staff_name = unique_name("grp_del_staff");
+    let staff = create_staff_only_user(&mut conn, &app.auth_service, &staff_name).await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -5324,19 +5391,20 @@ async fn test_vauban_group_delete_requires_superuser_not_staff() {
         .post(&format!("/accounts/groups/{}/delete", group_uuid))
         .add_header(
             COOKIE,
-            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+            format!(
+                "access_token={}; __vauban_csrf={}",
+                staff.token, csrf_token
+            ),
         )
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 303 || status == 302,
-        "Expected redirect, got {}",
-        status
+    let location = assert_redirect(&response);
+    assert_eq!(
+        location, "/accounts/groups",
+        "Delete must redirect to group list"
     );
 
-    // Verify group still exists (staff cannot delete)
     use vauban_web::schema::vauban_groups;
     let exists: bool = vauban_groups::table
         .filter(vauban_groups::uuid.eq(group_uuid))
@@ -5347,7 +5415,178 @@ async fn test_vauban_group_delete_requires_superuser_not_staff() {
         .unwrap()
         .is_some();
 
-    assert!(exists, "Staff should NOT be able to delete group");
+    assert!(
+        !exists,
+        "Staff with groups:write must be able to delete an empty group"
+    );
+}
+
+/// End-to-end navigation flow for staff group CRUD:
+/// create form -> POST create -> detail -> edit form -> POST update -> detail -> delete -> list.
+#[tokio::test]
+async fn test_vauban_group_staff_crud_navigation_flow() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let staff_name = unique_name("grp_e2e_staff");
+    let staff = create_staff_only_user(&mut conn, &app.auth_service, &staff_name).await;
+    let auth_cookie = |csrf: &str| {
+        if csrf.is_empty() {
+            format!("access_token={}", staff.token)
+        } else {
+            format!(
+                "access_token={}; __vauban_csrf={}",
+                staff.token, csrf
+            )
+        }
+    };
+
+    // Step 1: load create form
+    let create_form = app
+        .server
+        .get("/accounts/groups/new")
+        .add_header(COOKIE, auth_cookie(""))
+        .await;
+    assert_status(&create_form, 200);
+    assert!(
+        create_form.text().contains("Create New Group"),
+        "create form must render"
+    );
+
+    // Step 2: POST create -> redirect to detail
+    let csrf_token = app.generate_csrf_token();
+    let group_name = unique_name("e2e-staff-grp");
+    let create_response = app
+        .server
+        .post("/accounts/groups")
+        .add_header(COOKIE, auth_cookie(&csrf_token))
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("name", &group_name),
+            ("description", "E2E staff group"),
+        ])
+        .await;
+
+    let detail_path = assert_redirect(&create_response);
+    assert!(
+        detail_path.starts_with("/accounts/groups/"),
+        "create must redirect to detail, got {}",
+        detail_path
+    );
+    let group_uuid = detail_path
+        .trim_start_matches("/accounts/groups/")
+        .to_string();
+    let flash_after_create =
+        extract_flash_cookie(&create_response).expect("create must set flash cookie");
+
+    // Step 3: follow redirect to detail page
+    let detail = app
+        .server
+        .get(&detail_path)
+        .add_header(COOKIE, format!("{}; {}", auth_cookie(""), flash_after_create))
+        .await;
+    assert_status(&detail, 200);
+    let detail_body = detail.text();
+    assert!(
+        detail_body.contains(&group_name),
+        "detail page must show the new group name"
+    );
+    assert!(
+        detail_body.contains("created successfully"),
+        "detail page must render the create success banner"
+    );
+
+    // Step 4: load edit form
+    let edit_form = app
+        .server
+        .get(&format!("/accounts/groups/{}/edit", group_uuid))
+        .add_header(COOKIE, auth_cookie(""))
+        .await;
+    assert_status(&edit_form, 200);
+    assert!(
+        edit_form.text().contains("Edit Group"),
+        "edit form must render for staff"
+    );
+
+    // Step 5: POST update -> redirect to detail
+    let csrf_token = app.generate_csrf_token();
+    let updated_name = unique_name("e2e-staff-renamed");
+    let update_response = app
+        .server
+        .post(&format!("/accounts/groups/{}", group_uuid))
+        .add_header(COOKIE, auth_cookie(&csrf_token))
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("name", &updated_name),
+            ("description", "Renamed by staff E2E"),
+        ])
+        .await;
+
+    let update_location = assert_redirect(&update_response);
+    assert_eq!(
+        update_location,
+        format!("/accounts/groups/{}", group_uuid),
+        "update must redirect back to detail"
+    );
+    let flash_after_update =
+        extract_flash_cookie(&update_response).expect("update must set flash cookie");
+
+    // Step 6: follow redirect and verify renamed group on detail page
+    let detail_after_update = app
+        .server
+        .get(&update_location)
+        .add_header(COOKIE, format!("{}; {}", auth_cookie(""), flash_after_update))
+        .await;
+    assert_status(&detail_after_update, 200);
+    let updated_body = detail_after_update.text();
+    assert!(
+        updated_body.contains(&updated_name),
+        "detail page must show the renamed group"
+    );
+    assert!(
+        updated_body.contains("Group updated successfully"),
+        "detail page must render the update success banner"
+    );
+
+    // Step 7: delete empty group -> redirect to list
+    let csrf_token = app.generate_csrf_token();
+    let delete_response = app
+        .server
+        .post(&format!("/accounts/groups/{}/delete", group_uuid))
+        .add_header(COOKIE, auth_cookie(&csrf_token))
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let list_path = assert_redirect(&delete_response);
+    assert_eq!(
+        list_path, "/accounts/groups",
+        "delete must redirect to group list"
+    );
+
+    // Step 8: follow redirect to list
+    // so we assert the page resolves rather than a flash banner).
+    let list_page = app
+        .server
+        .get(&list_path)
+        .add_header(COOKIE, auth_cookie(""))
+        .await;
+    assert_status(&list_page, 200);
+    assert!(
+        list_page.text().contains("Groups"),
+        "delete redirect must resolve to the group list page"
+    );
+
+    // Step 9: verify group is gone from the database
+    use vauban_web::schema::vauban_groups;
+    let exists: bool = vauban_groups::table
+        .filter(vauban_groups::uuid.eq(Uuid::parse_str(&group_uuid).unwrap()))
+        .select(vauban_groups::id)
+        .first::<i32>(&mut conn)
+        .await
+        .optional()
+        .unwrap()
+        .is_some();
+    assert!(!exists, "group must be deleted after E2E flow");
 }
 
 // =============================================================================
