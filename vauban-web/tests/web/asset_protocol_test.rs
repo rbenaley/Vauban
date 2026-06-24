@@ -87,6 +87,16 @@ fn auth_csrf_cookie(token: &str, csrf: &str) -> String {
     format!("access_token={}; __vauban_csrf={}", token, csrf)
 }
 
+/// Extract the comment-independent identity of an OpenSSH public key:
+/// the `<algo> <base64>` prefix. Two keys with the same material but a
+/// different trailing comment compare equal under this projection.
+fn ssh_pubkey_body(line: &str) -> String {
+    line.split_whitespace()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Read an asset's full row from the DB by UUID, including its
 /// `connection_config` JSON. Used to assert on what was actually
 /// persisted.
@@ -220,8 +230,8 @@ async fn test_create_form_rdp_hides_auth_type_selector_and_private_key() {
     let body = response.text();
 
     assert!(
-        body.contains("x-show=\"assetType === 'ssh' && authType === 'private_key'\""),
-        "private-key block must be hidden whenever assetType is RDP"
+        body.contains("x-show=\"assetType === 'ssh' && authType === 'ssh_key'\""),
+        "ssh-key block must be hidden whenever assetType is RDP"
     );
     assert!(
         body.contains("name=\"ssh_private_key\""),
@@ -332,7 +342,7 @@ async fn test_create_rdp_with_private_key_rejects_400_and_drops_field() {
             ("asset_type", "rdp"),
             ("status", "online"),
             ("ssh_username", "Administrator"),
-            ("ssh_auth_type", "private_key"),
+            ("ssh_auth_type", "ssh_key"),
             ("ssh_private_key", CANARY),
         ])
         .await;
@@ -345,7 +355,7 @@ async fn test_create_rdp_with_private_key_rejects_400_and_drops_field() {
         .unwrap_or("");
     assert_eq!(
         location, "/assets/manage/new",
-        "rejected RDP+private_key submissions must bounce back to /assets/manage/new"
+        "rejected RDP+ssh_key submissions must bounce back to /assets/manage/new"
     );
 
     let persisted = read_asset_by_triplet(&mut conn, &asset_hostname, 3389, "Administrator").await;
@@ -425,13 +435,14 @@ async fn test_create_rdp_with_password_succeeds() {
     );
 }
 
-/// Non-regression: the SSH + private-key path still works after the
-/// asset_type-aware refactor. We deliberately use a clearly-non-secret
-/// placeholder string -- the test only cares that the field round-trips,
-/// not its content.
+/// Non-regression: the SSH + key-based (`ssh_key`) path still works after
+/// the key-auth redesign. `existing` source: the operator pastes BOTH the
+/// public and the private key; Vauban verifies they match, stores the
+/// public key in clear and persists the private key (encrypted in prod,
+/// plaintext here since `vault` is `None` in this harness).
 #[tokio::test]
 #[serial]
-async fn test_create_ssh_with_private_key_succeeds() {
+async fn test_create_ssh_with_existing_key_succeeds() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
@@ -441,7 +452,11 @@ async fn test_create_ssh_with_private_key_succeeds() {
 
     let asset_name = unique_name("ssh-pk-asset");
     let asset_hostname = format!("{}.ssh.test", unique_name("host"));
-    const FAKE_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nNON-SECRET-TEST-PLACEHOLDER\n-----END OPENSSH PRIVATE KEY-----";
+    // A real OpenSSH Ed25519 pair: the `existing` source requires the
+    // operator to paste BOTH halves; Vauban verifies they match.
+    let kp = shared::ssh_keygen::generate_ed25519_keypair("test@asset").expect("keygen");
+    let private_key = kp.private_openssh.to_string();
+    let public_key = kp.public_openssh.clone();
 
     let response = app
         .server
@@ -455,8 +470,10 @@ async fn test_create_ssh_with_private_key_succeeds() {
             ("asset_type", "ssh"),
             ("status", "online"),
             ("ssh_username", "root"),
-            ("ssh_auth_type", "private_key"),
-            ("ssh_private_key", FAKE_KEY),
+            ("ssh_auth_type", "ssh_key"),
+            ("ssh_key_source", "existing"),
+            ("ssh_public_key", public_key.as_str()),
+            ("ssh_private_key", private_key.as_str()),
         ])
         .await;
 
@@ -474,12 +491,207 @@ async fn test_create_ssh_with_private_key_succeeds() {
     let cfg = asset.connection_config;
     assert_eq!(
         cfg.get("auth_type").and_then(|v| v.as_str()),
-        Some("private_key"),
+        Some("ssh_key"),
         "SSH connection_config must round-trip auth_type"
+    );
+    assert_eq!(
+        cfg.get("ssh_key_source").and_then(|v| v.as_str()),
+        Some("existing"),
     );
     assert!(
         cfg.get("private_key").is_some(),
         "SSH private_key must be persisted (encrypted in prod, plaintext here -- vault is None in tests)"
+    );
+    let stored_pubkey = cfg
+        .get("ssh_public_key")
+        .and_then(|v| v.as_str())
+        .expect("pasted public key must be stored in clear");
+    // The pasted public key is stored verbatim (comment preserved).
+    assert_eq!(
+        stored_pubkey,
+        kp.public_openssh.trim(),
+        "the stored public key must be the operator-pasted one"
+    );
+    assert_eq!(
+        ssh_pubkey_body(stored_pubkey),
+        ssh_pubkey_body(&kp.public_openssh),
+    );
+}
+
+/// `existing` source with a public key that does NOT match the pasted
+/// private key: strict pair verification rejects the create (no asset is
+/// persisted) and surfaces a flash error.
+#[tokio::test]
+#[serial]
+async fn test_create_ssh_existing_mismatched_pair_is_rejected() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("asset_proto_ssh_mismatch");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let asset_name = unique_name("ssh-mismatch-asset");
+    let asset_hostname = format!("{}.ssh.test", unique_name("host"));
+    // Public key from pair A, private key from pair B -> fingerprints differ.
+    let kp_a = shared::ssh_keygen::generate_ed25519_keypair("a@asset").expect("keygen a");
+    let kp_b = shared::ssh_keygen::generate_ed25519_keypair("b@asset").expect("keygen b");
+    let public_key = kp_a.public_openssh.clone();
+    let private_key = kp_b.private_openssh.to_string();
+
+    let response = app
+        .server
+        .post("/assets/manage/new")
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &asset_name),
+            ("hostname", &asset_hostname),
+            ("port", "22"),
+            ("asset_type", "ssh"),
+            ("status", "online"),
+            ("ssh_username", "root"),
+            ("ssh_auth_type", "ssh_key"),
+            ("ssh_key_source", "existing"),
+            ("ssh_public_key", public_key.as_str()),
+            ("ssh_private_key", private_key.as_str()),
+        ])
+        .await;
+
+    // Flash-redirect back to the form on validation failure.
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected flash redirect on mismatch, got {}",
+        status
+    );
+    assert!(
+        read_asset_by_triplet(&mut conn, &asset_hostname, 22, "root")
+            .await
+            .is_none(),
+        "a mismatched key pair must NOT persist an asset"
+    );
+}
+
+/// `existing` source with the private key omitted: the public-key-only
+/// submission is rejected (both halves are required) and nothing is
+/// persisted.
+#[tokio::test]
+#[serial]
+async fn test_create_ssh_existing_without_private_key_is_rejected() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("asset_proto_ssh_nopriv");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let asset_name = unique_name("ssh-nopriv-asset");
+    let asset_hostname = format!("{}.ssh.test", unique_name("host"));
+    let kp = shared::ssh_keygen::generate_ed25519_keypair("test@asset").expect("keygen");
+    let public_key = kp.public_openssh.clone();
+
+    let response = app
+        .server
+        .post("/assets/manage/new")
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &asset_name),
+            ("hostname", &asset_hostname),
+            ("port", "22"),
+            ("asset_type", "ssh"),
+            ("status", "online"),
+            ("ssh_username", "root"),
+            ("ssh_auth_type", "ssh_key"),
+            ("ssh_key_source", "existing"),
+            ("ssh_public_key", public_key.as_str()),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected flash redirect when private key is missing, got {}",
+        status
+    );
+    assert!(
+        read_asset_by_triplet(&mut conn, &asset_hostname, 22, "root")
+            .await
+            .is_none(),
+        "a public-key-only submission must NOT persist an asset"
+    );
+}
+
+/// `generated` source: Vauban mints a fresh Ed25519 pair server-side. The
+/// public key is stored in clear; the private key is persisted (sealed in
+/// prod). The operator submits no key material.
+#[tokio::test]
+#[serial]
+async fn test_create_ssh_with_generated_key_succeeds() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("asset_proto_ssh_gen");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let asset_name = unique_name("ssh-gen-asset");
+    let asset_hostname = format!("{}.ssh.test", unique_name("host"));
+
+    let response = app
+        .server
+        .post("/assets/manage/new")
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &asset_name),
+            ("hostname", &asset_hostname),
+            ("port", "22"),
+            ("asset_type", "ssh"),
+            ("status", "online"),
+            ("ssh_username", "root"),
+            ("ssh_auth_type", "ssh_key"),
+            ("ssh_key_source", "generated"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect after SSH create, got {}",
+        status
+    );
+
+    let asset = read_asset_by_triplet(&mut conn, &asset_hostname, 22, "root")
+        .await
+        .expect("SSH asset must be persisted");
+    let cfg = asset.connection_config;
+    assert_eq!(
+        cfg.get("ssh_key_source").and_then(|v| v.as_str()),
+        Some("generated"),
+    );
+    assert_eq!(
+        cfg.get("ssh_pubkey_pushed").and_then(|v| v.as_bool()),
+        Some(false),
+        "a freshly generated key has not been pushed yet"
+    );
+    let pubkey = cfg
+        .get("ssh_public_key")
+        .and_then(|v| v.as_str())
+        .expect("generated public key must be stored in clear");
+    assert!(
+        pubkey.starts_with("ssh-ed25519 "),
+        "stored public key must be an ed25519 OpenSSH line, got: {}",
+        pubkey
+    );
+    let priv_key = cfg
+        .get("private_key")
+        .and_then(|v| v.as_str())
+        .expect("generated private key must be persisted");
+    assert!(
+        priv_key.contains("OPENSSH PRIVATE KEY"),
+        "private key must be stored (plaintext here; vault is None in tests)"
     );
 }
 
@@ -640,7 +852,7 @@ async fn test_edit_rdp_cannot_set_private_key_via_form() {
             ("port", "3389"),
             ("status", "online"),
             ("ssh_username", "Administrator"),
-            ("ssh_auth_type", "private_key"),
+            ("ssh_auth_type", "ssh_key"),
             ("ssh_private_key", CANARY),
         ])
         .await;
@@ -830,7 +1042,8 @@ async fn test_create_ssh_key_mode_with_empty_private_key_rejects_400() {
             ("asset_type", "ssh"),
             ("status", "online"),
             ("ssh_username", "root"),
-            ("ssh_auth_type", "private_key"),
+            ("ssh_auth_type", "ssh_key"),
+            ("ssh_key_source", "existing"),
             ("ssh_private_key", ""),
         ])
         .await;
@@ -1257,9 +1470,9 @@ async fn test_edit_ssh_password_rotation_preserves_host_key_pinning() {
     }
 }
 
-/// Switching `auth_type` from password to private_key persists the new
+/// Switching `auth_type` from password to `ssh_key` persists the new
 /// credential AND preserves the host-key pinning. Mirrors the unit test
-/// `test_compute_updated_ssh_switch_to_private_key` at the HTTP layer.
+/// `test_compute_updated_ssh_switch_to_ssh_key` at the HTTP layer.
 #[tokio::test]
 #[serial]
 async fn test_edit_ssh_switch_auth_type_preserves_host_key_pinning() {
@@ -1273,7 +1486,11 @@ async fn test_edit_ssh_switch_auth_type_preserves_host_key_pinning() {
     let hostname = format!("{}.switch-keep-key.test", unique_name("host"));
     const HOST_KEY: &str = "ecdsa-sha2-nistp256 AAAAESEC12SWITCH20260420";
     const FINGERPRINT: &str = "SHA256:SEC12SWITCHAUTHTYPE20260420ccccccccccccccccccc";
-    const NEW_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nSEC12-NEW-KEY-20260420\n-----END OPENSSH PRIVATE KEY-----";
+    // A real OpenSSH pair: the `existing` source requires both halves and
+    // verifies they match.
+    let kp = shared::ssh_keygen::generate_ed25519_keypair("alice@asset").expect("keygen");
+    let new_key = kp.private_openssh.to_string();
+    let new_pub = kp.public_openssh.clone();
 
     let asset = insert_asset_with_config(
         &mut conn,
@@ -1303,8 +1520,10 @@ async fn test_edit_ssh_switch_auth_type_preserves_host_key_pinning() {
             ("port", "22"),
             ("status", "online"),
             ("ssh_username", "alice"),
-            ("ssh_auth_type", "private_key"),
-            ("ssh_private_key", NEW_KEY),
+            ("ssh_auth_type", "ssh_key"),
+            ("ssh_key_source", "existing"),
+            ("ssh_public_key", new_pub.as_str()),
+            ("ssh_private_key", new_key.as_str()),
         ])
         .await;
 
@@ -1338,7 +1557,21 @@ async fn test_edit_ssh_switch_auth_type_preserves_host_key_pinning() {
             .connection_config
             .get("auth_type")
             .and_then(|v| v.as_str()),
-        Some("private_key"),
+        Some("ssh_key"),
+    );
+    let stored_pubkey = after
+        .connection_config
+        .get("ssh_public_key")
+        .and_then(|v| v.as_str())
+        .expect("switching to ssh_key must derive and store a public key");
+    assert_eq!(
+        ssh_pubkey_body(stored_pubkey),
+        ssh_pubkey_body(&kp.public_openssh),
+        "switching to ssh_key must store the pasted public key matching the imported private key"
+    );
+    assert!(
+        after.connection_config.get("password").is_none(),
+        "switching to ssh_key must strip the dormant password"
     );
 }
 

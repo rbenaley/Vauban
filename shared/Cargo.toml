@@ -74,6 +74,11 @@ session-token = ["dep:blake3", "dep:secrecy", "dep:base64", "dep:rand", "dep:sub
 # from FD before Capsicum). Other crates do NOT need russh and stay
 # slim.
 iacs-host-key = ["dep:russh", "dep:getrandom"]
+# Enables shared::ssh_keygen (generate_ed25519_keypair) for the SSH
+# asset key-based auth flow. Pulled in by vauban-web (the only generator
+# of asset key-pairs). Like iacs-host-key it needs russh + getrandom;
+# tokio-free crates that never generate keys stay slim.
+ssh-keygen = ["dep:russh", "dep:getrandom"]
 # Peek-based industrial wire protocol classification for the IACS
 # tunnel gate in vauban-proxy-iacs. Tokio-free pure parsing.
 iacs-protocol = []

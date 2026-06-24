@@ -95,6 +95,7 @@
               port: {{ form.port }},
               assetType: '{{ form.asset_type }}',
               authType: '{{ form.ssh_auth_type.as_deref().unwrap_or("password") }}',
+              keySource: '{{ form.ssh_key_source.as_deref().unwrap_or("generated") }}',
               username: '{{ form.ssh_username.as_deref().unwrap_or("root") }}',
               get isIacs() { return this.assetType.startsWith('iacs_'); },
               get isIacsTcp() { return this.assetType === 'iacs_tcp'; }
@@ -218,7 +219,7 @@
                                 data-iacs-strip
                                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
                             <option value="password">Password</option>
-                            <option value="private_key">Private Key</option>
+                            <option value="ssh_key">SSH keys</option>
                         </select>
                     </div>
                 </div>
@@ -244,32 +245,77 @@
                     <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Secret used to authenticate against the target system. Required for RDP and for SSH password authentication.</p>
                 </div>
 
-                <!-- Private key fields: SSH only AND auth_type=private_key. -->
-                <div x-show="assetType === 'ssh' && authType === 'private_key'" x-cloak class="space-y-4">
+                <!-- SSH key fields: SSH only AND auth_type=ssh_key. -->
+                <div x-show="assetType === 'ssh' && authType === 'ssh_key'" x-cloak class="space-y-4" data-testid="ssh-key-block">
                     <div>
-                        <label for="ssh_private_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                            Private Key <span class="text-red-500">*</span>
-                        </label>
-                        <textarea name="ssh_private_key" id="ssh_private_key" rows="6"
-                                  data-iacs-strip
-                                  class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono text-xs"
-                                  :required="!isIacs && assetType === 'ssh' && authType === 'private_key'"
-                                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----
+                        <label for="ssh_key_source" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Key source</label>
+                        <select name="ssh_key_source" id="ssh_key_source" x-model="keySource"
+                                data-iacs-strip
+                                data-testid="ssh-key-source"
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                            <option value="generated">Generate public/private key</option>
+                            <option value="existing">Use existing public/private key</option>
+                        </select>
+                    </div>
+
+                    {# Generated source: Vauban mints the Ed25519 pair
+                       server-side. The public key is shown on the asset
+                       page after creation (where the Push button lives);
+                       the private key is sealed in the vault and never
+                       displayed. #}
+                    <div x-show="keySource === 'generated'" x-cloak
+                         data-testid="ssh-key-generated-note"
+                         class="rounded-md bg-blue-50 dark:bg-blue-900/30 p-4">
+                        <p class="text-sm text-blue-700 dark:text-blue-300">
+                            Vauban will generate a fresh Ed25519 key pair on save. The public key
+                            is displayed on the asset page so you can push it to the target; the
+                            private key is sealed in the vault and never shown.
+                        </p>
+                    </div>
+
+                    {# Existing source: operator pastes BOTH halves of the
+                       pair. Vauban verifies they match (fingerprints), then
+                       stores the public key in clear and seals the private
+                       key (+ passphrase) in the vault. #}
+                    <div x-show="keySource === 'existing'" x-cloak class="space-y-4" data-testid="ssh-key-existing-block">
+                        <div>
+                            <label for="ssh_public_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                Public Key <span class="text-red-500">*</span>
+                            </label>
+                            <textarea name="ssh_public_key" id="ssh_public_key" rows="3"
+                                      data-iacs-strip
+                                      data-testid="ssh-public-key"
+                                      class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono text-xs"
+                                      :required="!isIacs && assetType === 'ssh' && authType === 'ssh_key' && keySource === 'existing'"
+                                      placeholder="ssh-ed25519 AAAA... user@host"></textarea>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Paste the OpenSSH public key (single line). Stored in clear and verified against the private key below.</p>
+                        </div>
+                        <div>
+                            <label for="ssh_private_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                Private Key <span class="text-red-500">*</span>
+                            </label>
+                            <textarea name="ssh_private_key" id="ssh_private_key" rows="6"
+                                      data-iacs-strip
+                                      data-testid="ssh-private-key"
+                                      class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono text-xs"
+                                      :required="!isIacs && assetType === 'ssh' && authType === 'ssh_key' && keySource === 'existing'"
+                                      placeholder="-----BEGIN OPENSSH PRIVATE KEY-----
 ...
 -----END OPENSSH PRIVATE KEY-----"></textarea>
-                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Paste the full private key content (PEM or OpenSSH format). Required for SSH key-based authentication.</p>
-                    </div>
-                    <div>
-                        {# Same opaque-name + visual-mask pattern as the
-                           main secret field above. #}
-                        <label for="vbn_secret_phrase" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Key Passphrase (optional)</label>
-                        <input type="text" name="vbn_secret_phrase" id="vbn_secret_phrase"
-                               data-real-name="ssh_passphrase"
-                               data-iacs-strip
-                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
-                               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
-                               placeholder="Key passphrase (if encrypted)">
-                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave empty if the private key is not encrypted</p>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Paste the matching private key. Vauban verifies it pairs with the public key above; the private key is sealed in the vault.</p>
+                        </div>
+                        <div>
+                            {# Same opaque-name + visual-mask pattern as the
+                               main secret field above. #}
+                            <label for="vbn_secret_phrase" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Key Passphrase (optional)</label>
+                            <input type="text" name="vbn_secret_phrase" id="vbn_secret_phrase"
+                                   data-real-name="ssh_passphrase"
+                                   data-iacs-strip
+                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                                   autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+                                   placeholder="Key passphrase (if encrypted)">
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave empty if the private key is not encrypted</p>
+                        </div>
                     </div>
                 </div>
 

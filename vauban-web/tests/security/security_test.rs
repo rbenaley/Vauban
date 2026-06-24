@@ -2071,10 +2071,13 @@ fn test_login_request_debug_does_not_leak_mfa_code() {
     assert!(debug_str.contains("csrf-value"));
 }
 
-/// Test that SshSessionOpenRequest Debug output does not contain SSH password.
+/// #4: `SshSessionOpenRequest` no longer carries any plaintext secret.
+/// It transports vault CIPHERTEXTS only; vauban-proxy-ssh decrypts them
+/// against vauban-vault moments before connecting. This test pins that
+/// the struct cannot hold a plaintext password and that a ciphertext
+/// (not a secret) round-trips through Debug.
 #[test]
-fn test_ssh_request_debug_does_not_leak_password() {
-    use secrecy::SecretString;
+fn test_ssh_request_carries_password_ciphertext_only() {
     use vauban_web::ipc::SshSessionOpenRequest;
 
     let request = SshSessionOpenRequest {
@@ -2087,31 +2090,27 @@ fn test_ssh_request_debug_does_not_leak_password() {
         terminal_cols: 80,
         terminal_rows: 24,
         auth_type: "password".to_string(),
-        password: Some(SecretString::from("ssh-p@ssw0rd!".to_string())),
-        private_key: None,
-        passphrase: None,
+        password_ciphertext: Some("v1:CIPHERTEXT_PWD".to_string()),
+        private_key_ciphertext: None,
+        passphrase_ciphertext: None,
         expected_host_key: None,
         session_token: Vec::new(),
     };
 
     let debug_str = format!("{:?}", request);
 
-    assert!(
-        !debug_str.contains("ssh-p@ssw0rd!"),
-        "SshSessionOpenRequest Debug must NOT contain the SSH password. Got: {}",
-        debug_str
-    );
-    assert!(debug_str.contains("[REDACTED]"));
-    // Non-secret fields should still be visible
+    // The ciphertext is NOT a secret (it is useless without the vault
+    // master key), so it may appear in Debug. Non-secret fields visible.
+    assert!(debug_str.contains("v1:CIPHERTEXT_PWD"));
     assert!(debug_str.contains("sess-001"));
     assert!(debug_str.contains("10.0.0.1"));
     assert!(debug_str.contains("root"));
 }
 
-/// Test that SshSessionOpenRequest Debug output does not contain private key.
+/// #4: the key-based auth path also transports only ciphertexts (private
+/// key + optional passphrase). No plaintext PEM ever reaches the request.
 #[test]
-fn test_ssh_request_debug_does_not_leak_private_key() {
-    use secrecy::SecretString;
+fn test_ssh_request_carries_key_ciphertexts_only() {
     use vauban_web::ipc::SshSessionOpenRequest;
 
     let request = SshSessionOpenRequest {
@@ -2123,39 +2122,26 @@ fn test_ssh_request_debug_does_not_leak_private_key() {
         username: "deploy".to_string(),
         terminal_cols: 80,
         terminal_rows: 24,
-        auth_type: "private_key".to_string(),
-        password: None,
-        private_key: Some(SecretString::from(
-            "-----BEGIN OPENSSH PRIVATE KEY-----\nbase64data\n-----END OPENSSH PRIVATE KEY-----"
-                .to_string(),
-        )),
-        passphrase: Some(SecretString::from("key-unlock-phrase".to_string())),
+        auth_type: "ssh_key".to_string(),
+        password_ciphertext: None,
+        private_key_ciphertext: Some("v1:CIPHERTEXT_KEY".to_string()),
+        passphrase_ciphertext: Some("v1:CIPHERTEXT_PP".to_string()),
         expected_host_key: None,
         session_token: Vec::new(),
     };
 
     let debug_str = format!("{:?}", request);
 
-    assert!(
-        !debug_str.contains("BEGIN OPENSSH PRIVATE KEY"),
-        "SshSessionOpenRequest Debug must NOT contain the private key. Got: {}",
-        debug_str
-    );
-    assert!(
-        !debug_str.contains("base64data"),
-        "SshSessionOpenRequest Debug must NOT contain key data. Got: {}",
-        debug_str
-    );
-    assert!(
-        !debug_str.contains("key-unlock-phrase"),
-        "SshSessionOpenRequest Debug must NOT contain the passphrase. Got: {}",
-        debug_str
-    );
+    // No plaintext PEM markers can appear because the struct only holds
+    // ciphertexts.
+    assert!(!debug_str.contains("BEGIN OPENSSH PRIVATE KEY"));
+    assert!(debug_str.contains("v1:CIPHERTEXT_KEY"));
+    assert!(debug_str.contains("v1:CIPHERTEXT_PP"));
 }
 
-/// Test that None secrets in SshSessionOpenRequest show None, not [REDACTED].
+/// `None` ciphertexts render as `None` in Debug (not an empty string).
 #[test]
-fn test_ssh_request_debug_none_secrets_show_none() {
+fn test_ssh_request_debug_none_ciphertexts_show_none() {
     use vauban_web::ipc::SshSessionOpenRequest;
 
     let request = SshSessionOpenRequest {
@@ -2168,19 +2154,18 @@ fn test_ssh_request_debug_none_secrets_show_none() {
         terminal_cols: 80,
         terminal_rows: 24,
         auth_type: "password".to_string(),
-        password: None,
-        private_key: None,
-        passphrase: None,
+        password_ciphertext: None,
+        private_key_ciphertext: None,
+        passphrase_ciphertext: None,
         expected_host_key: None,
         session_token: Vec::new(),
     };
 
     let debug_str = format!("{:?}", request);
 
-    // When secrets are None, they should show as None (not [REDACTED])
     assert!(
         debug_str.contains("None"),
-        "None secrets should show as None in Debug output. Got: {}",
+        "None ciphertexts should show as None in Debug output. Got: {}",
         debug_str
     );
 }
@@ -4712,56 +4697,69 @@ async fn test_session_fetch_supports_preconnected_fd() {
 // - Compile-time enforcement: expose_secret() required to access the value
 
 /// SshSessionOpenRequest credential fields MUST be SecretString, not String.
+///
+/// #4 (zero clear-text credentials on the web->proxy IPC): the SSH
+/// session-open request transports VAULT CIPHERTEXTS, never the secrets
+/// themselves. The fields are therefore plain `Option<String>`
+/// (`*_ciphertext`) -- a ciphertext is useless without the vault master
+/// key, so it is not a secret and need not be a `SecretString`.
 #[test]
 fn test_ssh_session_open_request_uses_secret_string() {
     let source = include_str!("../../src/ipc/proxy_ssh.rs");
 
-    // password field must be Option<SecretString>
     assert!(
-        source.contains("pub password: Option<SecretString>"),
-        "SshSessionOpenRequest.password must be Option<SecretString>"
+        source.contains("pub password_ciphertext: Option<String>"),
+        "SshSessionOpenRequest.password_ciphertext must be Option<String> (#4 ciphertext-only)"
     );
-
-    // private_key field must be Option<SecretString>
     assert!(
-        source.contains("pub private_key: Option<SecretString>"),
-        "SshSessionOpenRequest.private_key must be Option<SecretString>"
+        source.contains("pub private_key_ciphertext: Option<String>"),
+        "SshSessionOpenRequest.private_key_ciphertext must be Option<String> (#4 ciphertext-only)"
     );
-
-    // passphrase field must be Option<SecretString>
     assert!(
-        source.contains("pub passphrase: Option<SecretString>"),
-        "SshSessionOpenRequest.passphrase must be Option<SecretString>"
+        source.contains("pub passphrase_ciphertext: Option<String>"),
+        "SshSessionOpenRequest.passphrase_ciphertext must be Option<String> (#4 ciphertext-only)"
+    );
+    // Regression guard: the old plaintext-secret fields must be gone.
+    assert!(
+        !source.contains("pub password: Option<SecretString>"),
+        "#4 regression: SshSessionOpenRequest must NOT carry a plaintext password SecretString"
+    );
+    assert!(
+        !source.contains("pub private_key: Option<SecretString>"),
+        "#4 regression: SshSessionOpenRequest must NOT carry a plaintext private_key SecretString"
     );
 }
 
-/// Message::SshSessionOpen credential fields MUST be SensitiveString for IPC transport.
+/// #4: Message::SshSessionOpen credential fields transport VAULT
+/// CIPHERTEXTS, never the secrets. They are plain `Option<String>`; the
+/// proxy materialises the plaintext in its own sandbox via
+/// `VaultDecryptClient`. (`SensitiveString` still exists in the module
+/// for the RDP / vault paths and is asserted by their own tests.)
 #[test]
 fn test_message_ssh_session_open_uses_sensitive_string() {
     let source = include_str!("../../../shared/src/messages.rs");
 
-    // SensitiveString type must exist
+    // SensitiveString type still exists (RDP / vault transport).
     assert!(
         source.contains("pub struct SensitiveString"),
-        "shared/messages.rs must define SensitiveString type"
+        "shared/messages.rs must still define SensitiveString type"
     );
 
-    // password field in SshSessionOpen must use SensitiveString
+    for field in [
+        "password_ciphertext: Option<String>",
+        "private_key_ciphertext: Option<String>",
+        "passphrase_ciphertext: Option<String>",
+    ] {
+        assert!(
+            source.contains(field),
+            "Message::SshSessionOpen must carry `{field}` (#4 ciphertext-only)"
+        );
+    }
+    // Regression guard: the old SensitiveString credential fields on the
+    // SSH session-open path must be gone.
     assert!(
-        source.contains("password: Option<SensitiveString>"),
-        "Message::SshSessionOpen.password must be Option<SensitiveString>"
-    );
-
-    // private_key field must use SensitiveString
-    assert!(
-        source.contains("private_key: Option<SensitiveString>"),
-        "Message::SshSessionOpen.private_key must be Option<SensitiveString>"
-    );
-
-    // passphrase field must use SensitiveString
-    assert!(
-        source.contains("passphrase: Option<SensitiveString>"),
-        "Message::SshSessionOpen.passphrase must be Option<SensitiveString>"
+        !source.contains("private_key: Option<SensitiveString>"),
+        "#4 regression: SshSessionOpen must NOT carry a plaintext private_key SensitiveString"
     );
 }
 
@@ -4856,52 +4854,77 @@ fn test_ssh_credential_debug_not_derived() {
     );
 }
 
-/// Proxy main.rs must convert SensitiveString -> SecretString.
+/// #4: the proxy NO LONGER receives clear-text credentials. It
+/// materialises each `SshCredential` by decrypting the vault ciphertexts
+/// shipped in the IPC message, inside its own sandboxed address space,
+/// via the decrypt-only `VaultDecryptClient`.
 #[test]
 fn test_proxy_converts_sensitive_to_secret() {
     let source = include_str!("../../../vauban-proxy-ssh/src/main.rs");
 
-    // Must import SecretString
     assert!(
-        source.contains("use secrecy::SecretString"),
-        "proxy main.rs must import secrecy::SecretString"
+        source.contains("VaultDecryptClient"),
+        "proxy main.rs must use VaultDecryptClient (#4 proxy-side decryption)"
     );
-
-    // Must use into_inner() to extract from SensitiveString
     assert!(
-        source.contains("into_inner()"),
-        "proxy must call SensitiveString::into_inner() for conversion"
+        source.contains("build_credential_via_vault"),
+        "proxy must build SshCredential by decrypting vault ciphertexts"
+    );
+    assert!(
+        source.contains("decrypt(DOMAIN_CREDENTIALS"),
+        "proxy must decrypt via the `credentials` vault domain"
+    );
+    // Regression guard: the proxy must not resurrect the old SensitiveString
+    // clear-text-over-IPC conversion path.
+    assert!(
+        !source.contains("use secrecy::SecretString"),
+        "#4 regression: proxy must not re-import secrecy::SecretString for an IPC clear-text path"
     );
 }
 
-/// connect_ssh handler must wrap credentials in SecretString.
+/// #4: connect_ssh forwards the vault CIPHERTEXTS read from
+/// `connection_config` verbatim. It does NOT wrap any secret in a
+/// SecretString because it never holds a secret -- the proxy decrypts.
 #[test]
 fn test_connect_ssh_wraps_credentials() {
     let source = include_str!("../../src/handlers/web/ssh.rs");
 
-    // Must use SecretString::from() or secrecy::SecretString for credentials
+    for field in [
+        "password_ciphertext",
+        "private_key_ciphertext",
+        "passphrase_ciphertext",
+    ] {
+        assert!(
+            source.contains(field),
+            "connect_ssh must forward `{field}` to the proxy (#4 ciphertext-only)"
+        );
+    }
+    // Regression guard: connect_ssh must not wrap a plaintext credential.
     assert!(
-        source.contains("secrecy::SecretString::from(val.to_string())")
-            || source.contains("secrecy::SecretString::from(s.to_string())"),
-        "connect_ssh must wrap extracted credentials in SecretString"
+        !source.contains("secrecy::SecretString::from(val.to_string())")
+            && !source.contains("secrecy::SecretString::from(s.to_string())"),
+        "#4 regression: connect_ssh must not wrap clear-text credentials in SecretString"
     );
 }
 
-/// open_session() must convert SecretString -> SensitiveString for IPC.
+/// #4: open_session() ships the vault CIPHERTEXTS as plain `String`s in
+/// the IPC message; there is no SecretString -> SensitiveString
+/// conversion because no plaintext credential crosses the IPC anymore.
 #[test]
 fn test_open_session_converts_secret_to_sensitive() {
     let source = include_str!("../../src/ipc/proxy_ssh.rs");
 
-    // Must use expose_secret() to access credential before IPC transport
     assert!(
-        source.contains("expose_secret()"),
-        "open_session must call expose_secret() when converting to SensitiveString"
+        source.contains("password_ciphertext")
+            && source.contains("private_key_ciphertext")
+            && source.contains("passphrase_ciphertext"),
+        "open_session must populate the SshSessionOpen ciphertext fields (#4)"
     );
-
-    // Must create SensitiveString for IPC message
+    // Regression guard: the old plaintext->SensitiveString conversion on
+    // the SSH session path must be gone.
     assert!(
-        source.contains("SensitiveString::new"),
-        "open_session must construct SensitiveString for IPC message fields"
+        !source.contains("SensitiveString::new"),
+        "#4 regression: open_session must NOT build a SensitiveString credential for the SSH path"
     );
 }
 
@@ -5084,17 +5107,28 @@ fn test_vault_messages_use_sensitive_string() {
     );
 }
 
-/// connect_ssh handler must decrypt encrypted credentials via vault.
+/// #4: connect_ssh must NOT decrypt credentials. The whole point of the
+/// SSH key-auth redesign is that decryption moved proxy-side
+/// (`VaultDecryptClient`), so no clear-text credential ever exists in
+/// the web process or crosses the IPC. This test pins the inverse of the
+/// pre-#4 behaviour: a `vault.decrypt(` in connect_ssh would resurrect
+/// the hole.
 #[test]
 fn test_connect_ssh_decrypts_via_vault() {
     let source = include_str!("../../src/handlers/web/ssh.rs");
+    // Strip line comments so the doc-comments referencing decryption do
+    // not count as a wiring.
+    let stripped: String = source
+        .lines()
+        .map(|l| match l.find("//") {
+            Some(idx) => &l[..idx],
+            None => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        source.contains("vault.decrypt(\"credentials\""),
-        "connect_ssh must call vault.decrypt for encrypted credentials"
-    );
-    assert!(
-        source.contains("is_encrypted(val)"),
-        "connect_ssh must check is_encrypted() for backward compatibility"
+        !stripped.contains(".decrypt("),
+        "#4 regression: connect_ssh (web) must NOT decrypt credentials; the proxy does that"
     );
 }
 

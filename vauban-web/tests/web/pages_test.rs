@@ -5,10 +5,11 @@
 /// Since raw SQL is not checked at compile time, these tests ensure query validity.
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
-    add_user_to_vauban_group, count_vauban_group_members, create_approval_request,
-    create_recorded_session, create_admin_user, create_simple_admin_user, create_simple_ssh_asset,
-    create_simple_user, create_test_asset_group, create_test_asset_in_group, create_test_session,
-    create_staff_only_user, create_test_vauban_group, get_asset_uuid, unique_name,
+    add_user_to_vauban_group, count_vauban_group_members, create_admin_user,
+    create_approval_request, create_recorded_session, create_simple_admin_user,
+    create_simple_ssh_asset, create_simple_user, create_staff_only_user, create_test_asset_group,
+    create_test_asset_in_group, create_test_session, create_test_vauban_group, get_asset_uuid,
+    unique_name,
 };
 use axum::http::header::{COOKIE, LOCATION, SET_COOKIE};
 use diesel::{
@@ -5157,10 +5158,7 @@ async fn test_vauban_group_create_staff_success() {
         .post("/accounts/groups")
         .add_header(
             COOKIE,
-            format!(
-                "access_token={}; __vauban_csrf={}",
-                staff.token, csrf_token
-            ),
+            format!("access_token={}; __vauban_csrf={}", staff.token, csrf_token),
         )
         .form(&[("csrf_token", csrf_token.as_str()), ("name", &group_name)])
         .await;
@@ -5182,7 +5180,10 @@ async fn test_vauban_group_create_staff_success() {
         .unwrap()
         .is_some();
 
-    assert!(exists, "Staff with groups:write must be able to create a group");
+    assert!(
+        exists,
+        "Staff with groups:write must be able to create a group"
+    );
 }
 
 #[tokio::test]
@@ -5296,10 +5297,7 @@ async fn test_vauban_group_update_staff_success() {
         .post(&format!("/accounts/groups/{}", group_uuid))
         .add_header(
             COOKIE,
-            format!(
-                "access_token={}; __vauban_csrf={}",
-                staff.token, csrf_token
-            ),
+            format!("access_token={}; __vauban_csrf={}", staff.token, csrf_token),
         )
         .form(&[("csrf_token", csrf_token.as_str()), ("name", &new_name)])
         .await;
@@ -5391,10 +5389,7 @@ async fn test_vauban_group_delete_staff_empty_success() {
         .post(&format!("/accounts/groups/{}/delete", group_uuid))
         .add_header(
             COOKIE,
-            format!(
-                "access_token={}; __vauban_csrf={}",
-                staff.token, csrf_token
-            ),
+            format!("access_token={}; __vauban_csrf={}", staff.token, csrf_token),
         )
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
@@ -5434,10 +5429,7 @@ async fn test_vauban_group_staff_crud_navigation_flow() {
         if csrf.is_empty() {
             format!("access_token={}", staff.token)
         } else {
-            format!(
-                "access_token={}; __vauban_csrf={}",
-                staff.token, csrf
-            )
+            format!("access_token={}; __vauban_csrf={}", staff.token, csrf)
         }
     };
 
@@ -5483,7 +5475,10 @@ async fn test_vauban_group_staff_crud_navigation_flow() {
     let detail = app
         .server
         .get(&detail_path)
-        .add_header(COOKIE, format!("{}; {}", auth_cookie(""), flash_after_create))
+        .add_header(
+            COOKIE,
+            format!("{}; {}", auth_cookie(""), flash_after_create),
+        )
         .await;
     assert_status(&detail, 200);
     let detail_body = detail.text();
@@ -5535,7 +5530,10 @@ async fn test_vauban_group_staff_crud_navigation_flow() {
     let detail_after_update = app
         .server
         .get(&update_location)
-        .add_header(COOKIE, format!("{}; {}", auth_cookie(""), flash_after_update))
+        .add_header(
+            COOKIE,
+            format!("{}; {}", auth_cookie(""), flash_after_update),
+        )
         .await;
     assert_status(&detail_after_update, 200);
     let updated_body = detail_after_update.text();

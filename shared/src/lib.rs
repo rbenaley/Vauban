@@ -55,6 +55,13 @@ pub mod tasks;
 #[cfg(feature = "iacs-host-key")]
 pub mod iacs_host_key;
 
+// Ed25519 SSH key-pair generation for the asset key-based auth flow
+// (generate_ed25519_keypair). Pulled in by vauban-web only (the sole
+// generator of asset key-pairs). Behind the `ssh-keygen` feature so
+// tokio-free crates that never generate keys keep their dep tree minimal.
+#[cfg(feature = "ssh-keygen")]
+pub mod ssh_keygen;
+
 // Peek-based industrial wire protocol family classification for the
 // IACS tunnel gate. Pulled in by vauban-proxy-iacs only.
 #[cfg(feature = "iacs-protocol")]

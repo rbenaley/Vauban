@@ -28,11 +28,11 @@ mod input_redactor;
 mod ipc;
 mod session;
 mod session_manager;
+mod vault;
 
 use anyhow::{Context, Result};
 use error::SessionError;
 use ipc::AsyncIpcChannel;
-use secrecy::SecretString;
 use session::{SessionConfig, SshCredential, fetch_host_key};
 use session_manager::SessionManager;
 use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_SSH};
@@ -48,6 +48,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
+use vault::{DOMAIN_CREDENTIALS, VaultDecryptClient};
 
 /// Service runtime state (shared across async tasks).
 struct ServiceState {
@@ -274,6 +275,31 @@ async fn run_service() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok());
 
+    // Get the Vault IPC channel (ProxySsh -> Vault edge in the supervisor
+    // topology). Used decrypt-only to materialise asset credentials from
+    // the vault ciphertexts shipped in SshSessionOpen / SshPushPublicKey /
+    // SshTestKeyAuth (#4: no clear-text credentials cross the web->proxy
+    // IPC). Degrades cleanly when absent (in-process dev without a vault):
+    // any credential decrypt then fails closed.
+    let vault_fds: Option<(RawFd, RawFd)> = {
+        let r: Option<RawFd> = std::env::var("VAUBAN_VAULT_IPC_READ")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        let w: Option<RawFd> = std::env::var("VAUBAN_VAULT_IPC_WRITE")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        match (r, w) {
+            (Some(r), Some(w)) => Some((r, w)),
+            _ => {
+                warn!(
+                    "Vault IPC channel not configured (VAUBAN_VAULT_IPC_READ/WRITE); \
+                     credential decryption will be unavailable"
+                );
+                None
+            }
+        }
+    };
+
     let recording_enabled: bool = std::env::var("VAUBAN_RECORDING_ENABLED")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -322,6 +348,8 @@ async fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_RECORDING_ENABLED");
         std::env::remove_var("VAUBAN_AUDIT_IPC_READ");
         std::env::remove_var("VAUBAN_AUDIT_IPC_WRITE");
+        std::env::remove_var("VAUBAN_VAULT_IPC_READ");
+        std::env::remove_var("VAUBAN_VAULT_IPC_WRITE");
     }
 
     // Create IPC channels
@@ -378,6 +406,27 @@ async fn run_service() -> Result<()> {
         ch
     });
 
+    // Build the decrypt-only Vault client BEFORE Capsicum so the
+    // tokio AsyncFd reactor registration is not refused by the sandbox.
+    // The background reader task is spawned AFTER sandbox entry (with the
+    // AccessGuard dispatcher).
+    let vault_client: Option<Arc<VaultDecryptClient>> = match vault_fds {
+        Some((r, w)) => {
+            let ch = unsafe { IpcChannel::from_raw_fds(r, w) };
+            match VaultDecryptClient::new(ch) {
+                Ok(client) => {
+                    info!("Vault decrypt-only IPC client initialised");
+                    Some(client)
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to initialise Vault IPC client");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
     info!("Resources opened, preparing to enter sandbox");
 
     // Collect IPC file descriptors for sandboxing (read/write pipes).
@@ -391,6 +440,10 @@ async fn run_service() -> Result<()> {
     ];
     ipc_fds.extend_from_slice(&access_wiring.fds);
     if let Some((r, w)) = audit_fds {
+        ipc_fds.push(r);
+        ipc_fds.push(w);
+    }
+    if let Some((r, w)) = vault_fds {
         ipc_fds.push(r);
         ipc_fds.push(w);
     }
@@ -418,6 +471,14 @@ async fn run_service() -> Result<()> {
     // shared module logs at error level when the dispatcher exits, so
     // operators can detect the degraded state without re-grepping logs.
     let _dispatcher_handle = access_guard.spawn_dispatcher();
+
+    // Spawn the Vault decrypt client's background reader (routes
+    // VaultDecryptResponse to awaiting callers). Spawned after sandbox
+    // entry, mirroring the AccessGuard dispatcher.
+    if let Some(ref vc) = vault_client {
+        let vc = Arc::clone(vc);
+        tokio::spawn(vc.process_incoming());
+    }
 
     let audit_tx: Option<mpsc::Sender<Message>> = audit_channel.map(|ch| {
         let (tx, mut rx) = mpsc::channel::<Message>(512);
@@ -447,6 +508,7 @@ async fn run_service() -> Result<()> {
         fd_passing,
         audit_tx,
         access_guard,
+        vault_client,
     )
     .await
 }
@@ -462,6 +524,7 @@ async fn main_loop(
     fd_passing: Option<Arc<FdPassingState>>,
     audit_tx: Option<mpsc::Sender<Message>>,
     access_guard: Arc<AccessGuard>,
+    vault_client: Option<Arc<VaultDecryptClient>>,
 ) -> Result<()> {
     let (web_tx, mut web_rx) = web_mpsc;
     info!("Main event loop started");
@@ -541,6 +604,7 @@ async fn main_loop(
                             pending_connections.clone(),
                             audit_tx.clone(),
                             Arc::clone(&access_guard),
+                            vault_client.clone(),
                         ).await {
                             warn!(error = %e, "Error handling web message");
                             state.increment_failed();
@@ -615,6 +679,43 @@ async fn handle_control_message(
 /// This avoids needing to share the AsyncIpcChannel across tasks.
 type ResponseSender = mpsc::UnboundedSender<Message>;
 
+/// Materialise an [`SshCredential`] from the vault ciphertexts shipped
+/// in an [`Message::SshSessionOpen`]. The plaintext is produced via the
+/// decrypt-only [`VaultDecryptClient`] inside the proxy's address space
+/// (#4: vauban-web never holds the clear-text secret on the hot path).
+/// Fail-closed: returns `Err` if the vault is unavailable, a ciphertext
+/// is missing, or the vault refuses to decrypt.
+async fn build_credential_via_vault(
+    vault: Option<&Arc<VaultDecryptClient>>,
+    auth_type: &str,
+    password_ciphertext: Option<String>,
+    private_key_ciphertext: Option<String>,
+    passphrase_ciphertext: Option<String>,
+) -> std::result::Result<SshCredential, String> {
+    let vault = vault.ok_or_else(|| "vault client not available".to_string())?;
+    match auth_type {
+        "ssh_key" => {
+            let key_ct = private_key_ciphertext
+                .ok_or_else(|| "missing private key ciphertext".to_string())?;
+            let key_pem = vault.decrypt(DOMAIN_CREDENTIALS, &key_ct).await?;
+            let passphrase = match passphrase_ciphertext {
+                Some(ct) => Some(vault.decrypt(DOMAIN_CREDENTIALS, &ct).await?),
+                None => None,
+            };
+            Ok(SshCredential::PrivateKey {
+                key_pem,
+                passphrase,
+            })
+        }
+        _ => {
+            let pwd_ct =
+                password_ciphertext.ok_or_else(|| "missing password ciphertext".to_string())?;
+            let pwd = vault.decrypt(DOMAIN_CREDENTIALS, &pwd_ct).await?;
+            Ok(SshCredential::Password(pwd))
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // dispatch handler; arguments map 1:1 onto IPC dependencies and grouping would only add indirection
 async fn handle_web_message(
     response_tx: &ResponseSender,
@@ -625,6 +726,7 @@ async fn handle_web_message(
     pending_connections: Option<PendingConnections>,
     audit_tx: Option<mpsc::Sender<Message>>,
     access_guard: Arc<AccessGuard>,
+    vault_client: Option<Arc<VaultDecryptClient>>,
 ) -> Result<()> {
     match msg {
         Message::SshSessionOpen {
@@ -638,9 +740,9 @@ async fn handle_web_message(
             terminal_cols,
             terminal_rows,
             auth_type,
-            password,
-            private_key,
-            passphrase,
+            password_ciphertext,
+            private_key_ciphertext,
+            passphrase_ciphertext,
             expected_host_key,
             session_token,
         } => {
@@ -689,50 +791,27 @@ async fn handle_web_message(
                 return Ok(());
             }
 
-            // Build credential from received authentication data
-            // TODO: In production, credentials should come from Vault
-            // Convert SensitiveString credentials (from IPC transport) into
-            // SecretString.
-            let credential = match auth_type.as_str() {
-                "private_key" => {
-                    if let Some(key) = private_key {
-                        SshCredential::PrivateKey {
-                            key_pem: SecretString::from(key.into_inner()),
-                            passphrase: passphrase.map(|p| SecretString::from(p.into_inner())),
-                        }
-                    } else {
-                        let response = Message::SshSessionOpened {
-                            request_id,
-                            session_id,
-                            success: false,
-                            error: Some(
-                                "Private key authentication selected but no key provided"
-                                    .to_string(),
-                            ),
-                        };
-                        let _ = response_tx.send(response);
-                        return Ok(());
-                    }
-                }
-                _ => {
-                    // Default to password authentication
-                    if let Some(pwd) = password {
-                        SshCredential::Password(SecretString::from(pwd.into_inner()))
-                    } else {
-                        let response = Message::SshSessionOpened {
-                            request_id,
-                            session_id,
-                            success: false,
-                            error: Some(
-                                "Password authentication selected but no password provided"
-                                    .to_string(),
-                            ),
-                        };
-                        let _ = response_tx.send(response);
-                        return Ok(());
-                    }
-                }
+            // Cheap, no-IPC pre-validation: refuse early if the required
+            // ciphertext is missing for the chosen auth type. The actual
+            // decryption (Vault IPC) happens INSIDE the spawned task so a
+            // slow vault cannot stall the main loop's heartbeats.
+            let has_required_ciphertext = match auth_type.as_str() {
+                "ssh_key" => private_key_ciphertext.is_some(),
+                _ => password_ciphertext.is_some(),
             };
+            if !has_required_ciphertext {
+                let response = Message::SshSessionOpened {
+                    request_id,
+                    session_id,
+                    success: false,
+                    error: Some(format!(
+                        "{} authentication selected but no credential ciphertext provided",
+                        auth_type
+                    )),
+                };
+                let _ = response_tx.send(response);
+                return Ok(());
+            }
 
             // Check if we have a pre-established TCP connection for this session
             // (provided by the supervisor via FD passing for sandboxed operation)
@@ -746,36 +825,23 @@ async fn handle_web_message(
                 debug!(session_id = %session_id, "Using pre-established TCP connection from supervisor");
             }
 
-            // Create session configuration
-            let config = SessionConfig {
-                session_id: session_id.clone(),
-                user_id,
-                asset_id,
-                host: asset_host,
-                port: asset_port,
-                username,
-                terminal_cols,
-                terminal_rows,
-                credential,
-                preconnected_fd,
-                expected_host_key,
-            };
-
             // Spawn session creation in a separate task to avoid blocking
             // the main loop. This allows the service to continue
             // responding to heartbeats during potentially slow SSH
-            // connections AND during the defense-in-depth RBAC re-check.
-            // If we did the re-check inline, any IPC hang against
-            // vauban-access would freeze the main loop, miss supervisor
-            // heartbeats, and trigger an unresponsive-restart (see
+            // connections AND during the defense-in-depth RBAC re-check
+            // AND the Vault credential decryption. If we did any of these
+            // inline, an IPC hang against vauban-access / vauban-vault
+            // would freeze the main loop, miss supervisor heartbeats, and
+            // trigger an unresponsive-restart (see
             // docs/runbooks/ipc_topology_debugging.md for the prod
             // incident this design prevents).
             let sessions_clone = Arc::clone(&sessions);
             let state_clone = Arc::clone(&state);
             let response_tx_clone = response_tx.clone();
             let access_guard_clone = Arc::clone(&access_guard);
-            let rbac_user = config.user_id.clone();
-            let rbac_asset = config.asset_id.clone();
+            let vault_clone = vault_client.clone();
+            let rbac_user = user_id.clone();
+            let rbac_asset = asset_id.clone();
 
             tokio::spawn(async move {
                 // SECURITY: Defense-in-depth RBAC re-check via the shared
@@ -813,6 +879,52 @@ async fn handle_web_message(
                     session_id = %session_id, user_id = %rbac_user, asset_id = %rbac_asset,
                     "RBAC re-check granted SSH session"
                 );
+
+                // SECURITY (#4): materialise the credential from the vault
+                // ciphertexts HERE, inside the proxy's own address space,
+                // moments before the upstream connect. vauban-web never
+                // saw the plaintext. Fail-closed: a decrypt error (no
+                // vault wired, wrong key version, tampered ciphertext)
+                // collapses to a session-open failure.
+                let credential = match build_credential_via_vault(
+                    vault_clone.as_ref(),
+                    &auth_type,
+                    password_ciphertext,
+                    private_key_ciphertext,
+                    passphrase_ciphertext,
+                )
+                .await
+                {
+                    Ok(cred) => cred,
+                    Err(e) => {
+                        warn!(
+                            session_id = %session_id,
+                            error = %e,
+                            "Failed to materialise SSH credential from Vault"
+                        );
+                        let _ = response_tx_clone.send(Message::SshSessionOpened {
+                            request_id,
+                            session_id,
+                            success: false,
+                            error: Some("Failed to retrieve credentials".to_string()),
+                        });
+                        return;
+                    }
+                };
+
+                let config = SessionConfig {
+                    session_id: session_id.clone(),
+                    user_id,
+                    asset_id,
+                    host: asset_host,
+                    port: asset_port,
+                    username,
+                    terminal_cols,
+                    terminal_rows,
+                    credential,
+                    preconnected_fd,
+                    expected_host_key,
+                };
 
                 match sessions_clone
                     .create_session(config, web_tx, audit_tx)
@@ -914,6 +1026,141 @@ async fn handle_web_message(
                         host_key: None,
                         key_fingerprint: None,
                         error: Some(e.to_string()),
+                    },
+                };
+                let _ = response_tx_clone.send(response);
+            });
+        }
+
+        // SSH push public key (admin onboarding of a generated key pair)
+        Message::SshPushPublicKey {
+            request_id,
+            asset_host,
+            asset_port,
+            username,
+            public_key,
+            password_ciphertext,
+            expected_host_key,
+        } => {
+            info!(
+                asset_host = %asset_host,
+                asset_port = asset_port,
+                "SSH push public key request"
+            );
+
+            // Same synthetic-session_id convention as fetch_host_key so
+            // the supervisor-brokered FD can be matched.
+            let push_session_id = format!("push-pubkey-{}", request_id);
+            let preconnected_fd = if let Some(ref pending) = pending_connections {
+                pending.lock().await.remove(&push_session_id)
+            } else {
+                None
+            };
+
+            let response_tx_clone = response_tx.clone();
+            let vault_clone = vault_client.clone();
+
+            tokio::spawn(async move {
+                let result: std::result::Result<(), String> = async {
+                    let vault = vault_clone
+                        .as_ref()
+                        .ok_or_else(|| "vault client not available".to_string())?;
+                    let password = vault
+                        .decrypt(DOMAIN_CREDENTIALS, &password_ciphertext)
+                        .await?;
+                    session::push_public_key(
+                        &asset_host,
+                        asset_port,
+                        &username,
+                        &public_key,
+                        &password,
+                        expected_host_key,
+                        preconnected_fd,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())
+                }
+                .await;
+
+                let response = match result {
+                    Ok(()) => Message::SshPushPublicKeyResult {
+                        request_id,
+                        success: true,
+                        error: None,
+                    },
+                    Err(e) => Message::SshPushPublicKeyResult {
+                        request_id,
+                        success: false,
+                        error: Some(e),
+                    },
+                };
+                let _ = response_tx_clone.send(response);
+            });
+        }
+
+        // SSH test key-based authentication (admin validation of an
+        // imported key pair)
+        Message::SshTestKeyAuth {
+            request_id,
+            asset_host,
+            asset_port,
+            username,
+            private_key_ciphertext,
+            passphrase_ciphertext,
+            expected_host_key,
+        } => {
+            info!(
+                asset_host = %asset_host,
+                asset_port = asset_port,
+                "SSH test key auth request"
+            );
+
+            let test_session_id = format!("test-keyauth-{}", request_id);
+            let preconnected_fd = if let Some(ref pending) = pending_connections {
+                pending.lock().await.remove(&test_session_id)
+            } else {
+                None
+            };
+
+            let response_tx_clone = response_tx.clone();
+            let vault_clone = vault_client.clone();
+
+            tokio::spawn(async move {
+                let result: std::result::Result<(), String> = async {
+                    let vault = vault_clone
+                        .as_ref()
+                        .ok_or_else(|| "vault client not available".to_string())?;
+                    let key_pem = vault
+                        .decrypt(DOMAIN_CREDENTIALS, &private_key_ciphertext)
+                        .await?;
+                    let passphrase = match passphrase_ciphertext {
+                        Some(ct) => Some(vault.decrypt(DOMAIN_CREDENTIALS, &ct).await?),
+                        None => None,
+                    };
+                    session::test_key_auth(
+                        &asset_host,
+                        asset_port,
+                        &username,
+                        &key_pem,
+                        passphrase.as_ref(),
+                        expected_host_key,
+                        preconnected_fd,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())
+                }
+                .await;
+
+                let response = match result {
+                    Ok(()) => Message::SshTestKeyAuthResult {
+                        request_id,
+                        success: true,
+                        error: None,
+                    },
+                    Err(e) => Message::SshTestKeyAuthResult {
+                        request_id,
+                        success: false,
+                        error: Some(e),
                     },
                 };
                 let _ = response_tx_clone.send(response);

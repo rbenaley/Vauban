@@ -229,12 +229,10 @@ pub(crate) fn validate_auth_inputs(
     use crate::models::asset::AssetType;
 
     if asset_type == AssetType::Rdp {
-        if matches!(auth_type, Some("private_key")) {
-            return Err(
-                "Private key authentication is not supported for RDP assets. \
+        if matches!(auth_type, Some("ssh_key")) {
+            return Err("Key-based authentication is not supported for RDP assets. \
                  Use password authentication instead."
-                    .to_string(),
-            );
+                .to_string());
         }
         if private_key.is_some_and(|s| !s.is_empty()) {
             return Err(
@@ -305,6 +303,8 @@ pub(crate) fn validate_required_credentials(
     auth_type: Option<&str>,
     password: Option<&str>,
     private_key: Option<&str>,
+    ssh_key_source: Option<&str>,
+    public_key: Option<&str>,
 ) -> Result<(), String> {
     use crate::models::asset::AssetType;
 
@@ -330,18 +330,40 @@ pub(crate) fn validate_required_credentials(
                             .to_string());
                     }
                 }
-                "private_key" => {
-                    if is_blank(private_key) {
-                        return Err(
-                            "Private key is required for SSH assets when authentication \
-                             type is 'private_key' (ASS-02)."
-                                .to_string(),
-                        );
+                "ssh_key" => {
+                    // `generated` source: vauban-web mints the key pair
+                    // server-side, so no key material is submitted. EVERY
+                    // other source -- the canonical `existing` import AND
+                    // any tampered/unknown value -- requires the operator
+                    // to paste BOTH halves: the public key (stored in
+                    // clear) and the private key (sealed in the vault).
+                    // Anchoring on `!= "generated"` (rather than
+                    // `== "existing"`) is deliberate: a forged
+                    // `ssh_key_source=bogus` must NOT slip past the
+                    // key-material requirement. The handler's
+                    // `verify_public_private_pair` is the second line of
+                    // defence; this is the first.
+                    let source = ssh_key_source.unwrap_or("existing");
+                    if source != "generated" {
+                        if is_blank(private_key) {
+                            return Err(
+                                "Private key is required when importing an existing SSH key \
+                                 pair (ASS-02)."
+                                    .to_string(),
+                            );
+                        }
+                        if is_blank(public_key) {
+                            return Err(
+                                "Public key is required when importing an existing SSH key \
+                                 pair (ASS-02)."
+                                    .to_string(),
+                            );
+                        }
                     }
                 }
                 other => {
                     return Err(format!(
-                        "Unknown SSH authentication type '{}'. Expected 'password' or 'private_key'.",
+                        "Unknown SSH authentication type '{}'. Expected 'password' or 'ssh_key'.",
                         other
                     ));
                 }
@@ -389,6 +411,8 @@ pub(crate) fn build_connection_config(
     private_key: Option<&str>,
     passphrase: Option<&str>,
     domain: Option<&str>,
+    ssh_key_source: Option<&str>,
+    ssh_public_key: Option<&str>,
 ) -> serde_json::Value {
     use crate::models::asset::AssetType;
 
@@ -418,7 +442,36 @@ pub(crate) fn build_connection_config(
                             );
                         }
                     }
-                    "private_key" => {
+                    "ssh_key" => {
+                        // `ssh_public_key` is clear OpenSSH text and is the
+                        // ONLY half ever shown back to the UI. The private
+                        // key + passphrase are inserted in clear here and
+                        // sealed downstream by `encrypt_connection_config`.
+                        // Normalise to the closed {generated, existing}
+                        // set so a tampered request can never persist an
+                        // arbitrary `ssh_key_source` string on the row.
+                        let source = if ssh_key_source.map(str::trim) == Some("generated") {
+                            "generated"
+                        } else {
+                            "existing"
+                        };
+                        config.insert(
+                            "ssh_key_source".to_string(),
+                            serde_json::Value::String(source.to_string()),
+                        );
+                        if source == "generated" {
+                            // UX flag for the "Push public key" button.
+                            config.insert(
+                                "ssh_pubkey_pushed".to_string(),
+                                serde_json::Value::Bool(false),
+                            );
+                        }
+                        if let Some(pub_key) = ssh_public_key.filter(|s| !s.trim().is_empty()) {
+                            config.insert(
+                                "ssh_public_key".to_string(),
+                                serde_json::Value::String(pub_key.trim().to_string()),
+                            );
+                        }
                         if let Some(pk) = private_key.filter(|s| !s.is_empty()) {
                             config.insert(
                                 "private_key".to_string(),
@@ -537,6 +590,8 @@ pub(crate) fn compute_updated_connection_config(
     private_key: Option<&str>,
     passphrase: Option<&str>,
     domain: Option<&str>,
+    ssh_key_source: Option<&str>,
+    ssh_public_key: Option<&str>,
 ) -> serde_json::Value {
     use crate::models::asset::AssetType;
 
@@ -569,6 +624,15 @@ pub(crate) fn compute_updated_connection_config(
                 obj.insert("auth_type".to_string(), serde_json::Value::String(at));
             }
 
+            // Effective auth_type after the overlay: drive the
+            // cross-mode cleanup (switching password <-> ssh_key must
+            // not leave dormant secrets of the other mode on the row).
+            let effective_auth = obj
+                .get("auth_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("password")
+                .to_string();
+
             // password / private_key / passphrase: option A.
             // Non-empty values are inserted as plaintext here and
             // encrypted downstream by `encrypt_connection_config`.
@@ -590,12 +654,60 @@ pub(crate) fn compute_updated_connection_config(
                     serde_json::Value::String(pp.to_string()),
                 );
             }
+
+            // ssh_key_source / ssh_public_key: option A. Normalise the
+            // source to the closed {generated, existing} set so a tampered
+            // edit cannot persist an arbitrary string.
+            if let Some(src) = trimmed_nonempty(ssh_key_source) {
+                let normalised = if src == "generated" { "generated" } else { "existing" };
+                obj.insert(
+                    "ssh_key_source".to_string(),
+                    serde_json::Value::String(normalised.to_string()),
+                );
+            }
+            if let Some(pubk) = trimmed_nonempty(ssh_public_key) {
+                // Rotating the public key invalidates the "pushed to
+                // target" state: the freshly stored key is NOT yet in the
+                // target's authorized_keys, so the operator must push it
+                // again. Reset the flag when the key actually changes
+                // (a description-only edit overlays no public key and
+                // therefore preserves the flag).
+                let prev_pubkey = obj
+                    .get("ssh_public_key")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                if prev_pubkey.as_deref() != Some(pubk.as_str()) {
+                    obj.insert(
+                        "ssh_pubkey_pushed".to_string(),
+                        serde_json::Value::Bool(false),
+                    );
+                }
+                obj.insert(
+                    "ssh_public_key".to_string(),
+                    serde_json::Value::String(pubk),
+                );
+            }
+
+            // Cross-mode cleanup: strip the unused mode's secrets so a
+            // mode switch never carries a dormant credential.
+            if effective_auth == "ssh_key" {
+                obj.remove("password");
+            } else {
+                obj.remove("private_key");
+                obj.remove("passphrase");
+                obj.remove("ssh_public_key");
+                obj.remove("ssh_key_source");
+                obj.remove("ssh_pubkey_pushed");
+            }
         }
         AssetType::Rdp => {
             // SSH-only fields must not exist on an RDP row.
             obj.remove("auth_type");
             obj.remove("private_key");
             obj.remove("passphrase");
+            obj.remove("ssh_public_key");
+            obj.remove("ssh_key_source");
+            obj.remove("ssh_pubkey_pushed");
 
             // password: option A.
             if let Some(p) = password.filter(|s| !s.is_empty()) {
@@ -634,6 +746,9 @@ pub(crate) fn compute_updated_connection_config(
             obj.remove("private_key");
             obj.remove("passphrase");
             obj.remove("domain");
+            obj.remove("ssh_public_key");
+            obj.remove("ssh_key_source");
+            obj.remove("ssh_pubkey_pushed");
         }
     }
 

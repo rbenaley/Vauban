@@ -597,6 +597,14 @@ fn build_test_router(state: AppState) -> Router {
                     "/{uuid}/fetch-host-key",
                     post(handlers::web::fetch_ssh_host_key),
                 )
+                .route(
+                    "/{uuid}/push-public-key",
+                    post(handlers::web::push_ssh_public_key),
+                )
+                .route(
+                    "/{uuid}/test-key-auth",
+                    post(handlers::web::test_ssh_key_auth),
+                )
                 .route_layer(axum::middleware::from_fn(
                     middleware::require_assets_manage::require_assets_manage,
                 )),

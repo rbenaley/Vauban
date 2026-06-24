@@ -254,8 +254,8 @@ async fn login_page_without_reason_reuses_valid_csrf() {
         csrf_set_cookie(&page).is_none(),
         "a valid CSRF cookie must not be rotated on a plain /login"
     );
-    let hidden = extract_login_csrf_token(&page.text())
-        .expect("login page must carry a hidden csrf_token");
+    let hidden =
+        extract_login_csrf_token(&page.text()).expect("login page must carry a hidden csrf_token");
     assert_eq!(
         hidden, existing,
         "the hidden field must reflect the reused, still-valid cookie"

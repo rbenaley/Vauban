@@ -516,105 +516,30 @@ pub async fn connect_ssh(
         .unwrap_or("password")
         .to_string();
 
-    // Decrypt credentials via vault if encrypted, then wrap in SecretString.
-    // Helper closure for vault-aware credential extraction.
-    let vault_ref = state.vault_client.as_ref();
+    // SECURITY (#4 - zero clear-text credentials on the web->proxy IPC):
+    // vauban-web NO LONGER decrypts here. The credential fields in
+    // `connection_config` hold vault ciphertexts (`"v1:..."`), and we
+    // ship them verbatim to vauban-proxy-ssh, which materialises the
+    // plaintext via its own decrypt-only `VaultDecryptClient` moments
+    // before building the russh credential. The vault never round-trips
+    // the secret through vauban-web's address space on the hot path.
+    let password_ciphertext = config
+        .get("password")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
 
-    let password = match config.get("password").and_then(|v| v.as_str()) {
-        Some(val) if !val.is_empty() => {
-            if is_encrypted(val) {
-                if let Some(vault) = vault_ref {
-                    match vault.decrypt("credentials", val).await {
-                        Ok(decrypted) => Some(secrecy::SecretString::from(decrypted.into_inner())),
-                        Err(e) => {
-                            tracing::error!("Failed to decrypt password: {}", e);
-                            let msg = "Failed to decrypt credentials";
-                            if is_htmx {
-                                return htmx_error_response(msg);
-                            }
-                            return Json(ConnectSshResponse {
-                                success: false,
-                                session_id: None,
-                                redirect_url: None,
-                                error: Some(msg.to_string()),
-                            })
-                            .into_response();
-                        }
-                    }
-                } else {
-                    tracing::warn!("Encrypted credential found but vault not available");
-                    None
-                }
-            } else {
-                Some(secrecy::SecretString::from(val.to_string()))
-            }
-        }
-        _ => None,
-    };
+    let private_key_ciphertext = config
+        .get("private_key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
 
-    let private_key = match config.get("private_key").and_then(|v| v.as_str()) {
-        Some(val) if !val.is_empty() => {
-            if is_encrypted(val) {
-                if let Some(vault) = vault_ref {
-                    match vault.decrypt("credentials", val).await {
-                        Ok(decrypted) => Some(secrecy::SecretString::from(decrypted.into_inner())),
-                        Err(e) => {
-                            tracing::error!("Failed to decrypt private_key: {}", e);
-                            let msg = "Failed to decrypt credentials";
-                            if is_htmx {
-                                return htmx_error_response(msg);
-                            }
-                            return Json(ConnectSshResponse {
-                                success: false,
-                                session_id: None,
-                                redirect_url: None,
-                                error: Some(msg.to_string()),
-                            })
-                            .into_response();
-                        }
-                    }
-                } else {
-                    tracing::warn!("Encrypted credential found but vault not available");
-                    None
-                }
-            } else {
-                Some(secrecy::SecretString::from(val.to_string()))
-            }
-        }
-        _ => None,
-    };
-
-    let passphrase = match config.get("passphrase").and_then(|v| v.as_str()) {
-        Some(val) if !val.is_empty() => {
-            if is_encrypted(val) {
-                if let Some(vault) = vault_ref {
-                    match vault.decrypt("credentials", val).await {
-                        Ok(decrypted) => Some(secrecy::SecretString::from(decrypted.into_inner())),
-                        Err(e) => {
-                            tracing::error!("Failed to decrypt passphrase: {}", e);
-                            let msg = "Failed to decrypt credentials";
-                            if is_htmx {
-                                return htmx_error_response(msg);
-                            }
-                            return Json(ConnectSshResponse {
-                                success: false,
-                                session_id: None,
-                                redirect_url: None,
-                                error: Some(msg.to_string()),
-                            })
-                            .into_response();
-                        }
-                    }
-                } else {
-                    tracing::warn!("Encrypted credential found but vault not available");
-                    None
-                }
-            } else {
-                Some(secrecy::SecretString::from(val.to_string()))
-            }
-        }
-        _ => None,
-    };
+    let passphrase_ciphertext = config
+        .get("passphrase")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
 
     // Extract stored SSH host key for verification
     let expected_host_key = config
@@ -764,9 +689,9 @@ pub async fn connect_ssh(
         terminal_cols: 120,
         terminal_rows: 30,
         auth_type,
-        password,
-        private_key,
-        passphrase,
+        password_ciphertext,
+        private_key_ciphertext,
+        passphrase_ciphertext,
         expected_host_key,
         session_token: session_token_bytes.clone(),
     };
@@ -1159,6 +1084,367 @@ pub async fn fetch_ssh_host_key(
         .replace("__FINGERPRINT__", &fingerprint)
         .replace("__ASSET_UUID__", &asset_uuid.to_string());
 
+    axum::response::Html(html).into_response()
+}
+
+/// Minimal HTML-entity escape for interpolating server-derived strings
+/// into an HTMX fragment text node (defence-in-depth; the values here
+/// are OpenSSH-formatted and operator-controlled).
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
+/// Form for the "Push public key" modal (one-shot password).
+#[derive(Debug, serde::Deserialize)]
+pub struct PushPublicKeyForm {
+    pub csrf_token: String,
+    /// One-shot password used to authenticate while appending the key
+    /// to the target's `authorized_keys`. Never stored.
+    pub password: String,
+}
+
+/// Form for the "Test key-based authentication" button (CSRF only).
+#[derive(Debug, serde::Deserialize)]
+pub struct TestKeyAuthForm {
+    pub csrf_token: String,
+}
+
+/// Resolve the effective SSH username for a one-shot admin operation.
+fn resolve_ssh_username(asset: &crate::models::asset::Asset) -> String {
+    asset
+        .connection_config
+        .get("username")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            let cu = asset.connection_username.trim();
+            if cu.is_empty() {
+                "root".to_string()
+            } else {
+                cu.to_string()
+            }
+        })
+}
+
+/// POST /assets/manage/{uuid}/push-public-key
+///
+/// Installs the asset's stored OpenSSH public key into the target's
+/// `~/.ssh/authorized_keys` via a one-shot password-authenticated
+/// session (the password is typed in a modal, encrypted via the vault,
+/// and decrypted proxy-side -- it never crosses the IPC in clear). Host
+/// key pinning is mandatory: we authenticate with a password, so we
+/// refuse to talk to an unpinned/mismatched server. Returns an HTMX
+/// fragment.
+pub async fn push_ssh_public_key(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    perms: crate::auth::PermissionContext,
+    axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
+    jar: CookieJar,
+    Form(form): Form<PushPublicKeyForm>,
+) -> Response {
+    use uuid::Uuid;
+
+    if !perms.assets_manage {
+        return htmx_error_response("Insufficient privileges: assets:manage required");
+    }
+
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        state.config.secret_key.expose_secret().as_bytes(),
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return htmx_error_response("Invalid CSRF token");
+    }
+
+    if form.password.is_empty() {
+        return htmx_error_response("A password is required to push the public key");
+    }
+
+    let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {
+        Ok(u) => u,
+        Err(_) => return htmx_error_response("Invalid asset identifier"),
+    };
+
+    let proxy_client = match &state.ssh_proxy {
+        Some(client) => client.clone(),
+        None => return htmx_error_response("SSH proxy not available"),
+    };
+    let vault = match &state.vault_client {
+        Some(v) => v,
+        None => return htmx_error_response("Vault not available; cannot secure the password"),
+    };
+
+    let mut conn = match state.db_pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("DB error: {}", e);
+            return htmx_error_response("Database connection failed");
+        }
+    };
+
+    use crate::models::asset::{Asset, AssetType};
+    use crate::schema::assets::dsl;
+
+    let asset: Asset = match dsl::assets
+        .filter(dsl::uuid.eq(asset_uuid))
+        .first(&mut conn)
+        .await
+    {
+        Ok(a) => a,
+        Err(diesel::result::Error::NotFound) => return htmx_error_response("Asset not found"),
+        Err(e) => {
+            tracing::error!("Failed to fetch asset: {}", e);
+            return htmx_error_response("Failed to fetch asset");
+        }
+    };
+
+    if asset.asset_type != AssetType::Ssh {
+        return htmx_error_response("Public key push is only available for SSH assets");
+    }
+
+    let public_key = match asset
+        .connection_config
+        .get("ssh_public_key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        Some(k) => k.trim().to_string(),
+        None => {
+            return htmx_error_response(
+                "This asset has no SSH public key to push. Generate or import a key pair first.",
+            );
+        }
+    };
+
+    // Host-key pinning is MANDATORY: we authenticate by password, so an
+    // unpinned/mismatched host could phish the one-shot password.
+    let expected_host_key = match asset
+        .connection_config
+        .get("ssh_host_key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        Some(k) => k.to_string(),
+        None => {
+            return htmx_error_response(
+                "Pin the SSH host key first (Fetch Host Key) before pushing a public key.",
+            );
+        }
+    };
+
+    let password_ciphertext = match vault.encrypt("credentials", &form.password).await {
+        Ok(ct) => ct,
+        Err(e) => {
+            tracing::error!("Failed to encrypt one-shot password: {}", e);
+            return htmx_error_response("Failed to secure the password");
+        }
+    };
+
+    let username = resolve_ssh_username(&asset);
+    let supervisor_ref = state.supervisor.as_deref();
+    let asset_uuid_str_for_token = asset_uuid.to_string();
+    let identity = crate::ipc::HostKeyFetchIdentity {
+        access_client: state.access_client.as_ref(),
+        user_uuid: &auth_user.uuid,
+        asset_uuid: &asset_uuid_str_for_token,
+        caller_has_assets_manage: perms.assets_manage,
+    };
+
+    if let Err(e) = proxy_client
+        .push_public_key(
+            &asset.hostname,
+            asset.port as u16,
+            &username,
+            &public_key,
+            &password_ciphertext,
+            Some(expected_host_key),
+            supervisor_ref,
+            Some(identity),
+        )
+        .await
+    {
+        tracing::warn!(asset_uuid = %asset_uuid, error = %e, "Failed to push SSH public key");
+        return htmx_error_response(&format!("Failed to push public key: {}", e));
+    }
+
+    // Mark the key as pushed so the UI can reflect the new state.
+    let mut config = asset.connection_config.clone();
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert(
+            "ssh_pubkey_pushed".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    let actor_id =
+        crate::services::audit_authors::resolve_actor_id(&mut conn, &auth_user.uuid).await;
+    use chrono::Utc;
+    if let Err(e) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
+        .set((
+            dsl::connection_config.eq(&config),
+            dsl::updated_at.eq(Utc::now()),
+            dsl::updated_by_id.eq(actor_id),
+        ))
+        .execute(&mut conn)
+        .await
+    {
+        tracing::error!(asset_uuid = %asset_uuid, error = %e, "Failed to persist ssh_pubkey_pushed");
+        // The key was pushed; surface success but note the flag did not persist.
+    }
+
+    tracing::info!(asset_uuid = %asset_uuid, "SSH public key pushed to target");
+
+    let html = include_str!("../../../templates/assets/_ssh_push_result_fragment.html")
+        .replace("__FINGERPRINT__", &html_escape(&public_key));
+    axum::response::Html(html).into_response()
+}
+
+/// POST /assets/manage/{uuid}/test-key-auth
+///
+/// Dry-run key-based authentication against the target using the asset's
+/// stored (vault-sealed) private key: connect, `authenticate_publickey`,
+/// then disconnect. The private key/passphrase travel as vault
+/// ciphertexts and are decrypted proxy-side. Host key pinning is
+/// mandatory. Returns an HTMX fragment.
+pub async fn test_ssh_key_auth(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    perms: crate::auth::PermissionContext,
+    axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
+    jar: CookieJar,
+    Form(form): Form<TestKeyAuthForm>,
+) -> Response {
+    use uuid::Uuid;
+
+    if !perms.assets_manage {
+        return htmx_error_response("Insufficient privileges: assets:manage required");
+    }
+
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        state.config.secret_key.expose_secret().as_bytes(),
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return htmx_error_response("Invalid CSRF token");
+    }
+
+    let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {
+        Ok(u) => u,
+        Err(_) => return htmx_error_response("Invalid asset identifier"),
+    };
+
+    let proxy_client = match &state.ssh_proxy {
+        Some(client) => client.clone(),
+        None => return htmx_error_response("SSH proxy not available"),
+    };
+
+    let mut conn = match state.db_pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("DB error: {}", e);
+            return htmx_error_response("Database connection failed");
+        }
+    };
+
+    use crate::models::asset::{Asset, AssetType};
+    use crate::schema::assets::dsl;
+
+    let asset: Asset = match dsl::assets
+        .filter(dsl::uuid.eq(asset_uuid))
+        .first(&mut conn)
+        .await
+    {
+        Ok(a) => a,
+        Err(diesel::result::Error::NotFound) => return htmx_error_response("Asset not found"),
+        Err(e) => {
+            tracing::error!("Failed to fetch asset: {}", e);
+            return htmx_error_response("Failed to fetch asset");
+        }
+    };
+
+    if asset.asset_type != AssetType::Ssh {
+        return htmx_error_response("Key-based auth test is only available for SSH assets");
+    }
+
+    let private_key_ciphertext = match asset
+        .connection_config
+        .get("private_key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        Some(c) => c.to_string(),
+        None => {
+            return htmx_error_response(
+                "This asset has no SSH private key to test. Import or generate a key pair first.",
+            );
+        }
+    };
+    let passphrase_ciphertext = asset
+        .connection_config
+        .get("passphrase")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    let expected_host_key = match asset
+        .connection_config
+        .get("ssh_host_key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        Some(k) => k.to_string(),
+        None => {
+            return htmx_error_response(
+                "Pin the SSH host key first (Fetch Host Key) before testing authentication.",
+            );
+        }
+    };
+
+    let username = resolve_ssh_username(&asset);
+    let supervisor_ref = state.supervisor.as_deref();
+    let asset_uuid_str_for_token = asset_uuid.to_string();
+    let identity = crate::ipc::HostKeyFetchIdentity {
+        access_client: state.access_client.as_ref(),
+        user_uuid: &auth_user.uuid,
+        asset_uuid: &asset_uuid_str_for_token,
+        caller_has_assets_manage: perms.assets_manage,
+    };
+
+    if let Err(e) = proxy_client
+        .test_key_auth(
+            &asset.hostname,
+            asset.port as u16,
+            &username,
+            &private_key_ciphertext,
+            passphrase_ciphertext,
+            Some(expected_host_key),
+            supervisor_ref,
+            Some(identity),
+        )
+        .await
+    {
+        tracing::info!(asset_uuid = %asset_uuid, error = %e, "SSH key-based auth test failed");
+        return htmx_error_response(&format!("Key-based authentication test failed: {}", e));
+    }
+
+    tracing::info!(asset_uuid = %asset_uuid, "SSH key-based auth test succeeded");
+
+    let html = include_str!("../../../templates/assets/_ssh_test_result_fragment.html").replace(
+        "__FINGERPRINT__",
+        &format!(
+            "{}@{}",
+            html_escape(&username),
+            html_escape(&asset.hostname)
+        ),
+    );
     axum::response::Html(html).into_response()
 }
 

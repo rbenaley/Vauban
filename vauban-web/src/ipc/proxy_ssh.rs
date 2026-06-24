@@ -4,9 +4,8 @@
 //! and receive output from SSH sessions.
 
 use crate::error::{AppError, AppResult};
-use secrecy::{ExposeSecret, SecretString};
 use shared::ipc::IpcChannel;
-use shared::messages::{Message, SensitiveString};
+use shared::messages::Message;
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
@@ -19,14 +18,15 @@ use tracing::{debug, error, info, warn};
 
 /// Request to open an SSH session.
 ///
-/// `Debug` is manually implemented to redact `password`, `private_key`, and
-/// `passphrase` fields, preventing credential leaks in logs.
-///
-/// Credential fields use `SecretString` for:
-/// - Zeroize on drop (memory is scrubbed when the request is dropped)
-/// - Compile-time enforcement via `.expose_secret()`
-/// - Automatic Debug redaction by `SecretString` itself
-#[derive(Clone)]
+/// SECURITY (#4 - zero clear-text credentials on the web->proxy IPC):
+/// the credential fields are NOT the secrets themselves but the **vault
+/// ciphertexts** (`"v1:BASE64..."`) read verbatim from
+/// `assets.connection_config`. vauban-web never decrypts; the proxy
+/// materialises the plaintext via its decrypt-only `VaultDecryptClient`
+/// just before building the russh credential. A ciphertext is useless
+/// without the vault master key, so these are plain `String` and may be
+/// shown in Debug -- hence the derive (no manual redaction needed).
+#[derive(Clone, Debug)]
 pub struct SshSessionOpenRequest {
     /// Unique session ID (UUID).
     pub session_id: String,
@@ -44,14 +44,14 @@ pub struct SshSessionOpenRequest {
     pub terminal_cols: u16,
     /// Terminal height.
     pub terminal_rows: u16,
-    /// Authentication type: "password" or "private_key".
+    /// Authentication type: "password" or "ssh_key".
     pub auth_type: String,
-    /// Password for password authentication.
-    pub password: Option<SecretString>,
-    /// PEM-encoded private key for key authentication.
-    pub private_key: Option<SecretString>,
-    /// Passphrase for encrypted private key.
-    pub passphrase: Option<SecretString>,
+    /// Vault ciphertext of the password (password auth). Not a secret.
+    pub password_ciphertext: Option<String>,
+    /// Vault ciphertext of the PEM private key (key auth). Not a secret.
+    pub private_key_ciphertext: Option<String>,
+    /// Vault ciphertext of the private-key passphrase. Not a secret.
+    pub passphrase_ciphertext: Option<String>,
     /// Expected SSH host key in OpenSSH format (e.g. "ssh-ed25519 AAAA...").
     /// If set, the proxy verifies the server key matches before continuing.
     pub expected_host_key: Option<String>,
@@ -62,42 +62,6 @@ pub struct SshSessionOpenRequest {
     /// vauban-web cannot piggy-back another user's session here.
     /// See `docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md` §3.
     pub session_token: Vec<u8>,
-}
-
-impl std::fmt::Debug for SshSessionOpenRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SshSessionOpenRequest")
-            .field("session_id", &self.session_id)
-            .field("user_id", &self.user_id)
-            .field("asset_id", &self.asset_id)
-            .field("asset_host", &self.asset_host)
-            .field("asset_port", &self.asset_port)
-            .field("username", &self.username)
-            .field("terminal_cols", &self.terminal_cols)
-            .field("terminal_rows", &self.terminal_rows)
-            .field("auth_type", &self.auth_type)
-            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
-            .field(
-                "private_key",
-                &self.private_key.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field(
-                "passphrase",
-                &self.passphrase.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field(
-                "expected_host_key",
-                &self.expected_host_key.as_ref().map(|k| {
-                    // Show only algorithm and first 16 chars of key data
-                    if k.len() > 30 {
-                        format!("{}...", &k[..30])
-                    } else {
-                        k.clone()
-                    }
-                }),
-            )
-            .finish()
-    }
 }
 
 /// Identity binding required to crypto-gate the host-key fetch path.
@@ -148,6 +112,11 @@ pub struct SshSessionOpened {
 type HostKeyResponseSender =
     oneshot::Sender<(bool, Option<String>, Option<String>, Option<String>)>;
 
+/// Sender type for pending push-public-key / test-key-auth responses.
+///
+/// Carries `(success, error)`.
+type SimpleResultSender = oneshot::Sender<(bool, Option<String>)>;
+
 /// Async client for communicating with vauban-proxy-ssh.
 pub struct ProxySshClient {
     /// Underlying IPC channel.
@@ -166,6 +135,10 @@ pub struct ProxySshClient {
     session_data_receivers: Mutex<HashMap<String, mpsc::Receiver<Vec<u8>>>>,
     /// Pending host key fetch requests waiting for responses.
     pending_host_key_requests: Mutex<HashMap<u64, HostKeyResponseSender>>,
+    /// Pending push-public-key requests. Carries `(success, error)`.
+    pending_push_requests: Mutex<HashMap<u64, SimpleResultSender>>,
+    /// Pending test-key-auth requests. Carries `(success, error)`.
+    pending_test_requests: Mutex<HashMap<u64, SimpleResultSender>>,
 }
 
 impl ProxySshClient {
@@ -189,6 +162,8 @@ impl ProxySshClient {
             session_data_senders: Mutex::new(HashMap::new()),
             session_data_receivers: Mutex::new(HashMap::new()),
             pending_host_key_requests: Mutex::new(HashMap::new()),
+            pending_push_requests: Mutex::new(HashMap::new()),
+            pending_test_requests: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -259,7 +234,8 @@ impl ProxySshClient {
             pending.insert(request_id, tx);
         }
 
-        // Send request -- convert SecretString -> SensitiveString for IPC transport
+        // Send request -- ship vault CIPHERTEXTS verbatim (no decryption
+        // in vauban-web; the proxy decrypts via its VaultDecryptClient).
         let msg = Message::SshSessionOpen {
             request_id,
             session_id,
@@ -271,15 +247,9 @@ impl ProxySshClient {
             terminal_cols: request.terminal_cols,
             terminal_rows: request.terminal_rows,
             auth_type: request.auth_type,
-            password: request
-                .password
-                .map(|s| SensitiveString::new(s.expose_secret().to_string())),
-            private_key: request
-                .private_key
-                .map(|s| SensitiveString::new(s.expose_secret().to_string())),
-            passphrase: request
-                .passphrase
-                .map(|s| SensitiveString::new(s.expose_secret().to_string())),
+            password_ciphertext: request.password_ciphertext,
+            private_key_ciphertext: request.private_key_ciphertext,
+            passphrase_ciphertext: request.passphrase_ciphertext,
             expected_host_key: request.expected_host_key,
             session_token: request.session_token,
         };
@@ -505,6 +475,193 @@ impl ProxySshClient {
         }
     }
 
+    /// Broker a supervisor TCP connection for a one-shot SSH operation
+    /// (host-key fetch, push public key, test key auth). When a
+    /// `supervisor` is set (Capsicum mode) the supervisor performs DNS +
+    /// `connect()` and passes the socket FD to the proxy via SCM_RIGHTS,
+    /// keyed by `session_id`. The TCP broker is crypto-gated, so an
+    /// `identity` is required to mint the per-request session token.
+    /// Without a supervisor (in-process dev / tests) this is a no-op and
+    /// the proxy connects directly.
+    async fn broker_connect(
+        &self,
+        session_id: &str,
+        host: &str,
+        port: u16,
+        supervisor: Option<&super::SupervisorClient>,
+        identity: Option<HostKeyFetchIdentity<'_>>,
+    ) -> AppResult<()> {
+        let Some(sv) = supervisor else {
+            return Ok(());
+        };
+        let identity = identity.ok_or_else(|| {
+            AppError::Ipc(
+                "broker_connect: identity is required when supervisor is set \
+                 (the TCP broker is crypto-gated; a session token must be minted)"
+                    .to_string(),
+            )
+        })?;
+        let token_params = shared::session_token::SessionTokenParams {
+            session_id: session_id.to_string(),
+            user_uuid: identity.user_uuid.to_string(),
+            asset_uuid: identity.asset_uuid.to_string(),
+            protocol: "ssh".to_string(),
+            host: host.to_string(),
+            port,
+            target_service: shared::messages::Service::ProxySsh,
+        };
+        // Push / test are admin (`assets:manage`) operations, so the
+        // caller normally has no per-asset access rule -- mint a
+        // diagnostic token that bypasses the rule re-check (same
+        // reasoning as the host-key fetch path, issue #34).
+        let session_token = if identity.caller_has_assets_manage {
+            identity
+                .access_client
+                .issue_diagnostic_token(token_params, true)
+                .await?
+        } else {
+            identity
+                .access_client
+                .issue_session_token(token_params)
+                .await?
+        };
+        match sv
+            .request_tcp_connect(
+                session_id,
+                host,
+                port,
+                shared::messages::Service::ProxySsh,
+                session_token,
+            )
+            .await
+        {
+            Ok(result) if result.success => Ok(()),
+            Ok(result) => Err(AppError::Ipc(format!(
+                "Supervisor TCP connect failed: {}",
+                result
+                    .error
+                    .unwrap_or_else(|| "TCP connect failed".to_string())
+            ))),
+            Err(e) => Err(AppError::Ipc(format!(
+                "Supervisor TCP connect request failed: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Push an OpenSSH public key onto the target's
+    /// `~/.ssh/authorized_keys` via a one-shot password-authenticated
+    /// session. `password_ciphertext` is the vault ciphertext of the
+    /// one-shot password typed in the modal (decrypted proxy-side).
+    /// `expected_host_key` MUST be present (host-key pinning is
+    /// mandatory: we authenticate with a password, so we refuse to talk
+    /// to an unpinned / mismatched server). Idempotent server-side.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn push_public_key(
+        &self,
+        host: &str,
+        port: u16,
+        username: &str,
+        public_key: &str,
+        password_ciphertext: &str,
+        expected_host_key: Option<String>,
+        supervisor: Option<&super::SupervisorClient>,
+        identity: Option<HostKeyFetchIdentity<'_>>,
+    ) -> AppResult<()> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        // Proxy reconstructs the same synthetic id from request_id.
+        let session_id = format!("push-pubkey-{}", request_id);
+        self.broker_connect(&session_id, host, port, supervisor, identity)
+            .await?;
+
+        let (tx, rx) = oneshot::channel();
+        self.pending_push_requests
+            .lock()
+            .await
+            .insert(request_id, tx);
+
+        let msg = Message::SshPushPublicKey {
+            request_id,
+            asset_host: host.to_string(),
+            asset_port: port,
+            username: username.to_string(),
+            public_key: public_key.to_string(),
+            password_ciphertext: password_ciphertext.to_string(),
+            expected_host_key,
+        };
+        self.channel
+            .send(&msg)
+            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Ok(Ok((true, _))) => Ok(()),
+            Ok(Ok((false, err))) => Err(AppError::Ipc(format!(
+                "Push public key failed: {}",
+                err.unwrap_or_else(|| "unknown error".to_string())
+            ))),
+            Ok(Err(_)) => Err(AppError::Ipc("Push response channel dropped".to_string())),
+            Err(_) => {
+                self.pending_push_requests.lock().await.remove(&request_id);
+                Err(AppError::Ipc("Push public key timeout".to_string()))
+            }
+        }
+    }
+
+    /// Dry-run key-based authentication against the target (connect +
+    /// `authenticate_publickey` + disconnect) to validate that an
+    /// imported key pair actually logs in. The private key / passphrase
+    /// travel as vault ciphertexts (decrypted proxy-side).
+    /// `expected_host_key` MUST be present (host-key pinning mandatory).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn test_key_auth(
+        &self,
+        host: &str,
+        port: u16,
+        username: &str,
+        private_key_ciphertext: &str,
+        passphrase_ciphertext: Option<String>,
+        expected_host_key: Option<String>,
+        supervisor: Option<&super::SupervisorClient>,
+        identity: Option<HostKeyFetchIdentity<'_>>,
+    ) -> AppResult<()> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let session_id = format!("test-keyauth-{}", request_id);
+        self.broker_connect(&session_id, host, port, supervisor, identity)
+            .await?;
+
+        let (tx, rx) = oneshot::channel();
+        self.pending_test_requests
+            .lock()
+            .await
+            .insert(request_id, tx);
+
+        let msg = Message::SshTestKeyAuth {
+            request_id,
+            asset_host: host.to_string(),
+            asset_port: port,
+            username: username.to_string(),
+            private_key_ciphertext: private_key_ciphertext.to_string(),
+            passphrase_ciphertext,
+            expected_host_key,
+        };
+        self.channel
+            .send(&msg)
+            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Ok(Ok((true, _))) => Ok(()),
+            Ok(Ok((false, err))) => Err(AppError::Ipc(format!(
+                "Key-based authentication failed: {}",
+                err.unwrap_or_else(|| "unknown error".to_string())
+            ))),
+            Ok(Err(_)) => Err(AppError::Ipc("Test response channel dropped".to_string())),
+            Err(_) => {
+                self.pending_test_requests.lock().await.remove(&request_id);
+                Err(AppError::Ipc("Test key auth timeout".to_string()))
+            }
+        }
+    }
+
     /// Process incoming messages from the proxy.
     ///
     /// This should be called in a loop from a dedicated task.
@@ -593,6 +750,28 @@ impl ProxySshClient {
                 }
             }
 
+            Message::SshPushPublicKeyResult {
+                request_id,
+                success,
+                error,
+            } => {
+                debug!(request_id, success, "SSH push public key result received");
+                if let Some(tx) = self.pending_push_requests.lock().await.remove(&request_id) {
+                    let _ = tx.send((success, error));
+                }
+            }
+
+            Message::SshTestKeyAuthResult {
+                request_id,
+                success,
+                error,
+            } => {
+                debug!(request_id, success, "SSH test key auth result received");
+                if let Some(tx) = self.pending_test_requests.lock().await.remove(&request_id) {
+                    let _ = tx.send((success, error));
+                }
+            }
+
             Message::SshData { session_id, data } => {
                 // Forward data to the session's subscribed WebSocket
                 let senders = self.session_data_senders.lock().await;
@@ -646,9 +825,9 @@ mod tests {
             terminal_cols: 80,
             terminal_rows: 24,
             auth_type: "password".to_string(),
-            password: Some(SecretString::from("test-password".to_string())),
-            private_key: None,
-            passphrase: None,
+            password_ciphertext: Some("v1:test-password-ct".to_string()),
+            private_key_ciphertext: None,
+            passphrase_ciphertext: None,
             expected_host_key: None,
             session_token: Vec::new(),
         }
@@ -680,33 +859,20 @@ mod tests {
     }
 
     #[test]
-    fn test_ssh_session_open_request_debug_redacts_secrets() {
-        let mut request = make_test_request("debug-sess", "host.local", 22);
-        request.password = Some(SecretString::from("super-secret-password".to_string()));
-        request.private_key = Some(SecretString::from(
-            "-----BEGIN RSA PRIVATE KEY-----".to_string(),
-        ));
-        request.passphrase = Some(SecretString::from("my-passphrase".to_string()));
+    fn test_ssh_session_open_request_carries_ciphertexts_not_secrets() {
+        // #4: the request now holds vault ciphertexts, never clear-text
+        // secrets. There is therefore nothing to redact -- and crucially
+        // no plaintext credential can ever be constructed here.
+        let mut request = make_test_request("ct-sess", "host.local", 22);
+        request.password_ciphertext = Some("v1:CIPHER-PWD".to_string());
+        request.private_key_ciphertext = Some("v1:CIPHER-KEY".to_string());
+        request.passphrase_ciphertext = Some("v1:CIPHER-PASS".to_string());
 
         let debug_str = format!("{:?}", request);
-
         assert!(debug_str.contains("SshSessionOpenRequest"));
-        assert!(debug_str.contains("debug-sess"));
-        assert!(debug_str.contains("host.local"));
-        // Secrets MUST be redacted
-        assert!(
-            !debug_str.contains("super-secret-password"),
-            "Password must not appear in Debug output"
-        );
-        assert!(
-            !debug_str.contains("BEGIN RSA PRIVATE KEY"),
-            "Private key must not appear in Debug output"
-        );
-        assert!(
-            !debug_str.contains("my-passphrase"),
-            "Passphrase must not appear in Debug output"
-        );
-        assert!(debug_str.contains("[REDACTED]"));
+        assert!(debug_str.contains("ct-sess"));
+        // Ciphertexts are not secrets: they may appear verbatim.
+        assert!(debug_str.contains("v1:CIPHER-PWD"));
     }
 
     #[test]
@@ -732,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ssh_session_open_request_private_key_auth() {
+    fn test_ssh_session_open_request_ssh_key_auth() {
         let request = SshSessionOpenRequest {
             session_id: "key-auth".to_string(),
             user_id: "user".to_string(),
@@ -742,20 +908,17 @@ mod tests {
             username: "admin".to_string(),
             terminal_cols: 80,
             terminal_rows: 24,
-            auth_type: "private_key".to_string(),
-            password: None,
-            private_key: Some(SecretString::from(
-                "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"
-                    .to_string(),
-            )),
-            passphrase: Some(SecretString::from("key-passphrase".to_string())),
+            auth_type: "ssh_key".to_string(),
+            password_ciphertext: None,
+            private_key_ciphertext: Some("v1:CIPHER-KEY".to_string()),
+            passphrase_ciphertext: Some("v1:CIPHER-PASS".to_string()),
             expected_host_key: None,
             session_token: Vec::new(),
         };
 
-        assert_eq!(request.auth_type, "private_key");
-        assert!(request.private_key.is_some());
-        assert!(request.passphrase.is_some());
+        assert_eq!(request.auth_type, "ssh_key");
+        assert!(request.private_key_ciphertext.is_some());
+        assert!(request.passphrase_ciphertext.is_some());
     }
 
     // ==================== SshSessionOpened Tests ====================

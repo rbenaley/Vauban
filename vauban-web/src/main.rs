@@ -1836,6 +1836,17 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/{uuid}/fetch-host-key",
             post(handlers::web::fetch_ssh_host_key),
         )
+        // SSH key-auth onboarding (issue: ssh_key-auth redesign). Both
+        // are one-shot admin operations (no proxy_sessions row created),
+        // mirroring `fetch-host-key`: host-key pinning is mandatory.
+        .route(
+            "/{uuid}/push-public-key",
+            post(handlers::web::push_ssh_public_key),
+        )
+        .route(
+            "/{uuid}/test-key-auth",
+            post(handlers::web::test_ssh_key_auth),
+        )
         // VAU-001: admin fetch + pin of the RDP server TLS certificate
         // (TOFU). Mirrors `fetch-host-key`. Lives under `/assets/manage/*`
         // (gated by `require_assets_manage` + an in-handler re-check).

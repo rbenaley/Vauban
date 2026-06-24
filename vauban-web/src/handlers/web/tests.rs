@@ -847,6 +847,8 @@ fn test_compute_updated_ssh_description_only_preserves_everything() {
         Some(""),         // private_key input (hidden) blank
         Some(""),         // passphrase input (hidden) blank
         Some(""),         // rdp_domain input (hidden, alpine x-show=false) sent blank
+        None,             // ssh_key_source
+        None,             // ssh_public_key
     );
     assert_eq!(
         new, existing,
@@ -890,9 +892,9 @@ fn test_compute_updated_ssh_host_key_state_always_preserved() {
             Some(""),
         ),
         (
-            "switch to private_key",
+            "switch to ssh_key",
             Some("alice"),
-            Some("private_key"),
+            Some("ssh_key"),
             Some(""),
             Some("KEY"),
             Some(""),
@@ -908,7 +910,7 @@ fn test_compute_updated_ssh_host_key_state_always_preserved() {
         (
             "change auth_type only",
             Some("alice"),
-            Some("private_key"),
+            Some("ssh_key"),
             Some(""),
             Some(""),
             Some(""),
@@ -925,6 +927,8 @@ fn test_compute_updated_ssh_host_key_state_always_preserved() {
             *password,
             *private_key,
             *passphrase,
+            None,
+            None,
             None,
         );
         let obj = new
@@ -963,6 +967,8 @@ fn test_compute_updated_ssh_new_password_replaces_existing() {
         Some(""),
         Some(""),
         None,
+        None,
+        None,
     );
     assert_eq!(
         new.get("password").and_then(|v| v.as_str()),
@@ -986,6 +992,8 @@ fn test_compute_updated_ssh_blank_password_keeps_existing() {
         Some(""),
         Some(""),
         None,
+        None,
+        None,
     );
     assert_eq!(
         new.get("password"),
@@ -994,26 +1002,27 @@ fn test_compute_updated_ssh_blank_password_keeps_existing() {
     );
 }
 
-/// Switching auth_type to private_key persists the new private_key and
-/// passphrase, while preserving the host-key state. Per the agreed
-/// "minimal" scope, the now-irrelevant `password` ciphertext is left in
-/// place rather than stripped (separate concern, tracked elsewhere).
+/// Switching auth_type to `ssh_key` persists the new private_key and
+/// passphrase, strips the now-irrelevant `password` ciphertext (no
+/// dormant secret of the other mode), and preserves the host-key state.
 #[test]
-fn test_compute_updated_ssh_switch_to_private_key() {
+fn test_compute_updated_ssh_switch_to_ssh_key() {
     let existing = ssh_existing_full();
     let new = compute_updated_connection_config(
         &existing,
         AssetType::Ssh,
         Some("alice"),
-        Some("private_key"),
+        Some("ssh_key"),
         Some(""),
         Some("-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE\n-----END OPENSSH PRIVATE KEY-----"),
         Some("passphrase-secret"),
         None,
+        Some("existing"),
+        Some("ssh-ed25519 AAAAFAKEPUB comment"),
     );
     assert_eq!(
         new.get("auth_type").and_then(|v| v.as_str()),
-        Some("private_key"),
+        Some("ssh_key"),
     );
     assert!(
         new.get("private_key")
@@ -1024,6 +1033,18 @@ fn test_compute_updated_ssh_switch_to_private_key() {
     assert_eq!(
         new.get("passphrase").and_then(|v| v.as_str()),
         Some("passphrase-secret"),
+    );
+    assert_eq!(
+        new.get("ssh_public_key").and_then(|v| v.as_str()),
+        Some("ssh-ed25519 AAAAFAKEPUB comment"),
+    );
+    assert_eq!(
+        new.get("ssh_key_source").and_then(|v| v.as_str()),
+        Some("existing"),
+    );
+    assert!(
+        new.get("password").is_none(),
+        "switching to ssh_key must strip the dormant password ciphertext"
     );
     assert_eq!(new.get("ssh_host_key"), existing.get("ssh_host_key"));
     assert_eq!(
@@ -1050,6 +1071,8 @@ fn test_compute_updated_ssh_strips_domain() {
         Some(""),
         Some(""),
         Some("CORP"), // even if a tampered request smuggles domain, ignore on SSH
+        None,
+        None,
     );
     assert!(
         new.get("domain").is_none(),
@@ -1076,6 +1099,8 @@ fn test_compute_updated_preserves_unknown_forward_compat_keys() {
         Some(""),
         Some(""),
         None,
+        None,
+        None,
     );
     assert_eq!(
         new.get("future_field_we_dont_know_about"),
@@ -1099,6 +1124,8 @@ fn test_compute_updated_rdp_description_only_preserves_credentials_and_domain() 
         None,
         None,
         Some("CORP"), // domain re-submitted unchanged
+        None,
+        None,
     );
     assert_eq!(new.get("password"), existing.get("password"));
     assert_eq!(new.get("domain").and_then(|v| v.as_str()), Some("CORP"));
@@ -1122,6 +1149,8 @@ fn test_compute_updated_rdp_blank_domain_clears_stored() {
         None,
         None,
         Some(""), // explicit clear
+        None,
+        None,
     );
     assert!(
         new.get("domain").is_none(),
@@ -1145,6 +1174,8 @@ fn test_compute_updated_rdp_absent_domain_keeps_stored() {
         None,
         None,
         None, // field absent
+        None,
+        None,
     );
     assert_eq!(
         new.get("domain").and_then(|v| v.as_str()),
@@ -1166,6 +1197,8 @@ fn test_compute_updated_rdp_new_domain_replaces() {
         None,
         None,
         Some("NEWCORP"),
+        None,
+        None,
     );
     assert_eq!(new.get("domain").and_then(|v| v.as_str()), Some("NEWCORP"));
 }
@@ -1194,15 +1227,25 @@ fn test_compute_updated_rdp_strips_ssh_only_fields() {
         &existing,
         AssetType::Rdp,
         Some("Administrator"),
-        Some("private_key"), // tampered: try to smuggle SSH auth_type
+        Some("ssh_key"), // tampered: try to smuggle SSH auth_type
         Some(""),
         Some("ALSO-LEAKED"),  // tampered: try to smuggle private_key
         Some("ALSO-LEAKED2"), // tampered: try to smuggle passphrase
         None,
+        Some("existing"),              // tampered: try to smuggle ssh_key_source
+        Some("ssh-ed25519 LEAKEDPUB"), // tampered: try to smuggle public key
     );
     assert!(
         new.get("auth_type").is_none(),
         "auth_type must be stripped on RDP"
+    );
+    assert!(
+        new.get("ssh_public_key").is_none(),
+        "ssh_public_key must be stripped on RDP"
+    );
+    assert!(
+        new.get("ssh_key_source").is_none(),
+        "ssh_key_source must be stripped on RDP"
     );
     assert!(
         new.get("private_key").is_none(),
@@ -1226,6 +1269,8 @@ fn test_compute_updated_handles_non_object_existing() {
         Some("alice"),
         Some("password"),
         Some("PWD"),
+        None,
+        None,
         None,
         None,
         None,
@@ -1255,6 +1300,8 @@ fn test_compute_updated_blank_username_keeps_existing() {
         Some(""),
         Some(""),
         Some(""),
+        None,
+        None,
         None,
     );
     assert_eq!(

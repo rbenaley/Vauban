@@ -100,7 +100,16 @@ pub struct CreateAssetWebForm {
     pub ssh_auth_type: Option<String>,
     pub ssh_password: Option<String>,
     pub ssh_private_key: Option<String>,
+    /// OpenSSH **public** key pasted by the operator for the `existing`
+    /// key source. Stored in clear; verified against the pasted private
+    /// key (their fingerprints must match). Ignored for the `generated`
+    /// source (Vauban mints and stores its own public key).
+    pub ssh_public_key: Option<String>,
     pub ssh_passphrase: Option<String>,
+    /// SSH key source: `generated` (Vauban mints an Ed25519 pair) or
+    /// `existing` (operator imports a public/private key pair). Only
+    /// meaningful when `ssh_auth_type == "ssh_key"`.
+    pub ssh_key_source: Option<String>,
     /// Optional Windows AD domain for RDP authentication.
     ///
     /// Stored as `connection_config.domain` and consumed by
@@ -192,8 +201,76 @@ pub async fn create_asset_web(
         form.ssh_auth_type.as_deref(),
         form.ssh_password.as_deref(),
         form.ssh_private_key.as_deref(),
+        form.ssh_key_source.as_deref(),
+        form.ssh_public_key.as_deref(),
     ) {
         return flash_redirect(flash.error(msg), "/assets/manage/new");
+    }
+
+    // Resolve the SSH key material for the `ssh_key` auth mode.
+    //
+    // - `generated`: Vauban mints a fresh Ed25519 pair server-side. The
+    //   private key is sealed in the vault downstream; the public key is
+    //   stored in clear.
+    // - `existing`: the operator pastes BOTH halves (public + private).
+    //   We strictly verify they form a matching pair (same decoder as the
+    //   proxy's auth path, so a key accepted here is decodable at
+    //   session-open). The operator's public-key line is stored verbatim
+    //   in clear; the private key + passphrase are sealed in the vault.
+    //
+    // `eff_*` own their strings so they outlive the borrow in
+    // `build_connection_config`.
+    let mut eff_private_key: Option<String> = form.ssh_private_key.clone();
+    let mut eff_public_key: Option<String> = None;
+    if parsed_asset_type == AssetType::Ssh && form.ssh_auth_type.as_deref() == Some("ssh_key") {
+        let comment = format!(
+            "{}@{}",
+            form.ssh_username
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("vauban"),
+            form.hostname.trim()
+        );
+        let source = form
+            .ssh_key_source
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("existing");
+        match source {
+            "generated" => match shared::ssh_keygen::generate_ed25519_keypair(&comment) {
+                Ok(kp) => {
+                    eff_private_key = Some(kp.private_openssh.to_string());
+                    eff_public_key = Some(kp.public_openssh.clone());
+                }
+                Err(e) => {
+                    tracing::error!("SSH keygen failed: {}", e);
+                    return flash_redirect(
+                        flash.error("Failed to generate SSH key pair"),
+                        "/assets/manage/new",
+                    );
+                }
+            },
+            _ => {
+                // `existing`: verify the pasted public/private pair.
+                let priv_pem = form.ssh_private_key.as_deref().unwrap_or("");
+                let pub_pasted = form.ssh_public_key.as_deref().unwrap_or("");
+                match shared::ssh_keygen::verify_public_private_pair(
+                    pub_pasted,
+                    priv_pem,
+                    form.ssh_passphrase.as_deref(),
+                ) {
+                    Ok((pub_key, _fp)) => {
+                        eff_public_key = Some(pub_key);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Imported SSH key pair rejected: {}", e);
+                        return flash_redirect(flash.error(e.to_string()), "/assets/manage/new");
+                    }
+                }
+            }
+        }
     }
 
     let mut conn = match state.db_pool.get().await {
@@ -227,9 +304,11 @@ pub async fn create_asset_web(
         form.ssh_username.as_deref(),
         form.ssh_auth_type.as_deref(),
         form.ssh_password.as_deref(),
-        form.ssh_private_key.as_deref(),
+        eff_private_key.as_deref(),
         form.ssh_passphrase.as_deref(),
         form.rdp_domain.as_deref(),
+        form.ssh_key_source.as_deref(),
+        eff_public_key.as_deref(),
     );
 
     if let Some(ref vault) = state.vault_client
@@ -1123,6 +1202,20 @@ pub async fn asset_edit(
     let has_password = has_secret("password");
     let has_private_key = has_secret("private_key");
     let has_passphrase = has_secret("passphrase");
+    let ssh_key_source = asset_connection_config
+        .get("ssh_key_source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let ssh_public_key = asset_connection_config
+        .get("ssh_public_key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string());
+    let ssh_pubkey_pushed = asset_connection_config
+        .get("ssh_pubkey_pushed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let ssh_host_key_fingerprint = asset_connection_config
         .get("ssh_host_key_fingerprint")
         .and_then(|v| v.as_str())
@@ -1152,6 +1245,9 @@ pub async fn asset_edit(
         has_password,
         has_private_key,
         has_passphrase,
+        ssh_key_source,
+        ssh_public_key,
+        ssh_pubkey_pushed,
         ssh_host_key_fingerprint,
         rdp_server_cert_fingerprint,
         rdp_domain,
@@ -1202,8 +1298,14 @@ pub struct UpdateAssetForm {
     #[serde(alias = "vbn_secret")]
     pub ssh_password: Option<String>,
     pub ssh_private_key: Option<String>,
+    /// OpenSSH **public** key pasted by the operator for the `existing`
+    /// key source (stored in clear; verified against the pasted private
+    /// key). See `CreateAssetWebForm::ssh_public_key`.
+    pub ssh_public_key: Option<String>,
     #[serde(alias = "vbn_secret_phrase")]
     pub ssh_passphrase: Option<String>,
+    /// SSH key source: `generated` | `existing` (see `CreateAssetWebForm`).
+    pub ssh_key_source: Option<String>,
     pub rdp_domain: Option<String>,
     /// Present on IACS asset edits; selects the industrial protocol.
     pub asset_type: Option<String>,
@@ -1371,6 +1473,11 @@ pub async fn update_asset_web(
     } else {
         form.ssh_private_key.as_deref()
     };
+    let effective_public_key = if blank(form.ssh_public_key.as_deref()) {
+        existing_field("ssh_public_key")
+    } else {
+        form.ssh_public_key.as_deref()
+    };
     let effective_auth_type = form
         .ssh_auth_type
         .as_deref()
@@ -1381,11 +1488,23 @@ pub async fn update_asset_web(
                 .get("auth_type")
                 .and_then(|v| v.as_str())
         });
+    let effective_key_source = form
+        .ssh_key_source
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            existing
+                .connection_config
+                .get("ssh_key_source")
+                .and_then(|v| v.as_str())
+        });
     if let Err(msg) = validate_required_credentials(
         effective_asset_type,
         effective_auth_type,
         effective_password,
         effective_private_key,
+        effective_key_source,
+        effective_public_key,
     ) {
         return htmx_or_flash_redirect(
             &headers,
@@ -1394,15 +1513,99 @@ pub async fn update_asset_web(
         );
     }
 
+    // Resolve SSH key material on UPDATE. We deliberately do NOT
+    // regenerate or re-derive a key on an unrelated edit (description,
+    // status, ...): the public key round-trips untouched via option-A
+    // semantics in `compute_updated_connection_config`. We only act when
+    // the operator either pasted a NEW key pair (verify pub+priv) or
+    // switched a credential-less row into the `generated` source (mint a
+    // fresh pair). `eff_*_key` own their strings.
+    let mut eff_update_private_key: Option<String> = form.ssh_private_key.clone();
+    let mut eff_update_public_key: Option<String> = None;
+    if effective_asset_type == AssetType::Ssh && effective_auth_type == Some("ssh_key") {
+        let comment = format!(
+            "{}@{}",
+            form.ssh_username
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .or_else(|| existing
+                    .connection_config
+                    .get("username")
+                    .and_then(|v| v.as_str()))
+                .unwrap_or("vauban"),
+            form.hostname.trim()
+        );
+        let pasted_new_key = !blank(form.ssh_private_key.as_deref());
+        let pasted_new_public = !blank(form.ssh_public_key.as_deref());
+        let has_existing_private = existing_field("private_key").is_some();
+        if pasted_new_key {
+            // Import / rotate: verify the pasted public/private pair. The
+            // public key used for the match is the freshly pasted one when
+            // present, otherwise the stored public key (which will only
+            // match if the private key was not actually rotated -- a
+            // genuine rotation without a matching public key is rejected
+            // with a clear fingerprint-mismatch message).
+            let priv_pem = form.ssh_private_key.as_deref().unwrap_or("");
+            let pub_for_verify = effective_public_key.unwrap_or("");
+            match shared::ssh_keygen::verify_public_private_pair(
+                pub_for_verify,
+                priv_pem,
+                form.ssh_passphrase.as_deref(),
+            ) {
+                Ok((pub_key, _fp)) => eff_update_public_key = Some(pub_key),
+                Err(e) => {
+                    tracing::warn!("Imported SSH key pair rejected on update: {}", e);
+                    return htmx_or_flash_redirect(
+                        &headers,
+                        flash.error(e.to_string()),
+                        &format!("/assets/manage/{asset_uuid}/edit"),
+                    );
+                }
+            }
+        } else if pasted_new_public {
+            // A new public key without a new private key cannot be
+            // verified against the vault-sealed private key (we never read
+            // it back in clear here). Refuse rather than store an
+            // unverified public key (strict pair invariant).
+            return htmx_or_flash_redirect(
+                &headers,
+                flash.error(
+                    "To change the public key, also paste the matching private key so Vauban \
+                     can verify the pair.",
+                ),
+                &format!("/assets/manage/{asset_uuid}/edit"),
+            );
+        } else if effective_key_source == Some("generated") && !has_existing_private {
+            // Switching a credential-less row into the generated source.
+            match shared::ssh_keygen::generate_ed25519_keypair(&comment) {
+                Ok(kp) => {
+                    eff_update_private_key = Some(kp.private_openssh.to_string());
+                    eff_update_public_key = Some(kp.public_openssh.clone());
+                }
+                Err(e) => {
+                    tracing::error!("SSH keygen failed on update: {}", e);
+                    return htmx_or_flash_redirect(
+                        &headers,
+                        flash.error("Failed to generate SSH key pair"),
+                        &format!("/assets/manage/{asset_uuid}/edit"),
+                    );
+                }
+            }
+        }
+    }
+
     let mut connection_config = compute_updated_connection_config(
         &existing.connection_config,
         effective_asset_type,
         form.ssh_username.as_deref(),
         form.ssh_auth_type.as_deref(),
         form.ssh_password.as_deref(),
-        form.ssh_private_key.as_deref(),
+        eff_update_private_key.as_deref(),
         form.ssh_passphrase.as_deref(),
         form.rdp_domain.as_deref(),
+        form.ssh_key_source.as_deref(),
+        eff_update_public_key.as_deref(),
     );
 
     if let Some(ref vault) = state.vault_client

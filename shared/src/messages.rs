@@ -1625,17 +1625,26 @@ pub enum Message {
         terminal_cols: u16,
         /// Terminal height in rows.
         terminal_rows: u16,
-        /// Authentication type: "password" or "private_key".
+        /// Authentication type: "password" or "ssh_key".
         auth_type: String,
-        /// Password for password authentication (if auth_type == "password").
-        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug.
-        password: Option<SensitiveString>,
-        /// PEM-encoded private key (if auth_type == "private_key").
-        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug.
-        private_key: Option<SensitiveString>,
-        /// Passphrase for encrypted private key.
-        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug.
-        passphrase: Option<SensitiveString>,
+        /// SECURITY (#4 - zero clear-text credentials on the web->proxy
+        /// IPC): the three credential fields below are NO LONGER the
+        /// secrets themselves. They are the **vault ciphertexts**
+        /// (`"v1:BASE64..."`) exactly as stored in
+        /// `assets.connection_config`. vauban-web ships them verbatim
+        /// (it never decrypts), and vauban-proxy-ssh materialises the
+        /// plaintext via its decrypt-only `VaultDecryptClient` moments
+        /// before building the russh credential, inside its own
+        /// sandboxed address space. A ciphertext is not a secret (it is
+        /// useless without the vault master key), so these are plain
+        /// `String` and may appear in Debug / logs.
+        ///
+        /// Vault ciphertext of the password (if auth_type == "password").
+        password_ciphertext: Option<String>,
+        /// Vault ciphertext of the PEM private key (if auth_type == "ssh_key").
+        private_key_ciphertext: Option<String>,
+        /// Vault ciphertext of the private-key passphrase (optional).
+        passphrase_ciphertext: Option<String>,
         /// Expected SSH host key in OpenSSH format (e.g. "ssh-ed25519 AAAA...").
         /// If set, the proxy MUST verify the server key matches before continuing.
         /// If None, host key verification is skipped (insecure, logged as warning).
@@ -2317,6 +2326,74 @@ pub enum Message {
         /// Per-attempt timeout budget in seconds.
         timeout_secs: u64,
     },
+
+    // ========== SSH key onboarding (Web <-> ProxySsh) ==========
+    //
+    // These two verbs power the asset SSH key-based auth flow's
+    // "Push public key" (generated source) and "Test key-based
+    // authentication" (existing source) buttons. Like SshSessionOpen
+    // they carry vault CIPHERTEXTS only (#4): the proxy decrypts the
+    // one-shot password / private key via its decrypt-only
+    // VaultDecryptClient. Appended at the END of the enum to preserve
+    // the bincode discriminant indices of every variant above (wire
+    // compat with already-deployed peers).
+    /// Append `public_key` to the target's `~/.ssh/authorized_keys` over
+    /// a one-shot password-authenticated SSH session, then disconnect.
+    /// Idempotent server-side (`grep -qxF || echo >>`). Host key pinning
+    /// is mandatory: `expected_host_key` MUST match or the proxy refuses
+    /// (anti-MITM, since we authenticate with a password).
+    SshPushPublicKey {
+        request_id: u64,
+        /// Target hostname or IP address.
+        asset_host: String,
+        /// SSH port (default 22).
+        asset_port: u16,
+        /// SSH username on target server.
+        username: String,
+        /// OpenSSH public key line to install (clear text, not a secret).
+        public_key: String,
+        /// Vault ciphertext of the one-shot password (typed in the modal).
+        password_ciphertext: String,
+        /// Pinned host key in OpenSSH format. MUST be present and match.
+        expected_host_key: Option<String>,
+    },
+
+    /// Response to [`Message::SshPushPublicKey`].
+    SshPushPublicKeyResult {
+        request_id: u64,
+        success: bool,
+        /// Error message if success is false (auth refused, host
+        /// unreachable, host-key mismatch, exec non-zero, ...).
+        error: Option<String>,
+    },
+
+    /// Open a one-shot SSH session authenticating with the private key
+    /// (key-based auth dry-run), then disconnect. Used by the "Test
+    /// key-based authentication" button for the `existing` source. Host
+    /// key pinning is mandatory.
+    SshTestKeyAuth {
+        request_id: u64,
+        /// Target hostname or IP address.
+        asset_host: String,
+        /// SSH port (default 22).
+        asset_port: u16,
+        /// SSH username on target server.
+        username: String,
+        /// Vault ciphertext of the PEM private key.
+        private_key_ciphertext: String,
+        /// Vault ciphertext of the private-key passphrase (optional).
+        passphrase_ciphertext: Option<String>,
+        /// Pinned host key in OpenSSH format. MUST be present and match.
+        expected_host_key: Option<String>,
+    },
+
+    /// Response to [`Message::SshTestKeyAuth`].
+    SshTestKeyAuthResult {
+        request_id: u64,
+        success: bool,
+        /// Error message if success is false.
+        error: Option<String>,
+    },
 }
 
 impl Message {
@@ -2369,7 +2446,11 @@ impl Message {
             | Message::AdminCommand { request_id, .. }
             | Message::AdminResponse { request_id, .. }
             | Message::AuthLdapBind { request_id, .. }
-            | Message::AuthLdapBindResponse { request_id, .. } => Some(*request_id),
+            | Message::AuthLdapBindResponse { request_id, .. }
+            | Message::SshPushPublicKey { request_id, .. }
+            | Message::SshPushPublicKeyResult { request_id, .. }
+            | Message::SshTestKeyAuth { request_id, .. }
+            | Message::SshTestKeyAuthResult { request_id, .. } => Some(*request_id),
             _ => None,
         }
     }
@@ -2941,9 +3022,9 @@ mod tests {
             terminal_cols: 80,
             terminal_rows: 24,
             auth_type: "password".to_string(),
-            password: Some(SensitiveString::new("secret123".to_string())),
-            private_key: None,
-            passphrase: None,
+            password_ciphertext: Some("v1:CIPHERTEXT".to_string()),
+            private_key_ciphertext: None,
+            passphrase_ciphertext: None,
             expected_host_key: Some("ssh-ed25519 AAAA...".to_string()),
             session_token: Vec::new(),
         };
@@ -2961,7 +3042,7 @@ mod tests {
             terminal_cols,
             terminal_rows,
             auth_type,
-            password,
+            password_ciphertext,
             ..
         } = deserialized
         {
@@ -2974,7 +3055,7 @@ mod tests {
             assert_eq!(terminal_cols, 80);
             assert_eq!(terminal_rows, 24);
             assert_eq!(auth_type, "password");
-            assert_eq!(password.as_ref().map(|s| s.as_str()), Some("secret123"));
+            assert_eq!(password_ciphertext.as_deref(), Some("v1:CIPHERTEXT"));
         } else {
             panic!("Wrong variant");
         }
@@ -3096,9 +3177,9 @@ mod tests {
                 terminal_cols: 80,
                 terminal_rows: 24,
                 auth_type: "password".to_string(),
-                password: Some(SensitiveString::new("pass".to_string())),
-                private_key: None,
-                passphrase: None,
+                password_ciphertext: Some("v1:pass".to_string()),
+                private_key_ciphertext: None,
+                passphrase_ciphertext: None,
                 expected_host_key: None,
                 session_token: Vec::new(),
             },
@@ -3468,9 +3549,9 @@ mod tests {
             terminal_cols: 80,
             terminal_rows: 24,
             auth_type: "password".to_string(),
-            password: Some(SensitiveString::new("pass".to_string())),
-            private_key: None,
-            passphrase: None,
+            password_ciphertext: Some("v1:pass".to_string()),
+            private_key_ciphertext: None,
+            passphrase_ciphertext: None,
             expected_host_key: Some("ssh-ed25519 AAAA...test".to_string()),
             session_token: Vec::new(),
         };
@@ -3758,9 +3839,9 @@ mod tests {
             terminal_cols: 80,
             terminal_rows: 24,
             auth_type: "password".to_string(),
-            password: Some(SensitiveString::new("pass".to_string())),
-            private_key: None,
-            passphrase: None,
+            password_ciphertext: Some("v1:pass".to_string()),
+            private_key_ciphertext: None,
+            passphrase_ciphertext: None,
             expected_host_key: None,
             session_token: Vec::new(),
         };
@@ -5189,35 +5270,29 @@ mod tests {
 
     #[test]
     fn test_sensitive_string_in_message_debug_redacted() {
-        let msg = Message::SshSessionOpen {
+        // NOTE: SshSessionOpen no longer carries SensitiveString secrets
+        // (it ships vault ciphertexts now, see #4). RdpSessionOpen is the
+        // canonical Message that still embeds a SensitiveString password,
+        // so it is the right vehicle to pin the redaction contract.
+        let msg = Message::RdpSessionOpen {
             request_id: 999,
             session_id: "debug-test".to_string(),
             user_id: "u1".to_string(),
             asset_id: "a1".to_string(),
             asset_host: "host".to_string(),
-            asset_port: 22,
+            asset_port: 3389,
             username: "user".to_string(),
-            terminal_cols: 80,
-            terminal_rows: 24,
-            auth_type: "password".to_string(),
             password: Some(SensitiveString::new("super-secret-pwd".to_string())),
-            private_key: Some(SensitiveString::new("-----BEGIN KEY-----".to_string())),
-            passphrase: Some(SensitiveString::new("my-passphrase".to_string())),
-            expected_host_key: None,
+            domain: None,
+            desktop_width: 1280,
+            desktop_height: 720,
+            expected_cert_fingerprint: None,
             session_token: Vec::new(),
         };
         let debug = format!("{:?}", msg);
         assert!(
             !debug.contains("super-secret-pwd"),
             "Message Debug must NOT contain password"
-        );
-        assert!(
-            !debug.contains("BEGIN KEY"),
-            "Message Debug must NOT contain private key"
-        );
-        assert!(
-            !debug.contains("my-passphrase"),
-            "Message Debug must NOT contain passphrase"
         );
         assert!(
             debug.contains("REDACTED"),
@@ -5227,26 +5302,24 @@ mod tests {
 
     #[test]
     fn test_sensitive_string_message_serde_roundtrip() {
-        let msg = Message::SshSessionOpen {
+        let msg = Message::RdpSessionOpen {
             request_id: 1000,
             session_id: "rt-test".to_string(),
             user_id: "u1".to_string(),
             asset_id: "a1".to_string(),
             asset_host: "host".to_string(),
-            asset_port: 22,
+            asset_port: 3389,
             username: "user".to_string(),
-            terminal_cols: 80,
-            terminal_rows: 24,
-            auth_type: "password".to_string(),
             password: Some(SensitiveString::new("roundtrip-pwd".to_string())),
-            private_key: None,
-            passphrase: None,
-            expected_host_key: None,
+            domain: None,
+            desktop_width: 1280,
+            desktop_height: 720,
+            expected_cert_fingerprint: None,
             session_token: Vec::new(),
         };
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::SshSessionOpen { password, .. } = deserialized {
+        if let Message::RdpSessionOpen { password, .. } = deserialized {
             assert_eq!(
                 password.as_ref().map(|s| s.as_str()),
                 Some("roundtrip-pwd"),

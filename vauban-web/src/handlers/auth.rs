@@ -750,7 +750,9 @@ fn login_csrf_error_response(htmx: bool, jar: CookieJar, secret: &[u8]) -> AppRe
         let body = login_csrf_error_html(&new_token);
         Ok((jar.add(cookie), Html(body)).into_response())
     } else {
-        Err(AppError::Auth(LoginErrorKind::InvalidCsrf.message().to_string()))
+        Err(AppError::Auth(
+            LoginErrorKind::InvalidCsrf.message().to_string(),
+        ))
     }
 }
 

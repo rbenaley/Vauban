@@ -550,6 +550,204 @@ pub async fn fetch_host_key(
     }
 }
 
+/// Open a one-shot russh client `Handle` for an administrative SSH
+/// operation (push public key / test key auth). Host-key pinning is
+/// MANDATORY here (`expected_host_key` must be present and non-empty):
+/// both operations authenticate against a server we then trust, so a
+/// missing pin would let a MITM harvest the one-shot password or
+/// rubber-stamp a bogus key test. Tries the supervisor-brokered FD
+/// first, falling back to a direct connect in non-sandboxed dev.
+async fn connect_oneshot_handle(
+    label: &str,
+    host: &str,
+    port: u16,
+    expected_host_key: Option<String>,
+    preconnected_fd: Option<OwnedFd>,
+) -> SessionResult<Handle<SshHandler>> {
+    let pinned = expected_host_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if pinned.is_none() {
+        return Err(SessionError::ConnectionFailed(
+            "SSH host key pinning is mandatory for this operation; \
+             fetch and pin the host key first"
+                .to_string(),
+        ));
+    }
+
+    let ssh_config = make_ssh_config();
+    let handler = SshHandler::new(label.to_string(), expected_host_key);
+
+    if let Some(fd) = preconnected_fd {
+        // SAFETY: the FD comes from the supervisor via SCM_RIGHTS and is a valid TCP socket.
+        let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
+        std_stream.set_nonblocking(true).map_err(|e| {
+            SessionError::ConnectionFailed(format!("Failed to set non-blocking: {}", e))
+        })?;
+        let stream = TcpStream::from_std(std_stream).map_err(|e| {
+            SessionError::ConnectionFailed(format!("Failed to create tokio stream: {}", e))
+        })?;
+        client::connect_stream(ssh_config, stream, handler)
+            .await
+            .map_err(|e| SessionError::ConnectionFailed(e.to_string()))
+    } else {
+        let addr = format!("{}:{}", host, port);
+        client::connect(ssh_config, addr, handler)
+            .await
+            .map_err(|e| SessionError::ConnectionFailed(e.to_string()))
+    }
+}
+
+/// Push an OpenSSH public key onto the target's
+/// `~/.ssh/authorized_keys` over a one-shot password-authenticated
+/// session, then disconnect. Idempotent server-side (the key is only
+/// appended if absent). Host-key pinning is mandatory.
+pub async fn push_public_key(
+    host: &str,
+    port: u16,
+    username: &str,
+    public_key: &str,
+    password: &SecretString,
+    expected_host_key: Option<String>,
+    preconnected_fd: Option<OwnedFd>,
+) -> SessionResult<()> {
+    use russh::client::AuthResult;
+
+    // Defence: the key is interpolated into a shell command, single-
+    // quoted. A real OpenSSH public key never contains a single quote or
+    // a newline; reject anything that does so command injection is
+    // structurally impossible.
+    let key_line = public_key.trim();
+    if key_line.is_empty() || key_line.contains('\'') || key_line.contains('\n') {
+        return Err(SessionError::InvalidKey(
+            "public key contains illegal characters".to_string(),
+        ));
+    }
+
+    let mut session = connect_oneshot_handle(
+        "push-pubkey",
+        host,
+        port,
+        expected_host_key,
+        preconnected_fd,
+    )
+    .await?;
+
+    let auth = session
+        .authenticate_password(username, password.expose_secret())
+        .await
+        .map_err(|e| SessionError::AuthenticationFailed(e.to_string()))?;
+    if let AuthResult::Failure {
+        remaining_methods, ..
+    } = auth
+    {
+        let _ = session
+            .disconnect(Disconnect::ByApplication, "push aborted", "en")
+            .await;
+        return Err(SessionError::AuthenticationFailed(format!(
+            "password authentication rejected (remaining methods: {:?})",
+            remaining_methods
+        )));
+    }
+
+    // Idempotent append. `set -e` aborts on any pre-condition failure so
+    // we never echo into a half-created ~/.ssh. The `if ! grep` guard
+    // makes a repeat push a no-op.
+    let command = format!(
+        "set -e; mkdir -p ~/.ssh; chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys; \
+         chmod 600 ~/.ssh/authorized_keys; \
+         if ! grep -qxF '{key}' ~/.ssh/authorized_keys; then \
+         echo '{key}' >> ~/.ssh/authorized_keys; fi",
+        key = key_line
+    );
+
+    let mut channel = session
+        .channel_open_session()
+        .await
+        .map_err(|e| SessionError::ChannelOpenFailed(e.to_string()))?;
+    channel
+        .exec(true, command.as_bytes())
+        .await
+        .map_err(|e| SessionError::ChannelOpenFailed(e.to_string()))?;
+
+    let mut exit_status: Option<u32> = None;
+    let mut stderr = Vec::new();
+    loop {
+        match channel.wait().await {
+            Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
+            Some(ChannelMsg::ExtendedData { data, .. }) => stderr.extend_from_slice(&data),
+            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+            Some(_) => {}
+        }
+    }
+
+    let _ = session
+        .disconnect(Disconnect::ByApplication, "push complete", "en")
+        .await;
+
+    match exit_status {
+        Some(0) | None => Ok(()),
+        Some(code) => {
+            let detail = String::from_utf8_lossy(&stderr);
+            Err(SessionError::ShellStartFailed(format!(
+                "remote authorized_keys update failed (exit {code}): {}",
+                detail.trim()
+            )))
+        }
+    }
+}
+
+/// Dry-run key-based authentication against the target: connect,
+/// `authenticate_publickey`, disconnect. Used by the "Test key-based
+/// authentication" button. Host-key pinning is mandatory.
+pub async fn test_key_auth(
+    host: &str,
+    port: u16,
+    username: &str,
+    key_pem: &SecretString,
+    passphrase: Option<&SecretString>,
+    expected_host_key: Option<String>,
+    preconnected_fd: Option<OwnedFd>,
+) -> SessionResult<()> {
+    use russh::client::AuthResult;
+
+    let mut session = connect_oneshot_handle(
+        "test-keyauth",
+        host,
+        port,
+        expected_host_key,
+        preconnected_fd,
+    )
+    .await?;
+
+    let key = decode_secret_key(
+        key_pem.expose_secret(),
+        passphrase.map(|p| p.expose_secret()),
+    )
+    .map_err(|e| SessionError::InvalidKey(e.to_string()))?;
+    let key_with_alg = russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), None);
+
+    let auth = session
+        .authenticate_publickey(username, key_with_alg)
+        .await
+        .map_err(|e| SessionError::AuthenticationFailed(e.to_string()))?;
+
+    let _ = session
+        .disconnect(Disconnect::ByApplication, "key test complete", "en")
+        .await;
+
+    match auth {
+        AuthResult::Success => Ok(()),
+        AuthResult::Failure {
+            remaining_methods, ..
+        } => Err(SessionError::AuthenticationFailed(format!(
+            "key-based authentication rejected (remaining methods: {:?})",
+            remaining_methods
+        ))),
+    }
+}
+
 /// Handler for SSH client events.
 struct SshHandler {
     session_id: String,

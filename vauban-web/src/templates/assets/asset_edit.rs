@@ -34,6 +34,15 @@ pub struct AssetEdit {
     pub has_password: bool,
     pub has_private_key: bool,
     pub has_passphrase: bool,
+    /// SSH key source: `generated` | `existing` (empty when not an
+    /// `ssh_key` asset). Drives which edit-form block is shown.
+    pub ssh_key_source: String,
+    /// Stored OpenSSH public key (clear text, the ONLY key half ever
+    /// shown back to the UI). `None` when no key pair is on file.
+    pub ssh_public_key: Option<String>,
+    /// True when the generated public key has already been pushed to the
+    /// target (UX state of the "Push public key" button).
+    pub ssh_pubkey_pushed: bool,
     /// SSH host key fingerprint (read-only, from connection_config).
     pub ssh_host_key_fingerprint: Option<String>,
     /// VAU-001: pinned RDP server-certificate fingerprint (read-only, from
@@ -80,6 +89,9 @@ mod tests {
             has_password: false,
             has_private_key: false,
             has_passphrase: false,
+            ssh_key_source: String::new(),
+            ssh_public_key: None,
+            ssh_pubkey_pushed: false,
             ssh_host_key_fingerprint: None,
             rdp_server_cert_fingerprint: None,
             rdp_domain: String::new(),

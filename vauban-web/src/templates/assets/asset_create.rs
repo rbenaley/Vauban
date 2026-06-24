@@ -23,6 +23,9 @@ pub struct AssetCreateForm {
     pub ssh_password: Option<String>,
     pub ssh_private_key: Option<String>,
     pub ssh_passphrase: Option<String>,
+    /// SSH key source: `generated` | `existing` (defaults to
+    /// `generated` in the form when absent).
+    pub ssh_key_source: Option<String>,
     /// Optional Windows AD domain shown only for RDP assets.
     pub rdp_domain: Option<String>,
 }
@@ -70,6 +73,7 @@ mod tests {
             ssh_password: None,
             ssh_private_key: None,
             ssh_passphrase: None,
+            ssh_key_source: None,
             rdp_domain: None,
         }
     }

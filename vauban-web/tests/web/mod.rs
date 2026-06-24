@@ -92,6 +92,8 @@ pub mod sidebar_user_zone_test;
 pub mod ssh_host_key_e2e_test;
 pub mod ssh_host_key_mismatch_invariant_test;
 pub mod ssh_host_key_no_silent_green_test;
+pub mod ssh_key_auth_adversarial_test;
+pub mod ssh_key_auth_test;
 pub mod terminate_session_test;
 pub mod timezone_e2e_test;
 pub mod timezone_lints_test;

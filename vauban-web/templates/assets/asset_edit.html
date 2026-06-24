@@ -159,7 +159,8 @@
         <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden"
              x-data="{
                  assetType: '{{ asset.asset_type }}',
-                 authType: '{{ asset.ssh_auth_type }}'
+                 authType: '{{ asset.ssh_auth_type }}',
+                 keySource: '{{ asset.ssh_key_source }}' || 'existing'
              }"
              x-effect="if (assetType === 'rdp' && authType !== 'password') { authType = 'password' }">
             <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
@@ -181,7 +182,7 @@
                         <select name="ssh_auth_type" id="ssh_auth_type" x-model="authType"
                                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
                             <option value="password" {% if asset.ssh_auth_type == "password" %}selected{% endif %}>Password</option>
-                            <option value="private_key" {% if asset.ssh_auth_type == "private_key" %}selected{% endif %}>Private Key</option>
+                            <option value="ssh_key" {% if asset.ssh_auth_type == "ssh_key" %}selected{% endif %}>SSH keys</option>
                         </select>
                     </div>
                 </div>
@@ -197,26 +198,63 @@
                     </p>
                 </div>
 
-                <div x-show="assetType === 'ssh' && authType === 'private_key'" x-cloak class="space-y-4">
+                <div x-show="assetType === 'ssh' && authType === 'ssh_key'" x-cloak class="space-y-4" data-testid="ssh-key-block">
                     <div>
-                        <label for="ssh_private_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Private Key</label>
-                        <textarea name="ssh_private_key" id="ssh_private_key" rows="6"
-                                  class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono text-xs"
-                                  placeholder="{% if asset.has_private_key %}Leave blank to keep current private key{% else %}-----BEGIN OPENSSH PRIVATE KEY-----
+                        <label for="ssh_key_source" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Key source</label>
+                        <select name="ssh_key_source" id="ssh_key_source" x-model="keySource"
+                                data-testid="ssh-key-source"
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                            <option value="generated">Generate public/private key</option>
+                            <option value="existing">Use existing public/private key</option>
+                        </select>
+                    </div>
+
+                    {# Existing source: to rotate the pair, paste BOTH the
+                       new public and the new private key (blank keeps the
+                       current pair). Vauban verifies they match before
+                       storing. #}
+                    <div x-show="keySource === 'existing'" x-cloak class="space-y-4" data-testid="ssh-key-existing-block">
+                        <div>
+                            <label for="ssh_public_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Public Key</label>
+                            <textarea name="ssh_public_key" id="ssh_public_key" rows="3"
+                                      data-testid="ssh-public-key"
+                                      class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono text-xs"
+                                      placeholder="{% if asset.ssh_public_key.is_some() %}Leave blank to keep current public key{% else %}ssh-ed25519 AAAA... user@host{% endif %}"></textarea>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                {% if asset.ssh_public_key.is_some() %}The current public key is shown read-only in the <strong>SSH key pair</strong> card below. {% endif %}To rotate the pair, paste a new public key here and the matching private key below so Vauban can verify them.
+                            </p>
+                        </div>
+                        <div>
+                            <label for="ssh_private_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Private Key</label>
+                            <textarea name="ssh_private_key" id="ssh_private_key" rows="6"
+                                      data-testid="ssh-private-key"
+                                      class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono text-xs"
+                                      placeholder="{% if asset.has_private_key %}Leave blank to keep current private key{% else %}-----BEGIN OPENSSH PRIVATE KEY-----
 ...
 -----END OPENSSH PRIVATE KEY-----{% endif %}"></textarea>
-                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                            {% if asset.has_private_key %}A private key is currently stored. Leave this field blank to keep it, or paste a new key (PEM or OpenSSH format) to replace it.{% else %}Paste the full private key content (PEM or OpenSSH format).{% endif %}
-                        </p>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                {% if asset.has_private_key %}A private key is currently stored. Leave both fields blank to keep the current pair, or paste a new public + private key to replace it (Vauban verifies they match).{% else %}Paste the matching private key. Vauban verifies it pairs with the public key above; the private key is sealed in the vault.{% endif %}
+                            </p>
+                        </div>
+                        <div>
+                            <label for="vbn_secret_phrase" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Key Passphrase (optional)</label>
+                            <input type="text" name="vbn_secret_phrase" id="vbn_secret_phrase"
+                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                                   autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+                                   placeholder="{% if asset.has_passphrase %}Leave blank to keep current passphrase{% else %}Key passphrase (if encrypted){% endif %}">
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                {% if asset.has_passphrase %}A passphrase is currently stored. Leave this field blank to keep it, or type a new value to replace it.{% else %}Leave empty if the private key is not encrypted.{% endif %}
+                            </p>
+                        </div>
                     </div>
-                    <div>
-                        <label for="vbn_secret_phrase" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Key Passphrase (optional)</label>
-                        <input type="text" name="vbn_secret_phrase" id="vbn_secret_phrase"
-                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
-                               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
-                               placeholder="{% if asset.has_passphrase %}Leave blank to keep current passphrase{% else %}Key passphrase (if encrypted){% endif %}">
-                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                            {% if asset.has_passphrase %}A passphrase is currently stored. Leave this field blank to keep it, or type a new value to replace it.{% else %}Leave empty if the private key is not encrypted.{% endif %}
+
+                    {# Generated source: the public key + Push / Test
+                       buttons live in the dedicated "SSH key pair" card
+                       below (outside this form). #}
+                    <div x-show="keySource === 'generated'" x-cloak class="rounded-md bg-blue-50 dark:bg-blue-900/30 p-4" data-testid="ssh-key-generated-note">
+                        <p class="text-sm text-blue-700 dark:text-blue-300">
+                            This asset uses a Vauban-generated key pair. Manage the public key
+                            (push to target, view) in the <strong>SSH key pair</strong> card below.
                         </p>
                     </div>
                 </div>
@@ -299,5 +337,102 @@
             </button>
         </div>
     </form>
+
+    {# SSH key pair management card. Lives OUTSIDE the edit form so its
+       HTMX actions (push / test) never submit the main form. Only shown
+       for SSH assets using key-based auth. The Push button installs the
+       (clear) public key on the target via a one-shot password; the Test
+       button performs a key-based auth dry-run. Host key pinning is
+       mandatory server-side for both. #}
+    {% if asset.asset_type == "ssh" && asset.ssh_auth_type == "ssh_key" %}
+    <div class="mt-6 bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden" data-testid="ssh-key-pair-card"
+         x-data="{ pushModalOpen: false }">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">SSH key pair</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Public key onboarding for this asset. The private key is sealed in the vault and never displayed.
+            </p>
+        </div>
+        <div class="px-4 py-5 sm:p-6 space-y-4">
+            {% if let Some(pubkey) = asset.ssh_public_key %}
+            <div>
+                <label class="block text-sm font-medium text-gray-500 dark:text-gray-400">Public key</label>
+                <pre data-testid="ssh-public-key" class="mt-1 p-3 text-xs bg-gray-50 dark:bg-gray-900 rounded-md text-gray-900 dark:text-gray-200 font-mono whitespace-pre-wrap break-all">{{ pubkey }}</pre>
+                {% if asset.ssh_pubkey_pushed %}
+                <p class="mt-1 text-xs text-green-600 dark:text-green-400" data-testid="ssh-pubkey-pushed">This public key has been pushed to the target.</p>
+                {% endif %}
+            </div>
+            {% else %}
+            <p class="text-sm text-gray-500 dark:text-gray-400">No public key on file for this asset.</p>
+            {% endif %}
+
+            <div class="flex flex-wrap gap-2">
+                {# Test key-based authentication (dry-run). #}
+                <form hx-post="/assets/manage/{{ asset.uuid }}/test-key-auth"
+                      hx-target="#ssh-test-result"
+                      hx-swap="outerHTML"
+                      x-data="csrf"
+                      class="flex-shrink-0">
+                    <input type="hidden" name="csrf_token" x-model="token" />
+                    <button type="submit" data-testid="ssh-test-button"
+                            class="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-md transition-colors">
+                        Test key-based authentication
+                    </button>
+                </form>
+
+                {# Push public key: opens a modal that asks for a one-shot
+                   password used solely to append the key to the target. #}
+                <button type="button" data-testid="ssh-push-button"
+                        x-on:click="pushModalOpen = true"
+                        class="px-3 py-1.5 text-sm bg-vauban-600 hover:bg-vauban-500 text-white rounded-md transition-colors">
+                    Push public key to asset
+                </button>
+            </div>
+
+            <div id="ssh-test-result"></div>
+            <div id="ssh-push-result"></div>
+        </div>
+
+        {# Push password modal (pattern: accounts/profile.html). #}
+        <div x-show="pushModalOpen" x-cloak
+             class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+             x-on:keydown.escape.window="pushModalOpen = false">
+            <div class="w-full max-w-md bg-white dark:bg-gray-800 rounded-lg shadow-xl"
+                 x-on:click.outside="pushModalOpen = false">
+                <form hx-post="/assets/manage/{{ asset.uuid }}/push-public-key"
+                      hx-target="#ssh-push-result"
+                      hx-swap="outerHTML"
+                      x-on:htmx:after-request="pushModalOpen = false"
+                      x-data="csrf">
+                    <input type="hidden" name="csrf_token" x-model="token" />
+                    <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                        <h3 class="text-lg font-medium text-gray-900 dark:text-white">Push public key</h3>
+                        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                            Enter a password for <code>{{ asset.ssh_username }}</code> on the target. It is used
+                            once to append the public key to <code>~/.ssh/authorized_keys</code> and is never stored.
+                        </p>
+                    </div>
+                    <div class="px-4 py-5 sm:p-6">
+                        <label for="push_password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
+                        <input type="password" name="password" id="push_password" data-testid="ssh-push-password"
+                               autocomplete="off"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                               required>
+                    </div>
+                    <div class="px-4 py-4 sm:px-6 flex justify-end gap-2 border-t border-gray-200 dark:border-gray-700">
+                        <button type="button" x-on:click="pushModalOpen = false"
+                                class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-4 py-2 text-sm font-semibold text-gray-900 dark:text-white ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                            Cancel
+                        </button>
+                        <button type="submit" data-testid="ssh-push-submit"
+                                class="inline-flex items-center rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white hover:bg-vauban-500">
+                            Push
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 </div>
 {% endblock %}
