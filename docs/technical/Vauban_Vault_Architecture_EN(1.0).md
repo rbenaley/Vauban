@@ -59,7 +59,7 @@ This document covers the internal architecture of `vauban-vault`. It is a compan
 | `vauban-web` process compromise | Web process never sees encryption keys; plaintext TOTP secrets are transiently visible for local QR generation, then zeroized |
 | `vauban-vault` memory dump | Plaintext zeroized immediately after use; master key zeroized on drop |
 | Log leakage | `SensitiveString` and `SecretString` redact on `Debug`/`Display` |
-| Master key file theft | File permissions `0400` owner `vauban_vault`; read once then closed |
+| Master key file theft | File permissions `0440` owner `root:vb-vault` (uid/gid 902); read once then closed |
 | Compromised vault process (post-sandbox) | Capsicum limits to IPC pipes only; no filesystem, no network |
 
 ---
@@ -690,18 +690,24 @@ The master key is a 32-byte (256-bit) random value stored in a file:
 | Property | Value |
 |----------|-------|
 | Size | 32 bytes (raw binary) |
-| Permissions | `0400` (owner read-only) |
-| Owner | `vauban_vault:vauban_vault` (uid 902) |
+| Permissions | `0440` (owner read + group read) |
+| Owner | `root:vb-vault` (uid/gid 902) |
 | Read | Once at startup, before `cap_enter()` |
 | In memory | Zeroized on `Drop` |
+
+On FreeBSD package installs, `pkg/+POST_INSTALL` generates the file
+idempotently when absent. Manual installs use the same ownership and mode.
 
 ### 6.2 Master Key Generation
 
 ```sh
-# Generate a cryptographically secure master key (one-time operation)
-dd if=/dev/urandom of=/var/vauban/vault/master.key bs=32 count=1
-chmod 0400 /var/vauban/vault/master.key
-chown vauban_vault:vauban_vault /var/vauban/vault/master.key
+# Manual / non-package (matches +POST_INSTALL)
+mkdir -p /var/vauban/vault
+chown root:vb-vault /var/vauban/vault
+chmod 750 /var/vauban/vault
+dd if=/dev/random of=/var/vauban/vault/master.key bs=32 count=1
+chmod 440 /var/vauban/vault/master.key
+chown root:vb-vault /var/vauban/vault/master.key
 ```
 
 ### 6.3 Key Derivation
@@ -742,8 +748,9 @@ Contains a single integer (e.g. `3`), indicating the current number of key versi
 | Property | Value |
 |----------|-------|
 | Format | ASCII integer (e.g. `3`) |
-| Permissions | `0600` (owner read-write) |
-| Owner | `vauban_vault:vauban_vault` (uid 902) |
+| Permissions | `0440` when present (same group-read model as `master.key`) |
+| Owner | `root:vb-vault` (uid/gid 902) |
+| Default | File absent → version `1` at runtime |
 
 #### 6.4.2 Rotation Procedure
 

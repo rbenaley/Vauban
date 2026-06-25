@@ -34,19 +34,29 @@ See [Vauban_Vault_Architecture_EN(1.0).md](../docs/technical/Vauban_Vault_Archit
 
 The master key is a 32-byte (256-bit) random key used to derive all encryption keys. It must be generated **once** and stored securely.
 
-**Production (FreeBSD):**
+**Production (FreeBSD package):**
+
+On a `pkg install`, `+POST_INSTALL` creates `/var/vauban/vault/master.key`
+automatically when the file is absent (idempotent on upgrade). No manual
+`dd`/`chmod`/`chown` is required. The package sets:
+
+| Property | Value |
+|----------|-------|
+| Owner | `root:vb-vault` (UID/GID 902) |
+| Mode | `0440` (owner read + group read; vault reads via group) |
+| Entropy | `/dev/random` (32 bytes) |
+
+Back up the key after first install. Loss means encrypted data is unrecoverable.
+
+**Production (manual / non-package):**
 
 ```bash
-# Create the vault directory
 sudo mkdir -p /var/vauban/vault
-sudo chown root:vauban /var/vauban/vault
+sudo chown root:vb-vault /var/vauban/vault
 sudo chmod 750 /var/vauban/vault
 
-# Generate a 32-byte master key from the OS CSPRNG
 dd if=/dev/random of=/var/vauban/vault/master.key bs=32 count=1
-
-# Restrict permissions: readable only by root and the vauban group
-sudo chown root:vauban /var/vauban/vault/master.key
+sudo chown root:vb-vault /var/vauban/vault/master.key
 sudo chmod 440 /var/vauban/vault/master.key
 ```
 
@@ -73,7 +83,7 @@ The key version file determines how many derived key versions are maintained. Ve
 
 ```bash
 echo "1" | sudo tee /var/vauban/vault/key_version
-sudo chown root:vauban /var/vauban/vault/key_version
+sudo chown root:vb-vault /var/vauban/vault/key_version
 sudo chmod 440 /var/vauban/vault/key_version
 ```
 
@@ -90,9 +100,9 @@ export VAUBAN_VAULT_KEY_VERSION=1
 wc -c /var/vauban/vault/master.key
 # Expected output: 32 /var/vauban/vault/master.key
 
-# Check permissions (should be 440 or 400)
+# Check permissions (production package: 440 root:vb-vault)
 ls -la /var/vauban/vault/master.key
-# Expected: -r--r----- 1 root vauban 32 ... master.key
+# Expected: -r--r----- 1 root vb-vault 32 ... master.key
 ```
 
 ## Configuration
@@ -115,8 +125,8 @@ All environment variables are **cleared from memory** immediately after reading 
 
 ```
 /var/vauban/vault/
-    master.key      # 32 bytes, chmod 440, root:vauban
-    key_version     # Text file containing "1" (or higher), chmod 440
+    master.key      # 32 bytes, chmod 440, root:vb-vault
+    key_version     # Text file containing "1" (or higher), chmod 440, optional
 ```
 
 ## Running

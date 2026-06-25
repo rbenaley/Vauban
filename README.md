@@ -24,11 +24,13 @@ docs/                 # Technical architecture documentation
 
 ## Features
 
-- **Secure Authentication**: JWT-based authentication with MFA (TOTP) support
-- **RBAC Integration**: Role-based access control via IPC
-- **Asset Management**: Manage SSH and RDP assets
-- **Session Management**: Track and monitor proxy sessions
-- **Post-Quantum Cryptography**: Hybrid classical + PQ crypto support
+- **Secure Authentication**: Session cookies (JWT) with mandatory MFA (TOTP) for
+  the web UI; scoped API keys (`vbn_…`) for machine-to-machine `/api/v1/*` access
+- **RBAC Integration**: Role-based access control via IPC (Casbin)
+- **Asset Management**: SSH, RDP, and IACS assets with admin/user URL zones
+- **Session Management**: Track, record, and monitor proxy sessions
+- **Post-Quantum Cryptography**: Hybrid classical + PQ crypto in the SSH stack
+  (russh / ml-kem)
 - **Type Safety**: Compile-time verified SQL queries (Diesel) and templates (Askama)
 
 ## Technology Stack
@@ -38,7 +40,7 @@ docs/                 # Technical architecture documentation
 - **Cache**: in-process no-op (no external cache server)
 - **Templates**: Askama (compile-time verified)
 - **IPC**: Unix pipes for inter-service communication
-- **Authentication**: JWT, Argon2id, TOTP
+- **Authentication**: Session JWT (web), scoped API keys (M2M), Argon2id, TOTP
 
 ## Security
 
@@ -64,6 +66,7 @@ Detailed technical architecture documents are available in [`docs/technical/`](d
 | [ACME TLS Certificate Architecture](docs/technical/Vauban_ACME_TLS_Architecture_EN(1.0).md) | Automatic certificate renewal, TLS-ALPN-01, zero-downtime rotation |
 | [Session Recording Architecture](docs/technical/Vauban_Recording_Architecture_EN(1.5).md) | RDP segmented fMP4 + SSH asciicast v2 + IACS PCAP bundle (`pcap-bundle`) with synthetic L3/L4 (Wireshark-compatible), input redaction, DASH/asciinema playback, ZIP download |
 | [IAM Architecture](docs/technical/Vauban_IAM_Architecture_EN(1.0).md) | Two-layer authorization (Casbin RBAC + instance-level access rules), Argon2id auth service, JIT approval audit & separation of duties |
+| [LDAPS Auth Architecture](docs/technical/Vauban_LDAPS_Auth_Architecture_EN(1.0).md) | Directory-backed login, LDAPS bind via vauban-auth, JIT provisioning, anti-downgrade |
 | [AccessGuard Architecture](docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md) | Shared `shared::access_guard` defense-in-depth RBAC re-check gate (fail-closed, 10s timeout, RAII pending-map) |
 | [IACS Proxy Architecture](docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.0).md) | EWS-facing russh sshd, per-asset target resolution, Capsicum-aware FD passing (listener + Ed25519 host key), anti-SSRF supervisor broker, BLAKE3 session-token gate |
 | [IACS Inspect Capture](docs/technical/Vauban_IACS_Inspect_Capture_EN(1.0).md) | Admin-only inline PCAP analyzer for IACS recordings: industrial-protocol-aware dissectors (Modbus/TCP, IEC-104, passthrough), tree<->hex bidirectional highlight, server-rendered HTMX + Tailwind, no inline JavaScript |
@@ -112,7 +115,9 @@ just clippy
 cargo run
 ```
 
-The supervisor reads `config/default.toml`, forks all 7 child processes, sets up IPC pipes, drops privileges, and enters the watchdog loop.
+The supervisor reads `config/default.toml`, forks 7 child processes (8 when
+`[industrial]` IACS is enabled), sets up IPC pipes, drops privileges, and enters
+the watchdog loop.
 
 ## Configuration
 
@@ -297,7 +302,9 @@ cargo run -- migrate-secrets
 ```
 
 **Prerequisites**:
-- The master key must be available at `/var/vauban/vault/master.key` (or set `VAUBAN_VAULT_MASTER_KEY_PATH`)
+- The master key must be available at `/var/vauban/vault/master.key` (or set
+  `VAUBAN_VAULT_MASTER_KEY_PATH`). On FreeBSD, `pkg install` creates it via
+  `+POST_INSTALL` when absent (`root:vb-vault`, mode `0440`).
 - The key version file at `/var/vauban/vault/key_version` (optional, defaults to 1)
 
 **Environment variables**:
@@ -313,7 +320,8 @@ The `--dry-run` flag is recommended before any production migration.
 
 **What it migrates**:
 - `users.mfa_secret` - TOTP secrets
-- `assets.connection_config` - Credential fields: `password`, `private_key`, `passphrase`
+- `assets.connection_config` - Credential fields: `password`, `private_key`
+  (SSH key material for `auth_type = ssh_key`), `passphrase`
 
 > **Note**: Encrypt-on-read is also built into the application itself. When a user logs in
 > with a plaintext MFA secret, it is automatically encrypted and updated in the database.
@@ -321,54 +329,67 @@ The `--dry-run` flag is recommended before any production migration.
 
 ## API Endpoints
 
+The `/api/v1/*` tree is the **machine-to-machine** surface. It authenticates
+exclusively via **API keys** (`vbn_…` prefix, sent as `X-API-Key` or
+`Authorization: Bearer vbn_…`). Human session JWTs (cookie or Bearer) are
+**not** accepted on `/api/*`. Each key carries coarse scopes (`read`, `write`,
+`admin`) intersected with the owner's Casbin permissions. Keys are managed in
+the web UI at `/accounts/apikeys`.
+
+Unauthenticated endpoints (`POST /api/v1/auth/login`) exist for legacy clients
+but return session JWTs usable only on **web** routes, not on subsequent
+`/api/v1/*` calls. Prefer API keys for automation.
+
+When `[server.api_enabled]` is false, every `/api/v1/*` route returns 404.
+
 ### Authentication
-- `POST /api/v1/auth/login` - Login
+- `POST /api/v1/auth/login` - Login (returns a web-session JWT; not for M2M)
 - `POST /api/v1/auth/logout` - Logout
 
 ### Accounts
 - `GET /api/v1/accounts` - List users
 - `POST /api/v1/accounts` - Create user
-- `GET /api/v1/accounts/:uuid` - Get user
-- `PUT /api/v1/accounts/:uuid` - Update user
-- `DELETE /api/v1/accounts/:uuid` - Delete user (501 Not Implemented)
+- `GET /api/v1/accounts/{uuid}` - Get user
+- `PUT /api/v1/accounts/{uuid}` - Update user
+- `DELETE /api/v1/accounts/{uuid}` - Delete user (501 Not Implemented)
 
 ### Groups (Read-Only)
-- `GET /api/v1/groups/:uuid/members` - List group members
+- `GET /api/v1/groups/{uuid}/members` - List group members
 
-### Assets
-- `GET /api/v1/assets` - List assets
-- `POST /api/v1/assets` - Create asset
-- `GET /api/v1/assets/:uuid` - Get asset
-- `PUT /api/v1/assets/:uuid` - Update asset
-- `DELETE /api/v1/assets/:uuid` - Delete asset (501 Not Implemented)
+### Assets (User Zone -- read-only listing)
+- `GET /api/v1/assets` - List assets visible to the caller
+- `DELETE /api/v1/assets/{uuid}` - Delete asset (501 Not Implemented stub)
 
-### SSH Host Key Verification (SSH assets only)
-- `GET /api/v1/assets/:uuid/ssh-host-key` - Get host key status (`verified`, `mismatch`, or `no_key`)
-- `POST /api/v1/assets/:uuid/ssh-host-key` - Fetch host key from remote server (detects key changes)
-- `POST /api/v1/assets/:uuid/ssh-host-key?confirm=true` - Accept a changed host key
+### Assets (Admin Zone -- `/api/v1/assets/manage/*`, requires `assets:manage`)
+- `POST /api/v1/assets/manage/` - Create asset
+- `GET /api/v1/assets/manage/{uuid}` - Get asset
+- `PUT /api/v1/assets/manage/{uuid}` - Update asset
+- `GET /api/v1/assets/manage/groups` - List asset groups
+- `GET /api/v1/assets/manage/groups/{uuid}/assets` - List assets in a group
 
-### RDP Server Certificate Pinning (RDP assets only)
-- `GET /api/v1/assets/manage/:uuid/rdp-server-cert` - Get certificate status (`verified`, `mismatch`, or `no_key`)
-- `POST /api/v1/assets/manage/:uuid/rdp-server-cert` - Fetch the server TLS certificate SPKI (detects certificate changes)
-- `POST /api/v1/assets/manage/:uuid/rdp-server-cert?confirm=true` - Accept a changed certificate
+### SSH Host Key Verification (SSH assets, admin zone)
+- `GET /api/v1/assets/manage/{uuid}/ssh-host-key` - Host key status (`verified`, `mismatch`, or `no_key`)
+- `POST /api/v1/assets/manage/{uuid}/ssh-host-key` - Fetch host key from remote server (detects key changes)
+- `POST /api/v1/assets/manage/{uuid}/ssh-host-key?confirm=true` - Accept a changed host key
 
-### Asset Groups (Read-Only)
-- `GET /api/v1/assets/groups` - List asset groups
-- `GET /api/v1/assets/groups/:uuid/assets` - List assets in a group
+### RDP Server Certificate Pinning (RDP assets, admin zone)
+- `GET /api/v1/assets/manage/{uuid}/rdp-server-cert` - Certificate status (`verified`, `mismatch`, or `no_key`)
+- `POST /api/v1/assets/manage/{uuid}/rdp-server-cert` - Fetch the server TLS certificate SPKI (detects certificate changes)
+- `POST /api/v1/assets/manage/{uuid}/rdp-server-cert?confirm=true` - Accept a changed certificate
 
 ### Access Rules
 - `GET /api/v1/access-rules` - List access rules
 - `POST /api/v1/access-rules` - Create access rule
-- `GET /api/v1/access-rules/:uuid` - Get access rule
-- `PUT /api/v1/access-rules/:uuid` - Update access rule
-- `DELETE /api/v1/access-rules/:uuid` - Delete access rule
+- `GET /api/v1/access-rules/{uuid}` - Get access rule
+- `PUT /api/v1/access-rules/{uuid}` - Update access rule
+- `DELETE /api/v1/access-rules/{uuid}` - Delete access rule
 
 ### Sessions
 - `GET /api/v1/sessions` - List sessions
 - `POST /api/v1/sessions` - Create session
-- `GET /api/v1/sessions/:uuid` - Get session
-- `POST /api/v1/sessions/:id/terminate` - Terminate session
-- `DELETE /api/v1/sessions/:uuid` - Delete session (501 Not Implemented)
+- `GET /api/v1/sessions/{uuid}` - Get session
+- `POST /api/v1/sessions/{uuid}/terminate` - Terminate session
+- `DELETE /api/v1/sessions/{uuid}` - Delete session (501 Not Implemented)
 
 ## Testing
 
@@ -376,21 +397,24 @@ The project includes comprehensive tests following Rust best practices.
 
 ### Test Structure
 
+All integration tests live under `vauban-web/tests/` and are compiled into a
+**single** binary, `integration_tests`:
+
 ```
-tests/
-├── common/
-│   └── mod.rs           # Test utilities and fixtures
-├── auth_test.rs         # Authentication integration tests
-├── accounts_test.rs     # User management tests
-├── assets_test.rs       # Asset management tests
-├── sessions_test.rs     # Session management tests
-├── middleware_test.rs   # Middleware tests
-└── security/
-    ├── mod.rs
-    ├── auth_security.rs     # Authentication security tests
-    ├── access_control.rs    # Access control tests
-    └── input_validation.rs  # Input validation tests
+vauban-web/tests/
+├── integration_tests.rs   # Entry point (mod api; mod web; mod security; …)
+├── common/                # TestApp harness, router, helpers
+├── fixtures/              # DB fixtures (users, assets, sessions, …)
+├── api/                   # REST API tests (/api/v1/*, API keys)
+├── web/                   # HTML/HTMX page and navigation-flow tests
+├── security/              # Auth, CSRF, rate limiting, IDOR, MFA invariants
+├── middleware/            # PermissionContext, policy drift
+├── services/              # Service-layer integration (DB-only)
+├── ws/                    # WebSocket endpoint tests
+└── ipc/                   # vauban-access in-process IPC tests
 ```
+
+The workspace and `vauban-proxy-rdp` are tested separately (`just test` runs both).
 
 ### Setting Up Test Database
 
@@ -420,17 +444,15 @@ just test
 # Run unit tests only
 just test --lib
 
-# Run integration tests only
+# Run integration tests only (vauban-web)
 just test --test integration_tests
 
-# Run specific test file
-just test --test auth_test
+# Run a subset by module name (examples)
+just test --test integration_tests -- web::login_post_expiry_test
+just test --test integration_tests -- api::api_key_auth_test
 
 # Run tests with output
 just test -- --nocapture
-
-# Run security tests only
-just test --test security_test
 ```
 
 ### Test Coverage
