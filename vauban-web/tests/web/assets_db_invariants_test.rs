@@ -10,14 +10,16 @@
 //!
 //! Invariants under test:
 //!
-//! * **I1** — At most one ACTIVE row per `(hostname, port,
-//!   connection_username)` triplet
-//!   (`idx_assets_hostname_port_username_active` partial unique index,
-//!   originally introduced in
-//!   `20260330000000_add_connection_username` and re-documented from
-//!   `20260420000000_assets_irreversible_delete`).
+//! * **I1** — At most one ACTIVE row per `name`
+//!   (`idx_assets_name_active` partial unique index, introduced in
+//!   `20260625000000_assets_relax_uniqueness_to_name`, which replaced
+//!   the former `(hostname, port, connection_username)` triplet index).
+//!   Its corollary is tested too: any number of ACTIVE rows may share
+//!   the same `(hostname, port, connection_username)` triplet as long
+//!   as their names differ -- multiple accounts per host are now
+//!   first-class.
 //! * **I2** — Arbitrarily many *tombstones* (`is_deleted = true`) may
-//!   coexist on the same triplet -- audit history is unbounded.
+//!   coexist (any name, any triplet) -- audit history is unbounded.
 //! * **I3** — A tombstone MUST NOT carry credentials
 //!   (`assets_tombstone_no_secrets` CHECK constraint).
 //! * **I4** — `is_deleted` MUST NOT transition from `true` back to
@@ -91,39 +93,44 @@ async fn soft_delete_at_db(conn: &mut AsyncPgConnection, asset_id: i32) {
 }
 
 // =============================================================================
-// I1 — partial unique index on (hostname, port, connection_username)
+// I1 — partial unique index on `name` (active rows only)
 // =============================================================================
 
-/// Two ACTIVE rows on the same triplet must be rejected by the
-/// `idx_assets_hostname_port_username_active` partial unique index.
-/// SQLSTATE 23505 is the canonical "unique_violation". The index was
-/// originally introduced by
-/// `20260330000000_add_connection_username`; the
-/// `20260420000000_assets_irreversible_delete` migration only adds an
-/// explanatory `COMMENT ON INDEX` linking it to issue #17.
+/// Two ACTIVE rows with the same `name` must be rejected by the
+/// `idx_assets_name_active` partial unique index. SQLSTATE 23505 is
+/// the canonical "unique_violation". The index was introduced by
+/// `20260625000000_assets_relax_uniqueness_to_name`, replacing the
+/// former `(hostname, port, connection_username)` triplet index.
 #[tokio::test]
 #[serial]
-async fn test_i1_two_active_rows_same_triplet_rejected() {
+async fn test_i1_two_active_rows_same_name_rejected() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let hostname = format!("{}.i1.test", unique_name("host"));
-    let username = "shared";
-    let _first =
-        insert_active_asset(&mut conn, &unique_name("i1-a"), &hostname, 22, username).await;
+    let shared_name = unique_name("i1-dup-name");
+    let _first = insert_active_asset(
+        &mut conn,
+        &shared_name,
+        &format!("{}.i1a.test", unique_name("host")),
+        22,
+        "root",
+    )
+    .await;
 
+    // Same name, deliberately DIFFERENT host/port/username: only the
+    // name collision may trip the index.
     let new_asset = NewAsset {
         uuid: Uuid::new_v4(),
-        name: unique_name("i1-b"),
-        hostname: hostname.clone(),
-        port: 22,
+        name: shared_name.clone(),
+        hostname: format!("{}.i1b.test", unique_name("host")),
+        port: 2222,
         asset_type: AssetType::Ssh,
         status: "online".to_string(),
         description: None,
         connection_config: json!({}),
         created_by_id: None,
         updated_by_id: None,
-        connection_username: username.to_string(),
+        connection_username: "deploy".to_string(),
     };
     let result = diesel::insert_into(assets::table)
         .values(&new_asset)
@@ -135,19 +142,62 @@ async fn test_i1_two_active_rows_same_triplet_rejected() {
             let constraint = info.constraint_name().unwrap_or("");
             let message = info.message();
             assert!(
-                constraint.contains("idx_assets_hostname_port_username_active")
-                    || message.contains("idx_assets_hostname_port_username_active"),
-                "expected the partial unique index 'idx_assets_hostname_port_username_active' \
+                constraint.contains("idx_assets_name_active")
+                    || message.contains("idx_assets_name_active"),
+                "expected the partial unique index 'idx_assets_name_active' \
                  to fire, got constraint='{}' message='{}'",
                 constraint,
                 message
             );
         }
         other => panic!(
-            "expected UniqueViolation on idx_assets_hostname_port_username_active, got {:?}",
+            "expected UniqueViolation on idx_assets_name_active, got {:?}",
             other
         ),
     }
+}
+
+/// Corollary / the whole point of issue: many ACTIVE rows MAY share the
+/// exact same `(hostname, port, connection_username)` triplet as long
+/// as their names differ. This is the "multiple accounts on one host"
+/// scenario that the old triplet index made impossible. We insert five
+/// active rows on one triplet with distinct names and assert every
+/// insert succeeds.
+#[tokio::test]
+#[serial]
+async fn test_i1_many_active_rows_same_triplet_different_names_allowed() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let hostname = format!("{}.i1-multi.test", unique_name("host"));
+    let username = "root";
+
+    for i in 0..5 {
+        insert_active_asset(
+            &mut conn,
+            &format!("{}-{}", unique_name("i1-multi"), i),
+            &hostname,
+            22,
+            username,
+        )
+        .await;
+    }
+
+    let active_count: i64 = assets::table
+        .filter(assets::hostname.eq(&hostname))
+        .filter(assets::port.eq(22))
+        .filter(assets::connection_username.eq(username))
+        .filter(assets::is_deleted.eq(false))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .expect("count active rows on the shared triplet");
+
+    assert_eq!(
+        active_count, 5,
+        "five active rows must coexist on the same (hostname, port, username) triplet \
+         when their names differ -- the triplet is no longer a uniqueness key"
+    );
 }
 
 // =============================================================================
@@ -165,12 +215,22 @@ async fn test_i2_two_tombstones_same_triplet_allowed() {
 
     let hostname = format!("{}.i2.test", unique_name("host"));
     let username = "shared_i2";
+    // Names must be unique per run now that `name` is the active-row
+    // uniqueness key (the final active row is not cleaned up, so a
+    // static name would collide on the next run).
+    let name_prefix = unique_name("i2");
 
     let mut tombstone_uuids: Vec<Uuid> = Vec::new();
 
     for i in 0..3 {
-        let id =
-            insert_active_asset(&mut conn, &format!("i2-{}", i), &hostname, 22, username).await;
+        let id = insert_active_asset(
+            &mut conn,
+            &format!("{name_prefix}-{i}"),
+            &hostname,
+            22,
+            username,
+        )
+        .await;
         let uuid: Uuid = assets::table
             .filter(assets::id.eq(id))
             .select(assets::uuid)
@@ -180,7 +240,9 @@ async fn test_i2_two_tombstones_same_triplet_allowed() {
         soft_delete_at_db(&mut conn, id).await;
         tombstone_uuids.push(uuid);
     }
-    let _final_active = insert_active_asset(&mut conn, "i2-final", &hostname, 22, username).await;
+    let _final_active =
+        insert_active_asset(&mut conn, &format!("{name_prefix}-final"), &hostname, 22, username)
+            .await;
 
     let active_count: i64 = assets::table
         .filter(assets::hostname.eq(&hostname))

@@ -18,10 +18,11 @@
 /// (#15), recreating an asset still landed at the previous UUID, which
 /// violates the audit invariant that "delete is final" (RG-ASS-04).
 /// Issue #17 made deletion structurally irreversible: a fresh INSERT is
-/// always issued, the active triplet is enforced by the partial unique
-/// index `idx_assets_hostname_port_username_active` (originally
-/// introduced in 20260330000000_add_connection_username and
-/// re-documented from 20260420000000_assets_irreversible_delete), and a
+/// always issued. Active-row uniqueness is now enforced on the asset
+/// `name` by the partial unique index `idx_assets_name_active`
+/// (introduced in 20260625000000_assets_relax_uniqueness_to_name, which
+/// replaced the former (hostname, port, connection_username) triplet
+/// index so multiple accounts per host are first-class), and a
 /// DB trigger `assets_no_resurrection_trg` rejects any attempt to flip
 /// `is_deleted` back to `false`. The reactivation branch and its
 /// associated `force_soft_delete_keeping_config` test helper are gone:

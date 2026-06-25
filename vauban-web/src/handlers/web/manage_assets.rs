@@ -322,10 +322,12 @@ pub async fn create_asset_web(
     }
 
     // Issue #17: every create produces a fresh UUID. Soft-deleted rows
-    // sharing the same (hostname, port, username) triplet are tombstones
-    // (audit-only) and must NEVER be reactivated -- the
+    // are tombstones (audit-only) and must NEVER be reactivated -- the
     // `assets_no_resurrection_trg` trigger and the irreversible-delete
     // policy (RG-ASS-04) make any other path a security regression.
+    // Uniqueness is now enforced on the asset `name` among active rows
+    // (idx_assets_name_active); the same host/port/account may be
+    // registered under several distinct names.
     let new_uuid = ::uuid::Uuid::new_v4();
 
     // Issue #22 — stamp the audit pair on creation so the
@@ -377,7 +379,7 @@ pub async fn create_asset_web(
             diesel::result::DatabaseErrorKind::UniqueViolation,
             _,
         )) => flash_redirect(
-            flash.error("An asset with this hostname, port and username already exists"),
+            flash.error("An asset with this name already exists"),
             "/assets/manage/new",
         ),
         Err(e) => {
@@ -1669,6 +1671,14 @@ pub async fn update_asset_web(
                 &format!("/assets/manage/{asset_uuid}"),
             )
         }
+        Err(diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::UniqueViolation,
+            _,
+        )) => htmx_or_flash_redirect(
+            &headers,
+            flash.error("An asset with this name already exists"),
+            &format!("/assets/manage/{asset_uuid}/edit"),
+        ),
         Err(e) => {
             tracing::error!("Failed to update asset: {}", e);
             htmx_or_flash_redirect(

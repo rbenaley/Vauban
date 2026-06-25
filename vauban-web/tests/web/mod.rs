@@ -22,6 +22,7 @@ pub mod asset_user_admin_lifecycle_e2e_test;
 pub mod asset_user_zone_no_leak_test;
 pub mod asset_user_zone_render_snapshot_test;
 pub mod assets_db_invariants_test;
+pub mod assets_name_uniqueness_e2e_test;
 pub mod audit_authors_render_test;
 pub mod audit_instrumentation_test;
 pub mod auth_expiry_redirect_test;

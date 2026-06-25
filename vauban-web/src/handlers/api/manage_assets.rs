@@ -182,11 +182,10 @@ pub async fn create_asset(
         connection_username: "root".to_string(),
     };
 
-    // Issue #17: a UniqueViolation here means an active asset on the
-    // same (hostname, port, connection_username) triplet already exists.
-    // Tombstones do NOT count (the partial unique index only covers
-    // active rows), so a 409 here is always a true active-vs-active
-    // collision.
+    // A UniqueViolation here means an active asset with the same `name`
+    // already exists (idx_assets_name_active). Tombstones do NOT count
+    // (the partial unique index only covers active rows), so a 409 here
+    // is always a true active-vs-active name collision.
     let asset: Asset = diesel::insert_into(assets)
         .values(&new_asset)
         .get_result(&mut conn)
@@ -195,9 +194,7 @@ pub async fn create_asset(
             diesel::result::Error::DatabaseError(
                 diesel::result::DatabaseErrorKind::UniqueViolation,
                 _,
-            ) => AppError::Conflict(
-                "An asset with this hostname, port and username already exists".to_string(),
-            ),
+            ) => AppError::Conflict("An asset with this name already exists".to_string()),
             other => AppError::Database(other),
         })?;
 
@@ -334,6 +331,24 @@ pub async fn update_asset(
         .await
     {
         Ok(a) => a,
+        Err(diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::UniqueViolation,
+            _,
+        )) => {
+            // Renaming an asset onto an already-used active name
+            // (idx_assets_name_active) is a 409, not a 500, so
+            // automation can branch on it deterministically.
+            if is_htmx {
+                return htmx_error_response(
+                    StatusCode::CONFLICT,
+                    "An asset with this name already exists",
+                )
+                .into_response();
+            } else {
+                return AppError::Conflict("An asset with this name already exists".to_string())
+                    .into_response();
+            }
+        }
         Err(e) => {
             tracing::error!("Database error updating asset: {}", e);
             handle_error!(

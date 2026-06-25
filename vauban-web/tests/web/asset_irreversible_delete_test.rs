@@ -15,12 +15,16 @@
 //!   guarantee. After deleting an asset, recreating one on the same
 //!   triplet via the web form must land at a brand-new UUID, leaving
 //!   the original row as an immutable tombstone.
-//! * **`test_web_create_collision_on_active_triplet_redirects_with_flash`**
-//!   — collision on an existing active triplet must surface as a 303
-//!   back to `/assets/new` with a recognisable error flash, NOT as a
-//!   500 / generic DB error.
-//! * **`test_api_create_collision_on_active_triplet_returns_409`**
-//!   — same collision via the JSON API must return 409 Conflict so
+//! * **`test_web_create_collision_on_active_name_redirects_with_flash`**
+//!   — collision on an existing active `name` must surface as a 303
+//!   back to `/assets/manage/new` with a recognisable error flash, NOT
+//!   as a 500 / generic DB error.
+//! * **`test_web_create_multiple_accounts_same_host_distinct_names_succeeds`**
+//!   — the post-20260625 feature: the SAME (hostname, port, username)
+//!   target may be registered any number of times under distinct
+//!   names. Both creates succeed with fresh UUIDs.
+//! * **`test_api_create_collision_on_active_name_returns_409`**
+//!   — name collision via the JSON API must return 409 Conflict so
 //!   automation can branch on it deterministically.
 //! * **`test_update_on_tombstone_redirects_with_not_found_flash`**
 //!   — editing a soft-deleted asset must be rejected at the handler
@@ -189,16 +193,18 @@ async fn test_create_after_delete_yields_fresh_uuid() {
 }
 
 // =============================================================================
-// 2. Web collision on an existing active triplet
+// 2. Web collision on an existing active NAME
 // =============================================================================
 
-/// Posting a second active row on the same triplet through the web
-/// form MUST be rejected with a 303 to `/assets/new` carrying an error
-/// flash. We must NOT crash with a 500 (regression: Diesel's
-/// UniqueViolation used to bubble up unwrapped).
+/// Posting a second active row with an already-used `name` through the
+/// web form MUST be rejected with a 303 to `/assets/manage/new`
+/// carrying an error flash. We must NOT crash with a 500 (regression:
+/// Diesel's UniqueViolation used to bubble up unwrapped). The two
+/// attempts deliberately target DIFFERENT hosts so the collision can
+/// only be the name (post-20260625 the triplet is no longer unique).
 #[tokio::test]
 #[serial]
-async fn test_web_create_collision_on_active_triplet_redirects_with_flash() {
+async fn test_web_create_collision_on_active_name_redirects_with_flash() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
@@ -206,8 +212,7 @@ async fn test_web_create_collision_on_active_triplet_redirects_with_flash() {
         create_admin_user(&mut conn, &app.auth_service, &unique_name("irrev_web_409")).await;
     let csrf = app.generate_csrf_token();
 
-    let hostname = format!("{}.web-collide.test", unique_name("host"));
-    let username = "root";
+    let shared_name = unique_name("collide-name");
 
     let create1 = app
         .server
@@ -215,12 +220,12 @@ async fn test_web_create_collision_on_active_triplet_redirects_with_flash() {
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
-            ("name", &unique_name("collide-a")),
-            ("hostname", &hostname),
+            ("name", &shared_name),
+            ("hostname", &format!("{}.web-a.test", unique_name("host"))),
             ("port", "22"),
             ("asset_type", "ssh"),
             ("status", "online"),
-            ("ssh_username", username),
+            ("ssh_username", "root"),
             ("ssh_auth_type", "password"),
             ("ssh_password", "p"),
         ])
@@ -233,12 +238,12 @@ async fn test_web_create_collision_on_active_triplet_redirects_with_flash() {
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
-            ("name", &unique_name("collide-b")),
-            ("hostname", &hostname),
+            ("name", &shared_name),
+            ("hostname", &format!("{}.web-b.test", unique_name("host"))),
             ("port", "22"),
             ("asset_type", "ssh"),
             ("status", "online"),
-            ("ssh_username", username),
+            ("ssh_username", "root"),
             ("ssh_auth_type", "password"),
             ("ssh_password", "p"),
         ])
@@ -253,7 +258,7 @@ async fn test_web_create_collision_on_active_triplet_redirects_with_flash() {
     // collision flash bounces to the admin create form.
     assert_eq!(
         location, "/assets/manage/new",
-        "duplicate active triplet must bounce back to /assets/manage/new, got {}",
+        "duplicate active name must bounce back to /assets/manage/new, got {}",
         location
     );
 
@@ -271,9 +276,7 @@ async fn test_web_create_collision_on_active_triplet_redirects_with_flash() {
 
     let active_count: i64 = unwrap_ok!(
         assets::table
-            .filter(assets::hostname.eq(&hostname))
-            .filter(assets::port.eq(22))
-            .filter(assets::connection_username.eq(username))
+            .filter(assets::name.eq(&shared_name))
             .filter(assets::is_deleted.eq(false))
             .count()
             .get_result(&mut conn)
@@ -287,37 +290,110 @@ async fn test_web_create_collision_on_active_triplet_redirects_with_flash() {
     test_db::cleanup(&mut conn).await;
 }
 
+/// The headline feature of issue: an operator MAY register the same
+/// physical target (`hostname`, `port`, `connection_username`) any
+/// number of times through the web form, as long as each catalog entry
+/// carries a distinct `name`. Both creates must succeed with their own
+/// fresh UUID and both rows must remain active. This is the scenario
+/// the old triplet index wrongly rejected as "already exists".
+#[tokio::test]
+#[serial]
+async fn test_web_create_multiple_accounts_same_host_distinct_names_succeeds() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("irrev_multi_ok")).await;
+    let csrf = app.generate_csrf_token();
+
+    let hostname = format!("{}.shared-host.test", unique_name("host"));
+    let username = "root";
+
+    let mut uuids = std::collections::HashSet::new();
+    for label in ["primary", "break-glass"] {
+        let create = app
+            .server
+            .post("/assets/manage/new")
+            .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+            .form(&[
+                ("csrf_token", csrf.as_str()),
+                ("name", &unique_name(label)),
+                ("hostname", &hostname),
+                ("port", "22"),
+                ("asset_type", "ssh"),
+                ("status", "online"),
+                ("ssh_username", username),
+                ("ssh_auth_type", "password"),
+                ("ssh_password", "p"),
+            ])
+            .await;
+        assert_status(&create, 303);
+        let uuid = Uuid::parse_str(
+            create
+                .headers()
+                .get(LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|l| l.strip_prefix("/assets/manage/"))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "create '{}' must redirect to /assets/manage/{{uuid}}, not bounce to the form",
+                        label
+                    )
+                }),
+        )
+        .expect("location must carry a valid UUID");
+        assert!(uuids.insert(uuid), "each create must yield a fresh UUID");
+    }
+
+    let active_count: i64 = unwrap_ok!(
+        assets::table
+            .filter(assets::hostname.eq(&hostname))
+            .filter(assets::port.eq(22))
+            .filter(assets::connection_username.eq(username))
+            .filter(assets::is_deleted.eq(false))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
+    assert_eq!(
+        active_count, 2,
+        "two active assets must coexist on the same host/port/account when their names differ"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
 // =============================================================================
 // 3. API collision returns 409 Conflict (machine-readable)
 // =============================================================================
 
-/// Posting a second active row on the same triplet through the JSON
-/// API MUST return 409 Conflict so automation (CI scripts, IaC,
+/// Posting a second active row with an already-used `name` through the
+/// JSON API MUST return 409 Conflict so automation (CI scripts, IaC,
 /// orchestrators) can detect and recover from the duplicate without
-/// brittle string parsing.
+/// brittle string parsing. The two attempts target different hosts so
+/// only the name can collide.
 #[tokio::test]
 #[serial]
-async fn test_api_create_collision_on_active_triplet_returns_409() {
+async fn test_api_create_collision_on_active_name_returns_409() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
     let admin =
         create_admin_user(&mut conn, &app.auth_service, &unique_name("irrev_api_409")).await;
 
-    let hostname = format!("{}.api-collide.test", unique_name("host"));
-    let body = json!({
-        "name": unique_name("api-collide-a"),
-        "hostname": hostname,
-        "port": 22,
-        "asset_type": "ssh",
-        "status": "online"
-    });
+    let shared_name = unique_name("api-collide-name");
 
     let create1 = app
         .server
         .post("/api/v1/assets/manage")
         .add_header(AUTHORIZATION, app.api_key_header(&admin.api_key))
-        .json(&body)
+        .json(&json!({
+            "name": shared_name,
+            "hostname": format!("{}.api-a.test", unique_name("host")),
+            "port": 22,
+            "asset_type": "ssh",
+            "status": "online"
+        }))
         .await;
     let s = create1.status_code().as_u16();
     assert!(
@@ -331,8 +407,8 @@ async fn test_api_create_collision_on_active_triplet_returns_409() {
         .post("/api/v1/assets/manage")
         .add_header(AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
-            "name": unique_name("api-collide-b"),
-            "hostname": hostname,
+            "name": shared_name,
+            "hostname": format!("{}.api-b.test", unique_name("host")),
             "port": 22,
             "asset_type": "ssh",
             "status": "online"
@@ -342,8 +418,7 @@ async fn test_api_create_collision_on_active_triplet_returns_409() {
 
     let active_count: i64 = unwrap_ok!(
         assets::table
-            .filter(assets::hostname.eq(&hostname))
-            .filter(assets::port.eq(22))
+            .filter(assets::name.eq(&shared_name))
             .filter(assets::is_deleted.eq(false))
             .count()
             .get_result(&mut conn)
@@ -577,6 +652,9 @@ async fn test_create_delete_stress_ten_cycles_keeps_invariants() {
 
     let hostname = format!("{}.stress.test", unique_name("host"));
     let username = "root";
+    // Names are the active-row uniqueness key now, so they must be
+    // unique per run (the final active row outlives the test).
+    let name_prefix = unique_name("stress");
 
     let mut seen_uuids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
 
@@ -587,7 +665,7 @@ async fn test_create_delete_stress_ten_cycles_keeps_invariants() {
             .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
             .form(&[
                 ("csrf_token", csrf.as_str()),
-                ("name", &format!("stress-{}", cycle)),
+                ("name", &format!("{name_prefix}-{cycle}")),
                 ("hostname", &hostname),
                 ("port", "22"),
                 ("asset_type", "ssh"),
@@ -636,7 +714,7 @@ async fn test_create_delete_stress_ten_cycles_keeps_invariants() {
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
-            ("name", "stress-final"),
+            ("name", &format!("{name_prefix}-final")),
             ("hostname", &hostname),
             ("port", "22"),
             ("asset_type", "ssh"),

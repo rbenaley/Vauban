@@ -233,6 +233,79 @@ async fn login_page_with_reason_rotates_csrf() {
     }
 }
 
+/// Count the `__vauban_csrf` Set-Cookie headers in a response.
+fn csrf_set_cookie_count(response: &axum_test::TestResponse) -> usize {
+    response
+        .headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .filter(|h| {
+            h.to_str()
+                .map(|s| s.starts_with("__vauban_csrf="))
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+/// ROOT-CAUSE regression: a cold request (no CSRF cookie) for a NON-HTML
+/// response -- a static asset, a favicon, JSON, ... -- must NEVER mint a
+/// CSRF cookie. This is the fix for the recurring "Invalid or expired
+/// form" login bug: on a cold page load the browser fires the document
+/// plus several subresources concurrently, and an early cookie-less
+/// favicon/asset response used to mint its own token and clobber the one
+/// the login HTML embedded, desynchronising the double-submit pair.
+#[tokio::test]
+#[serial]
+async fn cold_static_asset_request_does_not_mint_csrf_cookie() {
+    let app = TestApp::spawn().await;
+
+    // A real, compiled-in static asset (text/css), requested with NO
+    // incoming CSRF cookie -- exactly what a browser does in parallel with
+    // the login document on a cold load.
+    let css = app.server.get("/static/css/vauban.css").await;
+    assert_status(&css, 200);
+    assert_eq!(
+        csrf_set_cookie_count(&css),
+        0,
+        "a non-HTML (text/css) response must never mint a CSRF cookie, \
+         otherwise it races the login document and clobbers its token"
+    );
+
+    // A plain text/plain endpoint must likewise not mint.
+    let health = app.server.get("/health").await;
+    assert_eq!(
+        csrf_set_cookie_count(&health),
+        0,
+        "a text/plain response must not mint a CSRF cookie either"
+    );
+}
+
+/// Companion invariant: a cold `/login` (HTML document) request MUST still
+/// mint exactly one CSRF cookie, and the hidden field must match it. This
+/// pins that restricting minting to HTML responses did not regress the
+/// page that actually needs the cookie.
+#[tokio::test]
+#[serial]
+async fn cold_login_page_mints_exactly_one_aligned_csrf_cookie() {
+    let app = TestApp::spawn().await;
+
+    let page = app.server.get("/login").await;
+    assert_status(&page, 200);
+    assert_eq!(
+        csrf_set_cookie_count(&page),
+        1,
+        "a cold /login must mint exactly one CSRF cookie"
+    );
+
+    let cookie = csrf_set_cookie(&page).expect("cold /login must Set-Cookie a CSRF token");
+    let hidden =
+        extract_login_csrf_token(&page.text()).expect("login page must carry a hidden csrf_token");
+    assert_eq!(
+        cookie, hidden,
+        "the minted cookie and the rendered hidden field must be identical"
+    );
+}
+
 /// Non-regression: a plain `/login` GET with a still-valid CSRF cookie must
 /// REUSE it (no needless rotation), preserving `get_or_create_csrf_token`.
 #[tokio::test]

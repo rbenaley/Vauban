@@ -60,12 +60,28 @@ pub fn validate_double_submit(
 
 /// Middleware to ensure a CSRF cookie exists on responses.
 ///
-/// Only adds a cookie if:
+/// Only adds a cookie if ALL of the following hold:
 /// 1. The incoming request doesn't have a valid CSRF cookie, AND
-/// 2. The handler hasn't already set a CSRF cookie in the response
+/// 2. The response is an HTML **document** (`Content-Type: text/html`), AND
+/// 3. The handler hasn't already set a CSRF cookie in the response.
 ///
-/// This prevents conflicts where both middleware and handler generate
-/// different tokens, causing validation failures.
+/// Condition (2) is the fix for the recurring "Invalid or expired form"
+/// bug on the login page. A cold page load fires several concurrent
+/// requests -- the HTML document PLUS `favicon.ico`, CSS, JS, ... -- and
+/// the early subresources (notably the speculative favicon fetch) often
+/// race ahead of the document's `Set-Cookie` being stored. If every
+/// cookie-less request were allowed to mint its own random token, the
+/// last `Set-Cookie` the browser happens to process would clobber the
+/// token embedded in the login HTML, desynchronising the double-submit
+/// pair (`__vauban_csrf` cookie vs. the form's hidden field) and failing
+/// the very first sign-in. Restricting minting to `text/html` responses
+/// guarantees that only the page the user is actually looking at
+/// establishes the cookie, and that cookie always matches the token
+/// rendered into that page. Static assets, images, JSON and redirects
+/// never touch the cookie, so they can no longer clobber it.
+///
+/// Condition (3) prevents conflicts where both middleware and handler
+/// generate different tokens (the login page mints + sets its own).
 pub async fn csrf_cookie_middleware(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
     req: axum::http::Request<axum::body::Body>,
@@ -83,8 +99,18 @@ pub async fn csrf_cookie_middleware(
 
     let response = next.run(req).await;
 
-    // Only add cookie if request didn't have one AND response doesn't already set one
-    if needs_cookie {
+    // Only mint on HTML documents (see condition 2 above) so a racing
+    // favicon / static-asset response can never overwrite the token the
+    // login page just embedded.
+    let is_html_document = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("text/html"));
+
+    // Only add cookie if request didn't have one, the response is an HTML
+    // document, AND the handler didn't already set one.
+    if needs_cookie && is_html_document {
         // Check if the handler already set a CSRF cookie in the response
         let handler_set_cookie = response
             .headers()
