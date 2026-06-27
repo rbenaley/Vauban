@@ -412,7 +412,12 @@ impl ProxyIacsClient {
                     let pool_handle = self.db_pool.lock().await.clone();
                     if let (Some(b), Some(pool)) = (broadcast_handle.as_ref(), pool_handle.as_ref())
                     {
-                        crate::tasks::dashboard::push_active_sessions_update(b, pool).await;
+                        // This pusher only runs while processing an IACS
+                        // IPC message, which only happens when the IACS
+                        // proxy is connected -- i.e. industrial.enabled =
+                        // true. Pass `true` so the IACS row it just
+                        // persisted is surfaced (not filtered out).
+                        crate::tasks::dashboard::push_active_sessions_update(b, pool, true).await;
                     }
                 }
             }
@@ -503,7 +508,12 @@ impl ProxyIacsClient {
                     let pool_handle = self.db_pool.lock().await.clone();
                     if let (Some(b), Some(pool)) = (broadcast_handle.as_ref(), pool_handle.as_ref())
                     {
-                        crate::tasks::dashboard::push_active_sessions_update(b, pool).await;
+                        // This pusher only runs while processing an IACS
+                        // IPC message, which only happens when the IACS
+                        // proxy is connected -- i.e. industrial.enabled =
+                        // true. Pass `true` so the IACS row it just
+                        // persisted is surfaced (not filtered out).
+                        crate::tasks::dashboard::push_active_sessions_update(b, pool, true).await;
                     }
                 }
             }

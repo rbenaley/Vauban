@@ -36,7 +36,11 @@ const ACTIVITY_INTERVAL_SECS: u64 = 30;
 /// Spawn is delegated to `shared::tasks::spawn_periodic` so every
 /// dashboard ticker shares the same naming, tracing and lifecycle
 /// (skip-first-tick semantics, Handle-based spawn).
-pub async fn start_dashboard_tasks(broadcast: BroadcastService, db_pool: DbPool) {
+pub async fn start_dashboard_tasks(
+    broadcast: BroadcastService,
+    db_pool: DbPool,
+    industrial_enabled: bool,
+) {
     let broadcast = Arc::new(broadcast);
     let db_pool = Arc::new(db_pool);
     let handle = tokio::runtime::Handle::current();
@@ -56,6 +60,22 @@ pub async fn start_dashboard_tasks(broadcast: BroadcastService, db_pool: DbPool)
                 }
             });
         }};
+        // Variant for passes that also need the industrial kill-switch
+        // flag (the operational `/sessions` + `/sessions/active`
+        // realtime pushers). `industrial_enabled` is `Copy` so it is
+        // captured by value on every tick.
+        ($name:literal, $period:expr, $body:ident, ind) => {{
+            let b = Arc::clone(&broadcast);
+            let p = Arc::clone(&db_pool);
+            let ind = industrial_enabled;
+            shared::tasks::spawn_periodic(&handle, $name, $period, move || {
+                let b = Arc::clone(&b);
+                let p = Arc::clone(&p);
+                async move {
+                    $body(b, p, ind).await;
+                }
+            });
+        }};
     }
 
     spawn_dashboard_task!(
@@ -66,7 +86,8 @@ pub async fn start_dashboard_tasks(broadcast: BroadcastService, db_pool: DbPool)
     spawn_dashboard_task!(
         "dashboard_sessions",
         Duration::from_secs(SESSIONS_INTERVAL_SECS),
-        sessions_pass
+        sessions_pass,
+        ind
     );
     spawn_dashboard_task!(
         "dashboard_activity",
@@ -76,7 +97,8 @@ pub async fn start_dashboard_tasks(broadcast: BroadcastService, db_pool: DbPool)
     spawn_dashboard_task!(
         "dashboard_session_list",
         Duration::from_secs(SESSIONS_INTERVAL_SECS),
-        session_list_pass
+        session_list_pass,
+        ind
     );
 
     info!("Dashboard background tasks started");
@@ -108,7 +130,11 @@ async fn stats_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
 
 /// One pass: fetch + broadcast active sessions (dashboard widget +
 /// full sessions list page).
-async fn sessions_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
+async fn sessions_pass(
+    broadcast: Arc<BroadcastService>,
+    db_pool: Arc<DbPool>,
+    industrial_enabled: bool,
+) {
     // Update dashboard widget (ActiveSessions channel)
     match fetch_active_sessions(&db_pool).await {
         Ok(sessions) => {
@@ -131,11 +157,12 @@ async fn sessions_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
     }
 
     // Update full active sessions list page (ActiveSessionsList channel)
-    match fetch_active_sessions_full(&db_pool).await {
+    match fetch_active_sessions_full(&db_pool, industrial_enabled).await {
         Ok(sessions) => {
             // Send stats update
             let stats_widget = ActiveListStatsWidget {
                 sessions: sessions.clone(),
+                industrial_enabled,
             };
             if let Ok(html) = stats_widget.render() {
                 let msg = WsMessage::new("ws-sessions-stats", html);
@@ -192,8 +219,12 @@ async fn activity_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
 }
 
 /// One pass: fetch + broadcast the session list (for the /sessions page).
-async fn session_list_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
-    match fetch_session_list(&db_pool).await {
+async fn session_list_pass(
+    broadcast: Arc<BroadcastService>,
+    db_pool: Arc<DbPool>,
+    industrial_enabled: bool,
+) {
+    match fetch_session_list(&db_pool, industrial_enabled).await {
         Ok(sessions) => {
             let widget = SessionListContentWidget {
                 sessions,
@@ -296,6 +327,7 @@ async fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem
 /// Uses JOIN queries to resolve real usernames and asset names (not placeholders).
 async fn fetch_active_sessions_full(
     db_pool: &DbPool,
+    industrial_enabled: bool,
 ) -> Result<Vec<FullActiveSessionItem>, String> {
     let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
 
@@ -318,12 +350,24 @@ async fn fetch_active_sessions_full(
         // `status = 'active'`, IACS tunnels run as
         // `status = 'tunnel_active'`; we surface both so the periodic
         // 10 s push and the page-load query stay byte-identical.
-    )> = proxy_sessions::table
-        .inner_join(schema_assets::table)
-        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
-        .filter(proxy_sessions::connected_at.is_not_null())
-        .select((
+    )> = {
+        let mut q = proxy_sessions::table
+            .inner_join(schema_assets::table)
+            .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+            .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
+            .filter(proxy_sessions::connected_at.is_not_null())
+            .into_boxed();
+        // Industrial kill-switch (layer 2): drop IACS tunnels from the
+        // operational active-list push when `industrial.enabled =
+        // false`, keeping the realtime stream in lock-step with the
+        // page-load handler in `handlers::web::sessions`.
+        if !industrial_enabled {
+            q = q.filter(
+                proxy_sessions::session_type
+                    .ne(crate::models::session::SessionType::IacsTunnel),
+            );
+        }
+        q.select((
             proxy_sessions::id,
             proxy_sessions::uuid,
             users::username,
@@ -336,7 +380,8 @@ async fn fetch_active_sessions_full(
         .order(proxy_sessions::connected_at.desc())
         .load(&mut conn)
         .await
-        .unwrap_or_default();
+        .unwrap_or_default()
+    };
 
     let now = Utc::now();
     Ok(rows
@@ -413,7 +458,10 @@ async fn fetch_recent_activity(db_pool: &DbPool) -> Result<Vec<ActivityItem>, St
 }
 
 /// Fetch session list for the /sessions page (admin view, page 1, no filters).
-async fn fetch_session_list(db_pool: &DbPool) -> Result<Vec<SessionListItem>, String> {
+async fn fetch_session_list(
+    db_pool: &DbPool,
+    industrial_enabled: bool,
+) -> Result<Vec<SessionListItem>, String> {
     use crate::schema::{assets as schema_assets, proxy_sessions};
 
     let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
@@ -433,11 +481,22 @@ async fn fetch_session_list(db_pool: &DbPool) -> Result<Vec<SessionListItem>, St
         Option<chrono::DateTime<chrono::Utc>>,
         Option<chrono::DateTime<chrono::Utc>>,
         bool,
-    )> = proxy_sessions::table
-        .inner_join(schema_assets::table)
-        .filter(proxy_sessions::status.ne("pending"))
-        .filter(proxy_sessions::status.ne("orphaned"))
-        .select((
+    )> = {
+        let mut q = proxy_sessions::table
+            .inner_join(schema_assets::table)
+            .filter(proxy_sessions::status.ne("pending"))
+            .filter(proxy_sessions::status.ne("orphaned"))
+            .into_boxed();
+        // Industrial kill-switch (layer 2): exclude IACS history rows
+        // from the realtime `/sessions` list push when the master
+        // switch is off (mirror of the page-load handler).
+        if !industrial_enabled {
+            q = q.filter(
+                proxy_sessions::session_type
+                    .ne(crate::models::session::SessionType::IacsTunnel),
+            );
+        }
+        q.select((
             proxy_sessions::id,
             proxy_sessions::uuid,
             schema_assets::name,
@@ -454,7 +513,8 @@ async fn fetch_session_list(db_pool: &DbPool) -> Result<Vec<SessionListItem>, St
         .limit(SESSIONS_PER_PAGE)
         .load(&mut conn)
         .await
-        .unwrap_or_default();
+        .unwrap_or_default()
+    };
 
     let now = Utc::now();
     Ok(db_sessions
@@ -504,8 +564,12 @@ async fn fetch_session_list(db_pool: &DbPool) -> Result<Vec<SessionListItem>, St
 ///
 /// Called by handlers (e.g. terminate_session) to trigger an instant
 /// refresh of the /sessions page without waiting for the next polling cycle.
-pub async fn push_session_list_update(broadcast: &BroadcastService, db_pool: &DbPool) {
-    match fetch_session_list(db_pool).await {
+pub async fn push_session_list_update(
+    broadcast: &BroadcastService,
+    db_pool: &DbPool,
+    industrial_enabled: bool,
+) {
+    match fetch_session_list(db_pool, industrial_enabled).await {
         Ok(sessions) => {
             let widget = SessionListContentWidget {
                 sessions,
@@ -524,11 +588,16 @@ pub async fn push_session_list_update(broadcast: &BroadcastService, db_pool: &Db
 ///
 /// Called by handlers (e.g. terminate_session) to trigger an instant
 /// refresh of the /sessions/active page without waiting for the next polling cycle.
-pub async fn push_active_sessions_update(broadcast: &BroadcastService, db_pool: &DbPool) {
-    match fetch_active_sessions_full(db_pool).await {
+pub async fn push_active_sessions_update(
+    broadcast: &BroadcastService,
+    db_pool: &DbPool,
+    industrial_enabled: bool,
+) {
+    match fetch_active_sessions_full(db_pool, industrial_enabled).await {
         Ok(sessions) => {
             let stats_widget = ActiveListStatsWidget {
                 sessions: sessions.clone(),
+                industrial_enabled,
             };
             if let Ok(html) = stats_widget.render() {
                 let msg = WsMessage::new("ws-sessions-stats", html);

@@ -23,6 +23,25 @@
 #     log lines, kept under the same whitelist for symmetry).
 #   - test files (`tests/**` and `#[cfg(test)] mod tests` blocks).
 #
+# Layer-2 DB-filter whitelist. The IACS kill-switch is not purely a
+# Casbin gate: a `read_all` admin would still SEE IACS rows in list
+# queries if the DB query did not also drop them. These handlers
+# therefore read `industrial.enabled` directly to add a
+# `.filter(... .ne(iacs))` clause to their list queries (assets) or
+# to exclude IACS sessions from the operational `/sessions` +
+# `/sessions/active` surfaces (sessions). This is NOT a parallel
+# *decision* path (the Casbin gate still fences the entry-points);
+# it is the data-visibility layer that complements it. Pinned by
+# `tests/web/iacs_kill_switch_test.rs` (assets) and
+# `tests/web/iacs_sessions_kill_switch_test.rs` (sessions).
+#
+#   - `vauban-web/src/handlers/web/assets.rs`
+#   - `vauban-web/src/handlers/api/assets.rs`
+#   - `vauban-web/src/handlers/web/sessions.rs`
+#   - `vauban-web/src/handlers/websocket.rs`
+#   - `vauban-web/src/handlers/api/sessions.rs`
+#   - `vauban-web/src/handlers/web/users.rs`
+#
 # Returns non-zero on the first forbidden read so it plugs into CI.
 # Companion of:
 #   - `tests/web/iacs_kill_switch_test.rs` (runtime invariant: routes
@@ -39,6 +58,13 @@ ALLOWED=(
     "src/auth/permissions.rs"
     "src/main.rs"
     "scripts/check_iacs_kill_switch.sh"
+    # Layer-2 DB-filter readers (see header comment).
+    "src/handlers/web/assets.rs"
+    "src/handlers/api/assets.rs"
+    "src/handlers/web/sessions.rs"
+    "src/handlers/websocket.rs"
+    "src/handlers/api/sessions.rs"
+    "src/handlers/web/users.rs"
 )
 
 errors=0

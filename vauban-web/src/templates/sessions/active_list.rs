@@ -61,6 +61,10 @@ pub struct ActiveListTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub sessions: Vec<ActiveSessionItem>,
     pub pagination: Option<Pagination>,
+    /// Industrial kill-switch (`industrial.enabled`). When `false`,
+    /// the IACS stat tile is hidden (layer 5); the active-list query
+    /// (layer 2) already excludes IACS tunnels so the count is 0.
+    pub industrial_enabled: bool,
 }
 
 impl ActiveListTemplate {
@@ -98,6 +102,9 @@ pub struct ActiveListContentWidget {
 #[template(path = "sessions/active_list_stats.html")]
 pub struct ActiveListStatsWidget {
     pub sessions: Vec<ActiveSessionItem>,
+    /// Industrial kill-switch (`industrial.enabled`). Hides the IACS
+    /// stat tile (layer 5) when `false`.
+    pub industrial_enabled: bool,
 }
 
 impl ActiveListStatsWidget {
@@ -201,6 +208,7 @@ mod tests {
             header_user: None,
             sessions: vec![create_test_active_session_item("ssh")],
             pagination: None,
+            industrial_enabled: true,
         };
 
         let result = template.render();
@@ -257,6 +265,7 @@ mod tests {
     fn test_active_list_stats_widget_renders() {
         let widget = ActiveListStatsWidget {
             sessions: vec![create_test_active_session_item("ssh")],
+            industrial_enabled: true,
         };
         let result = widget.render();
         assert!(result.is_ok(), "ActiveListStatsWidget should render");
@@ -270,6 +279,7 @@ mod tests {
     fn test_active_list_stats_widget_empty() {
         let widget = ActiveListStatsWidget {
             sessions: Vec::new(),
+            industrial_enabled: true,
         };
         let result = widget.render();
         assert!(result.is_ok(), "ActiveListStatsWidget should render with 0");
@@ -285,6 +295,7 @@ mod tests {
                 create_test_active_session_item("ssh"),
                 create_test_active_session_item("rdp"),
             ],
+            industrial_enabled: true,
         };
         let result = widget.render();
         assert!(result.is_ok());

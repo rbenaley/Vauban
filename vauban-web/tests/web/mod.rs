@@ -53,6 +53,8 @@ pub mod iacs_my_requests_render_test;
 pub mod iacs_per_asset_target_pin_test;
 pub mod iacs_revocation_watchdog_test;
 pub mod iacs_session_list_row_test;
+pub mod iacs_sessions_kill_switch_test;
+pub mod iacs_sessions_surface_e2e_test;
 pub mod iacs_test;
 pub mod iacs_tunnel_handler_test;
 pub mod iacs_tunnel_hardening_test;

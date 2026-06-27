@@ -1258,6 +1258,7 @@ async fn send_initial_active_sessions_data(
     // Send stats widget
     let stats_widget = ActiveListStatsWidget {
         sessions: sessions.clone(),
+        industrial_enabled: state.config.industrial.enabled,
     };
     if let Ok(html) = stats_widget.render() {
         let msg = WsMessage::new("ws-sessions-stats", html);
@@ -1311,12 +1312,23 @@ pub(crate) async fn fetch_active_sessions_list(
         // `status = 'tunnel_active'`; both surface on this WebSocket
         // initial-data send so a freshly-subscribed admin tab matches
         // the page-load HTML byte-for-byte.
-    )> = proxy_sessions::table
-        .inner_join(schema_assets::table)
-        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
-        .filter(proxy_sessions::connected_at.is_not_null())
-        .select((
+    )> = {
+        let mut q = proxy_sessions::table
+            .inner_join(schema_assets::table)
+            .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+            .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
+            .filter(proxy_sessions::connected_at.is_not_null())
+            .into_boxed();
+        // Industrial kill-switch (layer 2): exclude IACS tunnels from
+        // the WebSocket initial-data send when `industrial.enabled =
+        // false`, so a freshly-subscribed admin tab matches the
+        // (already IACS-filtered) page-load HTML.
+        if !state.config.industrial.enabled {
+            q = q.filter(
+                proxy_sessions::session_type.ne(crate::models::session::SessionType::IacsTunnel),
+            );
+        }
+        q.select((
             proxy_sessions::id,
             proxy_sessions::uuid,
             users::username,
@@ -1329,7 +1341,8 @@ pub(crate) async fn fetch_active_sessions_list(
         .order(proxy_sessions::connected_at.desc())
         .load(&mut conn)
         .await
-        .unwrap_or_default();
+        .unwrap_or_default()
+    };
 
     let now = Utc::now();
     Ok(rows
@@ -1536,11 +1549,21 @@ pub(crate) async fn fetch_session_list_data(
         Option<chrono::DateTime<chrono::Utc>>,
         Option<chrono::DateTime<chrono::Utc>>,
         bool,
-    )> = proxy_sessions::table
-        .inner_join(schema_assets::table)
-        .filter(proxy_sessions::status.ne("pending"))
-        .filter(proxy_sessions::status.ne("orphaned"))
-        .select((
+    )> = {
+        let mut q = proxy_sessions::table
+            .inner_join(schema_assets::table)
+            .filter(proxy_sessions::status.ne("pending"))
+            .filter(proxy_sessions::status.ne("orphaned"))
+            .into_boxed();
+        // Industrial kill-switch (layer 2): exclude IACS history rows
+        // from the realtime `/sessions` list initial-data send when
+        // the master switch is off (mirror of the page-load handler).
+        if !state.config.industrial.enabled {
+            q = q.filter(
+                proxy_sessions::session_type.ne(crate::models::session::SessionType::IacsTunnel),
+            );
+        }
+        q.select((
             proxy_sessions::id,
             proxy_sessions::uuid,
             schema_assets::name,
@@ -1557,7 +1580,8 @@ pub(crate) async fn fetch_session_list_data(
         .limit(SESSIONS_PER_PAGE)
         .load(&mut conn)
         .await
-        .unwrap_or_default();
+        .unwrap_or_default()
+    };
 
     let now = Utc::now();
     Ok(db_sessions

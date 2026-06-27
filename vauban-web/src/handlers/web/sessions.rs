@@ -65,6 +65,21 @@ pub async fn session_list(
     count_query = count_query.filter(proxy_sessions::status.ne("pending"));
     count_query = count_query.filter(proxy_sessions::status.ne("orphaned"));
 
+    // Industrial kill-switch (layer 2): when `industrial.enabled =
+    // false`, IACS tunnel sessions drop out of the operational
+    // `/sessions` history list at the DB level. Applied to BOTH the
+    // data and count queries so pagination stays in lock-step (mirror
+    // of the user-zone assets list in `handlers::web::assets`). A
+    // hand-crafted `?type=iacs_tunnel` is rendered inert by this
+    // `ne(IacsTunnel)` clause even though the type filter still
+    // parses. Forensic surfaces (`/sessions/recordings`, `/audit`)
+    // are intentionally NOT gated -- yesterday's audit trail survives
+    // switching IACS off.
+    if !state.config.industrial.enabled {
+        query = query.filter(proxy_sessions::session_type.ne(SessionType::IacsTunnel));
+        count_query = count_query.filter(proxy_sessions::session_type.ne(SessionType::IacsTunnel));
+    }
+
     if let Some(ref status) = status_filter
         && !status.is_empty()
     {
@@ -216,6 +231,7 @@ pub async fn session_list(
         show_view_link: true,
         pagination,
         ws_enabled,
+        industrial_enabled: state.config.industrial.enabled,
     };
 
     let html = template
@@ -2628,21 +2644,41 @@ pub async fn active_sessions(
     // filter clause keeps the same semantics ("really connected").
     // Pinned by
     // `tests::active_list_query_includes_iacs_tunnel_active_status`.
-    let total_items: i64 = proxy_sessions::table
+    //
+    // Industrial kill-switch (layer 2): when `industrial.enabled =
+    // false`, IACS tunnels are excluded from the operational
+    // `/sessions/active` pane (`session_type.ne(IacsTunnel)`). The
+    // base `status.eq_any(["active", "tunnel_active"])` clause is
+    // preserved so the three-site lock-step pin stays exact; the
+    // extra exclusion simply removes the IACS leg under the switch.
+    let mut total_query = proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
         .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
         .filter(proxy_sessions::connected_at.is_not_null())
-        .count()
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
+        .into_boxed();
+    if !state.config.industrial.enabled {
+        total_query = total_query.filter(proxy_sessions::session_type.ne(SessionType::IacsTunnel));
+    }
+    let total_items: i64 = total_query.count().get_result(&mut conn).await.unwrap_or(0);
 
     let total_pages = ((total_items as f64) / (ACTIVE_PER_PAGE as f64))
         .ceil()
         .max(1.0) as i32;
     let page = page.min(total_pages);
     let offset = ((page - 1) as i64) * ACTIVE_PER_PAGE;
+
+    let mut data_query = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
+        .filter(proxy_sessions::connected_at.is_not_null())
+        .into_boxed();
+    // Industrial kill-switch (layer 2): same exclusion as the count
+    // query above so pagination stays in lock-step.
+    if !state.config.industrial.enabled {
+        data_query = data_query.filter(proxy_sessions::session_type.ne(SessionType::IacsTunnel));
+    }
 
     #[allow(clippy::type_complexity)]
     let sessions_data: Vec<(
@@ -2654,11 +2690,7 @@ pub async fn active_sessions(
         String,
         ipnetwork::IpNetwork,
         Option<chrono::DateTime<chrono::Utc>>,
-    )> = proxy_sessions::table
-        .inner_join(schema_assets::table)
-        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
-        .filter(proxy_sessions::connected_at.is_not_null())
+    )> = data_query
         .select((
             proxy_sessions::id,
             proxy_sessions::uuid,
@@ -2751,6 +2783,7 @@ pub async fn active_sessions(
         header_user,
         sessions,
         pagination,
+        industrial_enabled: state.config.industrial.enabled,
     };
 
     let html = template

@@ -345,30 +345,76 @@ fn access_rule_edit_template_hides_iacs_checkbox_under_kill_switch() {
 }
 
 // ===================================================================
-// Audit surfaces stay visible -- pin at source-grep level
+// Forensic vs operational split -- pin at source-grep level
 // ===================================================================
 
-/// The user explicitly demanded that IACS audit / traceability /
-/// recordings stay accessible regardless of `industrial.enabled`. We
-/// pin this contract at the source level: the
-/// `handlers::web::sessions` and `handlers::web::recordings` modules
-/// MUST NOT carry an `industrial.enabled` guard. This is the
-/// flip-side of the layer-2 DB filter: forensic data is sacred, even
-/// (especially) when the master switch is off.
+/// Slice a source string from the given function signature to the
+/// next top-level `fn` boundary, so an assertion stays scoped to one
+/// function body.
+fn scoped_fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
+    let start = src
+        .find(sig)
+        .unwrap_or_else(|| panic!("function signature `{}` not found", sig));
+    let after = &src[start + sig.len()..];
+    let end_rel = after
+        .find("\nasync fn ")
+        .or_else(|| after.find("\nfn "))
+        .or_else(|| after.find("\npub async fn "))
+        .or_else(|| after.find("\npub(crate) async fn "))
+        .or_else(|| after.find("\npub fn "))
+        .map(|e| start + sig.len() + e)
+        .unwrap_or(src.len());
+    &src[start..end_rel]
+}
+
+/// The kill-switch splits the IACS session surface in two:
+///
+/// * Operational lists (`session_list`, `active_sessions`) HIDE IACS
+///   when `industrial.enabled = false` -- they gate on the flag.
+/// * Forensic surfaces (`recording_list`, the audit log) stay fully
+///   visible -- they MUST NOT carry an `industrial.enabled` guard, so
+///   yesterday's audit trail survives switching IACS off.
+///
+/// This replaces the pre-0.7.x `audit_surfaces_have_no_industrial_gate`
+/// contract, which forbade ANY gate in `handlers/web/sessions.rs`. The
+/// operational lists now legitimately read the flag; only the forensic
+/// functions remain gate-free.
 #[test]
-fn audit_surfaces_have_no_industrial_gate() {
+fn forensic_surfaces_have_no_industrial_gate_but_operational_lists_do() {
     let sessions = include_str!("../../src/handlers/web/sessions.rs");
     let audit = include_str!("../../src/handlers/web/audit.rs");
 
-    let needle = "state.config.industrial.enabled";
-    assert!(
-        !sessions.contains(needle),
-        "handlers/web/sessions.rs must NOT gate visibility on industrial.enabled \
-         (audit / traceability stays visible under the kill-switch)"
-    );
+    let needle = "industrial.enabled";
+
+    // Forensic: the audit-log handler module carries NO gate at all.
     assert!(
         !audit.contains(needle),
         "handlers/web/audit.rs must NOT gate visibility on industrial.enabled \
-         (audit log stays visible under the kill-switch)"
+         (the audit log stays visible under the kill-switch)"
+    );
+
+    // Forensic: the recordings catalogue stays visible -- its handler
+    // body must remain gate-free even though it lives in the same file
+    // as the (now gated) operational lists.
+    let recording_list = scoped_fn_body(sessions, "pub async fn recording_list");
+    assert!(
+        !recording_list.contains(needle),
+        "recording_list MUST NOT gate on industrial.enabled -- recordings \
+         are forensic and stay visible regardless of the kill-switch"
+    );
+
+    // Operational: the session history list and the active-sessions
+    // pane DO hide IACS under the kill-switch.
+    let session_list = scoped_fn_body(sessions, "pub async fn session_list");
+    assert!(
+        session_list.contains(needle) && session_list.contains("IacsTunnel"),
+        "session_list MUST exclude IACS under the kill-switch \
+         (`!state.config.industrial.enabled` + `session_type.ne(IacsTunnel)`)"
+    );
+    let active_sessions = scoped_fn_body(sessions, "pub async fn active_sessions");
+    assert!(
+        active_sessions.contains(needle) && active_sessions.contains("IacsTunnel"),
+        "active_sessions MUST exclude IACS under the kill-switch \
+         (`!state.config.industrial.enabled` + `session_type.ne(IacsTunnel)`)"
     );
 }

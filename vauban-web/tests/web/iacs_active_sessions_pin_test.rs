@@ -117,6 +117,78 @@ fn every_active_list_query_site_keeps_connected_at_not_null_guard() {
 }
 
 // ===================================================================
+// 1bis. Every active-list site must ALSO carry the industrial
+//       kill-switch branch (issue: IACS sessions leaking onto the
+//       operational `/sessions/active` surface when
+//       `industrial.enabled = false`). The base
+//       `status.eq_any(["active", "tunnel_active"])` clause stays
+//       (pinned above); under the kill-switch each site adds an
+//       `session_type.ne(... ::IacsTunnel)` exclusion gated on the
+//       flag. Scoped to the function body so an unrelated occurrence
+//       elsewhere in the file cannot mask a regression.
+// ===================================================================
+
+const ACTIVE_LIST_KILL_SWITCH_SITES: &[(&str, &str, &str)] = &[
+    (
+        "src/handlers/web/sessions.rs",
+        "pub async fn active_sessions",
+        "active_sessions handler (SSR page)",
+    ),
+    (
+        "src/tasks/dashboard.rs",
+        "async fn fetch_active_sessions_full",
+        "fetch_active_sessions_full (10 s WS pump)",
+    ),
+    (
+        "src/handlers/websocket.rs",
+        "async fn fetch_active_sessions_list",
+        "fetch_active_sessions_list (initial WS data)",
+    ),
+];
+
+/// Slice `src` from the given function signature to the next
+/// top-level `fn` boundary, so assertions stay scoped to one body.
+fn function_body<'a>(src: &'a str, sig: &str, rel: &str) -> &'a str {
+    let start = src
+        .find(sig)
+        .unwrap_or_else(|| panic!("{}: function signature `{}` not found", rel, sig));
+    let after = &src[start + sig.len()..];
+    let end_rel = after
+        .find("\nasync fn ")
+        .or_else(|| after.find("\nfn "))
+        .or_else(|| after.find("\npub async fn "))
+        .or_else(|| after.find("\npub(crate) async fn "))
+        .or_else(|| after.find("\npub fn "))
+        .map(|e| start + sig.len() + e)
+        .unwrap_or(src.len());
+    &src[start..end_rel]
+}
+
+#[test]
+fn every_active_list_query_site_has_kill_switch_branch() {
+    for (rel, sig, what) in ACTIVE_LIST_KILL_SWITCH_SITES {
+        let src = read_production_only(rel);
+        let body = function_body(&src, sig, rel);
+        assert!(
+            body.contains("IacsTunnel"),
+            "{} ({}) MUST exclude IACS tunnels under the kill-switch \
+             (`session_type.ne(... ::IacsTunnel)`). The operational \
+             active-list surface hides IACS when `industrial.enabled = \
+             false`. Pinned at tests/web/iacs_active_sessions_pin_test.rs",
+            rel,
+            what
+        );
+        assert!(
+            body.contains("industrial_enabled") || body.contains("industrial.enabled"),
+            "{} ({}) MUST gate the IACS exclusion on the industrial \
+             kill-switch flag (`industrial.enabled` / `industrial_enabled`)",
+            rel,
+            what
+        );
+    }
+}
+
+// ===================================================================
 // 2. Terminate dispatch MUST prefer proxy-iacs IPC over legacy registry.
 // ===================================================================
 

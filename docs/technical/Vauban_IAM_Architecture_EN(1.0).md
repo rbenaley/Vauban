@@ -1793,10 +1793,15 @@ environment (see `config/{development,testing}.toml` and
 
 When `industrial.enabled = false`, the **functional** IACS surface
 collapses to "as-if-it-never-existed" for the user / admin / API,
-while the **forensic** surface (sessions list, audit log,
-recordings) stays fully visible. This split is intentional: an
-operator switching off IACS tomorrow needs to *retain* yesterday's
-audit trail.
+**and the operational session lists hide IACS too** (`/sessions`
+history + type filter, `/sessions/active` rows + IACS stat tile),
+while the **forensic** surface (audit log + recordings catalogue)
+stays fully visible. This split is intentional: an operator
+switching off IACS tomorrow needs to *retain* yesterday's audit
+trail, but should not keep an "IACS" filter / live tile on the
+day-to-day session screens as if the module were still running.
+The IACS `proxy_sessions` rows are never deleted -- they reappear
+the moment the switch is flipped back on.
 
 The kill-switch is enforced through a four-layer defense:
 
@@ -1808,6 +1813,19 @@ The kill-switch is enforced through a four-layer defense:
 | 4 -- Handler defense-in-depth | `create_asset_web` / `api::create_asset`, `update_access_rule_web`, `create_access_rule_web`, `asset_detail` / `asset_edit_form` / `update_asset_web` / `delete_asset_web`, `api::get_asset` / `api::update_asset` | Every POST that could persist IACS state re-checks the flag before INSERT / UPDATE; every detail / edit / delete path collapses to **404 (anti-enumeration)** when the asset is IACS and the master switch is off. `update_access_rule_web` is **frozen-but-preserved**: it refuses to ADD `iacs_*` protocols but PRESERVES existing ones across no-op edits, so a rule born under `industrial.enabled = true` keeps its protocols across a title fix in the off mode. Pinned by `every_iacs_handler_post_re_checks_industrial_enabled`. |
 | 5 -- Template gate | `AccessRuleCreateTemplate`, `AccessRuleEditTemplate` (Askama) | IACS checkbox + helper paragraph wrapped in `{% if industrial_enabled %}`. SSH and RDP checkboxes stay -- the kill-switch is surgical, never collateral. Pinned by `template_industrial_enabled_field_pinned` and the runtime `access_rule_{create,edit}_template_hides_iacs_checkbox_under_kill_switch`. |
 
+The same DB-filter + template-gate pattern (layers 2 and 5) extends
+to the **operational session surface**:
+
+| Surface | Where | What |
+|---|---|---|
+| `/sessions` history | `handlers::web::sessions::session_list` | Adds `.filter(session_type.ne(SessionType::IacsTunnel))` (data + count, lock-step) under `!state.config.industrial.enabled`; `session_list.html` wraps the `iacs_tunnel` `<option>` in `{% if industrial_enabled %}`. |
+| `/sessions/active` | `session_list`'s sibling `active_sessions` + the three lock-step active-list query sites (`active_sessions`, `tasks::dashboard::fetch_active_sessions_full`, `handlers::websocket::fetch_active_sessions_list`) | Keep the base `status.eq_any(["active","tunnel_active"])` clause and ADD the IACS exclusion under the switch; `active_list_stats.html` wraps the IACS stat tile in `{% if industrial_enabled %}`. The realtime WS pushers (`push_session_list_update`, `push_active_sessions_update`) thread the flag through so live pushes match the page-load HTML. |
+
+Pinned by `iacs_sessions_kill_switch_test` (source-grep), the
+runtime `iacs_sessions_surface_e2e_test`, and the
+`every_active_list_query_site_has_kill_switch_branch` pin in
+`iacs_active_sessions_pin_test`.
+
 Layer 1 alone is necessary but not sufficient: it gates the
 entry-points (Connect button, sidebar links, CRUD endpoints) but
 leaves the **data** visible (an admin with `assets:read_all`
@@ -1818,19 +1836,25 @@ the list paths but cannot stop a hand-crafted POST against
 defense-in-depth: form options shape the UI, handlers re-check
 before persistence, templates hide the affordance.
 
-**Audit / traceability is intentionally orthogonal.** The
-`handlers::web::sessions` and `handlers::web::audit` modules
-carry NO industrial gate; they keep surfacing IACS sessions,
-recordings and audit-log entries regardless of the kill-switch.
-Pinned by `audit_surfaces_have_no_industrial_gate`.
+**Forensic / traceability is intentionally orthogonal.** The
+recordings catalogue (`handlers::web::sessions::recording_list` +
+`recording_list.html`, IACS `PCAP bundle` format option included)
+and the audit log (`handlers::web::audit`) carry NO industrial
+gate; they keep surfacing historical IACS recordings and
+audit-log entries regardless of the kill-switch. Only the
+**operational** session lists (`session_list`, `active_sessions`)
+gate on the flag. Pinned by
+`forensic_surfaces_have_no_industrial_gate_but_operational_lists_do`
+(it asserts `recording_list` and `audit.rs` stay gate-free while
+`session_list` / `active_sessions` carry the exclusion).
 
 The `/iacs/admin` (admin EWS workflow history) and
 `/sessions/my-requests` (user EWS workflow history) routes
 collapse to 403 / 404 under the kill-switch through layer 1
 (the `iacs_*` Casbin flags drop to `false` and the route guards
 deny). Forensic visibility into IACS sessions does NOT need
-those workflow pages: it relies exclusively on `/sessions` and
-the recordings catalogue.
+those workflow pages: it relies exclusively on the recordings
+catalogue and the audit log.
 
 ---
 

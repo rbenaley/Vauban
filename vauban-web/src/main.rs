@@ -992,7 +992,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Start background tasks for WebSocket updates
-    start_dashboard_tasks(broadcast, db_pool.clone()).await;
+    start_dashboard_tasks(broadcast, db_pool.clone(), config.industrial.enabled).await;
 
     // Start cleanup tasks for expired/idle sessions and API keys
     // (Issue #8: idle_timeout drives the auth_sessions purge predicate).

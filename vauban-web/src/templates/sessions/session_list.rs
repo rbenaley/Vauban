@@ -118,6 +118,11 @@ pub struct SessionListTemplate {
     pub pagination: Option<Pagination>,
     /// Whether WebSocket real-time updates are enabled (admin-only, page 1, no filters).
     pub ws_enabled: bool,
+    /// Industrial kill-switch (`industrial.enabled`). When `false`,
+    /// the IACS option is stripped from the type filter `<select>`
+    /// (layer 5) -- the matching DB filter (layer 2) already drops
+    /// IACS rows so the affordance would be dead anyway.
+    pub industrial_enabled: bool,
 }
 
 /// Partial widget for the session list content (used for WS pushes).
@@ -381,6 +386,7 @@ mod tests {
             show_view_link: true,
             pagination: None,
             ws_enabled: false,
+            industrial_enabled: true,
         };
 
         let result = template.render();
@@ -417,6 +423,7 @@ mod tests {
             show_view_link: false,
             pagination: None,
             ws_enabled: false,
+            industrial_enabled: true,
         };
 
         let result = template.render();
@@ -453,6 +460,7 @@ mod tests {
             show_view_link: true,
             pagination: None,
             ws_enabled: true,
+            industrial_enabled: true,
         };
 
         assert!(template.show_view_link);
@@ -490,6 +498,7 @@ mod tests {
             show_view_link: false,
             pagination: None,
             ws_enabled: false,
+            industrial_enabled: true,
         };
 
         assert!(!template.show_view_link);
@@ -569,6 +578,7 @@ mod tests {
             show_view_link: true,
             pagination: None,
             ws_enabled: true,
+            industrial_enabled: true,
         };
 
         let html = template.render().unwrap();
@@ -612,6 +622,7 @@ mod tests {
             show_view_link: false,
             pagination: None,
             ws_enabled: false,
+            industrial_enabled: true,
         };
 
         let html = template.render().unwrap();

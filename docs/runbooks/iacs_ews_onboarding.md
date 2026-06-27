@@ -71,14 +71,28 @@ Enforcement is centralised in
 - the IACS button on `/assets` is hidden,
 - every `/iacs/*` URL collapses to 404 (user zone) or 403 (admin
   zone),
+- IACS rows are dropped from the asset catalogue,
+- the **operational session lists hide IACS**: `/sessions` (history
+  list + the "IACS Tunnel" type filter option) and `/sessions/active`
+  (live rows + the IACS stat tile) no longer surface IACS sessions,
+  including over their realtime WebSocket pushes,
 - already-issued JWTs see the new flag on the next request -- no
   cache, no warm-up window.
+
+The historical IACS data is NEVER deleted. The **recordings
+catalogue** (`/sessions/recordings`, including the `PCAP bundle
+(IACS)` format filter) and the **audit log** stay fully visible so
+yesterday's forensic trail survives the toggle. Re-enabling the
+switch makes every hidden session reappear (the rows were only
+filtered, never removed).
 
 Source-level invariant pinned by
 [`scripts/check_iacs_kill_switch.sh`](../../vauban-web/scripts/check_iacs_kill_switch.sh):
 the `industrial.enabled` flag MUST NOT be read from anywhere except
-the canonical loader and `main.rs` boot. Any handler / template
-introducing a parallel decision path is flagged in CI.
+the canonical loader, `main.rs` boot, and the explicitly whitelisted
+**layer-2 DB-filter** handlers (assets + sessions) that add an
+`iacs`-exclusion clause to their list queries. Any OTHER handler /
+template introducing a parallel decision path is flagged in CI.
 
 Runtime invariant pinned by
 [`tests/web/iacs_kill_switch_test.rs`](../../vauban-web/tests/web/iacs_kill_switch_test.rs).

@@ -504,8 +504,18 @@ pub async fn terminate_session(
     }
 
     // Push real-time updates to /sessions and /sessions/active page subscribers
-    crate::tasks::dashboard::push_session_list_update(&state.broadcast, &state.db_pool).await;
-    crate::tasks::dashboard::push_active_sessions_update(&state.broadcast, &state.db_pool).await;
+    crate::tasks::dashboard::push_session_list_update(
+        &state.broadcast,
+        &state.db_pool,
+        state.config.industrial.enabled,
+    )
+    .await;
+    crate::tasks::dashboard::push_active_sessions_update(
+        &state.broadcast,
+        &state.db_pool,
+        state.config.industrial.enabled,
+    )
+    .await;
 
     if htmx {
         // Return an updated HTML fragment for the session row

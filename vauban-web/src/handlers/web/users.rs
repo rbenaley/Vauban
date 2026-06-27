@@ -2765,9 +2765,18 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
 
     // 5. Broadcast session updates
     if !active_sessions.is_empty() {
-        crate::tasks::dashboard::push_session_list_update(&state.broadcast, &state.db_pool).await;
-        crate::tasks::dashboard::push_active_sessions_update(&state.broadcast, &state.db_pool)
-            .await;
+        crate::tasks::dashboard::push_session_list_update(
+            &state.broadcast,
+            &state.db_pool,
+            state.config.industrial.enabled,
+        )
+        .await;
+        crate::tasks::dashboard::push_active_sessions_update(
+            &state.broadcast,
+            &state.db_pool,
+            state.config.industrial.enabled,
+        )
+        .await;
     }
     broadcast_sessions_update(state, user_uuid, user_id).await;
     broadcast_admin_sessions_update(state).await;

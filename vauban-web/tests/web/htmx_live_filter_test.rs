@@ -498,6 +498,7 @@ fn make_session_list(
         show_view_link: true,
         pagination: None,
         ws_enabled,
+        industrial_enabled: true,
     }
 }
 
