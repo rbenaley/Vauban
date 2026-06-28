@@ -71,6 +71,11 @@ async fn handle_create_user(
         Err(e) => return AdminResponse::Error(format!("DB pool error: {e}")),
     };
 
+    // Canonicalise to the case-insensitive identity form (same contract
+    // as the web/API create paths and the DB `lower(username)` index).
+    let username = shared::username::normalize_username(username);
+    let username = username.as_str();
+
     let user_uuid = Uuid::new_v4();
 
     #[derive(Insertable)]
@@ -130,6 +135,9 @@ async fn handle_reset_password(
         Err(e) => return AdminResponse::Error(format!("DB pool error: {e}")),
     };
 
+    // Usernames are stored in canonical (case-insensitive) form; match it.
+    let username: &str = &shared::username::normalize_username(username);
+
     match diesel::update(
         users::table
             .filter(users::username.eq(username))
@@ -156,6 +164,9 @@ async fn handle_reset_mfa(pool: &DbPool, username: &str) -> AdminResponse {
         Ok(c) => c,
         Err(e) => return AdminResponse::Error(format!("DB pool error: {e}")),
     };
+
+    // Usernames are stored in canonical (case-insensitive) form; match it.
+    let username: &str = &shared::username::normalize_username(username);
 
     match diesel::update(
         users::table

@@ -116,9 +116,15 @@ pub async fn login(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Database connection error: {}", e)))?;
 
-    // Find user by username.
+    // Find user by username. Logins are case-insensitive: the stored
+    // identity column is canonicalised to its `normalize_username` form
+    // (trimmed + lower-cased) at every write site, so we look it up by
+    // the same canonical form. The RAW `request.username` is still what
+    // gets handed to the directory bind below (an LDAP/AD bind DN may use
+    // a case-exact attribute, and AD is case-insensitive anyway).
+    let lookup_username = shared::username::normalize_username(&request.username);
     let existing_user = users
-        .filter(username.eq(&request.username))
+        .filter(username.eq(&lookup_username))
         .filter(is_deleted.eq(false))
         .first::<User>(&mut conn)
         .await
@@ -653,7 +659,10 @@ async fn jit_provision_ldap_user(
 
     let new_user = NewUser {
         uuid: ::uuid::Uuid::new_v4(),
-        username: login_name.to_string(),
+        // Canonical (case-insensitive) identity. The original casing the
+        // directory user typed is preserved verbatim in `external_id`
+        // below so the audit trail keeps the as-seen value.
+        username: shared::username::normalize_username(login_name),
         email: email_value,
         password_hash: LDAP_PASSWORD_SENTINEL.to_string(),
         first_name: None,

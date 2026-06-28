@@ -69,6 +69,10 @@ fn cmd_create_superuser() -> Result<()> {
             eprintln!("{e}");
             continue;
         }
+        // Canonicalise to the case-insensitive identity form so the
+        // superuser can log in on the web regardless of the casing typed
+        // here, and so the DB `lower(username)` unique index is honoured.
+        let input = shared::username::normalize_username(&input);
         let exists: bool = diesel::select(exists(
             users::table.filter(users::username.eq(&input).and(users::is_deleted.eq(false))),
         ))
@@ -167,6 +171,9 @@ fn cmd_reset_password(username: &str) -> Result<()> {
     if username.trim().is_empty() {
         bail!("Username cannot be empty");
     }
+    // Usernames are stored in canonical (case-insensitive) form, so an
+    // operator passing `Admin` must still resolve the stored `admin`.
+    let username: &str = &shared::username::normalize_username(username);
 
     let mut conn = load_db_connection()?;
 
@@ -230,6 +237,9 @@ fn cmd_reset_2fa(username: &str) -> Result<()> {
     if username.trim().is_empty() {
         bail!("Username cannot be empty");
     }
+    // Usernames are stored in canonical (case-insensitive) form, so an
+    // operator passing `Admin` must still resolve the stored `admin`.
+    let username: &str = &shared::username::normalize_username(username);
 
     let mut conn = load_db_connection()?;
 

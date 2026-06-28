@@ -2537,7 +2537,8 @@ sequenceDiagram
     participant DB as PostgreSQL (web)
 
     U->>W: POST /login (username, password)
-    W->>DB: SELECT * FROM users WHERE username = ?
+    Note over W: username := normalize_username(input) (trim + lower-case)
+    W->>DB: SELECT * FROM users WHERE username = ? (canonical)
     Note over W: User found, has password_hash
 
     W->>A: AuthVerifyPassword(password_hash, password)
@@ -2557,6 +2558,35 @@ sequenceDiagram
     W->>DB: INSERT INTO sessions (user_id, ...)
     W->>U: 302 Redirect + Session Cookie
 ```
+
+### Case-insensitive login identifiers
+
+Login identifiers are **case-insensitive**: `Alice`, `alice` and `ALICE`
+denote the same account. The contract is enforced on three layers that
+must stay in lock-step:
+
+1. **Canonical form** — `shared::username::normalize_username` (trim +
+   lower-case) is the single source of truth. Every write site funnels
+   through it: the REST create handler (`handlers::api::accounts`), the
+   admin web create / edit forms (`handlers::web::users`), the
+   admin IPC handlers (`ipc::admin`), the LDAP just-in-time provisioning
+   (`handlers::auth::jit_provision_ldap_user`) and the
+   `vauban-supervisor` superuser-create / reset commands.
+2. **Lookup** — the login handler looks the account up by the same
+   canonical form. The **raw** typed value is still what gets handed to
+   the LDAP/AD bind DN (`{username}` substitution): AD is case-insensitive
+   on `sAMAccountName`/UPN, and a directory using a case-exact bind
+   attribute keeps working.
+3. **Storage** — a DB-level `UNIQUE INDEX idx_users_username_lower ON
+   users (lower(username))` (migration `20260628000000`) is the final
+   backstop, so even a code path that forgets to normalise cannot create
+   a case-variant duplicate. This also closes a latent LDAP bug where a
+   re-cased spelling of an already-provisioned directory user could mint
+   a second shadow account.
+
+The original (as-typed) casing of a federated user is preserved verbatim
+in `users.external_id` for audit/forensics; only the `username` identity
+column is canonicalised.
 
 ---
 

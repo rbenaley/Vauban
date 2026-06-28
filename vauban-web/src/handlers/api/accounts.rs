@@ -112,7 +112,7 @@ pub async fn create_user(
     State(state): State<AppState>,
     _user: AuthUser,
     perms: PermissionContext,
-    Json(request): Json<CreateUserRequest>,
+    Json(mut request): Json<CreateUserRequest>,
 ) -> AppResult<Json<UserDto>> {
     if !perms.users_write {
         return Err(AppError::forbidden("users:write"));
@@ -123,6 +123,13 @@ pub async fn create_user(
 
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
+
+    // Canonicalise the identity to its case-insensitive form so logins
+    // match regardless of the casing typed at creation, and so the
+    // DB-level `lower(username)` unique index treats `Alice`/`alice` as
+    // one account. Validation runs first on the raw input (the regex
+    // accepts mixed case); normalization happens after.
+    request.username = shared::username::normalize_username(&request.username);
 
     let mut conn = state
         .db_pool

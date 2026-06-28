@@ -23,6 +23,7 @@ pub mod privdrop;
 pub mod recording_paths;
 pub mod sandbox;
 pub mod totp;
+pub mod username;
 
 // Defense-in-depth RBAC re-check helper. Pulled in by every protocol
 // proxy (vauban-proxy-ssh, vauban-proxy-rdp, ...) that opens upstream

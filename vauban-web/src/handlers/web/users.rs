@@ -486,7 +486,7 @@ pub async fn create_user_web(
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
-    Form(form): Form<CreateUserWebForm>,
+    Form(mut form): Form<CreateUserWebForm>,
 ) -> Response {
     use crate::schema::users;
 
@@ -520,6 +520,12 @@ pub async fn create_user_web(
             "/accounts/users/new",
         );
     }
+
+    // Canonicalise the identity to its case-insensitive form before any
+    // length check, duplicate lookup or INSERT, so logins match the
+    // casing-agnostic stored value and the DB `lower(username)` unique
+    // index is never tripped by an avoidable 500.
+    form.username = shared::username::normalize_username(&form.username);
 
     // Validate username
     if form.username.len() < 3 || form.username.len() > 50 {
@@ -840,7 +846,7 @@ pub async fn update_user_web(
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(user_uuid): axum::extract::Path<String>,
-    Form(form): Form<UpdateUserWebForm>,
+    Form(mut form): Form<UpdateUserWebForm>,
 ) -> Response {
     use crate::schema::users;
     use crate::services::role_invariants::{
@@ -974,6 +980,11 @@ pub async fn update_user_web(
             &format!("/accounts/users/{}/edit", user_uuid),
         );
     }
+
+    // Canonicalise the identity to its case-insensitive form before the
+    // length check, duplicate lookup and UPDATE (same contract as the
+    // create handler).
+    form.username = shared::username::normalize_username(&form.username);
 
     // Validate username
     if form.username.len() < 3 || form.username.len() > 50 {

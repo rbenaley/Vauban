@@ -10,3 +10,4 @@ pub mod ldap_login_test;
 pub mod mfa_setup_invariants_test;
 pub mod security_test;
 pub mod session_idor_test;
+pub mod username_case_insensitive_test;
