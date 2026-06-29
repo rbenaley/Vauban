@@ -240,9 +240,14 @@ async fn test_i2_two_tombstones_same_triplet_allowed() {
         soft_delete_at_db(&mut conn, id).await;
         tombstone_uuids.push(uuid);
     }
-    let _final_active =
-        insert_active_asset(&mut conn, &format!("{name_prefix}-final"), &hostname, 22, username)
-            .await;
+    let _final_active = insert_active_asset(
+        &mut conn,
+        &format!("{name_prefix}-final"),
+        &hostname,
+        22,
+        username,
+    )
+    .await;
 
     let active_count: i64 = assets::table
         .filter(assets::hostname.eq(&hostname))

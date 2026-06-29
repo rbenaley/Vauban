@@ -73,7 +73,8 @@ async fn test_e2e_multiple_ssh_accounts_same_host_all_created() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("name_uniq_ssh")).await;
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("name_uniq_ssh")).await;
     let csrf = app.generate_csrf_token();
 
     let hostname = format!("{}.multi-ssh.test", unique_name("host"));
@@ -151,7 +152,8 @@ async fn test_e2e_multiple_rdp_entries_same_host_all_created() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("name_uniq_rdp")).await;
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("name_uniq_rdp")).await;
     let csrf = app.generate_csrf_token();
 
     let hostname = format!("{}.multi-rdp.test", unique_name("host"));
@@ -209,8 +211,12 @@ async fn test_e2e_name_collision_across_protocols_is_rejected() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin =
-        create_admin_user(&mut conn, &app.auth_service, &unique_name("name_uniq_cross")).await;
+    let admin = create_admin_user(
+        &mut conn,
+        &app.auth_service,
+        &unique_name("name_uniq_cross"),
+    )
+    .await;
     let csrf = app.generate_csrf_token();
 
     let shared_name = unique_name("cross-proto");
@@ -222,7 +228,10 @@ async fn test_e2e_name_collision_across_protocols_is_rejected() {
         .form(&[
             ("csrf_token", csrf.as_str()),
             ("name", &shared_name),
-            ("hostname", &format!("{}.cross-ssh.test", unique_name("host"))),
+            (
+                "hostname",
+                &format!("{}.cross-ssh.test", unique_name("host")),
+            ),
             ("port", "22"),
             ("asset_type", "ssh"),
             ("status", "online"),
@@ -241,7 +250,10 @@ async fn test_e2e_name_collision_across_protocols_is_rejected() {
         .form(&[
             ("csrf_token", csrf.as_str()),
             ("name", &shared_name),
-            ("hostname", &format!("{}.cross-rdp.test", unique_name("host"))),
+            (
+                "hostname",
+                &format!("{}.cross-rdp.test", unique_name("host")),
+            ),
             ("port", "3389"),
             ("asset_type", "rdp"),
             ("status", "online"),
@@ -408,8 +420,12 @@ async fn test_e2e_deleted_name_can_be_reused_with_fresh_uuid() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin =
-        create_admin_user(&mut conn, &app.auth_service, &unique_name("name_uniq_reuse")).await;
+    let admin = create_admin_user(
+        &mut conn,
+        &app.auth_service,
+        &unique_name("name_uniq_reuse"),
+    )
+    .await;
     let csrf = app.generate_csrf_token();
 
     let name = unique_name("reusable");
@@ -475,7 +491,10 @@ async fn test_e2e_deleted_name_can_be_reused_with_fresh_uuid() {
             .get_result(&mut conn)
             .await
     );
-    assert_eq!(active_holders, 1, "exactly one active row may hold the name");
+    assert_eq!(
+        active_holders, 1,
+        "exactly one active row may hold the name"
+    );
 
     let tombstones: i64 = unwrap_ok!(
         assets::table

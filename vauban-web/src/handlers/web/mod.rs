@@ -659,7 +659,11 @@ pub(crate) fn compute_updated_connection_config(
             // source to the closed {generated, existing} set so a tampered
             // edit cannot persist an arbitrary string.
             if let Some(src) = trimmed_nonempty(ssh_key_source) {
-                let normalised = if src == "generated" { "generated" } else { "existing" };
+                let normalised = if src == "generated" {
+                    "generated"
+                } else {
+                    "existing"
+                };
                 obj.insert(
                     "ssh_key_source".to_string(),
                     serde_json::Value::String(normalised.to_string()),

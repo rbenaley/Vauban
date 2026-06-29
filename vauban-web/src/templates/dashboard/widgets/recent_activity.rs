@@ -3,8 +3,15 @@ use crate::utils::filters;
 /// VAUBAN Web - Recent activity widget template.
 use askama::Template;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+/// A recent-activity row. `timestamp` is carried as a raw
+/// `DateTime<Utc>` and rendered in the viewer's browser timezone at
+/// the last moment via the `local` filter. `Serialize`/`Deserialize`
+/// let the dashboard task broadcast the raw rows on the
+/// `RecentActivity` channel so each WS connection re-renders them in
+/// its own timezone (per-connection rendering).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityItem {
     pub user: String,
     pub action: String,

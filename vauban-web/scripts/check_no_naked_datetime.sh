@@ -6,7 +6,7 @@
 # `docs/runbooks/timezone_localization.md`). The UTC suffix is reserved
 # for logs / DB / IPC where the wire format is fixed.
 #
-# This lint catches three classes of regression:
+# This lint catches four classes of regression:
 #
 #   1. `{{ x.<field>.format(...) }}` -- direct call to `chrono::format`
 #      bypasses the filter entirely. Use `{{ x.<field>|local(tz) }}`
@@ -14,10 +14,18 @@
 #   2. `{{ x.<field> }}` (bare display) on a known datetime accessor
 #      -- relies on `Display for DateTime<Utc>` which prints UTC
 #      offset. Use `{{ x.<field>|local(tz) }}` instead.
-#   3. Any literal `UTC` string inside HTML template content. Reserved
-#      to: (a) machine-readable `<time datetime="...Z">` attributes
-#      (allowed), (b) tooltip / accessibility labels carrying both a
-#      local and a UTC marker (rare; flag and review).
+#   3. Handler-side `format!("...UTC...")` literals inside
+#      `src/handlers/**.rs` (UTC string pre-formatted in Rust).
+#   4. Rust-side naked clock-time `.format("%H...")` anywhere in
+#      `src/**.rs`. Localised display MUST go through
+#      `crate::utils::format_local*` (which carry `%Z`). Escape hatches:
+#      (a) the format literal itself carries `%Z`/`%z` (already
+#      tz-aware -- this is exactly what `format_local*` and the Apache
+#      audit log do); (b) an inline `// allow-naked-datetime: <reason>`
+#      annotation on the same line or the line immediately above
+#      (datetime-local form inputs, UTC round-trip tests, ...). Date-only
+#      formats (`%Y`, `%m`, `%d` storage paths) never match -- the rule
+#      only triggers on the clock specifiers %H %M %S %T %R %I %r %X.
 #
 # A non-zero exit code blocks CI on the first offending occurrence.
 
@@ -128,6 +136,36 @@ while IFS= read -r -d '' file; do
         errors=$((errors + 1))
     done < <(grep -nE 'format!\("[^"]*UTC[^"]*"' "${file}" || true)
 done < <(find "${ROOT}/src/handlers" -type f -name "*.rs" -print0)
+
+# Rule 4: forbid naked clock-time `.format("%H...")` anywhere in
+# `src/**.rs`. Localised display MUST go through
+# `crate::utils::format_local*` (which carry `%Z`). The awk pass below
+# triggers ONLY on clock specifiers (%H %M %S %T %R %I %r %X) so that
+# date-only storage paths (`%Y`, `%m`, `%d`) are never flagged. Two
+# escape hatches: a format literal that already carries `%Z`/`%z`
+# (tz-aware), or a `// allow-naked-datetime: <reason>` annotation on the
+# same line or the line immediately above.
+while IFS= read -r -d '' file; do
+    while IFS= read -r offending; do
+        echo "[lint] ${offending}" >&2
+        echo "    > use crate::utils::format_local* (browser_tz) or annotate with '// allow-naked-datetime: <reason>'" >&2
+        errors=$((errors + 1))
+    done < <(awk -v f="${file}" '
+        BEGIN { ann = -1 }
+        /allow-naked-datetime/ { ann = NR }
+        {
+            if ($0 ~ /\.format\(&?"[^"]*%[HMSTRIrX][^"]*"/ && $0 !~ /%[Zz]/) {
+                # Tracing/log macros stay UTC by contract (mirrors
+                # Rule 3). A single-line `info!(... dt.format("%H..."))`
+                # is exempt; the multi-line form needs the annotation.
+                if ($0 ~ /(info!|warn!|error!|debug!|trace!)/) next
+                if ($0 ~ /allow-naked-datetime/) next
+                if (ann == NR - 1) next
+                printf "%s:%d: %s\n", f, NR, $0
+            }
+        }
+    ' "${file}")
+done < <(find "${ROOT}/src" -type f -name "*.rs" -print0)
 
 if (( errors > 0 )); then
     echo "[lint] ${errors} naked-datetime / UTC-format violation(s) found." >&2

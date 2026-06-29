@@ -14,13 +14,32 @@ use crate::utils::format_duration;
 use crate::db::DbPool;
 use crate::services::broadcast::{BroadcastService, WsChannel, WsMessage};
 use crate::templates::dashboard::widgets::{
-    ActiveSessionItem, ActiveSessionsWidget, ActivityItem, RecentActivityWidget, StatsData,
-    StatsWidget,
+    ActiveSessionItem, ActiveSessionsWidget, ActivityItem, StatsData, StatsWidget,
 };
 use crate::templates::sessions::{
-    ActiveListContentWidget, ActiveListStatsWidget, ActiveSessionItem as FullActiveSessionItem,
-    SessionListContentWidget, SessionListItem,
+    ActiveListPayload, ActiveSessionItem as FullActiveSessionItem, SessionListItem,
+    SessionListPayload,
 };
+
+/// Serialize a live payload and broadcast it RAW (no HTMX wrapping)
+/// on `channel`. The subscribing WebSocket handlers deserialize it
+/// and re-render in their own browser timezone (per-connection
+/// rendering). Returns silently on a serialization error (logged)
+/// or when nobody is subscribed.
+async fn broadcast_data<T: serde::Serialize>(
+    broadcast: &BroadcastService,
+    channel: &WsChannel,
+    payload: &T,
+) {
+    match serde_json::to_string(payload) {
+        Ok(json) => {
+            if broadcast.send_raw(&channel.as_str(), json).await.is_err() {
+                trace!(channel = %channel.as_str(), "No subscribers for data channel");
+            }
+        }
+        Err(e) => error!(error = %e, "Failed to serialize live broadcast payload"),
+    }
+}
 
 /// Interval for stats updates (30 seconds).
 const STATS_INTERVAL_SECS: u64 = 30;
@@ -156,37 +175,16 @@ async fn sessions_pass(
         Err(e) => error!(error = %e, "Failed to fetch active sessions"),
     }
 
-    // Update full active sessions list page (ActiveSessionsList channel)
+    // Update full active sessions list page (ActiveSessionsList
+    // channel). Broadcast the RAW data; each WS connection renders the
+    // stats + content fragments in its own browser timezone.
     match fetch_active_sessions_full(&db_pool, industrial_enabled).await {
         Ok(sessions) => {
-            // Send stats update
-            let stats_widget = ActiveListStatsWidget {
-                sessions: sessions.clone(),
+            let payload = ActiveListPayload {
+                sessions,
                 industrial_enabled,
             };
-            if let Ok(html) = stats_widget.render() {
-                let msg = WsMessage::new("ws-sessions-stats", html);
-                if broadcast
-                    .send(&WsChannel::ActiveSessionsList, msg)
-                    .await
-                    .is_err()
-                {
-                    trace!("No subscribers for sessions list stats channel");
-                }
-            }
-
-            // Send list content update
-            let content_widget = ActiveListContentWidget { sessions };
-            if let Ok(html) = content_widget.render() {
-                let msg = WsMessage::new("ws-sessions-list", html);
-                if broadcast
-                    .send(&WsChannel::ActiveSessionsList, msg)
-                    .await
-                    .is_err()
-                {
-                    trace!("No subscribers for sessions list content channel");
-                }
-            }
+            broadcast_data(&broadcast, &WsChannel::ActiveSessionsList, &payload).await;
         }
         Err(e) => error!(error = %e, "Failed to fetch active sessions for list page"),
     }
@@ -196,23 +194,9 @@ async fn sessions_pass(
 async fn activity_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
     match fetch_recent_activity(&db_pool).await {
         Ok(activities) => {
-            let template = RecentActivityWidget {
-                activities,
-                tz: chrono_tz::Tz::UTC,
-            };
-            match template.render() {
-                Ok(html) => {
-                    let msg = WsMessage::new("ws-recent-activity", html);
-                    if broadcast
-                        .send(&WsChannel::RecentActivity, msg)
-                        .await
-                        .is_err()
-                    {
-                        trace!("No subscribers for activity channel");
-                    }
-                }
-                Err(e) => error!(error = %e, "Failed to render activity widget"),
-            }
+            // Broadcast the RAW rows; each WS connection renders the
+            // `RecentActivityWidget` in its own browser timezone.
+            broadcast_data(&broadcast, &WsChannel::RecentActivity, &activities).await;
         }
         Err(e) => error!(error = %e, "Failed to fetch recent activity"),
     }
@@ -226,16 +210,11 @@ async fn session_list_pass(
 ) {
     match fetch_session_list(&db_pool, industrial_enabled).await {
         Ok(sessions) => {
-            let widget = SessionListContentWidget {
+            let payload = SessionListPayload {
                 sessions,
                 show_view_link: true,
             };
-            if let Ok(html) = widget.render() {
-                let msg = WsMessage::new("ws-session-list-content", html);
-                if broadcast.send(&WsChannel::SessionsList, msg).await.is_err() {
-                    trace!("No subscribers for session list channel");
-                }
-            }
+            broadcast_data(&broadcast, &WsChannel::SessionsList, &payload).await;
         }
         Err(e) => error!(error = %e, "Failed to fetch session list"),
     }
@@ -363,8 +342,7 @@ async fn fetch_active_sessions_full(
         // page-load handler in `handlers::web::sessions`.
         if !industrial_enabled {
             q = q.filter(
-                proxy_sessions::session_type
-                    .ne(crate::models::session::SessionType::IacsTunnel),
+                proxy_sessions::session_type.ne(crate::models::session::SessionType::IacsTunnel),
             );
         }
         q.select((
@@ -417,7 +395,7 @@ async fn fetch_active_sessions_full(
                     asset_hostname,
                     session_type,
                     client_ip: client_ip.ip().to_string(),
-                    connected_at: connected.format("%H:%M:%S").to_string(),
+                    connected_at: connected,
                     duration: duration_str,
                 })
             },
@@ -492,8 +470,7 @@ async fn fetch_session_list(
         // switch is off (mirror of the page-load handler).
         if !industrial_enabled {
             q = q.filter(
-                proxy_sessions::session_type
-                    .ne(crate::models::session::SessionType::IacsTunnel),
+                proxy_sessions::session_type.ne(crate::models::session::SessionType::IacsTunnel),
             );
         }
         q.select((
@@ -551,7 +528,7 @@ async fn fetch_session_list(
                     status,
                     credential_username,
                     tunnel_target_addr,
-                    connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    connected_at,
                     duration_seconds,
                     is_recorded,
                 }
@@ -571,14 +548,11 @@ pub async fn push_session_list_update(
 ) {
     match fetch_session_list(db_pool, industrial_enabled).await {
         Ok(sessions) => {
-            let widget = SessionListContentWidget {
+            let payload = SessionListPayload {
                 sessions,
                 show_view_link: true,
             };
-            if let Ok(html) = widget.render() {
-                let msg = WsMessage::new("ws-session-list-content", html);
-                let _ = broadcast.send(&WsChannel::SessionsList, msg).await;
-            }
+            broadcast_data(broadcast, &WsChannel::SessionsList, &payload).await;
         }
         Err(e) => error!(error = %e, "Failed to push session list update"),
     }
@@ -595,20 +569,11 @@ pub async fn push_active_sessions_update(
 ) {
     match fetch_active_sessions_full(db_pool, industrial_enabled).await {
         Ok(sessions) => {
-            let stats_widget = ActiveListStatsWidget {
-                sessions: sessions.clone(),
+            let payload = ActiveListPayload {
+                sessions,
                 industrial_enabled,
             };
-            if let Ok(html) = stats_widget.render() {
-                let msg = WsMessage::new("ws-sessions-stats", html);
-                let _ = broadcast.send(&WsChannel::ActiveSessionsList, msg).await;
-            }
-
-            let content_widget = ActiveListContentWidget { sessions };
-            if let Ok(html) = content_widget.render() {
-                let msg = WsMessage::new("ws-sessions-list", html);
-                let _ = broadcast.send(&WsChannel::ActiveSessionsList, msg).await;
-            }
+            broadcast_data(broadcast, &WsChannel::ActiveSessionsList, &payload).await;
         }
         Err(e) => error!(error = %e, "Failed to push active sessions update"),
     }
@@ -761,11 +726,19 @@ mod tests {
     }
 
     #[test]
-    fn test_session_list_updater_target_id() {
+    fn test_session_list_pass_broadcasts_payload() {
+        // The session list is now broadcast as RAW data
+        // (`SessionListPayload`) so each WS connection can re-render it
+        // in its own browser timezone. The `ws-session-list-content`
+        // target id lives in the WebSocket handler, not here.
         let source = include_str!("dashboard.rs");
         assert!(
-            source.contains("ws-session-list-content"),
-            "session_list_updater must target ws-session-list-content div"
+            source.contains("SessionListPayload"),
+            "session_list_pass must broadcast a SessionListPayload"
+        );
+        assert!(
+            source.contains("broadcast_data"),
+            "session_list_pass must broadcast via broadcast_data (raw JSON)"
         );
     }
 
@@ -869,7 +842,12 @@ mod tests {
     }
 
     #[test]
-    fn test_push_active_sessions_update_uses_correct_target_ids() {
+    fn test_push_active_sessions_update_broadcasts_payload() {
+        // Per-connection rendering: the active list is broadcast as
+        // raw `ActiveListPayload` data on the `ActiveSessionsList`
+        // channel; the `ws-sessions-stats` / `ws-sessions-list` target
+        // ids are produced by the WebSocket handler in the viewer's
+        // timezone, not here.
         let source = include_str!("dashboard.rs");
         let fn_start = source
             .find("fn push_active_sessions_update")
@@ -883,12 +861,12 @@ mod tests {
         let fn_body = &fn_body[..next_fn];
 
         assert!(
-            fn_body.contains("ws-sessions-stats"),
-            "push_active_sessions_update must target ws-sessions-stats"
+            fn_body.contains("ActiveListPayload"),
+            "push_active_sessions_update must build an ActiveListPayload"
         );
         assert!(
-            fn_body.contains("ws-sessions-list"),
-            "push_active_sessions_update must target ws-sessions-list"
+            fn_body.contains("WsChannel::ActiveSessionsList"),
+            "push_active_sessions_update must broadcast on ActiveSessionsList"
         );
     }
 }

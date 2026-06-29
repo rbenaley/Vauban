@@ -217,6 +217,7 @@ fn session_list_template_hides_iacs_option_under_kill_switch() {
         pagination: None,
         ws_enabled: false,
         industrial_enabled,
+        tz: chrono_tz::Tz::UTC,
     };
 
     let killed = askama::Template::render(&make(false)).expect("kill-switch render must succeed");

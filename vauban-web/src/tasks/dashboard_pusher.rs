@@ -367,6 +367,19 @@ async fn push_medium(
             }),
         ),
         (
+            // `tz` is intentionally UTC here and it is SAFE: the
+            // pusher's `load_snapshot_for_scope` always sets
+            // `user_lens.recent_sessions = Vec::new()`, so this live
+            // fragment renders NO `started_at|local(tz)` timestamp at
+            // all (the only tz-formatted field in `_user_lens.html`).
+            // The populated user-lens -- with timestamps -- is rendered
+            // ONCE at request time by `handlers::web::dashboard::
+            // dashboard_home`, which threads the request's `BrowserTz`.
+            // INVARIANT: if a future change starts populating
+            // `recent_sessions` in the live push, this UTC must be
+            // replaced by per-connection rendering (thread the
+            // subscriber's `BrowserTz` like the session lists do),
+            // otherwise live timestamps would silently revert to UTC.
             TILE_USER_LENS,
             render_or_empty(&UserLensTile {
                 snapshot: snapshot.clone(),

@@ -485,6 +485,7 @@ mod tests {
         assert!(result.is_ok());
         let dt = result.unwrap();
         assert_eq!(
+            // allow-naked-datetime: test asserts the parsed ASN.1 UTC instant verbatim; no localization involved.
             dt.format("%Y-%m-%d %H:%M:%S").to_string(),
             "2026-03-01 12:00:00"
         );
@@ -496,6 +497,7 @@ mod tests {
         assert!(result.is_ok());
         let dt = result.unwrap();
         assert_eq!(
+            // allow-naked-datetime: test asserts the parsed ASN.1 UTC instant verbatim; no localization involved.
             dt.format("%Y-%m-%d %H:%M:%S").to_string(),
             "2026-03-01 12:00:00"
         );
@@ -557,6 +559,7 @@ mod tests {
         assert!(result.is_ok());
         let dt = result.unwrap();
         assert_eq!(
+            // allow-naked-datetime: test asserts the parsed ASN.1 UTC instant verbatim; no localization involved.
             dt.format("%Y-%m-%d %H:%M:%S").to_string(),
             "2026-06-15 14:30:22"
         );

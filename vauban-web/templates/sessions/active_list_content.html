@@ -30,7 +30,7 @@
                         <span class="hidden sm:inline">&bull;</span>
                         <span class="break-all">{{ session.client_ip }}</span>
                         <span class="hidden sm:inline">&bull;</span>
-                        <span>Connected {{ session.connected_at }}</span>
+                        <span>Connected {{ session.connected_at|local(tz) }}</span>
                     </div>
                 </div>
             </div>

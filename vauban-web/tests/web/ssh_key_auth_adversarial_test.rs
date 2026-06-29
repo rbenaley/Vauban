@@ -157,7 +157,8 @@ async fn create_ssh_tampered_source_without_keys_is_rejected() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("adv_src_nokey")).await;
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("adv_src_nokey")).await;
     let csrf = app.generate_csrf_token();
     let hostname = format!("{}.adv.test", unique_name("host"));
 
@@ -196,8 +197,7 @@ async fn create_ssh_tampered_source_with_valid_pair_normalises_to_existing() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin =
-        create_admin_user(&mut conn, &app.auth_service, &unique_name("adv_src_norm")).await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("adv_src_norm")).await;
     let csrf = app.generate_csrf_token();
     let hostname = format!("{}.adv.test", unique_name("host"));
 
@@ -285,7 +285,10 @@ async fn create_rdp_smuggled_public_key_is_dropped() {
         .await
         .expect("RDP asset must persist");
     let cfg = asset.connection_config;
-    assert_eq!(cfg.get("password").and_then(|v| v.as_str()), Some("rdp-secret"));
+    assert_eq!(
+        cfg.get("password").and_then(|v| v.as_str()),
+        Some("rdp-secret")
+    );
     assert!(
         cfg.get("ssh_public_key").is_none(),
         "no SSH public key may persist on an RDP row, got: {cfg:?}"
@@ -308,8 +311,12 @@ async fn edit_ssh_rotate_mismatched_pair_is_rejected_and_preserves_old() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin =
-        create_admin_user(&mut conn, &app.auth_service, &unique_name("adv_rot_mismatch")).await;
+    let admin = create_admin_user(
+        &mut conn,
+        &app.auth_service,
+        &unique_name("adv_rot_mismatch"),
+    )
+    .await;
     let csrf = app.generate_csrf_token();
     let hostname = format!("{}.adv-rot.test", unique_name("host"));
 
@@ -376,8 +383,7 @@ async fn edit_ssh_public_only_is_rejected_and_preserves_old() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin =
-        create_admin_user(&mut conn, &app.auth_service, &unique_name("adv_pub_only")).await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("adv_pub_only")).await;
     let csrf = app.generate_csrf_token();
     let hostname = format!("{}.adv-pubonly.test", unique_name("host"));
 
@@ -434,8 +440,7 @@ async fn edit_ssh_switch_to_password_strips_key_material() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin =
-        create_admin_user(&mut conn, &app.auth_service, &unique_name("adv_to_pwd")).await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("adv_to_pwd")).await;
     let csrf = app.generate_csrf_token();
     let hostname = format!("{}.adv-topwd.test", unique_name("host"));
 
@@ -471,7 +476,10 @@ async fn edit_ssh_switch_to_password_strips_key_material() {
         .await
         .unwrap()
         .connection_config;
-    assert_eq!(cfg.get("auth_type").and_then(|v| v.as_str()), Some("password"));
+    assert_eq!(
+        cfg.get("auth_type").and_then(|v| v.as_str()),
+        Some("password")
+    );
     assert_eq!(
         cfg.get("password").and_then(|v| v.as_str()),
         Some("now-a-password")
@@ -503,8 +511,7 @@ async fn edit_ssh_description_only_preserves_keypair_and_pinning() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin =
-        create_admin_user(&mut conn, &app.auth_service, &unique_name("adv_desconly")).await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("adv_desconly")).await;
     let csrf = app.generate_csrf_token();
     let hostname = format!("{}.adv-desc.test", unique_name("host"));
 
@@ -557,7 +564,10 @@ async fn edit_ssh_description_only_preserves_keypair_and_pinning() {
         Some(true),
         "a description-only edit must not reset the pushed flag"
     );
-    assert!(cfg.get("ssh_host_key").is_some(), "host key must be preserved");
+    assert!(
+        cfg.get("ssh_host_key").is_some(),
+        "host key must be preserved"
+    );
 }
 
 /// Invariant #6: rotating to a NEW (valid) pair resets `ssh_pubkey_pushed`
@@ -611,7 +621,9 @@ async fn edit_ssh_rotate_valid_pair_resets_pushed_flag() {
         .unwrap()
         .connection_config;
     assert_eq!(
-        cfg.get("ssh_public_key").and_then(|v| v.as_str()).map(ssh_pubkey_body),
+        cfg.get("ssh_public_key")
+            .and_then(|v| v.as_str())
+            .map(ssh_pubkey_body),
         Some(ssh_pubkey_body(&new.public_openssh)),
         "the rotated public key must be stored"
     );
@@ -712,8 +724,7 @@ async fn e2e_existing_public_key_comment_is_html_escaped_on_edit() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin =
-        create_admin_user(&mut conn, &app.auth_service, &unique_name("e2e_xss_pub")).await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("e2e_xss_pub")).await;
     let csrf = app.generate_csrf_token();
     let hostname = format!("{}.e2e-xss.test", unique_name("host"));
 

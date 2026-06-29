@@ -56,7 +56,9 @@ fn session_list_db_filter_is_gated_on_industrial_enabled() {
         "session_list MUST branch on `!state.config.industrial.enabled`"
     );
     assert!(
-        body.contains("query = query.filter(proxy_sessions::session_type.ne(SessionType::IacsTunnel))"),
+        body.contains(
+            "query = query.filter(proxy_sessions::session_type.ne(SessionType::IacsTunnel))"
+        ),
         "session_list data query MUST exclude IACS under the kill-switch"
     );
     assert!(

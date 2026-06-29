@@ -393,7 +393,10 @@ mod tests {
         // verify: the helper trims+filters the passphrase to None.
         let kp = generate_ed25519_keypair("a@asset").expect("keygen");
         let res = verify_public_private_pair(&kp.public_openssh, &kp.private_openssh, Some("   "));
-        assert!(res.is_ok(), "blank passphrase must be treated as None: {res:?}");
+        assert!(
+            res.is_ok(),
+            "blank passphrase must be treated as None: {res:?}"
+        );
     }
 
     #[test]
@@ -448,7 +451,10 @@ mod tests {
         let evil = format!("{} <script>alert(1)</script>", kp.public_openssh.trim());
         let (stored, fp) = verify_public_private_pair(&evil, &kp.private_openssh, None)
             .expect("a valid key with a hostile comment must still verify");
-        assert_eq!(stored, evil, "the pasted public key must be stored verbatim");
+        assert_eq!(
+            stored, evil,
+            "the pasted public key must be stored verbatim"
+        );
         assert!(stored.contains("<script>"));
         assert_eq!(fp, kp.fingerprint);
     }

@@ -184,8 +184,7 @@ pub async fn session_list(
                     status,
                     credential_username,
                     tunnel_target_addr,
-                    connected_at: connected_at
-                        .map(|dt| crate::utils::format_local(dt, browser_tz.0)),
+                    connected_at,
                     duration_seconds,
                     is_recorded,
                 }
@@ -232,6 +231,7 @@ pub async fn session_list(
         pagination,
         ws_enabled,
         industrial_enabled: state.config.industrial.enabled,
+        tz: browser_tz.0,
     };
 
     let html = template
@@ -2743,10 +2743,7 @@ pub async fn active_sessions(
                     asset_hostname,
                     session_type,
                     client_ip: client_ip.ip().to_string(),
-                    connected_at: connected
-                        .with_timezone(&browser_tz.0)
-                        .format("%H:%M:%S")
-                        .to_string(),
+                    connected_at: connected,
                     duration: duration_str,
                 })
             },
@@ -2784,6 +2781,7 @@ pub async fn active_sessions(
         sessions,
         pagination,
         industrial_enabled: state.config.industrial.enabled,
+        tz: browser_tz.0,
     };
 
     let html = template

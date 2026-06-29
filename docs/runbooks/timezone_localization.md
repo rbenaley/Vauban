@@ -44,6 +44,8 @@ emitting `2026-05-08T20:14:00Z` (UTC) regardless of the cookie.
 | IPC payloads (`shared::messages`) | UTC | RFC 3339 |
 | Audit ledger | UTC | RFC 3339 |
 | Server-rendered HTML (Askama) | **caller's browser timezone** | `YYYY-MM-DD HH:MM ZZZ` (or `:SS`) |
+| Live WebSocket fan-out fragments | **each connection's browser timezone** | `YYYY-MM-DD HH:MM ZZZ` |
+| `<input type="datetime-local">` value | **caller's browser timezone** (tz-less wall clock) | `YYYY-MM-DDTHH:MM` |
 | `<time datetime="...">` attribute | UTC | ISO 8601 (`2026-01-15T10:30:00Z`) |
 
 A 44-line vanilla JS bootstrap (`vauban-web/static/js/vbn-tz.js`)
@@ -58,6 +60,57 @@ The Axum extractor `BrowserTz` (in
 empty / oversized / characters outside `[A-Za-z0-9_/+-]` /
 unknown IANA name all collapse to `Tz::UTC`. The extractor is
 **infallible** so handlers always see a `Tz`.
+
+## Live updates (WebSocket): per-connection rendering
+
+Real-time list refreshes (active sessions, session list, recent
+activity) are NOT broadcast as a single pre-rendered HTML fragment.
+Doing so would pin every subscriber to one timezone (whoever the
+fan-out happened to render for). Instead:
+
+1. The periodic producer (`vauban-web/src/tasks/dashboard.rs`)
+   computes the rows ONCE per tick and broadcasts the **raw data**
+   as JSON (`ActiveListPayload`, `SessionListPayload`,
+   `Vec<ActivityItem>`) carrying `DateTime<Utc>` values -- never a
+   formatted string.
+2. Each WebSocket handler (`vauban-web/src/handlers/websocket.rs`)
+   captures the subscriber's `BrowserTz` at handshake (the `vbn_tz`
+   cookie is present on the upgrade request) and re-renders the
+   content widget (`*ContentWidget`) in THAT connection's timezone.
+
+Consequence: two operators in Paris and New York watching the same
+live list see the same instant rendered in their own local time,
+with no extra round-trip. The CPU cost is one render per connected
+subscriber per tick (acceptable for the admin-only supervision
+surface).
+
+The **Bastion Watch dashboard tiles** (`tasks/dashboard_pusher.rs`)
+are a deliberate exception: the live-pushed `user_lens` tile is
+emitted with `recent_sessions = Vec::new()` (empty), so the live
+fragment carries NO formatted timestamp. The populated user-lens --
+the only tile field that renders an absolute time -- is rendered
+ONCE at request time by `handlers::web::dashboard::dashboard_home`
+with the request's `BrowserTz`. The heatmap shows day labels +
+hour-of-day intensity (an aggregation), not formatted clock strings.
+
+## datetime-local form inputs (round-trip)
+
+`<input type="datetime-local">` carries NO timezone by HTML5 spec,
+so the server owns BOTH ends of the conversion. For the access-rule
+`valid_from` / `valid_until` fields
+(`vauban-web/src/handlers/web/access_rules.rs`):
+
+- **pre-fill** (`format_rfc3339_to_local`): stored UTC instant ->
+  the operator's `BrowserTz` -> `YYYY-MM-DDTHH:MM` wall clock.
+- **submit** (`parse_datetime`): the submitted wall clock is
+  interpreted in the SAME `BrowserTz` and converted back to UTC for
+  storage. DST fall-back picks the earliest instant; a spring-forward
+  gap value is treated as unset.
+
+When the cookie is absent the timezone is `UTC`, so the round-trip
+degrades to the historical UTC behavior (no surprise for clients
+that do not advertise a zone). Pinned by
+`access_rules_crud_web_test::test_web_access_rule_datetime_local_round_trips_in_browser_tz`.
 
 ## Operator surface
 
@@ -115,7 +168,7 @@ date. Run them locally to validate the build:
 cargo test -p vauban-web --test integration_tests timezone -- --test-threads=1
 ```
 
-Expect 21 passed across `timezone_e2e_test`, `timezone_lints_test`
+Expect 26 passed across `timezone_e2e_test`, `timezone_lints_test`
 and `timezone_snippet_test`.
 
 ## Triage: operator reports times in the wrong timezone
@@ -191,6 +244,20 @@ The lint refuses `format!("...UTC...")` literals inside
 `vauban-web/src/handlers/**`. A tracing macro is exempt -- if you
 see a hit on a `tracing::info!` line, the lint matched a false
 positive and the line is fine.
+
+It ALSO refuses a naked clock-time `.format("%H...")` anywhere in
+`vauban-web/src/**` (Rule 4): localized display must go through
+`crate::utils::format_local*` (which carry `%Z`). Two escape
+hatches exist for the rare legitimate UTC / tz-less render:
+
+- a format literal that already carries `%Z` / `%z` (tz-aware --
+  this is exactly what `format_local*` and the Apache audit log
+  emit), or
+- a `// allow-naked-datetime: <reason>` annotation on the same line
+  or the line immediately above (used by the `datetime-local`
+  form-input formatter and the ASN.1 cert-time UTC round-trip
+  tests). Date-only formats (`%Y`, `%m`, `%d` storage paths) never
+  match -- the rule only triggers on `%H %M %S %T %R %I %r %X`.
 
 ## Triage: append-only XSS attempt via cookie
 

@@ -125,6 +125,35 @@ fn check_no_naked_datetime_script_covers_canonical_fields() {
     }
 }
 
+/// Regression: Rule 4 (Rust-side naked clock-time `.format("%H...")`)
+/// MUST scan `src/`, trigger only on clock specifiers, exempt
+/// tz-aware (`%Z`/`%z`) literals, and honor the
+/// `// allow-naked-datetime:` annotation escape hatch.
+#[test]
+fn check_no_naked_datetime_script_covers_rust_clock_format_rule() {
+    let script = manifest_dir()
+        .join("scripts")
+        .join("check_no_naked_datetime.sh");
+    let body = std::fs::read_to_string(&script).expect("read script");
+
+    assert!(
+        body.contains("allow-naked-datetime"),
+        "Rule 4 must document the `// allow-naked-datetime:` annotation escape hatch"
+    );
+    assert!(
+        body.contains("%[HMSTRIrX]"),
+        "Rule 4 must restrict to clock specifiers (%H %M %S %T %R %I %r %X)"
+    );
+    assert!(
+        body.contains("%[Zz]"),
+        "Rule 4 must exempt tz-aware (`%Z`/`%z`) format literals"
+    );
+    assert!(
+        body.contains("${ROOT}/src"),
+        "Rule 4 must scan the Rust source tree (src/)"
+    );
+}
+
 /// Regression: the second script MUST recognize the two equivalent
 /// satisfy-clauses: `vauban: VaubanConfig` and `tz: ... Tz`.
 #[test]

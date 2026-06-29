@@ -499,6 +499,7 @@ fn make_session_list(
         pagination: None,
         ws_enabled,
         industrial_enabled: true,
+        tz: chrono_tz::Tz::UTC,
     }
 }
 
@@ -512,7 +513,11 @@ fn one_session() -> SessionListItem {
         status: "active".to_string(),
         credential_username: "alice".to_string(),
         tunnel_target_addr: None,
-        connected_at: Some("2026-04-30 10:00:00".to_string()),
+        connected_at: Some(
+            chrono::DateTime::parse_from_rfc3339("2026-04-30T10:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        ),
         duration_seconds: Some(120),
         is_recorded: true,
     }

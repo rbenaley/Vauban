@@ -4,12 +4,15 @@
 /// with fallback to direct SQL when IPC is not configured.
 use super::*;
 
-/// Format RFC3339 date string to display format.
-fn format_rfc3339_date(s: &str, fmt: &str) -> String {
+/// Parse an RFC3339 timestamp and render it in the browser timezone
+/// using the canonical minute-precision format (`"2026-05-08 22:14 CEST"`,
+/// see [`crate::utils::format_local`]). Falls back to the raw string if
+/// parsing fails. Mirrors `handlers::web::groups` so the two group pages
+/// share one date convention.
+fn format_rfc3339_local(s: &str, tz: chrono_tz::Tz) -> String {
     chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.format(fmt).to_string())
-        .unwrap_or_else(|| s.to_string())
+        .map(|d| crate::utils::format_local(d.with_timezone(&chrono::Utc), tz))
+        .unwrap_or_else(|_| s.to_string())
 }
 
 /// Returns `true` if the given UUID string matches the singleton virtual
@@ -89,7 +92,7 @@ pub async fn asset_group_list(
                 color: g.color,
                 icon: g.icon,
                 asset_count: counts.get(&g.id).copied().unwrap_or(0),
-                created_at: format_rfc3339_date(&g.created_at, "%b %d, %Y"),
+                created_at: format_rfc3339_local(&g.created_at, browser_tz.0),
             })
             .collect();
         groups.sort_by_key(|g| g.name.to_lowercase());
@@ -240,8 +243,8 @@ pub async fn asset_group_detail(
             description: group_info.description,
             color: group_info.color,
             icon: group_info.icon,
-            created_at: format_rfc3339_date(&group_info.created_at, "%b %d, %Y %H:%M"),
-            updated_at: format_rfc3339_date(&group_info.updated_at, "%b %d, %Y %H:%M"),
+            created_at: format_rfc3339_local(&group_info.created_at, browser_tz.0),
+            updated_at: format_rfc3339_local(&group_info.updated_at, browser_tz.0),
             created_by,
             updated_by,
             assets,

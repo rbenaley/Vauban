@@ -2,9 +2,17 @@ use crate::templates::accounts::user_list::Pagination;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Session list template.
 use askama::Template;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+// Make the `local` / `local_opt` Askama filters resolvable from the
+// templates that embed this module's structs (the partial reads
+// `{{ connected|local(tz) }}`).
+#[allow(unused_imports)]
+use crate::utils::filters;
 
 /// Session item for list display.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionListItem {
     pub id: i32,
     pub uuid: String,
@@ -22,7 +30,11 @@ pub struct SessionListItem {
     /// so without this fallback the row collapsed to "iacs_tunnel
     /// &bull; " with no actionable identity).
     pub tunnel_target_addr: Option<String>,
-    pub connected_at: Option<String>,
+    /// Raw connection timestamp, rendered in the viewer's browser
+    /// timezone at the last moment (page render or per-connection
+    /// WebSocket render) via the `local` filter. `None` for rows that
+    /// never reached the connected state.
+    pub connected_at: Option<DateTime<Utc>>,
     pub duration_seconds: Option<i64>,
     pub is_recorded: bool,
 }
@@ -123,12 +135,30 @@ pub struct SessionListTemplate {
     /// (layer 5) -- the matching DB filter (layer 2) already drops
     /// IACS rows so the affordance would be dead anyway.
     pub industrial_enabled: bool,
+    /// Viewer's browser timezone (IANA), used to render `connected_at`
+    /// in local time in the embedded `session_list_content.html`
+    /// partial. Resolved from the `vbn_tz` cookie via `BrowserTz`.
+    pub tz: chrono_tz::Tz,
 }
 
 /// Partial widget for the session list content (used for WS pushes).
 #[derive(Template)]
 #[template(path = "sessions/session_list_content.html")]
 pub struct SessionListContentWidget {
+    pub sessions: Vec<SessionListItem>,
+    pub show_view_link: bool,
+    /// Viewer's browser timezone, set per-connection by the WebSocket
+    /// handler so the live-pushed `connected_at` renders in local time.
+    pub tz: chrono_tz::Tz,
+}
+
+/// Serializable payload broadcast on the `SessionsList` channel. The
+/// realtime task computes the session rows ONCE per tick and
+/// broadcasts this raw data; each subscribed WebSocket connection
+/// deserializes it and re-renders the content widget in its own
+/// browser timezone (per-connection rendering).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionListPayload {
     pub sessions: Vec<SessionListItem>,
     pub show_view_link: bool,
 }
@@ -151,7 +181,11 @@ mod tests {
             status: status.to_string(),
             credential_username: "testuser".to_string(),
             tunnel_target_addr: None,
-            connected_at: Some("2026-01-03 10:00:00".to_string()),
+            connected_at: Some(
+                DateTime::parse_from_rfc3339("2026-01-03T10:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
             duration_seconds: duration,
             is_recorded: true,
         }
@@ -387,6 +421,7 @@ mod tests {
             pagination: None,
             ws_enabled: false,
             industrial_enabled: true,
+            tz: chrono_tz::Tz::UTC,
         };
 
         let result = template.render();
@@ -424,6 +459,7 @@ mod tests {
             pagination: None,
             ws_enabled: false,
             industrial_enabled: true,
+            tz: chrono_tz::Tz::UTC,
         };
 
         let result = template.render();
@@ -461,6 +497,7 @@ mod tests {
             pagination: None,
             ws_enabled: true,
             industrial_enabled: true,
+            tz: chrono_tz::Tz::UTC,
         };
 
         assert!(template.show_view_link);
@@ -499,6 +536,7 @@ mod tests {
             pagination: None,
             ws_enabled: false,
             industrial_enabled: true,
+            tz: chrono_tz::Tz::UTC,
         };
 
         assert!(!template.show_view_link);
@@ -511,6 +549,7 @@ mod tests {
         let widget = SessionListContentWidget {
             sessions: vec![create_test_session_item("ssh", "active", Some(100))],
             show_view_link: true,
+            tz: chrono_tz::Tz::UTC,
         };
         let result = widget.render();
         assert!(result.is_ok(), "SessionListContentWidget should render");
@@ -519,11 +558,37 @@ mod tests {
         assert!(html.contains("Active"));
     }
 
+    /// Per-connection live rendering: the WebSocket handler re-renders
+    /// this content widget with the subscriber's `BrowserTz`. A winter
+    /// timestamp (DST-stable) must surface in the connection's zone, not
+    /// UTC. Pins the core of the P3 list-broadcast refactor (raw data
+    /// broadcast -> per-connection render in local time).
+    #[test]
+    fn test_session_list_content_widget_localizes_connected_at_per_tz() {
+        let widget = SessionListContentWidget {
+            // connected_at is pinned to 2026-01-03T10:00:00Z.
+            sessions: vec![create_test_session_item("ssh", "active", Some(100))],
+            show_view_link: true,
+            tz: chrono_tz::Tz::Europe__Paris,
+        };
+        let html = widget.render().unwrap();
+        // 2026-01-03 10:00 UTC -> 11:00 CET (Paris, winter, UTC+01:00).
+        assert!(
+            html.contains("2026-01-03 11:00 CET"),
+            "Paris widget must render connected_at as `2026-01-03 11:00 CET`, got: {html}"
+        );
+        assert!(
+            !html.contains("10:00 UTC") && !html.contains("10:00 CET"),
+            "Paris widget must not leak the UTC wall clock for connected_at"
+        );
+    }
+
     #[test]
     fn test_session_list_content_no_terminate_button() {
         let widget = SessionListContentWidget {
             sessions: vec![create_test_session_item("ssh", "active", Some(100))],
             show_view_link: true,
+            tz: chrono_tz::Tz::UTC,
         };
         let html = widget.render().unwrap();
         assert!(
@@ -541,6 +606,7 @@ mod tests {
         let widget = SessionListContentWidget {
             sessions: Vec::new(),
             show_view_link: false,
+            tz: chrono_tz::Tz::UTC,
         };
         let result = widget.render();
         assert!(result.is_ok());
@@ -579,6 +645,7 @@ mod tests {
             pagination: None,
             ws_enabled: true,
             industrial_enabled: true,
+            tz: chrono_tz::Tz::UTC,
         };
 
         let html = template.render().unwrap();
@@ -623,6 +690,7 @@ mod tests {
             pagination: None,
             ws_enabled: false,
             industrial_enabled: true,
+            tz: chrono_tz::Tz::UTC,
         };
 
         let html = template.render().unwrap();

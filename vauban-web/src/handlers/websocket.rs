@@ -377,6 +377,10 @@ pub async fn dashboard_ws(
     user: WsAuthUser,
     perms: crate::auth::PermissionContext,
     ws_guard: WsGuard,
+    // Browser timezone captured at handshake (from the `vbn_tz`
+    // cookie); used to render the live-pushed recent-activity feed in
+    // the viewer's local time -- per-connection rendering.
+    browser_tz: crate::middleware::BrowserTz,
 ) -> Response {
     let user = user.0;
     let channel = WsChannel::DashboardStats.as_str();
@@ -390,8 +394,10 @@ pub async fn dashboard_ws(
     }
     info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
           "WebSocket connection requested");
-    ws.on_upgrade(move |socket| handle_dashboard_socket(socket, state, user, ws_guard))
-        .into_response()
+    ws.on_upgrade(move |socket| {
+        handle_dashboard_socket(socket, state, user, ws_guard, browser_tz.0)
+    })
+    .into_response()
 }
 
 /// Per-user Bastion Watch dashboard WebSocket handler.
@@ -517,12 +523,25 @@ async fn handle_dashboard_personal_socket(
     info!(channel = %channel, user = %user.username, "WebSocket disconnected");
 }
 
+/// Render the recent-activity broadcast payload (a JSON
+/// `Vec<ActivityItem>`) into the out-of-band HTMX fragment, localised
+/// to `tz`. Returns `None` if the payload is malformed.
+fn render_recent_activity_oob(json: &str, tz: chrono_tz::Tz) -> Option<String> {
+    use crate::services::broadcast::WsMessage;
+    use crate::templates::dashboard::widgets::{ActivityItem, RecentActivityWidget};
+    let activities: Vec<ActivityItem> = serde_json::from_str(json).ok()?;
+    let widget = RecentActivityWidget { activities, tz };
+    let html = widget.render().ok()?;
+    Some(WsMessage::new("ws-recent-activity", html).to_htmx_html())
+}
+
 /// Handle dashboard WebSocket connection.
 async fn handle_dashboard_socket(
     socket: WebSocket,
     state: AppState,
     user: AuthUser,
     _ws_guard: WsGuard,
+    tz: chrono_tz::Tz,
 ) {
     let (mut sender, mut receiver) = socket.split();
     let channel = WsChannel::DashboardStats.as_str();
@@ -532,7 +551,7 @@ async fn handle_dashboard_socket(
           "WebSocket connected");
 
     // Send initial data immediately on connection
-    if let Err(e) = send_initial_dashboard_data(&mut sender, &state).await {
+    if let Err(e) = send_initial_dashboard_data(&mut sender, &state, tz).await {
         error!(user = %user.username, error = %e, "Failed to send initial data");
         return;
     }
@@ -613,9 +632,12 @@ async fn handle_dashboard_socket(
                 }
             }
 
-            // Recent activity channel updates
+            // Recent activity channel updates. The broadcast carries
+            // the raw `Vec<ActivityItem>` (JSON); render it in THIS
+            // connection's timezone so timestamps are local.
             result = activity_rx.recv() => {
-                if let Ok(html) = result
+                if let Ok(json) = result
+                    && let Some(html) = render_recent_activity_oob(&json, tz)
                     && sender.send(Message::Text(html.into())).await.is_err()
                 {
                     should_close = true;
@@ -646,6 +668,7 @@ async fn handle_dashboard_socket(
 async fn send_initial_dashboard_data(
     sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     state: &AppState,
+    tz: chrono_tz::Tz,
 ) -> Result<(), String> {
     use crate::services::broadcast::WsMessage;
     use crate::templates::dashboard::widgets::{
@@ -676,10 +699,7 @@ async fn send_initial_dashboard_data(
 
     // Fetch and send recent activity
     let activities = fetch_initial_activity(state).await?;
-    let activity_widget = RecentActivityWidget {
-        activities,
-        tz: chrono_tz::Tz::UTC,
-    };
+    let activity_widget = RecentActivityWidget { activities, tz };
     if let Ok(html) = activity_widget.render() {
         let msg = WsMessage::new("ws-recent-activity", html);
         sender
@@ -1136,14 +1156,47 @@ pub async fn active_sessions_ws(
     State(state): State<AppState>,
     user: WsAuthUser,
     ws_guard: WsGuard,
+    // Browser timezone captured at handshake (from the `vbn_tz`
+    // cookie). Used to render the live-pushed `connected_at` in the
+    // viewer's local time -- per-connection rendering.
+    browser_tz: crate::middleware::BrowserTz,
     ws: WebSocketUpgrade,
 ) -> axum::response::Response {
     let user = user.0;
     let channel = WsChannel::ActiveSessionsList.as_str();
     info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
           "WebSocket connection requested");
-    ws.on_upgrade(move |socket| handle_active_sessions_socket(socket, state, user, ws_guard))
-        .into_response()
+    ws.on_upgrade(move |socket| {
+        handle_active_sessions_socket(socket, state, user, ws_guard, browser_tz.0)
+    })
+    .into_response()
+}
+
+/// Render the active-sessions-list broadcast payload into the two
+/// out-of-band HTMX fragments (stats + content), localised to `tz`.
+/// Returns `None` if the payload is malformed (skip the tick).
+fn render_active_list_oob(json: &str, tz: chrono_tz::Tz) -> Option<Vec<String>> {
+    use crate::services::broadcast::WsMessage;
+    use crate::templates::sessions::{
+        ActiveListContentWidget, ActiveListPayload, ActiveListStatsWidget,
+    };
+    let payload: ActiveListPayload = serde_json::from_str(json).ok()?;
+    let mut out = Vec::with_capacity(2);
+    let stats = ActiveListStatsWidget {
+        sessions: payload.sessions.clone(),
+        industrial_enabled: payload.industrial_enabled,
+    };
+    if let Ok(html) = stats.render() {
+        out.push(WsMessage::new("ws-sessions-stats", html).to_htmx_html());
+    }
+    let content = ActiveListContentWidget {
+        sessions: payload.sessions,
+        tz,
+    };
+    if let Ok(html) = content.render() {
+        out.push(WsMessage::new("ws-sessions-list", html).to_htmx_html());
+    }
+    Some(out)
 }
 
 /// Handle active sessions list WebSocket connection.
@@ -1152,6 +1205,7 @@ async fn handle_active_sessions_socket(
     state: AppState,
     user: AuthUser,
     _ws_guard: WsGuard,
+    tz: chrono_tz::Tz,
 ) {
     let (mut sender, mut receiver) = socket.split();
     let channel = WsChannel::ActiveSessionsList.as_str();
@@ -1161,7 +1215,7 @@ async fn handle_active_sessions_socket(
           "WebSocket connected");
 
     // Send initial data immediately on connection
-    if let Err(e) = send_initial_active_sessions_data(&mut sender, &state).await {
+    if let Err(e) = send_initial_active_sessions_data(&mut sender, &state, tz).await {
         error!(user = %user.username, error = %e, "Failed to send initial active sessions data");
         return;
     }
@@ -1223,13 +1277,20 @@ async fn handle_active_sessions_socket(
                 }
             }
 
-            // Active sessions list channel updates
+            // Active sessions list channel updates. The broadcast now
+            // carries the raw `ActiveListPayload` (JSON); render it in
+            // THIS connection's timezone so `connected_at` is local.
             result = sessions_rx.recv() => {
-                if let Ok(html) = result
-                    && sender.send(Message::Text(html.into())).await.is_err()
+                if let Ok(json) = result
+                    && let Some(fragments) = render_active_list_oob(&json, tz)
                 {
-                    close_cause = "send_fail";
-                    should_close = true;
+                    for html in fragments {
+                        if sender.send(Message::Text(html.into())).await.is_err() {
+                            close_cause = "send_fail";
+                            should_close = true;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -1244,10 +1305,12 @@ async fn handle_active_sessions_socket(
     info!(channel = %channel, user = %user.username, "WebSocket disconnected");
 }
 
-/// Send initial active sessions data immediately on WebSocket connection.
+/// Send initial active sessions data immediately on WebSocket
+/// connection, rendered in the viewer's browser timezone `tz`.
 async fn send_initial_active_sessions_data(
     sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     state: &AppState,
+    tz: chrono_tz::Tz,
 ) -> Result<(), String> {
     use crate::services::broadcast::WsMessage;
     use crate::templates::sessions::{ActiveListContentWidget, ActiveListStatsWidget};
@@ -1269,7 +1332,7 @@ async fn send_initial_active_sessions_data(
     }
 
     // Send sessions list content
-    let content_widget = ActiveListContentWidget { sessions };
+    let content_widget = ActiveListContentWidget { sessions, tz };
     if let Ok(html) = content_widget.render() {
         let msg = WsMessage::new("ws-sessions-list", html);
         sender
@@ -1378,7 +1441,7 @@ pub(crate) async fn fetch_active_sessions_list(
                     asset_hostname,
                     session_type,
                     client_ip: client_ip.ip().to_string(),
-                    connected_at: connected.format("%H:%M:%S").to_string(),
+                    connected_at: connected,
                     duration: duration_str,
                 })
             },
@@ -1400,14 +1463,35 @@ pub async fn session_list_ws(
     State(state): State<AppState>,
     user: WsAuthUser,
     ws_guard: WsGuard,
+    // Browser timezone captured at handshake (from the `vbn_tz`
+    // cookie); used to render live-pushed `connected_at` in local time.
+    browser_tz: crate::middleware::BrowserTz,
     ws: WebSocketUpgrade,
 ) -> axum::response::Response {
     let user = user.0;
     let channel = WsChannel::SessionsList.as_str();
     info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
           "WebSocket connection requested");
-    ws.on_upgrade(move |socket| handle_session_list_socket(socket, state, user, ws_guard))
-        .into_response()
+    ws.on_upgrade(move |socket| {
+        handle_session_list_socket(socket, state, user, ws_guard, browser_tz.0)
+    })
+    .into_response()
+}
+
+/// Render the session-list broadcast payload into the out-of-band
+/// HTMX content fragment, localised to `tz`. Returns `None` if the
+/// payload is malformed (skip the tick).
+fn render_session_list_oob(json: &str, tz: chrono_tz::Tz) -> Option<String> {
+    use crate::services::broadcast::WsMessage;
+    use crate::templates::sessions::{SessionListContentWidget, SessionListPayload};
+    let payload: SessionListPayload = serde_json::from_str(json).ok()?;
+    let widget = SessionListContentWidget {
+        sessions: payload.sessions,
+        show_view_link: payload.show_view_link,
+        tz,
+    };
+    let html = widget.render().ok()?;
+    Some(WsMessage::new("ws-session-list-content", html).to_htmx_html())
 }
 
 /// Handle session list WebSocket connection.
@@ -1416,6 +1500,7 @@ async fn handle_session_list_socket(
     state: AppState,
     user: AuthUser,
     _ws_guard: WsGuard,
+    tz: chrono_tz::Tz,
 ) {
     let (mut sender, mut receiver) = socket.split();
     let channel = WsChannel::SessionsList.as_str();
@@ -1424,7 +1509,7 @@ async fn handle_session_list_socket(
     info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
           "WebSocket connected");
 
-    if let Err(e) = send_initial_session_list_data(&mut sender, &state).await {
+    if let Err(e) = send_initial_session_list_data(&mut sender, &state, tz).await {
         error!(user = %user.username, error = %e, "Failed to send initial session list data");
         return;
     }
@@ -1476,8 +1561,12 @@ async fn handle_session_list_socket(
                 }
             }
 
+            // Session list channel updates. The broadcast carries the
+            // raw `SessionListPayload` (JSON); render it in THIS
+            // connection's timezone so `connected_at` is local.
             result = sessions_rx.recv() => {
-                if let Ok(html) = result
+                if let Ok(json) = result
+                    && let Some(html) = render_session_list_oob(&json, tz)
                     && sender.send(Message::Text(html.into())).await.is_err()
                 {
                     close_cause = "send_fail";
@@ -1496,10 +1585,12 @@ async fn handle_session_list_socket(
     info!(channel = %channel, user = %user.username, "WebSocket disconnected");
 }
 
-/// Send initial session list data immediately on WebSocket connection.
+/// Send initial session list data immediately on WebSocket
+/// connection, rendered in the viewer's browser timezone `tz`.
 async fn send_initial_session_list_data(
     sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     state: &AppState,
+    tz: chrono_tz::Tz,
 ) -> Result<(), String> {
     use crate::services::broadcast::WsMessage;
     use crate::templates::sessions::SessionListContentWidget;
@@ -1509,6 +1600,7 @@ async fn send_initial_session_list_data(
     let widget = SessionListContentWidget {
         sessions,
         show_view_link: true,
+        tz,
     };
     if let Ok(html) = widget.render() {
         let msg = WsMessage::new("ws-session-list-content", html);
@@ -1618,7 +1710,7 @@ pub(crate) async fn fetch_session_list_data(
                     status,
                     credential_username,
                     tunnel_target_addr,
-                    connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    connected_at,
                     duration_seconds,
                     is_recorded,
                 }

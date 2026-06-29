@@ -2,9 +2,25 @@ use crate::templates::accounts::user_list::Pagination;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Active sessions list template.
 use askama::Template;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+// Make the `local` / `local_seconds` Askama filters resolvable from
+// the templates that embed this module's structs (the partial reads
+// `{{ session.connected_at|local(tz) }}`).
+#[allow(unused_imports)]
+use crate::utils::filters;
 
 /// Active session item for list display.
-#[derive(Debug, Clone)]
+///
+/// `connected_at` is carried as a raw `DateTime<Utc>` (NOT a
+/// pre-formatted string): the timestamp is rendered server-side in
+/// the viewer's browser timezone at the LAST possible moment (page
+/// render or per-connection WebSocket render) via the `local`
+/// filter. `Serialize`/`Deserialize` let the realtime pusher
+/// broadcast the raw data on the `ActiveSessionsList` channel so
+/// each WS connection can re-render it in its own timezone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveSessionItem {
     pub id: i32,
     pub uuid: String,
@@ -13,7 +29,7 @@ pub struct ActiveSessionItem {
     pub asset_hostname: String,
     pub session_type: String,
     pub client_ip: String,
-    pub connected_at: String,
+    pub connected_at: DateTime<Utc>,
     pub duration: String,
 }
 
@@ -65,6 +81,11 @@ pub struct ActiveListTemplate {
     /// the IACS stat tile is hidden (layer 5); the active-list query
     /// (layer 2) already excludes IACS tunnels so the count is 0.
     pub industrial_enabled: bool,
+    /// Viewer's browser timezone (IANA), used to render `connected_at`
+    /// in local time in the embedded `active_list_content.html`
+    /// partial. Resolved from the `vbn_tz` cookie via the `BrowserTz`
+    /// extractor.
+    pub tz: chrono_tz::Tz,
 }
 
 impl ActiveListTemplate {
@@ -95,6 +116,24 @@ impl ActiveListTemplate {
 #[template(path = "sessions/active_list_content.html")]
 pub struct ActiveListContentWidget {
     pub sessions: Vec<ActiveSessionItem>,
+    /// Viewer's browser timezone, set per-connection by the WebSocket
+    /// handler so the live-pushed `connected_at` renders in local time.
+    pub tz: chrono_tz::Tz,
+}
+
+/// Serializable payload broadcast on the `ActiveSessionsList`
+/// channel. The realtime pusher computes the active-session rows
+/// ONCE per tick and broadcasts this raw data; each subscribed
+/// WebSocket connection deserializes it and re-renders the stats +
+/// content widgets in its own browser timezone (per-connection
+/// rendering). This keeps a single DB query per tick while still
+/// honouring each viewer's `vbn_tz`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveListPayload {
+    pub sessions: Vec<ActiveSessionItem>,
+    /// Industrial kill-switch snapshot at broadcast time (drives the
+    /// IACS stat tile visibility in `ActiveListStatsWidget`).
+    pub industrial_enabled: bool,
 }
 
 /// WebSocket widget for active sessions stats.
@@ -143,7 +182,9 @@ mod tests {
             asset_hostname: "test.example.com".to_string(),
             session_type: session_type.to_string(),
             client_ip: "192.168.1.100".to_string(),
-            connected_at: "2026-01-03 10:00:00".to_string(),
+            connected_at: DateTime::parse_from_rfc3339("2026-01-03T10:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
             duration: "1h 30m".to_string(),
         }
     }
@@ -209,6 +250,7 @@ mod tests {
             sessions: vec![create_test_active_session_item("ssh")],
             pagination: None,
             industrial_enabled: true,
+            tz: chrono_tz::Tz::UTC,
         };
 
         let result = template.render();
@@ -220,6 +262,7 @@ mod tests {
     fn test_active_list_content_widget_renders() {
         let widget = ActiveListContentWidget {
             sessions: vec![create_test_active_session_item("ssh")],
+            tz: chrono_tz::Tz::UTC,
         };
         let result = widget.render();
         assert!(result.is_ok(), "ActiveListContentWidget should render");
@@ -233,6 +276,7 @@ mod tests {
     fn test_active_list_content_widget_empty() {
         let widget = ActiveListContentWidget {
             sessions: Vec::new(),
+            tz: chrono_tz::Tz::UTC,
         };
         let result = widget.render();
         assert!(
@@ -251,6 +295,7 @@ mod tests {
                 create_test_active_session_item("ssh"),
                 create_test_active_session_item("rdp"),
             ],
+            tz: chrono_tz::Tz::UTC,
         };
         let result = widget.render();
         assert!(result.is_ok());

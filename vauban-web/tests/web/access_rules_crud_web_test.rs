@@ -506,6 +506,132 @@ async fn test_web_access_rule_edit_form_shows_duration_fields() {
     test_db::cleanup(&mut conn).await;
 }
 
+/// Phase 4/5: the access-rule `<input type="datetime-local">` fields
+/// round-trip in the operator's BROWSER timezone, not UTC.
+///
+/// `datetime-local` carries no timezone by HTML5 spec, so the server
+/// owns the conversion on BOTH ends: `create_access_rule_web`
+/// interprets the submitted wall clock in the `vbn_tz` timezone
+/// (`parse_datetime`), and the edit form pre-fills the same wall clock
+/// from the stored UTC instant (`format_rfc3339_to_local`).
+///
+/// Scenario (January -> Paris is CET = UTC+01:00, DST-stable):
+///   * POST `valid_from = 2026-01-15T11:30` under `vbn_tz=Europe/Paris`
+///     -> the server stores `10:30 UTC`.
+///   * GET the edit form under the SAME Paris cookie -> the input
+///     pre-fills `2026-01-15T11:30` (symmetric local round-trip).
+///   * GET the edit form with NO cookie (UTC) -> the input pre-fills
+///     `2026-01-15T10:30`, proving the stored instant is `10:30 UTC`
+///     and the localization is doing real work (not a no-op).
+#[tokio::test]
+#[serial]
+async fn test_web_access_rule_datetime_local_round_trips_in_browser_tz() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("w_ar_tz_adm");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let ug = create_test_vauban_group(&mut conn, &unique_name("w-ar-tz-ug")).await;
+    let ag = create_test_asset_group(&mut conn, &unique_name("w-ar-tz-ag")).await;
+
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    let ug_id: i32 = vauban_web::schema::vauban_groups::table
+        .filter(vauban_web::schema::vauban_groups::uuid.eq(ug))
+        .select(vauban_web::schema::vauban_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let ag_id: i32 = vauban_web::schema::asset_groups::table
+        .filter(vauban_web::schema::asset_groups::uuid.eq(ag))
+        .select(vauban_web::schema::asset_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+
+    // POST under a Paris cookie: 11:30 CET (winter) -> 10:30 UTC stored.
+    let csrf_token = app.generate_csrf_token();
+    let create = app
+        .server
+        .post("/assets/access")
+        .add_header(
+            COOKIE,
+            format!(
+                "access_token={}; __vauban_csrf={}; vbn_tz=Europe%2FParis",
+                admin.token, csrf_token
+            ),
+        )
+        .form(&serde_json::json!({
+            "csrf_token": csrf_token,
+            "name": "TZ Round Trip Rule",
+            "user_group_id": ug_id,
+            "asset_group_id": ag_id,
+            "allowed_ssh": "true",
+            "is_active": "true",
+            "valid_from": "2026-01-15T11:30",
+        }))
+        .await;
+
+    let status = create.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "create should redirect (PRG), got {}",
+        status
+    );
+    let location = create
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        location.starts_with("/assets/access/"),
+        "create should redirect to the rule detail, got: {}",
+        location
+    );
+
+    // Edit form under the SAME Paris cookie -> local round-trip 11:30.
+    let edit_paris = app
+        .server
+        .get(&format!("{}/edit", location))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; vbn_tz=Europe%2FParis", admin.token),
+        )
+        .await;
+    assert_status(&edit_paris, 200);
+    let body_paris = edit_paris.text();
+    assert!(
+        body_paris.contains("value=\"2026-01-15T11:30\""),
+        "Paris edit form must pre-fill the local wall clock 11:30 (CET); valid_from line: {}",
+        body_paris
+            .lines()
+            .find(|l| l.contains("valid_from"))
+            .unwrap_or("(no valid_from line)")
+    );
+
+    // Edit form with NO tz cookie -> UTC wall clock 10:30, proving the
+    // stored instant AND that the localization is not a no-op.
+    let edit_utc = app
+        .server
+        .get(&format!("{}/edit", location))
+        .add_header(COOKIE, format!("access_token={}", admin.token))
+        .await;
+    assert_status(&edit_utc, 200);
+    let body_utc = edit_utc.text();
+    assert!(
+        body_utc.contains("value=\"2026-01-15T10:30\""),
+        "no-cookie edit form must pre-fill the stored UTC wall clock 10:30; valid_from line: {}",
+        body_utc
+            .lines()
+            .find(|l| l.contains("valid_from"))
+            .unwrap_or("(no valid_from line)")
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
 // =============================================================================
 // Detail Page
 // =============================================================================

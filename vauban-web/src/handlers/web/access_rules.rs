@@ -172,11 +172,33 @@ fn any_iacs_protocol(allowed_protocols: &[String]) -> bool {
     allowed_protocols.iter().any(|p| p.starts_with("iacs_"))
 }
 
-fn parse_datetime(s: &Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
+/// Parse the wall-clock value of an `<input type="datetime-local">`
+/// back into UTC.
+///
+/// HTML5 `datetime-local` carries NO timezone by spec, so the browser
+/// submits a bare wall clock. We interpret that wall clock in the
+/// operator's browser timezone (`tz`, from the `vbn_tz` cookie) and
+/// convert it to UTC for storage -- the exact inverse of
+/// [`format_rfc3339_to_local`], so the edit form round-trips in the
+/// viewer's local time. When the cookie is absent `tz` is `UTC`
+/// (see `BrowserTz`), which preserves the historical UTC behavior for
+/// callers that do not advertise a timezone.
+fn parse_datetime(s: &Option<String>, tz: chrono_tz::Tz) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::TimeZone;
+    use chrono::offset::LocalResult;
     s.as_deref().filter(|v| !v.is_empty()).and_then(|v| {
-        chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M")
-            .ok()
-            .map(|dt| dt.and_utc())
+        let naive = chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M").ok()?;
+        match tz.from_local_datetime(&naive) {
+            LocalResult::Single(dt) => Some(dt.with_timezone(&chrono::Utc)),
+            // DST fall-back overlap: the same wall clock maps to two
+            // instants. Pick the earliest -- deterministic and the
+            // conventional choice for "the first time the clock shows
+            // this value".
+            LocalResult::Ambiguous(earliest, _) => Some(earliest.with_timezone(&chrono::Utc)),
+            // DST spring-forward gap: the wall clock never existed in
+            // this zone. Treat as unset rather than guessing.
+            LocalResult::None => None,
+        }
     })
 }
 
@@ -196,12 +218,26 @@ fn format_rfc3339_str_to_display(s: &str, tz: chrono_tz::Tz) -> String {
         .unwrap_or_else(|_| s.to_string())
 }
 
-/// Convert RFC3339 string from IPC to local form format "%Y-%m-%dT%H:%M".
-fn format_rfc3339_to_local(s: &Option<String>) -> String {
+/// Convert an RFC3339 string from IPC into the wall-clock value of an
+/// `<input type="datetime-local">`, expressed in the operator's
+/// browser timezone (`tz`).
+///
+/// The inverse of [`parse_datetime`]: the value pre-filled here is the
+/// same wall clock the browser will submit, so editing an access rule
+/// round-trips in the viewer's local time instead of UTC.
+fn format_rfc3339_to_local(s: &Option<String>, tz: chrono_tz::Tz) -> String {
     s.as_deref()
         .filter(|v| !v.is_empty())
         .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
-        .map(|dt| dt.format("%Y-%m-%dT%H:%M").to_string())
+        .map(|dt| {
+            let local = dt.with_timezone(&tz);
+            // HTML5 <input type="datetime-local"> values are tz-less by
+            // spec, so no %Z is emitted here. The wall clock is converted
+            // to the browser tz above and parse_datetime() converts it
+            // back to UTC on submit -- a symmetric local-time round-trip.
+            // allow-naked-datetime: datetime-local input value is tz-less by HTML5 spec.
+            local.format("%Y-%m-%dT%H:%M").to_string()
+        })
         .unwrap_or_default()
 }
 
@@ -501,6 +537,7 @@ pub async fn create_access_rule_web(
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    browser_tz: BrowserTz,
     Form(form): Form<CreateAccessRuleWebForm>,
 ) -> Response {
     let flash = incoming_flash.flash();
@@ -561,8 +598,8 @@ pub async fn create_access_rule_web(
 
     let sanitized_name = sanitize(form.name.trim());
     let sanitized_desc = sanitize_opt(form.description.filter(|s| !s.trim().is_empty()));
-    let valid_from = parse_datetime(&form.valid_from);
-    let valid_until = parse_datetime(&form.valid_until);
+    let valid_from = parse_datetime(&form.valid_from, browser_tz.0);
+    let valid_until = parse_datetime(&form.valid_until, browser_tz.0);
     let max_dur: Option<i32> = match crate::utils::resolve_duration_seconds(
         form.duration_value,
         form.duration_unit.as_deref(),
@@ -699,8 +736,8 @@ pub async fn access_rule_edit(
             allowed_ssh: info.allowed_protocols.iter().any(|p| p == "ssh"),
             allowed_rdp: info.allowed_protocols.iter().any(|p| p == "rdp"),
             allowed_iacs: any_iacs_protocol(&info.allowed_protocols),
-            valid_from: format_rfc3339_to_local(&info.valid_from),
-            valid_until: format_rfc3339_to_local(&info.valid_until),
+            valid_from: format_rfc3339_to_local(&info.valid_from, browser_tz.0),
+            valid_until: format_rfc3339_to_local(&info.valid_until, browser_tz.0),
             require_mfa: info.require_mfa,
             require_approval: info.require_approval,
             duration_value: dur_val,
@@ -750,12 +787,14 @@ pub async fn access_rule_edit(
 // UPDATE (POST)
 // ============================================================================
 
+#[allow(clippy::too_many_arguments)]
 pub async fn update_access_rule_web(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<UpdateAccessRuleWebForm>,
 ) -> Response {
@@ -850,8 +889,8 @@ pub async fn update_access_rule_web(
 
     let sanitized_name = sanitize(form.name.trim());
     let sanitized_desc = sanitize_opt(form.description.filter(|s| !s.trim().is_empty()));
-    let valid_from = parse_datetime(&form.valid_from);
-    let valid_until = parse_datetime(&form.valid_until);
+    let valid_from = parse_datetime(&form.valid_from, browser_tz.0);
+    let valid_until = parse_datetime(&form.valid_until, browser_tz.0);
     let edit_url = format!("/assets/access/{}/edit", uuid_str);
     let max_dur: Option<i32> = match crate::utils::resolve_duration_seconds(
         form.duration_value,
