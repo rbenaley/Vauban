@@ -79,6 +79,10 @@ struct ActiveRecording {
     pending_keyframe: Option<PendingFrame>,
     frame_count: u64,
     total_fragment_count: u64,
+    /// Set when bytes have been written to the fMP4 writer since the last
+    /// `fdatasync`, cleared after a successful sync. Lets the periodic sweep
+    /// skip idle sessions (no syscall when nothing changed).
+    dirty: bool,
 }
 
 /// Result returned by `end_session` so the caller can write `meta.json`.
@@ -88,6 +92,29 @@ pub struct EndSessionResult {
     pub meta_json_relative_path: String,
     pub total_frames: u64,
     pub total_bytes: u64,
+}
+
+/// Outcome of a periodic durability sweep over the active sessions.
+///
+/// Shared by the RDP and SSH recording managers so the audit main loop can
+/// aggregate and log a single line per sweep.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SyncStats {
+    /// Sessions whose dirty buffer was flushed and `fdatasync`'d.
+    pub synced: usize,
+    /// Sessions skipped because they had no new data since the last sweep.
+    pub skipped: usize,
+    /// Sessions where flush/fdatasync returned an I/O error (best-effort).
+    pub errors: usize,
+}
+
+impl SyncStats {
+    /// Fold another sweep's counts into this one (cross-manager aggregation).
+    pub fn merge(&mut self, other: SyncStats) {
+        self.synced += other.synced;
+        self.skipped += other.skipped;
+        self.errors += other.errors;
+    }
 }
 
 /// Manages all active recording sessions.
@@ -148,6 +175,7 @@ impl RecordingManager {
                 pending_keyframe: None,
                 frame_count: 0,
                 total_fragment_count: 0,
+                dirty: false,
             },
         );
     }
@@ -347,6 +375,40 @@ impl RecordingManager {
         })
     }
 
+    /// Flush + `fdatasync` every session that has written new fMP4 bytes since
+    /// the last sweep. Idle sessions (and sessions still waiting for their
+    /// first keyframe, i.e. `writer == None`) are skipped without a syscall.
+    ///
+    /// Durability only: the byte stream and the per-segment BLAKE3 hasher are
+    /// never touched, so `recording_blake3` stays equal to the on-disk bytes.
+    pub fn sync_dirty(&mut self) -> SyncStats {
+        let mut stats = SyncStats::default();
+        for (session_id, rec) in self.recordings.iter_mut() {
+            if !rec.dirty {
+                stats.skipped += 1;
+                continue;
+            }
+            match rec.writer {
+                Some(ref mut writer) => match writer.sync() {
+                    Ok(()) => {
+                        rec.dirty = false;
+                        stats.synced += 1;
+                    }
+                    Err(e) => {
+                        warn!(session_id, error = %e, "fdatasync failed for RDP recording");
+                        stats.errors += 1;
+                    }
+                },
+                None => {
+                    // No keyframe yet: nothing reached the file, clear the flag.
+                    rec.dirty = false;
+                    stats.skipped += 1;
+                }
+            }
+        }
+        stats
+    }
+
     /// Serialize segment metadata to JSON for writing to `meta.json`.
     pub fn serialize_meta_json(segments: &[SegmentInfo]) -> String {
         #[derive(serde::Serialize)]
@@ -437,6 +499,8 @@ fn append_frame(
         }
         rec.total_fragment_count += 1;
         rec.current_fragment.clear();
+        // A fragment reached the writer's buffer: mark for the next sync sweep.
+        rec.dirty = true;
     }
 
     rec.current_fragment.push(Sample {
@@ -459,6 +523,14 @@ fn finalize_current_segment(rec: &mut ActiveRecording, session_id: &str) {
         rec.total_fragment_count += 1;
         rec.current_fragment.clear();
     }
+
+    // Durably persist the completed segment before the writer is dropped
+    // (segment split or session end): a finalized segment must survive a
+    // power loss even if it happens between two periodic sweeps.
+    if let Err(e) = writer.sync() {
+        warn!(session_id, error = %e, "fdatasync failed when finalizing RDP segment");
+    }
+    rec.dirty = false;
 
     let hash = rec.segment_hasher.finalize();
 
@@ -1346,5 +1418,144 @@ mod tests {
         assert_eq!(segs[0]["width"], 1920);
         assert_eq!(segs[0]["height"], 1080);
         assert!(segs[0]["duration_ticks"].as_u64().unwrap() > 0);
+    }
+
+    // ── Durability sweep invariants (periodic fdatasync) ────────────
+
+    /// Invariant: the per-segment BLAKE3 digest (computed over the raw H.264
+    /// frame bytes) is unchanged when `sync_dirty` sweeps are interleaved with
+    /// frame ingestion. The sweep is durability-only: it must not touch the
+    /// hasher nor the byte stream.
+    #[test]
+    fn test_rdp_sync_dirty_preserves_segment_blake3() {
+        let dir = temp_dir();
+        let (file, _) = create_test_file(&dir, "b3sync/001.mp4");
+        let mut mgr = RecordingManager::new();
+
+        let keyframe = sample_keyframe_annex_b();
+        let pframe = sample_pframe_annex_b();
+
+        // Single segment (no resolution change): the segment hash covers every
+        // frame fed into the segment, in order.
+        let mut expected = blake3::Hasher::new();
+        expected.update(&keyframe);
+        expected.update(&pframe);
+        expected.update(&keyframe);
+        expected.update(&pframe);
+        let expected_hex = expected.finalize().to_hex().to_string();
+
+        mgr.start_session("b3", file, "2026/03/b3sync/001.mp4".to_string());
+        mgr.sync_dirty(); // before any keyframe: writer None -> skipped
+        mgr.handle_frame("b3", 0, true, 1920, 1080, &keyframe);
+        mgr.sync_dirty();
+        mgr.handle_frame("b3", 33333, false, 1920, 1080, &pframe);
+        mgr.handle_frame("b3", 66666, true, 1920, 1080, &keyframe); // flushes fragment 1
+        mgr.sync_dirty();
+        mgr.sync_dirty(); // idempotent
+        mgr.handle_frame("b3", 100000, false, 1920, 1080, &pframe);
+        let result = mgr.end_session("b3").unwrap();
+
+        assert_eq!(result.segments.len(), 1);
+        assert_eq!(result.segments[0].blake3_hex, expected_hex);
+    }
+
+    /// `sync_dirty` skips a session that has not yet received its first
+    /// keyframe (writer is `None`, nothing reached the file).
+    #[test]
+    fn test_rdp_sync_dirty_skips_before_first_keyframe() {
+        let dir = temp_dir();
+        let (file, _) = create_test_file(&dir, "nokf/001.mp4");
+        let mut mgr = RecordingManager::new();
+
+        mgr.start_session("nokf", file, "2026/03/nokf/001.mp4".to_string());
+        mgr.handle_frame("nokf", 0, false, 1920, 1080, &sample_pframe_annex_b());
+
+        let stats = mgr.sync_dirty();
+        assert_eq!(stats.synced, 0, "no keyframe yet -> nothing to fsync");
+        assert_eq!(stats.skipped, 1);
+    }
+
+    /// After a fragment is flushed to the writer, `sync_dirty` fsyncs it once
+    /// (synced == 1) and a subsequent sweep without new data is a no-op.
+    #[test]
+    fn test_rdp_sync_dirty_marks_synced_then_idle() {
+        let dir = temp_dir();
+        let (file, mp4_path) = create_test_file(&dir, "sync1/001.mp4");
+        let mut mgr = RecordingManager::new();
+
+        mgr.start_session("s", file, "2026/03/sync1/001.mp4".to_string());
+        mgr.handle_frame("s", 0, true, 1920, 1080, &sample_keyframe_annex_b());
+        mgr.handle_frame("s", 33333, false, 1920, 1080, &sample_pframe_annex_b());
+        // Second keyframe flushes the first fragment -> session becomes dirty.
+        mgr.handle_frame("s", 66666, true, 1920, 1080, &sample_keyframe_annex_b());
+
+        let first = mgr.sync_dirty();
+        assert_eq!(first.synced, 1);
+
+        let second = mgr.sync_dirty();
+        assert_eq!(second.synced, 0);
+        assert_eq!(second.skipped, 1);
+
+        // The flushed fragment is visible on disk before the session ends.
+        let data = std::fs::read(&mp4_path).unwrap();
+        assert_eq!(&data[4..8], b"ftyp");
+        assert!(count_mp4_boxes(&data, b"moof") >= 1);
+
+        mgr.end_session("s");
+    }
+
+    /// Empty manager: sweep is a clean no-op.
+    #[test]
+    fn test_rdp_sync_dirty_empty_manager() {
+        let mut mgr = RecordingManager::new();
+        assert_eq!(mgr.sync_dirty(), SyncStats::default());
+    }
+
+    /// N concurrent sessions with interleaved sweeps: each segment digest is
+    /// correct and the two mp4 files stay isolated.
+    #[test]
+    fn test_rdp_sync_dirty_concurrent_isolation() {
+        let dir = temp_dir();
+        let (file_a, path_a) = create_test_file(&dir, "ca/001.mp4");
+        let (file_b, path_b) = create_test_file(&dir, "cb/001.mp4");
+        let mut mgr = RecordingManager::new();
+
+        let keyframe = sample_keyframe_annex_b();
+        let pframe = sample_pframe_annex_b();
+
+        mgr.start_session("a", file_a, "2026/03/ca/001.mp4".to_string());
+        mgr.start_session("b", file_b, "2026/03/cb/001.mp4".to_string());
+
+        mgr.handle_frame("a", 0, true, 1920, 1080, &keyframe);
+        mgr.handle_frame("b", 0, true, 1280, 720, &keyframe);
+        mgr.sync_dirty();
+        mgr.handle_frame("a", 33333, false, 1920, 1080, &pframe);
+        mgr.handle_frame("b", 33333, false, 1280, 720, &pframe);
+        mgr.handle_frame("a", 66666, true, 1920, 1080, &keyframe);
+        mgr.handle_frame("b", 66666, true, 1280, 720, &keyframe);
+        mgr.sync_dirty();
+
+        let mut exp_a = blake3::Hasher::new();
+        exp_a.update(&keyframe);
+        exp_a.update(&pframe);
+        exp_a.update(&keyframe);
+        let mut exp_b = exp_a.clone();
+
+        let ra = mgr.end_session("a").unwrap();
+        let rb = mgr.end_session("b").unwrap();
+
+        assert_eq!(
+            ra.segments[0].blake3_hex,
+            exp_a.finalize().to_hex().to_string()
+        );
+        assert_eq!(
+            rb.segments[0].blake3_hex,
+            exp_b.finalize().to_hex().to_string()
+        );
+
+        let da = std::fs::read(&path_a).unwrap();
+        let db = std::fs::read(&path_b).unwrap();
+        assert_eq!(&da[4..8], b"ftyp");
+        assert_eq!(&db[4..8], b"ftyp");
     }
 }

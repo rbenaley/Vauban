@@ -353,6 +353,11 @@ pub struct RecordingConfig {
     /// Enable recording of IACS tunnel sessions (PCAP bundle).
     #[serde(default = "default_recording_enabled")]
     pub iacs: bool,
+    /// Interval (ms) between periodic `fdatasync` sweeps of the active SSH/RDP
+    /// recordings in vauban-audit. 0 disables the sweep (legacy behaviour /
+    /// instant rollback knob). Default 1000 ms => RPO ~1 s of media on crash.
+    #[serde(default = "default_recording_fsync_interval_ms")]
+    pub fsync_interval_ms: u64,
 }
 
 fn default_recording_enabled() -> bool {
@@ -361,6 +366,10 @@ fn default_recording_enabled() -> bool {
 
 fn default_recording_storage_path() -> String {
     "recordings".to_string()
+}
+
+fn default_recording_fsync_interval_ms() -> u64 {
+    1000
 }
 
 impl RecordingConfig {
@@ -390,6 +399,7 @@ impl Default for RecordingConfig {
             rdp: default_recording_enabled(),
             ssh: default_recording_enabled(),
             iacs: default_recording_enabled(),
+            fsync_interval_ms: default_recording_fsync_interval_ms(),
         }
     }
 }
@@ -1029,6 +1039,10 @@ impl SupervisorConfig {
                     "VAUBAN_RECORDING_STORAGE_PATH".to_string(),
                     self.recording.storage_path.clone(),
                 ));
+                vars.push((
+                    "VAUBAN_RECORDING_FSYNC_INTERVAL_MS".to_string(),
+                    self.recording.fsync_interval_ms.to_string(),
+                ));
                 // WORM signing: if the operator has provisioned a sealed audit
                 // signing key (`vauban-vault seal-audit-key`), hand its
                 // ciphertext to audit so it can unseal via VaultDecrypt{audit}
@@ -1437,11 +1451,13 @@ mod tests {
     fn test_service_env_vars_audit() {
         let config = test_config();
         let vars = config.service_env_vars("audit");
-        assert_eq!(vars.len(), 2);
+        assert_eq!(vars.len(), 3);
         assert_eq!(vars[0].0, "VAUBAN_RECORDING_ENABLED");
         assert_eq!(vars[0].1, "true");
         assert_eq!(vars[1].0, "VAUBAN_RECORDING_STORAGE_PATH");
         assert_eq!(vars[1].1, "recordings");
+        assert_eq!(vars[2].0, "VAUBAN_RECORDING_FSYNC_INTERVAL_MS");
+        assert_eq!(vars[2].1, "1000");
     }
 
     #[test]

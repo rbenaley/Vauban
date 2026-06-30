@@ -34,7 +34,7 @@ use ssh_recording_manager::SshRecordingManager;
 use std::net::IpAddr;
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::process::ExitCode;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 use vauban_audit::iacs_recording_manager::{self, IacsRecordingManager};
 use vauban_audit::worm::{AuditRecord, GENESIS_HASH, WormLog};
@@ -208,6 +208,15 @@ fn run_service() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(false);
 
+    // Interval (ms) between periodic `fdatasync` sweeps of the active SSH/RDP
+    // recordings. 0 disables the sweep entirely (legacy behaviour, instant
+    // rollback knob). Default 1000 ms => at most ~1 s of media lost on a
+    // power loss / kernel panic.
+    let recording_fsync_interval_ms: u64 = std::env::var("VAUBAN_RECORDING_FSYNC_INTERVAL_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1000);
+
     let fd_passing_socket: Option<RawFd> = std::env::var("VAUBAN_FD_PASSING_SOCKET")
         .ok()
         .and_then(|s| s.parse().ok());
@@ -325,6 +334,7 @@ fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_IPC_READ");
         std::env::remove_var("VAUBAN_IPC_WRITE");
         std::env::remove_var("VAUBAN_RECORDING_ENABLED");
+        std::env::remove_var("VAUBAN_RECORDING_FSYNC_INTERVAL_MS");
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
         std::env::remove_var("VAUBAN_PROXY_RDP_IPC_READ");
         std::env::remove_var("VAUBAN_PROXY_RDP_IPC_WRITE");
@@ -450,6 +460,7 @@ fn run_service() -> Result<()> {
             ssh_recording_mgr: &mut ssh_recording_mgr,
             iacs_recording_mgr: &mut iacs_recording_mgr,
             fd_passing_socket,
+            recording_fsync_interval_ms,
         },
         sealed,
     )
@@ -466,6 +477,8 @@ struct MainLoopContext<'a> {
     ssh_recording_mgr: &'a mut Option<SshRecordingManager>,
     iacs_recording_mgr: &'a mut Option<IacsRecordingManager>,
     fd_passing_socket: Option<RawFd>,
+    /// Period (ms) between `fdatasync` sweeps; 0 disables the sweep.
+    recording_fsync_interval_ms: u64,
 }
 
 fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()> {
@@ -480,8 +493,18 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
         ssh_recording_mgr,
         iacs_recording_mgr,
         fd_passing_socket,
+        recording_fsync_interval_ms,
     } = ctx;
     let mut poll_fds: Vec<RawFd> = vec![channel.read_fd()];
+
+    // Wake at least every `fsync` interval so the periodic durability sweep
+    // runs even when no IPC traffic arrives (capped at 1 s, the legacy value).
+    let poll_timeout_ms: i32 = if recording_fsync_interval_ms == 0 {
+        1000
+    } else {
+        recording_fsync_interval_ms.min(1000) as i32
+    };
+    let mut last_sync_sweep = Instant::now();
 
     let rdp_poll_idx = if let Some(rdp_ch) = proxy_rdp_channel {
         poll_fds.push(rdp_ch.read_fd());
@@ -515,10 +538,24 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
         // Check shutdown flag before blocking on poll.
         if state.shutdown_requested {
             info!("Shutdown flag set, exiting main loop to run destructors");
+            // Final durability sweep: flush + fdatasync any session that still
+            // has buffered bytes so a clean shutdown never loses recording tail.
+            run_fsync_sweep(recording_mgr, ssh_recording_mgr);
             return Ok(());
         }
 
-        let ready = poll_readable(&poll_fds, 1000)?;
+        let ready = poll_readable(&poll_fds, poll_timeout_ms)?;
+
+        // Periodic durability sweep. Runs before the `ready.is_empty()`
+        // early-continue so an idle service (poll timed out, no IPC traffic)
+        // still flushes + fdatasyncs sessions that received data just before
+        // going quiet. Time-gated, so it is a cheap no-op most iterations.
+        if recording_fsync_interval_ms > 0
+            && last_sync_sweep.elapsed() >= Duration::from_millis(recording_fsync_interval_ms)
+        {
+            run_fsync_sweep(recording_mgr, ssh_recording_mgr);
+            last_sync_sweep = Instant::now();
+        }
 
         if ready.is_empty() {
             continue;
@@ -677,6 +714,32 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
                 }
             }
         }
+    }
+}
+
+/// Flush + `fdatasync` every dirty SSH/RDP recording session (best-effort).
+///
+/// Aggregates both managers' [`SyncStats`] and emits one debug line per sweep
+/// when anything was synced or errored. IACS is intentionally untouched: it
+/// already runs its own per-batch `fdatasync` with backpressure.
+fn run_fsync_sweep(
+    recording_mgr: &mut Option<RecordingManager>,
+    ssh_recording_mgr: &mut Option<SshRecordingManager>,
+) {
+    let mut stats = recording_manager::SyncStats::default();
+    if let Some(mgr) = recording_mgr.as_mut() {
+        stats.merge(mgr.sync_dirty());
+    }
+    if let Some(mgr) = ssh_recording_mgr.as_mut() {
+        stats.merge(mgr.sync_dirty());
+    }
+    if stats.synced > 0 || stats.errors > 0 {
+        debug!(
+            synced = stats.synced,
+            skipped = stats.skipped,
+            errors = stats.errors,
+            "Recording fdatasync sweep"
+        );
     }
 }
 

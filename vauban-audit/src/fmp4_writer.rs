@@ -191,6 +191,19 @@ impl<W: Write> Fmp4Writer<W> {
     }
 }
 
+impl Fmp4Writer<std::io::BufWriter<std::fs::File>> {
+    /// Flush buffered bytes to the kernel, then `fdatasync` the inode so the
+    /// already-written fMP4 fragments survive a power loss / kernel panic.
+    ///
+    /// Only touches durability: it never reorders or rewrites bytes, so the
+    /// per-segment BLAKE3 digest (computed over the same byte stream) stays
+    /// consistent with what lands on disk.
+    pub fn sync(&mut self) -> io::Result<()> {
+        self.writer.flush()?;
+        self.writer.get_ref().sync_data()
+    }
+}
+
 // ── Box builders ───────────────────────────────────────────────
 
 fn write_u8(buf: &mut Vec<u8>, v: u8) {

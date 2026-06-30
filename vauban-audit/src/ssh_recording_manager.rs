@@ -3,6 +3,7 @@
 //! Writes terminal session recordings as asciicast v2 files (.cast) with
 //! BLAKE3 integrity hashing and meta.json metadata for each session.
 
+use crate::recording_manager::SyncStats;
 use shared::messages::SshRecordingEvent;
 use std::collections::HashMap;
 use std::fs::File;
@@ -36,6 +37,9 @@ struct SshRecordingSession {
     #[allow(dead_code)]
     username: String,
     relative_path: String,
+    /// Set when events have been written since the last `fdatasync`, cleared
+    /// after a successful sync. Lets the periodic sweep skip idle sessions.
+    dirty: bool,
 }
 
 /// Parameters for starting a new SSH recording session.
@@ -128,6 +132,9 @@ impl SshRecordingManager {
                 asset_name,
                 username,
                 relative_path,
+                // The asciicast header is already buffered: mark dirty so the
+                // first sweep persists it even if no event ever arrives.
+                dirty: true,
             },
         );
 
@@ -179,14 +186,49 @@ impl SshRecordingManager {
 
         session.total_bytes += line_bytes.len() as u64;
         session.total_events += 1;
+        session.dirty = true;
+    }
+
+    /// Flush + `fdatasync` every session that has written new asciicast events
+    /// since the last sweep. Idle sessions are skipped without a syscall.
+    ///
+    /// Durability only: the hasher and the byte stream are never touched, so
+    /// the per-session BLAKE3 digest stays equal to the on-disk bytes.
+    pub fn sync_dirty(&mut self) -> SyncStats {
+        let mut stats = SyncStats::default();
+        for (session_id, session) in self.sessions.iter_mut() {
+            if !session.dirty {
+                stats.skipped += 1;
+                continue;
+            }
+            match session
+                .writer
+                .flush()
+                .and_then(|()| session.writer.get_ref().sync_data())
+            {
+                Ok(()) => {
+                    session.dirty = false;
+                    stats.synced += 1;
+                }
+                Err(e) => {
+                    warn!(session_id = %session_id, error = %e, "fdatasync failed for SSH recording");
+                    stats.errors += 1;
+                }
+            }
+        }
+        stats
     }
 
     /// End a recording session, flush the file, and return metadata.
     pub fn end_session(&mut self, session_id: &str) -> Option<SshEndSessionResult> {
         let mut session = self.sessions.remove(session_id)?;
 
-        if let Err(e) = session.writer.flush() {
-            warn!(session_id = %session_id, error = %e, "Failed to flush asciicast file");
+        if let Err(e) = session
+            .writer
+            .flush()
+            .and_then(|()| session.writer.get_ref().sync_data())
+        {
+            warn!(session_id = %session_id, error = %e, "Failed to flush/fdatasync asciicast file");
         }
 
         let blake3_hex = session.hasher.finalize().to_hex().to_string();
@@ -726,5 +768,134 @@ mod tests {
         let result = mgr.end_session("s1").unwrap();
 
         assert_eq!(result.meta_json_relative_path, "2026/03/s1/meta.json");
+    }
+
+    // ── Durability sweep invariants (periodic fdatasync) ────────────
+
+    /// Read the current on-disk bytes via an independent clone, without
+    /// consuming the session's writer or moving the shared offset semantics
+    /// of `read_file_contents` (which takes ownership).
+    fn snapshot(reader: &File) -> String {
+        let clone = reader.try_clone().unwrap();
+        read_file_contents(clone)
+    }
+
+    /// Invariant: the final BLAKE3 digest equals the on-disk bytes even when
+    /// arbitrary `sync_dirty` sweeps are interleaved with `handle_data`.
+    /// The fsync sweep must never reorder or duplicate bytes.
+    #[test]
+    fn test_ssh_sync_dirty_preserves_blake3_under_interleaving() {
+        let mut mgr = SshRecordingManager::new();
+        let (f, reader) = create_temp_file_pair();
+
+        mgr.start_session("s1", test_params(f, "p"));
+        mgr.sync_dirty(); // sweep before any event (header only)
+        mgr.handle_data("s1", 0, SshRecordingEvent::Output, b"alpha");
+        mgr.sync_dirty();
+        mgr.sync_dirty(); // idempotent second sweep
+        mgr.handle_data("s1", 100_000, SshRecordingEvent::Input, b"beta\r");
+        mgr.handle_data("s1", 200_000, SshRecordingEvent::Output, b"gamma\r\n");
+        mgr.sync_dirty();
+        let result = mgr.end_session("s1").unwrap();
+
+        let contents = read_file_contents(reader);
+        let expected = blake3::hash(contents.as_bytes()).to_hex().to_string();
+        assert_eq!(result.blake3_hex, expected);
+    }
+
+    /// Invariant: after `handle_data` + `sync_dirty`, every byte written so far
+    /// is durably present on disk (readable through a second descriptor)
+    /// BEFORE the session ends. This is the crux of the RPO guarantee.
+    #[test]
+    fn test_ssh_sync_dirty_persists_bytes_mid_session() {
+        let mut mgr = SshRecordingManager::new();
+        let (f, reader) = create_temp_file_pair();
+
+        mgr.start_session("s1", test_params(f, "p"));
+        mgr.handle_data("s1", 0, SshRecordingEvent::Output, b"midsession");
+
+        let stats = mgr.sync_dirty();
+        assert_eq!(stats.synced, 1);
+
+        // Read WITHOUT ending the session: the bytes must already be on disk.
+        let snap = snapshot(&reader);
+        assert!(snap.starts_with("{\"version\":2"));
+        assert!(
+            snap.contains("midsession"),
+            "event must be durable after sync_dirty, got: {snap}"
+        );
+
+        mgr.end_session("s1");
+    }
+
+    /// `sync_dirty` performs no work on a session that received no new data
+    /// since the last sweep (idle skip + idempotence).
+    #[test]
+    fn test_ssh_sync_dirty_skips_idle_and_is_idempotent() {
+        let mut mgr = SshRecordingManager::new();
+        let f = create_temp_file();
+
+        mgr.start_session("s1", test_params(f, "p"));
+
+        // First sweep flushes the header (dirty at start).
+        let first = mgr.sync_dirty();
+        assert_eq!(first.synced, 1);
+        assert_eq!(first.skipped, 0);
+
+        // No new data: subsequent sweeps are pure no-ops.
+        let second = mgr.sync_dirty();
+        assert_eq!(second.synced, 0);
+        assert_eq!(second.skipped, 1);
+
+        mgr.handle_data("s1", 0, SshRecordingEvent::Output, b"x");
+        let third = mgr.sync_dirty();
+        assert_eq!(third.synced, 1);
+        let fourth = mgr.sync_dirty();
+        assert_eq!(fourth.synced, 0);
+        assert_eq!(fourth.skipped, 1);
+    }
+
+    /// Empty manager / unknown sessions: sweep is a clean no-op.
+    #[test]
+    fn test_ssh_sync_dirty_empty_manager() {
+        let mut mgr = SshRecordingManager::new();
+        assert_eq!(mgr.sync_dirty(), SyncStats::default());
+    }
+
+    /// N concurrent sessions with interleaved sweeps: each digest stays correct
+    /// and the streams remain isolated.
+    #[test]
+    fn test_ssh_sync_dirty_concurrent_isolation() {
+        let mut mgr = SshRecordingManager::new();
+        let (f1, reader1) = create_temp_file_pair();
+        let (f2, reader2) = create_temp_file_pair();
+
+        mgr.start_session("s1", test_params(f1, "p1"));
+        mgr.start_session("s2", test_params(f2, "p2"));
+
+        mgr.handle_data("s1", 0, SshRecordingEvent::Output, b"one-one");
+        mgr.sync_dirty();
+        mgr.handle_data("s2", 0, SshRecordingEvent::Output, b"two-two");
+        mgr.handle_data("s1", 100_000, SshRecordingEvent::Output, b"one-two");
+        mgr.sync_dirty();
+
+        let r1 = mgr.end_session("s1").unwrap();
+        let r2 = mgr.end_session("s2").unwrap();
+
+        let c1 = read_file_contents(reader1);
+        let c2 = read_file_contents(reader2);
+
+        assert_eq!(
+            r1.blake3_hex,
+            blake3::hash(c1.as_bytes()).to_hex().to_string()
+        );
+        assert_eq!(
+            r2.blake3_hex,
+            blake3::hash(c2.as_bytes()).to_hex().to_string()
+        );
+        assert!(c1.contains("one-one") && c1.contains("one-two"));
+        assert!(c2.contains("two-two"));
+        assert!(!c1.contains("two-two"));
+        assert!(!c2.contains("one-one"));
     }
 }

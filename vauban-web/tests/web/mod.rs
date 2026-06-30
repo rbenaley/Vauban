@@ -78,6 +78,7 @@ pub mod rdp_cert_no_silent_green_test;
 pub mod rdp_cert_pin_e2e_test;
 pub mod recording_daily_cron_e2e_test;
 pub mod recording_detail_test;
+pub mod recording_durability_pin_test;
 pub mod recording_iacs_download_e2e_test;
 pub mod recording_integrity_migration_test;
 pub mod recording_retention_e2e_test;

@@ -59,7 +59,7 @@ PostgreSQL columns so the UI never re-parses files on the hot path
 | Goal | Approach | Pipelines |
 |------|----------|-----------|
 | Zero-copy / no re-encoding | Reuse encoded artefacts (H.264 NAL, asciicast, raw bytes) | All |
-| Crash resilience | fMP4 fragments / asciicast lines / per-batch fdatasync | All |
+| Crash resilience | fMP4 fragments / asciicast lines (process-kill safe) + periodic `fdatasync` sweep (RDP/SSH, power-loss safe) / per-batch `fdatasync` (IACS) | All |
 | Wireshark/tcpdump compatibility | Synthetic IPv4 + TCP layer around captured chunks | IACS |
 | Tamper detection | BLAKE3 -- per-segment (RDP), per-session (SSH), per-channel + aggregate (IACS) | All |
 | Sandbox compatibility | SCM_RIGHTS for I/O; gzip/unlink delegated to supervisor | All |
@@ -310,7 +310,10 @@ length prefix) before being written to `mdat`; SPS/PPS are stripped
 from `mdat` because they already live in `avcC` inside `moov`. Storing
 each GOP as a self-describing fragment yields **crash resilience**: a
 process kill loses at most the GOP being written, never previously
-flushed fragments.
+flushed fragments. Each finalized segment (resolution split or session
+end) is additionally `fdatasync`'d before its writer is dropped, and a
+periodic sweep (Section 4.4) bounds the power-loss window for the
+in-progress segment to roughly one `fdatasync` interval.
 
 ### 3.4 Post-Resize Grace Period
 
@@ -402,6 +405,35 @@ Recording is a fan-out from the same `session_task` that serves the
 WebSocket. Live data flows to the web sandbox unredacted because the
 operator is the same person typing the password; only the **stored**
 copy is redacted.
+
+### 4.4 Durability (periodic `fdatasync` sweep)
+
+SSH (`.cast`) and RDP (`.mp4`) media are written through a `BufWriter`:
+each event/fragment is `flush`ed to the kernel page cache (so a process
+crash never loses already-written bytes), but a flush alone does **not**
+survive a power loss or kernel panic. To bound that window without the
+per-batch backpressure model used by IACS (Section 5.3) -- which would
+add latency to interactive sessions -- `vauban-audit` runs a **periodic
+`fdatasync` sweep inside its existing single-threaded poll loop**:
+
+1. Each recording session carries a `dirty` flag, set when bytes reach
+   its writer and cleared after a successful sync.
+2. Once per `VAUBAN_RECORDING_FSYNC_INTERVAL_MS` (default **1000 ms**)
+   the loop calls `sync_dirty()` on the SSH and RDP managers, which
+   `flush` + `fdatasync` (`File::sync_data`) every dirty session and
+   skip idle ones (no syscall). A final sweep runs at shutdown.
+3. Setting the interval to **0** disables the sweep entirely, restoring
+   the pre-feature behaviour -- an instant operator-level rollback knob
+   that needs no binary redeploy.
+
+This is **durability-only**: the sweep never touches the byte stream or
+the BLAKE3 hasher, so the integrity invariant `recording_blake3 ==
+BLAKE3(bytes on disk)` (Section 6) is preserved by construction. Because
+the proxies hand recording data to audit via non-blocking `try_send`,
+even a slow `fdatasync` (e.g. on cloud block storage) can never add
+latency to a user's SSH/RDP session -- at worst it slows audit drainage
+under a burst. IACS is unchanged: it keeps its stronger per-batch
+`fdatasync` + ack backpressure.
 
 ---
 
@@ -928,6 +960,12 @@ rdp = true
 ssh = true
 iacs = true
 
+# Periodic fdatasync sweep for SSH/RDP media (Section 4.4).
+# Milliseconds between sweeps; 0 disables the sweep (legacy behaviour /
+# instant rollback knob). Default 1000 => power-loss RPO ~1 s. Emitted
+# to vauban-audit as VAUBAN_RECORDING_FSYNC_INTERVAL_MS.
+fsync_interval_ms = 1000
+
 # Hydrator
 hydration_daily_cron_hour = 4
 hydration_enqueue_delay_secs = 5
@@ -963,6 +1001,13 @@ available alongside this one for archaeological purposes.
 
 ### 1.5 (24-25 May 2026)
 
+- **SSH/RDP media durability**: added a periodic `fdatasync` sweep in
+  the `vauban-audit` poll loop (Section 4.4), bounding the power-loss
+  RPO of in-progress `.cast`/`.mp4` files to one
+  `VAUBAN_RECORDING_FSYNC_INTERVAL_MS` interval (default 1000 ms; `0`
+  disables). Each finalized RDP segment is also `fdatasync`'d before
+  its writer is dropped. Durability-only: the BLAKE3 integrity
+  invariant is preserved. IACS unchanged.
 - **Inspect Capture** (admin-only inline PCAP analyzer): the IACS
   recording bundle can now be analysed in the browser (`/sessions/
   recordings/{uuid}/inspect`) with industrial-protocol-aware
