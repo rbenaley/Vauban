@@ -29,6 +29,7 @@ pub mod role_invariants;
 pub mod session_access;
 pub mod session_activity;
 pub mod session_limits;
+pub mod session_revocation;
 pub mod smtp_client;
 pub mod system_health;
 pub mod virtual_group;

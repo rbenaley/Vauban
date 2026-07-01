@@ -50,12 +50,17 @@ fn force_logout_oob_contains_canonical_redirect_for_each_reason() {
 // ─── Structural: single-source factoring ─────────────────────────────────────
 
 /// The raw force-logout fragment literal must live ONLY in the helper
-/// (`session_activity::force_logout_oob`). Neither `users.rs` nor
-/// `websocket.rs` may re-inline it; both must go through the helper. This
-/// pins the single-source-of-truth invariant.
+/// (`session_activity::force_logout_oob`). Neither `users.rs`,
+/// `websocket.rs` nor `session_revocation.rs` may re-inline it; all must
+/// go through the helper. This pins the single-source-of-truth invariant.
 #[test]
 fn force_logout_fragment_is_single_sourced() {
-    for (label, src) in [("users.rs", USERS_SRC), ("websocket.rs", WEBSOCKET_SRC)] {
+    const SESSION_REVOCATION_SRC: &str = include_str!("../../src/services/session_revocation.rs");
+    for (label, src) in [
+        ("users.rs", USERS_SRC),
+        ("websocket.rs", WEBSOCKET_SRC),
+        ("session_revocation.rs", SESSION_REVOCATION_SRC),
+    ] {
         assert!(
             !src.contains(r#"id="force-logout" hx-swap-oob"#),
             "{label} must NOT inline the force-logout fragment; call \
@@ -66,10 +71,12 @@ fn force_logout_fragment_is_single_sourced() {
             "{label} must produce the force-logout fragment via the shared helper"
         );
     }
-    // The helper's two admin call sites must remain (deactivate + revoke).
+    // The admin session-revoke call site stays in users.rs; the
+    // deactivation force-logout moved into the shared revocation seam
+    // (`services::session_revocation`), which users.rs must call.
     assert!(
-        USERS_SRC.matches("force_logout_oob(").count() >= 2,
-        "users.rs must keep both admin force-logout call sites via the helper"
+        USERS_SRC.contains("session_revocation::revoke_auth_sessions("),
+        "users.rs must revoke login sessions via the shared session_revocation seam"
     );
 }
 
@@ -187,10 +194,17 @@ async fn force_logout_to_matching_targets_only_the_revoked_browser() {
 // ─── Login-page reason banner ────────────────────────────────────────────────
 
 /// The login page must render a banner for each redirect reason in the
-/// taxonomy, including the new `session_expired`.
+/// taxonomy, including the privilege-revocation reasons (`role_changed`,
+/// `password_changed`).
 #[test]
 fn login_page_renders_banner_for_every_reason() {
-    for reason in ["session_revoked", "account_deactivated", "session_expired"] {
+    for reason in [
+        "session_revoked",
+        "account_deactivated",
+        "session_expired",
+        "role_changed",
+        "password_changed",
+    ] {
         assert!(
             LOGIN_HTML.contains(&format!("reason === '{reason}'")),
             "login.html must render a banner for reason `{reason}`"

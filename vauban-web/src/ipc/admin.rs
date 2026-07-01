@@ -5,7 +5,7 @@
 //! and returning AdminResponse results.
 
 use crate::db::DbPool;
-use crate::schema::{assets, proxy_sessions, users};
+use crate::schema::{assets, auth_sessions, proxy_sessions, users};
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use shared::messages::{
@@ -152,7 +152,31 @@ async fn handle_reset_password(
     {
         Ok(0) => AdminResponse::Error(format!("User '{username}' not found")),
         Ok(_) => {
-            info!(username, "Admin: password reset via IPC");
+            // Privilege-revocation contract: every login session dies
+            // with the old password. A CLI reset is by definition an
+            // out-of-band credential rotation (lost password, suspected
+            // compromise), so no session survives. The WebSocket
+            // force-logout side channel is not reachable from the IPC
+            // tier; the deleted rows make the auth middleware deny the
+            // very next request of each revoked session instead.
+            let revoked = diesel::delete(
+                auth_sessions::table.filter(
+                    auth_sessions::user_id.eq_any(
+                        users::table
+                            .filter(users::username.eq(username))
+                            .filter(users::is_deleted.eq(false))
+                            .select(users::id),
+                    ),
+                ),
+            )
+            .execute(&mut conn)
+            .await
+            .unwrap_or(0);
+            info!(
+                username,
+                revoked_sessions = revoked,
+                "Admin: password reset via IPC; login sessions revoked"
+            );
             AdminResponse::Ok
         }
         Err(e) => AdminResponse::Error(format!("Failed to reset password: {e}")),

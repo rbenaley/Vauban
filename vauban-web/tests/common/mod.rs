@@ -285,7 +285,23 @@ impl TestApp {
                 .unwrap_or(None);
 
             match existing {
-                Some(id) => id,
+                Some(id) => {
+                    // Privilege-revocation invariant: the auth middleware
+                    // denies any session whose JWT role claims diverge from
+                    // the `users` row. A test token is a *snapshot of the
+                    // row at mint time*, so align the row with the claims
+                    // the caller asked for. Tests that exercise divergence
+                    // flip the row AFTER minting (see
+                    // `security::privilege_revocation_test`).
+                    let _ = diesel::update(users::table.filter(users::id.eq(id)))
+                        .set((
+                            users::is_staff.eq(is_staff),
+                            users::is_superuser.eq(is_superuser),
+                        ))
+                        .execute(&mut conn)
+                        .await;
+                    id
+                }
                 None => {
                     // User doesn't exist, create minimal user
                     diesel::insert_into(users::table)

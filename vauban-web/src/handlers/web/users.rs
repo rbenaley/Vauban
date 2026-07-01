@@ -839,12 +839,14 @@ pub async fn user_edit_form(
 ///   snapshot and is rejected (or retried, then rejected). Without
 ///   SERIALIZABLE this would be a TOCTOU window between the count and
 ///   the update.
+#[allow(clippy::too_many_arguments)]
 pub async fn update_user_web(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    session_id: crate::middleware::auth::AuthSessionId,
     axum::extract::Path(user_uuid): axum::extract::Path<String>,
     Form(mut form): Form<UpdateUserWebForm>,
 ) -> Response {
@@ -1264,6 +1266,28 @@ pub async fn update_user_web(
             } else if !old_is_active && is_active {
                 reactivate_user(&state, user_id).await;
             }
+            // Privilege-revocation contract: a role change or a
+            // password rotation must kill the target's login sessions
+            // so no session outlives the privileges (or credential) it
+            // was minted with. Skipped when the account was just
+            // deactivated: `deactivate_user` already revoked everything.
+            // When the operator edits their own account (same-role
+            // password change; self role changes are fenced out above
+            // by `check_self_change`), the operator's own session
+            // survives so the admin is not logged out mid-flow.
+            let deactivated_now = old_is_active && !is_active;
+            if !deactivated_now && (role_changed || password_hash.is_some()) {
+                let keep = (parsed_uuid == operator_uuid).then_some(session_id.0);
+                let reason = if role_changed {
+                    "role_changed"
+                } else {
+                    "password_changed"
+                };
+                crate::services::session_revocation::revoke_auth_sessions(
+                    &state, user_id, &user_uuid, keep, reason,
+                )
+                .await;
+            }
             // UX-22: emit a transactional confirmation that explicitly mentions
             // the password when it was rotated, so administrators get an
             // unambiguous signal that the credential change took effect.
@@ -1630,6 +1654,7 @@ pub async fn change_own_password_web(
     auth_user: WebAuthUser,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    session_id: crate::middleware::auth::AuthSessionId,
     Form(form): Form<ChangeOwnPasswordForm>,
 ) -> Response {
     use crate::schema::users;
@@ -1778,6 +1803,19 @@ pub async fn change_own_password_web(
                 )
                 .user(auth_user.uuid.to_string()),
             );
+            // Privilege-revocation contract: every other login session of
+            // this user dies with the old password (an attacker holding a
+            // stolen session must not survive the credential rotation).
+            // The session that performed the rotation is kept so the user
+            // is not logged out by their own action.
+            crate::services::session_revocation::revoke_auth_sessions(
+                &state,
+                user_id,
+                &auth_user.uuid,
+                Some(session_id.0),
+                "password_changed",
+            )
+            .await;
             // Best-effort: zeroize the plaintext we still hold on the stack
             // before returning. The Form<T> deserializer already moved the
             // String out of the wire bytes, so this is the only copy we
@@ -2668,10 +2706,17 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
         Err(_) => return,
     };
 
-    // 1. Delete all auth sessions
-    let _ = diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
-        .execute(&mut conn)
-        .await;
+    // 1. Delete all auth sessions + force-logout all browser tabs via
+    //    WebSocket (shared revocation seam, also used on role change and
+    //    password rotation).
+    crate::services::session_revocation::revoke_auth_sessions(
+        state,
+        user_id,
+        user_uuid,
+        None,
+        "account_deactivated",
+    )
+    .await;
 
     // 2. Terminate all active proxy sessions (SSH/RDP)
     let active_sessions: Vec<ProxySession> = proxy_sessions::table
@@ -2766,15 +2811,7 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
     .execute(&mut conn)
     .await;
 
-    // 4. Force-logout all browser sessions via WebSocket
-    let force_logout_html =
-        crate::services::session_activity::force_logout_oob("account_deactivated");
-    state
-        .user_connections
-        .send_personalized(user_uuid, |_token_hash| force_logout_html.clone())
-        .await;
-
-    // 5. Broadcast session updates
+    // 4. Broadcast session updates
     if !active_sessions.is_empty() {
         crate::tasks::dashboard::push_session_list_update(
             &state.broadcast,

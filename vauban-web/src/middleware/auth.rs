@@ -325,6 +325,14 @@ fn api_client_ip(state: &AppState, request: &Request) -> Option<ipnetwork::IpNet
 /// 1. Session exists and has not been revoked
 /// 2. Session has not exceeded max_duration (created_at + session_max_duration_secs)
 /// 3. Session has not exceeded idle timeout (last_activity + session_idle_timeout_secs)
+/// 4. Role claims embedded in the JWT (`is_superuser`, `is_staff`) still
+///    match the `users` row. This is the per-request privilege invariant:
+///    the Casbin subject can never be more (or less) privileged than the
+///    database beyond a single request, regardless of which write path
+///    mutated the roles (UI, CLI, manual SQL). A divergence denies the
+///    session fail-closed -- exactly like an expired session -- so the
+///    user re-logs and mints fresh claims. The `users` join already
+///    exists in both lookup branches, so this costs zero extra queries.
 async fn verify_session_with_timeouts(
     state: &AppState,
     token: &str,
@@ -346,38 +354,60 @@ async fn verify_session_with_timeouts(
     let idle_cutoff = now - chrono::Duration::seconds(idle_timeout_secs);
     let max_duration_cutoff = now - chrono::Duration::seconds(max_duration_secs);
 
+    // Fail-closed comparison of the JWT role claims against the DB row.
+    // Logged at info (not warn): this is the expected outcome of a role
+    // change racing an in-flight session, not an anomaly.
+    let roles_match = |db_superuser: bool, db_staff: bool| {
+        let matches = db_superuser == claims.is_superuser && db_staff == claims.is_staff;
+        if !matches {
+            tracing::info!(
+                user = %claims.username,
+                claims_superuser = claims.is_superuser,
+                claims_staff = claims.is_staff,
+                db_superuser,
+                db_staff,
+                "Session role claims diverge from database; denying session (re-login required)"
+            );
+        }
+        matches
+    };
+
     if let Some(ref jti_str) = claims.jti
         && let (Ok(session_uuid), Ok(user_uuid)) =
             (Uuid::parse_str(jti_str), Uuid::parse_str(&claims.sub))
     {
-        let count: i64 = auth_sessions::table
+        let row: Option<(bool, bool)> = auth_sessions::table
             .inner_join(users::table.on(users::id.eq(auth_sessions::user_id)))
             .filter(auth_sessions::uuid.eq(session_uuid))
             .filter(users::uuid.eq(user_uuid))
             .filter(auth_sessions::created_at.gt(max_duration_cutoff))
             .filter(auth_sessions::last_activity.gt(idle_cutoff))
-            .count()
-            .get_result(&mut conn)
+            .select((users::is_superuser, users::is_staff))
+            .first(&mut conn)
             .await
-            .unwrap_or(0);
-        if count > 0 {
-            return Some(session_uuid);
+            .optional()
+            .ok()
+            .flatten();
+        if let Some((db_superuser, db_staff)) = row {
+            return roles_match(db_superuser, db_staff).then_some(session_uuid);
         }
     }
 
     let user_uuid = Uuid::parse_str(&claims.sub).ok()?;
-    auth_sessions::table
+    let row: Option<(Uuid, bool, bool)> = auth_sessions::table
         .inner_join(users::table.on(users::id.eq(auth_sessions::user_id)))
         .filter(auth_sessions::token_hash.eq(&token_hash))
         .filter(users::uuid.eq(user_uuid))
         .filter(auth_sessions::created_at.gt(max_duration_cutoff))
         .filter(auth_sessions::last_activity.gt(idle_cutoff))
-        .select(auth_sessions::uuid)
-        .first::<Uuid>(&mut conn)
+        .select((auth_sessions::uuid, users::is_superuser, users::is_staff))
+        .first(&mut conn)
         .await
         .optional()
         .ok()
-        .flatten()
+        .flatten();
+    let (session_uuid, db_superuser, db_staff) = row?;
+    roles_match(db_superuser, db_staff).then_some(session_uuid)
 }
 
 /// Update the last_activity timestamp for the session.

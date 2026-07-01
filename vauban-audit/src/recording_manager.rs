@@ -1539,7 +1539,7 @@ mod tests {
         exp_a.update(&keyframe);
         exp_a.update(&pframe);
         exp_a.update(&keyframe);
-        let mut exp_b = exp_a.clone();
+        let exp_b = exp_a.clone();
 
         let ra = mgr.end_session("a").unwrap();
         let rb = mgr.end_session("b").unwrap();

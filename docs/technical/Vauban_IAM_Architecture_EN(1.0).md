@@ -1858,6 +1858,75 @@ catalogue and the audit log.
 
 ---
 
+### 9.10 Login-session privilege revocation
+
+**Contract: a login session never outlives the privileges (or the
+credential) it was minted with.** Before this layer landed, the
+Casbin subject was derived from the `is_superuser` / `is_staff`
+claims baked into the JWT at login time, so a demoted administrator
+kept their elevated web session until natural expiry (up to
+`session_max_duration_secs`), and a password rotation left every
+pre-existing session of the (possibly compromised) account alive.
+
+Two **independent** layers enforce the contract; neither substitutes
+for the other:
+
+1. **Per-request invariant (fail-closed).**
+   [`verify_session_with_timeouts`](../../vauban-web/src/middleware/auth.rs)
+   already joins `users` in both of its lookup branches (JWT `jti`
+   and legacy `token_hash` fallback); it additionally selects
+   `users.is_superuser` / `users.is_staff` and denies the session
+   whenever the DB flags differ from the JWT claims — same outcome
+   as an expired session (303 to `/login`), zero additional queries.
+   This covers **every** role write path, present and future: admin
+   UI, CLI over IPC, SCIM-style sync, manual SQL. The cookie-rotation
+   path (`maybe_rotate_access_cookie`) is safe by construction: it
+   copies claims only after a successful verify, so it can never
+   re-mint divergent claims.
+
+2. **Event-driven revocation.**
+   [`services::session_revocation::revoke_auth_sessions`](../../vauban-web/src/services/session_revocation.rs)
+   deletes the target's `auth_sessions` rows and pushes the
+   canonical WebSocket force-logout fragment
+   (`session_activity::force_logout_oob`). Wired at four seams:
+
+   | Seam | Trigger | Kept session |
+   |---|---|---|
+   | `update_user_web` | any `is_superuser`/`is_staff` change (`reason=role_changed`) | none |
+   | `update_user_web` | admin sets a new password (`reason=password_changed`) | operator's own session when target == operator |
+   | `change_own_password_web` | self-service rotation | the session that performed the rotation |
+   | `ipc::admin::handle_reset_password` | CLI reset | none (DB delete only; WS tier unreachable from IPC) |
+
+   SEC-07 account deactivation (`deactivate_user`) now routes its
+   step 1 + force-logout through the same seam, then layers proxy-
+   session termination and API-key disabling on top.
+
+Passwords are **not** JWT claims, so layer 1 cannot see a rotation:
+every `users.password_hash` write site MUST call the revocation
+seam. This is pinned structurally by
+`security::privilege_revocation_test::every_password_write_site_revokes_sessions`,
+which counts the `password_hash.eq(` sites and fails when a new one
+appears unwired.
+
+The login page renders dedicated banners for the two new redirect
+reasons (`role_changed`, `password_changed`) next to the existing
+`session_revoked` / `account_deactivated` / `session_expired`
+taxonomy.
+
+#### Test surface
+
+| Concern | Test |
+|---|---|
+| Demotion revokes sessions + denies old cookie | `security::privilege_revocation_test::role_demotion_revokes_sessions_and_denies_old_cookie` |
+| Promotion follows the same single rule | `security::privilege_revocation_test::role_promotion_revokes_sessions` |
+| Admin password set revokes the target | `security::privilege_revocation_test::admin_password_change_revokes_target_sessions` |
+| Self rotation keeps ONLY the current session | `security::privilege_revocation_test::{admin_self,self}_password_change_*` |
+| Layer 1 alone (direct SQL flip, no hook) | `security::privilege_revocation_test::direct_sql_role_flip_denies_session_next_request` |
+| CLI reset revokes | `security::privilege_revocation_test::cli_password_reset_revokes_sessions` |
+| Structural drift guards (verifier select, seam wiring, write-site count) | `security::privilege_revocation_test::*_source_pins` + `verify_session_compares_role_claims_against_db` |
+
+---
+
 ## 10. Capsicum Sandboxing
 
 ### 10.1 vauban-auth Sandbox
