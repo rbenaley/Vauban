@@ -29,12 +29,85 @@ pub fn run_admin_command(cmd: AdminSubcommand) -> Result<()> {
         AdminSubcommand::Reset2fa { username } => cmd_reset_2fa(&username),
         AdminSubcommand::MigrateSecrets { dry_run } => cmd_migrate_secrets(dry_run),
         AdminSubcommand::SeedData => cmd_seed_data(),
+        AdminSubcommand::Migrate {
+            check,
+            database_url,
+        } => cmd_migrate(check, database_url),
     }
 }
 
 fn load_db_connection() -> Result<PgConnection> {
     let config = SupervisorConfig::load_auto().context("Failed to load configuration")?;
     PgConnection::establish(&config.database.url).context("Failed to connect to database")
+}
+
+/// Resolve the database URL for `migrate`: `--database-url` flag, then
+/// the `DATABASE_URL` environment variable, then the configuration
+/// file. The config file is only touched as a last resort because the
+/// post-install path runs as the `postgres` OS user, which cannot read
+/// vauban.conf (0600 root + service-user ACLs).
+fn resolve_migrate_database_url(flag: Option<String>) -> Result<String> {
+    if let Some(url) = flag {
+        return Ok(url);
+    }
+    if let Ok(url) = std::env::var("DATABASE_URL")
+        && !url.is_empty()
+    {
+        return Ok(url);
+    }
+    let config = SupervisorConfig::load_auto().context("Failed to load configuration")?;
+    Ok(config.database.url)
+}
+
+/// `vauban-supervisor migrate [--check] [--database-url <url>]`
+///
+/// Applies pending embedded schema migrations through the
+/// baseline-aware runner (`vauban_db::migrations::run`). With
+/// `--check`, only reports pending migrations (read-only) and fails if
+/// any are pending. Any error -- SQL failure, partial schema, dead DB
+/// -- exits non-zero so `pkg install` surfaces a loud POST-INSTALL
+/// failure instead of a clean install on a broken database.
+fn cmd_migrate(check: bool, database_url: Option<String>) -> Result<()> {
+    let url = resolve_migrate_database_url(database_url)?;
+    let mut conn = PgConnection::establish(&url).context("Failed to connect to database")?;
+
+    if check {
+        let pending =
+            vauban_db::migrations::check(&mut conn).map_err(|e| anyhow!(e.to_string()))?;
+        if pending.is_empty() {
+            println!("Database schema is up to date (no pending migrations).");
+            return Ok(());
+        }
+        for version in &pending {
+            println!("pending: {version}");
+        }
+        bail!(
+            "{} pending migration(s); run `vauban-supervisor migrate`",
+            pending.len()
+        );
+    }
+
+    let report = vauban_db::migrations::run(&mut conn).map_err(|e| anyhow!(e.to_string()))?;
+
+    println!("Database state detected: {}", report.state);
+    if !report.stamped.is_empty() {
+        println!(
+            "Stamped {} baseline migration(s) as already applied:",
+            report.stamped.len()
+        );
+        for version in &report.stamped {
+            println!("  stamped: {version}");
+        }
+    }
+    if report.applied.is_empty() {
+        println!("No pending migrations to apply.");
+    } else {
+        println!("Applied {} migration(s):", report.applied.len());
+        for version in &report.applied {
+            println!("  applied: {version}");
+        }
+    }
+    Ok(())
 }
 
 fn cmd_create_superuser() -> Result<()> {
@@ -921,6 +994,17 @@ mod tests {
         };
         let _migrate = AdminSubcommand::MigrateSecrets { dry_run: true };
         let _seed = AdminSubcommand::SeedData;
+        let _db_migrate = AdminSubcommand::Migrate {
+            check: false,
+            database_url: None,
+        };
+    }
+
+    #[test]
+    fn test_resolve_migrate_database_url_prefers_flag() {
+        let url = resolve_migrate_database_url(Some("postgresql:///flagged".to_string()))
+            .expect("flag resolution must not touch config or env");
+        assert_eq!(url, "postgresql:///flagged");
     }
 
     // ==================== structural checks ====================
@@ -933,6 +1017,7 @@ mod tests {
         assert!(source.contains("fn cmd_reset_2fa"));
         assert!(source.contains("fn cmd_migrate_secrets"));
         assert!(source.contains("fn cmd_seed_data"));
+        assert!(source.contains("fn cmd_migrate"));
     }
 
     #[test]

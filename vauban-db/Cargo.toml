@@ -10,5 +10,15 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Embedded migration runner (`vauban_db::migrations`): compiles every
+# vauban-db/migrations/*/up.sql into the binary and exposes the
+# baseline-aware runner used by `vauban-supervisor migrate`.
+migrations = ["dep:diesel_migrations"]
+
 [dependencies]
 diesel = { version = "2.3", features = ["postgres", "uuid", "chrono", "serde_json", "network-address", "64-column-tables"] }
+diesel_migrations = { version = "2", features = ["postgres"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"

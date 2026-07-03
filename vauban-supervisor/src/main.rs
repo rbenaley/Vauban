@@ -76,6 +76,18 @@ enum AdminSubcommand {
     },
     /// Seed the database with test data (users, assets, sessions, groups).
     SeedData,
+    /// Apply pending database schema migrations (baseline-aware).
+    Migrate {
+        /// Only report pending migrations; exit non-zero if any (no writes).
+        #[arg(long)]
+        check: bool,
+        /// Database URL override. Takes precedence over the DATABASE_URL
+        /// environment variable and the configuration file. Required when
+        /// the caller cannot read vauban.conf (e.g. `su -m postgres` at
+        /// package post-install time).
+        #[arg(long)]
+        database_url: Option<String>,
+    },
 }
 
 /// Global shutdown flag set by signal handler, checked by watchdog loop.
@@ -404,6 +416,47 @@ fn service_env_with_token(config: &SupervisorConfig, service_key: &str) -> Vec<(
     env
 }
 
+/// Boot-time schema freshness check (fail-closed on pending migrations).
+///
+/// - Database unreachable: `warn!` and continue (PostgreSQL may start
+///   after the supervisor; children are fail-closed on DB access).
+/// - Pending migrations: `error!` with the remediation command and
+///   refuse to boot. The supervisor never runs DDL at boot.
+fn check_schema_up_to_date(config: &SupervisorConfig) -> Result<()> {
+    use diesel::prelude::*;
+
+    let mut conn = match PgConnection::establish(&config.database.url) {
+        Ok(conn) => conn,
+        Err(e) => {
+            warn!(
+                "Skipping database schema check: database unreachable ({e}); \
+                 services will fail closed if the schema is stale"
+            );
+            return Ok(());
+        }
+    };
+
+    let pending = vauban_db::migrations::check(&mut conn)
+        .map_err(|e| anyhow::anyhow!("database schema check failed: {e}"))?;
+
+    if pending.is_empty() {
+        info!("Database schema is up to date");
+        return Ok(());
+    }
+
+    error!(
+        "Database schema is OUTDATED: {} pending migration(s): {}. \
+         Run `vauban-supervisor migrate` before starting the service.",
+        pending.len(),
+        pending.join(", ")
+    );
+    anyhow::bail!(
+        "refusing to start: {} pending database migration(s); \
+         run `vauban-supervisor migrate`",
+        pending.len()
+    )
+}
+
 fn run_supervisor() -> Result<()> {
     // Load configuration
     let config = SupervisorConfig::load_auto().context("Failed to load configuration")?;
@@ -418,6 +471,14 @@ fn run_supervisor() -> Result<()> {
     } else {
         info!("Running with privsep ENABLED - services will use dedicated UIDs");
     }
+
+    // Boot invariant: refuse to spawn services on a database whose schema
+    // lags the embedded migration set (fail-closed, read-only check; the
+    // supervisor NEVER auto-migrates at boot -- DDL belongs to the explicit
+    // `vauban-supervisor migrate` command run at package post-install time).
+    // An unreachable database only warns: PostgreSQL may still be starting,
+    // and the child services are themselves fail-closed on DB access.
+    check_schema_up_to_date(&config)?;
 
     // Setup signal handlers
     setup_signal_handlers()?;

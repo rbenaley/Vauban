@@ -1,6 +1,16 @@
 #!/bin/sh
 # Create Vauban service groups and users with fixed UIDs/GIDs.
 # These system accounts have no login shell and no home directory.
+#
+# On upgrades, the running service is stopped BEFORE the new files land
+# so the database migration in +POST_INSTALL never runs under binaries
+# of the previous version (no schema-N+1 / code-N window). Fresh
+# installs have no rc.d script yet, so this is a no-op.
+
+if service vauban onestatus >/dev/null 2>&1; then
+    echo "==> Stopping running Vauban service before upgrade..."
+    service vauban onestop || true
+fi
 
 create_group_if_missing() {
     _name=$1

@@ -1,8 +1,14 @@
 #!/bin/sh
 # Post-installation: directories, ACLs, vault master key, database setup.
+#
+# Database schema management is delegated to the embedded migration
+# runner (`vauban-supervisor migrate`): baseline-aware, one transaction
+# per migration, loud failure. The share/vauban/migrations/ tree is
+# shipped for reference only and is never executed by this script.
 
 PREFIX=${PKG_PREFIX:-/usr/local}
-MIGRATION_DIR="${PREFIX}/share/vauban/migrations"
+SUPERVISOR_BIN="${PREFIX}/libexec/vauban/vauban-supervisor"
+MIGRATE_CMD="${SUPERVISOR_BIN} migrate --database-url postgresql:///vauban"
 
 # --------------------------------------------------------------------------- #
 # ACL helpers -- detects NFSv4 (ZFS) vs POSIX.1e (UFS) via filesystem type   #
@@ -158,13 +164,38 @@ fi
 
 # =========================================================================== #
 # 6. PostgreSQL database setup                                               #
+#    Schema creation and upgrades both go through the embedded runner       #
+#    (`vauban-supervisor migrate`). It runs as the postgres superuser via   #
+#    the local socket, applies one transaction per migration, and exits     #
+#    non-zero on ANY failure -- which fails this whole post-install (see    #
+#    the DB_SETUP_FAILED check at the end of this script). No silent        #
+#    errors, no partial schemas.                                            #
 # =========================================================================== #
 echo "==> Checking PostgreSQL..."
 
+DB_SETUP_FAILED=0
+
+report_migrate_failure() {
+    DB_SETUP_FAILED=1
+    echo ""
+    echo "  ***************************************************************"
+    echo "  * ERROR: Vauban database migration FAILED.                    *"
+    echo "  * The error is printed above. Vauban services WILL NOT start  *"
+    echo "  * until the schema is complete.                               *"
+    echo "  *                                                             *"
+    echo "  * The runner is resumable: migrations already applied are     *"
+    echo "  * tracked and skipped. Fix the cause, then re-run:            *"
+    echo "  *   su -m postgres -c \"${MIGRATE_CMD}\"                       *"
+    echo "  ***************************************************************"
+    echo ""
+}
+
 if ! service postgresql status >/dev/null 2>&1; then
     echo "  WARNING: PostgreSQL is not running."
-    echo "  Start it with:  service postgresql start"
-    echo "  Then re-run post-install:  pkg info -D vauban"
+    echo "  The Vauban database schema has NOT been provisioned."
+    echo "  Start PostgreSQL:  service postgresql start"
+    echo "  Then run the database setup manually:"
+    echo "    su -m postgres -c \"${MIGRATE_CMD}\""
 else
     DB_EXISTS=$(su -m postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='vauban'\"" 2>/dev/null || true)
 
@@ -176,11 +207,12 @@ else
         su -m postgres -c "psql -q -c \"GRANT ALL PRIVILEGES ON DATABASE vauban TO vauban;\""
         su -m postgres -c "psql -q -d vauban -c \"GRANT ALL ON SCHEMA public TO vauban; ALTER SCHEMA public OWNER TO vauban;\""
 
-        for _mig in $(ls -d "${MIGRATION_DIR}"/*/ 2>/dev/null | sort); do
-            if [ -f "${_mig}/up.sql" ]; then
-                su -m postgres -c "psql -q -d vauban -f '${_mig}/up.sql'" 2>/dev/null
-            fi
-        done
+        echo "  Fresh install: applying full schema via the embedded runner..."
+        if su -m postgres -c "${MIGRATE_CMD}"; then
+            echo "  Database schema applied successfully."
+        else
+            report_migrate_failure
+        fi
 
         su -m postgres -c "psql -q -d vauban -c \"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO vauban; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO vauban;\""
         su -m postgres -c "psql -q -d vauban -c \"GRANT ALL ON ALL TABLES IN SCHEMA public TO vauban; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO vauban;\""
@@ -190,14 +222,13 @@ else
 
         echo "  Database created and configured in ${CONF}"
     else
-        echo "  Database 'vauban' already exists -- applying migrations..."
-        for _mig in $(ls -d "${MIGRATION_DIR}"/*/ 2>/dev/null | sort); do
-            if [ -f "${_mig}/up.sql" ]; then
-                su -m postgres -c "psql -q -d vauban -f '${_mig}/up.sql'" 2>/dev/null || true
-            fi
-        done
+        echo "  Database 'vauban' already exists -- applying pending migrations..."
+        if su -m postgres -c "${MIGRATE_CMD}"; then
+            echo "  Database schema is up to date."
+        else
+            report_migrate_failure
+        fi
         su -m postgres -c "psql -q -d vauban -c \"GRANT ALL ON ALL TABLES IN SCHEMA public TO vauban; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO vauban;\""
-        echo "  Migrations applied (existing objects skipped)."
     fi
 fi
 
@@ -263,3 +294,12 @@ echo "    3. service vauban start"
 echo "    4. vauban-supervisor create-superuser"
 echo "================================================================"
 echo ""
+
+# Fail the post-install script if the database schema could not be applied,
+# so `pkg add` / `pkg install` reports a visible POST-INSTALL failure
+# instead of a clean install on top of a broken database.
+if [ "${DB_SETUP_FAILED}" = "1" ]; then
+    echo "ERROR: Vauban post-install completed WITH ERRORS: the database"
+    echo "schema was NOT applied correctly (see messages above)."
+    exit 1
+fi

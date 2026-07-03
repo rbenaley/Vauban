@@ -28,4 +28,8 @@ deps = {
         origin = "databases/postgresql18-server";
         version = "18";
     };
+    postgresql18-contrib = {
+        origin = "databases/postgresql18-contrib";
+        version = "18";
+    };
 };
