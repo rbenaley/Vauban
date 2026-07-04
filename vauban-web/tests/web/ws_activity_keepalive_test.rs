@@ -66,12 +66,19 @@ async fn touch_login_session_advances_last_activity() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// Both SSH and RDP handlers must wire the throttled keepalive bump.
+/// Both SSH and RDP handlers must wire the throttled keepalive bump,
+/// built from the shared `ACTIVITY_REFRESH_MIN_INTERVAL_SECS` constant
+/// (whose margin against the effective idle horizon is pinned by
+/// `ws_auth_revalidation_test`).
 #[test]
 fn ws_handlers_wire_throttled_keepalive_bump() {
+    let throttles = WEBSOCKET_SRC
+        .matches("session_activity::ACTIVITY_REFRESH_MIN_INTERVAL_SECS")
+        .count();
     assert!(
-        WEBSOCKET_SRC.contains("ActivityThrottle::new(Duration::from_secs(60))"),
-        "WS handlers must allocate a 60s ActivityThrottle for the keepalive bump"
+        throttles >= 2,
+        "WS handlers must allocate their ActivityThrottle from the shared \
+         ACTIVITY_REFRESH_MIN_INTERVAL_SECS constant (SSH + RDP); found {throttles}"
     );
     let bumps = WEBSOCKET_SRC
         .matches("session_activity::touch_login_session(&state, auth_session.0)")

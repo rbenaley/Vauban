@@ -1530,7 +1530,7 @@ async fn test_vauban_group_edit_form_loads() {
     let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("edit-form-group")).await;
-    let token = group_admin_token(&app, &mut conn, "vgroup_edit_form").await;
+    let token = group_admin_token(app, &mut conn, "vgroup_edit_form").await;
 
     let response = app
         .server
@@ -1549,7 +1549,7 @@ async fn test_vauban_group_update_success() {
     let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("update-group")).await;
-    let token = group_admin_token(&app, &mut conn, "vgroup_update").await;
+    let token = group_admin_token(app, &mut conn, "vgroup_update").await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -1580,7 +1580,7 @@ async fn test_vauban_group_add_member_form_loads() {
     let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("add-member-form")).await;
-    let token = group_admin_token(&app, &mut conn, "add_member_form").await;
+    let token = group_admin_token(app, &mut conn, "add_member_form").await;
 
     let response = app
         .server
@@ -1605,7 +1605,7 @@ async fn test_vauban_group_add_member_success() {
     let user_id = create_simple_user(&mut conn, &unique_name("new-member")).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = group_admin_token(&app, &mut conn, "add_member").await;
+    let token = group_admin_token(app, &mut conn, "add_member").await;
     let csrf_token = app.generate_csrf_token();
 
     // Verify no members initially
@@ -1652,7 +1652,7 @@ async fn test_vauban_group_remove_member_success() {
     let count_before = count_vauban_group_members(&mut conn, &group_uuid).await;
     assert_eq!(count_before, 1, "Group should have 1 member initially");
 
-    let token = group_admin_token(&app, &mut conn, "remove_member").await;
+    let token = group_admin_token(app, &mut conn, "remove_member").await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -1687,7 +1687,7 @@ async fn test_vauban_group_delete_empty_success() {
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("delete-empty-grp")).await;
 
-    let token = group_admin_token(&app, &mut conn, "delete_empty").await;
+    let token = group_admin_token(app, &mut conn, "delete_empty").await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -1731,7 +1731,7 @@ async fn test_vauban_group_delete_with_members_fails() {
     // Add member to group
     add_user_to_vauban_group(&mut conn, user_id, &group_uuid).await;
 
-    let token = group_admin_token(&app, &mut conn, "delete_members").await;
+    let token = group_admin_token(app, &mut conn, "delete_members").await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app

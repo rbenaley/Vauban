@@ -15,6 +15,18 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::config::Config;
+
+/// Minimum interval between two `last_activity` refreshes driven by
+/// SSH/RDP WebSocket input (the [`ActivityThrottle`] window used by the
+/// terminal and RDP loops).
+///
+/// Contract: this MUST stay well below [`effective_idle_timeout_secs`]
+/// for every shipped configuration (pinned by an invariant test), so a
+/// genuinely active user -- whose `last_activity` may lag by up to this
+/// interval -- can never be classified as idle by
+/// [`is_login_session_live`].
+pub const ACTIVITY_REFRESH_MIN_INTERVAL_SECS: u64 = 60;
 
 /// Refresh `auth_sessions.last_activity` for `session_uuid` to "now".
 ///
@@ -27,6 +39,30 @@ pub async fn touch_login_session(state: &AppState, session_uuid: Uuid) {
     crate::middleware::auth::update_last_activity(state, session_uuid).await;
 }
 
+/// Effective inactivity window (seconds) after which an idle login
+/// session must be torn down, WebSockets included.
+///
+/// An idle browser issues no HTTP requests, so its `access_token`
+/// cookie is never rotated by `maybe_rotate_access_cookie`: past
+/// `access_token_lifetime_minutes` the JWT is dead and ANY navigation
+/// bounces to `/login`. The WS liveness probe must mirror that horizon,
+/// otherwise an idle SSH/RDP tab outlives the web session whenever the
+/// operator configures `session_idle_timeout_secs` above the token
+/// lifetime (observed: idle 1800 s vs token 15 min left inactive SSH
+/// tabs connected for 15 extra minutes).
+///
+/// The clamp applies to the *inactivity* cutoff only -- never to the
+/// max-duration cutoff: an ACTIVE session older than the token lifetime
+/// stays alive because activity keeps `last_activity` fresh (throttled
+/// WS input touches) and keeps the cookie rotating (front-end
+/// `/htmx/empty` heartbeat).
+pub fn effective_idle_timeout_secs(config: &Config) -> u64 {
+    config
+        .security
+        .session_idle_timeout_secs
+        .min(config.jwt.access_token_lifetime_minutes * 60)
+}
+
 /// Returns `true` while the login session identified by `session_uuid` is
 /// still valid, mirroring the timeout checks of
 /// [`crate::middleware::auth::verify_session_with_timeouts`] but keyed on
@@ -34,10 +70,13 @@ pub async fn touch_login_session(state: &AppState, session_uuid: Uuid) {
 /// [`crate::middleware::auth::AuthSessionId`] from the handshake).
 ///
 /// Returns `false` when the row was reaped, is idle past
-/// `session_idle_timeout_secs`, or is older than `session_max_duration_secs`.
-/// This is the server-side seam that lets the SSH/RDP loops terminate a
-/// live socket once its login session expires (HTTP requests already get
-/// this for free via `auth_middleware`).
+/// [`effective_idle_timeout_secs`] (the configured
+/// `session_idle_timeout_secs` clamped by the access-token lifetime, so
+/// the WS horizon matches the HTTP one for idle users), or is older
+/// than `session_max_duration_secs`. This is the server-side seam that
+/// lets the SSH/RDP loops terminate a live socket once its login
+/// session expires (HTTP requests already get this for free via
+/// `auth_middleware`).
 ///
 /// Fail-open on a transient DB error: returns `true` so a momentary
 /// database blip does not mass-disconnect every live session. The next
@@ -57,7 +96,7 @@ pub async fn is_login_session_live(state: &AppState, session_uuid: Uuid) -> bool
 
     let now = chrono::Utc::now();
     let idle_cutoff =
-        now - chrono::Duration::seconds(state.config.security.session_idle_timeout_secs as i64);
+        now - chrono::Duration::seconds(effective_idle_timeout_secs(&state.config) as i64);
     let max_duration_cutoff =
         now - chrono::Duration::seconds(state.config.security.session_max_duration_secs as i64);
 

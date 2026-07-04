@@ -1823,7 +1823,9 @@ async fn handle_terminal_socket(
     // `auth_sessions.last_activity` at most once per minute on real
     // terminal input. The front-end `/htmx/empty` heartbeat handles
     // cookie renewal; this is the server-side anti-idle-reaper backstop.
-    let mut activity_throttle = ActivityThrottle::new(Duration::from_secs(60));
+    let mut activity_throttle = ActivityThrottle::new(Duration::from_secs(
+        crate::services::session_activity::ACTIVITY_REFRESH_MIN_INTERVAL_SECS,
+    ));
 
     info!(channel = %channel_label, user = %user.username, user_uuid = %user.uuid,
           session_id = %session_id, "WebSocket connected");
@@ -2239,9 +2241,12 @@ async fn handle_rdp_socket(
 
     // Keep the login session alive while the user is interacting (keyboard
     // / mouse) over the RDP socket. Refreshes `auth_sessions.last_activity`
-    // at most once per minute; cookie renewal is handled by the front-end
-    // `/htmx/empty` heartbeat. See handle_terminal_socket for rationale.
-    let mut activity_throttle = ActivityThrottle::new(Duration::from_secs(60));
+    // at most once per ACTIVITY_REFRESH_MIN_INTERVAL_SECS; cookie renewal
+    // is handled by the front-end `/htmx/empty` heartbeat. See
+    // handle_terminal_socket for rationale.
+    let mut activity_throttle = ActivityThrottle::new(Duration::from_secs(
+        crate::services::session_activity::ACTIVITY_REFRESH_MIN_INTERVAL_SECS,
+    ));
 
     info!(channel = %channel_label, user = %user.username, user_uuid = %user.uuid,
           session_id = %session_id, "WebSocket connected");
