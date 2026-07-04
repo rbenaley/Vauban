@@ -649,8 +649,10 @@ async fn jit_provision_ldap_user(
 ) -> AppResult<User> {
     // No LDAP search is performed in v1, so we have no authoritative e-mail.
     // Derive a deterministic, non-routable placeholder (or reuse the value
-    // when the username already looks like a UPN) to satisfy the NOT NULL +
-    // UNIQUE e-mail column. Operators can edit it afterwards.
+    // when the username already looks like a UPN) to satisfy the NOT NULL
+    // e-mail column (duplicates are allowed since
+    // 20260704000000_users_email_drop_unique). Operators can edit it
+    // afterwards.
     let email_value = if login_name.contains('@') {
         login_name.to_lowercase()
     } else {

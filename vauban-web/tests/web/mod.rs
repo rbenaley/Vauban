@@ -103,6 +103,7 @@ pub mod timezone_e2e_test;
 pub mod timezone_lints_test;
 pub mod timezone_snippet_test;
 pub mod user_edit_test;
+pub mod users_email_shared_e2e_test;
 pub mod virtual_asset_group_adversarial_test;
 pub mod virtual_asset_group_boot_docs_test;
 pub mod virtual_asset_group_db_test;

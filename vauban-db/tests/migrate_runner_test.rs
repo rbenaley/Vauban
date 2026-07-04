@@ -378,13 +378,28 @@ fn post_baseline_delta_applies_only_new_migrations_on_adopted_databases() {
     .expect("write down.sql");
     let source = FileBasedMigrations::from_path(tmp.path()).expect("file-based source");
 
+    // Every REAL post-baseline migration in the tree is pending on an
+    // adopted-baseline database too, in version order, with the
+    // synthetic future migration last.
+    let mut expected_deltas: Vec<String> = std::fs::read_dir(migrations_dir())
+        .expect("read migrations dir")
+        .filter_map(|entry| {
+            let name = entry.expect("dir entry").file_name();
+            let name = name.to_string_lossy();
+            let version = name.split('_').next().unwrap_or("").to_string();
+            (version.as_str() > BASELINE_VERSION).then_some(version)
+        })
+        .collect();
+    expected_deltas.sort();
+    expected_deltas.push(synthetic_version.to_string());
+
     let db = ScratchDb::create("delta");
     let mut conn = db.connect();
     apply_baseline_fixture(&mut conn);
 
-    // Read-only check must see exactly the synthetic delta as pending.
+    // Read-only check must see exactly the post-baseline deltas as pending.
     let pending = check_with_source(&mut conn, source.clone()).expect("check");
-    assert_eq!(pending, vec![synthetic_version.to_string()]);
+    assert_eq!(pending, expected_deltas);
     assert!(
         !tracking_table_exists(&mut conn),
         "check must not create the tracking table"
@@ -394,9 +409,8 @@ fn post_baseline_delta_applies_only_new_migrations_on_adopted_databases() {
     assert_eq!(report.state, SchemaState::Baseline);
     assert_eq!(report.stamped.len(), EXPECTED_BASELINE_VERSIONS.len());
     assert_eq!(
-        report.applied,
-        vec![synthetic_version.to_string()],
-        "only the post-baseline migration must be executed"
+        report.applied, expected_deltas,
+        "only the post-baseline migrations must be executed"
     );
 
     let probe = text_rows(

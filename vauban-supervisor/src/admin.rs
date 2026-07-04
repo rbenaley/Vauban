@@ -159,20 +159,13 @@ fn cmd_create_superuser() -> Result<()> {
         break input;
     };
 
+    // No uniqueness check on the e-mail: several accounts may belong to
+    // the same person and share one address (the DB constraint was
+    // dropped by migration 20260704000000_users_email_drop_unique).
     let email = loop {
         let input = prompt("Email: ")?;
         if let Err(e) = validate_email(&input) {
             eprintln!("{e}");
-            continue;
-        }
-        let exists: bool = diesel::select(exists(
-            users::table.filter(users::email.eq(&input).and(users::is_deleted.eq(false))),
-        ))
-        .get_result(&mut conn)
-        .unwrap_or(false);
-
-        if exists {
-            eprintln!("Email '{input}' already exists.");
             continue;
         }
         break input;

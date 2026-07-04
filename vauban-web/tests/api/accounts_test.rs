@@ -193,10 +193,14 @@ async fn test_create_user_as_admin() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// Test create user with duplicate email.
+/// Test create user with duplicate email: ALLOWED. Several accounts may
+/// belong to the same person and share one address (the users.email
+/// UNIQUE constraint was dropped by migration
+/// 20260704000000_users_email_drop_unique). The full shared-email
+/// contract is pinned by tests/web/users_email_shared_e2e_test.rs.
 #[tokio::test]
 #[serial]
-async fn test_create_user_duplicate_email() {
+async fn test_create_user_duplicate_email_is_allowed() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
@@ -221,13 +225,26 @@ async fn test_create_user_duplicate_email() {
         }))
         .await;
 
-    // Assert: 409 Conflict, 400 Bad Request, or 500 (DB constraint violation)
+    // Assert: the create succeeds despite the shared address.
     let status = response.status_code().as_u16();
     assert!(
-        status == 409 || status == 400 || status == 500,
-        "Expected 409, 400, or 500, got {}",
+        status == 200 || status == 201,
+        "Expected 200 or 201 (shared e-mails are allowed), got {}",
         status
     );
+
+    // Both active accounts must now carry the same address.
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    use vauban_web::schema::users;
+    let holders: i64 = users::table
+        .filter(users::email.eq(&existing_user.user.email))
+        .filter(users::is_deleted.eq(false))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .expect("count email holders");
+    assert_eq!(holders, 2, "both accounts must share the e-mail address");
 
     // Cleanup
     test_db::cleanup(&mut conn).await;

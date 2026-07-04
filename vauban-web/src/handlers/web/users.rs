@@ -552,13 +552,14 @@ pub async fn create_user_web(
         }
     };
 
-    // Check for duplicate username or email among active users
+    // Check for duplicate username among active users. The e-mail is
+    // deliberately NOT part of the duplicate check: several accounts may
+    // belong to the same person (nominal + admin/break-glass) and share
+    // one address (migration 20260704000000_users_email_drop_unique).
+    // Login resolves by username only, so shared e-mails are never
+    // ambiguous.
     let active_duplicate: Option<i32> = users::table
-        .filter(
-            users::username
-                .eq(&form.username)
-                .or(users::email.eq(&form.email)),
-        )
+        .filter(users::username.eq(&form.username))
         .filter(users::is_deleted.eq(false))
         .select(users::id)
         .first(&mut conn)
@@ -568,7 +569,7 @@ pub async fn create_user_web(
 
     if active_duplicate.is_some() {
         return flash_redirect(
-            flash.error("Username or email already exists"),
+            flash.error("Username already exists"),
             "/accounts/users/new",
         );
     }
@@ -996,13 +997,12 @@ pub async fn update_user_web(
         );
     }
 
-    // Check for duplicate username or email (excluding current user, active only)
+    // Check for duplicate username (excluding current user, active only).
+    // The e-mail is deliberately NOT part of the duplicate check: several
+    // accounts may share one address (see create_user_web / migration
+    // 20260704000000_users_email_drop_unique).
     let active_duplicate: Option<i32> = users::table
-        .filter(
-            users::username
-                .eq(&form.username)
-                .or(users::email.eq(&form.email)),
-        )
+        .filter(users::username.eq(&form.username))
         .filter(users::id.ne(user_id))
         .filter(users::is_deleted.eq(false))
         .select(users::id)
@@ -1013,7 +1013,7 @@ pub async fn update_user_web(
 
     if active_duplicate.is_some() {
         return flash_redirect(
-            flash.error("Username or email already exists"),
+            flash.error("Username already exists"),
             &format!("/accounts/users/{}/edit", user_uuid),
         );
     }
@@ -1540,8 +1540,11 @@ pub async fn delete_user_web(
             check_last_active_superuser(c, in_tx_id, &in_tx_before, ChangeIntent::Delete).await?;
 
             // Soft-delete: mark as deleted and retire username/email
-            // so the UNIQUE constraints are freed for future reuse
-            // while preserving audit history.
+            // while preserving audit history. The username retire frees
+            // the lower(username) UNIQUE index for reuse; the email is
+            // suffixed for symmetry only (emails are no longer unique
+            // since 20260704000000_users_email_drop_unique) so tombstones
+            // remain unambiguous in audit views.
             let now = Utc::now();
             let suffix = format!("_deleted_{}", now.timestamp_millis());
             diesel::update(users::table.filter(users::id.eq(in_tx_id)))
