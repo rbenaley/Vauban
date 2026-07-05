@@ -555,6 +555,14 @@ fn build_test_router(state: AppState) -> Router {
             "/sessions/approvals/{uuid}/reject",
             post(handlers::web::reject_access_request),
         )
+        .route(
+            "/sessions/approvals/{uuid}/revoke",
+            post(handlers::web::revoke_access_request),
+        )
+        .route(
+            "/sessions/approvals/{uuid}/duration",
+            post(handlers::web::update_access_duration),
+        )
         .route("/sessions/my-requests", get(handlers::web::my_requests))
         .route(
             "/sessions/my-requests/{uuid}/cancel",

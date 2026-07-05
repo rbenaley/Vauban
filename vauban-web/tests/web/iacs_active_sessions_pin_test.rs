@@ -194,14 +194,18 @@ fn every_active_list_query_site_has_kill_switch_branch() {
 
 #[test]
 fn terminate_session_handler_dispatches_iacs_via_proxy_iacs_ipc_first() {
-    let src = read("src/handlers/api/sessions.rs");
+    // The dispatch moved from the terminate_session handler into the
+    // shared terminate core (services/session_termination.rs); every
+    // terminate caller routes through it (pinned by
+    // jit_revocation_pins_test::all_terminate_callers_use_the_shared_core).
+    let src = read("src/services/session_termination.rs");
 
     // Match the block-bodied arm specifically (the `is_recording`
-    // match earlier in the file uses `=> false,` -- one-liner). The
-    // terminate dispatch is the multi-line block: `=> {`.
+    // match earlier in the file uses one-liner arms). The terminate
+    // dispatch is the multi-line block: `=> {`.
     let needle_block = "SessionType::IacsTunnel => {";
     let block_start = src.find(needle_block).expect(
-        "terminate_session must keep a block-bodied IACS arm \
+        "the terminate core must keep a block-bodied IACS arm \
          (the dispatch arm, not the recording flag arm)",
     );
     let block = &src[block_start..(block_start + 2_500).min(src.len())];
@@ -214,9 +218,15 @@ fn terminate_session_handler_dispatches_iacs_via_proxy_iacs_ipc_first() {
         "IACS terminate arm MUST call `terminate_tunnel(...)` on \
          `state.proxy_iacs` so the IPC reaches proxy-iacs",
     );
-    let legacy_registry_pos = block.find("iacs_tunnel_registry.close_and_remove").expect(
+    // rustfmt may split the chained call across lines, so anchor on the
+    // registry field and require the close call after it.
+    let legacy_registry_pos = block.find("iacs_tunnel_registry").expect(
         "Legacy in-process registry MUST stay as the fallback (used \
          by tests / pre-supervisor dev mode)",
+    );
+    assert!(
+        block[legacy_registry_pos..].contains("close_and_remove"),
+        "The legacy registry fallback must call `close_and_remove(...)`"
     );
 
     assert!(

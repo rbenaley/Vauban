@@ -672,10 +672,17 @@ mod tests {
             html.contains("asset-ws-trigger"),
             "template should contain #asset-ws-trigger element"
         );
-        assert!(
-            html.contains("request_approved"),
-            "WS trigger should listen for request_approved"
-        );
+        // Every decision verb that flips the Connect/Request button must
+        // re-render the list in real time (JIT revocation included).
+        for event in [
+            "request_approved",
+            "request_rejected",
+            "request_expired",
+            "request_revoked",
+            "request_duration_updated",
+        ] {
+            assert!(html.contains(event), "WS trigger should listen for {event}");
+        }
         assert!(
             html.contains("htmx:wsAfterMessage"),
             "WS trigger should use htmx:wsAfterMessage"

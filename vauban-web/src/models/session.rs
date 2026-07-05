@@ -250,6 +250,12 @@ pub struct ProxySession {
     /// derived from `asset.hostname:asset.port` once bastion->asset
     /// routing lands.
     pub tunnel_target_addr: Option<String>,
+    /// Set when an APPROVED JIT grant was revoked by an admin
+    /// (`status = 'revoked'`). References `users.id` (`ON DELETE SET
+    /// NULL`).
+    pub revoked_by_id: Option<i32>,
+    /// Timestamp of the revocation decision.
+    pub revoked_at: Option<DateTime<Utc>>,
 }
 
 /// New session for insertion.
@@ -362,6 +368,8 @@ mod tests {
             industrial_protocol: None,
             ews_uuid: None,
             tunnel_target_addr: None,
+            revoked_by_id: None,
+            revoked_at: None,
         }
     }
 

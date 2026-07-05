@@ -64,7 +64,7 @@
     <!-- OOB swap target for JIT notifications; triggers list reload on status changes -->
     <div id="jit-notification" class="hidden"
          hx-get="/sessions/my-requests"
-         hx-trigger="htmx:wsAfterMessage[detail.message&&(detail.message.indexOf('request_approved')>-1||detail.message.indexOf('request_rejected')>-1||detail.message.indexOf('request_expired')>-1)] from:body throttle:500ms"
+         hx-trigger="htmx:wsAfterMessage[detail.message&&(detail.message.indexOf('request_approved')>-1||detail.message.indexOf('request_rejected')>-1||detail.message.indexOf('request_expired')>-1||detail.message.indexOf('request_revoked')>-1||detail.message.indexOf('request_duration_updated')>-1)] from:body throttle:500ms"
          hx-select="#my-requests-list"
          hx-target="#my-requests-list"
          hx-swap="outerHTML">

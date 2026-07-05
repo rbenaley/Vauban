@@ -275,6 +275,9 @@ pub enum EmailEvent {
     AccessRequestSubmitted(AccessRequestSubmittedEvent),
     AccessRequestApproved(AccessRequestApprovedEvent),
     AccessRequestRejected(AccessRequestRejectedEvent),
+    /// An APPROVED grant was revoked by an admin -- the requester is
+    /// informed that new sessions are blocked and live ones were cut.
+    AccessRequestRevoked(AccessRequestRevokedEvent),
     AccessRequestExpired(AccessRequestExpiredEvent),
     UserCreated(UserCreatedEvent),
     UserPasswordResetRequested(UserPasswordResetRequestedEvent),
@@ -302,6 +305,7 @@ impl EmailEvent {
             Self::AccessRequestSubmitted(_) => "access_request.submitted",
             Self::AccessRequestApproved(_) => "access_request.approved",
             Self::AccessRequestRejected(_) => "access_request.rejected",
+            Self::AccessRequestRevoked(_) => "access_request.revoked",
             Self::AccessRequestExpired(_) => "access_request.expired",
             Self::UserCreated(_) => "user.created",
             Self::UserPasswordResetRequested(_) => "user.password_reset_requested",
@@ -320,6 +324,7 @@ impl EmailEvent {
             Self::AccessRequestSubmitted(e) => e.event_id,
             Self::AccessRequestApproved(e) => e.event_id,
             Self::AccessRequestRejected(e) => e.event_id,
+            Self::AccessRequestRevoked(e) => e.event_id,
             Self::AccessRequestExpired(e) => e.event_id,
             Self::UserCreated(e) => e.event_id,
             Self::UserPasswordResetRequested(e) => e.event_id,
@@ -338,6 +343,7 @@ impl EmailEvent {
             Self::AccessRequestSubmitted(e) => &e.recipient,
             Self::AccessRequestApproved(e) => &e.recipient,
             Self::AccessRequestRejected(e) => &e.recipient,
+            Self::AccessRequestRevoked(e) => &e.recipient,
             Self::AccessRequestExpired(e) => &e.recipient,
             Self::UserCreated(e) => &e.recipient,
             Self::UserPasswordResetRequested(e) => &e.recipient,
@@ -360,6 +366,7 @@ impl EmailEvent {
             Self::AccessRequestSubmitted(e) => render_access_request_submitted(e),
             Self::AccessRequestApproved(e) => render_access_request_approved(e),
             Self::AccessRequestRejected(e) => render_access_request_rejected(e),
+            Self::AccessRequestRevoked(e) => render_access_request_revoked(e),
             Self::AccessRequestExpired(e) => render_access_request_expired(e),
             Self::UserCreated(e) => render_user_created(e),
             Self::UserPasswordResetRequested(e) => render_user_password_reset_requested(e),
@@ -490,6 +497,40 @@ fn render_access_request_rejected(
     let mut text = render_header(&e.from_brand);
     text.push_str(&format!(
         "Your access request to {} ({}) was denied by {}.\n",
+        e.asset_name, e.protocol, e.approver_username
+    ));
+    if let Some(r) = &e.reason {
+        text.push_str(&format!("\nReason: {}\n", r));
+    }
+    text.push_str(&render_footer(&e.base_url));
+    Ok(RenderedEmail {
+        subject,
+        body_text: text,
+        body_html: None,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct AccessRequestRevokedEvent {
+    pub event_id: Uuid,
+    pub recipient: EmailRecipient,
+    pub asset_name: String,
+    pub protocol: String,
+    pub approver_username: String,
+    pub reason: Option<String>,
+    pub base_url: String,
+    pub from_brand: String,
+}
+
+fn render_access_request_revoked(
+    e: &AccessRequestRevokedEvent,
+) -> Result<RenderedEmail, RenderError> {
+    let subject = format!("[Vauban] Access revoked: {} ({})", e.asset_name, e.protocol);
+    let mut text = render_header(&e.from_brand);
+    text.push_str(&format!(
+        "Your approved access to {} ({}) was revoked by {}.\n\
+         Any live session on this asset has been terminated and new \
+         connections are no longer possible.\n",
         e.asset_name, e.protocol, e.approver_username
     ));
     if let Some(r) = &e.reason {

@@ -38,6 +38,7 @@
                 <option value="pending" {% if status_filter.as_deref() == Some("pending") %}selected{% endif %}>Pending</option>
                 <option value="approved" {% if status_filter.as_deref() == Some("approved") %}selected{% endif %}>Approved</option>
                 <option value="rejected" {% if status_filter.as_deref() == Some("rejected") %}selected{% endif %}>Rejected</option>
+                <option value="revoked" {% if status_filter.as_deref() == Some("revoked") %}selected{% endif %}>Revoked</option>
                 <option value="expired" {% if status_filter.as_deref() == Some("expired") %}selected{% endif %}>Expired</option>
                 <option value="orphaned" {% if status_filter.as_deref() == Some("orphaned") %}selected{% endif %}>Orphaned</option>
             </select>
@@ -56,7 +57,7 @@
     <!-- Auto-refresh on WebSocket JIT events -->
     <div id="approval-ws-trigger" class="hidden"
          hx-get="/sessions/approvals{% if let Some(s) = status_filter.as_ref() %}?status={{ s }}{% endif %}"
-         hx-trigger="htmx:wsAfterMessage[detail.message&&(detail.message.indexOf('access_request')>-1||detail.message.indexOf('request_approved')>-1||detail.message.indexOf('request_rejected')>-1||detail.message.indexOf('request_expired')>-1||detail.message.indexOf('request_cancelled')>-1)] from:body throttle:500ms"
+         hx-trigger="htmx:wsAfterMessage[detail.message&&(detail.message.indexOf('access_request')>-1||detail.message.indexOf('request_approved')>-1||detail.message.indexOf('request_rejected')>-1||detail.message.indexOf('request_expired')>-1||detail.message.indexOf('request_cancelled')>-1||detail.message.indexOf('request_revoked')>-1||detail.message.indexOf('request_duration_updated')>-1)] from:body throttle:500ms"
          hx-select="#approvals-list-container"
          hx-target="#approvals-list-container"
          hx-swap="outerHTML">

@@ -376,6 +376,89 @@ mod tests {
         );
     }
 
+    // ---- JIT revoke / update-duration UI gating ----
+
+    #[test]
+    fn approved_detail_exposes_revoke_and_duration_controls() {
+        let mut tpl = detail_template(false);
+        tpl.approval.status = "approved".to_string();
+        let html = tpl.render().expect("render");
+        assert!(
+            html.contains("/sessions/approvals/uuid-detail-1/revoke"),
+            "approved detail must expose the Revoke form"
+        );
+        assert!(
+            html.contains("/sessions/approvals/uuid-detail-1/duration"),
+            "approved detail must expose the Update-duration form"
+        );
+        assert!(
+            html.contains("Confirm Revocation"),
+            "revoke modal must carry a confirmation button"
+        );
+    }
+
+    #[test]
+    fn approved_own_detail_allows_self_revoke_but_hides_duration_form() {
+        // No SoD on revoke: reducing one's own access is always licit.
+        // The duration form, however, could EXTEND access, so it stays
+        // hidden when the grant belongs to the viewer.
+        let mut tpl = detail_template(true);
+        tpl.approval.status = "approved".to_string();
+        let html = tpl.render().expect("render");
+        assert!(
+            html.contains("/sessions/approvals/uuid-detail-1/revoke"),
+            "own approved detail must still expose the Revoke form (self-revoke allowed)"
+        );
+        assert!(
+            !html.contains("/sessions/approvals/uuid-detail-1/duration"),
+            "own approved detail must NOT expose the Update-duration form"
+        );
+    }
+
+    #[test]
+    fn pending_detail_has_no_revoke_or_duration_controls() {
+        let html = detail_template(false).render().expect("render");
+        assert!(
+            !html.contains("/sessions/approvals/uuid-detail-1/revoke"),
+            "pending detail must NOT expose the Revoke form"
+        );
+        assert!(
+            !html.contains("/sessions/approvals/uuid-detail-1/duration"),
+            "pending detail must NOT expose the Update-duration form"
+        );
+    }
+
+    #[test]
+    fn revoked_detail_is_read_only_with_banner() {
+        let mut tpl = detail_template(false);
+        tpl.approval.status = "revoked".to_string();
+        tpl.approval.decided_by = Some("admin_dave".to_string());
+        tpl.approval.decided_at = Some("Jul 5, 2026 10:00".to_string());
+        let html = tpl.render().expect("render");
+        assert!(
+            html.contains("This grant has been revoked"),
+            "revoked detail must show the revocation banner"
+        );
+        assert!(
+            html.contains("Revoked by") && html.contains("admin_dave"),
+            "revoked detail must show the revoker in the Decision section"
+        );
+        assert!(
+            !html.contains("/sessions/approvals/uuid-detail-1/revoke"),
+            "revoked detail must NOT expose the Revoke form again"
+        );
+        assert!(
+            !html.contains("/sessions/approvals/uuid-detail-1/duration"),
+            "revoked detail must NOT expose the Update-duration form"
+        );
+    }
+
+    #[test]
+    fn test_status_class_revoked() {
+        let detail = create_test_approval_detail("revoked");
+        assert!(detail.status_class().contains("red"));
+    }
+
     #[test]
     fn test_approval_detail_template_renders() {
         use crate::templates::base::{UserContext, VaubanConfig};

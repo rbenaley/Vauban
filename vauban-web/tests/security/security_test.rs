@@ -7359,31 +7359,46 @@ async fn test_sec07_deactivated_user_cannot_rdp() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// Structural: deactivate_user sets recording_path in the same UPDATE as "terminated".
+/// Structural: the shared terminate core sets is_recorded/recording_path
+/// in the same UPDATE as "terminated". Both deactivate_user and the API
+/// terminate_session route through it (pinned by
+/// tests/web/jit_revocation_pins_test.rs::all_terminate_callers_use_the_shared_core),
+/// so pinning the service pins every caller at once.
 #[test]
 fn test_sec07_deactivate_user_sets_recording_path() {
     let users_source = include_str!("../../src/handlers/web/users.rs");
     assert!(
-        users_source.contains("proxy_sessions::is_recorded.eq(true)"),
-        "SEC-07: deactivate_user must set is_recorded=true when terminating proxy sessions"
+        users_source.contains("session_termination::terminate_live_session"),
+        "SEC-07: deactivate_user must terminate proxy sessions via the shared core"
+    );
+    let core_source = include_str!("../../src/services/session_termination.rs");
+    assert!(
+        core_source.contains("proxy_sessions::is_recorded.eq(true)"),
+        "SEC-07: terminate core must set is_recorded=true when terminating proxy sessions"
     );
     assert!(
-        users_source.contains("proxy_sessions::recording_path.eq("),
-        "SEC-07: deactivate_user must set recording_path when terminating proxy sessions"
+        core_source.contains("proxy_sessions::recording_path.eq("),
+        "SEC-07: terminate core must set recording_path when terminating proxy sessions"
     );
 }
 
-/// Structural: terminate_session sets recording_path in the same UPDATE as "terminated".
+/// Structural: terminate_session routes through the shared core, which
+/// sets recording_path in the same UPDATE as "terminated".
 #[test]
 fn test_sec07_terminate_session_sets_recording_path() {
     let sessions_source = include_str!("../../src/handlers/api/sessions.rs");
     assert!(
-        sessions_source.contains("is_recorded.eq(true)"),
-        "SEC-07: terminate_session must set is_recorded=true"
+        sessions_source.contains("session_termination::terminate_live_session"),
+        "SEC-07: terminate_session must route through the shared terminate core"
+    );
+    let core_source = include_str!("../../src/services/session_termination.rs");
+    assert!(
+        core_source.contains("is_recorded.eq(true)"),
+        "SEC-07: terminate core must set is_recorded=true"
     );
     assert!(
-        sessions_source.contains("recording_path.eq("),
-        "SEC-07: terminate_session must set recording_path"
+        core_source.contains("recording_path.eq("),
+        "SEC-07: terminate core must set recording_path"
     );
 }
 

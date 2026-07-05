@@ -21,7 +21,7 @@ pub fn session_status_class(status: &str) -> &'static str {
     match status {
         "pending" => "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300",
         "approved" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
-        "rejected" => "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300",
+        "rejected" | "revoked" => "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300",
         "expired" | "orphaned" => {
             "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300"
         }
@@ -74,6 +74,17 @@ mod tests {
     #[test]
     fn test_rejected() {
         assert!(session_status_class("rejected").contains("red"));
+    }
+
+    #[test]
+    fn test_revoked() {
+        // Revoked grants share the "access denied" red family with
+        // rejected requests: both mean "no access from now on".
+        assert!(session_status_class("revoked").contains("red"));
+        assert_eq!(
+            session_status_class("revoked"),
+            session_status_class("rejected")
+        );
     }
 
     #[test]
@@ -155,6 +166,7 @@ mod tests {
             "pending",
             "approved",
             "rejected",
+            "revoked",
             "expired",
             "orphaned",
             "consumed",

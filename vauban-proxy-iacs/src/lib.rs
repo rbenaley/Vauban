@@ -1,3 +1,15 @@
+// Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr
+    )
+)]
+
 //! Library facade for `vauban-proxy-iacs`.
 //!
 //! The crate ships primarily as the `vauban-proxy-iacs` binary

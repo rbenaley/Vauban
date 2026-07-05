@@ -245,6 +245,54 @@ async fn watchdog_closes_tunnels_when_user_deactivated() {
     assert!(registry.get(&session_uuid).is_none());
 }
 
+/// JIT revocation cascade contract: when the web layer flips a live
+/// IACS row to `terminated` (e.g. `cascade_terminate_grant_sessions`
+/// after a grant revoke, or the admin terminate endpoint), the
+/// watchdog must cut the live tunnel on its next tick even though the
+/// EWS and the user are both still perfectly valid.
+#[tokio::test]
+async fn watchdog_closes_tunnel_when_session_row_terminated() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_id = create_simple_user(&mut conn, &unique_name("watchdog_term")).await;
+    let asset_id = seed_iacs_asset(&mut conn, user_id).await;
+    let ews_uuid = seed_ews(&mut conn, user_id).await;
+    let session_uuid = seed_active_session(&mut conn, user_id, asset_id, ews_uuid).await;
+
+    let registry = TunnelRegistry::new();
+    registry.insert(TunnelHandle::new(
+        session_uuid,
+        ews_uuid,
+        user_uuid_for(user_id),
+    ));
+
+    // The revoke cascade flipped the row; EWS/user stay valid.
+    use vauban_web::schema::proxy_sessions;
+    diesel::update(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)))
+        .set((
+            proxy_sessions::status.eq("terminated"),
+            proxy_sessions::disconnected_at.eq(Some(Utc::now())),
+        ))
+        .execute(&mut conn)
+        .await
+        .expect("terminate session row");
+
+    let (closed, _) = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(0), true).await;
+    assert_eq!(
+        closed, 1,
+        "watchdog must close the live tunnel of a terminated row"
+    );
+    assert!(
+        registry.get(&session_uuid).is_none(),
+        "registry must drop the terminated tunnel"
+    );
+    assert_eq!(
+        read_session_status(&mut conn, session_uuid).await,
+        "terminated",
+        "row must stay terminated"
+    );
+}
+
 #[tokio::test]
 async fn watchdog_does_not_touch_other_users_tunnels() {
     let app = TestApp::spawn().await;

@@ -5,7 +5,9 @@ use crate::models::session::SessionType;
 /// Statuses that belong to the approval lifecycle. Session-state
 /// statuses (connecting, active, terminated, disconnected) are
 /// excluded — they belong in the session list, not the approval queue.
-const APPROVAL_STATUSES: &[&str] = &["pending", "approved", "rejected", "expired", "orphaned"];
+const APPROVAL_STATUSES: &[&str] = &[
+    "pending", "approved", "rejected", "revoked", "expired", "orphaned",
+];
 
 /// Session list page (admin-only).
 pub async fn session_list(
@@ -1314,8 +1316,10 @@ pub async fn approval_detail(
 
     let is_own = requester_uuid.to_string() == auth_user.uuid;
 
-    // Resolve who approved or rejected, when, and why.
+    // Resolve who approved, rejected or revoked, when, and why.
     type DecisionRow = (
+        Option<i32>,
+        Option<chrono::DateTime<chrono::Utc>>,
         Option<i32>,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<i32>,
@@ -1330,15 +1334,23 @@ pub async fn approval_detail(
                 proxy_sessions::approved_at,
                 proxy_sessions::rejected_by_id,
                 proxy_sessions::rejected_at,
+                proxy_sessions::revoked_by_id,
+                proxy_sessions::revoked_at,
                 proxy_sessions::decision_reason,
             ))
             .first(&mut conn)
             .await
             .ok();
 
-        if let Some((appr_id, appr_at, rej_id, rej_at, reason)) = row {
-            let actor_id = appr_id.or(rej_id);
-            let actor_at = appr_at.or(rej_at);
+        if let Some((appr_id, appr_at, rej_id, rej_at, rev_id, rev_at, reason)) = row {
+            // A revoked grant carries BOTH the original approver and
+            // the revoker; the Decision section shows the terminal
+            // actor (the revoker) in that case.
+            let (actor_id, actor_at) = if status == "revoked" {
+                (rev_id.or(appr_id).or(rej_id), rev_at.or(appr_at).or(rej_at))
+            } else {
+                (appr_id.or(rej_id), appr_at.or(rej_at))
+            };
 
             let actor_name: Option<String> = if let Some(id) = actor_id {
                 users::table
@@ -1867,6 +1879,335 @@ pub async fn reject_access_request(
     ))
 }
 
+/// Form for an admin revoke decision on an APPROVED grant. The
+/// optional `reason` is recorded in the audit trail and surfaced to
+/// the requester (WS notification + email).
+#[derive(Debug, serde::Deserialize)]
+pub struct RevokeForm {
+    pub csrf_token: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Form for the post-approval duration update. Unlike `ApproveForm`
+/// (where an empty duration means "keep the rule default"), the
+/// duration here is MANDATORY: the verb exists only to change it.
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateDurationForm {
+    pub csrf_token: String,
+    #[serde(
+        default,
+        deserialize_with = "crate::models::asset::deserialize_optional_i32"
+    )]
+    pub duration_value: Option<i32>,
+    pub duration_unit: Option<String>,
+}
+
+impl UpdateDurationForm {
+    /// Delegate to the shared resolver in `utils`, then require a
+    /// value (1 min - 24 h bounds are enforced by the resolver).
+    pub fn resolve_required_duration_seconds(&self) -> Result<i32, &'static str> {
+        match crate::utils::resolve_duration_seconds(
+            self.duration_value,
+            self.duration_unit.as_deref(),
+        )? {
+            Some(secs) => Ok(secs),
+            None => Err("A duration is required"),
+        }
+    }
+}
+
+/// `proxy_sessions.status` values that denote a LIVE session (data may
+/// be flowing): SSH/RDP handshake or active, IACS waiting for its
+/// client or relaying. Used by the revocation cascade and the
+/// duration clamp.
+const LIVE_SESSION_STATUSES: [&str; 4] =
+    ["connecting", "active", "waiting_client", "tunnel_active"];
+
+/// Revoke an APPROVED access grant (instant cut).
+///
+/// POST /sessions/approvals/{uuid}/revoke
+///
+/// Defence in depth, three layers:
+///   1. The grant row flips to `status = 'revoked'` inside the
+///      vauban-access transaction (with the append-only audit row) --
+///      NEW sessions are blocked instantly because every connect
+///      lookup filters on `status = 'approved'`.
+///   2. This handler then cascade-terminates every LIVE session of the
+///      (requester, asset) couple through the shared terminate core
+///      (SSH/RDP force-close + IACS terminate IPC).
+///   3. The WS revalidation probe (`is_proxy_session_live`) backstops
+///      any race or dead proxy IPC within `REVALIDATE_INTERVAL_SECS`.
+#[allow(clippy::too_many_arguments)]
+pub async fn revoke_access_request(
+    State(state): State<AppState>,
+    incoming_flash: IncomingFlash,
+    auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    client_addr: crate::middleware::ClientAddr,
+    extensions: axum::Extension<crate::middleware::audit::RequestId>,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    Form(form): Form<RevokeForm>,
+) -> AppResult<Response> {
+    let flash = incoming_flash.flash();
+
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
+    }
+
+    if !perms.admin_view {
+        return Err(AppError::Authorization(
+            "Only administrators can revoke grants".to_string(),
+        ));
+    }
+
+    let reason = form
+        .reason
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let outcome = dispatch_approval_decision(
+        &state,
+        &auth_user,
+        &headers,
+        &client_addr,
+        &extensions.0,
+        &uuid_str,
+        shared::messages::ApprovalDecisionKind::Revoke,
+        None,
+        reason,
+    )
+    .await?;
+
+    // Layer 2: the grant is durably `revoked`; now cut every live
+    // session of the (requester, asset) couple. Best-effort per
+    // session -- layer 3 (WS probe) and the IACS watchdog backstop
+    // any failure here.
+    if let ApprovalOutcome::Recorded { session_uuid, .. } = &outcome {
+        cascade_terminate_grant_sessions(&state, *session_uuid).await;
+    }
+
+    Ok(approval_outcome_to_response(
+        flash,
+        &uuid_str,
+        outcome,
+        "Access grant revoked; live sessions terminated",
+    ))
+}
+
+/// Update the duration of an APPROVED access grant.
+///
+/// POST /sessions/approvals/{uuid}/duration
+///
+/// `expires_at` is recomputed as `approved_at + duration` (same
+/// semantics as the approval itself), in either direction. Live
+/// sessions are CLAMPED to the new horizon (never extended: their
+/// in-flight max duration stays whatever was fixed at connect time).
+/// A duration shortened below the already-elapsed time lands
+/// `expires_at` in the past: connects are blocked instantly and the
+/// WS probe / cleanup task reap the leftovers.
+#[allow(clippy::too_many_arguments)]
+pub async fn update_access_duration(
+    State(state): State<AppState>,
+    incoming_flash: IncomingFlash,
+    auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    client_addr: crate::middleware::ClientAddr,
+    extensions: axum::Extension<crate::middleware::audit::RequestId>,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    Form(form): Form<UpdateDurationForm>,
+) -> AppResult<Response> {
+    let flash = incoming_flash.flash();
+
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
+    }
+
+    if !perms.admin_view {
+        return Err(AppError::Authorization(
+            "Only administrators can change grant durations".to_string(),
+        ));
+    }
+
+    let duration_seconds = match form.resolve_required_duration_seconds() {
+        Ok(d) => d,
+        Err(msg) => {
+            return Ok(flash_redirect(
+                flash.error(msg),
+                &format!("/sessions/approvals/{}", uuid_str),
+            ));
+        }
+    };
+
+    let outcome = dispatch_approval_decision(
+        &state,
+        &auth_user,
+        &headers,
+        &client_addr,
+        &extensions.0,
+        &uuid_str,
+        shared::messages::ApprovalDecisionKind::UpdateDuration,
+        Some(duration_seconds),
+        None,
+    )
+    .await?;
+
+    // Clamp live sessions to the new horizon (reduction only).
+    if let ApprovalOutcome::Recorded { session_uuid, .. } = &outcome {
+        clamp_grant_live_sessions(&state, *session_uuid).await;
+    }
+
+    Ok(approval_outcome_to_response(
+        flash,
+        &uuid_str,
+        outcome,
+        "Access grant duration updated",
+    ))
+}
+
+/// Terminate every LIVE proxy session of the (requester, asset) couple
+/// of a just-revoked grant. Best-effort: each failure is logged; the
+/// WS revalidation probe and the IACS watchdog backstop leftovers.
+async fn cascade_terminate_grant_sessions(state: &AppState, grant_uuid: ::uuid::Uuid) {
+    use crate::models::session::ProxySession;
+
+    let mut conn = match state.db_pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(
+                grant_uuid = %grant_uuid,
+                error = %e,
+                "revoke cascade: DB pool unavailable; WS probe will backstop"
+            );
+            return;
+        }
+    };
+
+    let grant: Option<(i32, i32)> = proxy_sessions::table
+        .filter(proxy_sessions::uuid.eq(grant_uuid))
+        .select((proxy_sessions::user_id, proxy_sessions::asset_id))
+        .first(&mut conn)
+        .await
+        .ok();
+    let Some((grant_user_id, grant_asset_id)) = grant else {
+        return;
+    };
+
+    let live_sessions: Vec<ProxySession> = proxy_sessions::table
+        .filter(proxy_sessions::user_id.eq(grant_user_id))
+        .filter(proxy_sessions::asset_id.eq(grant_asset_id))
+        .filter(proxy_sessions::status.eq_any(LIVE_SESSION_STATUSES))
+        .load(&mut conn)
+        .await
+        .unwrap_or_default();
+    drop(conn);
+
+    for session in &live_sessions {
+        if let Err(e) = crate::services::session_termination::terminate_live_session(
+            state,
+            session,
+            "access_revoked",
+        )
+        .await
+        {
+            tracing::warn!(
+                grant_uuid = %grant_uuid,
+                session_uuid = %session.uuid,
+                error = %e,
+                "revoke cascade: failed to terminate live session; WS probe will backstop"
+            );
+        }
+    }
+
+    if !live_sessions.is_empty() {
+        tracing::info!(
+            grant_uuid = %grant_uuid,
+            terminated = live_sessions.len(),
+            "revoke cascade: live sessions terminated"
+        );
+        crate::services::session_termination::broadcast_session_list_updates(state).await;
+    }
+}
+
+/// Clamp `expires_at` of every LIVE session of the grant's
+/// (requester, asset) couple to the grant's new horizon. NULL
+/// `expires_at` counts as "unbounded" and is clamped too; later
+/// horizons are reduced; earlier ones are left as-is (a duration
+/// update NEVER extends an in-flight session).
+async fn clamp_grant_live_sessions(state: &AppState, grant_uuid: ::uuid::Uuid) {
+    let mut conn = match state.db_pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(
+                grant_uuid = %grant_uuid,
+                error = %e,
+                "duration clamp: DB pool unavailable; WS probe will backstop"
+            );
+            return;
+        }
+    };
+
+    type GrantRow = (i32, i32, Option<chrono::DateTime<chrono::Utc>>);
+    let grant: Option<GrantRow> = proxy_sessions::table
+        .filter(proxy_sessions::uuid.eq(grant_uuid))
+        .select((
+            proxy_sessions::user_id,
+            proxy_sessions::asset_id,
+            proxy_sessions::expires_at,
+        ))
+        .first(&mut conn)
+        .await
+        .ok();
+    let Some((grant_user_id, grant_asset_id, Some(new_horizon))) = grant else {
+        return;
+    };
+
+    let clamped = diesel::update(
+        proxy_sessions::table
+            .filter(proxy_sessions::user_id.eq(grant_user_id))
+            .filter(proxy_sessions::asset_id.eq(grant_asset_id))
+            .filter(proxy_sessions::status.eq_any(LIVE_SESSION_STATUSES))
+            .filter(
+                proxy_sessions::expires_at
+                    .is_null()
+                    .or(proxy_sessions::expires_at.gt(new_horizon)),
+            ),
+    )
+    .set((
+        proxy_sessions::expires_at.eq(Some(new_horizon)),
+        proxy_sessions::updated_at.eq(chrono::Utc::now()),
+    ))
+    .execute(&mut conn)
+    .await
+    .unwrap_or(0);
+
+    if clamped > 0 {
+        tracing::info!(
+            grant_uuid = %grant_uuid,
+            clamped = clamped,
+            new_horizon = %new_horizon,
+            "duration update: live sessions clamped to the new horizon"
+        );
+    }
+}
+
 /// Outcome from `dispatch_approval_decision`, returned to keep the
 /// HTTP-shape mapping in a single place (`approval_outcome_to_response`).
 ///
@@ -1963,6 +2304,10 @@ async fn dispatch_approval_decision(
                 let kind_str = match decision {
                     shared::messages::ApprovalDecisionKind::Approve => "request_approved",
                     shared::messages::ApprovalDecisionKind::Reject => "request_rejected",
+                    shared::messages::ApprovalDecisionKind::Revoke => "request_revoked",
+                    shared::messages::ApprovalDecisionKind::UpdateDuration => {
+                        "request_duration_updated"
+                    }
                 };
                 let _ = state
                     .broadcast
@@ -2000,6 +2345,13 @@ async fn dispatch_approval_decision(
                 shared::messages::ApprovalDecisionKind::Reject => {
                     (shared::messages::AuditEventType::ApprovalDenied, "denied")
                 }
+                shared::messages::ApprovalDecisionKind::Revoke => {
+                    (shared::messages::AuditEventType::ApprovalRevoked, "revoked")
+                }
+                shared::messages::ApprovalDecisionKind::UpdateDuration => (
+                    shared::messages::AuditEventType::ApprovalDurationUpdated,
+                    "duration_updated",
+                ),
             };
             if let Err(e) = crate::services::emit_audit_critical(
                 state,
@@ -2017,7 +2369,15 @@ async fn dispatch_approval_decision(
             // here is logged but never bubbles up -- the audit row is
             // already durable on the access-side, so the user has
             // learned the outcome from the WS notification anyway.
-            if let Some(uid) = requester_id
+            // No email for update-duration (WS notification only): the
+            // grant stays live, so there is no actionable outcome to
+            // notify out-of-band.
+            let email_worthy = !matches!(
+                decision,
+                shared::messages::ApprovalDecisionKind::UpdateDuration
+            );
+            if email_worthy
+                && let Some(uid) = requester_id
                 && let Err(e) = queue_approval_email(
                     state,
                     uid,
@@ -2147,8 +2507,8 @@ async fn queue_approval_email(
 ) -> Result<(), String> {
     use crate::schema::{assets, proxy_sessions, users};
     use crate::services::mailer::{
-        AccessRequestApprovedEvent, AccessRequestRejectedEvent, EmailEvent, EmailRecipient,
-        deterministic_event_id,
+        AccessRequestApprovedEvent, AccessRequestRejectedEvent, AccessRequestRevokedEvent,
+        EmailEvent, EmailRecipient, deterministic_event_id,
     };
 
     let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
@@ -2208,6 +2568,21 @@ async fn queue_approval_email(
                 from_brand: state.config.mailer.from_name.clone(),
             })
         }
+        shared::messages::ApprovalDecisionKind::Revoke => {
+            EmailEvent::AccessRequestRevoked(AccessRequestRevokedEvent {
+                event_id,
+                recipient,
+                asset_name,
+                protocol,
+                approver_username: approver_username.to_string(),
+                reason: rejection_reason.map(str::to_string),
+                base_url: state.config.mailer.base_url.clone(),
+                from_brand: state.config.mailer.from_name.clone(),
+            })
+        }
+        // No email for update-duration; the caller filters this out
+        // (`email_worthy`), kept as a no-op for exhaustiveness.
+        shared::messages::ApprovalDecisionKind::UpdateDuration => return Ok(()),
     };
 
     let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
@@ -2222,6 +2597,8 @@ fn decision_kind_str(decision: shared::messages::ApprovalDecisionKind) -> &'stat
     match decision {
         shared::messages::ApprovalDecisionKind::Approve => "access_request.approved",
         shared::messages::ApprovalDecisionKind::Reject => "access_request.rejected",
+        shared::messages::ApprovalDecisionKind::Revoke => "access_request.revoked",
+        shared::messages::ApprovalDecisionKind::UpdateDuration => "access_request.duration_updated",
     }
 }
 
@@ -2431,6 +2808,7 @@ pub async fn my_requests(
         "pending",
         "approved",
         "rejected",
+        "revoked",
         "expired",
         "consumed",
         "active",
@@ -5165,6 +5543,10 @@ mod tests {
         assert!(
             APPROVAL_STATUSES.contains(&"rejected"),
             "APPROVAL_STATUSES must include rejected"
+        );
+        assert!(
+            APPROVAL_STATUSES.contains(&"revoked"),
+            "APPROVAL_STATUSES must include revoked (post-approval admin cut)"
         );
         assert!(
             APPROVAL_STATUSES.contains(&"expired"),

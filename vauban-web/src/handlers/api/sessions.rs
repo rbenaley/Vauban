@@ -16,7 +16,7 @@ use crate::AppState;
 use crate::auth::PermissionContext;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
-use crate::models::session::{CreateSessionRequest, NewProxySession, ProxySession, SessionType};
+use crate::models::session::{CreateSessionRequest, NewProxySession, ProxySession};
 use crate::schema::proxy_sessions::dsl::*;
 
 // is_htmx_request deduplicated - use crate::error::is_htmx_request
@@ -363,10 +363,7 @@ pub async fn terminate_session(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    // Check recording config before updating to decide if we need to set recording_path.
-    // This must happen in the same UPDATE that sets "terminated", because the WebSocket
-    // cleanup handler filters on status IN ('active','connecting') and would skip it.
-    let session_for_recording: ProxySession = proxy_sessions
+    let session_row: ProxySession = proxy_sessions
         .filter(uuid.eq(session_uuid))
         .first(&mut conn)
         .await
@@ -374,40 +371,17 @@ pub async fn terminate_session(
             diesel::result::Error::NotFound => AppError::NotFound("Session not found".to_string()),
             _ => AppError::Database(e),
         })?;
+    drop(conn);
 
-    let now = chrono::Utc::now();
-    let is_recording = match session_for_recording.session_type {
-        SessionType::Ssh => state.config.recording.ssh_recording_enabled(),
-        SessionType::Rdp => state.config.recording.rdp_recording_enabled(),
-        SessionType::IacsTunnel => state.config.recording.iacs_recording_enabled(),
-    };
-
-    let updated_session = if is_recording {
-        let path_anchor = session_for_recording.connected_at.unwrap_or(now);
-        let rec_path = crate::services::recording_hydrator::recording_dir_for_session(
-            &state.config.recording.storage_path,
-            &session_for_recording.uuid.to_string(),
-            path_anchor,
-        );
-        diesel::update(proxy_sessions.filter(uuid.eq(session_uuid)))
-            .set((
-                status.eq("terminated"),
-                disconnected_at.eq(now),
-                crate::schema::proxy_sessions::is_recorded.eq(true),
-                recording_path.eq(&rec_path),
-            ))
-            .get_result::<ProxySession>(&mut conn)
-            .await
-    } else {
-        diesel::update(proxy_sessions.filter(uuid.eq(session_uuid)))
-            .set((status.eq("terminated"), disconnected_at.eq(now)))
-            .get_result::<ProxySession>(&mut conn)
-            .await
-    }
-    .map_err(|e| match e {
-        diesel::result::Error::NotFound => AppError::NotFound("Session not found".to_string()),
-        _ => AppError::Database(e),
-    })?;
+    // Shared terminate core: DB update (+ recording fields), hydration
+    // enqueue, proxy-side force-close (SSH/RDP/IACS). Same seam as
+    // account deactivation and the JIT grant revocation cascade.
+    let updated_session = crate::services::session_termination::terminate_live_session(
+        &state,
+        &session_row,
+        "user_terminated",
+    )
+    .await?;
 
     crate::services::emit_audit(
         &state,
@@ -416,106 +390,8 @@ pub async fn terminate_session(
             .session(session_uuid.to_string()),
     );
 
-    // PRIMARY hydration path (issue #29 v1.4): schedule integrity
-    // bundle population after the configurable grace period so
-    // vauban-audit has time to flush meta.json. Idempotent + no-op
-    // when the session was not recorded.
-    std::mem::drop(crate::services::recording_hydrator::enqueue_hydration(
-        &state,
-        updated_session.id,
-        std::time::Duration::from_secs(state.config.recording.hydration_enqueue_delay_secs),
-    ));
-
-    // Force-close the proxy connection and data channel so the active
-    // WebSocket loop breaks (data_rx.recv() => None).
-    let session_uuid_str = updated_session.uuid.to_string();
-    match updated_session.session_type {
-        SessionType::Ssh => {
-            if let Some(ref proxy) = state.ssh_proxy {
-                let _ = proxy.close_session(&session_uuid_str);
-                proxy.unsubscribe_session(&session_uuid_str).await;
-            }
-        }
-        SessionType::Rdp => {
-            if let Some(ref proxy) = state.rdp_proxy {
-                let _ = proxy.close_session(&session_uuid_str);
-                proxy.unsubscribe_session(&session_uuid_str).await;
-            }
-        }
-        // IACS tunnels live in two flavours:
-        // - PRODUCTION (proxy-iacs spawned by the supervisor):
-        //   `state.proxy_iacs.terminate_tunnel(...)` dispatches an
-        //   `IacsTunnelTerminate` IPC; proxy-iacs drains the relay,
-        //   closes the SSH login, and emits `IacsTunnelClosed` which
-        //   the IPC pump (`ipc::proxy_iacs::handle_message`)
-        //   already persists as `status = 'terminated'` and pushes
-        //   to the active-list WS subscribers.
-        // - LEGACY (in-process russh server, used by tests and
-        //   pre-supervisor dev mode): the in-memory registry is the
-        //   only handle on the live tunnel; closing it drains the
-        //   relay tasks within milliseconds.
-        // We always try the IPC path first when wired so the
-        // supervised topology stays canonical; the legacy registry
-        // remains as a no-op fall-through for dev / test fixtures.
-        SessionType::IacsTunnel => {
-            let mut handled_via_ipc = false;
-            if let Some(ref proxy) = state.proxy_iacs {
-                match proxy.terminate_tunnel(&session_uuid_str, "user_terminated") {
-                    Ok(()) => {
-                        tracing::info!(
-                            session_uuid = %session_uuid_str,
-                            "iacs_tunnel: terminate IPC dispatched to proxy-iacs"
-                        );
-                        handled_via_ipc = true;
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            session_uuid = %session_uuid_str,
-                            error = %e,
-                            "iacs_tunnel: terminate IPC dispatch failed; \
-                             falling back to in-process registry"
-                        );
-                    }
-                }
-            }
-            if !handled_via_ipc
-                && let Some(handle) = state.iacs_tunnel_registry.close_and_remove(&session_uuid)
-            {
-                tracing::info!(
-                    session_uuid = %session_uuid_str,
-                    ews_uuid = %handle.ews_uuid,
-                    "iacs_tunnel: tunnel closed via legacy in-process registry"
-                );
-            }
-            // Per-session WS hint so the status page flips its pill
-            // without waiting for the IPC round-trip / IacsTunnelClosed.
-            let channel =
-                crate::services::broadcast::WsChannel::SessionLive(session_uuid_str.clone());
-            let payload = serde_json::json!({
-                "type": "tunnel_closed",
-                "reason": "user_terminated",
-            });
-            let channel_name = channel.as_str();
-            let _ = state
-                .broadcast
-                .send_raw(&channel_name, payload.to_string())
-                .await;
-        }
-    }
-
     // Push real-time updates to /sessions and /sessions/active page subscribers
-    crate::tasks::dashboard::push_session_list_update(
-        &state.broadcast,
-        &state.db_pool,
-        state.config.industrial.enabled,
-    )
-    .await;
-    crate::tasks::dashboard::push_active_sessions_update(
-        &state.broadcast,
-        &state.db_pool,
-        state.config.industrial.enabled,
-    )
-    .await;
+    crate::services::session_termination::broadcast_session_list_updates(&state).await;
 
     if htmx {
         // Return an updated HTML fragment for the session row
@@ -584,57 +460,55 @@ mod tests {
         Box::leak(body[..fn_end].to_string().into_boxed_str())
     }
 
+    /// The handler must route through the shared terminate core (the
+    /// four side-effects live there; see
+    /// `services/session_termination.rs`), not re-implement it inline.
     #[test]
-    fn test_terminate_session_calls_close_session() {
+    fn test_terminate_session_routes_through_shared_core() {
         let body = terminate_session_body();
         assert!(
-            body.contains("close_session"),
-            "terminate_session must call close_session to send IPC close to the proxy"
+            body.contains("session_termination::terminate_live_session"),
+            "terminate_session must delegate to services::session_termination"
         );
     }
 
     #[test]
-    fn test_terminate_session_calls_unsubscribe() {
+    fn test_terminate_session_broadcasts_list_updates() {
         let body = terminate_session_body();
         assert!(
-            body.contains("unsubscribe_session"),
-            "terminate_session must call unsubscribe_session to drop the data channel sender"
+            body.contains("session_termination::broadcast_session_list_updates"),
+            "terminate_session must push real-time /sessions + /sessions/active updates"
         );
     }
 
+    const TERMINATION_SERVICE: &str = include_str!("../../services/session_termination.rs");
+
+    /// The shared core must keep the proxy force-close side-effects the
+    /// handler carried before the extraction.
     #[test]
-    fn test_terminate_session_handles_ssh() {
-        let body = terminate_session_body();
-        assert!(
-            body.contains("SessionType::Ssh") || body.contains("ssh_proxy"),
-            "terminate_session must handle SSH sessions"
-        );
+    fn test_termination_service_closes_and_unsubscribes_proxies() {
+        for needle in [
+            "close_session",
+            "unsubscribe_session",
+            "SessionType::Ssh",
+            "SessionType::Rdp",
+            "SessionType::IacsTunnel",
+        ] {
+            assert!(
+                TERMINATION_SERVICE.contains(needle),
+                "session_termination service must contain `{needle}`"
+            );
+        }
     }
 
+    /// The shared broadcast helper must keep both page refresh pushes.
     #[test]
-    fn test_terminate_session_handles_rdp() {
-        let body = terminate_session_body();
-        assert!(
-            body.contains("SessionType::Rdp") || body.contains("rdp_proxy"),
-            "terminate_session must handle RDP sessions"
-        );
-    }
-
-    #[test]
-    fn test_terminate_session_pushes_session_list_update() {
-        let body = terminate_session_body();
-        assert!(
-            body.contains("push_session_list_update"),
-            "terminate_session must push real-time update to /sessions page subscribers"
-        );
-    }
-
-    #[test]
-    fn test_terminate_session_pushes_active_sessions_update() {
-        let body = terminate_session_body();
-        assert!(
-            body.contains("push_active_sessions_update"),
-            "terminate_session must push real-time update to /sessions/active page subscribers"
-        );
+    fn test_termination_service_pushes_both_list_updates() {
+        for needle in ["push_session_list_update", "push_active_sessions_update"] {
+            assert!(
+                TERMINATION_SERVICE.contains(needle),
+                "broadcast_session_list_updates must call `{needle}`"
+            );
+        }
     }
 }

@@ -2702,7 +2702,7 @@ pub async fn admin_user_sessions(
 /// disables API keys, force-logs out all browser sessions via WebSocket,
 /// and broadcasts updates to session pages.
 pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
-    use crate::models::session::{ProxySession, SessionType};
+    use crate::models::session::ProxySession;
 
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
@@ -2721,86 +2721,38 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
     )
     .await;
 
-    // 2. Terminate all active proxy sessions (SSH/RDP)
+    // 2. Terminate all live proxy sessions (SSH/RDP/IACS) via the
+    //    shared terminate core (same seam as the API terminate endpoint
+    //    and the JIT grant revocation cascade): DB update + recording
+    //    fields, hydration enqueue and proxy-side force-close --
+    //    including the IACS terminate IPC that this sweep previously
+    //    lacked.
     let active_sessions: Vec<ProxySession> = proxy_sessions::table
         .filter(proxy_sessions::user_id.eq(user_id))
-        .filter(
-            proxy_sessions::status
-                .eq("connecting")
-                .or(proxy_sessions::status.eq("active")),
-        )
+        .filter(proxy_sessions::status.eq_any([
+            "connecting",
+            "active",
+            "waiting_client",
+            "tunnel_active",
+        ]))
         .load(&mut conn)
         .await
         .unwrap_or_default();
 
-    let now = chrono::Utc::now();
     for session in &active_sessions {
-        let session_uuid_str = session.uuid.to_string();
-
-        // Check if recording is enabled for this session type
-        let is_recording = match session.session_type {
-            SessionType::Ssh => state.config.recording.ssh_recording_enabled(),
-            SessionType::Rdp => state.config.recording.rdp_recording_enabled(),
-            SessionType::IacsTunnel => state.config.recording.iacs_recording_enabled(),
-        };
-
-        // Set recording_path + is_recorded in the same UPDATE that sets "terminated",
-        // because the WebSocket cleanup handler filters on status IN ('active','connecting')
-        // and would skip sessions already marked "terminated".
-        if is_recording {
-            let path_anchor = session.connected_at.unwrap_or(now);
-            let recording_path = crate::services::recording_hydrator::recording_dir_for_session(
-                &state.config.recording.storage_path,
-                &session_uuid_str,
-                path_anchor,
-            );
-            let _ = diesel::update(proxy_sessions::table.filter(proxy_sessions::id.eq(session.id)))
-                .set((
-                    proxy_sessions::status.eq("terminated"),
-                    proxy_sessions::disconnected_at.eq(now),
-                    proxy_sessions::is_recorded.eq(true),
-                    proxy_sessions::recording_path.eq(&recording_path),
-                ))
-                .execute(&mut conn)
-                .await;
-        } else {
-            let _ = diesel::update(proxy_sessions::table.filter(proxy_sessions::id.eq(session.id)))
-                .set((
-                    proxy_sessions::status.eq("terminated"),
-                    proxy_sessions::disconnected_at.eq(now),
-                ))
-                .execute(&mut conn)
-                .await;
-        }
-
-        // PRIMARY hydration path (issue #29 v1.4): schedule the
-        // integrity bundle population for this session. Idempotent +
-        // no-op for non-recorded rows.
-        std::mem::drop(crate::services::recording_hydrator::enqueue_hydration(
+        if let Err(e) = crate::services::session_termination::terminate_live_session(
             state,
-            session.id,
-            std::time::Duration::from_secs(state.config.recording.hydration_enqueue_delay_secs),
-        ));
-
-        match session.session_type {
-            SessionType::Ssh => {
-                if let Some(ref proxy) = state.ssh_proxy {
-                    let _ = proxy.close_session(&session_uuid_str);
-                    proxy.unsubscribe_session(&session_uuid_str).await;
-                }
-            }
-            SessionType::Rdp => {
-                if let Some(ref proxy) = state.rdp_proxy {
-                    let _ = proxy.close_session(&session_uuid_str);
-                    proxy.unsubscribe_session(&session_uuid_str).await;
-                }
-            }
-            // IACS tunnels are closed via the in-process registry once
-            // L3 lands (`services::iacs_tunnel::Registry::close`). The
-            // L1 stub just relies on the status update above; the
-            // watchdog (L4) and the running tunnel task will then
-            // observe the row transition.
-            SessionType::IacsTunnel => {}
+            session,
+            "account_deactivated",
+        )
+        .await
+        {
+            tracing::warn!(
+                session_uuid = %session.uuid,
+                user_id = user_id,
+                error = %e,
+                "deactivate_user: failed to terminate live proxy session"
+            );
         }
     }
 
@@ -2814,20 +2766,9 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
     .execute(&mut conn)
     .await;
 
-    // 4. Broadcast session updates
+    // 4. Broadcast session updates (once for the whole batch)
     if !active_sessions.is_empty() {
-        crate::tasks::dashboard::push_session_list_update(
-            &state.broadcast,
-            &state.db_pool,
-            state.config.industrial.enabled,
-        )
-        .await;
-        crate::tasks::dashboard::push_active_sessions_update(
-            &state.broadcast,
-            &state.db_pool,
-            state.config.industrial.enabled,
-        )
-        .await;
+        crate::services::session_termination::broadcast_session_list_updates(state).await;
     }
     broadcast_sessions_update(state, user_uuid, user_id).await;
     broadcast_admin_sessions_update(state).await;

@@ -1716,6 +1716,14 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             post(handlers::web::reject_access_request),
         )
         .route(
+            "/sessions/approvals/{uuid}/revoke",
+            post(handlers::web::revoke_access_request),
+        )
+        .route(
+            "/sessions/approvals/{uuid}/duration",
+            post(handlers::web::update_access_duration),
+        )
+        .route(
             "/sessions/request",
             post(handlers::web::submit_access_request),
         )

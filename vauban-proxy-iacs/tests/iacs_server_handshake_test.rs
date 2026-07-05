@@ -179,7 +179,7 @@ fn make_pending(
         user_uuid: Uuid::new_v4(),
         asset_uuid: Uuid::new_v4(),
         ews_uuid: Uuid::new_v4(),
-        ews_pubkey_fp: fingerprint_sha256_hex(&key.public_key()).expect("fingerprint"),
+        ews_pubkey_fp: fingerprint_sha256_hex(key.public_key()).expect("fingerprint"),
         asset_host: target.ip().to_string(),
         asset_port: target.port(),
         industrial_protocol: "tcp".to_string(),

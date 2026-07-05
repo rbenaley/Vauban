@@ -30,6 +30,7 @@ impl MyRequestItem {
             "pending" => "Pending",
             "approved" => "Approved",
             "rejected" => "Rejected",
+            "revoked" => "Revoked",
             "expired" => "Expired",
             "consumed" | "active" => "Connected",
             "disconnected" => "Completed",
@@ -90,6 +91,11 @@ mod tests {
     }
 
     #[test]
+    fn test_status_class_revoked() {
+        assert!(make_item("revoked", None).status_class().contains("red"));
+    }
+
+    #[test]
     fn test_status_class_expired() {
         assert!(make_item("expired", None).status_class().contains("gray"));
     }
@@ -142,6 +148,18 @@ mod tests {
     #[test]
     fn test_status_label_rejected() {
         assert_eq!(make_item("rejected", None).status_label(), "Rejected");
+    }
+
+    #[test]
+    fn test_status_label_revoked() {
+        assert_eq!(make_item("revoked", None).status_label(), "Revoked");
+    }
+
+    #[test]
+    fn test_is_approved_false_for_revoked_hides_connect_button() {
+        // The Connect button in my_requests.html gates on
+        // `is_approved()`; a revoked grant must never render it.
+        assert!(!make_item("revoked", None).is_approved());
     }
 
     #[test]
@@ -307,10 +325,15 @@ mod tests {
             "should have ws-connect"
         );
         assert!(html.contains("jit-notification"), "should have OOB target");
-        assert!(
-            html.contains("request_approved"),
-            "should filter on request_approved"
-        );
+        for event in [
+            "request_approved",
+            "request_rejected",
+            "request_expired",
+            "request_revoked",
+            "request_duration_updated",
+        ] {
+            assert!(html.contains(event), "should filter on {event}");
+        }
     }
 
     #[test]
@@ -321,6 +344,7 @@ mod tests {
             ("pending", "Pending"),
             ("approved", "Approved"),
             ("rejected", "Rejected"),
+            ("revoked", "Revoked"),
             ("expired", "Expired"),
             ("consumed", "Connected"),
             ("active", "Connected"),

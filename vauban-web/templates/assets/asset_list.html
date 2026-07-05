@@ -421,7 +421,7 @@
     <!-- WS auto-refresh: reload asset list on approval state changes -->
     <div id="asset-ws-trigger" class="hidden"
          hx-get="/assets?page={% if let Some(pg) = pagination.as_ref() %}{{ pg.current_page }}{% else %}1{% endif %}{% if search.is_some() %}&search={{ search.as_ref().unwrap() }}{% endif %}{% if type_filter.is_some() %}&type={{ type_filter.as_ref().unwrap() }}{% endif %}{% if status_filter.is_some() %}&status={{ status_filter.as_ref().unwrap() }}{% endif %}"
-         hx-trigger="htmx:wsAfterMessage[detail.message&&(detail.message.indexOf('request_approved')>-1||detail.message.indexOf('request_rejected')>-1||detail.message.indexOf('request_expired')>-1)] from:body throttle:500ms"
+         hx-trigger="htmx:wsAfterMessage[detail.message&&(detail.message.indexOf('request_approved')>-1||detail.message.indexOf('request_rejected')>-1||detail.message.indexOf('request_expired')>-1||detail.message.indexOf('request_revoked')>-1||detail.message.indexOf('request_duration_updated')>-1)] from:body throttle:500ms"
          hx-select="#asset-list-container"
          hx-target="#asset-list-container"
          hx-swap="outerHTML">

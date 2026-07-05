@@ -356,6 +356,14 @@ pub struct IpcPage<T> {
 pub enum ApprovalDecisionKind {
     Approve,
     Reject,
+    /// Revoke an APPROVED grant (terminal): blocks new sessions
+    /// instantly and lets the web layer cascade-terminate live ones.
+    Revoke,
+    /// Recompute an APPROVED grant's window: `expires_at =
+    /// approved_at + duration`, in either direction (extend or
+    /// shorten). Live sessions are clamped by the web layer, never
+    /// extended.
+    UpdateDuration,
 }
 
 impl ApprovalDecisionKind {
@@ -365,6 +373,8 @@ impl ApprovalDecisionKind {
         match self {
             Self::Approve => "approve",
             Self::Reject => "reject",
+            Self::Revoke => "revoke",
+            Self::UpdateDuration => "update_duration",
         }
     }
 }
@@ -386,6 +396,10 @@ pub enum ApprovalDenyReason {
     /// The session is no longer in `status='pending'` (already
     /// approved, already rejected, expired, ...).
     SessionNotPending,
+    /// The grant is not in `status='approved'` (pending, already
+    /// revoked, expired, ...) -- returned by the post-approval verbs
+    /// (revoke / update_duration), which only operate on live grants.
+    SessionNotApproved,
     /// No `proxy_sessions` row matches the supplied UUID.
     SessionNotFound,
     /// The underlying `access_rules` row no longer requires
@@ -407,6 +421,7 @@ impl ApprovalDenyReason {
                 "You cannot decide on your own access request (separation of duties)"
             }
             Self::SessionNotPending => "This request has already been processed",
+            Self::SessionNotApproved => "This grant is not active (already revoked or expired)",
             Self::SessionNotFound => "Request not found",
             Self::RuleNoLongerRequiresApproval => {
                 "The underlying access rule no longer requires approval"
@@ -1249,11 +1264,18 @@ pub enum AuditEventType {
     // the user confirming a valid code. Appended at the end to keep existing
     // wire discriminants stable.
     MfaSecretGenerated,
+    // ---- appended for JIT grant revocation (post-approval verbs) ----
+    // An APPROVED grant was revoked by an admin (terminal state; live
+    // sessions are cascade-terminated). Appended at the end to keep
+    // existing wire discriminants stable.
+    ApprovalRevoked,
+    // An APPROVED grant's window was recomputed (extend or shorten).
+    ApprovalDurationUpdated,
 }
 
 impl AuditEventType {
     /// Number of variants. Pinned by `audit_event_type_count_is_pinned`.
-    pub const COUNT: usize = 42;
+    pub const COUNT: usize = 44;
 
     /// Every variant, for table-driven tests and drift checks.
     pub const ALL: [AuditEventType; Self::COUNT] = [
@@ -1299,6 +1321,8 @@ impl AuditEventType {
         AuditEventType::ApprovalDenied,
         AuditEventType::ApprovalCancelled,
         AuditEventType::MfaSecretGenerated,
+        AuditEventType::ApprovalRevoked,
+        AuditEventType::ApprovalDurationUpdated,
     ];
 
     /// Coarse category, for log pivoting and the drift test. EXHAUSTIVE match
@@ -1346,7 +1370,9 @@ impl AuditEventType {
             AuditEventType::ApprovalRequested
             | AuditEventType::ApprovalGranted
             | AuditEventType::ApprovalDenied
-            | AuditEventType::ApprovalCancelled => "approval",
+            | AuditEventType::ApprovalCancelled
+            | AuditEventType::ApprovalRevoked
+            | AuditEventType::ApprovalDurationUpdated => "approval",
             AuditEventType::AccessDenied => "denied",
         }
     }
@@ -2749,7 +2775,7 @@ mod tests {
         // and ALL together when appending a variant (never reorder existing
         // ones -- bincode encodes the index).
         assert_eq!(AuditEventType::ALL.len(), AuditEventType::COUNT);
-        assert_eq!(AuditEventType::COUNT, 42);
+        assert_eq!(AuditEventType::COUNT, 44);
     }
 
     #[test]

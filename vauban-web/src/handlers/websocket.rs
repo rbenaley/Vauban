@@ -354,6 +354,15 @@ const REVALIDATE_INTERVAL_SECS: u64 = 30;
 /// NOT redirect to login.
 const WS_CLOSE_AUTH_EXPIRED: u16 = 4401;
 
+/// Application-private WebSocket close code (RFC 6455 range 4000-4999)
+/// signalling that the PROXY session is no longer live in the database
+/// (JIT grant revoked -> cascade terminated, admin terminate racing the
+/// socket, or `expires_at` horizon reached). The browser shows an
+/// "access revoked" message and navigates back to /assets -- it must
+/// NOT redirect to /login (the login session is still valid). Distinct
+/// from 4401 (auth expired) and 1000 (clean end).
+const WS_CLOSE_ACCESS_REVOKED: u16 = 4403;
+
 /// Dashboard WebSocket handler (supervisor / Global view).
 ///
 /// Establishes a WebSocket connection for the supervisor-facing
@@ -2004,9 +2013,13 @@ async fn handle_terminal_socket(
                 }
             }
 
-            // Periodically re-validate the login session. If it expired
-            // (idle timeout / max-duration / reaped), tear the socket down
-            // and tell the browser to bounce to /login (close code 4401).
+            // Periodically re-validate BOTH liveness invariants:
+            //   1. the login session (idle timeout / max-duration /
+            //      reaped) -> close 4401, browser bounces to /login;
+            //   2. the proxy session row (JIT grant revoked -> cascade
+            //      terminated, admin terminate race, expires_at horizon
+            //      reached) -> close 4403, browser shows "access
+            //      revoked" and does NOT redirect to /login.
             _ = reval_interval.tick() => {
                 if !crate::services::session_activity::is_login_session_live(&state, auth_session.0).await {
                     if let Err(e) = proxy_client.close_session(&session_id) {
@@ -2020,6 +2033,19 @@ async fn handle_terminal_socket(
                         },
                     ))).await;
                     close_cause = "auth_expired";
+                    should_close = true;
+                } else if !crate::services::session_activity::is_proxy_session_live(&state, &session_id).await {
+                    if let Err(e) = proxy_client.close_session(&session_id) {
+                        warn!(channel = %channel_label, session_id = %session_id,
+                              error = %e, "Failed to close SSH session after access revocation");
+                    }
+                    let _ = sender.send(Message::Close(Some(
+                        axum::extract::ws::CloseFrame {
+                            code: WS_CLOSE_ACCESS_REVOKED,
+                            reason: "access-revoked".into(),
+                        },
+                    ))).await;
+                    close_cause = "access_revoked";
                     should_close = true;
                 }
             }
@@ -2450,9 +2476,13 @@ async fn handle_rdp_socket(
                 }
             }
 
-            // Periodically re-validate the login session. If it expired
-            // (idle timeout / max-duration / reaped), tear the socket down
-            // and tell the browser to bounce to /login (close code 4401).
+            // Periodically re-validate BOTH liveness invariants:
+            //   1. the login session (idle timeout / max-duration /
+            //      reaped) -> close 4401, browser bounces to /login;
+            //   2. the proxy session row (JIT grant revoked -> cascade
+            //      terminated, admin terminate race, expires_at horizon
+            //      reached) -> close 4403, browser shows "access
+            //      revoked" and does NOT redirect to /login.
             _ = reval_interval.tick() => {
                 if !crate::services::session_activity::is_login_session_live(&state, auth_session.0).await {
                     let pc = proxy_client.clone();
@@ -2470,6 +2500,23 @@ async fn handle_rdp_socket(
                         },
                     ))).await;
                     close_cause = "auth_expired";
+                    should_close = true;
+                } else if !crate::services::session_activity::is_proxy_session_live(&state, &session_id).await {
+                    let pc = proxy_client.clone();
+                    let sid = session_id.clone();
+                    if let Err(e) = tokio::task::spawn_blocking(move || {
+                        pc.close_session(&sid)
+                    }).await.unwrap_or_else(|e| Err(crate::error::AppError::Ipc(e.to_string()))) {
+                        warn!(channel = %channel_label, session_id = %session_id,
+                              error = %e, "Failed to close RDP session after access revocation");
+                    }
+                    let _ = sender.send(Message::Close(Some(
+                        axum::extract::ws::CloseFrame {
+                            code: WS_CLOSE_ACCESS_REVOKED,
+                            reason: "access-revoked".into(),
+                        },
+                    ))).await;
+                    close_cause = "access_revoked";
                     should_close = true;
                 }
             }

@@ -298,6 +298,8 @@ diesel::table! {
         ews_uuid -> Nullable<Uuid>,
         #[max_length = 255]
         tunnel_target_addr -> Nullable<Varchar>,
+        revoked_by_id -> Nullable<Int4>,
+        revoked_at -> Nullable<Timestamptz>,
     }
 }
 

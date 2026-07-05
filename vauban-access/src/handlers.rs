@@ -2480,6 +2480,24 @@ struct PendingSessionSnapshot {
     session_type: String,
     rule_requires_approval: bool,
     current_max_session_duration: Option<i32>,
+    /// Set for APPROVED grants (post-approval verbs recompute
+    /// `expires_at` from it); `None` while the request is pending.
+    approved_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Which `proxy_sessions.status` a decision verb operates on, and the
+/// structured deny reason surfaced when the row is not in that state.
+/// Approve/reject act on `pending` requests; revoke/update_duration act
+/// on `approved` grants.
+fn expected_status_for(decision: ApprovalDecisionKind) -> (&'static str, ApprovalDenyReason) {
+    match decision {
+        ApprovalDecisionKind::Approve | ApprovalDecisionKind::Reject => {
+            ("pending", ApprovalDenyReason::SessionNotPending)
+        }
+        ApprovalDecisionKind::Revoke | ApprovalDecisionKind::UpdateDuration => {
+            ("approved", ApprovalDenyReason::SessionNotApproved)
+        }
+    }
 }
 
 /// Read-only pre-flight: would the actor be allowed to approve/reject
@@ -2528,7 +2546,14 @@ pub async fn handle_check_approval_eligibility(
         }
     };
 
-    match load_pending_session_snapshot(conn, session_uuid).await {
+    match load_decision_snapshot(
+        conn,
+        session_uuid,
+        "pending",
+        ApprovalDenyReason::SessionNotPending,
+    )
+    .await
+    {
         Ok(snap) => {
             if let Some(reason) = evaluate_eligibility(&snap, actor_id) {
                 AccessResponse::ApprovalEligibility {
@@ -2595,6 +2620,13 @@ async fn handle_record_approval_decision<'a>(
 
     let decision = input.decision;
     let duration_override = input.duration_override_seconds;
+
+    // update_duration without a duration is a caller bug (the web form
+    // marks it required); fail-closed before touching the DB.
+    if decision == ApprovalDecisionKind::UpdateDuration && duration_override.is_none() {
+        return AccessResponse::Error("update_duration requires duration_override_seconds".into());
+    }
+
     let decision_reason = input.decision_reason.clone();
     let decision_ip_str = input.decision_ip.clone();
     let decision_user_agent = input.decision_user_agent.clone();
@@ -2617,12 +2649,17 @@ async fn handle_record_approval_decision<'a>(
                 // (we use READ COMMITTED), but the row-level UPDATE later
                 // takes a row-lock that prevents two concurrent admins
                 // from both winning the race -- the loser sees `updated
-                // == 0` and we fail-closed it as SessionNotPending.
-                let snap = load_pending_session_snapshot(conn, session_uuid)
-                    .await
-                    .map_err(ApprovalTxnError::Eligibility)?;
+                // == 0` and we fail-closed it with the state-mismatch
+                // reason of the verb (SessionNotPending for
+                // approve/reject, SessionNotApproved for the
+                // post-approval verbs).
+                let (expected_status, wrong_state_reason) = expected_status_for(decision);
+                let snap =
+                    load_decision_snapshot(conn, session_uuid, expected_status, wrong_state_reason)
+                        .await
+                        .map_err(ApprovalTxnError::Eligibility)?;
 
-                if let Some(reason) = evaluate_eligibility(&snap, actor_id) {
+                if let Some(reason) = evaluate_decision_eligibility(decision, &snap, actor_id) {
                     return Err(ApprovalTxnError::Eligibility(reason));
                 }
 
@@ -2690,17 +2727,66 @@ async fn handle_record_approval_decision<'a>(
                     .execute(conn)
                     .await
                     .map_err(|e| ApprovalTxnError::Db(e.to_string()))?,
+                    // Terminal state for an APPROVED grant: blocks NEW
+                    // sessions instantly (every connect lookup filters on
+                    // status = 'approved'); the web layer cascades the
+                    // termination of live sessions and the WS
+                    // revalidation probe backstops it. `expires_at` is
+                    // deliberately left untouched so the audit trail
+                    // keeps the originally granted window.
+                    ApprovalDecisionKind::Revoke => diesel::update(
+                        proxy_sessions::table
+                            .filter(proxy_sessions::uuid.eq(session_uuid))
+                            .filter(proxy_sessions::status.eq("approved")),
+                    )
+                    .set((
+                        proxy_sessions::status.eq("revoked"),
+                        proxy_sessions::revoked_by_id.eq(Some(actor_id)),
+                        proxy_sessions::revoked_at.eq(Some(now)),
+                        proxy_sessions::decision_reason.eq(decision_reason.clone()),
+                        proxy_sessions::updated_at.eq(now),
+                    ))
+                    .execute(conn)
+                    .await
+                    .map_err(|e| ApprovalTxnError::Db(e.to_string()))?,
+                    // Recompute the grant window from `approved_at`
+                    // (same semantics as the original approval: "the
+                    // access lasts D from the approval"), in either
+                    // direction. A window shortened below the elapsed
+                    // time lands `expires_at` in the past: the grant is
+                    // instantly inert for connects (`expires_at > now`
+                    // filter) and the cleanup task expires it.
+                    ApprovalDecisionKind::UpdateDuration => {
+                        // Presence enforced before the transaction.
+                        let secs = duration_override.unwrap_or_default();
+                        let base = snap.approved_at.unwrap_or(now);
+                        let new_expires_at = base + chrono::Duration::seconds(secs as i64);
+                        diesel::update(
+                            proxy_sessions::table
+                                .filter(proxy_sessions::uuid.eq(session_uuid))
+                                .filter(proxy_sessions::status.eq("approved")),
+                        )
+                        .set((
+                            proxy_sessions::max_session_duration.eq(Some(secs)),
+                            proxy_sessions::expires_at.eq(Some(new_expires_at)),
+                            proxy_sessions::decision_reason.eq(decision_reason.clone()),
+                            proxy_sessions::updated_at.eq(now),
+                        ))
+                        .execute(conn)
+                        .await
+                        .map_err(|e| ApprovalTxnError::Db(e.to_string()))?
+                    }
                 };
 
                 if updated == 0 {
                     // Either someone else won the race (status moved off
-                    // 'pending'), or one of the SoD CHECK constraints
-                    // fired before the row matched. Either way we treat
-                    // it as "no longer pending" -- the in-snapshot
-                    // checks already ruled out the legitimate causes.
-                    return Err(ApprovalTxnError::Eligibility(
-                        ApprovalDenyReason::SessionNotPending,
-                    ));
+                    // the expected state), or one of the SoD CHECK
+                    // constraints fired before the row matched. Either
+                    // way we fail-closed with the verb's state-mismatch
+                    // reason -- the in-snapshot checks already ruled out
+                    // the legitimate causes.
+                    let (_, wrong_state_reason) = expected_status_for(decision);
+                    return Err(ApprovalTxnError::Eligibility(wrong_state_reason));
                 }
 
                 // INSERT the audit row. Snapshot usernames so the trail
@@ -2829,19 +2915,36 @@ impl From<diesel::result::Error> for ApprovalTxnError {
     }
 }
 
-/// Single source of truth for "is this session approvable AT ALL". Used
+/// Single source of truth for "is this session decidable AT ALL". Used
 /// both by the read-only eligibility endpoint and by the in-transaction
 /// re-check inside `handle_record_approval_decision`. Returning an
 /// `ApprovalDenyReason` here MUST stay in sync with the structured
 /// variants surfaced over IPC.
-async fn load_pending_session_snapshot(
+///
+/// `expected_status` / `wrong_state_reason` parameterize the lifecycle
+/// gate: approve/reject load `pending` requests, revoke/update_duration
+/// load `approved` grants. Requester-liveness is NOT enforced here (it
+/// is a per-decision policy, checked by
+/// [`evaluate_decision_eligibility`]): revoking the grant of an
+/// already-disabled requester must remain possible.
+async fn load_decision_snapshot(
     conn: &mut DbConnection,
     session_uuid: Uuid,
+    expected_status: &'static str,
+    wrong_state_reason: ApprovalDenyReason,
 ) -> Result<PendingSessionSnapshot, ApprovalDenyReason> {
     // We deliberately query without a JOIN to keep the policy clear:
     // first the session, then the user, then the asset, then the rule.
     // Each missing piece maps to a structured deny reason.
-    type SessionRow = (i32, i32, i32, String, String, Option<i32>);
+    type SessionRow = (
+        i32,
+        i32,
+        i32,
+        String,
+        String,
+        Option<i32>,
+        Option<chrono::DateTime<chrono::Utc>>,
+    );
     let session: SessionRow = match proxy_sessions::table
         .filter(proxy_sessions::uuid.eq(session_uuid))
         .select((
@@ -2851,6 +2954,7 @@ async fn load_pending_session_snapshot(
             proxy_sessions::status,
             proxy_sessions::session_type,
             proxy_sessions::max_session_duration,
+            proxy_sessions::approved_at,
         ))
         .first(conn)
         .await
@@ -2859,10 +2963,11 @@ async fn load_pending_session_snapshot(
         Err(_) => return Err(ApprovalDenyReason::SessionNotFound),
     };
 
-    let (session_pk, requester_id, asset_pk, status, session_type, current_max) = session;
+    let (session_pk, requester_id, asset_pk, status, session_type, current_max, approved_at) =
+        session;
 
-    if status != "pending" {
-        return Err(ApprovalDenyReason::SessionNotPending);
+    if status != expected_status {
+        return Err(wrong_state_reason);
     }
 
     let (requester_username, requester_is_active, requester_is_deleted): (String, bool, bool) =
@@ -2875,10 +2980,6 @@ async fn load_pending_session_snapshot(
             Ok(r) => r,
             Err(_) => return Err(ApprovalDenyReason::SessionNotFound),
         };
-
-    if !requester_is_active || requester_is_deleted {
-        return Err(ApprovalDenyReason::RequesterDisabled);
-    }
 
     let (asset_uuid, asset_name): (Uuid, String) = match assets::table
         .filter(assets::id.eq(asset_pk))
@@ -2953,6 +3054,7 @@ async fn load_pending_session_snapshot(
         session_type,
         rule_requires_approval: still_requires_approval,
         current_max_session_duration: current_max,
+        approved_at,
     })
 }
 
@@ -2980,6 +3082,29 @@ fn evaluate_eligibility(
         return Some(ApprovalDenyReason::RuleNoLongerRequiresApproval);
     }
     None
+}
+
+/// Per-decision policy on top of the shared predicate.
+///
+/// * Approve / Reject / UpdateDuration: full [`evaluate_eligibility`]
+///   (SoD, requester liveness, rule still requires approval) --
+///   granting or re-widening access must stay fully fenced.
+/// * Revoke: NO checks. Reducing access is always legitimate: an admin
+///   may revoke a grant they approved themselves, revoke the grant of
+///   an already-disabled requester, or revoke a grant whose rule no
+///   longer requires approval. Fail-open here is the SAFE direction
+///   (the operation can only remove access, never add it).
+fn evaluate_decision_eligibility(
+    decision: ApprovalDecisionKind,
+    snap: &PendingSessionSnapshot,
+    actor_id: i32,
+) -> Option<ApprovalDenyReason> {
+    match decision {
+        ApprovalDecisionKind::Approve
+        | ApprovalDecisionKind::Reject
+        | ApprovalDecisionKind::UpdateDuration => evaluate_eligibility(snap, actor_id),
+        ApprovalDecisionKind::Revoke => None,
+    }
 }
 
 #[cfg(test)]

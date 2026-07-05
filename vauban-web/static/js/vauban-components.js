@@ -318,6 +318,16 @@ document.addEventListener('alpine:init', function () {
                         return;
                     }
 
+                    // 4403 = access revoked by an administrator (JIT grant
+                    // revoked / session cut server-side). The login session
+                    // is still valid: show the reason and go back to the
+                    // asset list -- never to /login, never reconnect.
+                    if (event.code === 4403) {
+                        self.term.write('\r\n\x1b[31mAccess revoked by an administrator.\x1b[0m\r\n');
+                        window.location.href = '/assets?reason=access_revoked';
+                        return;
+                    }
+
                     if (self.reconnectAttempts < self.maxReconnectAttempts && event.code !== 1000) {
                         self.reconnectAttempts++;
                         var delay = Math.min(1000 * Math.pow(2, self.reconnectAttempts), 30000);
@@ -509,6 +519,15 @@ document.addEventListener('alpine:init', function () {
                     // and must NOT redirect.
                     if (event && event.code === 4401) {
                         window.location.href = '/login?reason=session_expired';
+                        return;
+                    }
+                    // 4403 = access revoked by an administrator (JIT grant
+                    // revoked / session cut server-side). The login session
+                    // is still valid: surface the reason and go back to the
+                    // asset list -- never to /login, never reconnect.
+                    if (event && event.code === 4403) {
+                        self.error = 'Access revoked by an administrator';
+                        window.location.href = '/assets?reason=access_revoked';
                     }
                 };
 

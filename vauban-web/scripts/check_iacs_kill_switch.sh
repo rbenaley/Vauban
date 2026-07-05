@@ -65,6 +65,11 @@ ALLOWED=(
     "src/handlers/websocket.rs"
     "src/handlers/api/sessions.rs"
     "src/handlers/web/users.rs"
+    # Shared terminate core: `broadcast_session_list_updates` forwards
+    # the flag to `tasks::dashboard::push_*_update` (the same layer-2
+    # list-visibility filter its callers -- api/sessions.rs and
+    # web/users.rs above -- performed inline before the extraction).
+    "src/services/session_termination.rs"
 )
 
 errors=0

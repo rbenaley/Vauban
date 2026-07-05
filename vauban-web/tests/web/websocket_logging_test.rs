@@ -183,6 +183,11 @@ fn close_cause_values_belong_to_the_canonical_set() {
         // SSH/RDP login-session re-validation closed the socket because
         // the auth token expired / was idle-reaped (close code 4401).
         r#"close_cause = "auth_expired""#,
+        // SSH/RDP proxy-session re-validation closed the socket because
+        // the underlying proxy_sessions row left the live set (JIT
+        // grant revoked, admin terminate race, expires_at horizon
+        // reached) -- close code 4403.
+        r#"close_cause = "access_revoked""#,
         // initial value -- never a "real" cause but acceptable on the
         // `let mut close_cause: &'static str = "unknown";` declaration.
         r#"close_cause: &'static str = "unknown""#,
@@ -198,7 +203,8 @@ fn close_cause_values_belong_to_the_canonical_set() {
             ALLOWED.iter().any(|a| line.contains(a)),
             "Forbidden close_cause assignment: `{}`. Allowed values: \
              close, stream_end, error, ping_fail, send_fail, \
-             server_close, auth_expired. See `.cursor/rules/websocket-logging.mdc`.",
+             server_close, auth_expired, access_revoked. \
+             See `.cursor/rules/websocket-logging.mdc`.",
             line
         );
         cursor = abs + 1;

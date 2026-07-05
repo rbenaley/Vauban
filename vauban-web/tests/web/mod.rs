@@ -63,6 +63,8 @@ pub mod inspect_capture_pipeline_e2e_test;
 pub mod inspect_capture_template_test;
 pub mod inspect_capture_test;
 pub mod jit_access_test;
+pub mod jit_grant_revocation_e2e_test;
+pub mod jit_revocation_pins_test;
 pub mod jwt_cookie_renewal_test;
 pub mod login_post_expiry_test;
 pub mod manage_assets_anti_enumeration_test;

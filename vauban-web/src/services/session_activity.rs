@@ -112,6 +112,61 @@ pub async fn is_login_session_live(state: &AppState, session_uuid: Uuid) -> bool
     count > 0
 }
 
+/// Returns `true` while the PROXY session identified by `session_id` is
+/// still live in the database: `status` in `{connecting, active}` and
+/// `expires_at` NULL or in the future.
+///
+/// This is the WebSocket-side backstop of the JIT grant revocation
+/// (layer 3): the revoke/deactivate cascades force-close the proxy
+/// side, but a race (session row read before the cascade's UPDATE) or
+/// a dead proxy IPC could leave a zombie socket streaming data. The
+/// SSH/RDP revalidation arms poll this probe every
+/// `REVALIDATE_INTERVAL_SECS`; the invariant is therefore: NO socket
+/// survives its `proxy_sessions` row leaving the live set (terminated
+/// / revoked-cascade / expired horizon) by more than one tick. This
+/// also closes the pre-existing gap where
+/// `terminate_expired_proxy_sessions` (DB-only sweep) never actually
+/// cut the live socket.
+///
+/// Fail-open on a transient DB error, mirroring
+/// [`is_login_session_live`]: a momentary database blip must not
+/// mass-disconnect every live session. The next tick re-checks.
+pub async fn is_proxy_session_live(state: &AppState, session_id: &str) -> bool {
+    use crate::schema::proxy_sessions;
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
+    let Ok(session_uuid) = Uuid::parse_str(session_id) else {
+        // Malformed id cannot map to a live row; fail-closed (the
+        // handshake would never have accepted it anyway).
+        return false;
+    };
+
+    let Ok(mut conn) = state.db_pool.get().await else {
+        tracing::warn!(
+            session_id = %session_id,
+            "Database unavailable for WS proxy-session re-validation; keeping socket open (fail-open)"
+        );
+        return true;
+    };
+
+    let now = chrono::Utc::now();
+    let count: i64 = proxy_sessions::table
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .filter(proxy_sessions::status.eq_any(["connecting", "active"]))
+        .filter(
+            proxy_sessions::expires_at
+                .is_null()
+                .or(proxy_sessions::expires_at.gt(now)),
+        )
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap_or(0);
+
+    count > 0
+}
+
 /// Canonical force-logout out-of-band (OOB) fragment pushed over the
 /// always-present `/ws/notifications` channel.
 ///

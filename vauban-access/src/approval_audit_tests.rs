@@ -635,6 +635,500 @@ async fn ipc_record_decision_unknown_session() {
 }
 
 // =====================================================================
+// Tier 6 — JIT grant revocation & duration updates
+//
+// Battle-tests for the post-approval verbs added by the
+// 20260705000000_jit_grant_revocation migration:
+//   * revoke on an approved grant -> status=revoked + audit row
+//   * self-revoke allowed (reducing one's own access has no SoD)
+//   * revoke on pending / already-revoked -> denied SessionNotApproved
+//   * update_duration recomputes expires_at from approved_at
+//   * update_duration without a duration -> hard Error (caller bug)
+//   * update_duration on one's own grant -> denied SelfApproval
+//   * audit CHECK accepts the two new decision literals
+// =====================================================================
+
+/// Seed the full grant chain (user group + membership, asset group +
+/// membership, active access rule with `require_approval = true`) so
+/// `evaluate_eligibility` does not deny with
+/// `RuleNoLongerRequiresApproval` on the re-widening verbs.
+async fn link_grant_chain(pool: &DbPool, user_id: i32, asset_id: i32) {
+    use crate::schema::{
+        access_rules, asset_asset_groups, asset_groups, user_groups, vauban_groups,
+    };
+    let mut conn = pool.get().await.unwrap();
+    let g_name = unique("t6g");
+    let group_id: i32 = diesel::insert_into(vauban_groups::table)
+        .values((
+            vauban_groups::name.eq(&g_name),
+            vauban_groups::source.eq("local"),
+        ))
+        .returning(vauban_groups::id)
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    diesel::insert_into(user_groups::table)
+        .values((
+            user_groups::user_id.eq(user_id),
+            user_groups::group_id.eq(group_id),
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let ag_name = unique("t6ag");
+    let asset_group_id: i32 = diesel::insert_into(asset_groups::table)
+        .values((
+            asset_groups::name.eq(&ag_name),
+            asset_groups::slug.eq(&ag_name),
+            asset_groups::color.eq("#000000"),
+            asset_groups::icon.eq("server"),
+        ))
+        .returning(asset_groups::id)
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    diesel::insert_into(asset_asset_groups::table)
+        .values((
+            asset_asset_groups::asset_id.eq(asset_id),
+            asset_asset_groups::asset_group_id.eq(asset_group_id),
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    diesel::insert_into(access_rules::table)
+        .values((
+            access_rules::name.eq(unique("t6rule")),
+            access_rules::user_group_id.eq(group_id),
+            access_rules::asset_group_id.eq(asset_group_id),
+            access_rules::allowed_protocols.eq(vec![Some("ssh".to_string())]),
+            access_rules::require_mfa.eq(false),
+            access_rules::require_approval.eq(true),
+            access_rules::is_active.eq(true),
+            access_rules::priority.eq(0),
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+}
+
+type Ts = chrono::DateTime<chrono::Utc>;
+
+async fn user_uuid_of(pool: &DbPool, user_id: i32) -> Uuid {
+    users::table
+        .filter(users::id.eq(user_id))
+        .select(users::uuid)
+        .first(&mut pool.get().await.unwrap())
+        .await
+        .unwrap()
+}
+
+/// Insert an APPROVED grant: approved 10 minutes ago by `approver_id`,
+/// 1 h window (expires in 50 min).
+async fn insert_approved_session(
+    pool: &DbPool,
+    user_id: i32,
+    approver_id: i32,
+    asset_id: i32,
+) -> Uuid {
+    let session_uuid = insert_pending_session(pool, user_id, asset_id).await;
+    let mut conn = pool.get().await.unwrap();
+    let approved_at = chrono::Utc::now() - chrono::Duration::minutes(10);
+    diesel::update(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)))
+        .set((
+            proxy_sessions::status.eq("approved"),
+            proxy_sessions::approved_by_id.eq(Some(approver_id)),
+            proxy_sessions::approved_at.eq(Some(approved_at)),
+            proxy_sessions::max_session_duration.eq(Some(3600)),
+            proxy_sessions::expires_at.eq(Some(approved_at + chrono::Duration::seconds(3600))),
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    session_uuid
+}
+
+async fn record_decision(
+    pool: &DbPool,
+    actor_uuid: Uuid,
+    session_uuid: Uuid,
+    decision: ApprovalDecisionKind,
+    duration_override_seconds: Option<i32>,
+) -> AccessResponse {
+    handle_access_request(
+        pool,
+        AccessRequest::RecordApprovalDecision {
+            actor_user_uuid: actor_uuid.to_string(),
+            session_uuid: session_uuid.to_string(),
+            decision,
+            duration_override_seconds,
+            decision_reason: Some("t6".to_string()),
+            decision_ip: None,
+            decision_user_agent: None,
+            request_id: None,
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn t6_revoke_approved_grant_succeeds_and_writes_audit() {
+    let p = pool().await;
+    let requester = insert_user(&p, &unique("req_rv")).await;
+    let approver = insert_user(&p, &unique("apr_rv")).await;
+    let revoker = insert_user(&p, &unique("rvk_rv")).await;
+    let asset = insert_asset(&p, &unique("a_rv")).await;
+    let session_uuid = insert_approved_session(&p, requester, approver, asset).await;
+    let revoker_uuid = user_uuid_of(&p, revoker).await;
+
+    let resp = record_decision(
+        &p,
+        revoker_uuid,
+        session_uuid,
+        ApprovalDecisionKind::Revoke,
+        None,
+    )
+    .await;
+    match resp {
+        AccessResponse::ApprovalRecorded { audit_log_id } => assert!(audit_log_id > 0),
+        other => panic!("expected ApprovalRecorded, got {other:?}"),
+    }
+
+    let mut conn = p.get().await.unwrap();
+    let (status, revoked_by, revoked_at, expires_at): (
+        String,
+        Option<i32>,
+        Option<Ts>,
+        Option<Ts>,
+    ) = proxy_sessions::table
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .select((
+            proxy_sessions::status,
+            proxy_sessions::revoked_by_id,
+            proxy_sessions::revoked_at,
+            proxy_sessions::expires_at,
+        ))
+        .first(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(status, "revoked");
+    assert_eq!(revoked_by, Some(revoker), "revoker must be recorded");
+    assert!(revoked_at.is_some(), "revoked_at must be stamped");
+    assert!(
+        expires_at.is_some(),
+        "expires_at must be preserved for the audit trail"
+    );
+
+    let audit_count: i64 = approval_audit_log::table
+        .filter(approval_audit_log::session_uuid.eq(session_uuid))
+        .filter(approval_audit_log::decision.eq("revoke"))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(audit_count, 1, "revoke must produce exactly one audit row");
+}
+
+#[tokio::test]
+async fn t6_self_revoke_is_allowed() {
+    // No SoD on revoke: reducing one's own access is always licit.
+    let p = pool().await;
+    let requester = insert_user(&p, &unique("req_srv")).await;
+    let approver = insert_user(&p, &unique("apr_srv")).await;
+    let asset = insert_asset(&p, &unique("a_srv")).await;
+    let session_uuid = insert_approved_session(&p, requester, approver, asset).await;
+    let requester_uuid = user_uuid_of(&p, requester).await;
+
+    let resp = record_decision(
+        &p,
+        requester_uuid,
+        session_uuid,
+        ApprovalDecisionKind::Revoke,
+        None,
+    )
+    .await;
+    match resp {
+        AccessResponse::ApprovalRecorded { .. } => {}
+        other => panic!("self-revoke must be allowed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn t6_revoke_pending_denied_session_not_approved() {
+    let p = pool().await;
+    let requester = insert_user(&p, &unique("req_rp")).await;
+    let admin = insert_user(&p, &unique("adm_rp")).await;
+    let asset = insert_asset(&p, &unique("a_rp")).await;
+    let session_uuid = insert_pending_session(&p, requester, asset).await;
+    let admin_uuid = user_uuid_of(&p, admin).await;
+
+    let resp = record_decision(
+        &p,
+        admin_uuid,
+        session_uuid,
+        ApprovalDecisionKind::Revoke,
+        None,
+    )
+    .await;
+    match resp {
+        AccessResponse::ApprovalDenied {
+            reason: ApprovalDenyReason::SessionNotApproved,
+        } => {}
+        other => panic!("expected SessionNotApproved, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn t6_revoke_twice_second_loses() {
+    let p = pool().await;
+    let requester = insert_user(&p, &unique("req_r2")).await;
+    let approver = insert_user(&p, &unique("apr_r2")).await;
+    let admin = insert_user(&p, &unique("adm_r2")).await;
+    let asset = insert_asset(&p, &unique("a_r2")).await;
+    let session_uuid = insert_approved_session(&p, requester, approver, asset).await;
+    let admin_uuid = user_uuid_of(&p, admin).await;
+
+    let first = record_decision(
+        &p,
+        admin_uuid,
+        session_uuid,
+        ApprovalDecisionKind::Revoke,
+        None,
+    )
+    .await;
+    assert!(
+        matches!(first, AccessResponse::ApprovalRecorded { .. }),
+        "first revoke must win, got {first:?}"
+    );
+    let second = record_decision(
+        &p,
+        admin_uuid,
+        session_uuid,
+        ApprovalDecisionKind::Revoke,
+        None,
+    )
+    .await;
+    match second {
+        AccessResponse::ApprovalDenied {
+            reason: ApprovalDenyReason::SessionNotApproved,
+        } => {}
+        other => panic!("second revoke must be denied SessionNotApproved, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn t6_update_duration_recomputes_expires_from_approved_at() {
+    let p = pool().await;
+    let requester = insert_user(&p, &unique("req_ud")).await;
+    let approver = insert_user(&p, &unique("apr_ud")).await;
+    let admin = insert_user(&p, &unique("adm_ud")).await;
+    let asset = insert_asset(&p, &unique("a_ud")).await;
+    link_grant_chain(&p, requester, asset).await;
+    let session_uuid = insert_approved_session(&p, requester, approver, asset).await;
+    let admin_uuid = user_uuid_of(&p, admin).await;
+
+    let resp = record_decision(
+        &p,
+        admin_uuid,
+        session_uuid,
+        ApprovalDecisionKind::UpdateDuration,
+        Some(7200),
+    )
+    .await;
+    assert!(
+        matches!(resp, AccessResponse::ApprovalRecorded { .. }),
+        "update_duration must be recorded, got {resp:?}"
+    );
+
+    let mut conn = p.get().await.unwrap();
+    let (status, approved_at, expires_at, max_dur): (String, Option<Ts>, Option<Ts>, Option<i32>) =
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select((
+                proxy_sessions::status,
+                proxy_sessions::approved_at,
+                proxy_sessions::expires_at,
+                proxy_sessions::max_session_duration,
+            ))
+            .first(&mut conn)
+            .await
+            .unwrap();
+    assert_eq!(status, "approved", "grant must stay approved");
+    assert_eq!(max_dur, Some(7200));
+    let expected = approved_at.unwrap() + chrono::Duration::seconds(7200);
+    let drift = (expires_at.unwrap() - expected).num_seconds().abs();
+    assert!(
+        drift < 2,
+        "expires_at must equal approved_at + 7200s (drift {drift}s)"
+    );
+
+    let override_secs: Option<i32> = approval_audit_log::table
+        .filter(approval_audit_log::session_uuid.eq(session_uuid))
+        .filter(approval_audit_log::decision.eq("update_duration"))
+        .select(approval_audit_log::duration_override_seconds)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(
+        override_secs,
+        Some(7200),
+        "audit row must carry the new duration"
+    );
+}
+
+#[tokio::test]
+async fn t6_update_duration_reduction_below_elapsed_lands_in_the_past() {
+    // Shrinking the window below the already-elapsed time must move
+    // `expires_at` into the past (grant instantly inert for connects).
+    let p = pool().await;
+    let requester = insert_user(&p, &unique("req_sh")).await;
+    let approver = insert_user(&p, &unique("apr_sh")).await;
+    let admin = insert_user(&p, &unique("adm_sh")).await;
+    let asset = insert_asset(&p, &unique("a_sh")).await;
+    link_grant_chain(&p, requester, asset).await;
+    // approved_at is 10 minutes ago; shrink the window to 1 minute.
+    let session_uuid = insert_approved_session(&p, requester, approver, asset).await;
+    let admin_uuid = user_uuid_of(&p, admin).await;
+
+    let resp = record_decision(
+        &p,
+        admin_uuid,
+        session_uuid,
+        ApprovalDecisionKind::UpdateDuration,
+        Some(60),
+    )
+    .await;
+    assert!(matches!(resp, AccessResponse::ApprovalRecorded { .. }));
+
+    let mut conn = p.get().await.unwrap();
+    let expires_at: Option<chrono::DateTime<chrono::Utc>> = proxy_sessions::table
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .select(proxy_sessions::expires_at)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    assert!(
+        expires_at.unwrap() < chrono::Utc::now(),
+        "shrunk-below-elapsed window must land expires_at in the past"
+    );
+}
+
+#[tokio::test]
+async fn t6_update_duration_without_duration_is_hard_error() {
+    let p = pool().await;
+    let requester = insert_user(&p, &unique("req_nd")).await;
+    let approver = insert_user(&p, &unique("apr_nd")).await;
+    let admin = insert_user(&p, &unique("adm_nd")).await;
+    let asset = insert_asset(&p, &unique("a_nd")).await;
+    let session_uuid = insert_approved_session(&p, requester, approver, asset).await;
+    let admin_uuid = user_uuid_of(&p, admin).await;
+
+    let resp = record_decision(
+        &p,
+        admin_uuid,
+        session_uuid,
+        ApprovalDecisionKind::UpdateDuration,
+        None,
+    )
+    .await;
+    match resp {
+        AccessResponse::Error(msg) => assert!(
+            msg.contains("duration_override_seconds"),
+            "error must name the missing field, got: {msg}"
+        ),
+        other => panic!("expected hard Error, got {other:?}"),
+    }
+    // The grant must be untouched.
+    let mut conn = p.get().await.unwrap();
+    let status: String = proxy_sessions::table
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .select(proxy_sessions::status)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(status, "approved");
+}
+
+#[tokio::test]
+async fn t6_update_duration_on_pending_denied_session_not_approved() {
+    let p = pool().await;
+    let requester = insert_user(&p, &unique("req_up")).await;
+    let admin = insert_user(&p, &unique("adm_up")).await;
+    let asset = insert_asset(&p, &unique("a_up")).await;
+    let session_uuid = insert_pending_session(&p, requester, asset).await;
+    let admin_uuid = user_uuid_of(&p, admin).await;
+
+    let resp = record_decision(
+        &p,
+        admin_uuid,
+        session_uuid,
+        ApprovalDecisionKind::UpdateDuration,
+        Some(3600),
+    )
+    .await;
+    match resp {
+        AccessResponse::ApprovalDenied {
+            reason: ApprovalDenyReason::SessionNotApproved,
+        } => {}
+        other => panic!("expected SessionNotApproved, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn t6_update_duration_by_requester_denied_self_approval() {
+    // Extending one's own grant would break SoD — same fence as
+    // approve/reject.
+    let p = pool().await;
+    let requester = insert_user(&p, &unique("req_su")).await;
+    let approver = insert_user(&p, &unique("apr_su")).await;
+    let asset = insert_asset(&p, &unique("a_su")).await;
+    let session_uuid = insert_approved_session(&p, requester, approver, asset).await;
+    let requester_uuid = user_uuid_of(&p, requester).await;
+
+    let resp = record_decision(
+        &p,
+        requester_uuid,
+        session_uuid,
+        ApprovalDecisionKind::UpdateDuration,
+        Some(7200),
+    )
+    .await;
+    match resp {
+        AccessResponse::ApprovalDenied {
+            reason: ApprovalDenyReason::SelfApproval,
+        } => {}
+        other => panic!("expected SelfApproval denial, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn t6_db_check_decision_accepts_new_literals() {
+    // The widened CHECK must accept the two new decision literals.
+    let p = pool().await;
+    let actor = insert_user(&p, &unique("act_ck")).await;
+    let requester = insert_user(&p, &unique("req_ck")).await;
+    let mut conn = p.get().await.unwrap();
+    for decision in ["revoke", "update_duration"] {
+        let res = diesel::insert_into(approval_audit_log::table)
+            .values((
+                approval_audit_log::session_uuid.eq(Uuid::new_v4()),
+                approval_audit_log::decision.eq(decision),
+                approval_audit_log::actor_user_id.eq(Some(actor)),
+                approval_audit_log::actor_username.eq("act"),
+                approval_audit_log::requester_user_id.eq(Some(requester)),
+                approval_audit_log::requester_username.eq("req"),
+                approval_audit_log::asset_uuid.eq(Uuid::new_v4()),
+                approval_audit_log::asset_name.eq("a"),
+            ))
+            .execute(&mut conn)
+            .await;
+        assert!(
+            res.is_ok(),
+            "decision '{decision}' must pass CHECK: {res:?}"
+        );
+    }
+}
+
+// =====================================================================
 // Tier 7 — structural pins
 //
 // These tests freeze public-surface invariants whose silent drift would
@@ -652,6 +1146,7 @@ fn t7_approval_deny_reason_variants_are_stable() {
         match r {
             SessionNotFound => "SessionNotFound",
             SessionNotPending => "SessionNotPending",
+            SessionNotApproved => "SessionNotApproved",
             SelfApproval => "SelfApproval",
             RequesterDisabled => "RequesterDisabled",
             RuleNoLongerRequiresApproval => "RuleNoLongerRequiresApproval",
@@ -659,6 +1154,7 @@ fn t7_approval_deny_reason_variants_are_stable() {
     }
     assert_eq!(_exhaustive(SelfApproval), "SelfApproval");
     assert_eq!(_exhaustive(SessionNotPending), "SessionNotPending");
+    assert_eq!(_exhaustive(SessionNotApproved), "SessionNotApproved");
     // Pin the user-visible message strings so a refactor cannot
     // silently change what operators read in flash + audit log.
     assert_eq!(
@@ -669,6 +1165,10 @@ fn t7_approval_deny_reason_variants_are_stable() {
         SessionNotPending.as_message(),
         "This request has already been processed"
     );
+    assert_eq!(
+        SessionNotApproved.as_message(),
+        "This grant is not active (already revoked or expired)"
+    );
 }
 
 #[test]
@@ -678,10 +1178,23 @@ fn t7_approval_decision_kind_variants_are_stable() {
         match k {
             Approve => "approve",
             Reject => "reject",
+            Revoke => "revoke",
+            UpdateDuration => "update_duration",
         }
     }
     assert_eq!(_exhaustive(Approve), "approve");
     assert_eq!(_exhaustive(Reject), "reject");
+    assert_eq!(_exhaustive(Revoke), "revoke");
+    assert_eq!(_exhaustive(UpdateDuration), "update_duration");
+    // The canonical SQL rendering feeds the audit-log `decision`
+    // column; it must stay within the widened VARCHAR(16) + CHECK.
+    for k in [Approve, Reject, Revoke, UpdateDuration] {
+        assert!(
+            k.as_str().len() <= 16,
+            "decision '{}' overflows",
+            k.as_str()
+        );
+    }
 }
 
 #[test]
