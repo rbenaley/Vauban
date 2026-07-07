@@ -74,20 +74,34 @@ parallelism = 1
 # ==============================================================================
 
 [industrial]
-enabled = true            # explicit opt-in for the integration test suite (default is false)
+# Single master switch for the entire industrial surface (UI, sshd
+# tunnel, audit, future protocols). Default `false` in default.toml.
+# When `false`, the supervisor does NOT spawn vauban-proxy-iacs, does NOT
+# pre-bind the IACS sshd listener, and the web UI hides every /iacs/* route.
+enabled = true            # explicit opt-in for the integration test suite
 max_ews_per_user = 0      # 0 = no cap; otherwise a per-user EWS quota
 
 # Anti-SSRF: `allow_loopback_targets = false` (default) refuses to
 # broker upstream TCP connect to a loopback IP. Flip to `true` only
 # in dev/E2E where the fake industrial server runs on `127.0.0.1`.
 [industrial.iacs_tunnel]
-# `enabled` is now governed by `industrial.enabled` (single master switch).
+# `enabled` here is DEPRECATED (May 2026) -- use `industrial.enabled`
+# above. The supervisor logs a warning at boot if this key is still
+# present and ignores it.
 bind_addr = "0.0.0.0:22322"
 advertise_hostname = "localhost"
-target_addr = "127.0.0.1:4321"
 host_key_path = "vauban-proxy-iacs/certs/iacs_tunnel_host_ed25519.test"
 max_concurrent_per_user = 4
 max_concurrent_per_ews = 2
+# Per-login concurrent SSH `direct-tcpip` channels. Each TCP
+# `accept()` on the EWS-side `ssh -L LP:asset:AP` listener spawns a
+# new channel by OpenSSH design; capping the count protects against
+# fan-out exfil while preserving the multi-client workflow (e.g.
+# HMI + Modbus diagnostic tool against the same asset). `0`
+# disables the cap; default `16` leaves headroom for legitimate
+# bursts. NEVER set to `1` -- that re-introduces the pre-v0.7.9
+# bug where `nc`/Ctrl-C/`nc` returns `administratively prohibited`.
 max_concurrent_channels_per_session = 16
 waiting_client_ttl_seconds = 300
 revocation_poll_interval_seconds = 2
+allow_loopback_targets = true
