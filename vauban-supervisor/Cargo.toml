@@ -18,7 +18,7 @@ workspace = true
 # load-or-generate the IACS sshd Ed25519 host key BEFORE fork and pass
 # the file descriptor to vauban-proxy-iacs (the proxy is sandboxed by
 # Capsicum and cannot open paths post `cap_enter` -- errno 94).
-shared = { workspace = true, features = ["session-token", "iacs-host-key"] }
+shared = { workspace = true, features = ["session-token", "iacs-host-key", "client-acl"] }
 libc.workspace = true
 nix.workspace = true
 tracing.workspace = true

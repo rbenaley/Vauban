@@ -214,6 +214,10 @@ pub async fn login(
             {
                 jit_provision_ldap_user(&mut conn, &request.username).await?
             } else {
+                // Anti-enumeration: pay the same Argon2 cost as a real
+                // wrong-password failure so response timing cannot reveal
+                // whether the username exists (SEC-04/05 timing oracle).
+                crate::services::auth::equalize_login_timing(&state).await;
                 emit_audit(
                     &state,
                     AuditEvent::new(AuditEventType::AuthFailure, r#"{"reason":"unknown_user"}"#)
@@ -727,6 +731,15 @@ fn login_error_response(htmx: bool, kind: LoginErrorKind) -> AppResult<Response>
     } else {
         Err(AppError::Auth(kind.message().to_string()))
     }
+}
+
+/// The exact generic "Invalid credentials" login failure, exposed for the
+/// IP-ACL middleware short-circuit ([`crate::middleware::ip_acl`]). A login
+/// attempt from a denied client IP MUST be byte-for-byte identical to a
+/// wrong-password failure (stealth deny, SEC-04/05), so the middleware
+/// reuses this response instead of crafting its own.
+pub(crate) fn login_invalid_credentials_response(htmx: bool) -> AppResult<Response> {
+    login_error_response(htmx, LoginErrorKind::InvalidCredentials)
 }
 
 /// HTMX error fragment for a CSRF failure, augmented with an out-of-band swap

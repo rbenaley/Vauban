@@ -1,7 +1,7 @@
 [package]
 name = "vauban-proxy-rdp"
 description = "Vauban - RDP proxy service (IronRDP)"
-version = "0.8.20"
+version = "0.8.21"
 edition = "2024"
 rust-version = "1.89"
 authors = ["Richard Ben Aleya"]

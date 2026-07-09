@@ -68,4 +68,11 @@ pub mod ssh_keygen;
 #[cfg(feature = "iacs-protocol")]
 pub mod iacs_protocol;
 
+// Global client IP allowlist (CIDR ACL). One matcher shared by every
+// client-facing entry point so the decision can never drift between
+// vauban-web (HTTP/WS middleware) and vauban-proxy-iacs (sshd accept
+// loop); vauban-supervisor validates and transports the ranges.
+#[cfg(feature = "client-acl")]
+pub mod client_acl;
+
 pub use messages::{ControlMessage, Message, ServiceStats};

@@ -62,6 +62,8 @@ pub mod iacs_tunnel_status_ux_test;
 pub mod inspect_capture_pipeline_e2e_test;
 pub mod inspect_capture_template_test;
 pub mod inspect_capture_test;
+pub mod ip_acl_e2e_test;
+pub mod ip_acl_pins_test;
 pub mod jit_access_test;
 pub mod jit_grant_revocation_e2e_test;
 pub mod jit_revocation_pins_test;

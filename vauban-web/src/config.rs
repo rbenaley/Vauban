@@ -587,6 +587,14 @@ pub struct SecurityConfig {
     /// asset, across all users. `0` disables the control.
     #[serde(default = "default_max_concurrent_sessions_per_asset")]
     pub max_concurrent_sessions_per_asset: i64,
+    /// Global client IP allowlist (CIDR list, e.g. `["10.0.0.0/8",
+    /// "104.28.30.3/32"]`). Empty = disabled (allow all). When set, any
+    /// client whose resolved IP is outside every range is treated as an
+    /// anonymous visitor and can never authenticate (stealth deny).
+    /// Loopback is always permitted (anti-lockout). ACME challenges are
+    /// exempt by construction (TLS-ALPN-01 lives below the HTTP layer).
+    #[serde(default)]
+    pub allowed_client_networks: Vec<String>,
 }
 
 fn default_session_create_rate_per_minute() -> u32 {
@@ -613,6 +621,22 @@ impl SecurityConfig {
             .iter()
             .filter_map(|s| s.parse::<std::net::IpAddr>().ok())
             .collect()
+    }
+
+    /// Validate the security configuration (fail-closed at boot).
+    ///
+    /// `allowed_client_networks` is an ACL: a typo in a CIDR must stop
+    /// the service instead of silently widening/narrowing the policy.
+    pub fn validate(&self) -> Result<(), String> {
+        shared::client_acl::ClientAcl::parse(&self.allowed_client_networks)?;
+        Ok(())
+    }
+
+    /// Parse `allowed_client_networks` into the shared matcher.
+    /// Panics never: `validate()` ran at boot, so this only fails if the
+    /// config was mutated post-boot, which cannot happen.
+    pub fn parsed_client_acl(&self) -> Result<shared::client_acl::ClientAcl, String> {
+        shared::client_acl::ClientAcl::parse(&self.allowed_client_networks)
     }
 }
 
@@ -1672,6 +1696,13 @@ impl Config {
         config
             .server
             .validate(config.environment)
+            .map_err(crate::error::AppError::Config)?;
+
+        // Global client IP ACL: any invalid CIDR in allowed_client_networks
+        // must stop the boot (fail-closed), never silently alter the policy.
+        config
+            .security
+            .validate()
             .map_err(crate::error::AppError::Config)?;
 
         Ok(config)

@@ -6,6 +6,7 @@ pub mod browser_tz;
 pub mod client_addr;
 pub mod csrf;
 pub mod flash;
+pub mod ip_acl;
 pub mod permissions;
 pub mod require_assets_manage;
 pub mod require_iacs_manage;

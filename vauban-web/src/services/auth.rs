@@ -47,6 +47,43 @@ pub fn is_encrypted_mfa_secret(value: &str) -> bool {
     value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
 }
 
+/// Equalize the wall-clock cost of a login failure that would otherwise
+/// return WITHOUT running an Argon2 verification (unknown username with no
+/// LDAP JIT path, client IP denied by the global ACL).
+///
+/// Runs a dummy verification of a wrong password against the sacrifice
+/// hash minted at boot (`AppState::login_timing_sacrifice_hash`), through
+/// the SAME path as a real login (auth IPC when supervised, local Argon2
+/// otherwise). Without this, an attacker could time `POST /login` to
+/// enumerate valid usernames or detect the presence of the IP ACL
+/// (SEC-04/05 anti-enumeration).
+pub async fn equalize_login_timing(state: &crate::AppState) {
+    // Any constant is fine: the verification must FAIL, we only pay for
+    // its duration. The sacrifice hash was minted from a random UUID at
+    // boot so this can never accidentally match.
+    const WRONG_PASSWORD: &str = "vauban-login-timing-equalizer";
+    let sacrifice_hash = state.login_timing_sacrifice_hash.as_str();
+
+    let outcome = if let Some(ref client) = state.auth_ipc_client {
+        client.verify_password(WRONG_PASSWORD, sacrifice_hash).await
+    } else {
+        state
+            .auth_service
+            .verify_password(WRONG_PASSWORD, sacrifice_hash)
+    };
+
+    match outcome {
+        Ok(false) => {}
+        Ok(true) => {
+            // Cannot happen (random boot-time password); log loudly if it does.
+            tracing::error!("login timing equalizer unexpectedly verified the dummy password");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "login timing equalizer verification errored");
+        }
+    }
+}
+
 /// Outcome of a step-up TOTP verification with replay classification.
 ///
 /// Returned by [`AuthService::verify_and_consume_totp`]. The

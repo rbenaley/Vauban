@@ -648,6 +648,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         e
     })?;
 
+    // 5a. Global client IP ACL: parsed ONCE at boot (fail-closed -- an
+    // invalid CIDR already stopped `Config::load_with_environment`, this
+    // re-parse can only fail if the config was mutated in between).
+    let client_acl = Arc::new(config.security.parsed_client_acl().map_err(|e| {
+        eprintln!("Failed to parse [security] allowed_client_networks: {}", e);
+        vauban_web::error::AppError::Config(e)
+    })?);
+    if client_acl.is_enabled() {
+        tracing::info!(networks = client_acl.len(), "client IP ACL enabled");
+    }
+
+    // 5b. Sacrifice Argon2 hash for login timing equalization: minted with
+    // the production parameters from a random throwaway password, so a
+    // login failure that skips the real credential check (unknown user,
+    // ACL-denied IP) can pay the exact same verification cost (SEC-04/05).
+    let login_timing_sacrifice_hash = Arc::new(
+        auth_service
+            .hash_password(&uuid::Uuid::new_v4().to_string())
+            .map_err(|e| {
+                eprintln!("Failed to mint login timing sacrifice hash: {}", e);
+                e
+            })?,
+    );
+
     // 6. Create other services (no file access needed)
     let broadcast = BroadcastService::new();
     tracing::debug!("Broadcast service initialized");
@@ -863,6 +887,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         system_health_cache,
         iacs_tunnel_registry: vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
         pending_mfa: vauban_web::services::pending_mfa::PendingMfaStore::new(),
+        client_acl,
+        login_timing_sacrifice_hash,
     };
 
     // VAU-008: periodically evict abandoned MFA enrolment candidates so the
@@ -2079,6 +2105,16 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .layer(axum::middleware::from_fn_with_state(
             flash_key.clone(),
             middleware::flash::flash_middleware,
+        ))
+        // Global client IP ACL (allowed_client_networks). MUST run BEFORE
+        // auth_middleware: a denied IP is downgraded to anonymous (its
+        // credentials are stripped) or short-circuited on the login
+        // endpoints, so no credential from outside the allowlist is ever
+        // evaluated. Covers web + API + WS via common_layers. ACME stays
+        // exempt by construction (TLS-ALPN-01 below the HTTP layer).
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::ip_acl::ip_acl_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

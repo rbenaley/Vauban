@@ -692,6 +692,8 @@ async fn build_state_from(app: &TestApp) -> vauban_web::AppState {
         ),
         iacs_tunnel_registry: vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
         pending_mfa: vauban_web::services::pending_mfa::PendingMfaStore::new(),
+        client_acl: std::sync::Arc::new(shared::client_acl::ClientAcl::default()),
+        login_timing_sacrifice_hash: std::sync::Arc::new(String::new()),
     }
 }
 

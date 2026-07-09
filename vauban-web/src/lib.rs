@@ -141,6 +141,18 @@ pub struct AppState {
     /// session (keyed by the JWT `jti` / `auth_sessions.uuid`). See
     /// [`services::pending_mfa::PendingMfaStore`].
     pub pending_mfa: services::pending_mfa::PendingMfaStore,
+    /// Global client IP ACL (`[security] allowed_client_networks`), parsed
+    /// ONCE at boot (fail-closed) and matched on every request by
+    /// [`middleware::ip_acl::ip_acl_middleware`]. Disabled (allow all)
+    /// when the configured list is empty.
+    pub client_acl: Arc<shared::client_acl::ClientAcl>,
+    /// Sacrifice Argon2 hash minted at boot with the production
+    /// parameters. [`services::auth::equalize_login_timing`] runs a dummy
+    /// verification against it so login failures that never reach the
+    /// real password check (unknown username, denied client IP) cost the
+    /// same wall-clock time as an invalid-password failure
+    /// (anti-enumeration, no timing oracle).
+    pub login_timing_sacrifice_hash: Arc<String>,
 }
 
 #[cfg(test)]

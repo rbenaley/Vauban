@@ -272,6 +272,26 @@ async fn run_service() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(16);
 
+    // Global client IP ACL (`[security] allowed_client_networks`),
+    // transported by the supervisor as a comma-separated CIDR list.
+    // Parsed here, pre-`cap_enter`, with the SAME shared matcher as
+    // vauban-web. FAIL-CLOSED: the supervisor already validated the
+    // ranges at its own boot, so a malformed value here means the two
+    // sides diverged -- refuse to start rather than run with a policy
+    // we cannot honour. Empty / absent = ACL disabled (allow all).
+    let client_acl = shared::client_acl::ClientAcl::from_env_string(
+        &std::env::var("VAUBAN_CLIENT_ACL_NETWORKS").unwrap_or_default(),
+    )
+    .map_err(|e| {
+        anyhow::anyhow!(
+            "Invalid VAUBAN_CLIENT_ACL_NETWORKS (refusing to start; the \
+             client IP ACL must never be silently degraded): {e}"
+        )
+    })?;
+    if client_acl.is_enabled() {
+        info!(networks = client_acl.len(), "client IP ACL enabled");
+    }
+
     // === 3. Load and clear the BLAKE3 session-token MAC key.
     session_token_gate::init_from_env().context(
         "Failed to load VAUBAN_SESSION_TOKEN_KEY - vauban-proxy-iacs \
@@ -294,6 +314,7 @@ async fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_IACS_LISTENER_FD");
         std::env::remove_var("VAUBAN_IACS_HOST_KEY_FD");
         std::env::remove_var("VAUBAN_IACS_MAX_CHANNELS_PER_SESSION");
+        std::env::remove_var("VAUBAN_CLIENT_ACL_NETWORKS");
     }
 
     let supervisor_channel =
@@ -555,6 +576,7 @@ async fn run_service() -> Result<()> {
         let accept_max_channels = max_channels_per_session;
         let accept_web_tx = web_tx.clone();
         let accept_recording = recording_hub.clone();
+        let accept_acl = client_acl.clone();
         tokio::spawn(async move {
             info!(
                 iacs_bind_addr = %accept_bind_addr,
@@ -564,6 +586,21 @@ async fn run_service() -> Result<()> {
             loop {
                 match tokio_listener.accept().await {
                     Ok((stream, peer)) => {
+                        // Global client IP ACL: gate the peer BEFORE
+                        // `Server::new_client` / `run_stream`, i.e. before
+                        // a single SSH byte (banner included) is written.
+                        // The drop is silent -- a denied scanner sees an
+                        // immediate close, indistinguishable from a
+                        // filtered port (stealth deny). Loopback always
+                        // permitted by the shared matcher (anti-lockout).
+                        if !accept_acl.permits(peer.ip()) {
+                            debug!(
+                                ?peer,
+                                "iacs_tunnel: peer outside allowed_client_networks; dropping"
+                            );
+                            drop(stream);
+                            continue;
+                        }
                         debug!(?peer, "iacs_tunnel: accepted EWS connection");
                         let mut server = IacsTunnelServer::new(
                             accept_registry.clone(),

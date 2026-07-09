@@ -2310,7 +2310,11 @@ fn test_security_config_parsed_trusted_proxies() {
             "not-a-valid-ip".to_string(), // Should be silently skipped
             "10.0.0.1".to_string(),
         ],
+        allowed_client_networks: vec![],
     };
+
+    // Empty ACL is valid (disabled).
+    assert!(config.validate().is_ok());
 
     let parsed = config.parsed_trusted_proxies();
     assert_eq!(
@@ -2345,10 +2349,55 @@ fn test_security_config_empty_trusted_proxies() {
         max_concurrent_sessions_per_user: 10,
         max_concurrent_sessions_per_asset: 20,
         trusted_proxies: vec![],
+        allowed_client_networks: vec![],
     };
 
     let parsed = config.parsed_trusted_proxies();
     assert!(parsed.is_empty());
+}
+
+/// `SecurityConfig::validate` is fail-closed on the client IP ACL: any
+/// invalid CIDR must produce an error naming the entry (the boot then
+/// aborts) -- contrary to `trusted_proxies` which skips silently.
+#[test]
+fn test_security_config_validate_rejects_invalid_client_acl_cidr() {
+    use vauban_web::config::SecurityConfig;
+
+    let mut config = SecurityConfig {
+        password_min_length: 12,
+        max_failed_login_attempts: 5,
+        session_max_duration_secs: 28800,
+        session_idle_timeout_secs: 1800,
+        rate_limit_per_minute: 10,
+        argon2: vauban_web::config::Argon2Config {
+            memory_size_kb: 1024,
+            iterations: 1,
+            parallelism: 1,
+        },
+        require_justification: true,
+        session_create_rate_per_minute: 12,
+        session_create_rate_global_per_minute: 120,
+        max_concurrent_sessions_per_user: 10,
+        max_concurrent_sessions_per_asset: 20,
+        trusted_proxies: vec![],
+        allowed_client_networks: vec!["10.0.0.0/8".to_string(), "not-a-cidr".to_string()],
+    };
+
+    let err = unwrap_some!(config.validate().err());
+    assert!(
+        err.contains("not-a-cidr"),
+        "validation error must name the offending entry: {err}"
+    );
+
+    // Valid lists pass, including /32 host routes and v6.
+    config.allowed_client_networks = vec![
+        "10.0.0.0/8".to_string(),
+        "10.20.0.0/28".to_string(),
+        "104.28.30.3/32".to_string(),
+        "2001:db8::/32".to_string(),
+    ];
+    assert!(config.validate().is_ok());
+    assert!(unwrap_ok!(config.parsed_client_acl()).is_enabled());
 }
 
 /// Integration test: verify that login endpoint records the correct client IP

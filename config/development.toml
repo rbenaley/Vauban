@@ -118,6 +118,8 @@ session_create_rate_global_per_minute = 120
 max_concurrent_sessions_per_user = 10
 max_concurrent_sessions_per_asset = 20
 trusted_proxies = []
+# Global client IP ACL disabled in development (allow all).
+allowed_client_networks = []
 require_justification = false
 
 [security.argon2]

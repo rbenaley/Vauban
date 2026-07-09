@@ -149,6 +149,10 @@ max_concurrent_sessions_per_asset = 20
 # honoured when the TCP connection originates from one of these addresses.
 # Empty list = proxy headers are never trusted (safe default).
 trusted_proxies = []
+# Global client IP ACL (CIDR allowlist). Empty list = disabled (allow all).
+# See config/vauban.conf for the full documentation. Loopback is always
+# permitted (anti-lockout) and ACME renewal is exempt by construction.
+allowed_client_networks = []
 # Require users to provide a justification before connecting to an asset.
 # When true, a modal prompts for a reason that is stored in the session record.
 # Set to false to allow direct connections without justification.

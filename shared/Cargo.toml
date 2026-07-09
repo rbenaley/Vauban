@@ -50,6 +50,10 @@ russh = { workspace = true, optional = true }
 # needed alongside the russh-backed `iacs-host-key` feature.
 getrandom = { workspace = true, optional = true }
 
+# CIDR parsing/matching for the optional `client-acl` module (global
+# client IP allowlist). Same version as vauban-web/supervisor/access.
+ipnetwork = { version = "0.21", optional = true }
+
 [features]
 default = []
 # Enables the shared::access_guard module (defense-in-depth RBAC re-check
@@ -82,6 +86,12 @@ ssh-keygen = ["dep:russh", "dep:getrandom"]
 # Peek-based industrial wire protocol classification for the IACS
 # tunnel gate in vauban-proxy-iacs. Tokio-free pure parsing.
 iacs-protocol = []
+# Enables shared::client_acl (CIDR allowlist gating every client-facing
+# entry point: vauban-web HTTP/WS middleware, vauban-proxy-iacs sshd
+# accept loop; vauban-supervisor validates + transports the ranges).
+# Tokio-free pure matching. Crates that never face clients (vault,
+# audit, auth) MUST NOT enable this.
+client-acl = ["dep:ipnetwork"]
 
 # Capsicum bindings for FreeBSD
 [target.'cfg(target_os = "freebsd")'.dependencies]

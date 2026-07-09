@@ -78,6 +78,45 @@ impl TestApp {
             .await
     }
 
+    /// Test application variant wired for the global client IP ACL E2E
+    /// tests: `allowed_client_networks` is set and `trusted_proxies`
+    /// contains loopback, so tests can simulate arbitrary client IPs via
+    /// an `X-Forwarded-For` header (the in-process TestServer has no
+    /// ConnectInfo; the ip_acl middleware falls back to loopback as the
+    /// TCP peer, which IS a trusted proxy here).
+    pub async fn spawn_ip_acl() -> &'static TestApp {
+        static IP_ACL_APP: OnceCell<TestApp> = OnceCell::const_new();
+        IP_ACL_APP
+            .get_or_init(|| async {
+                Self::create_inner_with(None, |config| {
+                    config.security.trusted_proxies =
+                        vec!["127.0.0.1".to_string(), "::1".to_string()];
+                    config.security.allowed_client_networks =
+                        vec!["10.0.0.0/8".to_string(), "104.28.30.3/32".to_string()];
+                })
+                .await
+            })
+            .await
+    }
+
+    /// Variant with the ACL enabled but NO trusted proxy: an
+    /// `X-Forwarded-For` header must be ignored, so every request is
+    /// attributed to the loopback TCP peer, which the matcher always
+    /// permits (anti-lockout). Used to pin both the spoofing resistance
+    /// and the loopback bypass.
+    pub async fn spawn_ip_acl_untrusted_xff() -> &'static TestApp {
+        static IP_ACL_UNTRUSTED_APP: OnceCell<TestApp> = OnceCell::const_new();
+        IP_ACL_UNTRUSTED_APP
+            .get_or_init(|| async {
+                Self::create_inner_with(None, |config| {
+                    config.security.trusted_proxies = vec![];
+                    config.security.allowed_client_networks = vec!["10.0.0.0/8".to_string()];
+                })
+                .await
+            })
+            .await
+    }
+
     /// Get the path to the workspace root config/ directory.
     fn config_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -97,6 +136,16 @@ impl TestApp {
     async fn create_inner(
         auth_ipc_client: Option<std::sync::Arc<vauban_web::ipc::AuthIpcClient>>,
     ) -> Self {
+        Self::create_inner_with(auth_ipc_client, |_| {}).await
+    }
+
+    /// Same as [`Self::create_inner`] with a config mutator applied right
+    /// after loading `testing.toml`, BEFORE any state is derived from the
+    /// config (client ACL, auth service, ...).
+    async fn create_inner_with(
+        auth_ipc_client: Option<std::sync::Arc<vauban_web::ipc::AuthIpcClient>>,
+        mutate_config: impl FnOnce(&mut Config),
+    ) -> Self {
         // Load test configuration from workspace root config/testing.toml
         let mut config = unwrap_ok!(Config::load_with_environment(
             Self::config_dir(),
@@ -108,6 +157,9 @@ impl TestApp {
             config.auth.ldaps.enabled = true;
             config.auth.ldaps.order = vec!["local".to_string(), "ldap".to_string()];
         }
+
+        // Per-variant config overrides (IP ACL, trusted proxies, ...).
+        mutate_config(&mut config);
 
         // Create async database pool
         let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(
@@ -207,6 +259,14 @@ impl TestApp {
             ),
             iacs_tunnel_registry: vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
             pending_mfa: vauban_web::services::pending_mfa::PendingMfaStore::new(),
+            client_acl: std::sync::Arc::new(unwrap_ok!(shared::client_acl::ClientAcl::parse(
+                &config.security.allowed_client_networks
+            ))),
+            // Cheap testing.toml Argon2 params: minting one sacrifice hash
+            // per TestApp is fast and mirrors the production boot.
+            login_timing_sacrifice_hash: std::sync::Arc::new(unwrap_ok!(
+                auth_service.hash_password(&uuid::Uuid::new_v4().to_string())
+            )),
         };
 
         // Build router
@@ -1002,11 +1062,19 @@ fn build_test_router(state: AppState) -> Router {
             state.clone(),
             middleware::permissions::permission_context_middleware,
         ))
-        // Add auth middleware (outermost here so it runs first and populates
-        // AuthUser before the PermissionContext middleware).
+        // Add auth middleware (runs right after the IP ACL below and
+        // populates AuthUser before the PermissionContext middleware).
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::auth::auth_middleware,
+        ))
+        // Global client IP ACL, outermost so it runs BEFORE auth exactly
+        // like in main.rs `common_layers`: a denied IP is stripped of its
+        // credentials (anonymous downgrade) or short-circuited on the
+        // login endpoints before any credential is evaluated.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::ip_acl::ip_acl_middleware,
         ))
         .with_state(state)
 }

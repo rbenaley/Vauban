@@ -78,6 +78,44 @@ pub struct SupervisorConfig {
     ///      (test/dev only).
     #[serde(default)]
     pub industrial: IndustrialConfig,
+    /// Security configuration shared with vauban-web ([security] block).
+    ///
+    /// The supervisor only consumes `allowed_client_networks`: it validates
+    /// the CIDR list fail-closed at boot and transports it to the sandboxed
+    /// IACS proxy via `VAUBAN_CLIENT_ACL_NETWORKS` so the sshd accept loop
+    /// can gate peers before any SSH byte is exchanged.
+    #[serde(default)]
+    pub security: SecurityConfig,
+}
+
+/// `[security]` block (subset relevant to the supervisor).
+///
+/// The full block is owned by vauban-web; unknown keys are ignored here.
+#[derive(Debug, Default, Deserialize)]
+pub struct SecurityConfig {
+    /// Global client IP allowlist (CIDR list). Empty = disabled.
+    /// Loopback is always permitted by the matcher (anti-lockout).
+    #[serde(default)]
+    pub allowed_client_networks: Vec<String>,
+}
+
+impl SecurityConfig {
+    /// Fail-closed CIDR validation (same matcher as vauban-web and
+    /// proxy-iacs, so the accepted grammar can never drift).
+    pub fn validate(&self) -> Result<()> {
+        shared::client_acl::ClientAcl::parse(&self.allowed_client_networks)
+            .map_err(|e| anyhow::anyhow!("[security] {e}"))?;
+        Ok(())
+    }
+
+    /// Canonical comma-separated env-var form for `VAUBAN_CLIENT_ACL_NETWORKS`.
+    pub fn client_acl_env_value(&self) -> String {
+        self.allowed_client_networks
+            .iter()
+            .map(|s| s.trim())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }
 
 /// Database configuration for services that require direct DB access.
@@ -784,6 +822,7 @@ impl SupervisorConfig {
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
         config.auth.ldaps.validate()?;
+        config.security.validate()?;
 
         Ok(config)
     }
@@ -907,6 +946,7 @@ impl SupervisorConfig {
             .with_context(|| "Failed to deserialize supervisor configuration")?;
 
         config.auth.ldaps.validate()?;
+        config.security.validate()?;
 
         Ok(config)
     }
@@ -1070,6 +1110,13 @@ impl SupervisorConfig {
                         .iacs_tunnel
                         .max_concurrent_channels_per_session
                         .to_string(),
+                ));
+                // Global client IP ACL: the IACS sshd accept loop gates
+                // peers with the same shared matcher as vauban-web. The
+                // ranges were validated fail-closed at supervisor boot.
+                vars.push((
+                    "VAUBAN_CLIENT_ACL_NETWORKS".to_string(),
+                    self.security.client_acl_env_value(),
                 ));
             }
             _ => {}
@@ -1494,6 +1541,63 @@ mod tests {
         assert_eq!(vars[3].0, "VAUBAN_LDAP_ENABLED");
         // Disabled by default in dev config.
         assert_eq!(vars[3].1, "false");
+    }
+
+    #[test]
+    fn test_service_env_vars_proxy_iacs_carries_client_acl() {
+        let mut config = test_config();
+        config.security.allowed_client_networks =
+            vec!["10.0.0.0/8".to_string(), "104.28.30.3/32".to_string()];
+        let vars = config.service_env_vars("proxy_iacs");
+        let acl = vars
+            .iter()
+            .find(|(k, _)| k == "VAUBAN_CLIENT_ACL_NETWORKS")
+            .expect("proxy_iacs env vars must carry VAUBAN_CLIENT_ACL_NETWORKS");
+        assert_eq!(acl.1, "10.0.0.0/8,104.28.30.3/32");
+    }
+
+    #[test]
+    fn test_service_env_vars_proxy_iacs_client_acl_empty_when_disabled() {
+        let config = test_config();
+        let vars = config.service_env_vars("proxy_iacs");
+        let acl = vars
+            .iter()
+            .find(|(k, _)| k == "VAUBAN_CLIENT_ACL_NETWORKS")
+            .expect("the env var must be present even when the ACL is disabled");
+        assert_eq!(acl.1, "", "empty ACL must serialise to an empty string");
+    }
+
+    #[test]
+    fn test_security_config_validate_accepts_valid_cidrs() {
+        let sec = SecurityConfig {
+            allowed_client_networks: vec![
+                "10.0.0.0/8".to_string(),
+                "10.20.0.0/28".to_string(),
+                "104.28.30.3/32".to_string(),
+                "2001:db8::/32".to_string(),
+            ],
+        };
+        assert!(sec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_security_config_validate_rejects_invalid_cidr_fail_closed() {
+        let sec = SecurityConfig {
+            allowed_client_networks: vec!["10.0.0.0/8".to_string(), "garbage".to_string()],
+        };
+        let err = sec.validate().expect_err("invalid CIDR must fail the boot");
+        assert!(
+            err.to_string().contains("garbage"),
+            "error must name the offending entry: {err}"
+        );
+    }
+
+    #[test]
+    fn test_security_config_default_is_disabled() {
+        let sec = SecurityConfig::default();
+        assert!(sec.allowed_client_networks.is_empty());
+        assert!(sec.validate().is_ok());
+        assert_eq!(sec.client_acl_env_value(), "");
     }
 
     #[test]
