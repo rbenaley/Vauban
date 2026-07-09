@@ -88,6 +88,22 @@ enum AdminSubcommand {
         #[arg(long)]
         database_url: Option<String>,
     },
+    /// List SSH public keys of ssh_key-auth assets.
+    AssetPubkeys {
+        /// Output format: psql-like table or one `user@host key` per line.
+        #[arg(long, value_enum, default_value_t = PubkeysOutputFormat::Table)]
+        format: PubkeysOutputFormat,
+    },
+}
+
+/// Output format for the `asset-pubkeys` subcommand.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PubkeysOutputFormat {
+    /// psql-like aligned table (default).
+    Table,
+    /// One `user@host key` line per asset; rows without a public key
+    /// are skipped (machine-consumable, e.g. authorized_keys).
+    Plain,
 }
 
 /// Global shutdown flag set by signal handler, checked by watchdog loop.

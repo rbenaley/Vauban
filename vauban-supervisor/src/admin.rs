@@ -10,8 +10,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use crate::AdminSubcommand;
 use crate::config::SupervisorConfig;
+use crate::{AdminSubcommand, PubkeysOutputFormat};
 use anyhow::{Context, Result, anyhow, bail};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
 use diesel::dsl::exists;
@@ -33,6 +33,7 @@ pub fn run_admin_command(cmd: AdminSubcommand) -> Result<()> {
             check,
             database_url,
         } => cmd_migrate(check, database_url),
+        AdminSubcommand::AssetPubkeys { format } => cmd_asset_pubkeys(format),
     }
 }
 
@@ -107,6 +108,145 @@ fn cmd_migrate(check: bool, database_url: Option<String>) -> Result<()> {
             println!("  applied: {version}");
         }
     }
+    Ok(())
+}
+
+// ==================== asset-pubkeys ====================
+
+/// One `ssh_key`-auth asset, ready for display.
+#[derive(Debug, PartialEq, Eq)]
+struct AssetPubkeyRow {
+    /// `login@hostname` -- login is `connection_config->>'username'`
+    /// when non-empty, else the `connection_username` column.
+    user_at_host: String,
+    /// `connection_config->>'ssh_public_key'` (clear OpenSSH text; a
+    /// PUBLIC key, so no vault decryption involved). `None`/empty means
+    /// a misconfigured asset.
+    public_key: Option<String>,
+}
+
+/// Rust-side COALESCE: the JSON `username` wins when present and
+/// non-empty, otherwise fall back to the `connection_username` column.
+fn coalesce_login(json_username: Option<&str>, connection_username: &str) -> String {
+    match json_username {
+        Some(u) if !u.trim().is_empty() => u.to_string(),
+        _ => connection_username.to_string(),
+    }
+}
+
+/// Load the SSH public keys of every non-deleted `ssh_key`-auth asset,
+/// ordered by hostname (deterministic output).
+///
+/// DSL equivalent of:
+/// `SELECT COALESCE(connection_config->>'username', connection_username)
+///  || '@' || hostname, connection_config->>'ssh_public_key'
+///  FROM assets WHERE connection_config->>'auth_type' = 'ssh_key'
+///  AND is_deleted = false` (the COALESCE and `||` happen in Rust).
+fn fetch_asset_pubkeys(conn: &mut PgConnection) -> Result<Vec<AssetPubkeyRow>> {
+    let rows: Vec<(Option<String>, String, String, Option<String>)> = assets::table
+        .filter(
+            assets::connection_config
+                .retrieve_as_text("auth_type")
+                .eq("ssh_key"),
+        )
+        .filter(assets::is_deleted.eq(false))
+        .order(assets::hostname.asc())
+        .select((
+            // `->>` returns SQL NULL when the key is absent, but diesel
+            // types `retrieve_as_text` on a NOT NULL jsonb column as
+            // non-nullable Text -- force the honest Option<String>.
+            assets::connection_config
+                .retrieve_as_text("username")
+                .nullable(),
+            assets::connection_username,
+            assets::hostname,
+            assets::connection_config
+                .retrieve_as_text("ssh_public_key")
+                .nullable(),
+        ))
+        .load(conn)
+        .context("Failed to query ssh_key assets")?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(json_username, connection_username, hostname, public_key)| AssetPubkeyRow {
+                user_at_host: format!(
+                    "{}@{hostname}",
+                    coalesce_login(json_username.as_deref(), &connection_username)
+                ),
+                public_key,
+            },
+        )
+        .collect())
+}
+
+/// psql-like aligned table. Rows without a public key show an empty
+/// cell so misconfigured `ssh_key` assets stay visible.
+fn format_pubkeys_table(rows: &[AssetPubkeyRow]) -> String {
+    if rows.is_empty() {
+        return "(no ssh_key assets)\n".to_string();
+    }
+
+    const HDR_HOST: &str = "user@hostname";
+    const HDR_KEY: &str = "ssh_public_key";
+
+    let key_of = |row: &AssetPubkeyRow| row.public_key.as_deref().unwrap_or("").to_string();
+
+    let host_width = rows
+        .iter()
+        .map(|r| r.user_at_host.len())
+        .chain([HDR_HOST.len()])
+        .max()
+        .unwrap_or(0);
+    let key_width = rows
+        .iter()
+        .map(|r| key_of(r).len())
+        .chain([HDR_KEY.len()])
+        .max()
+        .unwrap_or(0);
+
+    // psql-style: headers centered, values left-aligned, `|` at the
+    // same column on every line; trailing whitespace trimmed.
+    let mut out = String::new();
+    out.push_str(format!(" {HDR_HOST:^host_width$} | {HDR_KEY:^key_width$}").trim_end());
+    out.push('\n');
+    out.push_str(&format!(
+        "{}+{}\n",
+        "-".repeat(host_width + 2),
+        "-".repeat(key_width + 2)
+    ));
+    for row in rows {
+        out.push_str(format!(" {:<host_width$} | {}", row.user_at_host, key_of(row)).trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// Machine-consumable output: one `user@host key` line per asset.
+/// Rows without a public key are SKIPPED (safe to pipe into an
+/// authorized_keys-style consumer).
+fn format_pubkeys_plain(rows: &[AssetPubkeyRow]) -> String {
+    let mut out = String::new();
+    for row in rows {
+        if let Some(key) = row.public_key.as_deref()
+            && !key.trim().is_empty()
+        {
+            out.push_str(&format!("{} {key}\n", row.user_at_host));
+        }
+    }
+    out
+}
+
+/// `vauban-supervisor asset-pubkeys [--format=table|plain]`
+fn cmd_asset_pubkeys(format: PubkeysOutputFormat) -> Result<()> {
+    let mut conn = load_db_connection()?;
+    let rows = fetch_asset_pubkeys(&mut conn)?;
+    let rendered = match format {
+        PubkeysOutputFormat::Table => format_pubkeys_table(&rows),
+        PubkeysOutputFormat::Plain => format_pubkeys_plain(&rows),
+    };
+    print!("{rendered}");
     Ok(())
 }
 
@@ -991,6 +1131,9 @@ mod tests {
             check: false,
             database_url: None,
         };
+        let _pubkeys = AdminSubcommand::AssetPubkeys {
+            format: PubkeysOutputFormat::Table,
+        };
     }
 
     #[test]
@@ -1011,6 +1154,7 @@ mod tests {
         assert!(source.contains("fn cmd_migrate_secrets"));
         assert!(source.contains("fn cmd_seed_data"));
         assert!(source.contains("fn cmd_migrate"));
+        assert!(source.contains("fn cmd_asset_pubkeys"));
     }
 
     #[test]
@@ -1059,5 +1203,292 @@ mod tests {
         assert!(source.contains("insert_into(users::table)"));
         assert!(source.contains("insert_into(vauban_groups::table)"));
         assert!(source.contains("insert_into(asset_groups::table)"));
+    }
+
+    // ==================== asset-pubkeys: coalesce_login ====================
+
+    #[test]
+    fn test_coalesce_login_json_username_wins() {
+        assert_eq!(coalesce_login(Some("root"), "fallback"), "root");
+    }
+
+    #[test]
+    fn test_coalesce_login_falls_back_when_absent() {
+        assert_eq!(coalesce_login(None, "fallback"), "fallback");
+    }
+
+    #[test]
+    fn test_coalesce_login_falls_back_when_empty_or_blank() {
+        assert_eq!(coalesce_login(Some(""), "fallback"), "fallback");
+        assert_eq!(coalesce_login(Some("   "), "fallback"), "fallback");
+    }
+
+    // ==================== asset-pubkeys: table format ====================
+
+    fn pk_row(user_at_host: &str, key: Option<&str>) -> AssetPubkeyRow {
+        AssetPubkeyRow {
+            user_at_host: user_at_host.to_string(),
+            public_key: key.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn test_format_pubkeys_table_matches_psql_layout() {
+        const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMnTWoVi5btjn4YfOQxk48ziaWBDUjs+U02LSQeCkBAR root@localhost";
+        let rows = [pk_row("root@localhost", Some(KEY))];
+        let out = format_pubkeys_table(&rows);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "header + separator + one row");
+        // Headers are centered (psql style); values are left-aligned;
+        // trailing whitespace is trimmed.
+        assert_eq!(
+            lines[0],
+            format!(
+                " {:^14} | {:^width$}",
+                "user@hostname",
+                "ssh_public_key",
+                width = KEY.len()
+            )
+            .trim_end()
+        );
+        assert_eq!(
+            lines[1],
+            format!("{}+{}", "-".repeat(16), "-".repeat(KEY.len() + 2))
+        );
+        assert_eq!(lines[2], format!(" {:<14} | {KEY}", "root@localhost"));
+    }
+
+    #[test]
+    fn test_format_pubkeys_table_pads_to_longest_value() {
+        let rows = [
+            pk_row("a@b", Some("k1")),
+            pk_row("longer-user@longer-hostname", Some("key-two")),
+        ];
+        let out = format_pubkeys_table(&rows);
+        let lines: Vec<&str> = out.lines().collect();
+        // The column joint sits at the same offset on every line
+        // (`|` on header/rows, `+` on the separator).
+        let joint = lines[1].find('+').expect("separator must have a joint");
+        assert_eq!(lines[0].find('|'), Some(joint));
+        for row_line in &lines[2..] {
+            assert_eq!(
+                row_line.find('|'),
+                Some(joint),
+                "misaligned row: {row_line:?}"
+            );
+        }
+        // Both column headers survive.
+        assert!(lines[0].contains("user@hostname"));
+        assert!(lines[0].contains("ssh_public_key"));
+        // Separator has exactly one column joint.
+        assert_eq!(lines[1].matches('+').count(), 1);
+        assert!(lines[1].chars().all(|c| c == '-' || c == '+'));
+    }
+
+    #[test]
+    fn test_format_pubkeys_table_shows_missing_key_as_empty_cell() {
+        let rows = [pk_row("root@nokey", None)];
+        let out = format_pubkeys_table(&rows);
+        let last = out.lines().last().unwrap();
+        assert!(
+            last.contains("root@nokey"),
+            "misconfigured ssh_key assets must stay visible in table mode"
+        );
+        let key_cell = last.split('|').nth(1).unwrap();
+        assert!(key_cell.trim().is_empty(), "key cell must be empty");
+    }
+
+    #[test]
+    fn test_format_pubkeys_table_empty() {
+        assert_eq!(format_pubkeys_table(&[]), "(no ssh_key assets)\n");
+    }
+
+    // ==================== asset-pubkeys: plain format ====================
+
+    #[test]
+    fn test_format_pubkeys_plain_one_line_per_asset() {
+        let rows = [
+            pk_row("root@h1", Some("ssh-ed25519 AAA root@h1")),
+            pk_row("admin@h2", Some("ssh-rsa BBB admin@h2")),
+        ];
+        assert_eq!(
+            format_pubkeys_plain(&rows),
+            "root@h1 ssh-ed25519 AAA root@h1\nadmin@h2 ssh-rsa BBB admin@h2\n"
+        );
+    }
+
+    #[test]
+    fn test_format_pubkeys_plain_skips_missing_or_blank_keys() {
+        let rows = [
+            pk_row("root@h1", None),
+            pk_row("root@h2", Some("   ")),
+            pk_row("root@h3", Some("ssh-ed25519 CCC")),
+        ];
+        assert_eq!(
+            format_pubkeys_plain(&rows),
+            "root@h3 ssh-ed25519 CCC\n",
+            "plain output must be safe to pipe (no empty-key lines)"
+        );
+    }
+
+    #[test]
+    fn test_format_pubkeys_plain_empty() {
+        assert_eq!(format_pubkeys_plain(&[]), "");
+    }
+
+    // ==================== asset-pubkeys: DB integration matrix ============
+
+    fn test_db_connection() -> PgConnection {
+        let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgresql://vauban_test:vauban_test@localhost/vauban_test".to_string()
+        });
+        PgConnection::establish(&url).expect("test database must be reachable")
+    }
+
+    fn insert_test_asset(
+        conn: &mut PgConnection,
+        name: &str,
+        hostname: &str,
+        connection_username: &str,
+        config: serde_json::Value,
+        deleted: bool,
+    ) {
+        diesel::insert_into(assets::table)
+            .values((
+                assets::name.eq(name),
+                assets::hostname.eq(hostname),
+                assets::connection_username.eq(connection_username),
+                assets::connection_config.eq(config),
+                assets::is_deleted.eq(deleted),
+            ))
+            .execute(conn)
+            .expect("failed to seed test asset");
+    }
+
+    /// Full E2E matrix on a live database: inclusion (ssh_key only,
+    /// not deleted), Rust-side COALESCE, missing-key rows surfaced as
+    /// None, deterministic hostname ordering.
+    #[test]
+    fn test_fetch_asset_pubkeys_db_matrix() {
+        let mut conn = test_db_connection();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        let prefix = format!("pkmx{ts}");
+
+        // a: ssh_key + JSON username -> JSON username wins.
+        insert_test_asset(
+            &mut conn,
+            &format!("{prefix}-a"),
+            &format!("{prefix}-a.example"),
+            "colfallback",
+            serde_json::json!({
+                "auth_type": "ssh_key",
+                "username": "jsonroot",
+                "ssh_public_key": "ssh-ed25519 AAAA a"
+            }),
+            false,
+        );
+        // b: ssh_key without JSON username -> connection_username.
+        insert_test_asset(
+            &mut conn,
+            &format!("{prefix}-b"),
+            &format!("{prefix}-b.example"),
+            "colroot",
+            serde_json::json!({
+                "auth_type": "ssh_key",
+                "ssh_public_key": "ssh-ed25519 BBBB b"
+            }),
+            false,
+        );
+        // c: ssh_key without public key -> present, key = None.
+        insert_test_asset(
+            &mut conn,
+            &format!("{prefix}-c"),
+            &format!("{prefix}-c.example"),
+            "nokey",
+            serde_json::json!({ "auth_type": "ssh_key" }),
+            false,
+        );
+        // d: password auth -> excluded.
+        insert_test_asset(
+            &mut conn,
+            &format!("{prefix}-d"),
+            &format!("{prefix}-d.example"),
+            "pw",
+            serde_json::json!({ "auth_type": "password", "ssh_public_key": "ssh-ed25519 DDDD d" }),
+            false,
+        );
+        // e: deleted asset -> excluded. The DB tombstone constraint
+        // (assets_tombstone_no_secrets) forces connection_config = '{}'
+        // on deleted rows, so exclusion is doubly guaranteed: by the
+        // is_deleted filter AND by the emptied config.
+        insert_test_asset(
+            &mut conn,
+            &format!("{prefix}-e"),
+            &format!("{prefix}-e.example"),
+            "gone",
+            serde_json::json!({}),
+            true,
+        );
+
+        let all = fetch_asset_pubkeys(&mut conn).expect("fetch must succeed");
+        let ours: Vec<&AssetPubkeyRow> = all
+            .iter()
+            .filter(|r| r.user_at_host.contains(&prefix))
+            .collect();
+
+        assert_eq!(
+            ours,
+            vec![
+                &pk_row(
+                    &format!("jsonroot@{prefix}-a.example"),
+                    Some("ssh-ed25519 AAAA a"),
+                ),
+                &pk_row(
+                    &format!("colroot@{prefix}-b.example"),
+                    Some("ssh-ed25519 BBBB b"),
+                ),
+                &pk_row(&format!("nokey@{prefix}-c.example"), None),
+            ],
+            "inclusion, COALESCE and hostname ordering must all hold"
+        );
+
+        // Cleanup the seeded rows (hard delete: test fixtures only).
+        diesel::delete(assets::table.filter(assets::hostname.like(format!("{prefix}%"))))
+            .execute(&mut conn)
+            .expect("cleanup failed");
+    }
+
+    /// Empty-DB behaviour: with no matching asset the fetch returns an
+    /// empty vec (formatters then render the explicit empty states).
+    #[test]
+    fn test_fetch_asset_pubkeys_ignores_unrelated_rows() {
+        let mut conn = test_db_connection();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        let prefix = format!("pkun{ts}");
+
+        insert_test_asset(
+            &mut conn,
+            &format!("{prefix}-pw"),
+            &format!("{prefix}-pw.example"),
+            "pw",
+            serde_json::json!({ "auth_type": "password" }),
+            false,
+        );
+
+        let all = fetch_asset_pubkeys(&mut conn).expect("fetch must succeed");
+        assert!(
+            !all.iter().any(|r| r.user_at_host.contains(&prefix)),
+            "password-auth assets must never leak into asset-pubkeys"
+        );
+
+        diesel::delete(assets::table.filter(assets::hostname.like(format!("{prefix}%"))))
+            .execute(&mut conn)
+            .expect("cleanup failed");
     }
 }
