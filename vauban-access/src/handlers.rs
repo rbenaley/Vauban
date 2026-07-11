@@ -366,6 +366,98 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
             ews_uuid,
             actor_ip,
         } => crate::iacs::handle_enable_ews(&mut conn, &actor_user_uuid, &ews_uuid, actor_ip).await,
+        // ===================================================================
+        // Organisational vault secrets -- group CRUD, rule CRUD, evaluation.
+        // All handlers live in `crate::secrets`; vauban-access stays the
+        // single evaluation oracle for secret_access_rules.
+        // ===================================================================
+        AccessRequest::CreateSecretGroup {
+            name,
+            slug,
+            description,
+            actor_uuid,
+        } => {
+            crate::secrets::handle_create_secret_group(
+                &mut conn,
+                &name,
+                &slug,
+                description.as_deref(),
+                actor_uuid.as_deref(),
+            )
+            .await
+        }
+        AccessRequest::GetSecretGroup { uuid } => {
+            crate::secrets::handle_get_secret_group(&mut conn, &uuid).await
+        }
+        AccessRequest::ListSecretGroups {
+            page,
+            include_virtual,
+        } => crate::secrets::handle_list_secret_groups(&mut conn, page, include_virtual).await,
+        AccessRequest::UpdateSecretGroup {
+            uuid,
+            name,
+            slug,
+            description,
+            actor_uuid,
+        } => {
+            crate::secrets::handle_update_secret_group(
+                &mut conn,
+                &uuid,
+                &name,
+                &slug,
+                description.as_deref(),
+                actor_uuid.as_deref(),
+            )
+            .await
+        }
+        AccessRequest::DeleteSecretGroup { uuid } => {
+            crate::secrets::handle_delete_secret_group(&mut conn, &uuid).await
+        }
+        AccessRequest::ListSecretGroupOptions {
+            page,
+            include_virtual,
+        } => {
+            crate::secrets::handle_list_secret_group_options(&mut conn, page, include_virtual).await
+        }
+
+        AccessRequest::CreateSecretAccessRule { data, actor_uuid } => {
+            crate::secrets::handle_create_secret_access_rule(&mut conn, data, actor_uuid.as_deref())
+                .await
+        }
+        AccessRequest::GetSecretAccessRule { uuid } => {
+            crate::secrets::handle_get_secret_access_rule(&mut conn, &uuid).await
+        }
+        AccessRequest::ListSecretAccessRules { page } => {
+            crate::secrets::handle_list_secret_access_rules(&mut conn, page).await
+        }
+        AccessRequest::UpdateSecretAccessRule {
+            uuid,
+            data,
+            actor_uuid,
+        } => {
+            crate::secrets::handle_update_secret_access_rule(
+                &mut conn,
+                &uuid,
+                data,
+                actor_uuid.as_deref(),
+            )
+            .await
+        }
+        AccessRequest::DeleteSecretAccessRule { uuid } => {
+            crate::secrets::handle_delete_secret_access_rule(&mut conn, &uuid).await
+        }
+
+        AccessRequest::ListAccessibleSecretGroups { user_id, page } => {
+            crate::secrets::handle_list_accessible_secret_groups(&mut conn, user_id, page).await
+        }
+        AccessRequest::CheckSecretAccessByUuid {
+            user_uuid,
+            secret_uuid,
+        } => {
+            crate::secrets::handle_check_secret_access_by_uuid(&mut conn, &user_uuid, &secret_uuid)
+                .await
+        }
+
         AccessRequest::OffboardEws {
             actor_user_uuid,
             ews_uuid,
@@ -685,7 +777,7 @@ pub async fn handle_issue_diagnostic_token(
 
 // ==================== Helpers ====================
 
-fn normalize_ipc_page(page: IpcPageParams) -> (i64, i64) {
+pub(crate) fn normalize_ipc_page(page: IpcPageParams) -> (i64, i64) {
     let limit = if page.limit == 0 {
         DEFAULT_IPC_PAGE_LIMIT
     } else {
@@ -694,7 +786,7 @@ fn normalize_ipc_page(page: IpcPageParams) -> (i64, i64) {
     (i64::from(limit), i64::from(page.offset))
 }
 
-fn parse_optional_datetime(
+pub(crate) fn parse_optional_datetime(
     value: &Option<String>,
 ) -> Result<Option<chrono::DateTime<Utc>>, String> {
     match value {
@@ -780,7 +872,7 @@ async fn build_vauban_group_info(
     })
 }
 
-fn parse_uuid(uuid_str: &str) -> Result<Uuid, String> {
+pub(crate) fn parse_uuid(uuid_str: &str) -> Result<Uuid, String> {
     Uuid::parse_str(uuid_str).map_err(|e| format!("Invalid UUID '{}': {}", uuid_str, e))
 }
 
@@ -791,7 +883,10 @@ fn parse_uuid(uuid_str: &str) -> Result<Uuid, String> {
 /// audit columns are `Nullable<Int4>` so a `None` only flips
 /// the read-side Metadata cell to the muted em-dash on the web
 /// detail pages, never blocking the write itself.
-async fn resolve_actor_id(conn: &mut DbConnection, actor_uuid: Option<&str>) -> Option<i32> {
+pub(crate) async fn resolve_actor_id(
+    conn: &mut DbConnection,
+    actor_uuid: Option<&str>,
+) -> Option<i32> {
     let raw = actor_uuid?;
     let parsed = Uuid::parse_str(raw).ok()?;
     users::table

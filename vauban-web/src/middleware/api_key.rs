@@ -52,22 +52,43 @@ pub struct ApiKeyAuth {
 }
 
 impl ApiKeyAuth {
-    /// Whether the key grants at least the `required` scope, honoring the
-    /// hierarchy `admin >= write >= read`.
+    /// Whether the key grants at least the `required` scope.
+    ///
+    /// Two disjoint families:
+    ///
+    /// - `read` / `write` / `admin` are hierarchical among themselves
+    ///   (`admin >= write >= read`);
+    /// - `secrets` is an ISLAND: it is satisfied ONLY by a key that
+    ///   carries the literal `secrets` scope, and it never satisfies any
+    ///   rank of the hierarchy. In particular `admin` does NOT imply
+    ///   `secrets` (an admin automation key must not be able to read
+    ///   organisational secret values), and `secrets` does NOT imply
+    ///   `read` (a secrets key is useless outside `/api/v1/vault/*`).
     pub fn satisfies(&self, required: ApiKeyScope) -> bool {
-        self.scopes
-            .iter()
-            .any(|granted| scope_rank(*granted) >= scope_rank(required))
+        match required {
+            ApiKeyScope::Secrets => self.scopes.contains(&ApiKeyScope::Secrets),
+            _ => self
+                .scopes
+                .iter()
+                .filter_map(|granted| scope_rank(*granted))
+                .any(|granted_rank| {
+                    // `required` is hierarchical here, so its rank exists.
+                    scope_rank(required).is_some_and(|r| granted_rank >= r)
+                }),
+        }
     }
 }
 
-/// Order the scopes so the broader one covers the narrower (`admin` covers
-/// `write` and `read`; `write` covers `read`).
-fn scope_rank(scope: ApiKeyScope) -> u8 {
+/// Order the hierarchical scopes so the broader one covers the narrower
+/// (`admin` covers `write` and `read`; `write` covers `read`). `Secrets`
+/// deliberately has NO rank: it lives outside the hierarchy and is
+/// matched by literal equality only (see [`ApiKeyAuth::satisfies`]).
+fn scope_rank(scope: ApiKeyScope) -> Option<u8> {
     match scope {
-        ApiKeyScope::Read => 0,
-        ApiKeyScope::Write => 1,
-        ApiKeyScope::Admin => 2,
+        ApiKeyScope::Read => Some(0),
+        ApiKeyScope::Write => Some(1),
+        ApiKeyScope::Admin => Some(2),
+        ApiKeyScope::Secrets => None,
     }
 }
 
@@ -192,10 +213,18 @@ pub async fn authenticate_api_key(
 
 /// Map an API request to the scope it requires.
 ///
-/// Coarse model (INV-3): the admin zone (`/api/v1/accounts*` and any
-/// `/assets/manage*` path) requires `admin`; other mutations
-/// (POST/PUT/PATCH/DELETE) require `write`; safe methods require `read`.
+/// Coarse model (INV-3): the vault-secrets M2M zone (`/api/v1/vault*`)
+/// requires the isolated `secrets` scope regardless of method; the admin
+/// zone (`/api/v1/accounts*` and any `/assets/manage*` path) requires
+/// `admin`; other mutations (POST/PUT/PATCH/DELETE) require `write`;
+/// safe methods require `read`.
 pub fn required_scope(method: &Method, path: &str) -> ApiKeyScope {
+    // Checked BEFORE the method match: every verb on the vault zone maps
+    // to `Secrets`, so even a hypothetical future mutation route could
+    // never be reached with a mere `write`/`admin` key.
+    if path.starts_with("/api/v1/vault") {
+        return ApiKeyScope::Secrets;
+    }
     if path.starts_with("/api/v1/accounts") || path.contains("/assets/manage") {
         return ApiKeyScope::Admin;
     }
@@ -366,6 +395,62 @@ mod tests {
         assert!(!a.satisfies(ApiKeyScope::Read));
         assert!(!a.satisfies(ApiKeyScope::Write));
         assert!(!a.satisfies(ApiKeyScope::Admin));
+        assert!(!a.satisfies(ApiKeyScope::Secrets));
+    }
+
+    // ==================== Secrets isolation matrix ====================
+
+    /// SECURITY: `secrets` is an island. Full cartesian matrix between
+    /// the four scopes: only the literal `secrets` scope satisfies the
+    /// `Secrets` requirement, and `secrets` satisfies nothing else.
+    #[test]
+    fn secrets_scope_is_isolated_from_hierarchy() {
+        // No hierarchical scope satisfies Secrets -- not even admin.
+        for granted in [ApiKeyScope::Read, ApiKeyScope::Write, ApiKeyScope::Admin] {
+            assert!(
+                !auth(&[granted]).satisfies(ApiKeyScope::Secrets),
+                "{granted:?} must NOT satisfy Secrets"
+            );
+        }
+        // Secrets satisfies only Secrets.
+        let s = auth(&[ApiKeyScope::Secrets]);
+        assert!(s.satisfies(ApiKeyScope::Secrets));
+        assert!(!s.satisfies(ApiKeyScope::Read));
+        assert!(!s.satisfies(ApiKeyScope::Write));
+        assert!(!s.satisfies(ApiKeyScope::Admin));
+    }
+
+    /// A key carrying BOTH families keeps both capabilities (the union
+    /// semantics of multi-scope keys is preserved).
+    #[test]
+    fn combined_secrets_and_read_key_satisfies_both() {
+        let a = auth(&[ApiKeyScope::Secrets, ApiKeyScope::Read]);
+        assert!(a.satisfies(ApiKeyScope::Secrets));
+        assert!(a.satisfies(ApiKeyScope::Read));
+        assert!(!a.satisfies(ApiKeyScope::Write));
+    }
+
+    #[test]
+    fn required_scope_secrets_on_vault_zone_all_methods() {
+        for m in [
+            Method::GET,
+            Method::HEAD,
+            Method::OPTIONS,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ] {
+            assert_eq!(
+                required_scope(&m, "/api/v1/vault/secrets"),
+                ApiKeyScope::Secrets,
+                "method {m} on the vault zone must require the secrets scope"
+            );
+        }
+        assert_eq!(
+            required_scope(&Method::GET, "/api/v1/vault/secrets/abc/value"),
+            ApiKeyScope::Secrets
+        );
     }
 
     #[test]

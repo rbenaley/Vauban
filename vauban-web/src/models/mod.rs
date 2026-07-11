@@ -11,6 +11,7 @@ pub mod ews_audit;
 pub mod ews_request;
 pub mod session;
 pub mod user;
+pub mod vault_secret;
 
 pub use access_rule::*;
 pub use api_key::*;
@@ -22,3 +23,4 @@ pub use ews_audit::*;
 pub use ews_request::*;
 pub use session::*;
 pub use user::*;
+pub use vault_secret::*;

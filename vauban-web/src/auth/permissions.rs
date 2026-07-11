@@ -106,6 +106,20 @@ pub struct PermissionContext {
     /// `[industrial].enabled = false` forces the flag to `false`,
     /// regardless of the policy decision.
     pub assets_connect_iacs: bool,
+    /// Consume the organisational vault-secrets M2M API
+    /// (`GET /api/v1/vault/secrets*`). This is the FUNCTIONAL capability
+    /// only; the instance-level decision (which secrets) is governed by
+    /// `secret_access_rules` evaluated in vauban-access, with NO
+    /// superuser/read_all bypass. Granted to `role:user` and
+    /// `role:staff` by default.
+    pub vault_secrets_read: bool,
+    /// Admin CRUD on the "Vault Secrets" section (`/vault/secrets/*`):
+    /// secrets (write-only values), secret groups + membership, and
+    /// secret access rules. Granted to `role:staff` and
+    /// `role:superuser` (via wildcard). Holding `manage` does NOT
+    /// imply the right to read a secret VALUE through the API -- that
+    /// path stays behind a covering secret_access_rule.
+    pub vault_secrets_manage: bool,
 }
 
 impl PermissionContext {
@@ -140,6 +154,8 @@ impl PermissionContext {
             iacs_read,
             iacs_manage,
             assets_connect_iacs,
+            vault_secrets_read,
+            vault_secrets_manage,
         ) = tokio::join!(
             check_rbac(state, user, "users", "read"),
             check_rbac(state, user, "users", "write"),
@@ -165,6 +181,8 @@ impl PermissionContext {
             check_rbac(state, user, "iacs", "read"),
             check_rbac(state, user, "iacs", "manage"),
             check_rbac(state, user, "assets", "connect_iacs"),
+            check_rbac(state, user, "vault_secrets", "read"),
+            check_rbac(state, user, "vault_secrets", "manage"),
         );
 
         // Kill-switch precedence: `[industrial].enabled = false` forces
@@ -204,6 +222,8 @@ impl PermissionContext {
             // of the other `iacs_*` flags. The user-zone Connect
             // button is hidden in that mode (see asset_list.html).
             assets_connect_iacs: assets_connect_iacs && industrial_enabled,
+            vault_secrets_read,
+            vault_secrets_manage,
         }
     }
 }
@@ -303,6 +323,8 @@ mod tests {
         assert!(!ctx.iacs_read);
         assert!(!ctx.iacs_manage);
         assert!(!ctx.assets_connect_iacs);
+        assert!(!ctx.vault_secrets_read);
+        assert!(!ctx.vault_secrets_manage);
     }
 
     #[test]

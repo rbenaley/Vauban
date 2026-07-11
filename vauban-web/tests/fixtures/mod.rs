@@ -2094,3 +2094,145 @@ pub async fn set_access_rule_validity(
             .await
     );
 }
+
+// ============================================================================
+// Vault secrets fixtures (organisational secrets, direct DB seed)
+// ============================================================================
+
+/// Create a vault secret directly in the DB. In dev/test posture the
+/// vault is absent, so `plaintext_value` is stored as-is in `ciphertext`
+/// (same contract as `encrypt_connection_config`). Returns
+/// `(internal id, uuid)`.
+pub async fn create_test_vault_secret(
+    conn: &mut AsyncPgConnection,
+    name: &str,
+    plaintext_value: &str,
+    is_active: bool,
+) -> (i32, Uuid) {
+    use vauban_web::schema::vault_secrets;
+
+    let secret_uuid = Uuid::new_v4();
+    let unique_name = format!("test-secret-{}_{}", name, &secret_uuid.to_string()[..8]);
+
+    let id: i32 = unwrap_ok!(
+        diesel::insert_into(vault_secrets::table)
+            .values((
+                vault_secrets::uuid.eq(secret_uuid),
+                vault_secrets::name.eq(&unique_name),
+                vault_secrets::description.eq(Some("Test vault secret")),
+                vault_secrets::ciphertext.eq(plaintext_value),
+                vault_secrets::is_active.eq(is_active),
+            ))
+            .returning(vault_secrets::id)
+            .get_result(conn)
+            .await
+    );
+
+    (id, secret_uuid)
+}
+
+/// Create a static secret group. Returns `(internal id, uuid)`.
+pub async fn create_test_secret_group(conn: &mut AsyncPgConnection, name: &str) -> (i32, Uuid) {
+    use vauban_web::schema::secret_groups;
+
+    let group_uuid = Uuid::new_v4();
+    let unique_name = format!("test-sg-{}_{}", name, &group_uuid.to_string()[..8]);
+    let slug = unique_name.to_lowercase().replace([' ', '_'], "-");
+
+    let id: i32 = unwrap_ok!(
+        diesel::insert_into(secret_groups::table)
+            .values((
+                secret_groups::uuid.eq(group_uuid),
+                secret_groups::name.eq(&unique_name),
+                secret_groups::slug.eq(&slug),
+                secret_groups::description.eq(Some("Test secret group")),
+                secret_groups::kind.eq("static"),
+            ))
+            .returning(secret_groups::id)
+            .get_result(conn)
+            .await
+    );
+
+    (id, group_uuid)
+}
+
+/// Attach a secret to a secret group (junction insert, idempotent).
+pub async fn add_secret_to_secret_group(
+    conn: &mut AsyncPgConnection,
+    secret_id: i32,
+    secret_group_id: i32,
+) {
+    use vauban_web::schema::secret_secret_groups;
+
+    unwrap_ok!(
+        diesel::insert_into(secret_secret_groups::table)
+            .values((
+                secret_secret_groups::secret_id.eq(secret_id),
+                secret_secret_groups::secret_group_id.eq(secret_group_id),
+            ))
+            .on_conflict_do_nothing()
+            .execute(conn)
+            .await
+    );
+}
+
+/// Resolve the internal id of the virtual "All secrets" group (seeded by
+/// the migration with the reserved UUID).
+pub async fn all_secrets_group_id(conn: &mut AsyncPgConnection) -> i32 {
+    use vauban_web::schema::secret_groups;
+
+    let virtual_uuid = unwrap_ok!(Uuid::parse_str(shared::messages::ALL_SECRETS_GROUP_UUID));
+    unwrap_ok!(
+        secret_groups::table
+            .filter(secret_groups::uuid.eq(virtual_uuid))
+            .select(secret_groups::id)
+            .first(conn)
+            .await
+    )
+}
+
+/// Create a secret access rule (direct DB seed, mirror of
+/// `create_test_access_rule`). `user_group_uuid` references
+/// `vauban_groups`; `secret_group_id` is the internal id of the secret
+/// group (use [`all_secrets_group_id`] for the virtual group). Returns
+/// the rule's uuid.
+pub async fn create_test_secret_access_rule(
+    conn: &mut AsyncPgConnection,
+    user_group_uuid: &Uuid,
+    secret_group_id: i32,
+    is_active: bool,
+    valid_from: Option<DateTime<Utc>>,
+    valid_until: Option<DateTime<Utc>>,
+) -> Uuid {
+    use vauban_web::schema::{secret_access_rules, vauban_groups};
+
+    let ug_id: i32 = unwrap_ok!(
+        vauban_groups::table
+            .filter(vauban_groups::uuid.eq(user_group_uuid))
+            .select(vauban_groups::id)
+            .first(conn)
+            .await
+    );
+
+    let rule_uuid = Uuid::new_v4();
+    let unique_name = format!("test-srule_{}", &rule_uuid.to_string()[..8]);
+
+    unwrap_ok!(
+        diesel::insert_into(secret_access_rules::table)
+            .values((
+                secret_access_rules::uuid.eq(rule_uuid),
+                secret_access_rules::name.eq(&unique_name),
+                secret_access_rules::description.eq(Some("Test secret access rule")),
+                secret_access_rules::user_group_id.eq(ug_id),
+                secret_access_rules::secret_group_id.eq(secret_group_id),
+                secret_access_rules::valid_from.eq(valid_from),
+                secret_access_rules::valid_until.eq(valid_until),
+                secret_access_rules::is_active.eq(is_active),
+                secret_access_rules::priority.eq(0),
+            ))
+            .execute(conn)
+            .await
+    );
+
+    rule_uuid
+}

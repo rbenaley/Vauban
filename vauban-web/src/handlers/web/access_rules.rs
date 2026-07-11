@@ -183,7 +183,10 @@ fn any_iacs_protocol(allowed_protocols: &[String]) -> bool {
 /// viewer's local time. When the cookie is absent `tz` is `UTC`
 /// (see `BrowserTz`), which preserves the historical UTC behavior for
 /// callers that do not advertise a timezone.
-fn parse_datetime(s: &Option<String>, tz: chrono_tz::Tz) -> Option<chrono::DateTime<chrono::Utc>> {
+pub(crate) fn parse_datetime(
+    s: &Option<String>,
+    tz: chrono_tz::Tz,
+) -> Option<chrono::DateTime<chrono::Utc>> {
     use chrono::TimeZone;
     use chrono::offset::LocalResult;
     s.as_deref().filter(|v| !v.is_empty()).and_then(|v| {
@@ -204,7 +207,7 @@ fn parse_datetime(s: &Option<String>, tz: chrono_tz::Tz) -> Option<chrono::DateT
 
 /// Convert RFC3339 string from IPC to display format "YYYY-MM-DD HH:MM <Z>"
 /// in the operator's browser timezone.
-fn format_rfc3339_to_display(s: &Option<String>, tz: chrono_tz::Tz) -> Option<String> {
+pub(crate) fn format_rfc3339_to_display(s: &Option<String>, tz: chrono_tz::Tz) -> Option<String> {
     s.as_deref()
         .filter(|v| !v.is_empty())
         .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
@@ -212,7 +215,7 @@ fn format_rfc3339_to_display(s: &Option<String>, tz: chrono_tz::Tz) -> Option<St
 }
 
 /// Convert required RFC3339 string to display format in `tz`.
-fn format_rfc3339_str_to_display(s: &str, tz: chrono_tz::Tz) -> String {
+pub(crate) fn format_rfc3339_str_to_display(s: &str, tz: chrono_tz::Tz) -> String {
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|dt| crate::utils::format_local(dt.with_timezone(&chrono::Utc), tz))
         .unwrap_or_else(|_| s.to_string())
@@ -225,7 +228,7 @@ fn format_rfc3339_str_to_display(s: &str, tz: chrono_tz::Tz) -> String {
 /// The inverse of [`parse_datetime`]: the value pre-filled here is the
 /// same wall clock the browser will submit, so editing an access rule
 /// round-trips in the viewer's local time instead of UTC.
-fn format_rfc3339_to_local(s: &Option<String>, tz: chrono_tz::Tz) -> String {
+pub(crate) fn format_rfc3339_to_local(s: &Option<String>, tz: chrono_tz::Tz) -> String {
     s.as_deref()
         .filter(|v| !v.is_empty())
         .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
@@ -242,7 +245,7 @@ fn format_rfc3339_to_local(s: &Option<String>, tz: chrono_tz::Tz) -> String {
 }
 
 /// Convert DateTime<Utc> to RFC3339 string for IPC.
-fn to_rfc3339_opt(dt: &Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
+pub(crate) fn to_rfc3339_opt(dt: &Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
     dt.map(|d| d.to_rfc3339())
 }
 

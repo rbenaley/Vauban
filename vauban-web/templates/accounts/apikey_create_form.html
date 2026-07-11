@@ -25,7 +25,16 @@
                                    class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-700">
                             <span class="ml-2 text-sm text-gray-600 dark:text-gray-400">Write</span>
                         </label>
+                        <label class="inline-flex items-center ml-4">
+                            <input type="checkbox" name="scopes" value="secrets"
+                                   class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-700">
+                            <span class="ml-2 text-sm text-gray-600 dark:text-gray-400">Secrets</span>
+                        </label>
                     </div>
+                    <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                        The <span class="font-medium">Secrets</span> scope only grants the Vault Secrets API
+                        (<code class="text-xs">/api/v1/vault/*</code>) and nothing else; the other scopes never grant it.
+                    </p>
                 </div>
                 <div>
                     <label for="expires_in_days" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Expires in (days)</label>

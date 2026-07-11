@@ -251,6 +251,42 @@ pub struct AccessRuleInfo {
     pub updated_at: String,
 }
 
+/// Data for creating or updating a secret access rule (organisational
+/// vault-secrets counterpart of [`AccessRuleData`]). Deliberately leaner:
+/// no protocols, no MFA, no JIT approval, no session duration -- the
+/// consumer is an M2M API key retrieving secret values, not a session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretAccessRuleData {
+    pub name: String,
+    pub description: Option<String>,
+    pub user_group_id: i32,
+    pub secret_group_id: i32,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+    pub is_active: bool,
+    pub priority: i32,
+}
+
+/// Full info about a secret access rule (returned from queries).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretAccessRuleInfo {
+    pub uuid: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub user_group_id: i32,
+    pub user_group_uuid: String,
+    pub user_group_name: String,
+    pub secret_group_id: i32,
+    pub secret_group_uuid: String,
+    pub secret_group_name: String,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+    pub is_active: bool,
+    pub priority: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Info about a vauban group (user group).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaubanGroupInfo {
@@ -285,6 +321,46 @@ pub const ASSET_GROUP_KIND_STATIC: &str = "static";
 /// Marker value used by [`AssetGroupInfo::kind`] for the virtual "All
 /// assets" singleton.
 pub const ASSET_GROUP_KIND_ALL: &str = "all";
+
+/// Reserved UUID of the singleton "All secrets" virtual secret group.
+///
+/// Mnemonic: the suffix `…5ec4e7a11` reads as "secret all". The row is
+/// seeded by the `20260711000000_vault_secrets` migration with
+/// `kind = "all"`, guarded by Postgres triggers (no membership rows, no
+/// mutation, no deletion), and resolved at access-decision time to every
+/// active organisational secret.
+pub const ALL_SECRETS_GROUP_UUID: &str = "00000000-0000-0000-0000-0005ec4e7a11";
+
+/// Marker value used by [`SecretGroupInfo::kind`] for ordinary user-managed
+/// secret groups. The DB CHECK constraint pins the same vocabulary.
+pub const SECRET_GROUP_KIND_STATIC: &str = "static";
+
+/// Marker value used by [`SecretGroupInfo::kind`] for the virtual "All
+/// secrets" singleton.
+pub const SECRET_GROUP_KIND_ALL: &str = "all";
+
+/// Info about a secret group (organisational vault secrets).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretGroupInfo {
+    pub id: i32,
+    pub uuid: String,
+    pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
+    /// Discriminator: [`SECRET_GROUP_KIND_STATIC`] for ordinary groups,
+    /// [`SECRET_GROUP_KIND_ALL`] for the virtual "All secrets" singleton.
+    #[serde(default = "default_secret_group_kind")]
+    pub kind: String,
+    pub created_at: String,
+    pub updated_at: String,
+    /// Number of secrets attached via `secret_secret_groups` (0 for the
+    /// virtual group -- its semantics is "everything", not a list).
+    pub member_count: i64,
+}
+
+fn default_secret_group_kind() -> String {
+    SECRET_GROUP_KIND_STATIC.to_string()
+}
 
 /// Info about an asset group.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -987,6 +1063,99 @@ pub enum AccessRequest {
         decision_reason: Option<String>,
         actor_ip: Option<String>,
     },
+
+    // ===================================================================
+    // Organisational vault secrets -- group-to-group access control,
+    // 100% parallel to the asset machinery (secret_groups /
+    // secret_secret_groups / secret_access_rules). vauban-access is the
+    // single evaluation oracle; vauban-web NEVER evaluates
+    // secret_access_rules in SQL.
+    //
+    // Wire compatibility: appended after `OffboardEws`. New variants
+    // MUST keep being appended at the end.
+    // ===================================================================
+    /// Create a static secret group. `kind` is always forced to
+    /// `static` server-side; the virtual "All secrets" singleton is
+    /// seeded by migration only.
+    CreateSecretGroup {
+        name: String,
+        slug: String,
+        description: Option<String>,
+        /// Issue #22 — see `CreateAccessRule.actor_uuid`.
+        #[serde(default)]
+        actor_uuid: Option<String>,
+    },
+    GetSecretGroup {
+        uuid: String,
+    },
+    ListSecretGroups {
+        page: IpcPageParams,
+        /// When `true`, the virtual "All secrets" group is included in
+        /// the result alongside ordinary static groups; only the
+        /// secret-access-rule editor opts in.
+        #[serde(default)]
+        include_virtual: bool,
+    },
+    UpdateSecretGroup {
+        uuid: String,
+        name: String,
+        slug: String,
+        description: Option<String>,
+        #[serde(default)]
+        actor_uuid: Option<String>,
+    },
+    DeleteSecretGroup {
+        uuid: String,
+    },
+    ListSecretGroupOptions {
+        page: IpcPageParams,
+        /// See `ListSecretGroups.include_virtual`.
+        #[serde(default)]
+        include_virtual: bool,
+    },
+
+    CreateSecretAccessRule {
+        data: SecretAccessRuleData,
+        #[serde(default)]
+        actor_uuid: Option<String>,
+    },
+    GetSecretAccessRule {
+        uuid: String,
+    },
+    ListSecretAccessRules {
+        page: IpcPageParams,
+    },
+    UpdateSecretAccessRule {
+        uuid: String,
+        data: SecretAccessRuleData,
+        #[serde(default)]
+        actor_uuid: Option<String>,
+    },
+    DeleteSecretAccessRule {
+        uuid: String,
+    },
+
+    /// Bulk list-filter primitive: which secret groups can `user_id`
+    /// access right now? Same two-phase pattern as
+    /// `ListAccessibleGroups`: vauban-access returns the accessible
+    /// `secret_groups.id` values (with the virtual singleton resolved
+    /// server-side to a dedicated marker entry), and vauban-web joins
+    /// them to concrete secret ids locally.
+    ListAccessibleSecretGroups {
+        user_id: i32,
+        page: IpcPageParams,
+    },
+
+    /// Unit check before revealing one secret's value: does an active
+    /// secret_access_rule (valid window, active flag, virtual group
+    /// included) cover `(user_uuid, secret_uuid)`? Fail-closed: any DB
+    /// lookup error or unknown UUID yields `allowed: false`. There is
+    /// deliberately NO Casbin/read_all bypass here: even a superuser
+    /// must be covered by a rule.
+    CheckSecretAccessByUuid {
+        user_uuid: String,
+        secret_uuid: String,
+    },
 }
 
 /// Access control response from vauban-access.
@@ -1110,6 +1279,39 @@ pub enum AccessResponse {
     EwsDecisionDenied {
         reason: EwsDenyReason,
     },
+
+    // ===================================================================
+    // Organisational vault secrets replies. Wire compatibility:
+    // appended at the end.
+    // ===================================================================
+    SecretGroup(Result<SecretGroupInfo, String>),
+    SecretGroupPage(IpcPage<SecretGroupInfo>),
+    SecretGroupOptionsPage(IpcPage<GroupOption>),
+
+    SecretAccessRule(Result<SecretAccessRuleInfo, String>),
+    SecretAccessRulePage(IpcPage<SecretAccessRuleInfo>),
+
+    /// Reply to `ListAccessibleSecretGroups`. Entries carry the
+    /// accessible secret-group ids; when a rule targets the virtual
+    /// "All secrets" group, its entry is [`AccessibleSecretGroupEntry`]
+    /// with `is_virtual_all == true` (vauban-web then resolves it to
+    /// every active secret).
+    AccessibleSecretGroupsPage(IpcPage<AccessibleSecretGroupEntry>),
+
+    /// Reply to `CheckSecretAccessByUuid`. Fail-closed boolean.
+    SecretAccessChecked {
+        allowed: bool,
+    },
+}
+
+/// Entry describing one secret group a user can access.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct AccessibleSecretGroupEntry {
+    pub secret_group_id: i32,
+    /// `true` when this entry is the virtual "All secrets" singleton:
+    /// the caller must resolve it to every active secret instead of
+    /// joining `secret_secret_groups`.
+    pub is_virtual_all: bool,
 }
 
 /// Seed user data for admin commands.
@@ -1271,11 +1473,34 @@ pub enum AuditEventType {
     ApprovalRevoked,
     // An APPROVED grant's window was recomputed (extend or shorten).
     ApprovalDurationUpdated,
+    // ---- appended for organisational Vault Secrets (M2M API + admin) ----
+    // Appended at the end to keep existing wire discriminants stable.
+    /// An organisational secret row was created (web admin zone).
+    VaultSecretCreated,
+    /// Secret metadata and/or value updated (value change bumps `version`).
+    VaultSecretUpdated,
+    /// Secret hard-deleted (row removed; this WORM record is the trace).
+    VaultSecretDeleted,
+    /// Secret VALUE revealed through `GET /api/v1/vault/secrets/{uuid}/value`.
+    /// Security-critical: emitted via `emit_audit_critical` (durable ack
+    /// before the plaintext leaves the process).
+    VaultSecretRead,
+    /// Secret group lifecycle (admin zone, static groups only).
+    SecretGroupCreated,
+    SecretGroupUpdated,
+    SecretGroupDeleted,
+    /// Membership changes on `secret_secret_groups`.
+    SecretGroupMemberAdded,
+    SecretGroupMemberRemoved,
+    /// Secret access rule lifecycle (group-to-group grants).
+    SecretAccessRuleCreated,
+    SecretAccessRuleUpdated,
+    SecretAccessRuleDeleted,
 }
 
 impl AuditEventType {
     /// Number of variants. Pinned by `audit_event_type_count_is_pinned`.
-    pub const COUNT: usize = 44;
+    pub const COUNT: usize = 56;
 
     /// Every variant, for table-driven tests and drift checks.
     pub const ALL: [AuditEventType; Self::COUNT] = [
@@ -1323,6 +1548,18 @@ impl AuditEventType {
         AuditEventType::MfaSecretGenerated,
         AuditEventType::ApprovalRevoked,
         AuditEventType::ApprovalDurationUpdated,
+        AuditEventType::VaultSecretCreated,
+        AuditEventType::VaultSecretUpdated,
+        AuditEventType::VaultSecretDeleted,
+        AuditEventType::VaultSecretRead,
+        AuditEventType::SecretGroupCreated,
+        AuditEventType::SecretGroupUpdated,
+        AuditEventType::SecretGroupDeleted,
+        AuditEventType::SecretGroupMemberAdded,
+        AuditEventType::SecretGroupMemberRemoved,
+        AuditEventType::SecretAccessRuleCreated,
+        AuditEventType::SecretAccessRuleUpdated,
+        AuditEventType::SecretAccessRuleDeleted,
     ];
 
     /// Coarse category, for log pivoting and the drift test. EXHAUSTIVE match
@@ -1373,6 +1610,18 @@ impl AuditEventType {
             | AuditEventType::ApprovalCancelled
             | AuditEventType::ApprovalRevoked
             | AuditEventType::ApprovalDurationUpdated => "approval",
+            AuditEventType::VaultSecretCreated
+            | AuditEventType::VaultSecretUpdated
+            | AuditEventType::VaultSecretDeleted
+            | AuditEventType::VaultSecretRead
+            | AuditEventType::SecretGroupCreated
+            | AuditEventType::SecretGroupUpdated
+            | AuditEventType::SecretGroupDeleted
+            | AuditEventType::SecretGroupMemberAdded
+            | AuditEventType::SecretGroupMemberRemoved
+            | AuditEventType::SecretAccessRuleCreated
+            | AuditEventType::SecretAccessRuleUpdated
+            | AuditEventType::SecretAccessRuleDeleted => "vault",
             AuditEventType::AccessDenied => "denied",
         }
     }
@@ -2775,7 +3024,7 @@ mod tests {
         // and ALL together when appending a variant (never reorder existing
         // ones -- bincode encodes the index).
         assert_eq!(AuditEventType::ALL.len(), AuditEventType::COUNT);
-        assert_eq!(AuditEventType::COUNT, 44);
+        assert_eq!(AuditEventType::COUNT, 56);
     }
 
     #[test]

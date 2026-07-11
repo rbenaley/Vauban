@@ -1971,7 +1971,7 @@ fn respawn_linked_group(
         match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
             Ok(WaitStatus::Exited(pid, _)) | Ok(WaitStatus::Signaled(pid, _, _)) => {
                 // Update state if this was one of our children
-                for (_, state) in children.iter_mut() {
+                for state in children.values_mut() {
                     if state.pid == pid.as_raw() {
                         state.pid = 0;
                         break;

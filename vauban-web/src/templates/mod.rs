@@ -8,6 +8,7 @@ pub mod base;
 pub mod dashboard;
 pub mod iacs;
 pub mod partials;
+pub mod secrets;
 pub mod sessions;
 
 // Re-export commonly used templates

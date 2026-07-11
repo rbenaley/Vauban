@@ -21,6 +21,8 @@ p, role:staff, sessions, supervise
 p, role:staff, sessions, write
 p, role:staff, users, read
 p, role:staff, users, write
+p, role:staff, vault_secrets, manage
+p, role:staff, vault_secrets, read
 p, role:user, assets, connect_iacs
 p, role:user, assets, read
 p, role:user, iacs, read
@@ -29,3 +31,5 @@ p, role:user, profile, read
 p, role:user, profile, write
 # role:user sessions:read -- API only (GET /api/v1/sessions); instance filter in session_access
 p, role:user, sessions, read
+# role:user vault_secrets:read -- M2M API only (GET /api/v1/vault/secrets*); instance filter via secret_access_rules
+p, role:user, vault_secrets, read

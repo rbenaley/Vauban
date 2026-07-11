@@ -23,8 +23,10 @@
 //!
 //! Only the couples below are allowed; everything else is DENIED:
 //!
-//! - `web`: Encrypt{credentials, mfa}, Decrypt{credentials}, MfaGenerate,
-//!   MfaVerify, MfaGetSecret.
+//! - `web`: Encrypt{credentials, mfa, secrets}, Decrypt{credentials, secrets},
+//!   MfaGenerate, MfaVerify, MfaGetSecret. The `secrets` domain protects the
+//!   organisational vault-secrets store (user-facing M2M retrieval API);
+//!   only web ever touches it.
 //! - `auth`: MfaVerify ONLY. Deliberately NOT MfaGetSecret nor Decrypt{mfa}:
 //!   those return the TOTP secret in clear, while auth only needs a yes/no on
 //!   a submitted code.
@@ -122,6 +124,12 @@ pub const DOMAIN_CREDENTIALS: &str = "credentials";
 pub const DOMAIN_MFA: &str = "mfa";
 /// Key domain for the audit Ed25519 signing-key seed (WORM log).
 pub const DOMAIN_AUDIT: &str = "audit";
+/// Key domain for organisational vault secrets (M2M retrieval API). Only the
+/// `web` peer holds Encrypt/Decrypt on it: cryptographic domain separation
+/// guarantees a `credentials`/`mfa` ciphertext can never be opened through
+/// the vault-secrets path (and vice versa), even if a handler bug routes a
+/// ciphertext to the wrong surface.
+pub const DOMAIN_SECRETS: &str = "secrets";
 
 /// The authorization decision for a `(peer, message)` couple.
 ///
@@ -131,11 +139,13 @@ pub const DOMAIN_AUDIT: &str = "audit";
 #[must_use]
 pub fn is_authorized(peer: VaultPeer, msg: &Message) -> bool {
     match (peer, msg) {
-        // ---- web: full credential + MFA surface ----
+        // ---- web: full credential + MFA + org-secrets surface ----
         (VaultPeer::Web, Message::VaultEncrypt { domain, .. }) => {
-            domain == DOMAIN_CREDENTIALS || domain == DOMAIN_MFA
+            domain == DOMAIN_CREDENTIALS || domain == DOMAIN_MFA || domain == DOMAIN_SECRETS
         }
-        (VaultPeer::Web, Message::VaultDecrypt { domain, .. }) => domain == DOMAIN_CREDENTIALS,
+        (VaultPeer::Web, Message::VaultDecrypt { domain, .. }) => {
+            domain == DOMAIN_CREDENTIALS || domain == DOMAIN_SECRETS
+        }
         (VaultPeer::Web, Message::VaultMfaGenerate { .. }) => true,
         (VaultPeer::Web, Message::VaultMfaVerify { .. }) => true,
         (VaultPeer::Web, Message::VaultMfaGetSecret { .. }) => true,
@@ -260,8 +270,8 @@ mod tests {
     fn expected(peer: VaultPeer, verb: &str, domain: &str) -> bool {
         match peer {
             VaultPeer::Web => match verb {
-                "Encrypt" => domain == "credentials" || domain == "mfa",
-                "Decrypt" => domain == "credentials",
+                "Encrypt" => domain == "credentials" || domain == "mfa" || domain == "secrets",
+                "Decrypt" => domain == "credentials" || domain == "secrets",
                 "MfaGenerate" | "MfaVerify" | "MfaGetSecret" => true,
                 _ => false,
             },
@@ -276,7 +286,7 @@ mod tests {
 
     #[test]
     fn full_cartesian_product_matches_expected_matrix() {
-        let domains = ["credentials", "mfa", "audit", "unknown"];
+        let domains = ["credentials", "mfa", "audit", "secrets", "unknown"];
         for &peer in &VaultPeer::ALL {
             for domain in domains {
                 // Encrypt / Decrypt carry an explicit domain.
@@ -321,10 +331,35 @@ mod tests {
     fn web_has_full_documented_surface() {
         assert!(is_authorized(VaultPeer::Web, &encrypt("credentials")));
         assert!(is_authorized(VaultPeer::Web, &encrypt("mfa")));
+        assert!(is_authorized(VaultPeer::Web, &encrypt("secrets")));
         assert!(is_authorized(VaultPeer::Web, &decrypt("credentials")));
+        assert!(is_authorized(VaultPeer::Web, &decrypt("secrets")));
         assert!(is_authorized(VaultPeer::Web, &mfa_generate()));
         assert!(is_authorized(VaultPeer::Web, &mfa_verify()));
         assert!(is_authorized(VaultPeer::Web, &mfa_get_secret()));
+    }
+
+    /// SECURITY: the organisational-secrets domain is a web-exclusive
+    /// capability. No proxy, auth, audit, or supervisor channel may ever
+    /// encrypt or decrypt on it.
+    #[test]
+    fn only_web_can_touch_secrets_domain() {
+        for peer in [
+            VaultPeer::Auth,
+            VaultPeer::ProxySsh,
+            VaultPeer::ProxyRdp,
+            VaultPeer::Audit,
+            VaultPeer::Supervisor,
+        ] {
+            assert!(
+                !is_authorized(peer, &decrypt("secrets")),
+                "peer {peer:?} must not decrypt the secrets domain"
+            );
+            assert!(
+                !is_authorized(peer, &encrypt("secrets")),
+                "peer {peer:?} must not encrypt on the secrets domain"
+            );
+        }
     }
 
     /// SECURITY: even web cannot decrypt the raw MFA secret via VaultDecrypt;

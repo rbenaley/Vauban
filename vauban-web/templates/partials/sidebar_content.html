@@ -247,6 +247,32 @@
                     </li>
                     {% endif %}
 
+                    <!-- Vault Secrets (self-contained section: secrets,
+                         secret groups and secret access rules, all gated
+                         by the single vault_secrets:manage permission) -->
+                    {% if sc.perms.vault_secrets_manage %}
+                    <li>
+                        <a href="/vault/secrets"
+                           class="group flex gap-x-3 rounded-md p-2 text-sm font-semibold leading-6 {% if sc.is_vault_secrets %}bg-gray-800 text-white{% else %}text-gray-400 hover:bg-gray-800 hover:text-white{% endif %}">
+                            <svg class="h-6 w-6 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/>
+                            </svg>
+                            Vault Secrets
+                            {# Beta marker: mirrors the IACS badge. The
+                               organisational vault (M2M API + admin CRUD)
+                               is a preview surface; UX, schema and audit
+                               shape may still shift between minor
+                               releases. Same styling/tooltip contract as
+                               the IACS tag so operators read both the
+                               same way. #}
+                            <span class="inline-flex items-center rounded bg-amber-50 dark:bg-amber-900/30 px-1 py-0 text-[10px] leading-tight font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300 ring-1 ring-inset ring-amber-700/10 dark:ring-amber-300/20"
+                                  title="Vault Secrets is a beta preview surface; UX, schema and audit shape may change between releases.">
+                                Beta
+                            </span>
+                        </a>
+                    </li>
+                    {% endif %}
+
                     {# Issue #17 + #27: the deleted-assets audit view
                        remains accessible at `/assets/manage/deleted`
                        as a sub-section of Assets (entered via the

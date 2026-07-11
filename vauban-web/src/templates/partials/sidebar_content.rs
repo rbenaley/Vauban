@@ -24,6 +24,9 @@ pub struct SidebarContentTemplate {
     pub is_groups: bool,
     pub is_approvals: bool,
     pub is_access_rules: bool,
+    /// Active state for the "Vault Secrets" admin section
+    /// (`/vault/secrets/*`, gated by `vault_secrets:manage`).
+    pub is_vault_secrets: bool,
     pub is_my_requests: bool,
     /// Active state for the IACS admin landing page (`/iacs/admin`).
     pub is_iacs: bool,
@@ -84,6 +87,7 @@ mod tests {
             is_groups: false,
             is_approvals: false,
             is_access_rules: false,
+            is_vault_secrets: false,
             is_my_requests: false,
             is_iacs: false,
             pending_approval_count: 0,
@@ -118,6 +122,8 @@ mod tests {
             iacs_read: true,
             iacs_manage: true,
             assets_connect_iacs: true,
+            vault_secrets_read: true,
+            vault_secrets_manage: true,
         }
     }
 

@@ -48,7 +48,7 @@ diesel::table! {
     approval_audit_log (id) {
         id -> Int8,
         session_uuid -> Uuid,
-        #[max_length = 8]
+        #[max_length = 16]
         decision -> Varchar,
         actor_user_id -> Nullable<Int4>,
         #[max_length = 150]
@@ -304,6 +304,51 @@ diesel::table! {
 }
 
 diesel::table! {
+    secret_access_rules (id) {
+        id -> Int4,
+        uuid -> Uuid,
+        #[max_length = 100]
+        name -> Varchar,
+        description -> Nullable<Text>,
+        user_group_id -> Int4,
+        secret_group_id -> Int4,
+        valid_from -> Nullable<Timestamptz>,
+        valid_until -> Nullable<Timestamptz>,
+        is_active -> Bool,
+        priority -> Int4,
+        created_by_id -> Nullable<Int4>,
+        updated_by_id -> Nullable<Int4>,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    secret_groups (id) {
+        id -> Int4,
+        uuid -> Uuid,
+        #[max_length = 100]
+        name -> Varchar,
+        #[max_length = 100]
+        slug -> Varchar,
+        description -> Nullable<Text>,
+        #[max_length = 16]
+        kind -> Varchar,
+        created_by_id -> Nullable<Int4>,
+        updated_by_id -> Nullable<Int4>,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    secret_secret_groups (secret_id, secret_group_id) {
+        secret_id -> Int4,
+        secret_group_id -> Int4,
+    }
+}
+
+diesel::table! {
     user_groups (user_id, group_id) {
         user_id -> Int4,
         group_id -> Int4,
@@ -369,6 +414,23 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    vault_secrets (id) {
+        id -> Int4,
+        uuid -> Uuid,
+        #[max_length = 255]
+        name -> Varchar,
+        description -> Nullable<Text>,
+        ciphertext -> Text,
+        version -> Int4,
+        is_active -> Bool,
+        created_by_id -> Nullable<Int4>,
+        updated_by_id -> Nullable<Int4>,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
 diesel::joinable!(access_rules -> asset_groups (asset_group_id));
 diesel::joinable!(access_rules -> vauban_groups (user_group_id));
 diesel::joinable!(api_keys -> users (user_id));
@@ -376,6 +438,10 @@ diesel::joinable!(asset_asset_groups -> asset_groups (asset_group_id));
 diesel::joinable!(asset_asset_groups -> assets (asset_id));
 diesel::joinable!(auth_sessions -> users (user_id));
 diesel::joinable!(proxy_sessions -> assets (asset_id));
+diesel::joinable!(secret_access_rules -> secret_groups (secret_group_id));
+diesel::joinable!(secret_access_rules -> vauban_groups (user_group_id));
+diesel::joinable!(secret_secret_groups -> secret_groups (secret_group_id));
+diesel::joinable!(secret_secret_groups -> vault_secrets (secret_id));
 diesel::joinable!(user_groups -> users (user_id));
 diesel::joinable!(user_groups -> vauban_groups (group_id));
 
@@ -392,7 +458,11 @@ diesel::allow_tables_to_appear_in_same_query!(
     ews_audit_log,
     ews_onboarding_requests,
     proxy_sessions,
+    secret_access_rules,
+    secret_groups,
+    secret_secret_groups,
     user_groups,
     users,
     vauban_groups,
+    vault_secrets,
 );

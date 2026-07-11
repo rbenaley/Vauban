@@ -718,6 +718,96 @@ fn build_test_router(state: AppState) -> Router {
                     middleware::require_assets_manage::require_assets_manage,
                 )),
         )
+        // ----------------------------------------------------------------
+        // Vault Secrets M2M API (read-only, `secrets` scope enforced by
+        // `api_scope_enforcement`). Mirrors production main.rs.
+        // ----------------------------------------------------------------
+        .route(
+            "/api/v1/vault/secrets",
+            get(handlers::api::list_vault_secrets),
+        )
+        .route(
+            "/api/v1/vault/secrets/{uuid}",
+            get(handlers::api::get_vault_secret),
+        )
+        .route(
+            "/api/v1/vault/secrets/{uuid}/value",
+            get(handlers::api::get_vault_secret_value),
+        )
+        // ----------------------------------------------------------------
+        // Vault Secrets admin nest. Mirrors production: route_layer
+        // `require_vault_secrets_manage` fences the whole sub-tree
+        // BEFORE any handler/DB lookup; each handler re-checks the flag.
+        // ----------------------------------------------------------------
+        .nest(
+            "/vault/secrets",
+            Router::new()
+                .route(
+                    "/",
+                    get(handlers::web::vault_secrets_list)
+                        .post(handlers::web::create_vault_secret_web),
+                )
+                .route("/new", get(handlers::web::vault_secret_create_form))
+                .route(
+                    "/groups",
+                    get(handlers::web::secret_group_list)
+                        .post(handlers::web::create_secret_group_web),
+                )
+                .route("/groups/new", get(handlers::web::secret_group_create_form))
+                .route("/groups/{uuid}", get(handlers::web::secret_group_detail))
+                .route(
+                    "/groups/{uuid}/edit",
+                    get(handlers::web::secret_group_edit)
+                        .post(handlers::web::update_secret_group_web),
+                )
+                .route(
+                    "/groups/{uuid}/delete",
+                    post(handlers::web::delete_secret_group_web),
+                )
+                .route(
+                    "/groups/{uuid}/secrets/add",
+                    post(handlers::web::secret_group_add_secret),
+                )
+                .route(
+                    "/groups/{uuid}/secrets/{secret_uuid}/remove",
+                    post(handlers::web::secret_group_remove_secret),
+                )
+                .route(
+                    "/access",
+                    get(handlers::web::secret_access_rules_list)
+                        .post(handlers::web::create_secret_access_rule_web),
+                )
+                .route(
+                    "/access/new",
+                    get(handlers::web::secret_access_rule_create_form),
+                )
+                .route(
+                    "/access/{uuid}",
+                    get(handlers::web::secret_access_rule_detail),
+                )
+                .route(
+                    "/access/{uuid}/edit",
+                    get(handlers::web::secret_access_rule_edit)
+                        .post(handlers::web::update_secret_access_rule_web),
+                )
+                .route(
+                    "/access/{uuid}/delete",
+                    post(handlers::web::delete_secret_access_rule_web),
+                )
+                .route("/{uuid}", get(handlers::web::vault_secret_detail))
+                .route(
+                    "/{uuid}/edit",
+                    get(handlers::web::vault_secret_edit)
+                        .post(handlers::web::update_vault_secret_web),
+                )
+                .route(
+                    "/{uuid}/delete",
+                    post(handlers::web::delete_vault_secret_web),
+                )
+                .route_layer(axum::middleware::from_fn(
+                    middleware::require_vault_secrets_manage::require_vault_secrets_manage,
+                )),
+        )
         // Access rules - literal routes MUST come before parameterized routes
         .route(
             "/assets/access/new",
@@ -1103,6 +1193,25 @@ pub mod test_db {
             .execute(conn)
             .await
             .ok();
+        // Vault secrets sub-system: junction first, then rules, then the
+        // entities. The virtual "All secrets" group (kind='all') is a
+        // seeded singleton protected by triggers -- never delete it.
+        diesel::sql_query("DELETE FROM secret_secret_groups")
+            .execute(conn)
+            .await
+            .ok();
+        diesel::sql_query("DELETE FROM secret_access_rules")
+            .execute(conn)
+            .await
+            .ok();
+        diesel::sql_query("DELETE FROM vault_secrets")
+            .execute(conn)
+            .await
+            .ok();
+        diesel::sql_query("DELETE FROM secret_groups WHERE kind <> 'all'")
+            .execute(conn)
+            .await
+            .ok();
         diesel::sql_query("DELETE FROM assets WHERE name LIKE 'test-%'")
             .execute(conn)
             .await
@@ -1245,6 +1354,13 @@ pub mod ipc_test_service {
         // UNINITIALIZED_VIRTUAL_ID sentinel and miss every virtual rule.
         if let Err(e) = rt.block_on(vauban_access::virtual_group::init_or_die(&pool)) {
             eprintln!("test access service: failed to init virtual_group OnceLock: {e:?}");
+        }
+
+        // Same boot-time resolution for the "All secrets" virtual secret
+        // group: the secret-access evaluation verbs inject its id, so it
+        // must be resolved before any request is served.
+        if let Err(e) = rt.block_on(vauban_access::virtual_secret_group::init_or_die(&pool)) {
+            eprintln!("test access service: failed to init virtual_secret_group OnceLock: {e:?}");
         }
 
         loop {

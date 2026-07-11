@@ -56,12 +56,21 @@ pub struct ApiKeyCreated {
 }
 
 /// API key scopes.
+///
+/// `Read` / `Write` / `Admin` form the classic hierarchy
+/// (`admin >= write >= read`). `Secrets` sits deliberately OUTSIDE that
+/// hierarchy: it is the only scope that satisfies the `/api/v1/vault/*`
+/// M2M surface, and it satisfies nothing else. An `admin` key can NOT
+/// read organisational secrets, and a `secrets` key can NOT touch any
+/// other endpoint -- total isolation, least privilege for machine
+/// consumers (see `middleware::api_key::satisfies`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiKeyScope {
     Read,
     Write,
     Admin,
+    Secrets,
 }
 
 impl ApiKeyScope {
@@ -70,6 +79,7 @@ impl ApiKeyScope {
             Self::Read => "read",
             Self::Write => "write",
             Self::Admin => "admin",
+            Self::Secrets => "secrets",
         }
     }
 
@@ -78,6 +88,7 @@ impl ApiKeyScope {
             "read" => Some(Self::Read),
             "write" => Some(Self::Write),
             "admin" => Some(Self::Admin),
+            "secrets" => Some(Self::Secrets),
             _ => None,
         }
     }
@@ -234,7 +245,12 @@ mod tests {
 
     #[test]
     fn test_api_key_scope_roundtrip() {
-        for scope in [ApiKeyScope::Read, ApiKeyScope::Write, ApiKeyScope::Admin] {
+        for scope in [
+            ApiKeyScope::Read,
+            ApiKeyScope::Write,
+            ApiKeyScope::Admin,
+            ApiKeyScope::Secrets,
+        ] {
             let str_val = scope.as_str();
             let parsed = ApiKeyScope::parse(str_val);
             assert_eq!(Some(scope), parsed);
@@ -396,6 +412,7 @@ mod tests {
         assert_eq!(ApiKeyScope::Read.as_str(), "read");
         assert_eq!(ApiKeyScope::Write.as_str(), "write");
         assert_eq!(ApiKeyScope::Admin.as_str(), "admin");
+        assert_eq!(ApiKeyScope::Secrets.as_str(), "secrets");
     }
 
     #[test]

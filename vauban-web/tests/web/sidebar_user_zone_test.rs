@@ -79,6 +79,8 @@ fn admin_perms() -> PermissionContext {
         iacs_read: true,
         iacs_manage: true,
         assets_connect_iacs: true,
+        vault_secrets_read: true,
+        vault_secrets_manage: true,
     }
 }
 
@@ -104,6 +106,7 @@ fn make_sidebar(user: UserContext, perms: PermissionContext) -> SidebarContentTe
         is_groups: false,
         is_approvals: false,
         is_access_rules: false,
+        is_vault_secrets: false,
         is_my_requests: false,
         is_iacs: false,
         pending_approval_count: 0,
@@ -298,5 +301,57 @@ fn test_iacs_sidebar_entry_hidden_when_iacs_manage_is_false() {
     assert!(
         !html.contains(">Beta<"),
         "the Beta badge must NOT render when iacs_manage is false; it lives inside the gated IACS entry"
+    );
+}
+
+// ---------------------------------------------------------------
+// Vault Secrets sidebar entry carries a "Beta" badge
+// ---------------------------------------------------------------
+
+/// Operator request 2026-07-11: the Vault Secrets sidebar entry must
+/// surface the SAME "Beta" tag as the IACS entry (identical styling
+/// and tooltip contract) so the preview status of the organisational
+/// vault (M2M API + admin CRUD) is visible at a glance. Pinned here
+/// so a future template refactor cannot silently drop it.
+#[test]
+fn test_vault_secrets_sidebar_entry_carries_beta_tag() {
+    let html = render_with(make_sidebar(user_ctx(true), admin_perms()));
+
+    let vault_idx = html
+        .find(">Vault Secrets\n")
+        .or_else(|| html.find(">Vault Secrets<"))
+        .or_else(|| html.find("Vault Secrets\n"))
+        .expect("sidebar must carry the Vault Secrets entry label");
+
+    // The badge must sit AFTER the Vault Secrets label (the first
+    // ">Beta<" in the page belongs to the IACS entry, which renders
+    // earlier -- search from the vault label onward).
+    let beta_rel = html[vault_idx..]
+        .find(">Beta<")
+        .or_else(|| html[vault_idx..].find("Beta\n"))
+        .expect("sidebar Vault Secrets entry must carry a 'Beta' badge");
+    let beta_idx = vault_idx + beta_rel;
+    assert!(
+        vault_idx < beta_idx,
+        "the Beta badge (idx {beta_idx}) must appear AFTER the Vault Secrets label (idx {vault_idx}) so it sits next to the entry"
+    );
+
+    // Tooltip pin: same disclaimer contract as the IACS badge.
+    assert!(
+        html.contains("Vault Secrets is a beta preview surface"),
+        "the Vault Secrets Beta badge MUST carry a `title=` tooltip explaining that the surface is a preview"
+    );
+}
+
+#[test]
+fn test_vault_secrets_beta_tag_hidden_when_vault_secrets_manage_is_false() {
+    // The Vault Secrets entry as a whole is gated by
+    // `vault_secrets_manage`. When it is false the entire `<li>`
+    // block must not render -- and so its Beta tag (and tooltip)
+    // must NOT leak into the output either.
+    let html = render_with(make_sidebar(user_ctx(false), user_perms()));
+    assert!(
+        !html.contains("Vault Secrets is a beta preview surface"),
+        "the Vault Secrets Beta badge must NOT render when vault_secrets_manage is false; it lives inside the gated entry"
     );
 }

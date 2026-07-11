@@ -2558,11 +2558,17 @@ pub async fn create_api_key(
     // Generate the API key
     let (_prefix, full_key, hash) = ApiKey::generate_key();
 
-    // Parse scopes
+    // Parse scopes. Whitelisted through `ApiKeyScope::parse` so an
+    // arbitrary string posted to the form can never land in the JSONB
+    // column (unknown values would silently be dropped at auth time,
+    // but rejecting them at write time keeps the stored state canonical).
     let scopes: Vec<String> = form
         .scopes
         .clone()
-        .unwrap_or_else(|| vec!["read".to_string()]);
+        .unwrap_or_else(|| vec!["read".to_string()])
+        .into_iter()
+        .filter(|s| crate::models::api_key::ApiKeyScope::parse(s).is_some())
+        .collect();
     let scopes_json = serde_json::to_value(&scopes)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize scopes: {}", e)))?;
 

@@ -25,6 +25,7 @@ pub mod assets;
 pub mod groups;
 pub mod manage_assets;
 pub mod sessions;
+pub mod vault_secrets;
 
 // Re-export all API handlers for convenient access
 pub use access_rules::{
@@ -39,3 +40,4 @@ pub use manage_assets::{
     update_asset,
 };
 pub use sessions::{create_session, get_session, list_sessions, terminate_session};
+pub use vault_secrets::{get_vault_secret, get_vault_secret_value, list_vault_secrets};

@@ -163,6 +163,7 @@ impl BaseTemplate {
             is_groups: false,
             is_approvals: false,
             is_access_rules: false,
+            is_vault_secrets: false,
             is_my_requests: false,
             is_iacs: false,
             pending_approval_count: 0,
@@ -220,9 +221,14 @@ impl BaseTemplate {
                     && !path.contains("/my-requests"),
                 is_recordings: path.contains("/recordings"),
                 is_users: path.contains("/users") && !path.contains("/groups"),
-                is_groups: path.contains("/groups"),
+                // `/vault/secrets/groups` and `/vault/secrets/access`
+                // belong to the self-contained Vault Secrets section:
+                // they must highlight the "Vault Secrets" entry, not
+                // the PAM "Groups" / "Access Rules" ones.
+                is_groups: path.contains("/groups") && !path.starts_with("/vault"),
                 is_approvals: path.contains("/approvals"),
-                is_access_rules: path.contains("/access"),
+                is_access_rules: path.contains("/access") && !path.starts_with("/vault"),
+                is_vault_secrets: path.starts_with("/vault/secrets"),
                 is_my_requests: path.contains("/my-requests"),
                 // The IACS sidebar entry covers BOTH the user-zone
                 // onboarding form (`/iacs/onboard`) and the admin

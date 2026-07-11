@@ -10,8 +10,9 @@ use shared::ipc::IpcChannel;
 use shared::messages::{
     AccessCheckResult, AccessCheckResultEntry, AccessRequest as AccessReq,
     AccessResponse as AccessResp, AccessRuleData, AccessRuleInfo, AccessibleGroupEntry,
-    ApprovalDecisionKind, ApprovalDenyReason, AssetGroupInfo, EwsDecisionKind, EwsDenyReason,
-    GroupOption, IpcPage, IpcPageParams, Message, RbacResult, SessionAccessDecision,
+    AccessibleSecretGroupEntry, ApprovalDecisionKind, ApprovalDenyReason, AssetGroupInfo,
+    EwsDecisionKind, EwsDenyReason, GroupOption, IpcPage, IpcPageParams, Message, RbacResult,
+    SecretAccessRuleData, SecretAccessRuleInfo, SecretGroupInfo, SessionAccessDecision,
     SessionAccessIntent, VaubanGroupInfo,
 };
 use std::collections::HashMap;
@@ -1046,6 +1047,254 @@ impl AccessIpcClient {
             )
             .await?;
         Ok((user_groups, asset_groups))
+    }
+
+    // === Secret Groups CRUD (organisational vault secrets) ===
+
+    pub async fn create_secret_group(
+        &self,
+        name: &str,
+        slug: &str,
+        description: Option<String>,
+        actor_uuid: Option<String>,
+    ) -> AppResult<SecretGroupInfo> {
+        let resp = self
+            .send_access_request(AccessReq::CreateSecretGroup {
+                name: name.to_string(),
+                slug: slug.to_string(),
+                description,
+                actor_uuid,
+            })
+            .await?;
+        match resp {
+            AccessResp::SecretGroup(Ok(info)) => Ok(info),
+            AccessResp::SecretGroup(Err(e)) => Err(AppError::Ipc(e)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc("unexpected response".to_string())),
+        }
+    }
+
+    pub async fn get_secret_group(&self, uuid: &str) -> AppResult<SecretGroupInfo> {
+        let resp = self
+            .send_access_request(AccessReq::GetSecretGroup {
+                uuid: uuid.to_string(),
+            })
+            .await?;
+        match resp {
+            AccessResp::SecretGroup(Ok(info)) => Ok(info),
+            AccessResp::SecretGroup(Err(e)) => Err(AppError::Ipc(e)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc("unexpected response".to_string())),
+        }
+    }
+
+    /// List user-managed secret groups (the default UI surface).
+    ///
+    /// The virtual "All secrets" group is NEVER included by this path;
+    /// only the secret-access-rule editor may opt in via
+    /// [`Self::list_secret_groups_with_virtual`].
+    pub async fn list_secret_groups(&self) -> AppResult<Vec<SecretGroupInfo>> {
+        self.list_secret_groups_inner(false).await
+    }
+
+    /// Same as [`Self::list_secret_groups`] but the virtual "All
+    /// secrets" group is included. Reserved for the secret-access-rule
+    /// editor and boundary tests.
+    pub async fn list_secret_groups_with_virtual(&self) -> AppResult<Vec<SecretGroupInfo>> {
+        self.list_secret_groups_inner(true).await
+    }
+
+    async fn list_secret_groups_inner(
+        &self,
+        include_virtual: bool,
+    ) -> AppResult<Vec<SecretGroupInfo>> {
+        self.drain_pages(
+            |offset| AccessReq::ListSecretGroups {
+                page: ipc_page(offset),
+                include_virtual,
+            },
+            |resp| match resp {
+                AccessResp::SecretGroupPage(p) => Ok(p),
+                AccessResp::Error(e) => Err(AppError::Ipc(e)),
+                _ => Err(AppError::Ipc("unexpected response".into())),
+            },
+        )
+        .await
+    }
+
+    pub async fn update_secret_group(
+        &self,
+        uuid: &str,
+        name: &str,
+        slug: &str,
+        description: Option<String>,
+        actor_uuid: Option<String>,
+    ) -> AppResult<SecretGroupInfo> {
+        let resp = self
+            .send_access_request(AccessReq::UpdateSecretGroup {
+                uuid: uuid.to_string(),
+                name: name.to_string(),
+                slug: slug.to_string(),
+                description,
+                actor_uuid,
+            })
+            .await?;
+        match resp {
+            AccessResp::SecretGroup(Ok(info)) => Ok(info),
+            AccessResp::SecretGroup(Err(e)) => Err(AppError::Ipc(e)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc("unexpected response".to_string())),
+        }
+    }
+
+    pub async fn delete_secret_group(&self, uuid: &str) -> AppResult<()> {
+        let resp = self
+            .send_access_request(AccessReq::DeleteSecretGroup {
+                uuid: uuid.to_string(),
+            })
+            .await?;
+        match resp {
+            AccessResp::Deleted(Ok(())) => Ok(()),
+            AccessResp::Deleted(Err(e)) => Err(AppError::Ipc(e)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc("unexpected response".to_string())),
+        }
+    }
+
+    /// Secret-group options for dropdowns. Virtual group hidden by
+    /// default; the secret-access-rule editor opts in.
+    pub async fn list_secret_group_options(
+        &self,
+        include_virtual: bool,
+    ) -> AppResult<Vec<GroupOption>> {
+        self.drain_pages(
+            |offset| AccessReq::ListSecretGroupOptions {
+                page: ipc_page(offset),
+                include_virtual,
+            },
+            |resp| match resp {
+                AccessResp::SecretGroupOptionsPage(p) => Ok(p),
+                AccessResp::Error(e) => Err(AppError::Ipc(e)),
+                _ => Err(AppError::Ipc("unexpected response".into())),
+            },
+        )
+        .await
+    }
+
+    // === Secret Access Rules CRUD ===
+
+    pub async fn create_secret_access_rule(
+        &self,
+        data: SecretAccessRuleData,
+        actor_uuid: Option<String>,
+    ) -> AppResult<SecretAccessRuleInfo> {
+        let resp = self
+            .send_access_request(AccessReq::CreateSecretAccessRule { data, actor_uuid })
+            .await?;
+        match resp {
+            AccessResp::SecretAccessRule(Ok(info)) => Ok(info),
+            AccessResp::SecretAccessRule(Err(e)) => Err(AppError::Ipc(e)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc("unexpected response".to_string())),
+        }
+    }
+
+    pub async fn get_secret_access_rule(&self, uuid: &str) -> AppResult<SecretAccessRuleInfo> {
+        let resp = self
+            .send_access_request(AccessReq::GetSecretAccessRule {
+                uuid: uuid.to_string(),
+            })
+            .await?;
+        match resp {
+            AccessResp::SecretAccessRule(Ok(info)) => Ok(info),
+            AccessResp::SecretAccessRule(Err(e)) => Err(AppError::Ipc(e)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc("unexpected response".to_string())),
+        }
+    }
+
+    pub async fn list_secret_access_rules(&self) -> AppResult<Vec<SecretAccessRuleInfo>> {
+        self.drain_pages(
+            |offset| AccessReq::ListSecretAccessRules {
+                page: ipc_page(offset),
+            },
+            |resp| match resp {
+                AccessResp::SecretAccessRulePage(p) => Ok(p),
+                AccessResp::Error(e) => Err(AppError::Ipc(e)),
+                _ => Err(AppError::Ipc("unexpected response".into())),
+            },
+        )
+        .await
+    }
+
+    pub async fn update_secret_access_rule(
+        &self,
+        uuid: &str,
+        data: SecretAccessRuleData,
+        actor_uuid: Option<String>,
+    ) -> AppResult<SecretAccessRuleInfo> {
+        let resp = self
+            .send_access_request(AccessReq::UpdateSecretAccessRule {
+                uuid: uuid.to_string(),
+                data,
+                actor_uuid,
+            })
+            .await?;
+        match resp {
+            AccessResp::SecretAccessRule(Ok(info)) => Ok(info),
+            AccessResp::SecretAccessRule(Err(e)) => Err(AppError::Ipc(e)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc("unexpected response".to_string())),
+        }
+    }
+
+    pub async fn delete_secret_access_rule(&self, uuid: &str) -> AppResult<()> {
+        let resp = self
+            .send_access_request(AccessReq::DeleteSecretAccessRule {
+                uuid: uuid.to_string(),
+            })
+            .await?;
+        match resp {
+            AccessResp::Deleted(Ok(())) => Ok(()),
+            AccessResp::Deleted(Err(e)) => Err(AppError::Ipc(e)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc("unexpected response".to_string())),
+        }
+    }
+
+    // === Secret access evaluation ===
+
+    pub async fn list_accessible_secret_groups(
+        &self,
+        user_id: i32,
+    ) -> AppResult<Vec<AccessibleSecretGroupEntry>> {
+        self.drain_pages(
+            |offset| AccessReq::ListAccessibleSecretGroups {
+                user_id,
+                page: ipc_page(offset),
+            },
+            |resp| match resp {
+                AccessResp::AccessibleSecretGroupsPage(p) => Ok(p),
+                AccessResp::Error(e) => Err(AppError::Ipc(e)),
+                _ => Err(AppError::Ipc("unexpected response".into())),
+            },
+        )
+        .await
+    }
+
+    /// Fail-closed unit check: `false` on any IPC error or unexpected
+    /// response shape, never an error the caller could interpret loosely.
+    pub async fn check_secret_access_by_uuid(&self, user_uuid: &str, secret_uuid: &str) -> bool {
+        let resp = self
+            .send_access_request(AccessReq::CheckSecretAccessByUuid {
+                user_uuid: user_uuid.to_string(),
+                secret_uuid: secret_uuid.to_string(),
+            })
+            .await;
+        match resp {
+            Ok(AccessResp::SecretAccessChecked { allowed }) => allowed,
+            Ok(_) | Err(_) => false,
+        }
     }
 
     /// Process incoming messages from the Access service.

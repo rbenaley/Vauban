@@ -26,6 +26,7 @@ pub mod rbac;
 pub mod recording_hydrator;
 pub mod recording_reaper;
 pub mod role_invariants;
+pub mod secret_access;
 pub mod session_access;
 pub mod session_activity;
 pub mod session_limits;

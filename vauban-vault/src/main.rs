@@ -142,6 +142,10 @@ fn run_service() -> Result<()> {
         "audit".to_string(),
         Keyring::new(master_key.as_bytes(), "audit", key_version),
     );
+    keyrings.insert(
+        "secrets".to_string(),
+        Keyring::new(master_key.as_bytes(), "secrets", key_version),
+    );
     // master_key is dropped here -- MasterKey::drop() zeroizes the memory
     drop(master_key);
 

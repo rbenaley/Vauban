@@ -18,7 +18,7 @@
 //! - Policy evaluation and caching
 //! - Authorization decisions
 
-use vauban_access::{admin_count, db, handlers, virtual_group};
+use vauban_access::{admin_count, db, handlers, virtual_group, virtual_secret_group};
 
 use anyhow::{Context, Result};
 use casbin::prelude::*;
@@ -199,6 +199,12 @@ fn run_service() -> Result<()> {
         // state. Recovery: re-run the migration (it's ON CONFLICT-safe).
         rt.block_on(virtual_group::init_or_die(&pool))
             .context("Boot-time virtual group invariant check failed")?;
+
+        // Same boot invariant for the singleton virtual "All secrets"
+        // group (vault-secrets machinery). Recovery: re-run the
+        // 20260711000000_vault_secrets migration (ON CONFLICT-safe).
+        rt.block_on(virtual_secret_group::init_or_die(&pool))
+            .context("Boot-time virtual secret group invariant check failed")?;
 
         // SECURITY (operational visibility): warn loudly if the
         // deployment cannot honor separation-of-duties end-to-end
@@ -863,6 +869,8 @@ mod tests {
             ("iacs", "request"),
             ("iacs", "read"),
             ("iacs", "manage"),
+            ("vault_secrets", "read"),
+            ("vault_secrets", "manage"),
         ];
 
         for (obj, act) in allowed {

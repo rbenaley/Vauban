@@ -34,6 +34,7 @@ mod tests {
             is_groups: false,
             is_approvals: false,
             is_access_rules: false,
+            is_vault_secrets: false,
             is_my_requests: false,
             is_iacs: false,
             pending_approval_count: 0,

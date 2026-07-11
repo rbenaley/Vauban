@@ -1895,6 +1895,94 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
     let web_routes = web_routes.nest("/assets/manage", manage_assets_routes);
 
     // --------------------------------------------------------------------
+    // VAULT SECRETS ADMIN (`/vault/secrets/*`)
+    // --------------------------------------------------------------------
+    //
+    // Mirrors the `/assets/manage` defence-in-depth pattern: the entire
+    // sub-tree is fenced by `route_layer(require_vault_secrets_manage)`
+    // so a caller without the `vault_secrets:manage` Casbin permission
+    // gets 403 BEFORE the handler runs (anti-enumeration: a random UUID
+    // cannot be used as an existence oracle). Each handler ALSO
+    // re-asserts `perms.vault_secrets_manage` at the top of its body so
+    // a routing misconfiguration that hoists a handler outside of the
+    // nest still fails closed (pinned by
+    // `tests/web/vault_secrets_pins_test`).
+    //
+    // The literal `new`, `groups` and `access` segments are declared
+    // BEFORE the parameterized `{uuid}` so axum does not attempt to
+    // parse them as a UUID.
+    let vault_secrets_routes = Router::new()
+        .route(
+            "/",
+            get(handlers::web::vault_secrets_list).post(handlers::web::create_vault_secret_web),
+        )
+        .route("/new", get(handlers::web::vault_secret_create_form))
+        // Secret groups sub-CRUD (entity via IPC, membership via the
+        // local `secret_secret_groups` junction).
+        .route(
+            "/groups",
+            get(handlers::web::secret_group_list).post(handlers::web::create_secret_group_web),
+        )
+        .route("/groups/new", get(handlers::web::secret_group_create_form))
+        .route("/groups/{uuid}", get(handlers::web::secret_group_detail))
+        .route(
+            "/groups/{uuid}/edit",
+            get(handlers::web::secret_group_edit).post(handlers::web::update_secret_group_web),
+        )
+        .route(
+            "/groups/{uuid}/delete",
+            post(handlers::web::delete_secret_group_web),
+        )
+        .route(
+            "/groups/{uuid}/secrets/add",
+            post(handlers::web::secret_group_add_secret),
+        )
+        .route(
+            "/groups/{uuid}/secrets/{secret_uuid}/remove",
+            post(handlers::web::secret_group_remove_secret),
+        )
+        // Secret access rules sub-CRUD (100% IPC: vauban-access is the
+        // single oracle for `secret_access_rules`).
+        .route(
+            "/access",
+            get(handlers::web::secret_access_rules_list)
+                .post(handlers::web::create_secret_access_rule_web),
+        )
+        .route(
+            "/access/new",
+            get(handlers::web::secret_access_rule_create_form),
+        )
+        .route(
+            "/access/{uuid}",
+            get(handlers::web::secret_access_rule_detail),
+        )
+        .route(
+            "/access/{uuid}/edit",
+            get(handlers::web::secret_access_rule_edit)
+                .post(handlers::web::update_secret_access_rule_web),
+        )
+        .route(
+            "/access/{uuid}/delete",
+            post(handlers::web::delete_secret_access_rule_web),
+        )
+        // Individual secrets (value write-only, sealed via the vault
+        // `secrets` domain at persistence time).
+        .route("/{uuid}", get(handlers::web::vault_secret_detail))
+        .route(
+            "/{uuid}/edit",
+            get(handlers::web::vault_secret_edit).post(handlers::web::update_vault_secret_web),
+        )
+        .route(
+            "/{uuid}/delete",
+            post(handlers::web::delete_vault_secret_web),
+        )
+        .route_layer(axum::middleware::from_fn(
+            middleware::require_vault_secrets_manage::require_vault_secrets_manage,
+        ));
+
+    let web_routes = web_routes.nest("/vault/secrets", vault_secrets_routes);
+
+    // --------------------------------------------------------------------
     // Palier 7 -- IACS ADMIN MANAGEMENT (`/iacs/admin/*`)
     // --------------------------------------------------------------------
     //
@@ -2017,6 +2105,25 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                 get(handlers::api::get_access_rule)
                     .put(handlers::api::update_access_rule)
                     .delete(handlers::api::delete_access_rule),
+            )
+            // Vault Secrets API -- M2M READ-ONLY zone.
+            // The whole `/api/v1/vault/*` sub-tree requires the
+            // dedicated `secrets` API-key scope (outside the
+            // read/write/admin hierarchy) via `api_scope_enforcement`.
+            // GET-only by design: every mutation lives in the web admin
+            // zone `/vault/secrets` (pinned by
+            // `tests/web/vault_secrets_pins_test`).
+            .route(
+                "/api/v1/vault/secrets",
+                get(handlers::api::list_vault_secrets),
+            )
+            .route(
+                "/api/v1/vault/secrets/{uuid}",
+                get(handlers::api::get_vault_secret),
+            )
+            .route(
+                "/api/v1/vault/secrets/{uuid}/value",
+                get(handlers::api::get_vault_secret_value),
             )
             // Issue #27 -- ADMIN ASSET MANAGEMENT API
             // (`/api/v1/assets/manage/*`)

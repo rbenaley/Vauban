@@ -74,9 +74,12 @@ pub mod iacs;
 mod iacs_tunnel;
 mod manage_assets;
 mod rdp;
+mod secret_access_rules;
+mod secret_groups;
 mod sessions;
 mod ssh;
 mod users;
+mod vault_secrets;
 
 pub use access_rules::*;
 pub use asset_groups::*;
@@ -88,9 +91,12 @@ pub use iacs::*;
 pub use iacs_tunnel::*;
 pub use manage_assets::*;
 pub use rdp::*;
+pub use secret_access_rules::*;
+pub use secret_groups::*;
 pub use sessions::*;
 pub use ssh::*;
 pub use users::*;
+pub use vault_secrets::*;
 
 pub const ACCOUNT_DEACTIVATED_MSG: &str = "Your account has been deactivated";
 

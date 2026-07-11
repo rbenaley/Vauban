@@ -19,7 +19,9 @@ pub mod admin_count;
 pub mod db;
 pub mod handlers;
 pub mod iacs;
+pub mod secrets;
 pub mod virtual_group;
+pub mod virtual_secret_group;
 pub use vauban_db::schema;
 
 #[cfg(test)]
