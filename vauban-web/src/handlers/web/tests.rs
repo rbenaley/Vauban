@@ -616,6 +616,52 @@ fn test_create_api_key_form_long_name() {
     assert_eq!(form.name.len(), 100);
 }
 
+// ==================== CreateApiKeyForm::from_bytes Tests ====================
+// Regression coverage for the 422 that killed the Create API Key modal:
+// `axum::extract::Form` (serde_urlencoded) rejects repeated `scopes` keys
+// and the empty `expires_in_days=` posted by the "Never" option, so the
+// handler now parses the raw body manually.
+
+#[test]
+fn test_create_api_key_form_from_bytes_repeated_scopes() {
+    let body = b"name=My+Key&scopes=read&scopes=secrets&expires_in_days=&csrf_token=tok";
+    let form = CreateApiKeyForm::from_bytes(body);
+
+    assert_eq!(form.name, "My Key");
+    assert_eq!(
+        form.scopes,
+        Some(vec!["read".to_string(), "secrets".to_string()])
+    );
+    assert_eq!(form.expires_in_days, None, "empty expiry means Never");
+    assert_eq!(form.csrf_token, "tok");
+}
+
+#[test]
+fn test_create_api_key_form_from_bytes_single_scope_and_expiry() {
+    let body = b"name=K&scopes=secrets&expires_in_days=30&csrf_token=tok";
+    let form = CreateApiKeyForm::from_bytes(body);
+
+    assert_eq!(form.scopes, Some(vec!["secrets".to_string()]));
+    assert_eq!(form.expires_in_days, Some(30));
+}
+
+#[test]
+fn test_create_api_key_form_from_bytes_no_scope_defaults_to_none() {
+    // No checkbox ticked: the handler later falls back to ["read"].
+    let form = CreateApiKeyForm::from_bytes(b"name=K&csrf_token=tok");
+
+    assert_eq!(form.scopes, None);
+    assert_eq!(form.expires_in_days, None);
+}
+
+#[test]
+fn test_create_api_key_form_from_bytes_ignores_unknown_and_bad_expiry() {
+    let form = CreateApiKeyForm::from_bytes(b"name=K&bogus=1&expires_in_days=abc&csrf_token=tok");
+
+    assert_eq!(form.expires_in_days, None, "unparsable expiry fails soft");
+    assert_eq!(form.name, "K");
+}
+
 // ==================== AuthUser Tests ====================
 
 #[test]

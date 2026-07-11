@@ -1050,6 +1050,130 @@ async fn test_create_api_key_endpoint_accepts_form() {
 }
 
 #[tokio::test]
+async fn test_create_api_key_accepts_repeated_scopes_and_empty_expiry() {
+    // Regression: the browser posts one `scopes` key per ticked checkbox
+    // plus `expires_in_days=` (empty) for the "Never" option. The old
+    // `axum::extract::Form` extractor rejected that body with a 422 and
+    // the modal silently did nothing.
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("multi_scope_key_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let body = format!(
+        "name=Vault-Secrets-Test&scopes=read&scopes=secrets&expires_in_days=&csrf_token={}",
+        csrf_token
+    );
+    let response = app
+        .server
+        .post("/accounts/apikeys/create")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .content_type("application/x-www-form-urlencoded")
+        .text(body)
+        .await;
+
+    assert_eq!(
+        response.status_code().as_u16(),
+        200,
+        "repeated scopes + empty expiry must not 422: {}",
+        response.text()
+    );
+
+    // The created key must carry both scopes in the JSONB column.
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    use vauban_web::schema::api_keys;
+    let scopes: serde_json::Value = api_keys::table
+        .filter(api_keys::user_id.eq(user_id))
+        .order(api_keys::id.desc())
+        .select(api_keys::scopes)
+        .first(&mut conn)
+        .await
+        .expect("API key row must exist");
+    assert_eq!(scopes, serde_json::json!(["read", "secrets"]));
+}
+
+#[tokio::test]
+async fn test_create_api_key_filters_unknown_scopes_and_defaults_to_read() {
+    // Adversarial: a tampered form posting a scope outside the
+    // ApiKeyScope vocabulary must never land it in the JSONB column
+    // (whitelist at write time), and a body with no scope at all must
+    // fall back to the least-privilege ["read"].
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("scope_filter_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    use vauban_web::schema::api_keys;
+
+    let latest_scopes = |conn: &mut diesel_async::AsyncPgConnection| {
+        api_keys::table
+            .filter(api_keys::user_id.eq(user_id))
+            .order(api_keys::id.desc())
+            .select(api_keys::scopes)
+            .first::<serde_json::Value>(conn)
+    };
+
+    // Case 1: bogus scope smuggled next to a legitimate one.
+    let response = app
+        .server
+        .post("/accounts/apikeys/create")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .content_type("application/x-www-form-urlencoded")
+        .text(format!(
+            "name=Tampered&scopes=secrets&scopes=superadmin&csrf_token={}",
+            csrf_token
+        ))
+        .await;
+    assert_eq!(response.status_code().as_u16(), 200);
+    assert_eq!(
+        latest_scopes(&mut conn).await.expect("key row"),
+        serde_json::json!(["secrets"]),
+        "unknown scope strings must be dropped by the ApiKeyScope::parse whitelist"
+    );
+
+    // Case 2: no scope checkbox at all -> least-privilege default.
+    let response = app
+        .server
+        .post("/accounts/apikeys/create")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .content_type("application/x-www-form-urlencoded")
+        .text(format!("name=NoScope&csrf_token={}", csrf_token))
+        .await;
+    assert_eq!(response.status_code().as_u16(), 200);
+    assert_eq!(
+        latest_scopes(&mut conn).await.expect("key row"),
+        serde_json::json!(["read"]),
+        "a body without scopes must default to the least-privilege [\"read\"]"
+    );
+}
+
+#[tokio::test]
 async fn test_create_api_key_requires_auth() {
     let app = TestApp::spawn().await;
 

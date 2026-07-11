@@ -14,6 +14,7 @@
 pub mod access_control_web_test;
 pub mod access_rules_crud_web_test;
 pub mod account_pages_test;
+pub mod apikey_create_form_pins_test;
 pub mod asset_irreversible_delete_test;
 pub mod asset_modal_dataflow_test;
 pub mod asset_pages_test;

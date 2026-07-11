@@ -2516,12 +2516,20 @@ pub async fn create_api_key_form(
 }
 
 /// Create a new API key.
+///
+/// The form body is parsed manually (same pattern as
+/// `AddAssetToGroupForm`): `axum::extract::Form` relies on
+/// `serde_urlencoded`, which rejects repeated keys
+/// (`scopes=read&scopes=secrets`) and the empty
+/// `expires_in_days=` sent by the "Never" option with a 422
+/// before the handler even runs.
 pub async fn create_api_key(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     jar: CookieJar,
-    axum::extract::Form(form): axum::extract::Form<CreateApiKeyForm>,
+    body: axum::body::Bytes,
 ) -> Result<impl IntoResponse, AppError> {
+    let form = CreateApiKeyForm::from_bytes(&body);
     use crate::models::{ApiKey, NewApiKey};
     use crate::templates::accounts::ApikeyCreatedTemplate;
 
@@ -3066,10 +3074,51 @@ fn build_admin_sessions_html(
 }
 
 /// Form data for creating an API key.
+///
+/// Populated by manual parsing (`from_bytes`) rather than
+/// `axum::extract::Form`: the scopes checkboxes post repeated keys
+/// (`scopes=read&scopes=secrets`) which `serde_urlencoded` cannot
+/// collect into a `Vec`, and the "Never" expiry option posts an empty
+/// `expires_in_days=` which fails integer parsing. Both used to make
+/// the extractor reject the request with a 422 before the handler ran.
 #[derive(Debug, serde::Deserialize)]
 pub struct CreateApiKeyForm {
     pub name: String,
     pub scopes: Option<Vec<String>>,
     pub expires_in_days: Option<i64>,
     pub csrf_token: String,
+}
+
+impl CreateApiKeyForm {
+    /// Parse raw `application/x-www-form-urlencoded` bytes, supporting
+    /// repeated `scopes` keys and an empty `expires_in_days`.
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
+        let mut name = String::new();
+        let mut scopes: Vec<String> = Vec::new();
+        let mut expires_in_days: Option<i64> = None;
+        let mut csrf_token = String::new();
+
+        for (key, value) in url::form_urlencoded::parse(bytes) {
+            match key.as_ref() {
+                "name" => name = value.to_string(),
+                "scopes" => scopes.push(value.to_string()),
+                // "Never" posts an empty string; any unparsable value
+                // collapses to None (no expiry) rather than a 4xx.
+                "expires_in_days" => expires_in_days = value.parse::<i64>().ok(),
+                "csrf_token" => csrf_token = value.to_string(),
+                _ => {}
+            }
+        }
+
+        Self {
+            name,
+            scopes: if scopes.is_empty() {
+                None
+            } else {
+                Some(scopes)
+            },
+            expires_in_days,
+            csrf_token,
+        }
+    }
 }
