@@ -7,6 +7,12 @@
 # regression is caught before `cargo test`.
 #
 # Usage: bash vauban-web/scripts/check_cors_origin_allowlist.sh
+#
+# NOTE: never pipe into `grep -q` here. Under `set -o pipefail`,
+# `grep -q` exits on the first match and closes the pipe; the upstream
+# `printf` then dies with SIGPIPE (141) and the pipeline status flips
+# to non-zero INTERMITTENTLY. `grep ... >/dev/null` drains its whole
+# input and is immune.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,28 +33,28 @@ fi
 PROD_MAIN="$(awk '/^#\[cfg\(test\)\]/{exit} {print}' "${MAIN}")"
 
 # INV-1: the Host-based predicate must be gone for good.
-if printf '%s' "${PROD_MAIN}" | grep -qE 'fn is_same_origin'; then
+if printf '%s' "${PROD_MAIN}" | grep -E 'fn is_same_origin' >/dev/null; then
     echo "FAIL (VAU-010 INV-1): is_same_origin (Host-based CORS) reappeared in main.rs." >&2
     status=1
 fi
 # AllowOrigin::predicate is the only tower-http API exposing the request parts
 # (hence Host). It must not be used for the CORS origin decision.
-if printf '%s' "${PROD_MAIN}" | grep -qE 'AllowOrigin::predicate'; then
+if printf '%s' "${PROD_MAIN}" | grep -E 'AllowOrigin::predicate' >/dev/null; then
     echo "FAIL (VAU-010 INV-1): the CORS seam must not use AllowOrigin::predicate (Host-capable)." >&2
     status=1
 fi
 
 # INV-2: the seam is build_cors_layer + AllowOrigin::list, fed from config.
-if ! printf '%s' "${PROD_MAIN}" | grep -qE 'fn build_cors_layer\('; then
+if ! printf '%s' "${PROD_MAIN}" | grep -E 'fn build_cors_layer\(' >/dev/null; then
     echo "FAIL (VAU-010 INV-2): build_cors_layer seam is missing from main.rs." >&2
     status=1
 fi
-if ! printf '%s' "${PROD_MAIN}" | grep -qE 'AllowOrigin::list'; then
+if ! printf '%s' "${PROD_MAIN}" | grep -E 'AllowOrigin::list' >/dev/null; then
     echo "FAIL (VAU-010 INV-2): the CORS seam must use AllowOrigin::list (exact allowlist match)." >&2
     status=1
 fi
 if ! printf '%s' "${PROD_MAIN}" \
-    | grep -qE 'build_cors_layer\(&state\.config\.server\.parsed_public_origins\(\)\)'; then
+    | grep -E 'build_cors_layer\(&state\.config\.server\.parsed_public_origins\(\)\)' >/dev/null; then
     echo "FAIL (VAU-010 INV-2): create_app must feed the CORS layer from parsed_public_origins()." >&2
     status=1
 fi

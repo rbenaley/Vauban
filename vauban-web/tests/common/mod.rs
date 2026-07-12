@@ -27,6 +27,49 @@ use vauban_web::{
     services::rate_limit::RateLimiter,
 };
 
+/// Shared fingerprint map backing the [`StaticHostIdentityVerifier`]:
+/// `(ip, port) -> fingerprint presented when challenged`. Tests seed it
+/// through [`TestApp::pin_host_fingerprint`].
+pub type FingerprintMap =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<(std::net::IpAddr, u16), String>>>;
+
+/// Deterministic [`HostIdentityVerifier`] stub for the Vault Secrets
+/// provenance E2E tests: "challenging `ip:port`" simply reads the
+/// fingerprint from a map seeded by the test. A missing entry is an
+/// error (like an unreachable host — fail-closed). Every challenge
+/// increments a counter so the 60 s verification cache can be pinned
+/// (second call = no new challenge).
+pub struct StaticHostIdentityVerifier {
+    pub fingerprints: FingerprintMap,
+    pub challenges: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl vauban_web::services::vault_provenance::HostIdentityVerifier for StaticHostIdentityVerifier {
+    fn observe_fingerprint<'a>(
+        &'a self,
+        _state: &'a AppState,
+        probe: vauban_web::services::vault_provenance::HostIdentityProbe<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = vauban_web::error::AppResult<String>> + Send + 'a>,
+    > {
+        self.challenges
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let observed = self
+            .fingerprints
+            .lock()
+            .expect("fingerprint map lock")
+            .get(&(probe.ip, probe.port))
+            .cloned();
+        Box::pin(async move {
+            observed.ok_or_else(|| {
+                vauban_web::error::AppError::Ipc(
+                    "static verifier: no fingerprint pinned for target".to_string(),
+                )
+            })
+        })
+    }
+}
+
 /// Test application wrapper.
 pub struct TestApp {
     pub server: TestServer,
@@ -36,6 +79,13 @@ pub struct TestApp {
     pub broadcast: BroadcastService,
     pub user_connections: vauban_web::services::connections::UserConnectionRegistry,
     pub ws_counter: vauban_web::services::connections::WsConnectionCounter,
+    /// Backing map of the app's [`StaticHostIdentityVerifier`]. Seed it
+    /// with [`TestApp::pin_host_fingerprint`] before calling the vault
+    /// M2M API.
+    pub host_fingerprints: FingerprintMap,
+    /// Number of active host-identity challenges performed by the stub
+    /// verifier (cache-behaviour assertions).
+    pub identity_challenges: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Cloned AppState exposed for tests that need to call functions
     /// taking `&AppState` (e.g. `services::recording_hydrator::enqueue_hydration`).
     /// `supervisor` is `None` here -- exactly the development-mode shape
@@ -111,6 +161,24 @@ impl TestApp {
                 Self::create_inner_with(None, |config| {
                     config.security.trusted_proxies = vec![];
                     config.security.allowed_client_networks = vec!["10.0.0.0/8".to_string()];
+                })
+                .await
+            })
+            .await
+    }
+
+    /// Variant dedicated to the Vault Secrets provenance suites:
+    /// `trusted_proxies` contains loopback (no client ACL), so tests can
+    /// simulate the M2M caller's source IP with an `X-Forwarded-For`
+    /// header, and the `StaticHostIdentityVerifier` answers the active
+    /// host-identity challenges from the per-app fingerprint map.
+    pub async fn spawn_vault_provenance() -> &'static TestApp {
+        static VAULT_PROVENANCE_APP: OnceCell<TestApp> = OnceCell::const_new();
+        VAULT_PROVENANCE_APP
+            .get_or_init(|| async {
+                Self::create_inner_with(None, |config| {
+                    config.security.trusted_proxies =
+                        vec!["127.0.0.1".to_string(), "::1".to_string()];
                 })
                 .await
             })
@@ -219,6 +287,12 @@ impl TestApp {
         // only need to clone the `Arc` and hand it to the app state.
         let access_client = std::sync::Arc::clone(&access_service.access_client);
 
+        // Deterministic host-identity verifier for the Vault Secrets
+        // provenance gate; the map/counter handles are kept on TestApp.
+        let host_fingerprints: FingerprintMap =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let identity_challenges = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
         // Create app state
         let state = AppState {
             config: config.clone(),
@@ -267,6 +341,11 @@ impl TestApp {
             login_timing_sacrifice_hash: std::sync::Arc::new(unwrap_ok!(
                 auth_service.hash_password(&uuid::Uuid::new_v4().to_string())
             )),
+            host_identity_verifier: std::sync::Arc::new(StaticHostIdentityVerifier {
+                fingerprints: std::sync::Arc::clone(&host_fingerprints),
+                challenges: std::sync::Arc::clone(&identity_challenges),
+            }),
+            vault_provenance: vauban_web::services::vault_provenance::ProvenanceCache::new(),
         };
 
         // Build router
@@ -284,9 +363,20 @@ impl TestApp {
             broadcast,
             user_connections,
             ws_counter,
+            host_fingerprints,
+            identity_challenges,
             app_state,
             _access_service: access_service,
         }
+    }
+
+    /// Pin the fingerprint the stub verifier presents when the vault
+    /// provenance gate challenges `ip:port`.
+    pub fn pin_host_fingerprint(&self, ip: std::net::IpAddr, port: u16, fingerprint: &str) {
+        self.host_fingerprints
+            .lock()
+            .expect("fingerprint map lock")
+            .insert((ip, port), fingerprint.to_string());
     }
 
     /// Generate authorization header with JWT token.

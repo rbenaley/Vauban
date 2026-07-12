@@ -98,7 +98,11 @@ for entry in "${SCOPED[@]}"; do
     stripped="${stripped%%#\[cfg(test)\]*}"
 
     for tok in "${FORBIDDEN[@]}"; do
-        if printf '%s' "${stripped}" | grep -qF "${tok}"; then
+        # `grep -F >/dev/null` (not `-q`): `-q` exits on the first match
+        # and SIGPIPEs the upstream printf, which under pipefail can
+        # INTERMITTENTLY flip a found-token pipeline to non-zero and
+        # silently skip the violation.
+        if printf '%s' "${stripped}" | grep -F "${tok}" >/dev/null; then
             echo "[lint] forbidden token \"${tok}\" found in ${path}"
             echo "       (the admin asset zone MUST be session-free -- issue #27)"
             errors=1

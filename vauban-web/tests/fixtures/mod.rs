@@ -2176,6 +2176,106 @@ pub async fn add_secret_to_secret_group(
     );
 }
 
+/// Resolve the internal id of the virtual "All assets" group (seeded by
+/// the migration with the reserved UUID). Used as the provenance
+/// dimension of secret access rules ("any known asset").
+pub async fn all_assets_group_id(conn: &mut AsyncPgConnection) -> i32 {
+    use vauban_web::schema::asset_groups;
+
+    let virtual_uuid = unwrap_ok!(Uuid::parse_str(shared::messages::ALL_ASSETS_GROUP_UUID));
+    unwrap_ok!(
+        asset_groups::table
+            .filter(asset_groups::uuid.eq(virtual_uuid))
+            .select(asset_groups::id)
+            .first(conn)
+            .await
+    )
+}
+
+/// Resolve the internal id of an asset group by its uuid.
+pub async fn asset_group_id_by_uuid(conn: &mut AsyncPgConnection, group_uuid: &Uuid) -> i32 {
+    use vauban_web::schema::asset_groups;
+
+    unwrap_ok!(
+        asset_groups::table
+            .filter(asset_groups::uuid.eq(group_uuid))
+            .select(asset_groups::id)
+            .first(conn)
+            .await
+    )
+}
+
+/// Create a provenance-capable asset for the Vault Secrets M2M tests:
+/// `hostname` is the literal source IP the test will present via
+/// `X-Forwarded-For`, and the host-identity fingerprint is pinned in
+/// `connection_config` under the per-protocol key. Returns
+/// `(internal id, uuid)`. Pass `fingerprint = None` to seed an asset
+/// WITHOUT a pinned identity (fail-closed scenario).
+pub async fn create_provenance_asset(
+    conn: &mut AsyncPgConnection,
+    name_hint: &str,
+    ip: &str,
+    port: i32,
+    asset_type: AssetType,
+    fingerprint: Option<&str>,
+) -> (i32, Uuid) {
+    let asset_uuid = Uuid::new_v4();
+    // "test-" prefix: matched by `test_db::cleanup`'s asset sweep.
+    let unique_name = format!("test-prov-{}_{}", name_hint, &asset_uuid.to_string()[..8]);
+
+    let pin_key = match asset_type {
+        AssetType::Rdp => "rdp_server_cert_fingerprint",
+        _ => "ssh_host_key_fingerprint",
+    };
+    let connection_config = match fingerprint {
+        Some(fp) => serde_json::json!({ pin_key: fp }),
+        None => serde_json::json!({}),
+    };
+
+    let new_asset = NewAsset {
+        uuid: asset_uuid,
+        name: unique_name,
+        hostname: ip.to_string(),
+        port,
+        asset_type,
+        status: "online".to_string(),
+        description: Some("Vault provenance test asset".to_string()),
+        connection_config,
+        created_by_id: None,
+        updated_by_id: None,
+        connection_username: "root".to_string(),
+    };
+
+    let asset: Asset = unwrap_ok!(
+        diesel::insert_into(assets::table)
+            .values(&new_asset)
+            .get_result(conn)
+            .await
+    );
+
+    (asset.id, asset_uuid)
+}
+
+/// Attach an asset to an asset group by internal ids (idempotent).
+pub async fn add_asset_to_asset_group_by_id(
+    conn: &mut AsyncPgConnection,
+    asset_id: i32,
+    asset_group_id: i32,
+) {
+    use vauban_web::schema::asset_asset_groups;
+
+    unwrap_ok!(
+        diesel::insert_into(asset_asset_groups::table)
+            .values((
+                asset_asset_groups::asset_id.eq(asset_id),
+                asset_asset_groups::asset_group_id.eq(asset_group_id),
+            ))
+            .on_conflict_do_nothing()
+            .execute(conn)
+            .await
+    );
+}
+
 /// Resolve the internal id of the virtual "All secrets" group (seeded by
 /// the migration with the reserved UUID).
 pub async fn all_secrets_group_id(conn: &mut AsyncPgConnection) -> i32 {
@@ -2194,12 +2294,15 @@ pub async fn all_secrets_group_id(conn: &mut AsyncPgConnection) -> i32 {
 /// Create a secret access rule (direct DB seed, mirror of
 /// `create_test_access_rule`). `user_group_uuid` references
 /// `vauban_groups`; `secret_group_id` is the internal id of the secret
-/// group (use [`all_secrets_group_id`] for the virtual group). Returns
-/// the rule's uuid.
+/// group (use [`all_secrets_group_id`] for the virtual group);
+/// `asset_group_id` is the provenance dimension (use
+/// [`all_assets_group_id`] for "any known asset"). Returns the rule's
+/// uuid.
 pub async fn create_test_secret_access_rule(
     conn: &mut AsyncPgConnection,
     user_group_uuid: &Uuid,
     secret_group_id: i32,
+    asset_group_id: i32,
     is_active: bool,
     valid_from: Option<DateTime<Utc>>,
     valid_until: Option<DateTime<Utc>>,
@@ -2225,6 +2328,7 @@ pub async fn create_test_secret_access_rule(
                 secret_access_rules::description.eq(Some("Test secret access rule")),
                 secret_access_rules::user_group_id.eq(ug_id),
                 secret_access_rules::secret_group_id.eq(secret_group_id),
+                secret_access_rules::asset_group_id.eq(asset_group_id),
                 secret_access_rules::valid_from.eq(valid_from),
                 secret_access_rules::valid_until.eq(valid_until),
                 secret_access_rules::is_active.eq(is_active),

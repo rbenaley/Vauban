@@ -34,7 +34,8 @@ use uuid::Uuid;
 use crate::db::DbConnection;
 use crate::handlers::{normalize_ipc_page, parse_optional_datetime, parse_uuid, resolve_actor_id};
 use crate::schema::{
-    secret_access_rules, secret_groups, secret_secret_groups, user_groups, users, vault_secrets,
+    asset_asset_groups, asset_groups, assets, secret_access_rules, secret_groups,
+    secret_secret_groups, user_groups, users, vault_secrets,
 };
 use shared::messages::AccessResponse;
 
@@ -344,6 +345,10 @@ type SecretAccessRuleRow = (
     i32,
     Uuid,
     String,
+    i32,
+    Uuid,
+    String,
+    String,
     Option<chrono::DateTime<Utc>>,
     Option<chrono::DateTime<Utc>>,
     bool,
@@ -364,6 +369,10 @@ macro_rules! secret_access_rule_columns {
             secret_access_rules::secret_group_id,
             secret_groups::uuid,
             secret_groups::name,
+            secret_access_rules::asset_group_id,
+            asset_groups::uuid,
+            asset_groups::name,
+            asset_groups::kind,
             secret_access_rules::valid_from,
             secret_access_rules::valid_until,
             secret_access_rules::is_active,
@@ -385,12 +394,16 @@ fn to_secret_access_rule_info(row: SecretAccessRuleRow) -> SecretAccessRuleInfo 
         secret_group_id: row.6,
         secret_group_uuid: row.7.to_string(),
         secret_group_name: row.8,
-        valid_from: row.9.map(|dt| dt.to_rfc3339()),
-        valid_until: row.10.map(|dt| dt.to_rfc3339()),
-        is_active: row.11,
-        priority: row.12,
-        created_at: row.13.to_rfc3339(),
-        updated_at: row.14.to_rfc3339(),
+        asset_group_id: row.9,
+        asset_group_uuid: row.10.to_string(),
+        asset_group_name: row.11,
+        asset_group_kind: row.12,
+        valid_from: row.13.map(|dt| dt.to_rfc3339()),
+        valid_until: row.14.map(|dt| dt.to_rfc3339()),
+        is_active: row.15,
+        priority: row.16,
+        created_at: row.17.to_rfc3339(),
+        updated_at: row.18.to_rfc3339(),
     }
 }
 
@@ -401,6 +414,7 @@ async fn load_secret_access_rule_by_uuid(
     secret_access_rules::table
         .inner_join(crate::schema::vauban_groups::table)
         .inner_join(secret_groups::table)
+        .inner_join(asset_groups::table)
         .filter(secret_access_rules::uuid.eq(rule_uuid))
         .select(secret_access_rule_columns!())
         .first::<SecretAccessRuleRow>(conn)
@@ -434,6 +448,7 @@ pub async fn handle_create_secret_access_rule(
             secret_access_rules::description.eq(&data.description),
             secret_access_rules::user_group_id.eq(data.user_group_id),
             secret_access_rules::secret_group_id.eq(data.secret_group_id),
+            secret_access_rules::asset_group_id.eq(data.asset_group_id),
             secret_access_rules::valid_from.eq(valid_from),
             secret_access_rules::valid_until.eq(valid_until),
             secret_access_rules::is_active.eq(data.is_active),
@@ -483,6 +498,7 @@ pub async fn handle_list_secret_access_rules(
     let result = secret_access_rules::table
         .inner_join(crate::schema::vauban_groups::table)
         .inner_join(secret_groups::table)
+        .inner_join(asset_groups::table)
         .order(secret_access_rules::priority.desc())
         .then_order_by(secret_access_rules::id.desc())
         .select(secret_access_rule_columns!())
@@ -536,6 +552,7 @@ pub async fn handle_update_secret_access_rule(
                 secret_access_rules::description.eq(&data.description),
                 secret_access_rules::user_group_id.eq(data.user_group_id),
                 secret_access_rules::secret_group_id.eq(data.secret_group_id),
+                secret_access_rules::asset_group_id.eq(data.asset_group_id),
                 secret_access_rules::valid_from.eq(valid_from),
                 secret_access_rules::valid_until.eq(valid_until),
                 secret_access_rules::is_active.eq(data.is_active),
@@ -587,23 +604,98 @@ pub async fn handle_delete_secret_access_rule(
 
 // ==================== Evaluation ====================
 
+/// Resolve the provenance search ids for a verified source asset: the
+/// asset group memberships of `source_asset_id`, plus the virtual "All
+/// assets" singleton (a rule on the virtual group covers ANY known
+/// asset). Mirrors the asset-side pattern in `handlers.rs`.
+///
+/// Fail-closed contract: `Err(())` when the asset is unknown/deleted or
+/// any DB lookup fails -- callers must translate that into a denial.
+async fn provenance_asset_group_ids(
+    conn: &mut DbConnection,
+    source_asset_id: i32,
+) -> Result<Vec<i32>, ()> {
+    // Defense-in-depth: re-assert the source asset is a live row even
+    // though vauban-web only forwards ids it just matched. A deleted
+    // asset must never anchor provenance.
+    let live: i64 = match assets::table
+        .filter(assets::id.eq(source_asset_id))
+        .filter(assets::is_deleted.eq(false))
+        .count()
+        .get_result::<i64>(conn)
+        .await
+    {
+        Ok(n) => n,
+        Err(e) => {
+            warn!(source_asset_id, error = %e, "provenance: db error resolving source asset");
+            return Err(());
+        }
+    };
+    if live == 0 {
+        warn!(
+            source_asset_id,
+            "provenance: unknown or deleted source asset"
+        );
+        return Err(());
+    }
+
+    let mut group_ids: Vec<i32> = match asset_asset_groups::table
+        .filter(asset_asset_groups::asset_id.eq(source_asset_id))
+        .select(asset_asset_groups::asset_group_id)
+        .load::<i32>(conn)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            warn!(source_asset_id, error = %e, "provenance: db error loading asset groups");
+            return Err(());
+        }
+    };
+
+    // The sentinel UNINITIALIZED_VIRTUAL_ID cannot match any real row,
+    // so pre-boot lookups degrade to "no virtual rule applies".
+    let virtual_id = crate::virtual_group::virtual_asset_group_id();
+    if !group_ids.contains(&virtual_id) {
+        group_ids.push(virtual_id);
+    }
+    Ok(group_ids)
+}
+
 /// Bulk list-filter primitive: which secret groups can `user_id` access
-/// right now? Returns the distinct accessible `secret_groups.id` values;
-/// an entry whose id is the virtual "All secrets" singleton is flagged
+/// right now, calling from the identity-verified `source_asset_id`?
+/// Returns the distinct accessible `secret_groups.id` values; an entry
+/// whose id is the virtual "All secrets" singleton is flagged
 /// `is_virtual_all` so vauban-web resolves it to every active secret.
+///
+/// Only rules whose `asset_group_id` contains the source asset (or the
+/// virtual "All assets" group) participate.
 pub async fn handle_list_accessible_secret_groups(
     conn: &mut DbConnection,
     user_id: i32,
+    source_asset_id: i32,
     page: IpcPageParams,
 ) -> AccessResponse {
     let (base_limit, offset) = normalize_ipc_page(page);
     let fetch = base_limit.saturating_add(1);
+
+    let provenance_ids = match provenance_asset_group_ids(conn, source_asset_id).await {
+        Ok(ids) => ids,
+        Err(()) => {
+            // Fail-closed: an invalid provenance yields an empty page,
+            // indistinguishable from "no rule grants anything".
+            return AccessResponse::AccessibleSecretGroupsPage(IpcPage {
+                items: Vec::new(),
+                has_more: false,
+            });
+        }
+    };
 
     let mut distinct_ids = match secret_access_rules::table
         .inner_join(
             user_groups::table.on(user_groups::group_id.eq(secret_access_rules::user_group_id)),
         )
         .filter(user_groups::user_id.eq(user_id))
+        .filter(secret_access_rules::asset_group_id.eq_any(&provenance_ids))
         .filter(secret_access_rules::is_active.eq(true))
         .filter(sql::<SqlBool>(
             "(secret_access_rules.valid_from IS NULL OR secret_access_rules.valid_from <= NOW())",
@@ -648,16 +740,21 @@ pub async fn handle_list_accessible_secret_groups(
 /// Unit check before revealing one secret's value.
 ///
 /// Fail-closed semantics: any failure path (UUID parse error, unknown or
-/// inactive user, unknown or inactive secret, DB error) returns
-/// `SecretAccessChecked { allowed: false }` rather than `Error(...)`, so
-/// the caller treats the response as a clean denial without having to
-/// distinguish "policy says no" from "infrastructure error". There is
-/// deliberately NO Casbin/read_all bypass: even a superuser must be
-/// covered by an active rule.
+/// inactive user, unknown or inactive secret, unknown/deleted source
+/// asset, DB error) returns `SecretAccessChecked { allowed: false }`
+/// rather than `Error(...)`, so the caller treats the response as a
+/// clean denial without having to distinguish "policy says no" from
+/// "infrastructure error". There is deliberately NO Casbin/read_all
+/// bypass: even a superuser must be covered by an active rule.
+///
+/// The provenance dimension: only rules whose `asset_group_id` contains
+/// `source_asset_id` (directly or via the virtual "All assets" group)
+/// can grant.
 pub async fn handle_check_secret_access_by_uuid(
     conn: &mut DbConnection,
     user_uuid: &str,
     secret_uuid: &str,
+    source_asset_id: i32,
 ) -> AccessResponse {
     let denied = || AccessResponse::SecretAccessChecked { allowed: false };
 
@@ -744,12 +841,18 @@ pub async fn handle_check_secret_access_by_uuid(
         secret_group_ids.push(virtual_id);
     }
 
+    let provenance_ids = match provenance_asset_group_ids(conn, source_asset_id).await {
+        Ok(ids) => ids,
+        Err(()) => return denied(),
+    };
+
     let matching: Result<i64, _> = secret_access_rules::table
         .inner_join(
             user_groups::table.on(user_groups::group_id.eq(secret_access_rules::user_group_id)),
         )
         .filter(user_groups::user_id.eq(user_id))
         .filter(secret_access_rules::secret_group_id.eq_any(&secret_group_ids))
+        .filter(secret_access_rules::asset_group_id.eq_any(&provenance_ids))
         .filter(secret_access_rules::is_active.eq(true))
         .filter(sql::<SqlBool>(
             "(secret_access_rules.valid_from IS NULL OR secret_access_rules.valid_from <= NOW())",

@@ -9,18 +9,23 @@
 //!   `secrets` API-key scope (outside the read/write/admin hierarchy),
 //!   enforced by `middleware::api_key::api_scope_enforcement`.
 //! - Casbin: every handler gates on `perms.vault_secrets_read`.
+//! - Provenance: BEFORE the access oracle runs, the caller's resolved
+//!   source IP must match a known asset that actively proves its pinned
+//!   host identity (`services::vault_provenance`). A caller that is not
+//!   a verified asset gets the canonical 404 on EVERY endpoint — the
+//!   list included (no `200 []` oracle).
 //! - NO bypass: there is no `read_all` equivalent — even a superuser
 //!   must be covered by an explicit rule to see or read a secret.
 //! - Anti-enumeration: non-existent, inactive and not-covered secrets
 //!   all collapse to the same 404 (`SECRET_NOT_FOUND`), including
-//!   malformed UUIDs.
+//!   malformed UUIDs and provenance denials.
 //! - The value endpoint replies with `Cache-Control: no-store` and
 //!   emits a critical (durably acked) `VaultSecretRead` audit event
 //!   BEFORE the plaintext leaves the process.
 use axum::{
     Json,
     extract::{Path, State},
-    http::header,
+    http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
@@ -32,7 +37,9 @@ use crate::AppState;
 use crate::auth::PermissionContext;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
+use crate::middleware::client_addr::ClientAddr;
 use crate::models::vault_secret::VaultSecret;
+use crate::services::vault_provenance::VerifiedAsset;
 
 /// Single canonical 404 message so every denial path (unknown UUID,
 /// malformed UUID, inactive secret, no covering rule) is byte-identical.
@@ -70,6 +77,47 @@ pub struct SecretValueResponse {
     pub value: String,
 }
 
+/// Mandatory provenance gate, run BEFORE the access oracle on every
+/// vault endpoint (the list included). Resolves the client IP through
+/// the same trusted-proxy seam as the global ACL, then requires an
+/// identity-verified asset match.
+///
+/// Denial is the canonical 404 (`SECRET_NOT_FOUND`), byte-identical to
+/// every other refusal of the vault API, plus a non-blocking
+/// `VaultProvenanceDenied` audit event (warn level: the deny already
+/// happened, the audit is best-effort).
+async fn require_provenance(
+    state: &AppState,
+    headers: &HeaderMap,
+    client_addr: ClientAddr,
+    user: &AuthUser,
+) -> AppResult<VerifiedAsset> {
+    let trusted = state.config.security.parsed_trusted_proxies();
+    let source_ip =
+        crate::middleware::resolve_client_ip(headers, client_addr.addr().ip(), &trusted);
+
+    match crate::services::vault_provenance::resolve_caller_asset(state, source_ip, &user.uuid)
+        .await
+    {
+        Some(asset) => Ok(asset),
+        None => {
+            tracing::warn!(
+                source_ip = %source_ip, user = %user.uuid,
+                "vault API call denied: caller is not a verified asset (provenance)"
+            );
+            crate::services::emit_audit(
+                state,
+                crate::ipc::AuditEvent::new(
+                    shared::messages::AuditEventType::VaultProvenanceDenied,
+                    format!(r#"{{"source_ip":"{source_ip}"}}"#),
+                )
+                .user(user.uuid.clone()),
+            );
+            Err(AppError::NotFound(SECRET_NOT_FOUND.to_string()))
+        }
+    }
+}
+
 /// Resolve the caller's internal DB id from the JWT/API-key UUID claim.
 async fn resolve_user_internal_id(
     conn: &mut diesel_async::AsyncPgConnection,
@@ -85,20 +133,30 @@ async fn resolve_user_internal_id(
 }
 
 /// `GET /api/v1/vault/secrets` — list the metadata of every active
-/// secret the caller can access via a secret access rule.
+/// secret the caller can access via a secret access rule covering the
+/// verified provenance asset.
 ///
-/// Fail-closed: an IPC error yields an empty list, never an error the
-/// caller could use to distinguish outage from absence-of-grant.
+/// Provenance failure is the canonical 404, NOT an empty list: a caller
+/// that is not a verified asset learns nothing, not even that the API
+/// answered. Fail-closed: an IPC error yields an empty list, never an
+/// error the caller could use to distinguish outage from
+/// absence-of-grant.
 pub async fn list_vault_secrets(
     State(state): State<AppState>,
     user: AuthUser,
     perms: PermissionContext,
+    client_addr: ClientAddr,
+    headers: HeaderMap,
 ) -> AppResult<Json<Vec<SecretMetadata>>> {
     use crate::schema::vault_secrets;
 
     if !perms.vault_secrets_read {
         return Err(AppError::forbidden("vault_secrets:read"));
     }
+
+    // Provenance BEFORE the oracle: no DB/IPC evaluation for a caller
+    // that is not a verified asset.
+    let source_asset = require_provenance(&state, &headers, client_addr, &user).await?;
 
     let mut conn = state
         .db_pool
@@ -112,6 +170,7 @@ pub async fn list_vault_secrets(
         &state.access_client,
         &mut conn,
         user_internal_id,
+        source_asset.id,
     )
     .await?;
 
@@ -133,6 +192,7 @@ async fn load_authorized_secret(
     state: &AppState,
     user: &AuthUser,
     secret_uuid_raw: &str,
+    source_asset: &VerifiedAsset,
 ) -> AppResult<VaultSecret> {
     use crate::schema::vault_secrets;
 
@@ -142,12 +202,14 @@ async fn load_authorized_secret(
         .map_err(|_| AppError::NotFound(SECRET_NOT_FOUND.to_string()))?;
 
     // Single oracle: vauban-access evaluates active rules in their
-    // validity window, injects the virtual "All secrets" group, and
-    // requires the secret row to be active. Fail-closed bool.
+    // validity window, injects the virtual "All secrets" group, filters
+    // on the provenance asset group and requires the secret row to be
+    // active. Fail-closed bool.
     let allowed = crate::services::secret_access::can_access_secret(
         &state.access_client,
         &user.uuid,
         &secret_uuid.to_string(),
+        source_asset.id,
     )
     .await;
     if !allowed {
@@ -176,12 +238,15 @@ pub async fn get_vault_secret(
     State(state): State<AppState>,
     user: AuthUser,
     perms: PermissionContext,
+    client_addr: ClientAddr,
+    headers: HeaderMap,
     Path(secret_uuid): Path<String>,
 ) -> AppResult<Json<SecretMetadata>> {
     if !perms.vault_secrets_read {
         return Err(AppError::forbidden("vault_secrets:read"));
     }
-    let secret = load_authorized_secret(&state, &user, &secret_uuid).await?;
+    let source_asset = require_provenance(&state, &headers, client_addr, &user).await?;
+    let secret = load_authorized_secret(&state, &user, &secret_uuid, &source_asset).await?;
     Ok(Json(SecretMetadata::from(&secret)))
 }
 
@@ -195,12 +260,15 @@ pub async fn get_vault_secret_value(
     State(state): State<AppState>,
     user: AuthUser,
     perms: PermissionContext,
+    client_addr: ClientAddr,
+    headers: HeaderMap,
     Path(secret_uuid): Path<String>,
 ) -> AppResult<Response> {
     if !perms.vault_secrets_read {
         return Err(AppError::forbidden("vault_secrets:read"));
     }
-    let secret = load_authorized_secret(&state, &user, &secret_uuid).await?;
+    let source_asset = require_provenance(&state, &headers, client_addr, &user).await?;
+    let secret = load_authorized_secret(&state, &user, &secret_uuid, &source_asset).await?;
 
     // Same storage contract as `encrypt_connection_config`: a `vN:`
     // envelope is EXCLUSIVELY decrypted by vauban-vault; anything else
@@ -229,10 +297,11 @@ pub async fn get_vault_secret_value(
         crate::ipc::AuditEvent::new(
             shared::messages::AuditEventType::VaultSecretRead,
             format!(
-                r#"{{"secret":"{}","name":"{}","version":{}}}"#,
+                r#"{{"secret":"{}","name":"{}","version":{},"source_asset":"{}"}}"#,
                 secret.uuid,
                 secret.name.replace('"', ""),
-                secret.version
+                secret.version,
+                source_asset.uuid
             ),
         )
         .user(user.uuid.clone()),

@@ -342,6 +342,7 @@ async fn rule_create_flow_redirect_resolves_then_edit_and_delete() {
     let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("vsw_rule")).await;
     let ug = create_test_vauban_group(&mut conn, "vsw-rule-ug").await;
     let (sg_id, _sg_uuid) = create_test_secret_group(&mut conn, "vsw-rule-sg").await;
+    let ag_id = crate::fixtures::all_assets_group_id(&mut conn).await;
 
     use vauban_web::schema::vauban_groups;
     let ug_id: i32 = vauban_groups::table
@@ -354,7 +355,7 @@ async fn rule_create_flow_redirect_resolves_then_edit_and_delete() {
     let csrf = app.generate_csrf_token();
     let rule_name = unique_name("test-web-srule");
 
-    // Create form loads with both dropdowns.
+    // Create form loads with all three dropdowns (triplet).
     let response = app
         .server
         .get("/vault/secrets/access/new")
@@ -365,6 +366,10 @@ async fn rule_create_flow_redirect_resolves_then_edit_and_delete() {
     assert!(
         form_html.contains("All secrets"),
         "the secret-group dropdown must include the virtual 'All secrets' entry"
+    );
+    assert!(
+        form_html.contains("All assets"),
+        "the asset-group (provenance) dropdown must include the virtual 'All assets' entry"
     );
 
     // Submit.
@@ -378,6 +383,7 @@ async fn rule_create_flow_redirect_resolves_then_edit_and_delete() {
             "description": "web-created rule",
             "user_group_id": ug_id,
             "secret_group_id": sg_id,
+            "asset_group_id": ag_id,
             "is_active": "true",
             "priority": "0",
         }))
@@ -421,6 +427,7 @@ async fn rule_create_flow_redirect_resolves_then_edit_and_delete() {
             "name": format!("{rule_name}-renamed"),
             "user_group_id": ug_id,
             "secret_group_id": sg_id,
+            "asset_group_id": ag_id,
             "priority": "3",
         }))
         .await;
@@ -454,6 +461,60 @@ async fn rule_create_flow_redirect_resolves_then_edit_and_delete() {
         .await
         .expect("count");
     assert_eq!(remaining, 0, "rule row must be gone after delete");
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Eclipse lint rendering: a narrow rule (static asset group) shadowed
+/// by an active "All assets" rule for the same user group and secret
+/// group shows the "Eclipsed" badge in the list and the amber callout
+/// on its detail page; the broad rule shows neither.
+#[tokio::test]
+#[serial]
+async fn eclipsed_rule_badge_and_callout_are_rendered() {
+    use crate::fixtures::{
+        all_assets_group_id, asset_group_id_by_uuid, create_test_asset_group,
+        create_test_secret_access_rule,
+    };
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("vsw_ecl")).await;
+    let ug = create_test_vauban_group(&mut conn, "vsw-ecl-ug").await;
+    let (sg_id, _sg_uuid) = create_test_secret_group(&mut conn, "vsw-ecl-sg").await;
+
+    let static_ag_uuid = create_test_asset_group(&mut conn, &unique_name("vsw-ecl-ag")).await;
+    let static_ag_id = asset_group_id_by_uuid(&mut conn, &static_ag_uuid).await;
+    let all_ag_id = all_assets_group_id(&mut conn).await;
+
+    let narrow_uuid =
+        create_test_secret_access_rule(&mut conn, &ug, sg_id, static_ag_id, true, None, None).await;
+    create_test_secret_access_rule(&mut conn, &ug, sg_id, all_ag_id, true, None, None).await;
+
+    // The list carries the badge.
+    let list = app
+        .server
+        .get("/vault/secrets/access")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    assert_status(&list, 200);
+    assert!(
+        list.text().contains("Eclipsed"),
+        "the rule list must render the Eclipsed badge for the shadowed rule"
+    );
+
+    // The narrow rule's detail carries the amber callout.
+    let detail = app
+        .server
+        .get(&format!("/vault/secrets/access/{narrow_uuid}"))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    assert_status(&detail, 200);
+    assert!(
+        detail.text().contains("Eclipsed rule"),
+        "the shadowed rule's detail page must render the eclipse callout"
+    );
 
     test_db::cleanup(&mut conn).await;
 }

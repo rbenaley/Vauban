@@ -261,6 +261,11 @@ pub struct SecretAccessRuleData {
     pub description: Option<String>,
     pub user_group_id: i32,
     pub secret_group_id: i32,
+    /// Provenance dimension: the rule only grants when the M2M caller's
+    /// source IP matches an identity-verified asset that is a member of
+    /// this asset group (the virtual "All assets" group means "any known
+    /// asset", never "any IP").
+    pub asset_group_id: i32,
     pub valid_from: Option<String>,
     pub valid_until: Option<String>,
     pub is_active: bool,
@@ -279,6 +284,12 @@ pub struct SecretAccessRuleInfo {
     pub secret_group_id: i32,
     pub secret_group_uuid: String,
     pub secret_group_name: String,
+    pub asset_group_id: i32,
+    pub asset_group_uuid: String,
+    pub asset_group_name: String,
+    /// `kind` of the provenance asset group (`static` / `all`); lets the
+    /// admin UI compute the eclipse lint without extra round-trips.
+    pub asset_group_kind: String,
     pub valid_from: Option<String>,
     pub valid_until: Option<String>,
     pub is_active: bool,
@@ -1136,25 +1147,32 @@ pub enum AccessRequest {
     },
 
     /// Bulk list-filter primitive: which secret groups can `user_id`
-    /// access right now? Same two-phase pattern as
-    /// `ListAccessibleGroups`: vauban-access returns the accessible
-    /// `secret_groups.id` values (with the virtual singleton resolved
-    /// server-side to a dedicated marker entry), and vauban-web joins
-    /// them to concrete secret ids locally.
+    /// access right now, calling from `source_asset_id`? Same two-phase
+    /// pattern as `ListAccessibleGroups`: vauban-access returns the
+    /// accessible `secret_groups.id` values (with the virtual singleton
+    /// resolved server-side to a dedicated marker entry), and vauban-web
+    /// joins them to concrete secret ids locally.
+    ///
+    /// `source_asset_id` is the identity-verified asset the M2M caller
+    /// was matched to (provenance). Only rules whose `asset_group_id`
+    /// contains that asset (or the virtual "All assets" group) count.
     ListAccessibleSecretGroups {
         user_id: i32,
+        source_asset_id: i32,
         page: IpcPageParams,
     },
 
     /// Unit check before revealing one secret's value: does an active
     /// secret_access_rule (valid window, active flag, virtual group
-    /// included) cover `(user_uuid, secret_uuid)`? Fail-closed: any DB
-    /// lookup error or unknown UUID yields `allowed: false`. There is
-    /// deliberately NO Casbin/read_all bypass here: even a superuser
-    /// must be covered by a rule.
+    /// included) cover `(user_uuid, secret_uuid)` for a call originating
+    /// from `source_asset_id`? Fail-closed: any DB lookup error or
+    /// unknown UUID yields `allowed: false`. There is deliberately NO
+    /// Casbin/read_all bypass here: even a superuser must be covered by
+    /// a rule.
     CheckSecretAccessByUuid {
         user_uuid: String,
         secret_uuid: String,
+        source_asset_id: i32,
     },
 }
 
@@ -1496,11 +1514,21 @@ pub enum AuditEventType {
     SecretAccessRuleCreated,
     SecretAccessRuleUpdated,
     SecretAccessRuleDeleted,
+    /// M2M vault API call denied because the caller's source IP could
+    /// not be matched to a known, identity-verifiable asset (provenance
+    /// gate). Non-blocking warn-level emission: the deny already
+    /// happened, the audit is best-effort.
+    VaultProvenanceDenied,
+    /// A provenance candidate asset answered the active host-identity
+    /// challenge with a fingerprint that does NOT match the pinned one
+    /// (possible MITM / IP squatting). Security-critical: emitted via
+    /// `emit_audit_critical` and NEVER cached.
+    VaultHostIdentityMismatch,
 }
 
 impl AuditEventType {
     /// Number of variants. Pinned by `audit_event_type_count_is_pinned`.
-    pub const COUNT: usize = 56;
+    pub const COUNT: usize = 58;
 
     /// Every variant, for table-driven tests and drift checks.
     pub const ALL: [AuditEventType; Self::COUNT] = [
@@ -1560,6 +1588,8 @@ impl AuditEventType {
         AuditEventType::SecretAccessRuleCreated,
         AuditEventType::SecretAccessRuleUpdated,
         AuditEventType::SecretAccessRuleDeleted,
+        AuditEventType::VaultProvenanceDenied,
+        AuditEventType::VaultHostIdentityMismatch,
     ];
 
     /// Coarse category, for log pivoting and the drift test. EXHAUSTIVE match
@@ -1621,7 +1651,9 @@ impl AuditEventType {
             | AuditEventType::SecretGroupMemberRemoved
             | AuditEventType::SecretAccessRuleCreated
             | AuditEventType::SecretAccessRuleUpdated
-            | AuditEventType::SecretAccessRuleDeleted => "vault",
+            | AuditEventType::SecretAccessRuleDeleted
+            | AuditEventType::VaultProvenanceDenied
+            | AuditEventType::VaultHostIdentityMismatch => "vault",
             AuditEventType::AccessDenied => "denied",
         }
     }
@@ -3024,7 +3056,7 @@ mod tests {
         // and ALL together when appending a variant (never reorder existing
         // ones -- bincode encodes the index).
         assert_eq!(AuditEventType::ALL.len(), AuditEventType::COUNT);
-        assert_eq!(AuditEventType::COUNT, 56);
+        assert_eq!(AuditEventType::COUNT, 58);
     }
 
     #[test]

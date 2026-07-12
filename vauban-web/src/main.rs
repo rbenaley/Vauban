@@ -889,6 +889,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pending_mfa: vauban_web::services::pending_mfa::PendingMfaStore::new(),
         client_acl,
         login_timing_sacrifice_hash,
+        host_identity_verifier: Arc::new(
+            vauban_web::services::vault_provenance::ProxyHostIdentityVerifier,
+        ),
+        vault_provenance: vauban_web::services::vault_provenance::ProvenanceCache::new(),
     };
 
     // VAU-008: periodically evict abandoned MFA enrolment candidates so the

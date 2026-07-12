@@ -21,7 +21,10 @@ use crate::error::AppError;
 use crate::ipc::AccessIpcClient;
 
 /// Return the IDs of all vault secrets accessible to a given user via
-/// active, temporally valid secret access rules.
+/// active, temporally valid secret access rules, for a call originating
+/// from the identity-verified `source_asset_id` (provenance dimension:
+/// only rules whose asset group contains that asset — directly or via
+/// the virtual "All assets" group — participate).
 ///
 /// The IPC service computes the set of accessible secret groups (with a
 /// flag for the virtual "All secrets" singleton); local DB is only used
@@ -32,14 +35,18 @@ pub async fn list_accessible_secret_ids(
     access_client: &Arc<AccessIpcClient>,
     conn: &mut AsyncPgConnection,
     user_id: i32,
+    source_asset_id: i32,
 ) -> Result<Vec<i32>, AppError> {
     use crate::schema::{secret_secret_groups, vault_secrets};
 
-    let entries = match access_client.list_accessible_secret_groups(user_id).await {
+    let entries = match access_client
+        .list_accessible_secret_groups(user_id, source_asset_id)
+        .await
+    {
         Ok(e) => e,
         Err(err) => {
             tracing::error!(
-                user_id, error = %err,
+                user_id, source_asset_id, error = %err,
                 "list_accessible_secret_groups IPC call failed; returning empty set (fail-closed)"
             );
             return Ok(Vec::new());
@@ -79,19 +86,22 @@ pub async fn list_accessible_secret_ids(
     Ok(all_ids)
 }
 
-/// Check whether a user can read a specific vault secret.
+/// Check whether a user can read a specific vault secret when calling
+/// from the identity-verified `source_asset_id`.
 ///
 /// Fully delegated to vauban-access (`CheckSecretAccessByUuid`), which
 /// evaluates active rules in their validity window, injects the virtual
-/// "All secrets" group and requires the secret row to be active.
+/// "All secrets" group, filters on the provenance asset group and
+/// requires the secret row to be active.
 ///
 /// Fail-closed: `false` on any IPC error or unexpected response shape.
 pub async fn can_access_secret(
     access_client: &Arc<AccessIpcClient>,
     user_uuid: &str,
     secret_uuid: &str,
+    source_asset_id: i32,
 ) -> bool {
     access_client
-        .check_secret_access_by_uuid(user_uuid, secret_uuid)
+        .check_secret_access_by_uuid(user_uuid, secret_uuid, source_asset_id)
         .await
 }

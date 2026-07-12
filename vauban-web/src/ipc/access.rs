@@ -1264,13 +1264,18 @@ impl AccessIpcClient {
 
     // === Secret access evaluation ===
 
+    /// `source_asset_id` is the identity-verified provenance asset the
+    /// M2M caller was matched to; only rules whose asset group contains
+    /// it (or the virtual "All assets" group) participate.
     pub async fn list_accessible_secret_groups(
         &self,
         user_id: i32,
+        source_asset_id: i32,
     ) -> AppResult<Vec<AccessibleSecretGroupEntry>> {
         self.drain_pages(
             |offset| AccessReq::ListAccessibleSecretGroups {
                 user_id,
+                source_asset_id,
                 page: ipc_page(offset),
             },
             |resp| match resp {
@@ -1284,11 +1289,17 @@ impl AccessIpcClient {
 
     /// Fail-closed unit check: `false` on any IPC error or unexpected
     /// response shape, never an error the caller could interpret loosely.
-    pub async fn check_secret_access_by_uuid(&self, user_uuid: &str, secret_uuid: &str) -> bool {
+    pub async fn check_secret_access_by_uuid(
+        &self,
+        user_uuid: &str,
+        secret_uuid: &str,
+        source_asset_id: i32,
+    ) -> bool {
         let resp = self
             .send_access_request(AccessReq::CheckSecretAccessByUuid {
                 user_uuid: user_uuid.to_string(),
                 secret_uuid: secret_uuid.to_string(),
+                source_asset_id,
             })
             .await;
         match resp {

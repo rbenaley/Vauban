@@ -15,10 +15,14 @@ use crate::templates::secrets::{
     SecretRuleEditData, SecretRuleEditTemplate, SecretRuleForm, SecretRuleItem,
     SecretRuleListTemplate,
 };
-use shared::messages::{SECRET_GROUP_KIND_ALL, SecretAccessRuleData};
+use shared::messages::{
+    ASSET_GROUP_KIND_ALL, SECRET_GROUP_KIND_ALL, SecretAccessRuleData, SecretAccessRuleInfo,
+};
 
 /// Map IPC `GroupOption`s to the rule-editor dropdown options, virtual
-/// entries first (mirrors the asset rule editor ordering).
+/// entries first (mirrors the asset rule editor ordering). The `kind`
+/// vocabulary is shared between secret groups and asset groups
+/// (`static` / `all`), so one mapper serves all three dropdowns.
 fn map_secret_group_options(opts: Vec<shared::messages::GroupOption>) -> Vec<SecretGroupOption> {
     let mut mapped: Vec<SecretGroupOption> = opts
         .into_iter()
@@ -36,21 +40,64 @@ fn map_secret_group_options(opts: Vec<shared::messages::GroupOption>) -> Vec<Sec
     mapped
 }
 
-/// Load both dropdowns for the rule editor: user groups (never virtual)
-/// and secret groups INCLUDING the virtual "All secrets" entry.
+/// Load the three dropdowns for the rule editor: user groups (never
+/// virtual), secret groups INCLUDING the virtual "All secrets" entry,
+/// and asset groups INCLUDING the virtual "All assets" entry
+/// (provenance dimension).
 async fn load_rule_editor_options(
     state: &AppState,
-) -> Result<(Vec<SecretGroupOption>, Vec<SecretGroupOption>), AppError> {
-    let (user_groups_res, secret_groups_res) = tokio::join!(
-        state.access_client.get_group_options(),
+) -> Result<
+    (
+        Vec<SecretGroupOption>,
+        Vec<SecretGroupOption>,
+        Vec<SecretGroupOption>,
+    ),
+    AppError,
+> {
+    let (groups_res, secret_groups_res) = tokio::join!(
+        state.access_client.get_group_options_with_virtual(),
         state.access_client.list_secret_group_options(true),
     );
-    let (user_groups, _asset_groups) = user_groups_res?;
+    let (user_groups, asset_groups) = groups_res?;
     let secret_groups = secret_groups_res?;
     Ok((
         map_secret_group_options(user_groups),
         map_secret_group_options(secret_groups),
+        map_secret_group_options(asset_groups),
     ))
+}
+
+/// Eclipse lint (pure function, table-driven-tested): the set of rule
+/// UUIDs whose asset-group restriction is moot because another ACTIVE
+/// rule grants the same user group a covering secret group (same group
+/// or the virtual "All secrets") from the virtual "All assets"
+/// provenance.
+///
+/// A rule whose own asset group IS the virtual "All assets" is never
+/// flagged (there is nothing narrower to eclipse).
+pub(crate) fn eclipsed_rule_uuids(
+    rules: &[SecretAccessRuleInfo],
+) -> std::collections::HashSet<String> {
+    use shared::messages::ALL_SECRETS_GROUP_UUID;
+
+    let mut eclipsed = std::collections::HashSet::new();
+    for r in rules {
+        if r.asset_group_kind == ASSET_GROUP_KIND_ALL {
+            continue;
+        }
+        let covered = rules.iter().any(|s| {
+            s.uuid != r.uuid
+                && s.is_active
+                && s.user_group_id == r.user_group_id
+                && s.asset_group_kind == ASSET_GROUP_KIND_ALL
+                && (s.secret_group_id == r.secret_group_id
+                    || s.secret_group_uuid == ALL_SECRETS_GROUP_UUID)
+        });
+        if covered {
+            eclipsed.insert(r.uuid.clone());
+        }
+    }
+    eclipsed
 }
 
 // ============================================================================
@@ -64,6 +111,7 @@ pub struct SecretAccessRuleWebForm {
     pub description: Option<String>,
     pub user_group_id: i32,
     pub secret_group_id: i32,
+    pub asset_group_id: i32,
     pub valid_from: Option<String>,
     pub valid_until: Option<String>,
     pub is_active: Option<String>,
@@ -103,13 +151,16 @@ pub async fn secret_access_rules_list(
 
     let mut infos = state.access_client.list_secret_access_rules().await?;
     infos.sort_by_key(|r| r.name.to_lowercase());
+    let eclipsed = eclipsed_rule_uuids(&infos);
     let rules: Vec<SecretRuleItem> = infos
         .into_iter()
         .map(|r| SecretRuleItem {
+            is_eclipsed: eclipsed.contains(&r.uuid),
             uuid: r.uuid,
             name: r.name,
             user_group_name: r.user_group_name,
             secret_group_name: r.secret_group_name,
+            asset_group_name: r.asset_group_name,
             is_active: r.is_active,
         })
         .collect();
@@ -151,8 +202,8 @@ pub async fn secret_access_rule_create_form(
         );
     }
 
-    let (user_groups, secret_groups) = match load_rule_editor_options(&state).await {
-        Ok(pair) => pair,
+    let (user_groups, secret_groups, asset_groups) = match load_rule_editor_options(&state).await {
+        Ok(triple) => triple,
         Err(e) => {
             tracing::error!("IPC error loading rule editor options: {}", e);
             return flash_redirect(
@@ -188,6 +239,7 @@ pub async fn secret_access_rule_create_form(
         },
         user_groups,
         secret_groups,
+        asset_groups,
     };
 
     match template.render() {
@@ -254,6 +306,7 @@ pub async fn create_secret_access_rule_web(
         description: sanitized_desc,
         user_group_id: form.user_group_id,
         secret_group_id: form.secret_group_id,
+        asset_group_id: form.asset_group_id,
         valid_from: to_rfc3339_opt(&valid_from),
         valid_until: to_rfc3339_opt(&valid_until),
         is_active: form.is_active.is_some(),
@@ -285,7 +338,9 @@ pub async fn create_secret_access_rule_web(
                 || msg.to_lowercase().contains("already exists") =>
         {
             flash_redirect(
-                flash.error("A rule for this user group / secret group combination already exists"),
+                flash.error(
+                    "A rule for this user group / secret group / asset group combination already exists",
+                ),
                 "/vault/secrets/access/new",
             )
         }
@@ -324,7 +379,15 @@ pub async fn secret_access_rule_detail(
         return flash_redirect(flash.error("Invalid identifier"), "/vault/secrets/access");
     }
 
-    let info = match state.access_client.get_secret_access_rule(&uuid_str).await {
+    // The eclipse lint needs the full rule set; fetch it alongside the
+    // rule itself. A failure of the list call degrades to "no eclipse
+    // information" rather than blocking the detail page.
+    let (info_res, all_rules_res) = tokio::join!(
+        state.access_client.get_secret_access_rule(&uuid_str),
+        state.access_client.list_secret_access_rules(),
+    );
+
+    let info = match info_res {
         Ok(i) => i,
         Err(AppError::Ipc(ref msg)) if msg.to_lowercase().contains("not found") => {
             return flash_redirect(
@@ -341,16 +404,27 @@ pub async fn secret_access_rule_detail(
         }
     };
 
+    let is_eclipsed = match all_rules_res {
+        Ok(all) => eclipsed_rule_uuids(&all).contains(&info.uuid),
+        Err(e) => {
+            tracing::warn!("IPC error loading rules for eclipse lint: {}", e);
+            false
+        }
+    };
+
     let detail = SecretRuleDetailData {
         uuid: info.uuid,
         name: info.name.clone(),
         description: info.description,
         user_group_name: info.user_group_name,
         secret_group_name: info.secret_group_name,
+        asset_group_name: info.asset_group_name,
+        asset_group_is_virtual: info.asset_group_kind == ASSET_GROUP_KIND_ALL,
         valid_from: format_rfc3339_to_display(&info.valid_from, browser_tz.0),
         valid_until: format_rfc3339_to_display(&info.valid_until, browser_tz.0),
         is_active: info.is_active,
         priority: info.priority,
+        is_eclipsed,
         created_at: format_rfc3339_str_to_display(&info.created_at, browser_tz.0),
         updated_at: format_rfc3339_str_to_display(&info.updated_at, browser_tz.0),
     };
@@ -437,8 +511,8 @@ pub async fn secret_access_rule_edit(
         }
     };
 
-    let (user_groups, secret_groups) = match options_res {
-        Ok(pair) => pair,
+    let (user_groups, secret_groups, asset_groups) = match options_res {
+        Ok(triple) => triple,
         Err(e) => {
             tracing::error!("IPC error loading rule editor options: {}", e);
             return flash_redirect(
@@ -454,6 +528,7 @@ pub async fn secret_access_rule_edit(
         description: info.description.clone().unwrap_or_default(),
         user_group_id: info.user_group_id,
         secret_group_id: info.secret_group_id,
+        asset_group_id: info.asset_group_id,
         valid_from: format_rfc3339_to_local(&info.valid_from, browser_tz.0),
         valid_until: format_rfc3339_to_local(&info.valid_until, browser_tz.0),
         is_active: info.is_active,
@@ -483,6 +558,7 @@ pub async fn secret_access_rule_edit(
         rule: rule_edit,
         user_groups,
         secret_groups,
+        asset_groups,
     };
 
     match template.render() {
@@ -550,6 +626,7 @@ pub async fn update_secret_access_rule_web(
         description: sanitized_desc,
         user_group_id: form.user_group_id,
         secret_group_id: form.secret_group_id,
+        asset_group_id: form.asset_group_id,
         valid_from: to_rfc3339_opt(&valid_from),
         valid_until: to_rfc3339_opt(&valid_until),
         is_active: form.is_active.is_some(),
@@ -585,7 +662,9 @@ pub async fn update_secret_access_rule_web(
                 || msg.to_lowercase().contains("already exists") =>
         {
             flash_redirect(
-                flash.error("A rule for this user group / secret group combination already exists"),
+                flash.error(
+                    "A rule for this user group / secret group / asset group combination already exists",
+                ),
                 &edit_url,
             )
         }
@@ -699,5 +778,119 @@ mod tests {
         assert_eq!(mapped[0].name, "All secrets");
         assert_eq!(mapped[1].name, "Alpha");
         assert_eq!(mapped[2].name, "Zeta");
+    }
+
+    /// Builder for eclipse-lint table tests.
+    #[allow(clippy::too_many_arguments)]
+    fn rule(
+        uuid: &str,
+        user_group_id: i32,
+        secret_group_id: i32,
+        secret_group_uuid: &str,
+        asset_group_kind: &str,
+        is_active: bool,
+    ) -> SecretAccessRuleInfo {
+        SecretAccessRuleInfo {
+            uuid: uuid.to_string(),
+            name: uuid.to_string(),
+            description: None,
+            user_group_id,
+            user_group_uuid: format!("ug-{user_group_id}"),
+            user_group_name: format!("ug-{user_group_id}"),
+            secret_group_id,
+            secret_group_uuid: secret_group_uuid.to_string(),
+            secret_group_name: format!("sg-{secret_group_id}"),
+            asset_group_id: 1,
+            asset_group_uuid: "ag-uuid".to_string(),
+            asset_group_name: "ag".to_string(),
+            asset_group_kind: asset_group_kind.to_string(),
+            valid_from: None,
+            valid_until: None,
+            is_active,
+            priority: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn eclipse_lint_table_driven() {
+        use shared::messages::ALL_SECRETS_GROUP_UUID;
+
+        // (description, rules, expected eclipsed uuids)
+        let cases: Vec<(&str, Vec<SecretAccessRuleInfo>, Vec<&str>)> = vec![
+            ("empty set has no eclipse", vec![], vec![]),
+            (
+                "narrow rule eclipsed by active All-assets rule on same secret group",
+                vec![
+                    rule("narrow", 1, 10, "sg-10", "static", true),
+                    rule("broad", 1, 10, "sg-10", "all", true),
+                ],
+                vec!["narrow"],
+            ),
+            (
+                "narrow rule eclipsed by active All-assets + All-secrets rule",
+                vec![
+                    rule("narrow", 1, 10, "sg-10", "static", true),
+                    rule("broad", 1, 99, ALL_SECRETS_GROUP_UUID, "all", true),
+                ],
+                vec!["narrow"],
+            ),
+            (
+                "inactive broad rule does NOT eclipse",
+                vec![
+                    rule("narrow", 1, 10, "sg-10", "static", true),
+                    rule("broad", 1, 10, "sg-10", "all", false),
+                ],
+                vec![],
+            ),
+            (
+                "different user group does NOT eclipse",
+                vec![
+                    rule("narrow", 1, 10, "sg-10", "static", true),
+                    rule("broad", 2, 10, "sg-10", "all", true),
+                ],
+                vec![],
+            ),
+            (
+                "different secret group (non-virtual) does NOT eclipse",
+                vec![
+                    rule("narrow", 1, 10, "sg-10", "static", true),
+                    rule("broad", 1, 11, "sg-11", "all", true),
+                ],
+                vec![],
+            ),
+            (
+                "All-assets rule itself is never flagged",
+                vec![
+                    rule("broad-1", 1, 10, "sg-10", "all", true),
+                    rule("broad-2", 1, 10, "sg-10", "all", true),
+                ],
+                vec![],
+            ),
+            (
+                "broad static rule does NOT eclipse another static rule",
+                vec![
+                    rule("static-1", 1, 10, "sg-10", "static", true),
+                    rule("static-2", 1, 10, "sg-10", "static", true),
+                ],
+                vec![],
+            ),
+            (
+                "inactive narrow rule is still flagged (redundant even if re-activated)",
+                vec![
+                    rule("narrow", 1, 10, "sg-10", "static", false),
+                    rule("broad", 1, 10, "sg-10", "all", true),
+                ],
+                vec!["narrow"],
+            ),
+        ];
+
+        for (desc, rules, expected) in cases {
+            let got = eclipsed_rule_uuids(&rules);
+            let want: std::collections::HashSet<String> =
+                expected.into_iter().map(String::from).collect();
+            assert_eq!(got, want, "case failed: {desc}");
+        }
     }
 }

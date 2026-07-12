@@ -153,6 +153,16 @@ pub struct AppState {
     /// same wall-clock time as an invalid-password failure
     /// (anti-enumeration, no timing oracle).
     pub login_timing_sacrifice_hash: Arc<String>,
+    /// Seam for the active host-identity challenge of the Vault Secrets
+    /// M2M provenance gate. Production wires
+    /// [`services::vault_provenance::ProxyHostIdentityVerifier`] (SSH
+    /// host-key fetch / RDP cert fetch via proxy IPC); tests inject a
+    /// deterministic stub. Every `/api/v1/vault/*` call MUST verify the
+    /// caller through this seam before touching the access oracle.
+    pub host_identity_verifier: Arc<dyn services::vault_provenance::HostIdentityVerifier>,
+    /// In-memory caches (verification successes TTL 60 s, DNS TTL 60 s)
+    /// for the vault provenance pipeline. Mismatches are never cached.
+    pub vault_provenance: services::vault_provenance::ProvenanceCache,
 }
 
 #[cfg(test)]

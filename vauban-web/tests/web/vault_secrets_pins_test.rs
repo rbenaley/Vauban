@@ -305,6 +305,160 @@ fn api_key_middleware_wires_secrets_scope_isolation() {
     );
 }
 
+// =============================================================================
+// 5. Provenance: mandatory gate, anti-DNS-poisoning, mismatch never cached
+// =============================================================================
+
+/// Every one of the three GET handlers must run the provenance gate
+/// BEFORE the access oracle: `require_provenance(` appears in each
+/// handler body, and the oracle call receives the verified asset.
+#[test]
+fn api_handlers_gate_on_provenance_before_the_oracle() {
+    let body = include_str!("../../src/handlers/api/vault_secrets.rs");
+    let production_body = strip_comments_and_tests(body);
+    let production_body = production_body.as_str();
+
+    for handler in [
+        "pub async fn list_vault_secrets",
+        "pub async fn get_vault_secret(",
+        "pub async fn get_vault_secret_value",
+    ] {
+        let start = production_body
+            .find(handler)
+            .unwrap_or_else(|| panic!("vault_secrets.rs must declare `{handler}`"));
+        let after = &production_body[start..];
+        let end = after[1..]
+            .find("\npub async fn ")
+            .map(|p| p + 1)
+            .unwrap_or(after.len());
+        let handler_body = &after[..end];
+
+        let provenance_at = handler_body
+            .find("require_provenance(")
+            .unwrap_or_else(|| panic!("`{handler}` must call require_provenance()"));
+
+        // The oracle (secret_access::*) must come AFTER the gate.
+        if let Some(oracle_at) = handler_body.find("secret_access::") {
+            assert!(
+                provenance_at < oracle_at,
+                "`{handler}`: provenance must run BEFORE the access oracle"
+            );
+        }
+    }
+
+    // The gate's denial is the canonical 404 (byte-identical to every
+    // other refusal), never a distinguishable status.
+    let gate_start = production_body
+        .find("async fn require_provenance")
+        .expect("vault_secrets.rs must define require_provenance");
+    let gate_body = &production_body[gate_start..];
+    let gate_body = &gate_body[..gate_body
+        .find("\nasync fn ")
+        .or_else(|| gate_body.find("\npub async fn "))
+        .unwrap_or(gate_body.len())];
+    assert!(
+        gate_body.contains("SECRET_NOT_FOUND"),
+        "require_provenance must deny with the canonical SECRET_NOT_FOUND 404"
+    );
+    assert!(
+        !gate_body.contains("AppError::forbidden") && !gate_body.contains("Authorization("),
+        "require_provenance must never leak a 401/403 (anti-enumeration)"
+    );
+}
+
+/// Anti-DNS-poisoning: the active challenge targets the SOURCE IP of
+/// the call. The probe construction in `resolve_caller_asset` must bind
+/// `ip: source_ip` and must never pass the asset's hostname (or any
+/// resolved name) to the verifier.
+#[test]
+fn provenance_challenge_targets_source_ip_never_hostname() {
+    let body = include_str!("../../src/services/vault_provenance.rs");
+    let production_body = strip_comments_and_tests(body);
+
+    let probe_at = production_body
+        .find("HostIdentityProbe {")
+        .expect("resolve_caller_asset must build a HostIdentityProbe");
+    let probe_zone = &production_body[probe_at..];
+    let probe_zone = &probe_zone[..probe_zone.find('}').unwrap_or(probe_zone.len())];
+
+    assert!(
+        probe_zone.contains("ip: source_ip"),
+        "the probe must target the caller's source IP verbatim"
+    );
+    let forbidden_ip_sources = [
+        format!("ip: c.{}", "hostname"),
+        format!("ip: {}", "hostname"),
+        format!("ip: {}", "addrs"),
+        format!("ip: {}", "resolved"),
+    ];
+    for token in &forbidden_ip_sources {
+        assert!(
+            !probe_zone.contains(token.as_str()),
+            "the probe must NEVER be aimed at a resolved/stored hostname ('{token}')"
+        );
+    }
+}
+
+/// Mismatch is never cached: `mark_verified` must appear exactly once
+/// in the provenance service, guarded by the pin equality check.
+#[test]
+fn provenance_mismatch_is_never_cached() {
+    let body = include_str!("../../src/services/vault_provenance.rs");
+    let production_body = strip_comments_and_tests(body);
+
+    let call = ".mark_verified(";
+    let count = production_body.matches(call).count();
+    assert_eq!(
+        count, 1,
+        "vault_provenance.rs must call mark_verified exactly once (the success branch)"
+    );
+
+    let call_at = production_body.find(call).expect("counted above");
+    let preceding = &production_body[..call_at];
+    let guard_at = preceding
+        .rfind("observed == pinned")
+        .expect("mark_verified must be guarded by the `observed == pinned` equality");
+    assert!(
+        call_at - guard_at < 200,
+        "mark_verified must sit directly inside the equality-guarded success branch"
+    );
+
+    // The mismatch branch must emit the critical audit event.
+    assert!(
+        production_body.contains("VaultHostIdentityMismatch"),
+        "the mismatch branch must emit the VaultHostIdentityMismatch critical audit"
+    );
+    assert!(
+        production_body.contains("emit_audit_critical"),
+        "the mismatch audit must go through emit_audit_critical (durable ack)"
+    );
+}
+
+/// The list endpoint must NOT return `200 []` to a non-asset caller:
+/// `list_vault_secrets` propagates the provenance error with `?` before
+/// building any response.
+#[test]
+fn list_endpoint_has_no_empty_list_oracle_for_provenance() {
+    let body = include_str!("../../src/handlers/api/vault_secrets.rs");
+    let production_body = strip_comments_and_tests(body);
+
+    let start = production_body
+        .find("pub async fn list_vault_secrets")
+        .expect("list handler present");
+    let after = &production_body[start..];
+    let end = after[1..]
+        .find("\npub async fn ")
+        .map(|p| p + 1)
+        .unwrap_or(after.len());
+    let handler_body = &after[..end];
+
+    assert!(
+        handler_body.contains("require_provenance(&state, &headers, client_addr, &user).await?"),
+        "list_vault_secrets must propagate the provenance denial with `?` \
+         (404, never an empty 200 list)"
+    );
+}
+
 /// The `vault_secrets` Casbin resource must be tracked by the
 /// PermissionContext (both flags) and granted in the default policy.
 #[test]

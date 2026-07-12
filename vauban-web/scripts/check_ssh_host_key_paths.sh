@@ -32,6 +32,14 @@
 
 set -euo pipefail
 
+# Fixed-string presence helper reading from a here-string. We
+# deliberately avoid `printf ... | grep -q` because `grep -q` exits on
+# the first match, closing the pipe; with `pipefail` set, the upstream
+# `printf` then dies with SIGPIPE (141) and the pipeline reports failure
+# INTERMITTENTLY even though the pattern WAS found. Here-strings have no
+# upstream process and are immune (same helper as check_rdp_cert_paths.sh).
+has() { grep -qF -- "$1" <<<"$2"; }
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 errors=0
@@ -63,14 +71,14 @@ if [[ "${unverified_count}" -lt 2 ]]; then
 fi
 
 # ---- 2. Strict-pin refusal messages in connect_ssh ----
-if ! printf '%s' "${stripped_ssh}" | grep -qF 'No SSH host key pinned'; then
+if ! has 'No SSH host key pinned' "${stripped_ssh}"; then
     echo "[lint] forbidden: missing literal \"No SSH host key pinned\" in ${SSH_HANDLER}"
     echo "       Issue #34 connect_ssh pre-flight refuses categorically when"
     echo "       no host key is pinned. The literal is the user-visible"
     echo "       message; removing it re-opens the indefinite TOFU window."
     errors=1
 fi
-if ! printf '%s' "${stripped_ssh}" | grep -qF 'SSH host key mismatch detected on previous connection'; then
+if ! has 'SSH host key mismatch detected on previous connection' "${stripped_ssh}"; then
     echo "[lint] forbidden: missing literal \"SSH host key mismatch detected on previous connection\" in ${SSH_HANDLER}"
     echo "       Issue #34 connect_ssh pre-flight refuses when the mismatch"
     echo "       flag is set. Removing this literal would let users retry"
@@ -85,14 +93,14 @@ fi
 # via the new `caller_has_assets_manage` field. Without these, the
 # IPC layer falls back to the legacy session-token verb and the
 # admin path silently denies again.
-if ! printf '%s' "${stripped_ssh}" | grep -qF 'perms.assets_manage'; then
+if ! has 'perms.assets_manage' "${stripped_ssh}"; then
     echo "[lint] forbidden: ${SSH_HANDLER} no longer reads \`perms.assets_manage\`"
     echo "       Issue #34 verify_ssh_host_key (and fetch_ssh_host_key) MUST"
     echo "       forward this Casbin flag so the IPC layer routes admin"
     echo "       callers to the diagnostic-token verb."
     errors=1
 fi
-if ! printf '%s' "${stripped_ssh}" | grep -qF 'caller_has_assets_manage'; then
+if ! has 'caller_has_assets_manage' "${stripped_ssh}"; then
     echo "[lint] forbidden: ${SSH_HANDLER} no longer constructs \`HostKeyFetchIdentity\` with \`caller_has_assets_manage\`"
     echo "       Issue #34: this field gates the diagnostic-token bypass."
     errors=1
@@ -115,13 +123,13 @@ if [[ ! -f "${PROXY_SSH_IPC}" ]]; then
     errors=1
 else
     stripped_ipc="$(sed 's|//.*$||' "${PROXY_SSH_IPC}")"
-    if ! printf '%s' "${stripped_ipc}" | grep -qF 'issue_diagnostic_token'; then
+    if ! has 'issue_diagnostic_token' "${stripped_ipc}"; then
         echo "[lint] forbidden: ${PROXY_SSH_IPC} no longer calls \`issue_diagnostic_token\`"
         echo "       Issue #34 Lot 2: \`fetch_host_key\` must route admin"
         echo "       callers through the diagnostic-token verb."
         errors=1
     fi
-    if ! printf '%s' "${stripped_ipc}" | grep -qF 'pub caller_has_assets_manage'; then
+    if ! has 'pub caller_has_assets_manage' "${stripped_ipc}"; then
         echo "[lint] forbidden: ${PROXY_SSH_IPC} no longer exposes"
         echo "       \`pub caller_has_assets_manage\` on HostKeyFetchIdentity."
         echo "       Issue #34: removing this field forces every caller back"

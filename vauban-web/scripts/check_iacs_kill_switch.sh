@@ -70,6 +70,21 @@ ALLOWED=(
     # list-visibility filter its callers -- api/sessions.rs and
     # web/users.rs above -- performed inline before the extraction).
     "src/services/session_termination.rs"
+    # Layer-4 kill-switch enforcers (documented in each file's inline
+    # comments): refuse creating/updating IACS assets or granting IACS
+    # protocols on access rules while the master switch is off,
+    # anti-enumeration 404 on IACS asset detail, frozen-but-preserved
+    # IACS protocols on rule edit, and `AssetType::select_options`
+    # gating of the type dropdown. These reads were always present but
+    # invisible to this lint until the `grep -q` SIGPIPE bug (see the
+    # comment in the scan loop below) was fixed: `-q` exited on the
+    # first match, killed the upstream sed and the pipefail status flip
+    # silently skipped the finding. Pinned by
+    # `tests/web/iacs_kill_switch_test.rs` and
+    # `access_rule_edit_preserves_existing_iacs_protocols_under_kill_switch`.
+    "src/handlers/web/access_rules.rs"
+    "src/handlers/web/manage_assets.rs"
+    "src/handlers/api/manage_assets.rs"
 )
 
 errors=0
@@ -108,7 +123,11 @@ for dir in "${SCAN_DIRS[@]}"; do
                 continue 2
             fi
         done
-        if strip_rust "${path}" | grep -qE 'config\.industrial\.enabled'; then
+        # `grep -E >/dev/null` (not `-q`): `-q` exits on the first match
+        # and SIGPIPEs the upstream sed, which under pipefail can
+        # INTERMITTENTLY flip a found-token pipeline to non-zero and
+        # silently skip the violation.
+        if strip_rust "${path}" | grep -E 'config\.industrial\.enabled' >/dev/null; then
             echo "[lint] forbidden read of \`config.industrial.enabled\` in ${rel}"
             echo "       gate on \`perms.iacs_*\` instead -- the kill-switch is"
             echo "       enforced once in \`PermissionContext::load\`."

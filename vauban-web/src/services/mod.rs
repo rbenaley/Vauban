@@ -34,6 +34,7 @@ pub mod session_revocation;
 pub mod session_termination;
 pub mod smtp_client;
 pub mod system_health;
+pub mod vault_provenance;
 pub mod virtual_group;
 
 pub use access::*;

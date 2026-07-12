@@ -320,6 +320,7 @@ diesel::table! {
         updated_by_id -> Nullable<Int4>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        asset_group_id -> Int4,
     }
 }
 
@@ -438,6 +439,7 @@ diesel::joinable!(asset_asset_groups -> asset_groups (asset_group_id));
 diesel::joinable!(asset_asset_groups -> assets (asset_id));
 diesel::joinable!(auth_sessions -> users (user_id));
 diesel::joinable!(proxy_sessions -> assets (asset_id));
+diesel::joinable!(secret_access_rules -> asset_groups (asset_group_id));
 diesel::joinable!(secret_access_rules -> secret_groups (secret_group_id));
 diesel::joinable!(secret_access_rules -> vauban_groups (user_group_id));
 diesel::joinable!(secret_secret_groups -> secret_groups (secret_group_id));

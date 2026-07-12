@@ -11,4 +11,5 @@ pub mod casbin_handler_eradication_test;
 pub mod cleanup_test;
 pub mod sessions_test;
 pub mod vauban_groups_test;
+pub mod vault_provenance_test;
 pub mod vault_secrets_test;

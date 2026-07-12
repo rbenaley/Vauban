@@ -28,6 +28,13 @@
 #     (E2E coverage: the route returns 410 with a constant body).
 #
 # Returns non-zero on the first violation so it plugs into CI directly.
+#
+# NOTE: never pipe into `grep -q` here. Under `set -o pipefail`,
+# `grep -q` exits on the first match and closes the pipe; the upstream
+# `printf`/`sed` then dies with SIGPIPE (141) and the pipeline status
+# flips to non-zero INTERMITTENTLY (timing-dependent), inverting the
+# `!`-negated checks. `grep ... >/dev/null` drains its whole input and
+# is immune.
 
 set -euo pipefail
 
@@ -40,7 +47,7 @@ HANDLER="${ROOT}/src/handlers/web/assets.rs"
 if [[ ! -f "${HANDLER}" ]]; then
     echo "[lint] missing file: ${HANDLER}" >&2
     errors=1
-elif sed 's|//.*$||' "${HANDLER}" | grep -qE 'pub async fn asset_user_view\('; then
+elif sed 's|//.*$||' "${HANDLER}" | grep -E 'pub async fn asset_user_view\(' >/dev/null; then
     echo "[lint] forbidden: \`pub async fn asset_user_view(\` in ${HANDLER}"
     echo "       Issue #34 removed the user-zone /assets/{uuid} detail page."
     echo "       The route now serves a constant 410 via gone_asset_user_view;"
@@ -71,14 +78,14 @@ if [[ -f "${LIST}" ]]; then
     # Strip Askama `{# ... #}` and HTML `<!-- ... -->` comments first
     # so the documentation comments can mention the legacy pattern.
     stripped="$(sed 's|<!--[^>]*-->||g; s|{#.*#}||g' "${LIST}")"
-    if printf '%s' "${stripped}" | grep -qE 'href="/assets/\{\{ asset\.uuid \}\}#'; then
+    if printf '%s' "${stripped}" | grep -E 'href="/assets/\{\{ asset\.uuid \}\}#' >/dev/null; then
         echo "[lint] forbidden: legacy \`href=\"/assets/{{ asset.uuid }}#...\"\` in ${LIST}"
         echo "       Issue #34: the per-row Request / Connect buttons must open"
         echo "       the inlined Alpine modaux via @click=\"\$store.*.open(...)\""
         echo "       and NOT navigate to the now-removed detail page."
         errors=1
     fi
-    if printf '%s' "${stripped}" | grep -qE '#request-access|#justify'; then
+    if printf '%s' "${stripped}" | grep -E '#request-access|#justify' >/dev/null; then
         echo "[lint] forbidden: legacy \`#request-access\`/\`#justify\` hash in ${LIST}"
         echo "       Issue #34: the hash router was removed; modaux open via"
         echo "       \$store.accessModal.open(...) and \$store.justificationModal.open(...)."
@@ -94,13 +101,13 @@ if [[ ! -f "${MAIN}" ]]; then
 else
     stripped_main="$(sed 's|//.*$||' "${MAIN}")"
     # Find the `.route("/assets/{uuid}",` line(s).
-    if ! printf '%s' "${stripped_main}" | grep -qE '\.route\("/assets/\{uuid\}",[[:space:]]*get\(handlers::web::gone_asset_user_view\)\)'; then
+    if ! printf '%s' "${stripped_main}" | grep -E '\.route\("/assets/\{uuid\}",[[:space:]]*get\(handlers::web::gone_asset_user_view\)\)' >/dev/null; then
         echo "[lint] forbidden: \`/assets/{uuid}\` GET route is not on gone_asset_user_view in ${MAIN}"
         echo "       Issue #34: this route must serve a constant 410 via"
         echo "       handlers::web::gone_asset_user_view (anti-enum, audit-grep)."
         errors=1
     fi
-    if printf '%s' "${stripped_main}" | grep -qE 'handlers::web::asset_user_view'; then
+    if printf '%s' "${stripped_main}" | grep -E 'handlers::web::asset_user_view' >/dev/null; then
         echo "[lint] forbidden: reference to \`handlers::web::asset_user_view\` in ${MAIN}"
         echo "       Issue #34: this handler is gone; use gone_asset_user_view."
         errors=1

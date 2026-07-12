@@ -447,15 +447,31 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
             crate::secrets::handle_delete_secret_access_rule(&mut conn, &uuid).await
         }
 
-        AccessRequest::ListAccessibleSecretGroups { user_id, page } => {
-            crate::secrets::handle_list_accessible_secret_groups(&mut conn, user_id, page).await
+        AccessRequest::ListAccessibleSecretGroups {
+            user_id,
+            source_asset_id,
+            page,
+        } => {
+            crate::secrets::handle_list_accessible_secret_groups(
+                &mut conn,
+                user_id,
+                source_asset_id,
+                page,
+            )
+            .await
         }
         AccessRequest::CheckSecretAccessByUuid {
             user_uuid,
             secret_uuid,
+            source_asset_id,
         } => {
-            crate::secrets::handle_check_secret_access_by_uuid(&mut conn, &user_uuid, &secret_uuid)
-                .await
+            crate::secrets::handle_check_secret_access_by_uuid(
+                &mut conn,
+                &user_uuid,
+                &secret_uuid,
+                source_asset_id,
+            )
+            .await
         }
 
         AccessRequest::OffboardEws {
