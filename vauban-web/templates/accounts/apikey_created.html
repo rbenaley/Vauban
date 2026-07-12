@@ -9,8 +9,24 @@
             <h3 class="text-sm font-medium text-green-800 dark:text-green-200">API Key Created: {{ name }}</h3>
             <div class="mt-2">
                 <p class="text-sm text-green-700 dark:text-green-300 mb-2">Copy this key now. You won't be able to see it again.</p>
-                <div class="flex items-center space-x-2">
+                <div class="flex items-center space-x-2" x-data="{ copied: false }">
                     <code class="flex-1 min-w-0 px-3 py-2 text-sm font-mono bg-white dark:bg-gray-800 border border-green-300 dark:border-green-700 rounded text-green-900 dark:text-green-100 select-all break-all">{{ key }}</code>
+                    {# Same copy-to-clipboard affordance as mfa_setup.html:
+                       the key is shown exactly once, so a one-click copy
+                       (double-square icon, check feedback) matters. #}
+                    <button type="button"
+                            @click="navigator.clipboard.writeText('{{ key }}'); copied = true; setTimeout(() => copied = false, 2000)"
+                            class="p-2 text-green-700 hover:text-green-600 dark:text-green-300 dark:hover:text-green-200 focus:outline-none focus:ring-2 focus:ring-vauban-500 rounded"
+                            title="Copy to clipboard">
+                        <!-- Copy icon (double square) -->
+                        <svg x-show="!copied" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                        <!-- Check icon (after copy) -->
+                        <svg x-show="copied" x-cloak class="h-5 w-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                        </svg>
+                    </button>
                 </div>
             </div>
             <div class="mt-4">
