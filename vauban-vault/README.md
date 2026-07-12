@@ -21,7 +21,7 @@ Cryptographic secrets management service for the VAUBAN security bastion platfor
 - `poll(2)`-based event loop on Unix pipes
 - Master key read from file once at startup, then sandboxed
 
-See [Vauban_Vault_Architecture_EN(1.0).md](../docs/technical/Vauban_Vault_Architecture_EN(1.0).md) for the full design document.
+See [Vauban_Vault_Architecture_EN(1.1).md](../docs/technical/Vauban_Vault_Architecture_EN(1.1).md) for the full design document.
 
 ## Prerequisites
 
