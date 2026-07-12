@@ -333,14 +333,23 @@ The `/api/v1/*` tree is the **machine-to-machine** surface. It authenticates
 exclusively via **API keys** (`vbn_…` prefix, sent as `X-API-Key` or
 `Authorization: Bearer vbn_…`). Human session JWTs (cookie or Bearer) are
 **not** accepted on `/api/*`. Each key carries coarse scopes (`read`, `write`,
-`admin`) intersected with the owner's Casbin permissions. Keys are managed in
-the web UI at `/accounts/apikeys`.
+`admin`) intersected with the owner's Casbin permissions, plus an isolated
+`secrets` scope (outside the read/write/admin hierarchy) dedicated to the
+Vault Secrets endpoints. Keys are managed in the web UI at `/accounts/apikeys`.
 
 Unauthenticated endpoints (`POST /api/v1/auth/login`) exist for legacy clients
 but return session JWTs usable only on **web** routes, not on subsequent
 `/api/v1/*` calls. Prefer API keys for automation.
 
-When `[server.api_enabled]` is false, every `/api/v1/*` route returns 404.
+When `[api].enabled` is false, every `/api/v1/*` route returns
+**501 Not Implemented** (JSON body), all methods included.
+
+When the API is enabled, status codes are honest (no anti-enumeration on
+the M2M surface): **401** for a missing or invalid API key, **403** for an
+insufficient scope or a denied authorization (including Vault Secrets
+provenance), **404** for a nonexistent or inactive resource, **400** for a
+malformed identifier (e.g. bad UUID). Every `/api/*` response carries
+`Cache-Control: no-store`.
 
 ### Authentication
 - `POST /api/v1/auth/login` - Login (returns a web-session JWT; not for M2M)
@@ -390,6 +399,20 @@ When `[server.api_enabled]` is false, every `/api/v1/*` route returns 404.
 - `GET /api/v1/sessions/{uuid}` - Get session
 - `POST /api/v1/sessions/{uuid}/terminate` - Terminate session
 - `DELETE /api/v1/sessions/{uuid}` - Delete session (501 Not Implemented)
+
+### Vault Secrets (read-only, requires the dedicated `secrets` scope)
+- `GET /api/v1/vault/secrets` - List authorized secrets (metadata only)
+- `GET /api/v1/vault/secrets/{uuid}` - Get secret metadata (name, description, version, `updated_at`; the version counter increments on each rotation so consumers can detect one without downloading the value)
+- `GET /api/v1/vault/secrets/{uuid}/value` - Get the decrypted value (critical audit event)
+
+The whole sub-tree is GET-only by design: secrets are created, rotated, and
+grouped in the web admin zone `/vault/secrets` (Casbin `vault_secrets:manage`).
+Beyond the API key, every call must pass **asset provenance**: the caller's
+source IP must match a registered SSH/RDP asset that actively proves its
+pinned host identity, and a `(user group, secret group, asset group)` access
+rule must allow the triple. See the
+[Vault Architecture](docs/technical/Vauban_Vault_Architecture_EN(1.1).md)
+document, Section 11.
 
 ## Testing
 
