@@ -1515,13 +1515,19 @@ async fn test_login_page_security_headers() {
         headers.contains_key("content-security-policy"),
         "Missing Content-Security-Policy header"
     );
+    // INV-HDR-3: the deprecated x-xss-protection header (dead XSS
+    // auditor, removed from every modern browser) is never emitted.
     assert!(
-        headers.contains_key("x-xss-protection"),
-        "Missing X-XSS-Protection header"
+        !headers.contains_key("x-xss-protection"),
+        "Deprecated X-XSS-Protection header must NOT be emitted"
     );
 }
 
-/// Test security headers on API endpoints.
+/// Test security headers on API endpoints (M2M surface).
+///
+/// INV-HDR-2/INV-HDR-4: the API surface carries the transport base set
+/// plus `Cache-Control: no-store`, but none of the browser-only
+/// directives (CSP is meaningless for a curl/SDK caller).
 #[tokio::test]
 #[serial]
 async fn test_api_security_headers() {
@@ -1535,8 +1541,16 @@ async fn test_api_security_headers() {
         "API should have X-Content-Type-Options"
     );
     assert!(
-        headers.contains_key("content-security-policy"),
-        "API should have Content-Security-Policy"
+        !headers.contains_key("content-security-policy"),
+        "API surface must NOT carry the browser-only CSP (INV-HDR-2)"
+    );
+    assert_eq!(
+        headers
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default(),
+        "no-store",
+        "API responses must default to Cache-Control: no-store (INV-HDR-4)"
     );
 }
 
@@ -3568,7 +3582,8 @@ async fn test_terminal_page_404_does_not_leak_session_uuid() {
 //  2. CSP contains strengthening directives (base-uri, form-action, frame-ancestors)
 //  3. Static JS/CSS files are served correctly with proper MIME types
 //  4. Directory traversal is blocked
-//  5. CSP is present on all endpoint types (pages, API, login)
+//  5. CSP is present on every WEB endpoint (pages, login, health) and
+//     absent from the M2M API surface (INV-HDR-2)
 
 /// Regression: CSP script-src must NOT contain 'unsafe-inline'.
 #[tokio::test]
@@ -3660,7 +3675,9 @@ async fn test_csp_contains_frame_ancestors_none() {
     );
 }
 
-/// Regression: CSP is consistent across page types (login, API, health).
+/// Regression: CSP is consistent across web page types (login, health)
+/// and ABSENT from the API surface (INV-HDR-2: browser-only directive,
+/// meaningless for M2M callers).
 #[tokio::test]
 #[serial]
 async fn test_csp_consistent_across_endpoints() {
@@ -3694,18 +3711,15 @@ async fn test_csp_consistent_across_endpoints() {
         .await
         .headers()
         .get("content-security-policy")
-        .expect("API CSP")
-        .to_str()
-        .expect("valid UTF-8")
-        .to_string();
+        .cloned();
 
     assert_eq!(
         login_csp, health_csp,
         "CSP must be identical on login and health endpoints"
     );
-    assert_eq!(
-        login_csp, api_csp,
-        "CSP must be identical on login and API endpoints"
+    assert!(
+        api_csp.is_none(),
+        "CSP must be ABSENT on the API surface (INV-HDR-2), got: {api_csp:?}"
     );
 }
 
@@ -5993,17 +6007,20 @@ fn test_web_admin_ipc_handler_exists() {
 #[test]
 fn test_delete_stubs_return_501() {
     let source = include_str!("../../src/main.rs");
-    // Ensure no bare "Not implemented" string response remains (which returns 200 OK)
+    // Ensure no bare "Not implemented" string response remains (which
+    // returns 200 OK). A stub is valid when the line carries the 501
+    // marker: either the raw StatusCode or the canonical JSON variant
+    // `AppError::NotImplemented` (mapped to 501 in error.rs).
     let has_bare_stub = source.lines().any(|line| {
         let trimmed = line.trim();
-        // Match the old pattern: `delete(|| async { "Not implemented" })`
         trimmed.contains("\"Not implemented\"")
             && !trimmed.contains("StatusCode::NOT_IMPLEMENTED")
+            && !trimmed.contains("AppError::NotImplemented")
             && !trimmed.starts_with("//")
     });
     assert!(
         !has_bare_stub,
-        "All DELETE stubs must return StatusCode::NOT_IMPLEMENTED, not bare 200 OK"
+        "All DELETE stubs must return 501 (AppError::NotImplemented), not bare 200 OK"
     );
 }
 
@@ -6011,12 +6028,15 @@ fn test_delete_stubs_return_501() {
 fn test_delete_stubs_use_not_implemented_status() {
     let source = include_str!("../../src/main.rs");
     let prod = prod_source(source);
-    // Every "Not implemented" in production code must be paired with NOT_IMPLEMENTED status
+    // Every "Not implemented" in production code must be paired with a
+    // 501 marker (StatusCode::NOT_IMPLEMENTED or the canonical
+    // AppError::NotImplemented JSON variant).
     let not_impl_count = prod.matches("\"Not implemented\"").count();
-    let status_501_count = prod.matches("StatusCode::NOT_IMPLEMENTED").count();
+    let status_501_count = prod.matches("StatusCode::NOT_IMPLEMENTED").count()
+        + prod.matches("AppError::NotImplemented").count();
     assert!(
         status_501_count >= not_impl_count,
-        "Found {} 'Not implemented' strings but only {} StatusCode::NOT_IMPLEMENTED. \
+        "Found {} 'Not implemented' strings but only {} 501 markers. \
          All stubs must return 501.",
         not_impl_count,
         status_501_count

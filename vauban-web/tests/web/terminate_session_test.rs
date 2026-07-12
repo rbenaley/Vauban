@@ -6,10 +6,13 @@
 //!
 //!     allowed iff (caller == session.owner) OR (perms.sessions_write)
 //!
-//! Plus the strong anti-enumeration shape:
+//! Response shaping differs per surface:
 //!
-//!     denied -> 404 (NEVER 403), so an attacker cannot fingerprint
-//!     existing session UUIDs through latency/wording differences.
+//! - web/HTMX wrapper: anti-enumeration, denied -> 404 (NEVER 403).
+//! - JSON API (`/api/v1`): honest statuses per
+//!   `services::api_response_invariants` -- a denied caller holding a
+//!   valid API key gets 403 (the session exists but is not theirs),
+//!   404 is reserved for non-existent sessions.
 //!
 //! On the side-effect axis, a successful terminate must also flip the
 //! row to `terminated` and stamp `disconnected_at`, regardless of
@@ -190,16 +193,15 @@ async fn test_admin_with_sessions_write_can_terminate_others_session_via_api() {
 }
 
 // =============================================================================
-// 4. Non-owner without sessions:write -> 404 (anti-enum)
+// 4. Non-owner without sessions:write -> 403 on the API (honest status)
 // =============================================================================
 
-/// SECURITY: a regular user (not the owner, no `sessions:write`) MUST
-/// receive 404 (not 403, never the success page) when probing
-/// someone else's session terminate endpoint. Today the handler
-/// returns 403 ("sessions:write") and the row stays untouched, which
-/// is correct on the side-effect axis but leaks the existence of the
-/// session UUID through the status code. Post-fix this collapses to
-/// 404 to align with the rest of the session_access surface.
+/// SECURITY: a regular user (not the owner, no `sessions:write`)
+/// probing someone else's terminate endpoint on the JSON API gets an
+/// honest 403 (INV-API-3: the caller is authenticated by a valid API
+/// key, the session exists but is not theirs) and, on the side-effect
+/// axis, the row MUST stay untouched. The web/HTMX wrapper keeps the
+/// anti-enumeration 404.
 #[tokio::test]
 async fn test_user_without_sessions_write_cannot_terminate_others_session() {
     let app = TestApp::spawn().await;
@@ -235,8 +237,8 @@ async fn test_user_without_sessions_write_cannot_terminate_others_session() {
 
     assert_eq!(
         response.status_code().as_u16(),
-        404,
-        "non-owner without sessions:write must collapse to 404 (anti-enum)"
+        403,
+        "non-owner without sessions:write must get an honest 403 on the API"
     );
     assert_eq!(
         db_status(&mut conn, session_id).await,

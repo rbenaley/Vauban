@@ -12,13 +12,16 @@
 //! - Provenance: BEFORE the access oracle runs, the caller's resolved
 //!   source IP must match a known asset that actively proves its pinned
 //!   host identity (`services::vault_provenance`). A caller that is not
-//!   a verified asset gets the canonical 404 on EVERY endpoint — the
+//!   a verified asset gets a canonical 403 on EVERY endpoint — the
 //!   list included (no `200 []` oracle).
 //! - NO bypass: there is no `read_all` equivalent — even a superuser
 //!   must be covered by an explicit rule to see or read a secret.
-//! - Anti-enumeration: non-existent, inactive and not-covered secrets
-//!   all collapse to the same 404 (`SECRET_NOT_FOUND`), including
-//!   malformed UUIDs and provenance denials.
+//! - Honest statuses (`services::api_response_invariants`): the M2M
+//!   zone is authenticated by API keys, so there is no anti-enumeration
+//!   collapse. 400 = malformed UUID, 403 = the caller is not authorized
+//!   (provenance not verified, no covering secret access rule), 404 =
+//!   the secret does not exist or is inactive, 502 = the rule oracle is
+//!   unavailable.
 //! - The value endpoint replies with `Cache-Control: no-store` and
 //!   emits a critical (durably acked) `VaultSecretRead` audit event
 //!   BEFORE the plaintext leaves the process.
@@ -39,11 +42,8 @@ use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
 use crate::middleware::client_addr::ClientAddr;
 use crate::models::vault_secret::VaultSecret;
+use crate::services::api_response_invariants::ApiDenial;
 use crate::services::vault_provenance::VerifiedAsset;
-
-/// Single canonical 404 message so every denial path (unknown UUID,
-/// malformed UUID, inactive secret, no covering rule) is byte-identical.
-const SECRET_NOT_FOUND: &str = "Secret not found";
 
 /// Secret metadata exposed by the API. The ciphertext/value NEVER
 /// appears here; the value has its own endpoint with its own audit.
@@ -82,10 +82,10 @@ pub struct SecretValueResponse {
 /// the same trusted-proxy seam as the global ACL, then requires an
 /// identity-verified asset match.
 ///
-/// Denial is the canonical 404 (`SECRET_NOT_FOUND`), byte-identical to
-/// every other refusal of the vault API, plus a non-blocking
-/// `VaultProvenanceDenied` audit event (warn level: the deny already
-/// happened, the audit is best-effort).
+/// Denial is the canonical 403 (`ApiDenial::ProvenanceDenied`,
+/// INV-API-3: the caller holds a valid API key but is not authorized),
+/// plus a non-blocking `VaultProvenanceDenied` audit event (warn
+/// level: the deny already happened, the audit is best-effort).
 async fn require_provenance(
     state: &AppState,
     headers: &HeaderMap,
@@ -113,12 +113,15 @@ async fn require_provenance(
                 )
                 .user(user.uuid.clone()),
             );
-            Err(AppError::NotFound(SECRET_NOT_FOUND.to_string()))
+            Err(ApiDenial::ProvenanceDenied.into())
         }
     }
 }
 
 /// Resolve the caller's internal DB id from the JWT/API-key UUID claim.
+///
+/// The caller is authenticated, so a missing row is an internal
+/// inconsistency (500), not an authorization decision.
 async fn resolve_user_internal_id(
     conn: &mut diesel_async::AsyncPgConnection,
     user_uuid: &str,
@@ -129,18 +132,20 @@ async fn resolve_user_internal_id(
         .select(users::id)
         .first(conn)
         .await
-        .map_err(|_| AppError::Authorization("User not found".to_string()))
+        .map_err(|e| {
+            AppError::Internal(anyhow::anyhow!(
+                "authenticated user {user_uuid} not resolvable: {e}"
+            ))
+        })
 }
 
 /// `GET /api/v1/vault/secrets` — list the metadata of every active
 /// secret the caller can access via a secret access rule covering the
 /// verified provenance asset.
 ///
-/// Provenance failure is the canonical 404, NOT an empty list: a caller
-/// that is not a verified asset learns nothing, not even that the API
-/// answered. Fail-closed: an IPC error yields an empty list, never an
-/// error the caller could use to distinguish outage from
-/// absence-of-grant.
+/// Provenance failure is the canonical 403, NOT an empty list. An IPC
+/// failure of the rule oracle is an honest 502 (INV-API-6), never a
+/// misleading `200 []` the caller could mistake for absence-of-grant.
 pub async fn list_vault_secrets(
     State(state): State<AppState>,
     user: AuthUser,
@@ -185,9 +190,11 @@ pub async fn list_vault_secrets(
     Ok(Json(rows.iter().map(SecretMetadata::from).collect()))
 }
 
-/// Shared lookup for the two single-secret endpoints: access check via
-/// vauban-access (single oracle), then row load. Every denial collapses
-/// to the same 404.
+/// Shared lookup for the two single-secret endpoints. Honest statuses
+/// (INV-API-3/4/5): existence is decided first (a secret that does not
+/// exist or is inactive is a 404 regardless of rules), then the access
+/// oracle decides authorization (403 when the caller is not covered by
+/// a rule).
 async fn load_authorized_secret(
     state: &AppState,
     user: &AuthUser,
@@ -196,15 +203,34 @@ async fn load_authorized_secret(
 ) -> AppResult<VaultSecret> {
     use crate::schema::vault_secrets;
 
-    // Malformed UUIDs get the same 404 as unknown ones (anti-enumeration:
-    // no format oracle either).
-    let secret_uuid = uuid::Uuid::parse_str(secret_uuid_raw)
-        .map_err(|_| AppError::NotFound(SECRET_NOT_FOUND.to_string()))?;
+    // INV-API-5: malformed UUIDs are a 400 (no phantom 404).
+    let secret_uuid =
+        uuid::Uuid::parse_str(secret_uuid_raw).map_err(|_| ApiDenial::MalformedIdentifier)?;
 
-    // Single oracle: vauban-access evaluates active rules in their
-    // validity window, injects the virtual "All secrets" group, filters
-    // on the provenance asset group and requires the secret row to be
-    // active. Fail-closed bool.
+    // INV-API-4: existence first. Inactive secrets are hidden
+    // everywhere in the product, so they are a 404 too.
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    let secret = vault_secrets::table
+        .filter(vault_secrets::uuid.eq(secret_uuid))
+        .filter(vault_secrets::is_active.eq(true))
+        .first::<VaultSecret>(&mut conn)
+        .await
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::from(ApiDenial::NotFound("Secret")),
+            other => AppError::Database(other),
+        })?;
+    drop(conn);
+
+    // INV-API-3: single authorization oracle. vauban-access evaluates
+    // active rules in their validity window, injects the virtual "All
+    // secrets" group, filters on the provenance asset group and
+    // requires the secret row to be active. Fail-closed bool: an IPC
+    // error denies (403), it never fabricates a grant.
     let allowed = crate::services::secret_access::can_access_secret(
         &state.access_client,
         &user.uuid,
@@ -213,24 +239,10 @@ async fn load_authorized_secret(
     )
     .await;
     if !allowed {
-        return Err(AppError::NotFound(SECRET_NOT_FOUND.to_string()));
+        return Err(ApiDenial::NotAuthorized("secret").into());
     }
 
-    let mut conn = state
-        .db_pool
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
-
-    vault_secrets::table
-        .filter(vault_secrets::uuid.eq(secret_uuid))
-        .filter(vault_secrets::is_active.eq(true))
-        .first::<VaultSecret>(&mut conn)
-        .await
-        .map_err(|e| match e {
-            diesel::result::Error::NotFound => AppError::NotFound(SECRET_NOT_FOUND.to_string()),
-            other => AppError::Database(other),
-        })
+    Ok(secret)
 }
 
 /// `GET /api/v1/vault/secrets/{uuid}` — metadata of one secret.
@@ -347,9 +359,17 @@ mod tests {
     }
 
     #[test]
-    fn test_secret_not_found_message_is_stable() {
-        // The anti-enumeration contract relies on every denial being
-        // byte-identical; pin the canonical message.
-        assert_eq!(SECRET_NOT_FOUND, "Secret not found");
+    fn test_denial_messages_are_canonical() {
+        // Honest-status contract: 404 is reserved for non-existent /
+        // inactive secrets, 403 carries the authorization reason.
+        assert_eq!(ApiDenial::NotFound("Secret").message(), "Secret not found");
+        assert_eq!(
+            ApiDenial::NotAuthorized("secret").message(),
+            "Not authorized to access this secret"
+        );
+        assert_eq!(
+            ApiDenial::ProvenanceDenied.message(),
+            "Caller is not an identity-verified asset (vault provenance)"
+        );
     }
 }

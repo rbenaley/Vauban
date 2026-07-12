@@ -601,26 +601,16 @@ fn build_test_router(state: AppState) -> Router {
         )
         .layer(ws_limit_layer);
 
-    Router::new()
-        // Login page (for redirect tests)
-        .route("/login", get(handlers::web::login_page))
-        // WebSocket routes
-        .merge(ws_routes)
+    // ----------------------------------------------------------------
+    // API sub-router (`/api/v1/*`): the M2M JSON zone, mirrored from
+    // production main.rs. INV-HDR-5: this branch is merged WITHOUT the
+    // CORS layer (CORS is browser-only; only the web/WS branch below
+    // carries it), exactly like the production router.
+    // ----------------------------------------------------------------
+    let api_routes = Router::new()
         // Auth routes
         .route("/api/v1/auth/login", post(handlers::auth::login))
         .route("/api/v1/auth/logout", post(handlers::auth::logout))
-        .route("/auth/login", post(handlers::auth::login_web))
-        .route("/auth/logout", post(handlers::auth::logout_web))
-        // MFA routes (web only, no API endpoint)
-        .route(
-            "/mfa/setup",
-            get(handlers::auth::mfa_setup_page).post(handlers::auth::mfa_setup_submit),
-        )
-        .route("/mfa/setup/init", post(handlers::auth::mfa_setup_init))
-        .route(
-            "/mfa/verify",
-            get(handlers::auth::mfa_verify_page).post(handlers::auth::mfa_verify_submit),
-        )
         // Accounts routes
         .route("/api/v1/accounts", get(handlers::api::list_users))
         .route("/api/v1/accounts", post(handlers::api::create_user))
@@ -629,7 +619,9 @@ fn build_test_router(state: AppState) -> Router {
             "/api/v1/accounts/{uuid}",
             get(handlers::api::get_user)
                 .put(handlers::api::update_user)
-                .delete(|| async { (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented") }),
+                .delete(|| async {
+                    vauban_web::error::AppError::NotImplemented("Not implemented".to_string())
+                }),
         )
         // Assets routes -- USER ZONE only.
         // Issue #27: every write / detail / SSH host-key endpoint moved
@@ -642,7 +634,7 @@ fn build_test_router(state: AppState) -> Router {
         .route(
             "/api/v1/assets/{uuid}",
             axum::routing::delete(|| async {
-                (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
+                vauban_web::error::AppError::NotImplemented("Not implemented".to_string())
             }),
         )
         // Asset groups POST -- this endpoint does not exist in
@@ -670,8 +662,101 @@ fn build_test_router(state: AppState) -> Router {
         // DELETE stub returns 501 Not Implemented (not 200 OK)
         .route(
             "/api/v1/sessions/{uuid}",
-            get(handlers::api::get_session)
-                .delete(|| async { (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented") }),
+            get(handlers::api::get_session).delete(|| async {
+                vauban_web::error::AppError::NotImplemented("Not implemented".to_string())
+            }),
+        )
+        .route(
+            "/api/v1/sessions/{uuid}/terminate",
+            post(handlers::api::terminate_session),
+        )
+        // ----------------------------------------------------------------
+        // Issue #27: API admin nest, same defence-in-depth as the web nest.
+        // ----------------------------------------------------------------
+        .nest(
+            "/api/v1/assets/manage",
+            Router::new()
+                .route("/", post(handlers::api::create_asset))
+                .route("/groups", get(handlers::api::list_asset_groups))
+                .route(
+                    "/groups/{uuid}/assets",
+                    get(handlers::api::list_group_assets),
+                )
+                .route(
+                    "/{uuid}",
+                    get(handlers::api::get_asset).put(handlers::api::update_asset),
+                )
+                .route(
+                    "/{uuid}/ssh-host-key",
+                    get(handlers::api::get_ssh_host_key_status)
+                        .post(handlers::api::fetch_ssh_host_key_api),
+                )
+                .route_layer(axum::middleware::from_fn(
+                    middleware::require_assets_manage::require_assets_manage,
+                )),
+        )
+        // ----------------------------------------------------------------
+        // Vault Secrets M2M API (read-only, `secrets` scope enforced by
+        // `api_scope_enforcement`). Mirrors production main.rs.
+        // ----------------------------------------------------------------
+        .route(
+            "/api/v1/vault/secrets",
+            get(handlers::api::list_vault_secrets),
+        )
+        .route(
+            "/api/v1/vault/secrets/{uuid}",
+            get(handlers::api::get_vault_secret),
+        )
+        .route(
+            "/api/v1/vault/secrets/{uuid}/value",
+            get(handlers::api::get_vault_secret_value),
+        )
+        // Groups API (read-only)
+        .route(
+            "/api/v1/groups/{uuid}/members",
+            get(handlers::api::list_group_members),
+        )
+        .route(
+            "/api/v1/assets/{uuid}/ssh-host-key",
+            get(handlers::api::get_ssh_host_key_status).post(handlers::api::fetch_ssh_host_key_api),
+        )
+        // VAU-001: RDP server-certificate management (mirror of SSH
+        // host-key).
+        .route(
+            "/api/v1/assets/{uuid}/rdp-server-cert",
+            get(handlers::api::get_rdp_server_cert_status)
+                .post(handlers::api::fetch_rdp_server_cert_api),
+        )
+        // VAU-007: mirror production -- the API key scope enforcement
+        // lives on the API branch (inside every global layer, so it
+        // runs AFTER auth_middleware populated `ApiKeyAuth` and its
+        // 403 still traverses the security-headers middleware).
+        .layer(axum::middleware::from_fn(
+            middleware::api_key::api_scope_enforcement,
+        ));
+
+    // ----------------------------------------------------------------
+    // Web + WS branch. INV-HDR-5: this branch (and only this branch)
+    // is wrapped by the CORS layer at the bottom of the chain, mirror
+    // of production `web_routes.layer(cors).merge(api_routes)`.
+    // ----------------------------------------------------------------
+    let web_routes = Router::new()
+        // Login page (for redirect tests)
+        .route("/login", get(handlers::web::login_page))
+        // WebSocket routes
+        .merge(ws_routes)
+        // Auth routes
+        .route("/auth/login", post(handlers::auth::login_web))
+        .route("/auth/logout", post(handlers::auth::logout_web))
+        // MFA routes (web only, no API endpoint)
+        .route(
+            "/mfa/setup",
+            get(handlers::auth::mfa_setup_page).post(handlers::auth::mfa_setup_submit),
+        )
+        .route("/mfa/setup/init", post(handlers::auth::mfa_setup_init))
+        .route(
+            "/mfa/verify",
+            get(handlers::auth::mfa_verify_page).post(handlers::auth::mfa_verify_submit),
         )
         // Web pages (HTML) - for testing raw SQL queries
         .route("/sessions", get(handlers::web::session_list))
@@ -730,10 +815,6 @@ fn build_test_router(state: AppState) -> Router {
             "/sessions/{uuid}/terminate",
             post(handlers::web::terminate_session_web),
         )
-        .route(
-            "/api/v1/sessions/{uuid}/terminate",
-            post(handlers::api::terminate_session),
-        )
         // ----------------------------------------------------------------
         // Issue #27: USER zone -- `/assets` (list filtered by access
         // rules) + `/assets/{uuid}` (connect / request-access page).
@@ -782,47 +863,6 @@ fn build_test_router(state: AppState) -> Router {
                 .route_layer(axum::middleware::from_fn(
                     middleware::require_assets_manage::require_assets_manage,
                 )),
-        )
-        // ----------------------------------------------------------------
-        // Issue #27: API admin nest, same defence-in-depth as the web nest.
-        // ----------------------------------------------------------------
-        .nest(
-            "/api/v1/assets/manage",
-            Router::new()
-                .route("/", post(handlers::api::create_asset))
-                .route("/groups", get(handlers::api::list_asset_groups))
-                .route(
-                    "/groups/{uuid}/assets",
-                    get(handlers::api::list_group_assets),
-                )
-                .route(
-                    "/{uuid}",
-                    get(handlers::api::get_asset).put(handlers::api::update_asset),
-                )
-                .route(
-                    "/{uuid}/ssh-host-key",
-                    get(handlers::api::get_ssh_host_key_status)
-                        .post(handlers::api::fetch_ssh_host_key_api),
-                )
-                .route_layer(axum::middleware::from_fn(
-                    middleware::require_assets_manage::require_assets_manage,
-                )),
-        )
-        // ----------------------------------------------------------------
-        // Vault Secrets M2M API (read-only, `secrets` scope enforced by
-        // `api_scope_enforcement`). Mirrors production main.rs.
-        // ----------------------------------------------------------------
-        .route(
-            "/api/v1/vault/secrets",
-            get(handlers::api::list_vault_secrets),
-        )
-        .route(
-            "/api/v1/vault/secrets/{uuid}",
-            get(handlers::api::get_vault_secret),
-        )
-        .route(
-            "/api/v1/vault/secrets/{uuid}/value",
-            get(handlers::api::get_vault_secret_value),
         )
         // ----------------------------------------------------------------
         // Vault Secrets admin nest. Mirrors production: route_layer
@@ -986,11 +1026,6 @@ fn build_test_router(state: AppState) -> Router {
             "/accounts/groups/{uuid}",
             get(handlers::web::group_detail).post(handlers::web::update_vauban_group_web),
         )
-        // Groups API (read-only)
-        .route(
-            "/api/v1/groups/{uuid}/members",
-            get(handlers::api::list_group_members),
-        )
         // User management pages (literal paths before parameterized)
         .route("/accounts/users/new", get(handlers::web::user_create_form))
         .route(
@@ -1092,10 +1127,6 @@ fn build_test_router(state: AppState) -> Router {
             "/assets/{uuid}/verify-host-key",
             get(handlers::web::verify_ssh_host_key),
         )
-        .route(
-            "/api/v1/assets/{uuid}/ssh-host-key",
-            get(handlers::api::get_ssh_host_key_status).post(handlers::api::fetch_ssh_host_key_api),
-        )
         // VAU-001: RDP server-certificate management (mirror of SSH
         // host-key). The production router splits these between the user
         // zone (`verify-rdp-cert`) and the admin zone (`fetch-rdp-cert`,
@@ -1108,11 +1139,6 @@ fn build_test_router(state: AppState) -> Router {
         .route(
             "/assets/{uuid}/verify-rdp-cert",
             get(handlers::web::verify_rdp_server_cert),
-        )
-        .route(
-            "/api/v1/assets/{uuid}/rdp-server-cert",
-            get(handlers::api::get_rdp_server_cert_status)
-                .post(handlers::api::fetch_rdp_server_cert_api),
         )
         .route(
             "/sessions/terminal/{session_id}",
@@ -1200,6 +1226,15 @@ fn build_test_router(state: AppState) -> Router {
         .route("/htmx/empty", get(handlers::web::htmx_empty))
         // Dashboard home
         .route("/", get(handlers::web::dashboard_home))
+        // INV-HDR-5: CORS on the web/WS branch ONLY, fed from the same
+        // config allowlist as production (VAU-010). Applied here (before
+        // the merge below) so the API branch is never wrapped.
+        .layer(middleware::cors::build_cors_layer(
+            &state.config.server.parsed_public_origins(),
+        ));
+
+    web_routes
+        .merge(api_routes)
         // Fallback handler for unmatched routes
         .fallback(handlers::web::fallback_handler)
         // Audit middleware (injects RequestId extension required by
@@ -1223,15 +1258,6 @@ fn build_test_router(state: AppState) -> Router {
                 state.config.secret_key.expose_secret().as_bytes().to_vec(),
             ),
             middleware::flash::flash_middleware,
-        ))
-        // VAU-007: mirror production -- enforce the API key scope on
-        // `/api/v1` requests authenticated by a key. Added before `auth`
-        // in the chain so it runs AFTER `auth_middleware` populates
-        // `ApiKeyAuth`. Pure pass-through for any request without an
-        // `ApiKeyAuth` extension (every web/ws route, and any API request
-        // that failed key auth).
-        .layer(axum::middleware::from_fn(
-            middleware::api_key::api_scope_enforcement,
         ))
         // Add Casbin PermissionContext middleware BEFORE auth in the `.layer()`
         // chain so that after Router's reverse-order wrapping it ends up INSIDE

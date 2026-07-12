@@ -8,11 +8,11 @@
 //! and the active host-identity challenge answered by the deterministic
 //! [`StaticHostIdentityVerifier`]:
 //!
-//! - Unknown IP -> canonical 404 on ALL endpoints, the list included
-//!   (never `200 []` for a non-asset caller), byte-identical to the
-//!   rule-level denial.
-//! - Asset without a pinned fingerprint -> fail-closed 404.
-//! - Fingerprint mismatch (MITM / IP squatting) -> 404, NEVER cached:
+//! - Unknown IP -> canonical 403 (`ApiDenial::ProvenanceDenied`) on
+//!   ALL endpoints, the list included (never `200 []` for a non-asset
+//!   caller), byte-identical across endpoints.
+//! - Asset without a pinned fingerprint -> fail-closed 403.
+//! - Fingerprint mismatch (MITM / IP squatting) -> 403, NEVER cached:
 //!   every retry re-challenges.
 //! - Triplet enforcement: an identity-verified asset OUTSIDE the rule's
 //!   asset group is denied; the same user calling from an asset inside
@@ -81,16 +81,18 @@ async fn get_with_xff(
 }
 
 // =============================================================================
-// Unknown IP: global refusal, list included, byte-identical 404
+// Unknown IP: global refusal, list included, canonical 403
 // =============================================================================
 
-/// A caller whose source IP matches NO asset gets the canonical 404 on
-/// every endpoint — the LIST INCLUDED (no `200 []` oracle) — and the
-/// body is byte-identical to a rule-level denial (a covered caller
-/// asking for an unknown UUID).
+/// A caller whose source IP matches NO asset gets the canonical 403
+/// (`ApiDenial::ProvenanceDenied`) on every endpoint — the LIST
+/// INCLUDED (no `200 []` oracle) — byte-identical across the three
+/// endpoints. A verified caller asking for an unknown UUID gets a
+/// distinct honest 404 (INV-API-4): existence and authorization are
+/// separate answers on the M2M zone.
 #[tokio::test]
 #[serial]
-async fn unknown_ip_gets_canonical_404_everywhere_including_list() {
+async fn unknown_ip_gets_canonical_403_everywhere_including_list() {
     let app = TestApp::spawn_vault_provenance().await;
     let mut conn = app.get_conn().await;
 
@@ -100,7 +102,7 @@ async fn unknown_ip_gets_canonical_404_everywhere_including_list() {
     // 203.0.113.99 matches no asset hostname.
     let ghost_ip = "203.0.113.99";
     let list = get_with_xff(app, "/api/v1/vault/secrets", &raw_key, ghost_ip).await;
-    assert_status(&list, 404);
+    assert_status(&list, 403);
     let meta = get_with_xff(
         app,
         &format!("/api/v1/vault/secrets/{secret_uuid}"),
@@ -108,7 +110,7 @@ async fn unknown_ip_gets_canonical_404_everywhere_including_list() {
         ghost_ip,
     )
     .await;
-    assert_status(&meta, 404);
+    assert_status(&meta, 403);
     let value = get_with_xff(
         app,
         &format!("/api/v1/vault/secrets/{secret_uuid}/value"),
@@ -116,9 +118,22 @@ async fn unknown_ip_gets_canonical_404_everywhere_including_list() {
         ghost_ip,
     )
     .await;
-    assert_status(&value, 404);
+    assert_status(&value, 403);
 
-    // Byte-identical to a rule-level denial: verified caller, unknown UUID.
+    let reference_body = list.text();
+    assert!(
+        reference_body.contains("Caller is not an identity-verified asset"),
+        "provenance denial must carry the canonical message, got: {reference_body}"
+    );
+    for (name, body) in [("metadata", meta.text()), ("value", value.text())] {
+        assert_eq!(
+            body, reference_body,
+            "provenance denial on {name} must be byte-identical to the list denial"
+        );
+    }
+
+    // A verified caller asking for an unknown UUID gets an honest 404,
+    // clearly distinct from the provenance 403.
     let caller_ip = "10.99.20.1";
     seed_verified_asset(&mut conn, app, "prov_noip_ref", caller_ip).await;
     let reference = get_with_xff(
@@ -130,18 +145,6 @@ async fn unknown_ip_gets_canonical_404_everywhere_including_list() {
     .await;
     assert_status(&reference, 404);
 
-    let reference_body = reference.text();
-    for (name, body) in [
-        ("list", list.text()),
-        ("metadata", meta.text()),
-        ("value", value.text()),
-    ] {
-        assert_eq!(
-            body, reference_body,
-            "provenance denial on {name} must be byte-identical to a rule-level 404"
-        );
-    }
-
     test_db::cleanup(&mut conn).await;
 }
 
@@ -150,7 +153,7 @@ async fn unknown_ip_gets_canonical_404_everywhere_including_list() {
 // =============================================================================
 
 /// An asset matching the caller IP but WITHOUT a pinned fingerprint can
-/// never anchor provenance: canonical 404 even with a covering rule,
+/// never anchor provenance: canonical 403 even with a covering rule,
 /// and no challenge is even attempted (nothing to compare against).
 #[tokio::test]
 #[serial]
@@ -175,7 +178,7 @@ async fn asset_without_pinned_fingerprint_is_fail_closed() {
         caller_ip,
     )
     .await;
-    assert_status(&response, 404);
+    assert_status(&response, 403);
     assert_eq!(
         app.identity_challenges.load(Ordering::SeqCst),
         before,
@@ -190,7 +193,7 @@ async fn asset_without_pinned_fingerprint_is_fail_closed() {
 // =============================================================================
 
 /// A candidate that answers the challenge with a fingerprint different
-/// from the pin is rejected (404) and the failure is NEVER cached:
+/// from the pin is rejected (403) and the failure is NEVER cached:
 /// every retry re-challenges the host.
 #[tokio::test]
 #[serial]
@@ -224,7 +227,7 @@ async fn fingerprint_mismatch_is_denied_and_never_cached() {
         caller_ip,
     )
     .await;
-    assert_status(&first, 404);
+    assert_status(&first, 403);
     let second = get_with_xff(
         app,
         &format!("/api/v1/vault/secrets/{secret_uuid}/value"),
@@ -232,7 +235,7 @@ async fn fingerprint_mismatch_is_denied_and_never_cached() {
         caller_ip,
     )
     .await;
-    assert_status(&second, 404);
+    assert_status(&second, 403);
 
     assert_eq!(
         app.identity_challenges.load(Ordering::SeqCst),
@@ -275,7 +278,8 @@ async fn asset_outside_rule_asset_group_is_denied_inside_is_granted() {
     let (raw_key, secret_uuid) = seed_user_secret_rule(&mut conn, app, "prov_triplet", ag_id).await;
 
     // From the OUTSIDE asset: identity verified, but the triplet does
-    // not cover it -> rule-level denial (404 on value, empty list).
+    // not cover it -> rule-level denial (403 on value, empty list):
+    // the secret exists, the caller is not covered from there.
     let response = get_with_xff(
         app,
         &format!("/api/v1/vault/secrets/{secret_uuid}/value"),
@@ -283,7 +287,7 @@ async fn asset_outside_rule_asset_group_is_denied_inside_is_granted() {
         outside_ip,
     )
     .await;
-    assert_status(&response, 404);
+    assert_status(&response, 403);
     let list = get_with_xff(app, "/api/v1/vault/secrets", &raw_key, outside_ip).await;
     assert_status(&list, 200);
     assert!(

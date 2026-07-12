@@ -30,7 +30,9 @@ use crate::ipc::AccessIpcClient;
 /// flag for the virtual "All secrets" singleton); local DB is only used
 /// to resolve those groups to secret IDs and filter inactive rows.
 ///
-/// Fail-closed: returns an empty Vec on IPC error.
+/// Fail-closed AND honest: an IPC error is surfaced as
+/// `AppError::Ipc` (502 on the M2M API, INV-API-6), never as a silent
+/// empty list the caller could mistake for absence-of-grant.
 pub async fn list_accessible_secret_ids(
     access_client: &Arc<AccessIpcClient>,
     conn: &mut AsyncPgConnection,
@@ -47,9 +49,11 @@ pub async fn list_accessible_secret_ids(
         Err(err) => {
             tracing::error!(
                 user_id, source_asset_id, error = %err,
-                "list_accessible_secret_groups IPC call failed; returning empty set (fail-closed)"
+                "list_accessible_secret_groups IPC call failed; failing closed with 502"
             );
-            return Ok(Vec::new());
+            return Err(AppError::Ipc(format!(
+                "secret access oracle unavailable: {err}"
+            )));
         }
     };
 

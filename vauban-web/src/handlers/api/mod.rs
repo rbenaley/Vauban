@@ -27,6 +27,34 @@ pub mod manage_assets;
 pub mod sessions;
 pub mod vault_secrets;
 
+use crate::error::AppError;
+use crate::services::api_response_invariants::ApiDenial;
+
+/// Handler served on the whole `/api/v1` tree when the API is disabled
+/// by configuration (`[api] enabled = false`).
+///
+/// INV-API-1: replies `501 Not Implemented` (JSON), NOT a misleading
+/// 404 -- the routes exist, the server deliberately does not serve
+/// them. A caller probing a disabled bastion learns immediately that
+/// the API must be enabled instead of chasing phantom typos.
+pub async fn api_disabled_handler() -> AppError {
+    ApiDenial::ApiDisabled.into()
+}
+
+/// Catch-all router mounted instead of the real API routes when
+/// `config.api.enabled` is false. Uses `any()` so EVERY method (GET,
+/// POST, PUT, DELETE, PATCH, HEAD, ...) receives the canonical 501,
+/// and covers both `/api/v1` and every sub-path.
+///
+/// Single seam shared by production (`create_app`) and the test router
+/// (`tests/common`), so the E2E suite exercises the exact production
+/// wiring.
+pub fn api_disabled_router() -> axum::Router<crate::AppState> {
+    axum::Router::new()
+        .route("/api/v1", axum::routing::any(api_disabled_handler))
+        .route("/api/v1/{*path}", axum::routing::any(api_disabled_handler))
+}
+
 // Re-export all API handlers for convenient access
 pub use access_rules::{
     create_access_rule, delete_access_rule, get_access_rule, list_access_rules, update_access_rule,

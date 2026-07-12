@@ -151,24 +151,35 @@ pub async fn list_sessions(
 /// SECURITY: layered authorisation:
 /// 1. functional `sessions:read` (Casbin) -- Capability to read ANY
 ///    session metadata at all.
-/// 2. instance-level `session_access::verify(ReadMetadata)` --
+/// 2. instance-level `session_access::verify_api(ReadMetadata)` --
 ///    ownership OR `sessions:supervise`, plus the access-rule
 ///    re-check. Without this layer, anyone with `sessions:read` could
 ///    GET any session UUID they happened to know.
+///
+/// Status semantics (`services::api_response_invariants`): 400
+/// malformed UUID, 403 exists-but-not-authorized, 404 does-not-exist,
+/// 502 decision service down. No anti-enumeration collapse on the M2M
+/// zone: the caller is authenticated by a valid API key.
 pub async fn get_session(
     State(state): State<AppState>,
     user: AuthUser,
     perms: PermissionContext,
     Path(session_uuid_str): Path<String>,
 ) -> AppResult<Json<ProxySession>> {
-    use crate::services::session_access::{self, SessionAccessOutcome};
+    use crate::services::api_response_invariants::ApiDenial;
+    use crate::services::session_access::{self, SessionAccessDetail};
     use shared::messages::SessionAccessIntent;
 
     if !perms.sessions_read {
         return Err(AppError::forbidden("sessions:read"));
     }
 
-    match session_access::verify(
+    // INV-API-5: malformed identifiers are a 400, checked before any
+    // IPC round-trip.
+    let session_uuid =
+        Uuid::parse_str(&session_uuid_str).map_err(|_| ApiDenial::MalformedIdentifier)?;
+
+    match session_access::verify_api(
         &state,
         &session_uuid_str,
         &user,
@@ -177,14 +188,21 @@ pub async fn get_session(
     )
     .await
     {
-        SessionAccessOutcome::Allowed => {}
-        SessionAccessOutcome::Denied404 | SessionAccessOutcome::DeniedGone => {
-            return Err(AppError::NotFound("Session not found".to_string()));
+        SessionAccessDetail::Allowed => {}
+        // `DeniedGone` never reaches ReadMetadata (vauban-access
+        // short-circuits owner reads of historical metadata to
+        // Allowed); defensively it maps to the honest "no longer
+        // there" 404 rather than the web 410 collapse.
+        SessionAccessDetail::DeniedNotFound | SessionAccessDetail::DeniedGone => {
+            return Err(ApiDenial::NotFound("Session").into());
+        }
+        SessionAccessDetail::DeniedForbidden => {
+            return Err(ApiDenial::NotAuthorized("session").into());
+        }
+        SessionAccessDetail::Unavailable => {
+            return Err(ApiDenial::Unavailable("vauban-access").into());
         }
     }
-
-    let session_uuid = Uuid::parse_str(&session_uuid_str)
-        .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
 
     let mut conn = state
         .db_pool
@@ -330,15 +348,21 @@ pub async fn terminate_session(
     perms: PermissionContext,
     Path(session_uuid_str): Path<String>,
 ) -> AppResult<Response> {
-    use crate::services::session_access::{self, SessionAccessOutcome};
+    use crate::services::api_response_invariants::ApiDenial;
+    use crate::services::session_access::{self, SessionAccessDetail};
     use shared::messages::SessionAccessIntent;
 
+    // INV-API-5: malformed identifiers are a 400, checked before any
+    // IPC round-trip.
+    let session_uuid =
+        Uuid::parse_str(&session_uuid_str).map_err(|_| ApiDenial::MalformedIdentifier)?;
+
     // SECURITY: single seam. Allowed iff (caller is owner) OR
-    // `sessions:write`. Every denial collapses to 404 -- in
-    // particular a non-owner without `sessions:write` cannot
-    // distinguish "session does not exist" from "you are not the
-    // owner" through the status code.
-    match session_access::verify(
+    // `sessions:write`. Honest statuses on the M2M zone
+    // (`services::api_response_invariants`): a non-owner without
+    // `sessions:write` gets 403 (the session exists, the caller may
+    // not terminate it), an unknown UUID gets 404.
+    match session_access::verify_api(
         &state,
         &session_uuid_str,
         &user,
@@ -347,14 +371,20 @@ pub async fn terminate_session(
     )
     .await
     {
-        SessionAccessOutcome::Allowed => {}
-        SessionAccessOutcome::Denied404 | SessionAccessOutcome::DeniedGone => {
-            return Err(AppError::NotFound("Session not found".to_string()));
+        SessionAccessDetail::Allowed => {}
+        // `DeniedGone` never reaches Terminate (owner double-click is
+        // short-circuited to Allowed for idempotency); defensively it
+        // is an honest 404.
+        SessionAccessDetail::DeniedNotFound | SessionAccessDetail::DeniedGone => {
+            return Err(ApiDenial::NotFound("Session").into());
+        }
+        SessionAccessDetail::DeniedForbidden => {
+            return Err(ApiDenial::NotAuthorized("session").into());
+        }
+        SessionAccessDetail::Unavailable => {
+            return Err(ApiDenial::Unavailable("vauban-access").into());
         }
     }
-
-    let session_uuid = Uuid::parse_str(&session_uuid_str)
-        .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
 
     let htmx = is_htmx_request(&headers);
     let mut conn = state

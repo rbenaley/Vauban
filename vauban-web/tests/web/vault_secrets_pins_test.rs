@@ -346,8 +346,10 @@ fn api_handlers_gate_on_provenance_before_the_oracle() {
         }
     }
 
-    // The gate's denial is the canonical 404 (byte-identical to every
-    // other refusal), never a distinguishable status.
+    // The gate's denial is the canonical honest 403
+    // (`ApiDenial::ProvenanceDenied`, INV-API-3): the caller holds a
+    // valid API key, so the M2M zone answers with the real reason
+    // instead of an anti-enumeration 404.
     let gate_start = production_body
         .find("async fn require_provenance")
         .expect("vault_secrets.rs must define require_provenance");
@@ -357,12 +359,13 @@ fn api_handlers_gate_on_provenance_before_the_oracle() {
         .or_else(|| gate_body.find("\npub async fn "))
         .unwrap_or(gate_body.len())];
     assert!(
-        gate_body.contains("SECRET_NOT_FOUND"),
-        "require_provenance must deny with the canonical SECRET_NOT_FOUND 404"
+        gate_body.contains("ApiDenial::ProvenanceDenied"),
+        "require_provenance must deny with the canonical ApiDenial::ProvenanceDenied 403"
     );
     assert!(
-        !gate_body.contains("AppError::forbidden") && !gate_body.contains("Authorization("),
-        "require_provenance must never leak a 401/403 (anti-enumeration)"
+        !gate_body.contains("NotFound("),
+        "require_provenance must never mask the denial as a 404 \
+         (INV-API-4 reserves 404 for non-existent resources)"
     );
 }
 
@@ -455,7 +458,7 @@ fn list_endpoint_has_no_empty_list_oracle_for_provenance() {
     assert!(
         handler_body.contains("require_provenance(&state, &headers, client_addr, &user).await?"),
         "list_vault_secrets must propagate the provenance denial with `?` \
-         (404, never an empty 200 list)"
+         (403, never an empty 200 list)"
     );
 }
 

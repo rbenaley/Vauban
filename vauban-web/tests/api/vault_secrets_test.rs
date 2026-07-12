@@ -9,12 +9,13 @@
 //!   simulated via `X-Forwarded-For` on the trusted-proxy variant, host
 //!   identity answered by the deterministic stub verifier). The
 //!   provenance-denial scenarios live in `vault_provenance_test.rs`.
-//! - Anti-enumeration: no rule / inactive rule / expired rule /
-//!   inactive secret / unknown UUID / malformed UUID all collapse to
-//!   byte-identical 404 responses on the single-secret endpoints.
+//! - Honest status matrix (`services::api_response_invariants`): no
+//!   rule / inactive rule / expired rule are 403 (the secret exists,
+//!   the caller is not covered), inactive secret / unknown UUID are
+//!   404, malformed UUID is 400.
 //! - Virtual group: a rule on "All secrets" covers freshly created
 //!   secrets with zero group membership.
-//! - NO bypass: a superuser WITHOUT a covering rule gets 404 on
+//! - NO bypass: a superuser WITHOUT a covering rule gets 403 on
 //!   `/value` (there is no `read_all` equivalent for secrets).
 //! - Scope isolation: `read`/`write`/`admin` keys get 403 on
 //!   `/api/v1/vault/*`; a `secrets` key gets 200 there and 403
@@ -158,29 +159,37 @@ async fn covered_user_lists_and_reads_exact_value() {
 }
 
 // =============================================================================
-// Anti-enumeration: every denial is a byte-identical 404
+// Honest status matrix: 403 = not covered, 404 = does not exist, 400 = malformed
 // =============================================================================
 
-/// Collect the value-endpoint response for a UUID and assert 404.
-async fn value_404_body(app: &TestApp, raw_key: &str, caller_ip: &str, uuid_str: &str) -> String {
+/// Fetch the value endpoint for a UUID, assert the expected status and
+/// return the body text.
+async fn value_body_with_status(
+    app: &TestApp,
+    raw_key: &str,
+    caller_ip: &str,
+    uuid_str: &str,
+    expected_status: u16,
+) -> String {
     let response = app
         .server
         .get(&format!("/api/v1/vault/secrets/{uuid_str}/value"))
         .add_header(header::AUTHORIZATION, app.api_key_header(raw_key))
         .add_header("x-forwarded-for", caller_ip)
         .await;
-    assert_status(&response, 404);
+    assert_status(&response, expected_status);
     response.text()
 }
 
-/// No rule / inactive rule / expired rule / inactive secret / unknown
-/// UUID / malformed UUID: six denial paths, one byte-identical body.
-/// The caller IS a verified asset, so every denial here is a rule-level
-/// denial, not a provenance denial (which must be byte-identical too —
-/// pinned in `vault_provenance_test.rs`).
+/// Six denial paths, three honest statuses (INV-API-3/4/5): rule-level
+/// refusals (no rule / inactive rule / expired rule) are 403 with the
+/// canonical authorization message; non-existence (inactive secret /
+/// unknown UUID) is 404; a malformed UUID is 400. The caller IS a
+/// verified asset, so no denial here is a provenance denial (that 403
+/// is pinned in `vault_provenance_test.rs`).
 #[tokio::test]
 #[serial]
-async fn all_denials_collapse_to_byte_identical_404() {
+async fn denials_follow_honest_status_matrix() {
     let app = TestApp::spawn_vault_provenance().await;
     let mut conn = app.get_conn().await;
 
@@ -231,25 +240,79 @@ async fn all_denials_collapse_to_byte_identical_404() {
     // 5. Unknown (random) UUID. 6. Malformed UUID.
     let unknown_uuid = Uuid::new_v4().to_string();
 
-    let bodies = [
-        value_404_body(app, &raw_key, caller_ip, &no_rule_uuid.to_string()).await,
-        value_404_body(app, &raw_key, caller_ip, &inactive_rule_uuid.to_string()).await,
-        value_404_body(app, &raw_key, caller_ip, &expired_rule_uuid.to_string()).await,
-        value_404_body(app, &raw_key, caller_ip, &inactive_secret_uuid.to_string()).await,
-        value_404_body(app, &raw_key, caller_ip, &unknown_uuid).await,
-        value_404_body(app, &raw_key, caller_ip, "not-a-uuid").await,
+    // Rule-level refusals: the secret exists, the caller is not
+    // covered -> 403 with the canonical authorization message.
+    let forbidden_bodies = [
+        value_body_with_status(app, &raw_key, caller_ip, &no_rule_uuid.to_string(), 403).await,
+        value_body_with_status(
+            app,
+            &raw_key,
+            caller_ip,
+            &inactive_rule_uuid.to_string(),
+            403,
+        )
+        .await,
+        value_body_with_status(
+            app,
+            &raw_key,
+            caller_ip,
+            &expired_rule_uuid.to_string(),
+            403,
+        )
+        .await,
     ];
-    for (i, body) in bodies.iter().enumerate() {
+    for (i, body) in forbidden_bodies.iter().enumerate() {
+        assert!(
+            body.contains("Not authorized to access this secret"),
+            "rule-level denial #{i} must carry the canonical 403 message, got: {body}"
+        );
         assert_eq!(
-            body, &bodies[0],
-            "denial path #{i} must be byte-identical to path #0 (anti-enumeration)"
+            body, &forbidden_bodies[0],
+            "rule-level denial #{i} must be byte-identical to #0"
         );
     }
+
+    // Non-existence: inactive secret and unknown UUID -> canonical 404.
+    let not_found_bodies = [
+        value_body_with_status(
+            app,
+            &raw_key,
+            caller_ip,
+            &inactive_secret_uuid.to_string(),
+            404,
+        )
+        .await,
+        value_body_with_status(app, &raw_key, caller_ip, &unknown_uuid, 404).await,
+    ];
+    for (i, body) in not_found_bodies.iter().enumerate() {
+        assert!(
+            body.contains("Secret not found"),
+            "non-existence denial #{i} must carry the canonical 404 message, got: {body}"
+        );
+        assert_eq!(
+            body, &not_found_bodies[0],
+            "non-existence denial #{i} must be byte-identical to #0"
+        );
+    }
+
+    // Malformed UUID -> 400 (INV-API-5), no phantom 404.
+    let malformed_body = value_body_with_status(app, &raw_key, caller_ip, "not-a-uuid", 400).await;
+    assert!(
+        malformed_body.contains("Invalid UUID format"),
+        "malformed UUID must carry the canonical 400 message, got: {malformed_body}"
+    );
 
     // The metadata endpoint follows the same contract.
     let response = app
         .server
         .get(&format!("/api/v1/vault/secrets/{no_rule_uuid}"))
+        .add_header(header::AUTHORIZATION, app.api_key_header(&raw_key))
+        .add_header("x-forwarded-for", caller_ip)
+        .await;
+    assert_status(&response, 403);
+    let response = app
+        .server
+        .get(&format!("/api/v1/vault/secrets/{unknown_uuid}"))
         .add_header(header::AUTHORIZATION, app.api_key_header(&raw_key))
         .add_header("x-forwarded-for", caller_ip)
         .await;
@@ -337,12 +400,13 @@ async fn virtual_all_secrets_rule_covers_fresh_secret() {
 // NO bypass: superuser without a rule
 // =============================================================================
 
-/// A superuser WITHOUT a covering rule gets 404 on `/value` even when
+/// A superuser WITHOUT a covering rule gets 403 on `/value` even when
 /// calling from a verified asset: secrets have no `read_all`-style
-/// bypass, the rule is the only path in.
+/// bypass, the rule is the only path in. (403 and not 404: the secret
+/// exists, the caller is simply not covered -- INV-API-3.)
 #[tokio::test]
 #[serial]
-async fn superuser_without_rule_gets_404_on_value() {
+async fn superuser_without_rule_gets_403_on_value() {
     let app = TestApp::spawn_vault_provenance().await;
     let mut conn = app.get_conn().await;
 
@@ -362,7 +426,7 @@ async fn superuser_without_rule_gets_404_on_value() {
         .add_header(header::AUTHORIZATION, app.api_key_header(&raw_key))
         .add_header("x-forwarded-for", caller_ip)
         .await;
-    assert_status(&response, 404);
+    assert_status(&response, 403);
 
     // The list is empty too (provenance passed, zero grants).
     let response = app

@@ -233,13 +233,14 @@ async fn test_user_b_cannot_terminate_user_a_session_via_api() {
         .add_header(header::AUTHORIZATION, app.api_key_header(&attacker.api_key))
         .await;
     let status = resp.status_code().as_u16();
-    // 404 is the anti-enum collapse for NotOwner-without-write. Some
-    // pre-existing routes happen to surface 403 for an authenticated
-    // user that lacks Casbin sessions:write entirely; the migration
-    // unifies on 404 (anti-enum).
+    // Honest statuses on the M2M zone (api_response_invariants,
+    // INV-API-3): the session exists but the caller is neither the
+    // owner nor a holder of sessions:write -> 403. The web surface
+    // keeps its anti-enum 404 (see the web terminate tests).
     assert_eq!(
-        status, 404,
-        "regular user must NOT terminate another user's session via API, got {}",
+        status, 403,
+        "regular user must NOT terminate another user's session via API \
+         (expected honest 403), got {}",
         status
     );
 }
@@ -284,9 +285,12 @@ async fn test_user_b_cannot_get_user_a_session_metadata() {
 
     let resp = api_get_session(app, &session_uuid.to_string(), &attacker.api_key).await;
     let status = resp.status_code().as_u16();
+    // Honest statuses on the M2M zone (INV-API-3): the session exists,
+    // the caller is not authorized -> 403 (a random UUID would be 404).
     assert_eq!(
-        status, 404,
-        "regular user must NOT read another user's session metadata, got {}",
+        status, 403,
+        "regular user must NOT read another user's session metadata \
+         (expected honest 403), got {}",
         status
     );
 }

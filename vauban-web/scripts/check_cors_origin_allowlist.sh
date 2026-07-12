@@ -3,8 +3,12 @@
 # VAU-010 lint: the CORS origin decision must be driven EXCLUSIVELY by the
 # fixed `server.public_origins` allowlist, never by the client-controlled
 # `Host` header. Mirrors the in-crate pin test
-# `src/main.rs::tests::cors_seam_is_pinned_to_config_allowlist` so the
-# regression is caught before `cargo test`.
+# `src/middleware/cors.rs::tests::cors_seam_is_pinned_to_config_allowlist`
+# so the regression is caught before `cargo test`.
+#
+# INV-HDR-5: the seam lives in the lib module `src/middleware/cors.rs`
+# (shared by production and the E2E test router) and is mounted on the
+# web/WS branches only -- never on `/api/*`.
 #
 # Usage: bash vauban-web/scripts/check_cors_origin_allowlist.sh
 #
@@ -18,44 +22,67 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CRATE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MAIN="${CRATE_DIR}/src/main.rs"
+CORS_SEAM="${CRATE_DIR}/src/middleware/cors.rs"
 CONFIG="${CRATE_DIR}/src/config.rs"
 
 status=0
 
-if [[ ! -f "${MAIN}" || ! -f "${CONFIG}" ]]; then
-    echo "FAIL: missing ${MAIN} or ${CONFIG}" >&2
+if [[ ! -f "${MAIN}" || ! -f "${CORS_SEAM}" || ! -f "${CONFIG}" ]]; then
+    echo "FAIL: missing ${MAIN}, ${CORS_SEAM} or ${CONFIG}" >&2
     exit 1
 fi
 
-# Production portion of main.rs only (everything before the test module), so
-# the CORS E2E test helper -- which deliberately sends a Host header to prove
-# it is ignored -- does not trip the drift guards below.
+# Production portion only (everything before the test module), so the CORS
+# test helpers -- which deliberately send a Host header to prove it is
+# ignored -- do not trip the drift guards below.
 PROD_MAIN="$(awk '/^#\[cfg\(test\)\]/{exit} {print}' "${MAIN}")"
+PROD_SEAM="$(awk '/^#\[cfg\(test\)\]/{exit} {print}' "${CORS_SEAM}")"
 
 # INV-1: the Host-based predicate must be gone for good.
-if printf '%s' "${PROD_MAIN}" | grep -E 'fn is_same_origin' >/dev/null; then
-    echo "FAIL (VAU-010 INV-1): is_same_origin (Host-based CORS) reappeared in main.rs." >&2
+if printf '%s' "${PROD_MAIN}${PROD_SEAM}" | grep -E 'fn is_same_origin' >/dev/null; then
+    echo "FAIL (VAU-010 INV-1): is_same_origin (Host-based CORS) reappeared." >&2
     status=1
 fi
 # AllowOrigin::predicate is the only tower-http API exposing the request parts
 # (hence Host). It must not be used for the CORS origin decision.
-if printf '%s' "${PROD_MAIN}" | grep -E 'AllowOrigin::predicate' >/dev/null; then
+if printf '%s' "${PROD_MAIN}${PROD_SEAM}" | grep -E 'AllowOrigin::predicate' >/dev/null; then
     echo "FAIL (VAU-010 INV-1): the CORS seam must not use AllowOrigin::predicate (Host-capable)." >&2
     status=1
 fi
 
 # INV-2: the seam is build_cors_layer + AllowOrigin::list, fed from config.
-if ! printf '%s' "${PROD_MAIN}" | grep -E 'fn build_cors_layer\(' >/dev/null; then
-    echo "FAIL (VAU-010 INV-2): build_cors_layer seam is missing from main.rs." >&2
+if ! printf '%s' "${PROD_SEAM}" | grep -E 'pub fn build_cors_layer\(' >/dev/null; then
+    echo "FAIL (VAU-010 INV-2): build_cors_layer seam is missing from middleware/cors.rs." >&2
     status=1
 fi
-if ! printf '%s' "${PROD_MAIN}" | grep -E 'AllowOrigin::list' >/dev/null; then
+if ! printf '%s' "${PROD_SEAM}" | grep -E 'AllowOrigin::list' >/dev/null; then
     echo "FAIL (VAU-010 INV-2): the CORS seam must use AllowOrigin::list (exact allowlist match)." >&2
     status=1
 fi
 if ! printf '%s' "${PROD_MAIN}" \
-    | grep -E 'build_cors_layer\(&state\.config\.server\.parsed_public_origins\(\)\)' >/dev/null; then
-    echo "FAIL (VAU-010 INV-2): create_app must feed the CORS layer from parsed_public_origins()." >&2
+    | grep -E 'middleware::cors::build_cors_layer\(&state\.config\.server\.parsed_public_origins\(\)\)' >/dev/null; then
+    echo "FAIL (VAU-010 INV-2): create_app must feed the shared CORS seam from parsed_public_origins()." >&2
+    status=1
+fi
+# main.rs must not re-grow a private copy of the seam.
+if printf '%s' "${PROD_MAIN}" | grep -E 'fn build_cors_layer\(' >/dev/null; then
+    echo "FAIL (INV-HDR-5): main.rs must consume middleware::cors::build_cors_layer, not re-define it." >&2
+    status=1
+fi
+
+# INV-HDR-5: CORS mounted on web/WS branches only, never in common_layers.
+STRIPPED_MAIN="$(printf '%s' "${PROD_MAIN}" | tr -d '[:space:]')"
+if ! printf '%s' "${STRIPPED_MAIN}" | grep -F 'web_routes.layer(cors).merge(api_routes)' >/dev/null; then
+    echo "FAIL (INV-HDR-5): web_routes must carry the CORS layer before merging api_routes." >&2
+    status=1
+fi
+if ! printf '%s' "${STRIPPED_MAIN}" | grep -F 'ws_routes.layer(cors.clone())' >/dev/null; then
+    echo "FAIL (INV-HDR-5): ws_routes must carry the CORS layer." >&2
+    status=1
+fi
+COMMON_BLOCK="$(printf '%s' "${STRIPPED_MAIN}" | sed -n 's/.*ServiceBuilder::new()\(.*\)letws_app.*/\1/p')"
+if printf '%s' "${COMMON_BLOCK}" | grep -F 'layer(cors' >/dev/null; then
+    echo "FAIL (INV-HDR-5): common_layers must NOT contain the CORS layer (/api/* is CORS-free)." >&2
     status=1
 fi
 

@@ -4,6 +4,7 @@ pub mod audit;
 pub mod auth;
 pub mod browser_tz;
 pub mod client_addr;
+pub mod cors;
 pub mod csrf;
 pub mod flash;
 pub mod ip_acl;

@@ -132,25 +132,49 @@ pub async fn audit_middleware(
     let apache_log = format_apache_combined(&audit_log);
 
     // Log based on severity
-    match status_code {
-        500..=599 => error!(
+    match audit_severity(status_code) {
+        (AuditSeverity::Error, message) => error!(
             audit_log = ?audit_log,
             apache_format = %apache_log,
-            "Server error"
+            "{message}"
         ),
-        400..=499 => warn!(
+        (AuditSeverity::Warn, message) => warn!(
             audit_log = ?audit_log,
             apache_format = %apache_log,
-            "Client error"
+            "{message}"
         ),
-        _ => info!(
+        (AuditSeverity::Info, message) => info!(
             audit_log = ?audit_log,
             apache_format = %apache_log,
-            "Request processed"
+            "{message}"
         ),
     }
 
     response
+}
+
+/// Audit log severity, decoupled from the tracing macros so the
+/// status -> level mapping stays unit-testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditSeverity {
+    Error,
+    Warn,
+    Info,
+}
+
+/// Map a response status to its audit log level and message.
+///
+/// 501 Not Implemented is singled out as WARN: it is a deliberate
+/// contract response (the whole `/api/v1` tree when `api.enabled =
+/// false`, or an unimplemented verb stub), not a server malfunction --
+/// operators must not be paged for it.
+pub fn audit_severity(status_code: u16) -> (AuditSeverity, &'static str) {
+    match status_code {
+        501 => (AuditSeverity::Warn, "Not implemented"),
+        500..=599 => (AuditSeverity::Error, "Server error"),
+        400..=499 => (AuditSeverity::Warn, "Client error"),
+        _ => (AuditSeverity::Info, "Request processed"),
+    }
 }
 
 /// Determine event type from status code.
@@ -244,6 +268,51 @@ mod tests {
         };
 
         assert!(log.ip_address.is_none());
+    }
+
+    // ==================== Audit Severity Tests ====================
+
+    /// 501 is a deliberate contract response (API disabled, verb
+    /// stubs): WARN, never ERROR.
+    #[test]
+    fn test_audit_severity_501_is_warn() {
+        assert_eq!(
+            audit_severity(501),
+            (AuditSeverity::Warn, "Not implemented")
+        );
+    }
+
+    #[test]
+    fn test_audit_severity_5xx_is_error() {
+        for code in [500, 502, 503, 504, 599] {
+            assert_eq!(
+                audit_severity(code),
+                (AuditSeverity::Error, "Server error"),
+                "status {code} must stay ERROR"
+            );
+        }
+    }
+
+    #[test]
+    fn test_audit_severity_4xx_is_warn() {
+        for code in [400, 401, 403, 404, 429, 499] {
+            assert_eq!(
+                audit_severity(code),
+                (AuditSeverity::Warn, "Client error"),
+                "status {code} must stay WARN"
+            );
+        }
+    }
+
+    #[test]
+    fn test_audit_severity_success_and_redirect_are_info() {
+        for code in [200, 204, 301, 303, 304] {
+            assert_eq!(
+                audit_severity(code),
+                (AuditSeverity::Info, "Request processed"),
+                "status {code} must stay INFO"
+            );
+        }
     }
 
     // ==================== Event Type Tests ====================

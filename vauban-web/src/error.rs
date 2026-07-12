@@ -33,6 +33,14 @@ pub enum AppError {
     #[error("Not found: {0}")]
     NotFound(String),
 
+    /// 501 Not Implemented. Used by the M2M API zone when the whole
+    /// API surface is disabled by configuration (`[api] enabled = false`)
+    /// and by endpoint stubs that are deliberately not implemented.
+    /// A 501 (instead of a misleading 404) tells the caller the route
+    /// exists but the server does not serve it.
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
+
     /// 409 Conflict. Used for unique-constraint violations, idempotency
     /// races and similar "the request is well-formed but conflicts with
     /// the current state" cases. Surfaced as `409 Conflict` with the
@@ -87,6 +95,7 @@ impl IntoResponse for AppError {
             AppError::Authorization(msg) => (StatusCode::FORBIDDEN, msg),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            AppError::NotImplemented(msg) => (StatusCode::NOT_IMPLEMENTED, msg),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             AppError::Internal(e) => {
                 tracing::error!("Internal error: {}", e);
@@ -327,6 +336,26 @@ mod tests {
         let error = AppError::NotFound("Resource not found".to_string());
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_app_error_into_response_not_implemented_status() {
+        let error = AppError::NotImplemented("API is disabled".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[test]
+    fn test_app_error_display_not_implemented() {
+        let error = AppError::NotImplemented("API is disabled".to_string());
+        assert_eq!(error.to_string(), "Not implemented: API is disabled");
+    }
+
+    #[test]
+    fn test_app_error_debug_not_implemented() {
+        let error = AppError::NotImplemented("test".to_string());
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("NotImplemented"));
     }
 
     #[test]

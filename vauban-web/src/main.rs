@@ -17,7 +17,6 @@
 use axum::{
     Router,
     extract::Path,
-    http::Method,
     response::Redirect,
     routing::{get, post},
 };
@@ -26,11 +25,7 @@ use rustls::server::ResolvesServerCert;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceBuilder;
-use tower_http::{
-    cors::{AllowOrigin, CorsLayer},
-    timeout::TimeoutLayer,
-    trace::TraceLayer,
-};
+use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // Import for supervisor, vault, and Access IPC clients
@@ -1384,7 +1379,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
     // `server.public_origins` allowlist, never by the client-controlled
     // `Host` header. `AllowOrigin::list` performs an exact match and, by
     // construction, has no access to the request `Host`.
-    let cors = build_cors_layer(&state.config.server.parsed_public_origins());
+    //
+    // INV-HDR-5: the layer is mounted on the web and WS branches only
+    // (see below) -- the M2M API zone never carries CORS headers.
+    let cors = middleware::cors::build_cors_layer(&state.config.server.parsed_public_origins());
 
     // Get flash secret key from config
     let flash_secret = state.config.secret_key.expose_secret().as_bytes().to_vec();
@@ -2060,9 +2058,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                 "/api/v1/accounts/{uuid}",
                 get(handlers::api::get_user)
                     .put(handlers::api::update_user)
-                    .delete(|| async {
-                        (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
-                    }),
+                    .delete(|| async { AppError::NotImplemented("Not implemented".to_string()) }),
             )
             // Assets API -- USER ZONE (read-only listing).
             // Issue #27: every write operation lives under
@@ -2077,7 +2073,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             .route(
                 "/api/v1/assets/{uuid}",
                 axum::routing::delete(|| async {
-                    (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
+                    AppError::NotImplemented("Not implemented".to_string())
                 }),
             )
             // Sessions API
@@ -2086,9 +2082,8 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             // DELETE stub returns 501 Not Implemented (not 200 OK)
             .route(
                 "/api/v1/sessions/{uuid}",
-                get(handlers::api::get_session).delete(|| async {
-                    (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
-                }),
+                get(handlers::api::get_session)
+                    .delete(|| async { AppError::NotImplemented("Not implemented".to_string()) }),
             )
             .route(
                 "/api/v1/sessions/{uuid}/terminate",
@@ -2167,32 +2162,58 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                         middleware::require_assets_manage::require_assets_manage,
                     )),
             )
+            // VAU-007 (INV-3): enforce the API key scope (read/write/admin)
+            // on every request authenticated by an API key. Runs after
+            // `auth_middleware` (which sets `ApiKeyAuth`) since it is inner
+            // to the shared `common_layers`. No-op for requests without an
+            // `ApiKeyAuth` extension (the downstream `AuthUser` extractor
+            // then yields 401). Applied to the ENABLED branch only:
+            // INV-API-1 requires the disabled tree to answer 501 for every
+            // caller, scope checks included.
+            .layer(axum::middleware::from_fn(
+                middleware::api_key::api_scope_enforcement,
+            ))
     } else {
         tracing::info!("API routes disabled by configuration");
-        Router::new()
-            // Return 404 for all API routes when disabled
-            .route(
-                "/api/v1/{*path}",
-                get(api_disabled_handler)
-                    .post(api_disabled_handler)
-                    .put(api_disabled_handler)
-                    .delete(api_disabled_handler),
-            )
+        // INV-API-1: the whole `/api/v1` tree answers 501 Not
+        // Implemented (JSON), every method included. Single seam shared
+        // with the test router (`handlers::api::api_disabled_router`).
+        handlers::api::api_disabled_router()
     };
-
-    // VAU-007 (INV-3): enforce the API key scope (read/write/admin) on
-    // every request authenticated by an API key. Runs after
-    // `auth_middleware` (which sets `ApiKeyAuth`) since it is inner to the
-    // shared `common_layers`. No-op for requests without an `ApiKeyAuth`
-    // extension (the downstream `AuthUser` extractor then yields 401).
-    let api_routes = api_routes.layer(axum::middleware::from_fn(
-        middleware::api_key::api_scope_enforcement,
-    ));
 
     // Common middleware layers (applied to all routes)
     let flash_key = middleware::flash::FlashSecretKey(flash_secret);
     let common_layers = ServiceBuilder::new()
-        .layer(TraceLayer::new_for_http())
+        // The default on_failure logs every 5xx at ERROR. 501 Not
+        // Implemented is a deliberate contract response (the whole
+        // `/api/v1` tree when `api.enabled = false`, or an
+        // unimplemented verb stub), not a malfunction: keep it at WARN
+        // so operators are not paged for a configuration choice.
+        .layer(TraceLayer::new_for_http().on_failure(
+            |class: tower_http::classify::ServerErrorsFailureClass,
+             latency: std::time::Duration,
+             _span: &tracing::Span| {
+                use tower_http::classify::ServerErrorsFailureClass;
+                match class {
+                    ServerErrorsFailureClass::StatusCode(code)
+                        if code == axum::http::StatusCode::NOT_IMPLEMENTED =>
+                    {
+                        tracing::warn!(
+                            classification = %class,
+                            latency = format_args!("{} ms", latency.as_millis()),
+                            "response not implemented"
+                        );
+                    }
+                    _ => {
+                        tracing::error!(
+                            classification = %class,
+                            latency = format_args!("{} ms", latency.as_millis()),
+                            "response failed"
+                        );
+                    }
+                }
+            },
+        ))
         // Security headers (XSS, clickjacking, MIME sniffing protection)
         .layer(axum::middleware::from_fn(
             middleware::security::security_headers_middleware,
@@ -2208,7 +2229,9 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             state.http_rate.clone(),
             services::system_health::record_http_request,
         ))
-        .layer(cors.clone())
+        // INV-HDR-5: NO CorsLayer here. CORS is browser-only and is
+        // mounted on the web and WS branches below; the API branch
+        // (enabled or 501-disabled) never carries it.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::csrf::csrf_cookie_middleware,
@@ -2243,17 +2266,21 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             middleware::audit::audit_middleware,
         ));
 
-    // WebSocket routes - NO timeout (long-lived connections)
-    let ws_app = ws_routes.layer(common_layers.clone());
+    // WebSocket routes - NO timeout (long-lived connections).
+    // INV-HDR-5: CORS on the WS branch (browser-facing surface).
+    let ws_app = ws_routes.layer(cors.clone()).layer(common_layers.clone());
 
-    // Web and API routes - WITH 30s timeout for regular HTTP requests
-    let http_app =
-        web_routes
-            .merge(api_routes)
-            .layer(common_layers.layer(TimeoutLayer::with_status_code(
-                axum::http::StatusCode::REQUEST_TIMEOUT,
-                std::time::Duration::from_secs(30),
-            )));
+    // Web and API routes - WITH 30s timeout for regular HTTP requests.
+    // INV-HDR-5: `Router::layer` only wraps the routes registered so
+    // far, so `web_routes.layer(cors)` scopes CORS to the web branch;
+    // `api_routes` merged afterwards stays CORS-free (M2M zone).
+    let http_app = web_routes
+        .layer(cors)
+        .merge(api_routes)
+        .layer(common_layers.layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            std::time::Duration::from_secs(30),
+        )));
 
     // Merge all routes
     let app = ws_app
@@ -2262,40 +2289,6 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .with_state(state);
 
     Ok(app)
-}
-
-/// Build the CORS layer from the fixed `server.public_origins` allowlist
-/// (VAU-010). The single seam for the CORS origin decision: it uses
-/// `AllowOrigin::list` (exact match against the configured origins) and is
-/// therefore structurally incapable of consulting the client-controlled
-/// `Host` header. An unparseable entry is skipped; an empty allowlist
-/// admits no cross-origin request (fail-closed).
-fn build_cors_layer(origins: &[String]) -> CorsLayer {
-    let allow = AllowOrigin::list(
-        origins
-            .iter()
-            .filter_map(|o| o.parse::<axum::http::HeaderValue>().ok()),
-    );
-    CorsLayer::new()
-        .allow_origin(allow)
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::DELETE,
-            Method::PATCH,
-            Method::OPTIONS,
-        ])
-        .allow_headers([
-            axum::http::header::CONTENT_TYPE,
-            axum::http::header::AUTHORIZATION,
-            axum::http::header::ACCEPT,
-        ])
-}
-
-/// Handler for disabled API routes.
-async fn api_disabled_handler() -> (axum::http::StatusCode, &'static str) {
-    (axum::http::StatusCode::NOT_FOUND, "API is disabled")
 }
 
 /// Health check endpoint.
@@ -2569,173 +2562,50 @@ mod tests {
         assert_eq!(addr.port(), 65535);
     }
 
-    // ==================== CORS Methods Test ====================
-
-    #[test]
-    fn test_http_methods_available() {
-        // Verify all HTTP methods used in CORS are valid
-        assert_eq!(Method::GET.as_str(), "GET");
-        assert_eq!(Method::POST.as_str(), "POST");
-        assert_eq!(Method::PUT.as_str(), "PUT");
-        assert_eq!(Method::DELETE.as_str(), "DELETE");
-        assert_eq!(Method::PATCH.as_str(), "PATCH");
-        assert_eq!(Method::OPTIONS.as_str(), "OPTIONS");
-    }
-
-    // ==================== CORS Origin Tests (VAU-010) ====================
+    // ==================== CORS scoping pin (INV-HDR-5) ====================
     //
-    // These drive the REAL `build_cors_layer` through a tiny router via
-    // `tower::ServiceExt::oneshot`, asserting the `access-control-allow-origin`
-    // (ACAO) response header. They prove the CORS decision comes ONLY from the
-    // configured allowlist and is NEVER influenced by the client `Host` header.
+    // The CORS origin tests (VAU-010) live with the seam in
+    // `middleware/cors.rs`. Here we only pin the per-surface mounting.
 
-    /// Send a simple (non-preflight) GET carrying `Origin` (+ optional `Host`)
-    /// through a router that mounts `build_cors_layer(allowlist)`. Returns the
-    /// reflected ACAO header value, if any.
-    async fn cors_acao_for(
-        allowlist: &[String],
-        origin: &str,
-        host: Option<&str>,
-    ) -> Option<String> {
-        use axum::body::Body;
-        use axum::http::Request;
-        use axum::routing::get;
-        use tower::ServiceExt;
-
-        let app = axum::Router::new()
-            .route("/", get(|| async { "ok" }))
-            .layer(build_cors_layer(allowlist));
-
-        let mut builder = Request::builder()
-            .uri("/")
-            .header(axum::http::header::ORIGIN, origin);
-        if let Some(h) = host {
-            builder = builder.header(axum::http::header::HOST, h);
-        }
-        let req = builder.body(Body::empty()).unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        resp.headers()
-            .get(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string())
-    }
-
-    /// INV-2 / normal: an allowlisted origin is reflected, regardless of the
-    /// `Host` header value.
-    #[tokio::test]
-    async fn cors_allows_configured_origin_regardless_of_host() {
-        let allow = vec!["https://bastion.example.com".to_string()];
-        // No Host, complicit Host, and unrelated Host all behave identically.
-        for host in [None, Some("bastion.example.com"), Some("evil.com")] {
-            let acao = cors_acao_for(&allow, "https://bastion.example.com", host).await;
-            assert_eq!(
-                acao.as_deref(),
-                Some("https://bastion.example.com"),
-                "configured origin must be allowed (host = {host:?})"
-            );
-        }
-    }
-
-    /// INV-1 / INV-3 (the VAU-010 fix): a forged origin is REFUSED even when a
-    /// complicit `Host` header "confirms" it. Pre-fix, `Host: evil.com` +
-    /// `Origin: https://evil.com` was accepted as same-origin.
-    #[tokio::test]
-    async fn cors_refuses_forged_origin_even_with_complicit_host() {
-        let allow = vec!["https://bastion.example.com".to_string()];
-        let acao = cors_acao_for(&allow, "https://evil.com", Some("evil.com")).await;
-        assert_eq!(
-            acao, None,
-            "a forged Origin must NOT be allowed by a complicit Host header (VAU-010)"
-        );
-    }
-
-    /// An origin absent from the allowlist is refused.
-    #[tokio::test]
-    async fn cors_refuses_unlisted_origin() {
-        let allow = vec!["https://bastion.example.com".to_string()];
-        let acao = cors_acao_for(&allow, "https://other.example.com", None).await;
-        assert_eq!(acao, None);
-    }
-
-    /// Fail-closed: an empty allowlist admits no cross-origin request.
-    #[tokio::test]
-    async fn cors_empty_allowlist_admits_nothing() {
-        let acao = cors_acao_for(&[], "https://bastion.example.com", None).await;
-        assert_eq!(acao, None);
-    }
-
-    /// Preflight (OPTIONS): an allowlisted origin gets CORS headers, an
-    /// unlisted one does not.
-    #[tokio::test]
-    async fn cors_preflight_respects_allowlist() {
-        let allow = vec!["https://bastion.example.com".to_string()];
-        assert_eq!(
-            cors_preflight_acao(&allow, "https://bastion.example.com")
-                .await
-                .as_deref(),
-            Some("https://bastion.example.com")
-        );
-        assert_eq!(cors_preflight_acao(&allow, "https://evil.com").await, None);
-    }
-
-    /// Drift guard (VAU-010, INV-1/INV-2): the CORS seam must stay on the
-    /// config allowlist and never regain access to the request `Host`. The
-    /// closure-based predicate API is the only tower-http surface that
-    /// exposes the request parts (hence `Host`); its absence -- together with
-    /// the presence of `AllowOrigin::list` and `build_cors_layer` --
-    /// structurally guarantees the origin decision cannot consult `Host`.
+    /// INV-HDR-5 drift guard: CORS must stay scoped to the web and WS
+    /// branches, out of `common_layers` (which also wraps the API zone).
+    /// The source is whitespace-stripped so the pin survives rustfmt;
+    /// every needle is built from fragments so this test's own source
+    /// (read back via include_str!) cannot match itself.
     #[test]
-    fn cors_seam_is_pinned_to_config_allowlist() {
-        let src = include_str!("main.rs");
-        // Build the banned needles from fragments so this very test's source
-        // (read back via include_str!) does not match itself.
-        let banned_fn = ["fn ", "is_same_origin"].concat();
-        let banned_predicate = ["AllowOrigin", "::predicate"].concat();
-        assert!(
-            !src.contains(&banned_fn),
-            "is_same_origin (Host-based CORS) must stay deleted (VAU-010 INV-1)."
-        );
-        assert!(
-            !src.contains(&banned_predicate),
-            "the CORS seam must not use the Host-capable predicate API; \
-             use AllowOrigin::list over the config allowlist (VAU-010 INV-1)."
-        );
-        assert!(
-            src.contains("fn build_cors_layer(") && src.contains("AllowOrigin::list"),
-            "the CORS seam must be build_cors_layer + AllowOrigin::list (VAU-010 INV-2)."
-        );
-        assert!(
-            src.contains("build_cors_layer(&state.config.server.parsed_public_origins())"),
-            "create_app must feed the CORS layer from server.parsed_public_origins() (VAU-010 INV-2)."
-        );
-    }
+    fn cors_layer_is_scoped_to_web_and_ws_branches() {
+        let src: String = include_str!("main.rs")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
 
-    /// Drive a CORS preflight (OPTIONS + `Access-Control-Request-Method`)
-    /// through `build_cors_layer` and return the reflected ACAO header.
-    async fn cors_preflight_acao(allowlist: &[String], origin: &str) -> Option<String> {
-        use axum::body::Body;
-        use axum::http::Request;
-        use axum::routing::get;
-        use tower::ServiceExt;
+        let web_needle = ["web_routes", ".layer(cors)", ".merge(api_routes)"].concat();
+        assert!(
+            src.contains(&web_needle),
+            "web_routes must carry the CORS layer BEFORE merging api_routes (INV-HDR-5)."
+        );
 
-        let app = axum::Router::new()
-            .route("/", get(|| async { "ok" }))
-            .layer(build_cors_layer(allowlist));
-        let req = Request::builder()
-            .method(Method::OPTIONS)
-            .uri("/")
-            .header(axum::http::header::ORIGIN, origin)
-            .header(axum::http::header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
-            .body(Body::empty())
-            .unwrap();
-        app.oneshot(req)
-            .await
-            .unwrap()
-            .headers()
-            .get(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string())
+        let ws_needle = ["ws_routes", ".layer(cors.clone())"].concat();
+        assert!(
+            src.contains(&ws_needle),
+            "ws_routes must carry the CORS layer (INV-HDR-5)."
+        );
+
+        // CORS inside the common ServiceBuilder stack would wrap the API
+        // zone too: scan the block between the builder and `let ws_app`.
+        let builder_marker = ["ServiceBuilder", "::new()"].concat();
+        let end_marker = ["let", "ws_app"].concat();
+        let banned = ["layer", "(cors"].concat();
+        let service_builder_block = src
+            .split(&builder_marker)
+            .nth(1)
+            .and_then(|rest| rest.split(&end_marker).next())
+            .unwrap_or_default();
+        assert!(
+            !service_builder_block.contains(&banned),
+            "common_layers must NOT contain the CORS layer: /api/* is a \
+             CORS-free M2M zone (INV-HDR-5)."
+        );
     }
 
     // ==================== HeartbeatState Tests ====================
