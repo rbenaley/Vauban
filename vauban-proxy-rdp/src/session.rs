@@ -10,8 +10,11 @@ use base64::Engine as _;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
 use ironrdp::connector::{
-    self, ClientConnector, ConnectionResult, Credentials, DesktopSize,
-    connection_activation::ConnectionActivationState,
+    self, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError,
+    ConnectorErrorKind, ConnectorResult, Credentials, DesktopSize, Sequence as _,
+    connection_activation::{ConnectionActivationFactory, ConnectionActivationState},
+    credssp::CredsspSequence,
+    sspi::generator::GeneratorState,
 };
 use ironrdp::core::WriteBuf;
 use ironrdp::displaycontrol::client::DisplayControlClient;
@@ -24,9 +27,9 @@ use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::{self, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStage, ActiveStageOutput, fast_path};
+use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, fast_path};
 use ironrdp_tokio::single_sequence_step;
-use ironrdp_tokio::{FramedWrite as _, NetworkClient};
+use ironrdp_tokio::{Framed, FramedRead, FramedWrite, NetworkClient, Upgraded};
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use shared::messages::{Message, RdpInputEvent};
@@ -239,16 +242,17 @@ impl RdpSession {
 
         let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
 
-        // Finalize connection (CredSSP + remaining handshake)
+        // Finalize connection (CredSSP + remaining handshake). The local
+        // demuxed loop (NOT ironrdp_tokio::connect_finalize) shields the
+        // licensing exchange from interleaved message-channel PDUs.
         let mut network_client = NtlmOnlyNetworkClient;
-        let connection_result = ironrdp_tokio::connect_finalize(
+        let connection_result = connect_finalize_with_message_channel_demux(
             upgraded,
             connector,
             &mut tls_framed,
             &mut network_client,
             connector::ServerName::new(config.host.clone()),
             server_public_key,
-            None,
         )
         .await
         .map_err(|e| SessionError::AuthenticationFailed(format!("RDP finalize failed: {e}")))?;
@@ -321,6 +325,13 @@ fn build_connector_config(
         client_build: 0,
         client_name: "Vauban".to_owned(),
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
+        // No startup program / working directory override on the target.
+        alternate_shell: String::new(),
+        work_dir: String::new(),
+        // Conservative posture, identical to the pre-0.17 behavior: no
+        // bulk compression and no UDP sideband transport negotiation.
+        compression_type: None,
+        multitransport_flags: None,
 
         #[cfg(windows)]
         platform: MajorPlatformType::WINDOWS,
@@ -357,8 +368,16 @@ fn build_connector_config(
 }
 
 /// Round a dimension up to the nearest even number (H.264 YUV 4:2:0 requirement).
+/// Round up to the nearest even value (H.264 YUV 4:2:0 requires even
+/// dimensions). Total on all of `u16`: `u16::MAX` clamps DOWN to `65534`
+/// instead of overflowing (the server controls these values, a hostile
+/// peer must not be able to panic the session task).
 fn align_even(v: u16) -> u16 {
-    (v + 1) & !1
+    if v.is_multiple_of(2) {
+        v
+    } else {
+        v.saturating_add(1) & !1
+    }
 }
 
 /// Commands sent to the background encoder thread.
@@ -454,7 +473,21 @@ async fn active_session_loop(
     let desktop_w = connection_result.desktop_size.width;
     let desktop_h = connection_result.desktop_size.height;
     let mut image = DecodedImage::new(PixelFormat::RgbA32, desktop_w, desktop_h);
-    let mut active_stage = ActiveStage::new(connection_result);
+    // Retained to drive the Deactivation-Reactivation Sequence locally
+    // (since IronRDP 0.17, ActiveStageOutput::DeactivateAll is a unit
+    // variant and the consumer produces fresh activation sequences).
+    let activation_factory = connection_result.activation_factory;
+    let mut active_stage = ActiveStageBuilder {
+        static_channels: connection_result.static_channels,
+        user_channel_id: connection_result.user_channel_id,
+        io_channel_id: connection_result.io_channel_id,
+        message_channel_id: connection_result.message_channel_id,
+        share_id: connection_result.share_id,
+        compression_type: connection_result.compression_type,
+        enable_server_pointer: connection_result.enable_server_pointer,
+        pointer_software_rendering: connection_result.pointer_software_rendering,
+    }
+    .build();
     let mut input_db = InputDatabase::new();
     let mut lock_sync = LockSyncState::default();
     let mut graphics_update_count: u64 = 0;
@@ -525,7 +558,7 @@ async fn active_session_loop(
                                 "GraphicsUpdate region"
                             );
                         }
-                        ActiveStageOutput::DeactivateAll(_) => {
+                        ActiveStageOutput::DeactivateAll => {
                             info!(session_id = %session_id, "DeactivateAll received");
                         }
                         ActiveStageOutput::Terminate(reason) => {
@@ -597,72 +630,62 @@ async fn active_session_loop(
                             info!(session_id = %session_id, ?reason, "RDP server terminated session");
                             return Ok(());
                         }
-                        ActiveStageOutput::DeactivateAll(mut connection_activation) => {
+                        ActiveStageOutput::DeactivateAll => {
                             debug!(session_id = %session_id, "Deactivation-Reactivation Sequence started");
-                            let mut buf = WriteBuf::new();
-                            loop {
-                                single_sequence_step(&mut framed, &mut *connection_activation, &mut buf)
-                                    .await
-                                    .map_err(|e| SessionError::SessionFailed(
-                                        format!("Deactivation-Reactivation failed: {e}")
-                                    ))?;
-
-                                if let ConnectionActivationState::Finalized {
-                                    io_channel_id,
-                                    user_channel_id,
-                                    desktop_size,
-                                    enable_server_pointer,
-                                    pointer_software_rendering,
-                                } = connection_activation.connection_activation_state()
-                                {
-                                    debug!(
-                                        session_id = %session_id,
-                                        ?desktop_size,
-                                        "Deactivation-Reactivation Sequence completed"
-                                    );
-                                    image = DecodedImage::new(
-                                        PixelFormat::RgbA32,
-                                        desktop_size.width,
-                                        desktop_size.height,
-                                    );
-                                    active_stage.set_fastpath_processor(
-                                        fast_path::ProcessorBuilder {
-                                            io_channel_id,
-                                            user_channel_id,
-                                            enable_server_pointer,
-                                            pointer_software_rendering,
-                                        }
-                                        .build(),
-                                    );
-                                    active_stage.set_enable_server_pointer(enable_server_pointer);
-
-                                    let aligned_w = align_even(desktop_size.width);
-                                    let aligned_h = align_even(desktop_size.height);
-
-                                    if let Some(ref tx) = encoder_snapshot_tx {
-                                        let _ = tx.try_send(EncoderCommand::Reconfigure(
-                                            aligned_w,
-                                            aligned_h,
-                                        ));
-                                        suppress_encoding_until = Some(
-                                            Instant::now() + std::time::Duration::from_millis(500)
-                                        );
-                                    }
-
-                                    let _ = web_tx.send(Message::RdpDesktopResize {
-                                        session_id: session_id.clone(),
-                                        width: aligned_w,
-                                        height: aligned_h,
-                                    }).await;
-                                    info!(
-                                        session_id = %session_id,
-                                        width = desktop_size.width,
-                                        height = desktop_size.height,
-                                        "Desktop resized after reactivation"
-                                    );
-                                    break;
+                            let outcome = drive_reactivation(&activation_factory, &mut framed)
+                                .await
+                                .map_err(|e| SessionError::SessionFailed(
+                                    format!("Deactivation-Reactivation failed: {e}")
+                                ))?;
+                            let desktop_size = outcome.desktop_size;
+                            debug!(
+                                session_id = %session_id,
+                                ?desktop_size,
+                                "Deactivation-Reactivation Sequence completed"
+                            );
+                            image = DecodedImage::new(
+                                PixelFormat::RgbA32,
+                                desktop_size.width,
+                                desktop_size.height,
+                            );
+                            active_stage.set_fastpath_processor(
+                                fast_path::ProcessorBuilder {
+                                    io_channel_id: outcome.io_channel_id,
+                                    user_channel_id: outcome.user_channel_id,
+                                    share_id: outcome.share_id,
+                                    enable_server_pointer: outcome.enable_server_pointer,
+                                    pointer_software_rendering: outcome.pointer_software_rendering,
+                                    bulk_decompressor: None,
                                 }
+                                .build(),
+                            );
+                            active_stage.set_share_id(outcome.share_id);
+                            active_stage.set_enable_server_pointer(outcome.enable_server_pointer);
+
+                            let aligned_w = align_even(desktop_size.width);
+                            let aligned_h = align_even(desktop_size.height);
+
+                            if let Some(ref tx) = encoder_snapshot_tx {
+                                let _ = tx.try_send(EncoderCommand::Reconfigure(
+                                    aligned_w,
+                                    aligned_h,
+                                ));
+                                suppress_encoding_until = Some(
+                                    Instant::now() + std::time::Duration::from_millis(500)
+                                );
                             }
+
+                            let _ = web_tx.send(Message::RdpDesktopResize {
+                                session_id: session_id.clone(),
+                                width: aligned_w,
+                                height: aligned_h,
+                            }).await;
+                            info!(
+                                session_id = %session_id,
+                                width = desktop_size.width,
+                                height = desktop_size.height,
+                                "Desktop resized after reactivation"
+                            );
                         }
                         _ => {}
                     }
@@ -1527,6 +1550,355 @@ impl NetworkClient for NtlmOnlyNetworkClient {
     }
 }
 
+/// Classification of an inbound PDU against the MCS message channel during
+/// the connection finalize sequence.
+#[derive(Debug, PartialEq, Eq)]
+enum MessageChannelPdu {
+    /// RTT Measure Request ([MS-RDPBCGR] 2.2.14.1.1): must be answered with
+    /// an RTT Measure Response so the server can compute the round-trip time.
+    RttRequest { sequence_number: u16 },
+    /// Any other message-channel PDU (bandwidth measure, network
+    /// characteristics result, ...). Informational during the connection
+    /// sequence: swallowed without a reply, mirroring the upstream
+    /// `ConnectTimeAutoDetection` handling.
+    Other,
+}
+
+/// Demultiplex one inbound PDU by MCS channel during connection finalize.
+///
+/// IronRDP >= 0.17 unconditionally requests the MCS message channel and
+/// advertises `SUPPORT_NET_CHAR_AUTODETECT` in the client GCC blocks, so the
+/// server may interleave connect-time auto-detect PDUs (carried on the
+/// message channel) with the licensing exchange ([MS-RDPBCGR] 1.3.8). The
+/// upstream connector only demuxes those in its pre-licensing
+/// `ConnectTimeAutoDetection` state: a message-channel PDU arriving
+/// mid-licensing is handed to the license decoder and aborts the connection
+/// with `decode during SERVER_NEW_LICENSE/... decode error` (its security
+/// header carries `SEC_AUTODETECT_REQ`, not `LICENSE_PKT`).
+///
+/// Returns `None` when the PDU is NOT on the message channel (it must then
+/// be fed to the connector state machine as usual), and
+/// `Some(MessageChannelPdu)` when it is (it must NEVER reach the connector).
+fn classify_message_channel_pdu(
+    pdu: &[u8],
+    message_channel_id: Option<u16>,
+) -> Option<MessageChannelPdu> {
+    use ironrdp::pdu::mcs::McsMessage;
+    use ironrdp::pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest};
+    use ironrdp::pdu::x224::X224;
+
+    let message_channel_id = message_channel_id?;
+    let mcs = ironrdp::core::decode::<X224<McsMessage<'_>>>(pdu).ok()?;
+    let McsMessage::SendDataIndication(data) = mcs.0 else {
+        return None;
+    };
+    if data.channel_id != message_channel_id {
+        return None;
+    }
+
+    match ironrdp::core::decode::<AutoDetectReqPdu>(&data.user_data) {
+        Ok(AutoDetectReqPdu {
+            request:
+                AutoDetectRequest::RttRequest {
+                    sequence_number, ..
+                },
+            ..
+        }) => Some(MessageChannelPdu::RttRequest { sequence_number }),
+        _ => Some(MessageChannelPdu::Other),
+    }
+}
+
+/// Encode the answer to a connect-time RTT Measure Request into `buf`.
+///
+/// Mirrors the upstream `respond_to_connect_time_autodetect` (private in
+/// ironrdp-connector): only RTT is answered, the response goes out as an
+/// MCS Send Data Request on the message channel. Returns the number of
+/// bytes written into `buf` (`None` when no response is warranted).
+/// Synchronous on purpose: `&ClientConnector` is not `Sync`, so it must not
+/// be held across an await point in a spawned task.
+fn encode_rtt_response(
+    connector: &ClientConnector,
+    buf: &mut WriteBuf,
+    sequence_number: u16,
+) -> ConnectorResult<Option<usize>> {
+    use ironrdp::pdu::rdp::autodetect::{AutoDetectResponse, AutoDetectRspPdu};
+
+    let Some(message_channel_id) = connector.message_channel_id else {
+        return Ok(None);
+    };
+    let user_channel_id = match &connector.state {
+        ClientConnectorState::ConnectTimeAutoDetection {
+            user_channel_id, ..
+        }
+        | ClientConnectorState::LicensingExchange {
+            user_channel_id, ..
+        }
+        | ClientConnectorState::MultitransportBootstrapping {
+            user_channel_id, ..
+        } => *user_channel_id,
+        _ => {
+            debug!("RTT request received in a phase without a known user channel; ignored");
+            return Ok(None);
+        }
+    };
+
+    buf.clear();
+    let response = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number });
+    let len =
+        connector::encode_send_data_request(user_channel_id, message_channel_id, &response, buf)?;
+
+    Ok(Some(len))
+}
+
+/// Outcome of one iteration of the demuxed finalize loop
+/// ([`finalize_step`]). Exposed as a value so tests can drive the loop one
+/// PDU at a time against a scripted transport.
+#[derive(Debug, PartialEq, Eq)]
+enum FinalizeStepOutcome {
+    /// The PDU (or a no-input step) was fed to the connector state machine.
+    SteppedConnector,
+    /// An RTT Measure Request on the message channel was answered (or
+    /// dropped when no channel was usable); the connector was NOT stepped.
+    AnsweredRtt,
+    /// A non-RTT message-channel PDU was swallowed; the connector was NOT
+    /// stepped.
+    IgnoredMessageChannelPdu,
+}
+
+/// One iteration of the demuxed finalize loop: read the next PDU, demux it
+/// by MCS channel, and either handle it locally (message channel) or feed it
+/// to the connector (everything else), flushing any connector response.
+async fn finalize_step<S>(
+    connector: &mut ClientConnector,
+    framed: &mut Framed<S>,
+    buf: &mut WriteBuf,
+) -> ConnectorResult<FinalizeStepOutcome>
+where
+    S: FramedRead + FramedWrite,
+{
+    buf.clear();
+
+    let written = if let Some(next_pdu_hint) = connector.next_pdu_hint() {
+        let pdu = framed
+            .read_by_hint(next_pdu_hint)
+            .await
+            .map_err(|e| ironrdp::connector::custom_err!("read frame by hint", e))?;
+
+        match classify_message_channel_pdu(&pdu, connector.message_channel_id) {
+            Some(MessageChannelPdu::RttRequest { sequence_number }) => {
+                debug!(
+                    sequence_number,
+                    "Answering RTT measure request received during connection finalize"
+                );
+                if let Some(len) = encode_rtt_response(connector, buf, sequence_number)? {
+                    framed
+                        .write_all(&buf[..len])
+                        .await
+                        .map_err(|e| ironrdp::connector::custom_err!("write all", e))?;
+                }
+                return Ok(FinalizeStepOutcome::AnsweredRtt);
+            }
+            Some(MessageChannelPdu::Other) => {
+                debug!("Ignoring non-licensing message-channel PDU during connection finalize");
+                return Ok(FinalizeStepOutcome::IgnoredMessageChannelPdu);
+            }
+            None => connector.step(&pdu, buf)?,
+        }
+    } else {
+        connector.step_no_input(buf)?
+    };
+
+    if let Some(response_len) = written.size() {
+        framed
+            .write_all(&buf[..response_len])
+            .await
+            .map_err(|e| ironrdp::connector::custom_err!("write all", e))?;
+    }
+
+    Ok(FinalizeStepOutcome::SteppedConnector)
+}
+
+/// Local replacement for `ironrdp_tokio::connect_finalize` that shields the
+/// connector state machine from message-channel PDUs.
+///
+/// Identical to the upstream loop (CredSSP, then step the connector until
+/// `Connected`), with ONE addition: every inbound PDU is first passed through
+/// [`classify_message_channel_pdu`]; message-channel PDUs are answered
+/// (RTT) or swallowed instead of being fed to the connector. This closes the
+/// upstream gap where an auto-detect PDU interleaved with the licensing
+/// exchange kills the connection with a license decode error.
+async fn connect_finalize_with_message_channel_demux<S>(
+    _upgraded: Upgraded,
+    mut connector: ClientConnector,
+    framed: &mut Framed<S>,
+    network_client: &mut NtlmOnlyNetworkClient,
+    server_name: connector::ServerName,
+    server_public_key: Vec<u8>,
+) -> ConnectorResult<ConnectionResult>
+where
+    S: FramedRead + FramedWrite,
+{
+    let mut buf = WriteBuf::new();
+
+    if connector.should_perform_credssp() {
+        perform_credssp_step(
+            &mut connector,
+            framed,
+            network_client,
+            &mut buf,
+            server_name,
+            server_public_key,
+        )
+        .await?;
+    }
+
+    let result = loop {
+        finalize_step(&mut connector, framed, &mut buf).await?;
+
+        if let ClientConnectorState::Connected { result } = connector.state {
+            break result;
+        }
+    };
+
+    Ok(result)
+}
+
+/// CredSSP/NLA sequence, mirrored from `ironrdp_async::connect_finalize`
+/// (the upstream helper is private). The NTLM-only posture is preserved:
+/// the network client is only consulted when the security package needs the
+/// network (Kerberos KDC), which [`NtlmOnlyNetworkClient`] refuses.
+async fn perform_credssp_step<S>(
+    connector: &mut ClientConnector,
+    framed: &mut Framed<S>,
+    network_client: &mut NtlmOnlyNetworkClient,
+    buf: &mut WriteBuf,
+    server_name: connector::ServerName,
+    server_public_key: Vec<u8>,
+) -> ConnectorResult<()>
+where
+    S: FramedRead + FramedWrite,
+{
+    let selected_protocol = match connector.state {
+        ClientConnectorState::Credssp {
+            selected_protocol, ..
+        } => selected_protocol,
+        _ => {
+            return Err(ironrdp::connector::general_err!(
+                "invalid connector state for CredSSP sequence"
+            ));
+        }
+    };
+
+    let (mut sequence, mut ts_request) = CredsspSequence::init(
+        connector.config.credentials.clone(),
+        connector.config.domain.as_deref(),
+        selected_protocol,
+        server_name,
+        server_public_key,
+        None,
+    )?;
+
+    loop {
+        let client_state = {
+            let mut generator = sequence.process_ts_request(ts_request);
+            let mut state = generator.start();
+            loop {
+                match state {
+                    GeneratorState::Suspended(request) => {
+                        let response = network_client.send(&request).await?;
+                        state = generator.resume(Ok(response));
+                    }
+                    GeneratorState::Completed(client_state) => {
+                        break client_state.map_err(|e| {
+                            ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e))
+                        });
+                    }
+                }
+            }?
+        };
+
+        buf.clear();
+        let written = sequence.handle_process_result(client_state, buf)?;
+
+        if let Some(response_len) = written.size() {
+            framed
+                .write_all(&buf[..response_len])
+                .await
+                .map_err(|e| ironrdp::connector::custom_err!("write all", e))?;
+        }
+
+        let Some(next_pdu_hint) = sequence.next_pdu_hint() else {
+            break;
+        };
+
+        let pdu = framed
+            .read_by_hint(next_pdu_hint)
+            .await
+            .map_err(|e| ironrdp::connector::custom_err!("read frame by hint", e))?;
+
+        if let Some(next_request) = sequence.decode_server_message(&pdu)? {
+            ts_request = next_request;
+        } else {
+            break;
+        }
+    }
+
+    connector.mark_credssp_as_done();
+
+    Ok(())
+}
+
+/// Parameters renegotiated by a completed Deactivation-Reactivation
+/// Sequence ([MS-RDPBCGR] 1.3.1.3): the server-negotiated desktop size, the
+/// new share id, the pointer settings, and the (invariant) MCS channel ids
+/// needed to rebuild the fastpath processor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReactivationOutcome {
+    desktop_size: DesktopSize,
+    share_id: u32,
+    enable_server_pointer: bool,
+    pointer_software_rendering: bool,
+    io_channel_id: u16,
+    user_channel_id: u16,
+}
+
+/// Drive a full Deactivation-Reactivation Sequence: create a fresh
+/// activation sequence from the factory (IronRDP 0.17 pattern for the unit
+/// `ActiveStageOutput::DeactivateAll` variant) and step it through the
+/// Capabilities Exchange and Connection Finalization phases until it
+/// reaches `Finalized`, returning the renegotiated session parameters.
+async fn drive_reactivation<S>(
+    activation_factory: &ConnectionActivationFactory,
+    framed: &mut Framed<S>,
+) -> ConnectorResult<ReactivationOutcome>
+where
+    S: FramedRead + FramedWrite,
+{
+    let mut connection_activation = activation_factory.create();
+    let mut buf = WriteBuf::new();
+
+    loop {
+        single_sequence_step(framed, &mut connection_activation, &mut buf).await?;
+
+        if let ConnectionActivationState::Finalized {
+            desktop_size,
+            share_id,
+            enable_server_pointer,
+            pointer_software_rendering,
+        } = connection_activation.connection_activation_state()
+        {
+            return Ok(ReactivationOutcome {
+                desktop_size,
+                share_id,
+                enable_server_pointer,
+                pointer_software_rendering,
+                io_channel_id: connection_activation.io_channel_id(),
+                user_channel_id: connection_activation.user_channel_id(),
+            });
+        }
+    }
+}
+
 fn extract_tls_server_public_key(cert: &pki_types::CertificateDer<'_>) -> Result<Vec<u8>, String> {
     use x509_cert::der::Decode as _;
     let parsed = x509_cert::Certificate::from_der(cert.as_ref())
@@ -1868,6 +2240,1006 @@ mod tests {
             "the Input arm must not bypass handle_input_event with a direct \
              translate + apply (it would drop ReleaseAll and lock sync)"
         );
+    }
+
+    // ==================== Migration guards (IronRDP 0.17) ====================
+
+    /// Extract the locked version of a crate from the isolated Cargo.lock.
+    fn locked_version(name: &str) -> String {
+        let lock: &str = include_str!("../Cargo.lock");
+        let needle = format!("name = \"{name}\"\n");
+        let start = lock
+            .find(&needle)
+            .unwrap_or_else(|| panic!("crate `{name}` must be in Cargo.lock"));
+        let rest = &lock[start + needle.len()..];
+        let version_line = rest
+            .lines()
+            .find(|l| l.starts_with("version = "))
+            .unwrap_or_else(|| panic!("crate `{name}` must have a version line"));
+        version_line
+            .trim_start_matches("version = ")
+            .trim_matches('"')
+            .to_string()
+    }
+
+    /// Anti-drift guard: the IronRDP / sspi stack is pinned to the minors
+    /// validated by the 0.17 migration. A future `cargo update` that
+    /// silently regresses or skips a version (changing API semantics
+    /// without a compile error) fails here with an explicit message
+    /// instead of surfacing as a runtime behavior change.
+    #[test]
+    fn test_locked_ironrdp_stack_versions_are_pinned() {
+        let expected: [(&str, &str); 8] = [
+            ("ironrdp", "0.17."),
+            ("ironrdp-connector", "0.10."),
+            ("ironrdp-session", "0.11."),
+            ("ironrdp-input", "0.7."),
+            ("ironrdp-pdu", "0.9."),
+            ("ironrdp-async", "0.10."),
+            ("ironrdp-tokio", "0.10."),
+            ("sspi", "0.21."),
+        ];
+        for (name, prefix) in expected {
+            let version = locked_version(name);
+            assert!(
+                version.starts_with(prefix),
+                "crate `{name}` locked at {version}, expected minor {prefix}x \
+                 (validated by the IronRDP 0.17 migration); re-validate the \
+                 migration guards before accepting a different minor"
+            );
+        }
+    }
+
+    /// Security posture: the CredSSP network client must refuse EVERY
+    /// out-of-band network request (Kerberos KDC lookups over tcp/udp/
+    /// http/https). Vauban only supports NTLM inside CredSSP, where the
+    /// network client is never called; any call means the target tried
+    /// to force a Kerberos exchange and must fail closed.
+    #[tokio::test]
+    async fn test_ntlm_only_network_client_refuses_all_requests() {
+        use ironrdp::connector::sspi::generator::NetworkRequest;
+        use ironrdp::connector::sspi::network_client::NetworkProtocol;
+
+        let urls = [
+            (NetworkProtocol::Tcp, "tcp://kdc.example.com:88"),
+            (NetworkProtocol::Udp, "udp://kdc.example.com:88"),
+            (NetworkProtocol::Http, "http://kdc.example.com/KdcProxy"),
+            (NetworkProtocol::Https, "https://kdc.example.com/KdcProxy"),
+        ];
+        for (protocol, url) in urls {
+            let request = NetworkRequest {
+                protocol,
+                url: url::Url::parse(url).expect("static test URL"),
+                data: vec![0x42],
+            };
+            let mut client = NtlmOnlyNetworkClient;
+            let result = client.send(&request).await;
+            assert!(
+                result.is_err(),
+                "NtlmOnlyNetworkClient must refuse {protocol:?} requests \
+                 (Kerberos is not supported; NTLM never calls the network client)"
+            );
+        }
+    }
+
+    /// Security posture of the connector configuration, pinned across
+    /// version bumps: NLA (CredSSP) stays enforced, no bulk compression,
+    /// no UDP sideband, no autologon, credentials mapped verbatim.
+    #[test]
+    fn test_connector_config_security_posture() {
+        let config = build_connector_config(
+            "alice".to_string(),
+            "s3cret".to_string(),
+            Some("CORP".to_string()),
+            1280,
+            720,
+        );
+
+        assert!(config.enable_credssp, "NLA/CredSSP must stay enabled");
+        assert!(config.enable_tls, "TLS security protocol must stay enabled");
+        assert!(!config.autologon, "autologon must stay disabled");
+        assert!(
+            config.compression_type.is_none(),
+            "bulk compression must stay disabled (pre-0.17 behavior)"
+        );
+        assert!(
+            config.multitransport_flags.is_none(),
+            "UDP sideband transport must stay disabled"
+        );
+        match &config.credentials {
+            Credentials::UsernamePassword { username, password } => {
+                assert_eq!(username, "alice");
+                assert_eq!(password, "s3cret");
+            }
+            other => panic!("credentials must be UsernamePassword, got {other:?}"),
+        }
+        assert_eq!(config.domain.as_deref(), Some("CORP"));
+        assert_eq!(config.desktop_size.width, 1280);
+        assert_eq!(config.desktop_size.height, 720);
+        for flag in [
+            PerformanceFlags::DISABLE_WALLPAPER,
+            PerformanceFlags::DISABLE_THEMING,
+            PerformanceFlags::DISABLE_CURSOR_SHADOW,
+            PerformanceFlags::DISABLE_CURSORSETTINGS,
+            PerformanceFlags::DISABLE_FULLWINDOWDRAG,
+            PerformanceFlags::DISABLE_MENUANIMATIONS,
+        ] {
+            assert!(
+                config.performance_flags.contains(flag),
+                "performance flag {flag:?} must stay set"
+            );
+        }
+    }
+
+    // ========= Message-channel demux during finalize (licensing fix) =========
+    //
+    // IronRDP >= 0.17 requests the MCS message channel and advertises
+    // network auto-detection, so the server may interleave auto-detect PDUs
+    // with the licensing exchange. Without the demux, such a PDU is fed to
+    // the license decoder and the connection dies with
+    // `decode during SERVER_NEW_LICENSE/... decode error`.
+
+    /// Wrap `user_data` in an MCS Send Data Indication on `channel_id`,
+    /// X224-framed, exactly as received on the wire during finalize.
+    fn encode_send_data_indication(channel_id: u16, user_data: &[u8]) -> Vec<u8> {
+        let sdi = ironrdp::pdu::mcs::SendDataIndication {
+            initiator_id: 1002,
+            channel_id,
+            user_data: std::borrow::Cow::Borrowed(user_data),
+        };
+        ironrdp::core::encode_vec(&ironrdp::pdu::x224::X224(sdi))
+            .expect("encode SendDataIndication")
+    }
+
+    /// Encode a connect-time RTT Measure Request as sent by the server.
+    fn encode_rtt_request(sequence_number: u16) -> Vec<u8> {
+        use ironrdp::pdu::rdp::autodetect::{
+            AutoDetectReqPdu, AutoDetectRequest, RTT_REQUEST_CONNECT_TIME,
+        };
+        let pdu = AutoDetectReqPdu::new(AutoDetectRequest::RttRequest {
+            sequence_number,
+            request_type: RTT_REQUEST_CONNECT_TIME,
+        });
+        ironrdp::core::encode_vec(&pdu).expect("encode AutoDetectReqPdu")
+    }
+
+    const MESSAGE_CHANNEL_ID: u16 = 1005;
+    const IO_CHANNEL_ID: u16 = 1003;
+    const USER_CHANNEL_ID: u16 = 1004;
+
+    #[test]
+    fn test_classify_without_message_channel_returns_none() {
+        let pdu = encode_send_data_indication(MESSAGE_CHANNEL_ID, &encode_rtt_request(7));
+        assert_eq!(classify_message_channel_pdu(&pdu, None), None);
+    }
+
+    #[test]
+    fn test_classify_rtt_request_on_message_channel() {
+        let pdu = encode_send_data_indication(MESSAGE_CHANNEL_ID, &encode_rtt_request(42));
+        assert_eq!(
+            classify_message_channel_pdu(&pdu, Some(MESSAGE_CHANNEL_ID)),
+            Some(MessageChannelPdu::RttRequest {
+                sequence_number: 42
+            })
+        );
+    }
+
+    /// A PDU on the I/O channel (licensing PDUs live there) must NEVER be
+    /// classified as message-channel traffic: it has to reach the connector.
+    #[test]
+    fn test_classify_io_channel_pdu_returns_none() {
+        let pdu = encode_send_data_indication(IO_CHANNEL_ID, &encode_rtt_request(7));
+        assert_eq!(
+            classify_message_channel_pdu(&pdu, Some(MESSAGE_CHANNEL_ID)),
+            None
+        );
+    }
+
+    /// A message-channel PDU that is not an auto-detect request (bandwidth
+    /// stop, heartbeat, ...) is swallowed, never fed to the license decoder.
+    #[test]
+    fn test_classify_non_autodetect_message_channel_pdu_returns_other() {
+        // 0x0080 = SEC_LICENSE_PKT-style header: not AUTODETECT_REQ.
+        let user_data = [0x80, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04];
+        let pdu = encode_send_data_indication(MESSAGE_CHANNEL_ID, &user_data);
+        assert_eq!(
+            classify_message_channel_pdu(&pdu, Some(MESSAGE_CHANNEL_ID)),
+            Some(MessageChannelPdu::Other)
+        );
+    }
+
+    #[test]
+    fn test_classify_garbage_returns_none() {
+        let garbage = [0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01];
+        assert_eq!(
+            classify_message_channel_pdu(&garbage, Some(MESSAGE_CHANNEL_ID)),
+            None
+        );
+    }
+
+    /// Round-trip invariant: the encoded RTT response is a well-formed MCS
+    /// Send Data Request on the message channel carrying an RTT Measure
+    /// Response with the request's sequence number.
+    #[test]
+    fn test_encode_rtt_response_round_trip() {
+        use ironrdp::pdu::mcs::McsMessage;
+        use ironrdp::pdu::rdp::autodetect::{AutoDetectResponse, AutoDetectRspPdu};
+        use ironrdp::pdu::x224::X224;
+
+        let config =
+            build_connector_config("alice".to_string(), "s3cret".to_string(), None, 1024, 768);
+        let client_addr = "127.0.0.1:3389".parse().expect("addr");
+        let mut connector = ClientConnector::new(config, client_addr);
+        connector.message_channel_id = Some(MESSAGE_CHANNEL_ID);
+        connector.state = ClientConnectorState::ConnectTimeAutoDetection {
+            io_channel_id: IO_CHANNEL_ID,
+            user_channel_id: USER_CHANNEL_ID,
+        };
+
+        let mut buf = WriteBuf::new();
+        let len = encode_rtt_response(&connector, &mut buf, 42)
+            .expect("encode must succeed")
+            .expect("an RTT response must be produced");
+
+        let mcs = ironrdp::core::decode::<X224<McsMessage<'_>>>(&buf[..len])
+            .expect("response must be a valid X224/MCS PDU");
+        let McsMessage::SendDataRequest(data) = mcs.0 else {
+            panic!("response must be an MCS Send Data Request");
+        };
+        assert_eq!(data.channel_id, MESSAGE_CHANNEL_ID);
+        assert_eq!(data.initiator_id, USER_CHANNEL_ID);
+
+        let rsp = ironrdp::core::decode::<AutoDetectRspPdu>(&data.user_data)
+            .expect("payload must be an AutoDetectRspPdu");
+        assert_eq!(
+            rsp.response,
+            AutoDetectResponse::RttResponse {
+                sequence_number: 42
+            }
+        );
+    }
+
+    /// Without a known user channel (or message channel), no response is
+    /// emitted -- and no error either: the PDU is simply dropped.
+    #[test]
+    fn test_encode_rtt_response_without_channels_is_a_noop() {
+        let config =
+            build_connector_config("alice".to_string(), "s3cret".to_string(), None, 1024, 768);
+        let client_addr = "127.0.0.1:3389".parse().expect("addr");
+        let mut connector = ClientConnector::new(config, client_addr);
+
+        let mut buf = WriteBuf::new();
+        // No message channel negotiated.
+        assert_eq!(
+            encode_rtt_response(&connector, &mut buf, 1).expect("ok"),
+            None
+        );
+
+        // Message channel known but connector in a phase without a user channel.
+        connector.message_channel_id = Some(MESSAGE_CHANNEL_ID);
+        assert_eq!(
+            encode_rtt_response(&connector, &mut buf, 1).expect("ok"),
+            None
+        );
+    }
+
+    /// Source pin: the session path must go through the demuxed finalize,
+    /// never through the upstream `ironrdp_tokio::connect_finalize` (which
+    /// feeds interleaved message-channel PDUs to the license decoder).
+    #[test]
+    fn test_connect_uses_demuxed_finalize() {
+        let source = include_str!("session.rs");
+        assert!(
+            source.contains("let connection_result = connect_finalize_with_message_channel_demux("),
+            "connect() must use the demuxed finalize loop"
+        );
+        // Needle built at runtime so this pin does not match itself.
+        let upstream_call = format!("ironrdp_tokio::{}(", "connect_finalize");
+        assert!(
+            !source.contains(&upstream_call),
+            "the upstream connect_finalize must not be used anywhere"
+        );
+    }
+
+    /// Source pin: inside the finalize step, every inbound PDU is classified
+    /// BEFORE being fed to the connector, and message-channel PDUs return
+    /// early (they never reach `connector.step`).
+    #[test]
+    fn test_finalize_step_demuxes_before_stepping() {
+        let source = include_str!("session.rs");
+        let fn_start = source
+            .find("async fn finalize_step")
+            .expect("finalize_step must exist");
+        let body = &source[fn_start..];
+        let classify_pos = body
+            .find("classify_message_channel_pdu(&pdu, connector.message_channel_id)")
+            .expect("finalize_step must classify each inbound PDU");
+        let step_pos = body
+            .find("None => connector.step(&pdu, buf)?")
+            .expect("only unclassified PDUs may reach connector.step");
+        assert!(
+            classify_pos < step_pos,
+            "classification must happen before connector.step"
+        );
+
+        let loop_start = source
+            .find("async fn connect_finalize_with_message_channel_demux")
+            .expect("demuxed finalize must exist");
+        assert!(
+            source[loop_start..].contains("finalize_step(&mut connector, framed, &mut buf)"),
+            "the finalize loop must drive the demuxed finalize_step"
+        );
+    }
+
+    /// Noop cache mirroring the upstream private `NoopLicenseCache`, used to
+    /// build a `LicenseExchangeSequence` in tests.
+    #[derive(Debug)]
+    struct TestNoopLicenseCache;
+
+    impl ironrdp::connector::LicenseCache for TestNoopLicenseCache {
+        fn get_license(
+            &self,
+            _license_info: ironrdp::pdu::rdp::server_license::LicenseInformation,
+        ) -> ConnectorResult<Option<Vec<u8>>> {
+            Ok(None)
+        }
+
+        fn store_license(
+            &self,
+            _license_info: ironrdp::pdu::rdp::server_license::LicenseInformation,
+        ) -> ConnectorResult<()> {
+            Ok(())
+        }
+    }
+
+    /// Build a connector frozen mid-licensing with a negotiated message
+    /// channel -- the exact production state in which the regression fired.
+    fn connector_in_licensing_exchange() -> ClientConnector {
+        let config =
+            build_connector_config("alice".to_string(), "s3cret".to_string(), None, 1024, 768);
+        let client_addr = "127.0.0.1:3389".parse().expect("addr");
+        let mut connector = ClientConnector::new(config, client_addr);
+        connector.message_channel_id = Some(MESSAGE_CHANNEL_ID);
+        connector.state = ClientConnectorState::LicensingExchange {
+            io_channel_id: IO_CHANNEL_ID,
+            user_channel_id: USER_CHANNEL_ID,
+            license_exchange: ironrdp::connector::LicenseExchangeSequence::new(
+                IO_CHANNEL_ID,
+                "alice".to_string(),
+                None,
+                [0u32; 4],
+                std::sync::Arc::new(TestNoopLicenseCache),
+            ),
+        };
+        connector
+    }
+
+    /// Server License Error PDU "Valid Client" on the I/O channel: what a
+    /// standard Windows host sends to complete the licensing exchange.
+    fn encode_valid_client_license_pdu() -> Vec<u8> {
+        use ironrdp::pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
+        let msg = LicensingErrorMessage::new_valid_client().expect("valid client message");
+        let user_data =
+            ironrdp::core::encode_vec(&LicensePdu::from(msg)).expect("encode LicensePdu");
+        encode_send_data_indication(IO_CHANNEL_ID, &user_data)
+    }
+
+    /// Battle-tested counterfactual: pin the UPSTREAM gap that motivates the
+    /// demux. Feeding an auto-detect PDU to the connector mid-licensing must
+    /// error out (the production `SERVER_NEW_LICENSE ... decode error`). The
+    /// day upstream demuxes message-channel PDUs during licensing, this test
+    /// fails and tells us the local workaround can be retired.
+    #[test]
+    fn test_upstream_connector_chokes_on_interleaved_autodetect_without_demux() {
+        let mut connector = connector_in_licensing_exchange();
+        let rtt_pdu = encode_send_data_indication(MESSAGE_CHANNEL_ID, &encode_rtt_request(7));
+
+        let mut buf = WriteBuf::new();
+        let result = connector.step(&rtt_pdu, &mut buf);
+        assert!(
+            result.is_err(),
+            "upstream connector is expected to reject an interleaved auto-detect PDU \
+             during licensing; if this now succeeds, the demux workaround can be removed"
+        );
+    }
+
+    /// Sanity check of the counterfactual: the SAME connector state accepts
+    /// the legitimate licensing PDU, so the failure above is caused by the
+    /// interleaved PDU, not by a malformed test fixture.
+    #[test]
+    fn test_upstream_connector_accepts_licensing_pdu_in_same_state() {
+        let mut connector = connector_in_licensing_exchange();
+        let mut buf = WriteBuf::new();
+        connector
+            .step(&encode_valid_client_license_pdu(), &mut buf)
+            .expect("valid client licensing PDU must be accepted");
+        assert!(
+            matches!(
+                connector.state,
+                ClientConnectorState::MultitransportBootstrapping { .. }
+            ),
+            "licensing must complete and transition past LicensingExchange"
+        );
+    }
+
+    /// E2E replay of the production failure over a real (in-memory) duplex
+    /// transport: the server interleaves an RTT Measure Request on the
+    /// message channel in the middle of the licensing exchange, then
+    /// completes licensing on the I/O channel. Pre-fix, step 1 aborted the
+    /// connection with the license decode error. Post-fix, the RTT request
+    /// is answered on the wire and licensing completes.
+    #[tokio::test]
+    async fn test_e2e_interleaved_rtt_during_licensing_is_answered_and_licensing_completes() {
+        use ironrdp::pdu::mcs::McsMessage;
+        use ironrdp::pdu::rdp::autodetect::{AutoDetectResponse, AutoDetectRspPdu};
+        use ironrdp::pdu::x224::X224;
+        use tokio::io::AsyncWriteExt as _;
+
+        let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
+        let mut framed = ironrdp_tokio::TokioFramed::new(client_side);
+        let mut connector = connector_in_licensing_exchange();
+        let mut buf = WriteBuf::new();
+
+        // The scripted server interleaves auto-detect with licensing.
+        server_side
+            .write_all(&encode_send_data_indication(
+                MESSAGE_CHANNEL_ID,
+                &encode_rtt_request(42),
+            ))
+            .await
+            .expect("server writes RTT request");
+        server_side
+            .write_all(&encode_valid_client_license_pdu())
+            .await
+            .expect("server writes licensing PDU");
+
+        // Step 1: the RTT request is answered, NOT fed to the connector.
+        let outcome = finalize_step(&mut connector, &mut framed, &mut buf)
+            .await
+            .expect("interleaved RTT request must not abort the connection");
+        assert_eq!(outcome, FinalizeStepOutcome::AnsweredRtt);
+        assert!(
+            matches!(
+                connector.state,
+                ClientConnectorState::LicensingExchange { .. }
+            ),
+            "the connector must still be mid-licensing after the RTT detour"
+        );
+
+        // The RTT response must be on the wire: an MCS Send Data Request on
+        // the message channel echoing the sequence number.
+        let frame = read_tpkt_frame(&mut server_side).await;
+        let mcs = ironrdp::core::decode::<X224<McsMessage<'_>>>(&frame)
+            .expect("RTT response must be a valid X224/MCS PDU");
+        let McsMessage::SendDataRequest(data) = mcs.0 else {
+            panic!("RTT response must be an MCS Send Data Request");
+        };
+        assert_eq!(data.channel_id, MESSAGE_CHANNEL_ID);
+        let rsp = ironrdp::core::decode::<AutoDetectRspPdu>(&data.user_data)
+            .expect("payload must be an AutoDetectRspPdu");
+        assert_eq!(
+            rsp.response,
+            AutoDetectResponse::RttResponse {
+                sequence_number: 42
+            }
+        );
+
+        // Step 2: the licensing PDU reaches the connector and completes the
+        // licensing exchange.
+        let outcome = finalize_step(&mut connector, &mut framed, &mut buf)
+            .await
+            .expect("licensing PDU must be accepted");
+        assert_eq!(outcome, FinalizeStepOutcome::SteppedConnector);
+        assert!(
+            matches!(
+                connector.state,
+                ClientConnectorState::MultitransportBootstrapping { .. }
+            ),
+            "licensing must complete after the interleaved detour"
+        );
+    }
+
+    /// E2E: a non-RTT message-channel PDU (e.g. a bandwidth measure payload)
+    /// is swallowed without a reply and without aborting the sequence.
+    #[tokio::test]
+    async fn test_e2e_non_rtt_message_channel_pdu_is_swallowed() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
+        let mut framed = ironrdp_tokio::TokioFramed::new(client_side);
+        let mut connector = connector_in_licensing_exchange();
+        let mut buf = WriteBuf::new();
+
+        let non_autodetect = [0x80, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04];
+        server_side
+            .write_all(&encode_send_data_indication(
+                MESSAGE_CHANNEL_ID,
+                &non_autodetect,
+            ))
+            .await
+            .expect("server writes message-channel PDU");
+        server_side
+            .write_all(&encode_valid_client_license_pdu())
+            .await
+            .expect("server writes licensing PDU");
+
+        let outcome = finalize_step(&mut connector, &mut framed, &mut buf)
+            .await
+            .expect("message-channel PDU must not abort the connection");
+        assert_eq!(outcome, FinalizeStepOutcome::IgnoredMessageChannelPdu);
+
+        let outcome = finalize_step(&mut connector, &mut framed, &mut buf)
+            .await
+            .expect("licensing PDU must be accepted");
+        assert_eq!(outcome, FinalizeStepOutcome::SteppedConnector);
+        assert!(matches!(
+            connector.state,
+            ClientConnectorState::MultitransportBootstrapping { .. }
+        ));
+    }
+
+    // ========= Message-channel demux invariants (property-based) =========
+
+    mod demux_invariants {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            /// Total function: NO byte sequence may panic the classifier
+            /// (it sits on the wire path, fed with attacker-controlled data).
+            #[test]
+            fn classifier_never_panics_on_arbitrary_bytes(
+                bytes in proptest::collection::vec(any::<u8>(), 0..128),
+                channel in proptest::option::of(any::<u16>()),
+            ) {
+                let _ = classify_message_channel_pdu(&bytes, channel);
+            }
+
+            /// Every RTT request on the message channel is intercepted, for
+            /// ANY channel id and ANY sequence number.
+            #[test]
+            fn rtt_request_on_message_channel_is_always_intercepted(
+                msg_channel in any::<u16>(),
+                sequence_number in any::<u16>(),
+            ) {
+                let pdu = encode_send_data_indication(
+                    msg_channel,
+                    &encode_rtt_request(sequence_number),
+                );
+                prop_assert_eq!(
+                    classify_message_channel_pdu(&pdu, Some(msg_channel)),
+                    Some(MessageChannelPdu::RttRequest { sequence_number })
+                );
+            }
+
+            /// A PDU on ANY other channel is NEVER intercepted, whatever its
+            /// payload: licensing traffic cannot be swallowed by the demux.
+            #[test]
+            fn pdu_on_other_channel_is_never_intercepted(
+                channel in any::<u16>(),
+                msg_channel in any::<u16>(),
+                payload in proptest::collection::vec(any::<u8>(), 0..64),
+            ) {
+                prop_assume!(channel != msg_channel);
+                let pdu = encode_send_data_indication(channel, &payload);
+                prop_assert_eq!(
+                    classify_message_channel_pdu(&pdu, Some(msg_channel)),
+                    None
+                );
+            }
+
+            /// The RTT response round-trips for ANY sequence number: what we
+            /// put on the wire is always a well-formed response the server
+            /// can correlate with its request.
+            #[test]
+            fn rtt_response_round_trips_for_any_sequence_number(
+                sequence_number in any::<u16>(),
+            ) {
+                use ironrdp::pdu::mcs::McsMessage;
+                use ironrdp::pdu::rdp::autodetect::{AutoDetectResponse, AutoDetectRspPdu};
+                use ironrdp::pdu::x224::X224;
+
+                let mut connector = connector_in_licensing_exchange();
+                connector.state = ClientConnectorState::ConnectTimeAutoDetection {
+                    io_channel_id: IO_CHANNEL_ID,
+                    user_channel_id: USER_CHANNEL_ID,
+                };
+
+                let mut buf = WriteBuf::new();
+                let len = encode_rtt_response(&connector, &mut buf, sequence_number)
+                    .expect("encode must succeed")
+                    .expect("an RTT response must be produced");
+
+                let mcs = ironrdp::core::decode::<X224<McsMessage<'_>>>(&buf[..len])
+                    .expect("must decode");
+                let McsMessage::SendDataRequest(data) = mcs.0 else {
+                    panic!("must be a Send Data Request");
+                };
+                prop_assert_eq!(data.channel_id, MESSAGE_CHANNEL_ID);
+                prop_assert_eq!(data.initiator_id, USER_CHANNEL_ID);
+                let rsp = ironrdp::core::decode::<AutoDetectRspPdu>(&data.user_data)
+                    .expect("must be an AutoDetectRspPdu");
+                prop_assert_eq!(
+                    rsp.response,
+                    AutoDetectResponse::RttResponse { sequence_number }
+                );
+            }
+        }
+    }
+
+    // ========= Deactivation-Reactivation (battle-tested + E2E) =========
+    //
+    // The IronRDP 0.17 migration rewrote the DeactivateAll handler around
+    // `ConnectionActivationFactory`. These tests drive the REAL
+    // `drive_reactivation` code over an in-memory transport against a
+    // scripted server, asserting both the negotiated outcome and the
+    // client PDUs actually put on the wire.
+
+    const REACTIVATION_SHARE_ID: u32 = 0x0011_66EA;
+
+    fn test_activation_factory() -> ConnectionActivationFactory {
+        ConnectionActivationFactory::new(
+            build_connector_config("alice".to_string(), "s3cret".to_string(), None, 1024, 768),
+            IO_CHANNEL_ID,
+            USER_CHANNEL_ID,
+        )
+    }
+
+    /// Read one TPKT-framed PDU from the scripted server side.
+    async fn read_tpkt_frame(stream: &mut tokio::io::DuplexStream) -> Vec<u8> {
+        use tokio::io::AsyncReadExt as _;
+        let mut header = [0u8; 4];
+        stream.read_exact(&mut header).await.expect("TPKT header");
+        let len = usize::from(u16::from_be_bytes([header[2], header[3]]));
+        let mut frame = vec![0u8; len];
+        frame[..4].copy_from_slice(&header);
+        stream.read_exact(&mut frame[4..]).await.expect("TPKT body");
+        frame
+    }
+
+    /// Wrap a Share Control PDU the way the server does: Share Control
+    /// header inside an MCS Send Data Indication on the I/O channel.
+    fn encode_server_share_control(
+        share_id: u32,
+        pdu: ironrdp::pdu::rdp::headers::ShareControlPdu,
+    ) -> Vec<u8> {
+        use ironrdp::pdu::rdp::capability_sets::SERVER_CHANNEL_ID;
+        let header = ironrdp::pdu::rdp::headers::ShareControlHeader {
+            share_control_pdu: pdu,
+            pdu_source: SERVER_CHANNEL_ID,
+            share_id,
+        };
+        let user_data = ironrdp::core::encode_vec(&header).expect("encode ShareControlHeader");
+        encode_send_data_indication(IO_CHANNEL_ID, &user_data)
+    }
+
+    /// Server Demand Active PDU advertising the (renegotiated) desktop size
+    /// via a Bitmap capability set.
+    fn encode_server_demand_active(share_id: u32, width: u16, height: u16) -> Vec<u8> {
+        use ironrdp::pdu::rdp::capability_sets::{
+            Bitmap, BitmapDrawingFlags, CapabilitySet, DemandActive, ServerDemandActive,
+        };
+        use ironrdp::pdu::rdp::headers::ShareControlPdu;
+        let demand = ServerDemandActive {
+            pdu: DemandActive {
+                source_descriptor: "RDP".to_owned(),
+                capability_sets: vec![CapabilitySet::Bitmap(Bitmap {
+                    pref_bits_per_pix: 32,
+                    desktop_width: width,
+                    desktop_height: height,
+                    desktop_resize_flag: true,
+                    drawing_flags: BitmapDrawingFlags::empty(),
+                })],
+            },
+        };
+        encode_server_share_control(share_id, ShareControlPdu::ServerDemandActive(demand))
+    }
+
+    fn encode_server_share_data(
+        share_id: u32,
+        pdu: ironrdp::pdu::rdp::headers::ShareDataPdu,
+    ) -> Vec<u8> {
+        use ironrdp::pdu::rdp::client_info::CompressionType;
+        use ironrdp::pdu::rdp::headers::{
+            CompressionFlags, ShareControlPdu, ShareDataHeader, StreamPriority,
+        };
+        let header = ShareDataHeader {
+            share_data_pdu: pdu,
+            stream_priority: StreamPriority::Medium,
+            compression_flags: CompressionFlags::empty(),
+            compression_type: CompressionType::K8,
+        };
+        encode_server_share_control(share_id, ShareControlPdu::Data(header))
+    }
+
+    fn encode_server_font_map(share_id: u32) -> Vec<u8> {
+        use ironrdp::pdu::rdp::finalization_messages::FontPdu;
+        use ironrdp::pdu::rdp::headers::ShareDataPdu;
+        encode_server_share_data(share_id, ShareDataPdu::FontMap(FontPdu::default()))
+    }
+
+    /// Decode a client->server frame: MCS Send Data Request carrying a
+    /// Share Control header. Returns (mcs_channel_id, share_id, pdu).
+    fn decode_client_share_control(
+        frame: &[u8],
+    ) -> (u16, u32, ironrdp::pdu::rdp::headers::ShareControlPdu) {
+        use ironrdp::pdu::mcs::McsMessage;
+        use ironrdp::pdu::x224::X224;
+        let mcs = ironrdp::core::decode::<X224<McsMessage<'_>>>(frame).expect("X224/MCS");
+        let McsMessage::SendDataRequest(data) = mcs.0 else {
+            panic!("client frame must be an MCS Send Data Request");
+        };
+        let header = ironrdp::core::decode::<ironrdp::pdu::rdp::headers::ShareControlHeader>(
+            &data.user_data,
+        )
+        .expect("ShareControlHeader");
+        (data.channel_id, header.share_id, header.share_control_pdu)
+    }
+
+    /// E2E: full Deactivation-Reactivation over an in-memory transport. The
+    /// scripted server demands activation with a NEW desktop size and plays
+    /// the complete finalization handshake. Asserts BOTH directions: the
+    /// negotiated outcome AND the client PDUs on the wire (Confirm Active
+    /// echoing the negotiated size, then Synchronize, Control Cooperate,
+    /// Request Control, Font List in the spec-mandated order,
+    /// [MS-RDPBCGR] 1.3.1.3).
+    #[tokio::test]
+    async fn test_e2e_reactivation_completes_and_negotiates_desktop_size() {
+        use ironrdp::pdu::rdp::capability_sets::{CapabilitySet, SERVER_CHANNEL_ID};
+        use ironrdp::pdu::rdp::finalization_messages::{ControlAction, ControlPdu, SynchronizePdu};
+        use ironrdp::pdu::rdp::headers::{ShareControlPdu, ShareDataPdu};
+        use tokio::io::AsyncWriteExt as _;
+
+        let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
+        let mut framed = ironrdp_tokio::TokioFramed::new(client_side);
+        let factory = test_activation_factory();
+
+        server_side
+            .write_all(&encode_server_demand_active(
+                REACTIVATION_SHARE_ID,
+                1680,
+                1050,
+            ))
+            .await
+            .expect("demand active");
+        server_side
+            .write_all(&encode_server_share_data(
+                REACTIVATION_SHARE_ID,
+                ShareDataPdu::Synchronize(SynchronizePdu {
+                    target_user_id: USER_CHANNEL_ID,
+                }),
+            ))
+            .await
+            .expect("synchronize");
+        server_side
+            .write_all(&encode_server_share_data(
+                REACTIVATION_SHARE_ID,
+                ShareDataPdu::Control(ControlPdu {
+                    action: ControlAction::Cooperate,
+                    grant_id: 0,
+                    control_id: 0,
+                }),
+            ))
+            .await
+            .expect("cooperate");
+        server_side
+            .write_all(&encode_server_share_data(
+                REACTIVATION_SHARE_ID,
+                ShareDataPdu::Control(ControlPdu {
+                    action: ControlAction::GrantedControl,
+                    grant_id: USER_CHANNEL_ID,
+                    control_id: u32::from(SERVER_CHANNEL_ID),
+                }),
+            ))
+            .await
+            .expect("granted control");
+        server_side
+            .write_all(&encode_server_font_map(REACTIVATION_SHARE_ID))
+            .await
+            .expect("font map");
+
+        let outcome = drive_reactivation(&factory, &mut framed)
+            .await
+            .expect("reactivation must complete");
+
+        assert_eq!(outcome.desktop_size.width, 1680);
+        assert_eq!(outcome.desktop_size.height, 1050);
+        assert_eq!(outcome.share_id, REACTIVATION_SHARE_ID);
+        assert_eq!(
+            outcome.io_channel_id, IO_CHANNEL_ID,
+            "MCS channel ids are invariant across reactivation"
+        );
+        assert_eq!(
+            outcome.user_channel_id, USER_CHANNEL_ID,
+            "MCS channel ids are invariant across reactivation"
+        );
+
+        // Wire, client direction, frame 1: Confirm Active echoing the size.
+        let frame = read_tpkt_frame(&mut server_side).await;
+        let (channel, share_id, pdu) = decode_client_share_control(&frame);
+        assert_eq!(channel, IO_CHANNEL_ID);
+        assert_eq!(
+            share_id, REACTIVATION_SHARE_ID,
+            "Confirm Active must echo the server's share id"
+        );
+        let ShareControlPdu::ClientConfirmActive(confirm) = pdu else {
+            panic!("first client frame must be Client Confirm Active");
+        };
+        let bitmap = confirm
+            .pdu
+            .capability_sets
+            .iter()
+            .find_map(|c| match c {
+                CapabilitySet::Bitmap(b) => Some(b),
+                _ => None,
+            })
+            .expect("Confirm Active must carry a Bitmap capability set");
+        assert_eq!(bitmap.desktop_width, 1680);
+        assert_eq!(bitmap.desktop_height, 1050);
+
+        // Frames 2-5: finalization PDUs in the spec-mandated order.
+        let mut kinds = Vec::new();
+        for _ in 0..4 {
+            let frame = read_tpkt_frame(&mut server_side).await;
+            let (_, _, pdu) = decode_client_share_control(&frame);
+            let ShareControlPdu::Data(data) = pdu else {
+                panic!("finalization frames must be Share Data PDUs");
+            };
+            kinds.push(match data.share_data_pdu {
+                ShareDataPdu::Synchronize(_) => "Synchronize",
+                ShareDataPdu::Control(ControlPdu {
+                    action: ControlAction::Cooperate,
+                    ..
+                }) => "ControlCooperate",
+                ShareDataPdu::Control(ControlPdu {
+                    action: ControlAction::RequestControl,
+                    ..
+                }) => "RequestControl",
+                ShareDataPdu::FontList(_) => "FontList",
+                other => panic!("unexpected finalization PDU: {other:?}"),
+            });
+        }
+        assert_eq!(
+            kinds,
+            [
+                "Synchronize",
+                "ControlCooperate",
+                "RequestControl",
+                "FontList"
+            ]
+        );
+    }
+
+    /// E2E, battle-tested quirk: some servers (GNOME Remote Desktop) send a
+    /// Server Deactivate All PDU BEFORE Demand Active inside the sequence.
+    /// The reactivation must skip it and still finalize -- pins the upstream
+    /// tolerance our handler relies on.
+    #[tokio::test]
+    async fn test_e2e_reactivation_tolerates_deactivate_all_before_demand_active() {
+        use ironrdp::pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
+        use tokio::io::AsyncWriteExt as _;
+
+        let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
+        let mut framed = ironrdp_tokio::TokioFramed::new(client_side);
+        let factory = test_activation_factory();
+
+        server_side
+            .write_all(&encode_server_share_control(
+                REACTIVATION_SHARE_ID,
+                ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll),
+            ))
+            .await
+            .expect("deactivate all");
+        server_side
+            .write_all(&encode_server_demand_active(
+                REACTIVATION_SHARE_ID,
+                800,
+                600,
+            ))
+            .await
+            .expect("demand active");
+        server_side
+            .write_all(&encode_server_font_map(REACTIVATION_SHARE_ID))
+            .await
+            .expect("font map");
+
+        let outcome = drive_reactivation(&factory, &mut framed)
+            .await
+            .expect("reactivation must tolerate DeactivateAll before DemandActive");
+        assert_eq!(outcome.desktop_size.width, 800);
+        assert_eq!(outcome.desktop_size.height, 600);
+    }
+
+    /// E2E: an unexpected PDU where Demand Active is required fails cleanly
+    /// (no hang, no panic): the session tears down instead of spinning.
+    #[tokio::test]
+    async fn test_e2e_reactivation_fails_cleanly_on_unexpected_pdu() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
+        let mut framed = ironrdp_tokio::TokioFramed::new(client_side);
+        let factory = test_activation_factory();
+
+        // A Font Map where a Demand Active is required.
+        server_side
+            .write_all(&encode_server_font_map(REACTIVATION_SHARE_ID))
+            .await
+            .expect("font map");
+
+        let result = drive_reactivation(&factory, &mut framed).await;
+        assert!(
+            result.is_err(),
+            "unexpected PDU must abort the reactivation, not hang"
+        );
+    }
+
+    // ====== Deactivation-Reactivation invariants (property-based) ======
+
+    mod reactivation_invariants {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(24))]
+
+            /// For ANY desktop size and share id demanded by the server,
+            /// the finalized outcome reports exactly the negotiated values
+            /// and the invariant MCS channel ids. Drives the REAL
+            /// `drive_reactivation` over an in-memory transport per case.
+            #[test]
+            fn reactivation_outcome_matches_server_negotiation(
+                width in any::<u16>(),
+                height in any::<u16>(),
+                share_id in any::<u32>(),
+            ) {
+                use tokio::io::AsyncWriteExt as _;
+
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+
+                rt.block_on(async {
+                    let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
+                    let mut framed = ironrdp_tokio::TokioFramed::new(client_side);
+                    let factory = test_activation_factory();
+
+                    server_side
+                        .write_all(&encode_server_demand_active(share_id, width, height))
+                        .await
+                        .expect("demand active");
+                    server_side
+                        .write_all(&encode_server_font_map(share_id))
+                        .await
+                        .expect("font map");
+
+                    let outcome = drive_reactivation(&factory, &mut framed)
+                        .await
+                        .expect("reactivation must complete");
+
+                    prop_assert_eq!(outcome.desktop_size.width, width);
+                    prop_assert_eq!(outcome.desktop_size.height, height);
+                    prop_assert_eq!(outcome.share_id, share_id);
+                    prop_assert_eq!(outcome.io_channel_id, IO_CHANNEL_ID);
+                    prop_assert_eq!(outcome.user_channel_id, USER_CHANNEL_ID);
+                    Ok(())
+                })?;
+            }
+
+            /// The dimensions forwarded to the encoder and the web after a
+            /// reactivation are ALWAYS even (H.264 YUV 4:2:0) and within one
+            /// pixel of the negotiated value -- and `align_even` is total on
+            /// all of `u16` (a hostile server must not be able to panic the
+            /// session task with `width = u16::MAX`).
+            #[test]
+            fn aligned_dimensions_are_always_even_and_close(v in any::<u16>()) {
+                let aligned = align_even(v);
+                prop_assert_eq!(aligned % 2, 0);
+                prop_assert!(aligned.abs_diff(v) <= 1);
+            }
+        }
     }
 
     // ============ Input pipeline invariants (property-based) ============
@@ -2617,24 +3989,56 @@ mod tests {
 
     // ==================== Structural Regression Tests ====================
 
+    /// Extract the body of the reactivation handler (the arm of the active
+    /// session loop that applies a completed Deactivation-Reactivation
+    /// Sequence), anchored on the `drive_reactivation` call.
+    fn deactivate_all_handler_body() -> &'static str {
+        let source = include_str!("session.rs");
+        let start = source
+            .find("let outcome = drive_reactivation(&activation_factory, &mut framed)")
+            .expect("DeactivateAll handler must drive the reactivation sequence");
+        let body = &source[start..];
+        let end = body.find("_ => {}").unwrap_or(body.len());
+        &body[..end]
+    }
+
+    /// Extract the body of `drive_reactivation` (the function that steps a
+    /// fresh activation sequence until `Finalized`).
+    fn drive_reactivation_body() -> &'static str {
+        let source = include_str!("session.rs");
+        let start = source
+            .find("async fn drive_reactivation")
+            .expect("drive_reactivation must exist");
+        let body = &source[start..];
+        let end = body.find("\n}\n").map(|pos| pos + 2).unwrap_or(body.len());
+        &body[..end]
+    }
+
     #[test]
     fn test_active_session_loop_handles_deactivate_all() {
-        let source = include_str!("session.rs");
+        let drive_body = drive_reactivation_body();
         assert!(
-            source.contains("DeactivateAll(mut connection_activation)"),
-            "active_session_loop must handle ActiveStageOutput::DeactivateAll"
+            drive_body.contains("activation_factory.create()"),
+            "drive_reactivation must create a fresh activation sequence from the factory"
         );
         assert!(
-            source.contains("single_sequence_step"),
-            "DeactivateAll handler must use single_sequence_step for reactivation"
+            drive_body.contains("single_sequence_step"),
+            "drive_reactivation must use single_sequence_step for reactivation"
         );
         assert!(
-            source.contains("ConnectionActivationState::Finalized"),
-            "DeactivateAll handler must check for Finalized state"
+            drive_body.contains("ConnectionActivationState::Finalized"),
+            "drive_reactivation must check for Finalized state"
         );
+
+        let handler_body = deactivate_all_handler_body();
         assert!(
-            source.contains("set_fastpath_processor"),
+            handler_body.contains("set_fastpath_processor"),
             "DeactivateAll handler must update fastpath processor"
+        );
+        assert!(
+            handler_body.contains("set_share_id"),
+            "DeactivateAll handler must propagate the renegotiated share_id \
+             (IronRDP 0.17: the fastpath processor alone is not enough)"
         );
     }
 
@@ -2696,13 +4100,7 @@ mod tests {
 
     #[test]
     fn test_deactivate_all_sends_aligned_dimensions_to_web() {
-        let source = include_str!("session.rs");
-        let deactivate_start = source
-            .find("DeactivateAll(mut connection_activation)")
-            .expect("DeactivateAll handler must exist");
-        let handler_body = &source[deactivate_start..];
-        let handler_end = handler_body.find("_ => {}").unwrap_or(handler_body.len());
-        let handler_body = &handler_body[..handler_end];
+        let handler_body = deactivate_all_handler_body();
 
         assert!(
             handler_body.contains("align_even(desktop_size.width)"),
@@ -2720,13 +4118,7 @@ mod tests {
 
     #[test]
     fn test_deactivate_all_reconfigures_encoder() {
-        let source = include_str!("session.rs");
-        let deactivate_start = source
-            .find("DeactivateAll(mut connection_activation)")
-            .expect("DeactivateAll handler must exist");
-        let handler_body = &source[deactivate_start..];
-        let handler_end = handler_body.find("_ => {}").unwrap_or(handler_body.len());
-        let handler_body = &handler_body[..handler_end];
+        let handler_body = deactivate_all_handler_body();
 
         assert!(
             handler_body.contains("DecodedImage::new"),
