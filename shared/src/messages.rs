@@ -1699,7 +1699,25 @@ pub enum RdpInputEvent {
         ctrl: bool,
         alt: bool,
         meta: bool,
+        /// Browser lock-key states (`KeyboardEvent.getModifierState`).
+        /// The proxy emits an RDP Synchronize Event when they drift from
+        /// the last state it synchronized. `serde(default)` keeps older
+        /// senders (no lock fields) decodable.
+        #[serde(default)]
+        caps_lock: bool,
+        #[serde(default)]
+        num_lock: bool,
+        #[serde(default)]
+        scroll_lock: bool,
     },
+    /// Release every held key and mouse button (stuck-modifier fix).
+    ///
+    /// Sent when the browser canvas loses focus (blur, tab switch) or when
+    /// a WebSocket (re)connects to an existing proxy session: the keyup
+    /// events for held modifiers never reach the canvas in those cases, so
+    /// the RDP server would otherwise believe Shift/Ctrl/Alt/Meta are held
+    /// forever.
+    ReleaseAll,
 }
 
 /// Direction of a captured IACS relay chunk.
@@ -4448,6 +4466,9 @@ mod tests {
                 ctrl: false,
                 alt: false,
                 meta: false,
+                caps_lock: true,
+                num_lock: false,
+                scroll_lock: false,
             },
         };
 
@@ -4462,6 +4483,9 @@ mod tests {
                 ctrl,
                 alt,
                 meta,
+                caps_lock,
+                num_lock,
+                scroll_lock,
             } = input
             {
                 assert_eq!(code, "KeyA");
@@ -4471,9 +4495,30 @@ mod tests {
                 assert!(!ctrl);
                 assert!(!alt);
                 assert!(!meta);
+                assert!(caps_lock);
+                assert!(!num_lock);
+                assert!(!scroll_lock);
             } else {
                 panic!("Wrong input variant");
             }
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_rdp_input_release_all_round_trip() {
+        // Stuck-modifier fix: ReleaseAll must survive the IPC round-trip.
+        let msg = Message::RdpInput {
+            session_id: "rdp-sess".to_string(),
+            input: RdpInputEvent::ReleaseAll,
+        };
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::RdpInput { session_id, input } = deserialized {
+            assert_eq!(session_id, "rdp-sess");
+            assert!(matches!(input, RdpInputEvent::ReleaseAll));
         } else {
             panic!("Wrong variant");
         }
@@ -4706,7 +4751,11 @@ mod tests {
                 ctrl: true,
                 alt: false,
                 meta: false,
+                caps_lock: false,
+                num_lock: true,
+                scroll_lock: false,
             },
+            RdpInputEvent::ReleaseAll,
         ];
 
         for event in events {

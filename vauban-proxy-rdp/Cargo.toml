@@ -1,7 +1,7 @@
 [package]
 name = "vauban-proxy-rdp"
 description = "Vauban - RDP proxy service (IronRDP)"
-version = "0.9.2"
+version = "0.9.3"
 edition = "2024"
 rust-version = "1.89"
 authors = ["Richard Ben Aleya"]
@@ -68,6 +68,10 @@ secrecy = { version = "0.10", features = ["serde"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+# Invariant-based (property) tests on the RDP input pipeline: release_all
+# always clears the key/button state, lock synchronization is minimal, and
+# input translation never panics on arbitrary events.
+proptest = "1"
 nix = { version = "0.31", features = ["process", "signal", "poll", "fs", "user", "socket", "uio", "term"] }
 # VAU-001: generate a self-signed leaf cert for the in-process TLS server
 # used by the behavioral pinning tests (match / mismatch / fetch).

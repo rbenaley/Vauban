@@ -2215,7 +2215,18 @@ enum RdpCommand {
         ctrl: bool,
         alt: bool,
         meta: bool,
+        // Lock-key states (KeyboardEvent.getModifierState). Default to
+        // false so older frontends without these fields still decode.
+        #[serde(default)]
+        caps_lock: bool,
+        #[serde(default)]
+        num_lock: bool,
+        #[serde(default)]
+        scroll_lock: bool,
     },
+    /// Release every held key/button on the RDP session (stuck-modifier
+    /// fix). Sent by the frontend on canvas blur / tab switch / WS open.
+    ReleaseKeys,
     Resize {
         width: u16,
         height: u16,
@@ -2337,10 +2348,26 @@ async fn handle_rdp_socket(
                                         warn!(session_id = %session_id, error = %e, "Failed to send RDP resize");
                                     }
                                 }
+                                RdpCommand::ReleaseKeys => {
+                                    // Stuck-modifier fix: fired on canvas blur /
+                                    // tab switch / WS open. Deliberately does NOT
+                                    // refresh the login-session activity: a blur
+                                    // is the user leaving, not interacting.
+                                    debug!(session_id = %session_id, "RDP release-keys requested");
+                                    let pc = proxy_client.clone();
+                                    let sid = session_id.clone();
+                                    if let Err(e) = tokio::task::spawn_blocking(move || {
+                                        pc.send_input(&sid, RdpInputEvent::ReleaseAll)
+                                    }).await.unwrap_or_else(|e| Err(crate::error::AppError::Ipc(e.to_string()))) {
+                                        error!(session_id = %session_id, error = %e, "Failed to send RDP release-keys");
+                                        should_close = true;
+                                    }
+                                }
                                 _ => {
                                     // Real keyboard/mouse input -> keep the login
-                                    // session alive (throttled). Resize and
-                                    // Capabilities above are excluded.
+                                    // session alive (throttled). Resize,
+                                    // Capabilities and ReleaseKeys above are
+                                    // excluded.
                                     if activity_throttle.should_fire(Instant::now()) {
                                         crate::services::session_activity::touch_login_session(&state, auth_session.0).await;
                                     }
@@ -2354,12 +2381,18 @@ async fn handle_rdp_socket(
                                         RdpCommand::MouseWheel { delta_x, delta_y } => {
                                             RdpInputEvent::MouseWheel { delta_x, delta_y }
                                         }
-                                        RdpCommand::Key { code, key, pressed, shift, ctrl, alt, meta } => {
+                                        RdpCommand::Key {
+                                            code, key, pressed, shift, ctrl, alt, meta,
+                                            caps_lock, num_lock, scroll_lock,
+                                        } => {
                                             RdpInputEvent::Keyboard {
                                                 code, key, pressed, shift, ctrl, alt, meta,
+                                                caps_lock, num_lock, scroll_lock,
                                             }
                                         }
-                                        RdpCommand::Resize { .. } | RdpCommand::Capabilities { .. } => unreachable!(),
+                                        RdpCommand::Resize { .. }
+                                        | RdpCommand::Capabilities { .. }
+                                        | RdpCommand::ReleaseKeys => unreachable!(),
                                     };
                                     let pc = proxy_client.clone();
                                     let sid = session_id.clone();
@@ -2939,6 +2972,9 @@ mod tests {
             ctrl,
             alt,
             meta,
+            caps_lock,
+            num_lock,
+            scroll_lock,
         } = cmd
         {
             assert_eq!(code, "KeyA");
@@ -2948,6 +2984,9 @@ mod tests {
             assert!(!ctrl);
             assert!(!alt);
             assert!(!meta);
+            assert!(!caps_lock);
+            assert!(!num_lock);
+            assert!(!scroll_lock);
         } else {
             panic!("Wrong variant");
         }
@@ -2973,6 +3012,53 @@ mod tests {
         } else {
             panic!("Wrong variant");
         }
+    }
+
+    #[test]
+    fn test_rdp_command_key_lock_states() {
+        let json = r#"{"type": "key", "code": "KeyA", "key": "A", "pressed": true, "shift": false, "ctrl": false, "alt": false, "meta": false, "caps_lock": true, "num_lock": true, "scroll_lock": false}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::Key {
+            caps_lock,
+            num_lock,
+            scroll_lock,
+            ..
+        } = cmd
+        {
+            assert!(caps_lock);
+            assert!(num_lock);
+            assert!(!scroll_lock);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_key_without_lock_states_defaults_false() {
+        // Backward compatibility: older frontends do not send lock fields.
+        let json = r#"{"type": "key", "code": "KeyA", "key": "a", "pressed": true, "shift": false, "ctrl": false, "alt": false, "meta": false}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::Key {
+            caps_lock,
+            num_lock,
+            scroll_lock,
+            ..
+        } = cmd
+        {
+            assert!(!caps_lock);
+            assert!(!num_lock);
+            assert!(!scroll_lock);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_release_keys() {
+        // Stuck-modifier fix: fired on canvas blur / tab switch / WS open.
+        let json = r#"{"type": "release_keys"}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        assert!(matches!(cmd, RdpCommand::ReleaseKeys));
     }
 
     #[test]

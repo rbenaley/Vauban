@@ -9,7 +9,6 @@ use crate::video_encoder::VideoEncoder;
 use base64::Engine as _;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
-use sha2::{Digest, Sha256};
 use ironrdp::connector::{
     self, ClientConnector, ConnectionResult, Credentials, DesktopSize,
     connection_activation::ConnectionActivationState,
@@ -21,6 +20,7 @@ use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::input::{self as rdp_input, Database as InputDatabase};
 use ironrdp::pdu::gcc::KeyboardType;
 use ironrdp::pdu::geometry::Rectangle as _;
+use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::{self, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::session::image::DecodedImage;
@@ -28,6 +28,7 @@ use ironrdp::session::{ActiveStage, ActiveStageOutput, fast_path};
 use ironrdp_tokio::single_sequence_step;
 use ironrdp_tokio::{FramedWrite as _, NetworkClient};
 use secrecy::{ExposeSecret, SecretString};
+use sha2::{Digest, Sha256};
 use shared::messages::{Message, RdpInputEvent};
 use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
@@ -455,6 +456,7 @@ async fn active_session_loop(
     let mut image = DecodedImage::new(PixelFormat::RgbA32, desktop_w, desktop_h);
     let mut active_stage = ActiveStage::new(connection_result);
     let mut input_db = InputDatabase::new();
+    let mut lock_sync = LockSyncState::default();
     let mut graphics_update_count: u64 = 0;
     let mut _response_frame_count: u64 = 0;
     let mut pdu_count: u64 = 0;
@@ -671,8 +673,8 @@ async fn active_session_loop(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(SessionCommand::Input(input_event)) => {
-                        let operations = translate_input_event(input_event);
-                        let fastpath_events = input_db.apply(operations);
+                        let fastpath_events =
+                            handle_input_event(&mut input_db, &mut lock_sync, input_event);
 
                         if !fastpath_events.is_empty() {
                             let outputs = active_stage
@@ -837,6 +839,72 @@ async fn active_session_loop(
     recording_result
 }
 
+/// Last lock-key state synchronized to the RDP server.
+///
+/// The browser reports CapsLock/NumLock/ScrollLock on every keydown
+/// (`KeyboardEvent.getModifierState`); an RDP Synchronize Event is emitted
+/// only when that state drifts from the last one sent, so the server-side
+/// lock state converges without flooding the wire.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct LockSyncState {
+    synced: Option<(bool, bool, bool)>,
+}
+
+impl LockSyncState {
+    /// Returns a Synchronize Event iff the reported lock state differs
+    /// from the last synchronized one (always fires on the first report).
+    fn reconcile(
+        &mut self,
+        caps_lock: bool,
+        num_lock: bool,
+        scroll_lock: bool,
+    ) -> Option<FastPathInputEvent> {
+        let current = (caps_lock, num_lock, scroll_lock);
+        if self.synced == Some(current) {
+            return None;
+        }
+        self.synced = Some(current);
+        // kana_lock is not reported by browsers; always false.
+        Some(rdp_input::synchronize_event(
+            scroll_lock,
+            num_lock,
+            caps_lock,
+            false,
+        ))
+    }
+}
+
+/// Convert one web-originated input event into the FastPath events to send.
+///
+/// - `ReleaseAll` releases every key/button tracked by `input_db`
+///   (stuck-modifier fix: fired on browser focus loss / WS reconnect);
+/// - `Keyboard` prepends a Synchronize Event when the browser-reported
+///   lock-key state drifted (see [`LockSyncState`]);
+/// - everything else goes through [`translate_input_event`] unchanged.
+fn handle_input_event(
+    input_db: &mut InputDatabase,
+    lock_sync: &mut LockSyncState,
+    event: RdpInputEvent,
+) -> Vec<FastPathInputEvent> {
+    if matches!(event, RdpInputEvent::ReleaseAll) {
+        return input_db.release_all().into_iter().collect();
+    }
+
+    let mut events: Vec<FastPathInputEvent> = Vec::new();
+    if let RdpInputEvent::Keyboard {
+        caps_lock,
+        num_lock,
+        scroll_lock,
+        ..
+    } = &event
+        && let Some(sync) = lock_sync.reconcile(*caps_lock, *num_lock, *scroll_lock)
+    {
+        events.push(sync);
+    }
+    events.extend(input_db.apply(translate_input_event(event)));
+    events
+}
+
 fn translate_input_event(event: RdpInputEvent) -> Vec<rdp_input::Operation> {
     match event {
         RdpInputEvent::KeyPressed { scancode } => {
@@ -935,6 +1003,10 @@ fn translate_input_event(event: RdpInputEvent) -> Vec<rdp_input::Operation> {
                 )]
             }
         }
+
+        // Handled by handle_input_event before translation (release_all is
+        // an InputDatabase method, not an Operation); kept for exhaustiveness.
+        RdpInputEvent::ReleaseAll => vec![],
     }
 }
 
@@ -1345,7 +1417,9 @@ pub async fn fetch_server_cert(
     let cert = client_connection
         .peer_certificates()
         .and_then(|certs| certs.first())
-        .ok_or_else(|| SessionError::TlsUpgradeFailed("Server presented no certificate".to_string()))?;
+        .ok_or_else(|| {
+            SessionError::TlsUpgradeFailed("Server presented no certificate".to_string())
+        })?;
 
     let spki = spki_der(cert).map_err(SessionError::TlsUpgradeFailed)?;
     let fingerprint = spki_sha256_fingerprint(cert).map_err(SessionError::TlsUpgradeFailed)?;
@@ -1640,10 +1714,296 @@ mod tests {
 
     // ==================== translate_input_event Tests ====================
 
+    /// Build a high-level Keyboard event with all modifiers/locks off.
+    fn keyboard_event(code: &str, key: &str, pressed: bool) -> RdpInputEvent {
+        keyboard_event_with_locks(code, key, pressed, false, false, false)
+    }
+
+    /// Build a high-level Keyboard event with explicit lock-key states.
+    fn keyboard_event_with_locks(
+        code: &str,
+        key: &str,
+        pressed: bool,
+        caps_lock: bool,
+        num_lock: bool,
+        scroll_lock: bool,
+    ) -> RdpInputEvent {
+        RdpInputEvent::Keyboard {
+            code: code.to_string(),
+            key: key.to_string(),
+            pressed,
+            shift: false,
+            ctrl: false,
+            alt: false,
+            meta: false,
+            caps_lock,
+            num_lock,
+            scroll_lock,
+        }
+    }
+
     #[test]
     fn test_translate_key_pressed() {
         let ops = translate_input_event(RdpInputEvent::KeyPressed { scancode: 0x1E });
         assert_eq!(ops.len(), 1);
+    }
+
+    #[test]
+    fn test_translate_release_all_yields_no_operations() {
+        // ReleaseAll is handled by handle_input_event (InputDatabase method,
+        // not an Operation); the translation arm must stay empty.
+        let ops = translate_input_event(RdpInputEvent::ReleaseAll);
+        assert!(ops.is_empty());
+    }
+
+    // ==================== handle_input_event Tests ====================
+
+    /// The exact production bug: Shift held, focus lost (keyup never
+    /// delivered), ReleaseAll fired on blur. The server must receive the
+    /// Shift RELEASE, and a subsequent KeyA press must arrive unshifted.
+    #[test]
+    fn test_handle_input_release_all_releases_held_modifier() {
+        let mut db = InputDatabase::new();
+        let mut locks = LockSyncState::default();
+
+        // Shift pressed (scancode 0x2A), keyup lost.
+        let pressed = handle_input_event(
+            &mut db,
+            &mut locks,
+            RdpInputEvent::KeyPressed { scancode: 0x2A },
+        );
+        assert_eq!(pressed.len(), 1);
+
+        // Blur -> ReleaseAll must emit the pending Shift RELEASE.
+        let released = handle_input_event(&mut db, &mut locks, RdpInputEvent::ReleaseAll);
+        assert_eq!(released.len(), 1, "one RELEASE for the held Shift");
+        match &released[0] {
+            FastPathInputEvent::KeyboardEvent(flags, scancode) => {
+                assert_eq!(*scancode, 0x2A);
+                assert!(
+                    flags.contains(ironrdp::pdu::input::fast_path::KeyboardFlags::RELEASE),
+                    "must be a RELEASE event"
+                );
+            }
+            other => panic!("expected KeyboardEvent, got {other:?}"),
+        }
+
+        // Second ReleaseAll is idempotent: nothing left to release.
+        let empty = handle_input_event(&mut db, &mut locks, RdpInputEvent::ReleaseAll);
+        assert!(empty.is_empty(), "release_all must be idempotent");
+    }
+
+    #[test]
+    fn test_handle_input_release_all_releases_mouse_buttons() {
+        let mut db = InputDatabase::new();
+        let mut locks = LockSyncState::default();
+
+        let _ = handle_input_event(
+            &mut db,
+            &mut locks,
+            RdpInputEvent::MouseButtonPressed { button: 0 },
+        );
+        let released = handle_input_event(&mut db, &mut locks, RdpInputEvent::ReleaseAll);
+        assert_eq!(released.len(), 1, "one release for the held button");
+    }
+
+    #[test]
+    fn test_handle_input_lock_sync_emitted_once_per_state() {
+        let mut db = InputDatabase::new();
+        let mut locks = LockSyncState::default();
+
+        let caps_on = keyboard_event_with_locks("KeyA", "a", true, true, false, false);
+        // First keydown reporting CapsLock=on: SynchronizeEvent + key press.
+        let events = handle_input_event(&mut db, &mut locks, caps_on.clone());
+        assert_eq!(events.len(), 2, "synchronize + key press");
+        assert!(
+            matches!(events[0], FastPathInputEvent::SyncEvent(_)),
+            "synchronize must precede the key event"
+        );
+
+        // Same lock state again: no further SynchronizeEvent (the key
+        // itself may repeat as a release+press pair, which is fine).
+        let events = handle_input_event(&mut db, &mut locks, caps_on);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, FastPathInputEvent::SyncEvent(_))),
+            "no duplicate synchronize for an unchanged lock state"
+        );
+    }
+
+    #[test]
+    fn test_lock_sync_state_reconcile_fires_on_change_only() {
+        let mut locks = LockSyncState::default();
+        // First report always fires (unknown server state).
+        assert!(locks.reconcile(false, false, false).is_some());
+        assert!(locks.reconcile(false, false, false).is_none());
+        // Any flag change fires again.
+        assert!(locks.reconcile(true, false, false).is_some());
+        assert!(locks.reconcile(true, false, false).is_none());
+        assert!(locks.reconcile(true, true, false).is_some());
+        assert!(locks.reconcile(true, true, true).is_some());
+    }
+
+    /// Structural pin: the active session loop must route EVERY web input
+    /// through handle_input_event (release_all + lock synchronization),
+    /// never through a bare translate + apply that would silently drop
+    /// the stuck-modifier fix.
+    #[test]
+    fn test_active_session_loop_routes_input_through_handle_input_event() {
+        let source = include_str!("session.rs");
+        assert!(
+            source.contains("handle_input_event(&mut input_db, &mut lock_sync, input_event)"),
+            "SessionCommand::Input must be processed by handle_input_event"
+        );
+        let input_arm_idx = source
+            .find("Some(SessionCommand::Input(input_event))")
+            .expect("the loop must handle SessionCommand::Input");
+        let arm_end = source[input_arm_idx..]
+            .find("Some(SessionCommand::Resize")
+            .map(|i| input_arm_idx + i)
+            .expect("Resize arm follows the Input arm");
+        assert!(
+            !source[input_arm_idx..arm_end].contains("input_db.apply(translate_input_event"),
+            "the Input arm must not bypass handle_input_event with a direct \
+             translate + apply (it would drop ReleaseAll and lock sync)"
+        );
+    }
+
+    // ============ Input pipeline invariants (property-based) ============
+    //
+    // These pin the stuck-modifier fix against regression for ANY input
+    // sequence, not just the scenarios enumerated above. They live here
+    // (not in tests/) because the crate is a binary: integration tests
+    // cannot import handle_input_event / LockSyncState.
+
+    mod input_invariants {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        /// Mix of JS codes the frontend actually sends (valid mappings,
+        /// modifiers, extended keys) and arbitrary garbage.
+        fn arb_js_code() -> impl Strategy<Value = String> {
+            prop_oneof![
+                Just("KeyA".to_owned()),
+                Just("ShiftLeft".to_owned()),
+                Just("ControlLeft".to_owned()),
+                Just("ArrowUp".to_owned()),
+                Just("CapsLock".to_owned()),
+                "[a-zA-Z0-9]{0,12}",
+            ]
+        }
+
+        fn arb_input_event() -> impl Strategy<Value = RdpInputEvent> {
+            prop_oneof![
+                any::<u16>().prop_map(|scancode| RdpInputEvent::KeyPressed { scancode }),
+                any::<u16>().prop_map(|scancode| RdpInputEvent::KeyReleased { scancode }),
+                (any::<u16>(), any::<u16>()).prop_map(|(x, y)| RdpInputEvent::MouseMove { x, y }),
+                any::<u8>().prop_map(|button| RdpInputEvent::MouseButtonPressed { button }),
+                any::<u8>().prop_map(|button| RdpInputEvent::MouseButtonReleased { button }),
+                (any::<bool>(), any::<i16>())
+                    .prop_map(|(vertical, amount)| RdpInputEvent::WheelScroll { vertical, amount }),
+                (any::<u8>(), any::<bool>(), any::<u16>(), any::<u16>()).prop_map(
+                    |(button, pressed, x, y)| RdpInputEvent::MouseButton {
+                        button,
+                        pressed,
+                        x,
+                        y
+                    }
+                ),
+                (any::<i16>(), any::<i16>())
+                    .prop_map(|(delta_x, delta_y)| RdpInputEvent::MouseWheel { delta_x, delta_y }),
+                (
+                    arb_js_code(),
+                    any::<bool>(),
+                    any::<bool>(),
+                    any::<bool>(),
+                    any::<bool>()
+                )
+                    .prop_map(|(code, pressed, caps, num, scroll)| {
+                        keyboard_event_with_locks(&code, &code, pressed, caps, num, scroll)
+                    }),
+                Just(RdpInputEvent::ReleaseAll),
+            ]
+        }
+
+        proptest! {
+            /// I1 + I2 - total release and idempotence: after ReleaseAll,
+            /// no key or mouse button stays pressed in the input database,
+            /// and an immediate second ReleaseAll emits no event.
+            #[test]
+            fn prop_release_all_clears_all_state(
+                events in proptest::collection::vec(arb_input_event(), 0..64)
+            ) {
+                let mut db = InputDatabase::new();
+                let mut locks = LockSyncState::default();
+                for event in events {
+                    let _ = handle_input_event(&mut db, &mut locks, event);
+                }
+
+                let _ = handle_input_event(&mut db, &mut locks, RdpInputEvent::ReleaseAll);
+                prop_assert!(
+                    !db.keyboard_state().any(),
+                    "keys still pressed after ReleaseAll"
+                );
+                prop_assert!(
+                    !db.mouse_buttons_state().any(),
+                    "mouse buttons still pressed after ReleaseAll"
+                );
+
+                let again = handle_input_event(&mut db, &mut locks, RdpInputEvent::ReleaseAll);
+                prop_assert!(again.is_empty(), "ReleaseAll must be idempotent");
+            }
+
+            /// I3 - no panic: the input pipeline accepts ANY event sequence
+            /// (garbage JS codes, out-of-range buttons, extreme deltas)
+            /// without panicking.
+            #[test]
+            fn prop_handle_input_never_panics(
+                events in proptest::collection::vec(arb_input_event(), 0..64)
+            ) {
+                let mut db = InputDatabase::new();
+                let mut locks = LockSyncState::default();
+                for event in events {
+                    let _ = handle_input_event(&mut db, &mut locks, event);
+                }
+            }
+
+            /// I4 - minimal synchronization: exactly one SynchronizeEvent
+            /// per lock-state transition, never two for the same state.
+            #[test]
+            fn prop_lock_sync_is_minimal(
+                lock_states in proptest::collection::vec(
+                    (any::<bool>(), any::<bool>(), any::<bool>()),
+                    1..32
+                )
+            ) {
+                let mut db = InputDatabase::new();
+                let mut locks = LockSyncState::default();
+                let mut last: Option<(bool, bool, bool)> = None;
+                let mut expected = 0usize;
+                let mut emitted = 0usize;
+
+                for (caps, num, scroll) in lock_states {
+                    if last != Some((caps, num, scroll)) {
+                        expected += 1;
+                        last = Some((caps, num, scroll));
+                    }
+                    let events = handle_input_event(
+                        &mut db,
+                        &mut locks,
+                        keyboard_event_with_locks("KeyA", "a", true, caps, num, scroll),
+                    );
+                    emitted += events
+                        .iter()
+                        .filter(|e| matches!(e, FastPathInputEvent::SyncEvent(_)))
+                        .count();
+                }
+
+                prop_assert_eq!(emitted, expected);
+            }
+        }
     }
 
     #[test]
@@ -1756,43 +2116,19 @@ mod tests {
 
     #[test]
     fn test_translate_high_level_keyboard_known_key() {
-        let ops = translate_input_event(RdpInputEvent::Keyboard {
-            code: "KeyA".to_string(),
-            key: "a".to_string(),
-            pressed: true,
-            shift: false,
-            ctrl: false,
-            alt: false,
-            meta: false,
-        });
+        let ops = translate_input_event(keyboard_event("KeyA", "a", true));
         assert_eq!(ops.len(), 1);
     }
 
     #[test]
     fn test_translate_high_level_keyboard_release() {
-        let ops = translate_input_event(RdpInputEvent::Keyboard {
-            code: "KeyA".to_string(),
-            key: "a".to_string(),
-            pressed: false,
-            shift: false,
-            ctrl: false,
-            alt: false,
-            meta: false,
-        });
+        let ops = translate_input_event(keyboard_event("KeyA", "a", false));
         assert_eq!(ops.len(), 1);
     }
 
     #[test]
     fn test_translate_high_level_keyboard_unknown_key() {
-        let ops = translate_input_event(RdpInputEvent::Keyboard {
-            code: "UnknownKey".to_string(),
-            key: "?".to_string(),
-            pressed: true,
-            shift: false,
-            ctrl: false,
-            alt: false,
-            meta: false,
-        });
+        let ops = translate_input_event(keyboard_event("UnknownKey", "?", true));
         assert!(ops.is_empty());
     }
 
@@ -1804,15 +2140,7 @@ mod tests {
 
     #[test]
     fn test_translate_high_level_keyboard_extended_key() {
-        let ops = translate_input_event(RdpInputEvent::Keyboard {
-            code: "ArrowUp".to_string(),
-            key: "ArrowUp".to_string(),
-            pressed: true,
-            shift: false,
-            ctrl: false,
-            alt: false,
-            meta: false,
-        });
+        let ops = translate_input_event(keyboard_event("ArrowUp", "ArrowUp", true));
         assert_eq!(ops.len(), 1);
     }
 
@@ -2528,9 +2856,7 @@ mod tests {
         use tokio::net::{TcpListener, TcpStream};
         use tokio_rustls::rustls;
         use tokio_rustls::rustls::client::danger::ServerCertVerifier as _;
-        use tokio_rustls::rustls::pki_types::{
-            self, CertificateDer, PrivateKeyDer, ServerName,
-        };
+        use tokio_rustls::rustls::pki_types::{self, CertificateDer, PrivateKeyDer, ServerName};
         use tokio_rustls::{TlsAcceptor, TlsConnector};
 
         /// Generate a fresh self-signed leaf cert + PKCS#8 key (DER).

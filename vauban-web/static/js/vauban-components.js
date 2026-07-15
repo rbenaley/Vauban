@@ -413,12 +413,25 @@ document.addEventListener('alpine:init', function () {
                     });
                 };
                 document.addEventListener('fullscreenchange', this._fullscreenHandler);
+                // Stuck-modifier fix: when the browser tab or window loses
+                // focus (Cmd+Tab, Alt+Tab, tab switch), the keyup events for
+                // held modifiers never reach the canvas, so the RDP server
+                // believes Shift/Ctrl/Alt/Meta are held forever. Ask the
+                // proxy to release every pressed key (Guacamole pattern).
+                this._blurHandler = function () { self.releaseKeys(); };
+                this._visibilityHandler = function () {
+                    if (document.visibilityState === 'hidden') self.releaseKeys();
+                };
+                window.addEventListener('blur', this._blurHandler);
+                document.addEventListener('visibilitychange', this._visibilityHandler);
                 this.$nextTick(function () { self.connectWs(); });
             },
 
             destroy: function () {
                 if (this._hb) this._hb.stop();
                 if (this._fullscreenHandler) document.removeEventListener('fullscreenchange', this._fullscreenHandler);
+                if (this._blurHandler) window.removeEventListener('blur', this._blurHandler);
+                if (this._visibilityHandler) document.removeEventListener('visibilitychange', this._visibilityHandler);
                 if (this._pendingMouseMove) clearTimeout(this._pendingMouseMove);
                 if (this.decoder) { try { this.decoder.close(); } catch (e) { /* ignore */ } }
                 if (this.ws) this.ws.close(1000, 'Component destroyed');
@@ -466,6 +479,10 @@ document.addEventListener('alpine:init', function () {
                     self.error = null;
                     self.ctx = self.$refs.canvas.getContext('2d');
                     self.$refs.canvas.focus();
+
+                    // The proxy session survives WebSocket reconnects: purge
+                    // any key state left over from a previous socket.
+                    self.releaseKeys();
 
                     self._initVideoDecoder();
                     if (self.decoder) {
@@ -710,8 +727,20 @@ document.addEventListener('alpine:init', function () {
                     shift: e.shiftKey,
                     ctrl: e.ctrlKey,
                     alt: e.altKey,
-                    meta: e.metaKey
+                    meta: e.metaKey,
+                    // Lock-key states so the proxy can emit an RDP
+                    // Synchronize Event when they drift out of sync.
+                    caps_lock: e.getModifierState('CapsLock'),
+                    num_lock: e.getModifierState('NumLock'),
+                    scroll_lock: e.getModifierState('ScrollLock')
                 });
+            },
+
+            // Ask the proxy to release every held key/button. Sent on focus
+            // loss and WS (re)open; deliberately NOT marked as heartbeat
+            // activity (a blur is the user leaving, not interacting).
+            releaseKeys: function () {
+                this.sendInput({ type: 'release_keys' });
             },
 
             onKeyUp: function (e) {

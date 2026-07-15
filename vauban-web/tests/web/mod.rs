@@ -81,6 +81,7 @@ pub mod profile_password_test;
 pub mod rdp_cert_lints_test;
 pub mod rdp_cert_no_silent_green_test;
 pub mod rdp_cert_pin_e2e_test;
+pub mod rdp_input_release_e2e_test;
 pub mod recording_daily_cron_e2e_test;
 pub mod recording_detail_test;
 pub mod recording_durability_pin_test;

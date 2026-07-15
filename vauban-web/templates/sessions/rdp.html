@@ -67,6 +67,7 @@
                 @wheel.prevent="onWheel($event)"
                 @keydown.prevent="onKeyDown($event)"
                 @keyup.prevent="onKeyUp($event)"
+                @blur="releaseKeys()"
                 tabindex="0"></canvas>
 
         <!-- Loading overlay -->
