@@ -895,6 +895,7 @@ fn test_compute_updated_ssh_description_only_preserves_everything() {
         Some(""),         // rdp_domain input (hidden, alpine x-show=false) sent blank
         None,             // ssh_key_source
         None,             // ssh_public_key
+        None,             // rdp_auth_mode
     );
     assert_eq!(
         new, existing,
@@ -976,6 +977,7 @@ fn test_compute_updated_ssh_host_key_state_always_preserved() {
             None,
             None,
             None,
+            None, // rdp_auth_mode
         );
         let obj = new
             .as_object()
@@ -1015,6 +1017,7 @@ fn test_compute_updated_ssh_new_password_replaces_existing() {
         None,
         None,
         None,
+        None, // rdp_auth_mode
     );
     assert_eq!(
         new.get("password").and_then(|v| v.as_str()),
@@ -1040,6 +1043,7 @@ fn test_compute_updated_ssh_blank_password_keeps_existing() {
         None,
         None,
         None,
+        None, // rdp_auth_mode
     );
     assert_eq!(
         new.get("password"),
@@ -1065,6 +1069,7 @@ fn test_compute_updated_ssh_switch_to_ssh_key() {
         None,
         Some("existing"),
         Some("ssh-ed25519 AAAAFAKEPUB comment"),
+        None, // rdp_auth_mode
     );
     assert_eq!(
         new.get("auth_type").and_then(|v| v.as_str()),
@@ -1119,6 +1124,7 @@ fn test_compute_updated_ssh_strips_domain() {
         Some("CORP"), // even if a tampered request smuggles domain, ignore on SSH
         None,
         None,
+        None, // rdp_auth_mode
     );
     assert!(
         new.get("domain").is_none(),
@@ -1147,6 +1153,7 @@ fn test_compute_updated_preserves_unknown_forward_compat_keys() {
         None,
         None,
         None,
+        None, // rdp_auth_mode
     );
     assert_eq!(
         new.get("future_field_we_dont_know_about"),
@@ -1172,6 +1179,7 @@ fn test_compute_updated_rdp_description_only_preserves_credentials_and_domain() 
         Some("CORP"), // domain re-submitted unchanged
         None,
         None,
+        None, // rdp_auth_mode
     );
     assert_eq!(new.get("password"), existing.get("password"));
     assert_eq!(new.get("domain").and_then(|v| v.as_str()), Some("CORP"));
@@ -1197,6 +1205,7 @@ fn test_compute_updated_rdp_blank_domain_clears_stored() {
         Some(""), // explicit clear
         None,
         None,
+        None, // rdp_auth_mode
     );
     assert!(
         new.get("domain").is_none(),
@@ -1222,6 +1231,7 @@ fn test_compute_updated_rdp_absent_domain_keeps_stored() {
         None, // field absent
         None,
         None,
+        None, // rdp_auth_mode
     );
     assert_eq!(
         new.get("domain").and_then(|v| v.as_str()),
@@ -1245,6 +1255,7 @@ fn test_compute_updated_rdp_new_domain_replaces() {
         Some("NEWCORP"),
         None,
         None,
+        None, // rdp_auth_mode
     );
     assert_eq!(new.get("domain").and_then(|v| v.as_str()), Some("NEWCORP"));
 }
@@ -1280,6 +1291,7 @@ fn test_compute_updated_rdp_strips_ssh_only_fields() {
         None,
         Some("existing"),              // tampered: try to smuggle ssh_key_source
         Some("ssh-ed25519 LEAKEDPUB"), // tampered: try to smuggle public key
+        None,                          // rdp_auth_mode
     );
     assert!(
         new.get("auth_type").is_none(),
@@ -1320,6 +1332,7 @@ fn test_compute_updated_handles_non_object_existing() {
         None,
         None,
         None,
+        None, // rdp_auth_mode
     );
     let obj = new
         .as_object()
@@ -1349,6 +1362,7 @@ fn test_compute_updated_blank_username_keeps_existing() {
         None,
         None,
         None,
+        None, // rdp_auth_mode
     );
     assert_eq!(
         new.get("username").and_then(|v| v.as_str()),

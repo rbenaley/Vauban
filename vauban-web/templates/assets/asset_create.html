@@ -95,6 +95,7 @@
               port: {{ form.port }},
               assetType: '{{ form.asset_type }}',
               authType: '{{ form.ssh_auth_type.as_deref().unwrap_or("password") }}',
+              rdpAuthMode: '{{ form.rdp_auth_mode.as_deref().unwrap_or("ntlm") }}',
               keySource: '{{ form.ssh_key_source.as_deref().unwrap_or("generated") }}',
               username: '{{ form.ssh_username.as_deref().unwrap_or("root") }}',
               get isIacs() { return this.assetType.startsWith('iacs_'); },
@@ -320,6 +321,19 @@
                 </div>
 
                 <!-- Windows AD domain: RDP only. -->
+                <div x-show="assetType === 'rdp'" x-cloak class="mb-4">
+                    <label for="rdp_auth_mode" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Authentication Mode</label>
+                    <select name="rdp_auth_mode" id="rdp_auth_mode" x-model="rdpAuthMode"
+                            data-iacs-strip
+                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                        <option value="ntlm">Password / NTLMv2</option>
+                        <option value="kerberos_restricted_admin">Kerberos - Restricted Admin</option>
+                    </select>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400" x-show="rdpAuthMode === 'kerberos_restricted_admin'" x-cloak>
+                        Requires a fully-qualified hostname (SPN <code>TERMSRV/&lt;fqdn&gt;</code>) and a KDC configured in <code>[auth.kerberos]</code>. The password is never delegated to the target (credential-less CredSSP).
+                    </p>
+                </div>
+
                 <div x-show="assetType === 'rdp'" x-cloak>
                     <label for="rdp_domain" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Domain (optional)</label>
                     <input type="text" name="rdp_domain" id="rdp_domain"

@@ -116,6 +116,10 @@ pub struct CreateAssetWebForm {
     /// `vauban-proxy-rdp` (see `SessionConfig.domain`). Ignored for
     /// non-RDP `asset_type` values to keep the JSONB blob protocol-clean.
     pub rdp_domain: Option<String>,
+    /// RDP NLA auth mode: `ntlm` (default) or
+    /// `kerberos_restricted_admin`. Stored as
+    /// `connection_config.rdp_auth_mode`. Ignored for non-RDP assets.
+    pub rdp_auth_mode: Option<String>,
 }
 
 /// Handle asset creation form submission (admin zone).
@@ -204,6 +208,16 @@ pub async fn create_asset_web(
         form.ssh_key_source.as_deref(),
         form.ssh_public_key.as_deref(),
     ) {
+        return flash_redirect(flash.error(msg), "/assets/manage/new");
+    }
+
+    // Kerberos RDP requires an FQDN target (SPN TERMSRV/<fqdn>): reject an
+    // IP-literal hostname fail-closed, before persisting anything.
+    if parsed_asset_type == AssetType::Rdp
+        && super::normalize_rdp_auth_mode(form.rdp_auth_mode.as_deref())
+            == shared::messages::RdpAuthMode::KerberosRestrictedAdmin.as_str()
+        && let Err(msg) = super::validate_kerberos_fqdn(&form.hostname)
+    {
         return flash_redirect(flash.error(msg), "/assets/manage/new");
     }
 
@@ -309,6 +323,7 @@ pub async fn create_asset_web(
         form.rdp_domain.as_deref(),
         form.ssh_key_source.as_deref(),
         eff_public_key.as_deref(),
+        form.rdp_auth_mode.as_deref(),
     );
 
     if let Some(ref vault) = state.vault_client
@@ -1231,6 +1246,11 @@ pub async fn asset_edit(
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
+    let rdp_auth_mode = super::normalize_rdp_auth_mode(
+        asset_connection_config
+            .get("rdp_auth_mode")
+            .and_then(|v| v.as_str()),
+    );
 
     let asset = crate::templates::assets::asset_edit::AssetEdit {
         uuid: asset_uuid_val.to_string(),
@@ -1253,6 +1273,7 @@ pub async fn asset_edit(
         ssh_host_key_fingerprint,
         rdp_server_cert_fingerprint,
         rdp_domain,
+        rdp_auth_mode,
     };
 
     let base = BaseTemplate::new(
@@ -1309,6 +1330,9 @@ pub struct UpdateAssetForm {
     /// SSH key source: `generated` | `existing` (see `CreateAssetWebForm`).
     pub ssh_key_source: Option<String>,
     pub rdp_domain: Option<String>,
+    /// RDP NLA auth mode: `ntlm` | `kerberos_restricted_admin`
+    /// (see `CreateAssetWebForm::rdp_auth_mode`).
+    pub rdp_auth_mode: Option<String>,
     /// Present on IACS asset edits; selects the industrial protocol.
     pub asset_type: Option<String>,
 }
@@ -1597,6 +1621,35 @@ pub async fn update_asset_web(
         }
     }
 
+    // Kerberos RDP requires an FQDN target (SPN TERMSRV/<fqdn>). Compute
+    // the effective mode after the overlay (blank ⇒ keep existing) and
+    // reject an IP-literal hostname fail-closed before persisting.
+    if effective_asset_type == AssetType::Rdp {
+        let effective_mode = form
+            .rdp_auth_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|m| super::normalize_rdp_auth_mode(Some(m)))
+            .unwrap_or_else(|| {
+                existing
+                    .connection_config
+                    .get("rdp_auth_mode")
+                    .and_then(|v| v.as_str())
+                    .map(|m| super::normalize_rdp_auth_mode(Some(m)))
+                    .unwrap_or_else(|| super::normalize_rdp_auth_mode(None))
+            });
+        if effective_mode == shared::messages::RdpAuthMode::KerberosRestrictedAdmin.as_str()
+            && let Err(msg) = super::validate_kerberos_fqdn(&form.hostname)
+        {
+            return htmx_or_flash_redirect(
+                &headers,
+                flash.error(msg),
+                &format!("/assets/manage/{asset_uuid}/edit"),
+            );
+        }
+    }
+
     let mut connection_config = compute_updated_connection_config(
         &existing.connection_config,
         effective_asset_type,
@@ -1608,6 +1661,7 @@ pub async fn update_asset_web(
         form.rdp_domain.as_deref(),
         form.ssh_key_source.as_deref(),
         eff_update_public_key.as_deref(),
+        form.rdp_auth_mode.as_deref(),
     );
 
     if let Some(ref vault) = state.vault_client

@@ -40,6 +40,9 @@ pub struct RdpSessionOpenRequest {
     /// vauban-access, verified by vauban-proxy-rdp BEFORE
     /// `AccessGuard::authorize`. Mirrors `SshSessionOpenRequest`.
     pub session_token: Vec<u8>,
+    /// NLA auth mode from `connection_config.rdp_auth_mode`. Fail-closed:
+    /// the proxy never falls back to NTLM when Kerberos is selected.
+    pub rdp_auth_mode: shared::messages::RdpAuthMode,
 }
 
 /// Identity material required to mint the crypto token that gates the
@@ -77,6 +80,7 @@ impl std::fmt::Debug for RdpSessionOpenRequest {
             .field("desktop_width", &self.desktop_width)
             .field("desktop_height", &self.desktop_height)
             .field("expected_cert_fingerprint", &self.expected_cert_fingerprint)
+            .field("rdp_auth_mode", &self.rdp_auth_mode)
             .finish()
     }
 }
@@ -228,6 +232,7 @@ impl ProxyRdpClient {
             desktop_height: request.desktop_height,
             expected_cert_fingerprint: request.expected_cert_fingerprint,
             session_token: request.session_token,
+            rdp_auth_mode: request.rdp_auth_mode,
         };
 
         self.channel
@@ -647,6 +652,7 @@ mod tests {
             desktop_height: 720,
             expected_cert_fingerprint: Some("SHA256:dGVzdA==".to_string()),
             session_token: Vec::new(),
+            rdp_auth_mode: shared::messages::RdpAuthMode::Ntlm,
         }
     }
 
@@ -1142,6 +1148,7 @@ mod tests {
             desktop_height: 720,
             expected_cert_fingerprint: None,
             session_token: Vec::new(),
+            rdp_auth_mode: shared::messages::RdpAuthMode::Ntlm,
         };
         assert_eq!(request.asset_host, "serveur.example.com");
     }
@@ -1167,6 +1174,7 @@ mod tests {
             desktop_height: 720,
             expected_cert_fingerprint: None,
             session_token: Vec::new(),
+            rdp_auth_mode: shared::messages::RdpAuthMode::Ntlm,
         };
         assert_eq!(request.domain.as_deref(), Some(""));
     }

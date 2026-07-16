@@ -28,6 +28,9 @@ pub struct AssetCreateForm {
     pub ssh_key_source: Option<String>,
     /// Optional Windows AD domain shown only for RDP assets.
     pub rdp_domain: Option<String>,
+    /// RDP NLA auth mode (`ntlm` | `kerberos_restricted_admin`), shown only
+    /// for RDP assets.
+    pub rdp_auth_mode: Option<String>,
 }
 
 #[derive(Template)]
@@ -75,6 +78,7 @@ mod tests {
             ssh_passphrase: None,
             ssh_key_source: None,
             rdp_domain: None,
+            rdp_auth_mode: None,
         }
     }
 

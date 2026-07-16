@@ -409,6 +409,50 @@ pub(crate) fn validate_required_credentials(
 /// encrypted at rest via `encrypt_connection_config` after this helper
 /// returns.
 #[allow(clippy::too_many_arguments)]
+/// Normalise an RDP NLA auth-mode string to its canonical, closed-set wire
+/// form. Any unknown / absent value collapses to the safe default `ntlm`
+/// (never an arbitrary attacker-controlled string on the row). Uses
+/// [`shared::messages::RdpAuthMode`] as the single source of truth.
+pub(crate) fn normalize_rdp_auth_mode(mode: Option<&str>) -> String {
+    mode.map(str::trim)
+        .and_then(shared::messages::RdpAuthMode::parse)
+        .unwrap_or_default()
+        .as_str()
+        .to_string()
+}
+
+/// Fail-closed FQDN check for RDP Kerberos mode.
+///
+/// Kerberos ties the ticket to the target's Service Principal Name
+/// (`TERMSRV/<fqdn>`), which a bare IPv4/IPv6 literal cannot satisfy: an
+/// AS-REQ/TGS-REQ for `TERMSRV/192.0.2.10` has no matching SPN in the
+/// directory. We therefore reject an IP-literal hostname early (create AND
+/// update) with a clear admin-facing message, rather than letting the
+/// session fail opaquely at connect time. Returns `Ok(())` for a plausible
+/// hostname (contains a dot and is not an IP literal).
+pub(crate) fn validate_kerberos_fqdn(hostname: &str) -> Result<(), String> {
+    let host = hostname.trim();
+    if host.is_empty() {
+        return Err("A fully-qualified hostname is required for Kerberos RDP".to_string());
+    }
+    // Reject bracketed / bare IP literals: Kerberos needs a DNS name.
+    let unbracketed = host.trim_start_matches('[').trim_end_matches(']');
+    if unbracketed.parse::<std::net::IpAddr>().is_ok() {
+        return Err(format!(
+            "Kerberos RDP requires a fully-qualified hostname (SPN TERMSRV/<fqdn>), \
+             not an IP address: {host}"
+        ));
+    }
+    if !host.contains('.') {
+        return Err(format!(
+            "Kerberos RDP requires a fully-qualified hostname (e.g. host.example.com), \
+             got a short name: {host}"
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_connection_config(
     asset_type: crate::models::asset::AssetType,
     username: Option<&str>,
@@ -419,6 +463,7 @@ pub(crate) fn build_connection_config(
     domain: Option<&str>,
     ssh_key_source: Option<&str>,
     ssh_public_key: Option<&str>,
+    rdp_auth_mode: Option<&str>,
 ) -> serde_json::Value {
     use crate::models::asset::AssetType;
 
@@ -514,6 +559,13 @@ pub(crate) fn build_connection_config(
                     serde_json::Value::String(d.trim().to_string()),
                 );
             }
+            // NLA auth mode: normalise to the closed
+            // {ntlm, kerberos_restricted_admin} set (default ntlm) so a
+            // tampered request cannot persist an arbitrary string.
+            config.insert(
+                "rdp_auth_mode".to_string(),
+                serde_json::Value::String(normalize_rdp_auth_mode(rdp_auth_mode)),
+            );
         }
         // IACS assets carry NO per-asset credentials -- authentication
         // is handled by EWS public keys (see `ews` table). Any
@@ -598,6 +650,7 @@ pub(crate) fn compute_updated_connection_config(
     domain: Option<&str>,
     ssh_key_source: Option<&str>,
     ssh_public_key: Option<&str>,
+    rdp_auth_mode: Option<&str>,
 ) -> serde_json::Value {
     use crate::models::asset::AssetType;
 
@@ -738,6 +791,21 @@ pub(crate) fn compute_updated_connection_config(
                         serde_json::Value::String(trimmed.to_string()),
                     );
                 }
+            }
+
+            // rdp_auth_mode: option A (blank or absent ⇒ keep existing,
+            // defaulting to ntlm when the row predates this field). A
+            // present value is normalised to the closed set.
+            if let Some(mode) = rdp_auth_mode.map(str::trim).filter(|s| !s.is_empty()) {
+                obj.insert(
+                    "rdp_auth_mode".to_string(),
+                    serde_json::Value::String(normalize_rdp_auth_mode(Some(mode))),
+                );
+            } else if !obj.contains_key("rdp_auth_mode") {
+                obj.insert(
+                    "rdp_auth_mode".to_string(),
+                    serde_json::Value::String(normalize_rdp_auth_mode(None)),
+                );
             }
         }
         // IACS assets carry no per-asset credentials at this stage

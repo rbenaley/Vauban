@@ -77,6 +77,114 @@ impl From<&str> for SensitiveString {
     }
 }
 
+/// A byte-vector wrapper for sensitive binary payloads transported via IPC.
+///
+/// Same security properties as [`SensitiveString`] (zeroize on drop, redacted
+/// `Debug`, transparent serde), for raw byte payloads. Used for the brokered
+/// Kerberos KDC exchange (`Message::KerberosKdcRequest` /
+/// `Message::KerberosKdcResponse`): the AS-REQ carries the encrypted
+/// pre-authentication timestamp derived from the user's password, and the KDC
+/// reply carries the (encrypted) TGT, so neither must ever leak through logs.
+#[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(transparent)]
+pub struct SensitiveBytes(Vec<u8>);
+
+impl SensitiveBytes {
+    /// Create a new `SensitiveBytes` from a plain `Vec<u8>`.
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    /// Consume `self` and return the inner `Vec<u8>`.
+    ///
+    /// The caller takes ownership and responsibility for the secret material.
+    /// Because `self` is consumed (not dropped), the destructor does **not**
+    /// run -- the returned `Vec<u8>` must be consumed or zeroized by the caller.
+    pub fn into_inner(self) -> Vec<u8> {
+        let md = std::mem::ManuallyDrop::new(self);
+        // SAFETY: we own the value and `ManuallyDrop` is repr(transparent).
+        unsafe { std::ptr::read(&md.0) }
+    }
+
+    /// Borrow the inner bytes as `&[u8]`.
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Length of the payload in bytes.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the payload is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for SensitiveBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[REDACTED {} bytes]", self.0.len())
+    }
+}
+
+impl Drop for SensitiveBytes {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl PartialEq for SensitiveBytes {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl From<Vec<u8>> for SensitiveBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+}
+
+/// NLA authentication mode for an RDP asset (CredSSP leg).
+///
+/// Stored in `assets.connection_config.rdp_auth_mode` as its canonical wire
+/// string (`ntlm` | `kerberos_restricted_admin`), threaded through
+/// `Message::RdpSessionOpen` down to the RDP proxy's CredSSP sequence.
+///
+/// - `Ntlm` (default): CredSSP + NTLMv2, credentials delegated in
+///   TSCredentials (current behavior, unchanged).
+/// - `KerberosRestrictedAdmin`: CredSSP + Kerberos with the
+///   `RESTRICTED_ADMIN_MODE_REQUIRED` nego flag and credential-less
+///   TSCredentials (the password never leaves the proxy; it is only used
+///   in-memory for the AS-REQ pre-authentication).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RdpAuthMode {
+    #[default]
+    Ntlm,
+    KerberosRestrictedAdmin,
+}
+
+impl RdpAuthMode {
+    /// Canonical wire/storage form (JSON `connection_config.rdp_auth_mode`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RdpAuthMode::Ntlm => "ntlm",
+            RdpAuthMode::KerberosRestrictedAdmin => "kerberos_restricted_admin",
+        }
+    }
+
+    /// Parse the canonical wire form. Unknown strings yield `None` so
+    /// callers decide their own failure posture (web handlers fail-closed).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "ntlm" => Some(RdpAuthMode::Ntlm),
+            "kerberos_restricted_admin" => Some(RdpAuthMode::KerberosRestrictedAdmin),
+            _ => None,
+        }
+    }
+}
+
 /// Service identifier for routing messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Service {
@@ -2074,6 +2182,10 @@ pub enum Message {
         /// verification failure MUST collapse to a fail-closed denial.
         /// See `docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md` §3.
         session_token: Vec<u8>,
+        /// NLA authentication mode for the CredSSP leg (fail-closed: in
+        /// `KerberosRestrictedAdmin` mode the proxy NEVER falls back to
+        /// NTLM).
+        rdp_auth_mode: RdpAuthMode,
     },
 
     /// Response confirming RDP session opened or error.
@@ -2719,6 +2831,42 @@ pub enum Message {
         /// Error message if success is false.
         error: Option<String>,
     },
+
+    // ========== Kerberos KDC broker (ProxyRdp <-> Supervisor) ==========
+    //
+    // The sandboxed RDP proxy cannot `connect()` to the KDC (TCP 88).
+    // During the CredSSP/NLA Kerberos leg, each sspi `NetworkRequest`
+    // (AS-REQ, TGS-REQ) is relayed to the supervisor, which is the only
+    // process allowed to open the outbound socket. The supervisor gate
+    // is its own `[auth.kerberos]` whitelist (realm + KDC endpoint):
+    // like the LDAPS broker it is token-less and connects ONLY to its
+    // configured KDC, ignoring any host embedded in the request URL, so
+    // a compromised proxy cannot use it as an SSRF oracle.
+    //
+    // The `data` payload is the raw Kerberos TCP message (4-byte
+    // big-endian length prefix included, per sspi's `send_tcp`
+    // contract). Appended at the END of the enum to preserve the bincode
+    // discriminant indices of every variant above (wire compat).
+    /// Relay a Kerberos KDC request (raw TCP message) to the supervisor.
+    KerberosKdcRequest {
+        request_id: u64,
+        /// RDP session id the KDC exchange belongs to (correlation only).
+        session_id: String,
+        /// Raw Kerberos message with its 4-byte length prefix.
+        data: SensitiveBytes,
+    },
+
+    /// Response to [`Message::KerberosKdcRequest`] carrying the KDC reply.
+    KerberosKdcResponse {
+        request_id: u64,
+        session_id: String,
+        success: bool,
+        /// Raw KDC reply with its 4-byte length prefix (empty on failure).
+        data: SensitiveBytes,
+        /// Error message when `success` is false (KDC unreachable,
+        /// Kerberos disabled in supervisor config, timeout, ...).
+        error: Option<String>,
+    },
 }
 
 impl Message {
@@ -2775,7 +2923,9 @@ impl Message {
             | Message::SshPushPublicKey { request_id, .. }
             | Message::SshPushPublicKeyResult { request_id, .. }
             | Message::SshTestKeyAuth { request_id, .. }
-            | Message::SshTestKeyAuthResult { request_id, .. } => Some(*request_id),
+            | Message::SshTestKeyAuthResult { request_id, .. }
+            | Message::KerberosKdcRequest { request_id, .. }
+            | Message::KerberosKdcResponse { request_id, .. } => Some(*request_id),
             _ => None,
         }
     }
@@ -3743,6 +3893,106 @@ mod tests {
     }
 
     #[test]
+    fn test_kerberos_kdc_request_roundtrip() {
+        let msg = Message::KerberosKdcRequest {
+            request_id: 4242,
+            session_id: "rdp-krb-1".to_string(),
+            data: SensitiveBytes::new(vec![0x00, 0x00, 0x00, 0x04, 0xde, 0xad, 0xbe, 0xef]),
+        };
+        assert_eq!(msg.request_id(), Some(4242));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::KerberosKdcRequest {
+            request_id,
+            session_id,
+            data,
+        } = deserialized
+        {
+            assert_eq!(request_id, 4242);
+            assert_eq!(session_id, "rdp-krb-1");
+            assert_eq!(
+                data.as_slice(),
+                &[0x00, 0x00, 0x00, 0x04, 0xde, 0xad, 0xbe, 0xef]
+            );
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_kerberos_kdc_response_roundtrip() {
+        let msg = Message::KerberosKdcResponse {
+            request_id: 4242,
+            session_id: "rdp-krb-1".to_string(),
+            success: true,
+            data: SensitiveBytes::new(vec![0x00, 0x00, 0x00, 0x02, 0xca, 0xfe]),
+            error: None,
+        };
+        assert_eq!(msg.request_id(), Some(4242));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::KerberosKdcResponse {
+            request_id,
+            success,
+            data,
+            error,
+            ..
+        } = deserialized
+        {
+            assert_eq!(request_id, 4242);
+            assert!(success);
+            assert_eq!(data.as_slice(), &[0x00, 0x00, 0x00, 0x02, 0xca, 0xfe]);
+            assert!(error.is_none());
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    /// The Kerberos KDC payload MUST never leak through `Debug` (the AS-REQ
+    /// carries the encrypted pre-auth timestamp, the reply carries the TGT).
+    #[test]
+    fn test_kerberos_kdc_payload_is_redacted_in_debug() {
+        let secret = vec![0x53, 0x45, 0x43, 0x52, 0x45, 0x54]; // "SECRET"
+        let req = Message::KerberosKdcRequest {
+            request_id: 1,
+            session_id: "s".to_string(),
+            data: SensitiveBytes::new(secret.clone()),
+        };
+        let dbg = format!("{:?}", req);
+        assert!(!dbg.contains("SECRET"));
+        assert!(!dbg.contains("83, 69, 67")); // decimal byte rendering
+        assert!(dbg.contains("REDACTED"));
+
+        let resp = Message::KerberosKdcResponse {
+            request_id: 1,
+            session_id: "s".to_string(),
+            success: true,
+            data: SensitiveBytes::new(secret),
+            error: None,
+        };
+        let dbg = format!("{:?}", resp);
+        assert!(!dbg.contains("SECRET"));
+        assert!(dbg.contains("REDACTED"));
+    }
+
+    /// WIRE COMPATIBILITY pin: the Kerberos KDC variants are appended at the
+    /// very end of `Message` (after the SSH key-onboarding verbs). Bincode
+    /// encodes variants by ordinal index, so they MUST stay last.
+    #[test]
+    fn test_kerberos_message_variants_are_appended_last() {
+        let req = Message::KerberosKdcRequest {
+            request_id: 7,
+            session_id: "s".to_string(),
+            data: SensitiveBytes::new(vec![1, 2, 3]),
+        };
+        let bytes = serialize(&req);
+        let decoded: Message = deserialize(&bytes);
+        assert!(matches!(decoded, Message::KerberosKdcRequest { .. }));
+    }
+
+    #[test]
     fn test_tcp_connect_messages_serialization_roundtrip() {
         let messages: Vec<Message> = vec![
             Message::TcpConnectRequest {
@@ -4201,6 +4451,7 @@ mod tests {
             desktop_height: 1080,
             expected_cert_fingerprint: Some("SHA256:dGVzdA==".to_string()),
             session_token: Vec::new(),
+            rdp_auth_mode: RdpAuthMode::Ntlm,
         };
         assert_eq!(msg.request_id(), Some(700));
 
@@ -4251,6 +4502,7 @@ mod tests {
             desktop_height: 720,
             expected_cert_fingerprint: None,
             session_token: Vec::new(),
+            rdp_auth_mode: RdpAuthMode::Ntlm,
         };
 
         let serialized = serialize(&msg);
@@ -4675,6 +4927,7 @@ mod tests {
                 desktop_height: 720,
                 expected_cert_fingerprint: None,
                 session_token: Vec::new(),
+                rdp_auth_mode: RdpAuthMode::Ntlm,
             },
             Message::RdpSessionOpened {
                 request_id: 1,
@@ -4781,6 +5034,7 @@ mod tests {
             desktop_height: 720,
             expected_cert_fingerprint: None,
             session_token: Vec::new(),
+            rdp_auth_mode: RdpAuthMode::Ntlm,
         };
         let debug = format!("{:?}", msg);
         assert!(
@@ -5644,6 +5898,7 @@ mod tests {
             desktop_height: 720,
             expected_cert_fingerprint: None,
             session_token: Vec::new(),
+            rdp_auth_mode: RdpAuthMode::Ntlm,
         };
         let debug = format!("{:?}", msg);
         assert!(
@@ -5672,6 +5927,7 @@ mod tests {
             desktop_height: 720,
             expected_cert_fingerprint: None,
             session_token: Vec::new(),
+            rdp_auth_mode: RdpAuthMode::Ntlm,
         };
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);

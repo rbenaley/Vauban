@@ -184,6 +184,13 @@ pub struct AuthConfig {
     /// default (`[auth.ldaps].enabled = false`).
     #[serde(default)]
     pub ldaps: LdapConfig,
+    /// Kerberos KDC brokering for RDP assets in `kerberos_restricted_admin`
+    /// auth mode. When enabled, the supervisor relays the sandboxed RDP
+    /// proxy's KDC exchanges (AS-REQ / TGS-REQ) to the configured KDC over
+    /// TCP 88 (the proxy cannot `connect()` itself). Disabled by default
+    /// (`[auth.kerberos].enabled = false`).
+    #[serde(default)]
+    pub kerberos: KerberosConfig,
 }
 
 fn default_argon2_memory_kb() -> u32 {
@@ -203,6 +210,7 @@ impl Default for AuthConfig {
             argon2_iterations: default_argon2_iterations(),
             argon2_parallelism: default_argon2_parallelism(),
             ldaps: LdapConfig::default(),
+            kerberos: KerberosConfig::default(),
         }
     }
 }
@@ -346,6 +354,95 @@ impl LdapConfig {
         }
         if self.dn_template.is_empty() {
             anyhow::bail!("[auth.ldaps] dn_template must be set when ldaps is enabled");
+        }
+        Ok(())
+    }
+}
+
+/// Kerberos KDC brokering configuration (supervisor view).
+///
+/// The sandboxed RDP proxy cannot open a socket to the KDC (TCP 88); during
+/// the CredSSP Kerberos leg it relays each sspi `NetworkRequest` to the
+/// supervisor via [`shared::messages::Message::KerberosKdcRequest`]. The
+/// supervisor owns the authoritative `(host, port)` endpoint here and connects
+/// ONLY to it, ignoring any host embedded in the relayed request (mirrors the
+/// LDAPS `allows` SSRF gate). No secret transits this struct: the AS-REQ /
+/// TGS-REQ bytes are produced in-memory by sspi inside the proxy.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KerberosConfig {
+    /// Master switch. When false, the supervisor refuses to broker any KDC
+    /// exchange (fail-closed).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Kerberos realm (uppercase), e.g. `EXAMPLE.COM`. Consumed by the RDP
+    /// proxy for SPN construction; accepted here so the `[auth.kerberos]`
+    /// block has a single schema.
+    #[serde(default)]
+    pub realm: String,
+    /// KDC hostname or IP address (the domain controller).
+    #[serde(default)]
+    pub kdc_host: String,
+    /// KDC TCP port (Kerberos default 88).
+    #[serde(default = "default_kdc_port")]
+    pub kdc_port: u16,
+    /// Per-exchange timeout budget in seconds (broker TCP connect + I/O).
+    #[serde(default = "default_kerberos_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_kdc_port() -> u16 {
+    88
+}
+
+fn default_kerberos_timeout_secs() -> u64 {
+    5
+}
+
+impl Default for KerberosConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            realm: String::new(),
+            kdc_host: String::new(),
+            kdc_port: default_kdc_port(),
+            timeout_secs: default_kerberos_timeout_secs(),
+        }
+    }
+}
+
+impl KerberosConfig {
+    /// Configured KDC endpoint as a `(host, port)` couple. Returns `None`
+    /// (fail-closed) when the host is empty.
+    pub fn endpoint(&self) -> Option<(String, u16)> {
+        if self.kdc_host.is_empty() {
+            return None;
+        }
+        Some((self.kdc_host.clone(), self.kdc_port))
+    }
+
+    /// SSRF guard for the KDC broker: returns `true` iff Kerberos is enabled
+    /// and a KDC endpoint is configured. Unlike the LDAPS broker, the relayed
+    /// Kerberos request carries no caller-chosen destination (the supervisor
+    /// always connects to its own configured KDC), so this is a pure
+    /// enabled + configured check rather than a per-request host match.
+    pub fn allows(&self) -> bool {
+        self.enabled && self.endpoint().is_some()
+    }
+
+    /// Reject malformed configurations at load time. A disabled block is
+    /// always valid. When enabled, `realm` and `kdc_host` MUST be set.
+    pub fn validate(&self) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.realm.is_empty() {
+            anyhow::bail!("[auth.kerberos] realm must be set when kerberos is enabled");
+        }
+        if self.kdc_host.is_empty() {
+            anyhow::bail!("[auth.kerberos] kdc_host must be set when kerberos is enabled");
+        }
+        if self.kdc_port == 0 {
+            anyhow::bail!("[auth.kerberos] kdc_port must be non-zero when kerberos is enabled");
         }
         Ok(())
     }
@@ -822,6 +919,7 @@ impl SupervisorConfig {
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
         config.auth.ldaps.validate()?;
+        config.auth.kerberos.validate()?;
         config.security.validate()?;
 
         Ok(config)
@@ -946,6 +1044,7 @@ impl SupervisorConfig {
             .with_context(|| "Failed to deserialize supervisor configuration")?;
 
         config.auth.ldaps.validate()?;
+        config.auth.kerberos.validate()?;
         config.security.validate()?;
 
         Ok(config)
@@ -1904,6 +2003,76 @@ dn_template = "{username}@example.com"
         assert!(
             result.unwrap_err().to_string().contains("ldaps://"),
             "error should explain the ldaps:// requirement"
+        );
+    }
+
+    // ===================== [auth.kerberos] tests =====================
+
+    fn krb(enabled: bool, realm: &str, kdc_host: &str) -> KerberosConfig {
+        KerberosConfig {
+            enabled,
+            realm: realm.to_string(),
+            kdc_host: kdc_host.to_string(),
+            ..KerberosConfig::default()
+        }
+    }
+
+    #[test]
+    fn kerberos_default_is_disabled_and_port_88() {
+        let k = KerberosConfig::default();
+        assert!(!k.enabled);
+        assert_eq!(k.kdc_port, 88);
+        assert!(!k.allows());
+        assert!(k.endpoint().is_none());
+    }
+
+    #[test]
+    fn kerberos_allows_only_when_enabled_and_configured() {
+        assert!(!krb(false, "EXAMPLE.COM", "dc1.example.com").allows());
+        assert!(!krb(true, "EXAMPLE.COM", "").allows());
+        assert!(krb(true, "EXAMPLE.COM", "dc1.example.com").allows());
+    }
+
+    #[test]
+    fn kerberos_endpoint_uses_configured_host_and_port() {
+        let mut k = krb(true, "EXAMPLE.COM", "dc1.example.com");
+        k.kdc_port = 8888;
+        assert_eq!(k.endpoint(), Some(("dc1.example.com".to_string(), 8888)));
+    }
+
+    #[test]
+    fn kerberos_validate_disabled_is_always_ok() {
+        assert!(KerberosConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn kerberos_validate_rejects_missing_realm() {
+        let k = krb(true, "", "dc1.example.com");
+        let err = k.validate().unwrap_err().to_string();
+        assert!(err.contains("realm"), "got: {err}");
+    }
+
+    #[test]
+    fn kerberos_validate_rejects_missing_kdc_host() {
+        let k = krb(true, "EXAMPLE.COM", "");
+        let err = k.validate().unwrap_err().to_string();
+        assert!(err.contains("kdc_host"), "got: {err}");
+    }
+
+    #[test]
+    fn kerberos_validate_rejects_zero_port() {
+        let mut k = krb(true, "EXAMPLE.COM", "dc1.example.com");
+        k.kdc_port = 0;
+        let err = k.validate().unwrap_err().to_string();
+        assert!(err.contains("kdc_port"), "got: {err}");
+    }
+
+    #[test]
+    fn kerberos_validate_accepts_valid_enabled_config() {
+        assert!(
+            krb(true, "EXAMPLE.COM", "dc1.example.com")
+                .validate()
+                .is_ok()
         );
     }
 }

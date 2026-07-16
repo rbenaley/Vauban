@@ -329,3 +329,19 @@ allow_loopback_targets = false
 [auth.ldaps]
 enabled = false
 order = ["local"]
+
+# ------------------------------------------------------------------------------
+# Kerberos KDC brokering (RDP "kerberos_restricted_admin" auth mode)
+# ------------------------------------------------------------------------------
+#
+# When enabled, the supervisor relays the sandboxed RDP proxy's Kerberos KDC
+# exchanges (AS-REQ / TGS-REQ) to the configured domain controller over TCP 88
+# (the proxy cannot open the socket itself once sealed). The supervisor
+# connects ONLY to the endpoint below, ignoring any host embedded in the
+# relayed request (SSRF-safe). Realm is uppercase (e.g. EXAMPLE.COM).
+[auth.kerberos]
+enabled = false
+# realm = "EXAMPLE.COM"
+# kdc_host = "dc1.example.com"
+# kdc_port = 88
+# timeout_secs = 5

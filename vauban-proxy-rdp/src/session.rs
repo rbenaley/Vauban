@@ -11,9 +11,10 @@ use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
 use ironrdp::connector::{
     self, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError,
-    ConnectorErrorKind, ConnectorResult, Credentials, DesktopSize, Sequence as _,
+    ConnectorErrorKind, ConnectorResult, Credentials, DesktopSize, Sequence as _, Written,
     connection_activation::{ConnectionActivationFactory, ConnectionActivationState},
-    credssp::CredsspSequence,
+    sspi,
+    sspi::credssp::{self as sspi_credssp, ClientState, CredSspClient, CredSspMode},
     sspi::generator::GeneratorState,
 };
 use ironrdp::core::WriteBuf;
@@ -21,18 +22,21 @@ use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::input::{self as rdp_input, Database as InputDatabase};
+use ironrdp::pdu::PduHint;
 use ironrdp::pdu::gcc::KeyboardType;
 use ironrdp::pdu::geometry::Rectangle as _;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
+use ironrdp::pdu::nego;
 use ironrdp::pdu::rdp::capability_sets::{self, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp::pdu::x224::X224;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, fast_path};
 use ironrdp_tokio::single_sequence_step;
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, NetworkClient, Upgraded};
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
-use shared::messages::{Message, RdpInputEvent};
+use shared::messages::{Message, RdpAuthMode, RdpInputEvent};
 use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -72,6 +76,15 @@ pub struct SessionConfig {
     /// When running in Capsicum sandbox, the proxy cannot open network connections.
     /// The supervisor establishes the TCP connection and passes the FD via SCM_RIGHTS.
     pub preconnected_fd: Option<OwnedFd>,
+    /// NLA authentication mode for the CredSSP leg. `Ntlm` preserves the
+    /// historical behavior; `KerberosRestrictedAdmin` sets the
+    /// `RESTRICTED_ADMIN_MODE_REQUIRED` nego flag and drives CredSSP in
+    /// credential-less mode (fail-closed: no NTLM fallback).
+    pub auth_mode: RdpAuthMode,
+    /// Supervisor KDC relay handle (Kerberos mode only). `None` in NTLM
+    /// mode or in non-sandboxed dev mode; Kerberos mode fails closed
+    /// without it.
+    pub supervisor_relay: Option<Arc<SupervisorRelay>>,
 }
 
 /// Active RDP session handle (the actual connection runs in a spawned task).
@@ -190,12 +203,23 @@ impl RdpSession {
         // Wrap in IronRDP framing
         let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
-        // Drive connection up to TLS upgrade point
-        let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector)
-            .await
-            .map_err(|e| {
-                SessionError::ConnectionFailed(format!("RDP handshake begin failed: {e}"))
-            })?;
+        // Drive connection up to TLS upgrade point. Local mirror of
+        // `ironrdp_tokio::connect_begin`: in Kerberos / Restricted Admin
+        // mode the X.224 Connection Request must carry the
+        // RESTRICTED_ADMIN_MODE_REQUIRED nego flag, which upstream
+        // hardcodes to empty.
+        let extra_nego_flags = match config.auth_mode {
+            RdpAuthMode::Ntlm => nego::RequestFlags::empty(),
+            RdpAuthMode::KerberosRestrictedAdmin => {
+                nego::RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED
+            }
+        };
+        let should_upgrade =
+            connect_begin_with_nego_flags(&mut framed, &mut connector, extra_nego_flags)
+                .await
+                .map_err(|e| {
+                    SessionError::ConnectionFailed(format!("RDP handshake begin failed: {e}"))
+                })?;
 
         trace!(session_id = %config.session_id, "TLS upgrade starting");
 
@@ -245,7 +269,14 @@ impl RdpSession {
         // Finalize connection (CredSSP + remaining handshake). The local
         // demuxed loop (NOT ironrdp_tokio::connect_finalize) shields the
         // licensing exchange from interleaved message-channel PDUs.
-        let mut network_client = NtlmOnlyNetworkClient;
+        // NTLM keeps the network-less NtlmOnlyNetworkClient; Kerberos mode
+        // relays KDC exchanges to the supervisor (fail-closed without the
+        // relay handle).
+        let mut network_client = SessionNetworkClient::for_auth_mode(
+            config.auth_mode,
+            config.supervisor_relay.clone(),
+            &config.session_id,
+        )?;
         let connection_result = connect_finalize_with_message_channel_demux(
             upgraded,
             connector,
@@ -253,6 +284,7 @@ impl RdpSession {
             &mut network_client,
             connector::ServerName::new(config.host.clone()),
             server_public_key,
+            config.auth_mode,
         )
         .await
         .map_err(|e| SessionError::AuthenticationFailed(format!("RDP finalize failed: {e}")))?;
@@ -1550,6 +1582,187 @@ impl NetworkClient for NtlmOnlyNetworkClient {
     }
 }
 
+/// Per-exchange budget for a relayed KDC round-trip. Slightly above the
+/// supervisor's own `[auth.kerberos].timeout_secs` default (5 s for connect
+/// + I/O) so the supervisor's error message wins over a bare local timeout.
+const KDC_RELAY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Handle for relaying Kerberos KDC exchanges to the supervisor over the
+/// existing IPC pipe (payload relay -- the sealed proxy never opens a
+/// socket).
+///
+/// Mirrors the `pending_connections` correlation pattern used for
+/// SCM_RIGHTS TCP FDs: `kdc_round_trip` allocates a unique `request_id`,
+/// parks a oneshot in `pending`, and sends a
+/// [`Message::KerberosKdcRequest`] through `tx` (drained by `main_loop`
+/// into the supervisor channel). `main_loop` routes the matching
+/// [`Message::KerberosKdcResponse`] back via [`SupervisorRelay::complete`].
+/// Result of a relayed KDC round-trip: the raw framed KDC reply on
+/// success, or a human-readable relay/supervisor error on failure.
+type KdcRelayResult = Result<Vec<u8>, String>;
+
+pub struct SupervisorRelay {
+    tx: mpsc::UnboundedSender<Message>,
+    pending: tokio::sync::Mutex<
+        std::collections::HashMap<u64, tokio::sync::oneshot::Sender<KdcRelayResult>>,
+    >,
+    next_request_id: std::sync::atomic::AtomicU64,
+}
+
+impl std::fmt::Debug for SupervisorRelay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SupervisorRelay").finish_non_exhaustive()
+    }
+}
+
+impl SupervisorRelay {
+    pub fn new(tx: mpsc::UnboundedSender<Message>) -> Self {
+        Self {
+            tx,
+            pending: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            next_request_id: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    /// Relay one framed Kerberos TCP message (AS-REQ / TGS-REQ, 4-byte
+    /// length prefix included) to the supervisor and await the KDC reply.
+    /// Fail-closed: relay unavailability, supervisor-side refusal and
+    /// timeout all surface as `Err` (never an empty reply).
+    pub async fn kdc_round_trip(&self, session_id: &str, data: Vec<u8>) -> Result<Vec<u8>, String> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        self.pending.lock().await.insert(request_id, resp_tx);
+
+        let request = Message::KerberosKdcRequest {
+            request_id,
+            session_id: session_id.to_string(),
+            data: shared::messages::SensitiveBytes::new(data),
+        };
+        if self.tx.send(request).is_err() {
+            self.pending.lock().await.remove(&request_id);
+            return Err("supervisor relay channel closed".to_string());
+        }
+
+        match tokio::time::timeout(KDC_RELAY_TIMEOUT, resp_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                // The oneshot sender was dropped without a response.
+                Err("KDC relay response channel dropped".to_string())
+            }
+            Err(_) => {
+                self.pending.lock().await.remove(&request_id);
+                Err(format!(
+                    "KDC relay timed out after {}s",
+                    KDC_RELAY_TIMEOUT.as_secs()
+                ))
+            }
+        }
+    }
+
+    /// Route a supervisor `KerberosKdcResponse` to the parked requester.
+    /// Unknown `request_id`s (late replies after a timeout) are dropped.
+    pub async fn complete(&self, request_id: u64, result: Result<Vec<u8>, String>) {
+        if let Some(tx) = self.pending.lock().await.remove(&request_id) {
+            let _ = tx.send(result);
+        } else {
+            debug!(
+                request_id,
+                "Dropping KDC relay response with no pending requester"
+            );
+        }
+    }
+}
+
+/// NetworkClient for the Kerberos / Restricted Admin mode: every sspi
+/// `NetworkRequest` is relayed to the supervisor as an IPC payload
+/// ([`Message::KerberosKdcRequest`]), because the sealed proxy cannot
+/// `connect()` anywhere.
+///
+/// Posture (audit §5 / plan phase A):
+/// - Only `NetworkProtocol::Tcp` is accepted. `Udp` (unauthenticated
+///   datagram path), `Http`/`Https` (KDC proxy, KKDCP) are all refused
+///   fail-closed -- the supervisor relay only implements the framed
+///   Kerberos TCP contract, and refusing here keeps the proxy's reachable
+///   surface at zero even if sspi's internals change.
+/// - The request URL host (our sentinel, [`KERBEROS_KDC_SENTINEL_URL`]) is
+///   NOT forwarded: the supervisor always connects to its own configured
+///   KDC, so a compromised proxy cannot steer the exchange elsewhere.
+struct KerberosRelayNetworkClient {
+    relay: Arc<SupervisorRelay>,
+    session_id: String,
+}
+
+impl NetworkClient for KerberosRelayNetworkClient {
+    async fn send(
+        &mut self,
+        request: &ironrdp::connector::sspi::generator::NetworkRequest,
+    ) -> ironrdp::connector::ConnectorResult<Vec<u8>> {
+        use ironrdp::connector::sspi::network_client::NetworkProtocol;
+
+        match request.protocol {
+            NetworkProtocol::Tcp => self
+                .relay
+                .kdc_round_trip(&self.session_id, request.data.clone())
+                .await
+                .map_err(|e| {
+                    warn!(session_id = %self.session_id, error = %e, "KDC relay round-trip failed");
+                    ironrdp::connector::custom_err!("KDC relay", std::io::Error::other(e))
+                }),
+            NetworkProtocol::Udp | NetworkProtocol::Http | NetworkProtocol::Https => {
+                Err(ironrdp::connector::general_err!(
+                    "KDC relay refuses non-TCP transports (fail-closed)"
+                ))
+            }
+        }
+    }
+}
+
+/// NetworkClient actually plugged into the CredSSP sequence, selected from
+/// the session's [`RdpAuthMode`]. An enum (rather than a trait object)
+/// because `ironrdp_tokio::NetworkClient::send` is an RPITIT and is not
+/// dyn-compatible.
+enum SessionNetworkClient {
+    NtlmOnly(NtlmOnlyNetworkClient),
+    KerberosRelay(KerberosRelayNetworkClient),
+}
+
+impl SessionNetworkClient {
+    /// Fail-closed selection: Kerberos mode WITHOUT a supervisor relay
+    /// (e.g. non-sandboxed dev mode where no FD-passing state exists) is
+    /// refused instead of silently downgrading to NTLM.
+    fn for_auth_mode(
+        auth_mode: RdpAuthMode,
+        relay: Option<Arc<SupervisorRelay>>,
+        session_id: &str,
+    ) -> SessionResult<Self> {
+        match auth_mode {
+            RdpAuthMode::Ntlm => Ok(Self::NtlmOnly(NtlmOnlyNetworkClient)),
+            RdpAuthMode::KerberosRestrictedAdmin => match relay {
+                Some(relay) => Ok(Self::KerberosRelay(KerberosRelayNetworkClient {
+                    relay,
+                    session_id: session_id.to_string(),
+                })),
+                None => Err(SessionError::AuthenticationFailed(
+                    "Kerberos mode requires the supervisor KDC relay (no NTLM fallback)"
+                        .to_string(),
+                )),
+            },
+        }
+    }
+}
+
+impl NetworkClient for SessionNetworkClient {
+    async fn send(
+        &mut self,
+        request: &ironrdp::connector::sspi::generator::NetworkRequest,
+    ) -> ironrdp::connector::ConnectorResult<Vec<u8>> {
+        match self {
+            Self::NtlmOnly(client) => client.send(request).await,
+            Self::KerberosRelay(client) => client.send(request).await,
+        }
+    }
+}
+
 /// Classification of an inbound PDU against the MCS message channel during
 /// the connection finalize sequence.
 #[derive(Debug, PartialEq, Eq)]
@@ -1718,6 +1931,81 @@ where
     Ok(FinalizeStepOutcome::SteppedConnector)
 }
 
+/// Local mirror of `ironrdp_tokio::connect_begin` (Kerberos phase A,
+/// audit §7 / "point 7"): behaviorally identical to the upstream loop, with
+/// ONE addition -- the first outbound PDU (always the X.224 Connection
+/// Request, [MS-RDPBCGR] 2.2.1.1) is decoded, `extra_flags` are OR-ed into
+/// its RDP_NEG_REQ flags, and the PDU is re-encoded before hitting the
+/// wire. `ironrdp-connector 0.10` hardcodes `RequestFlags::empty()` in
+/// `connection.rs` and exposes no hook, so Restricted Admin mode
+/// (`RESTRICTED_ADMIN_MODE_REQUIRED`) is impossible without this mirror
+/// (implemented locally: neither fork nor upstream patch, per the phase-A
+/// scoping decision).
+///
+/// The `ShouldUpgrade` token is obtained through the public
+/// `ironrdp_tokio::skip_connect_begin` (the type is `#[non_exhaustive]`
+/// and cannot be constructed here).
+async fn connect_begin_with_nego_flags<S>(
+    framed: &mut Framed<S>,
+    connector: &mut ClientConnector,
+    extra_flags: nego::RequestFlags,
+) -> ConnectorResult<ironrdp_tokio::ShouldUpgrade>
+where
+    S: Sync + FramedRead + FramedWrite,
+{
+    let mut buf = WriteBuf::new();
+    // Nothing to patch when no extra flag is requested (NTLM mode): the
+    // first PDU is then written verbatim, byte-identical to upstream.
+    let mut connection_request_patched = extra_flags.is_empty();
+
+    while !connector.should_perform_security_upgrade() {
+        buf.clear();
+        let written = if let Some(next_pdu_hint) = connector.next_pdu_hint() {
+            let pdu = framed
+                .read_by_hint(next_pdu_hint)
+                .await
+                .map_err(|e| ironrdp::connector::custom_err!("read frame by hint", e))?;
+            connector.step(&pdu, &mut buf)?
+        } else {
+            connector.step_no_input(&mut buf)?
+        };
+
+        if let Some(response_len) = written.size() {
+            if connection_request_patched {
+                framed
+                    .write_all(&buf[..response_len])
+                    .await
+                    .map_err(|e| ironrdp::connector::custom_err!("write all", e))?;
+            } else {
+                connection_request_patched = true;
+                let patched = patch_connection_request_flags(&buf[..response_len], extra_flags)?;
+                framed
+                    .write_all(&patched)
+                    .await
+                    .map_err(|e| ironrdp::connector::custom_err!("write all", e))?;
+            }
+        }
+    }
+
+    Ok(ironrdp_tokio::skip_connect_begin(connector))
+}
+
+/// Decode an X.224 Connection Request PDU, OR `extra_flags` into its
+/// RDP_NEG_REQ flags, and re-encode it. Errors are fail-closed: a PDU that
+/// does not decode as a Connection Request aborts the handshake rather than
+/// being silently written unpatched (the flag is a security property in
+/// Restricted Admin mode).
+fn patch_connection_request_flags(
+    pdu: &[u8],
+    extra_flags: nego::RequestFlags,
+) -> ConnectorResult<Vec<u8>> {
+    let X224(mut request): X224<nego::ConnectionRequest> = ironrdp::core::decode(pdu)
+        .map_err(|e| ironrdp::connector::custom_err!("decode X224 ConnectionRequest", e))?;
+    request.flags |= extra_flags;
+    ironrdp::core::encode_vec(&X224(request))
+        .map_err(|e| ironrdp::connector::custom_err!("encode X224 ConnectionRequest", e))
+}
+
 /// Local replacement for `ironrdp_tokio::connect_finalize` that shields the
 /// connector state machine from message-channel PDUs.
 ///
@@ -1727,16 +2015,18 @@ where
 /// (RTT) or swallowed instead of being fed to the connector. This closes the
 /// upstream gap where an auto-detect PDU interleaved with the licensing
 /// exchange kills the connection with a license decode error.
-async fn connect_finalize_with_message_channel_demux<S>(
+async fn connect_finalize_with_message_channel_demux<S, N>(
     _upgraded: Upgraded,
     mut connector: ClientConnector,
     framed: &mut Framed<S>,
-    network_client: &mut NtlmOnlyNetworkClient,
+    network_client: &mut N,
     server_name: connector::ServerName,
     server_public_key: Vec<u8>,
+    auth_mode: RdpAuthMode,
 ) -> ConnectorResult<ConnectionResult>
 where
     S: FramedRead + FramedWrite,
+    N: NetworkClient,
 {
     let mut buf = WriteBuf::new();
 
@@ -1748,6 +2038,7 @@ where
             &mut buf,
             server_name,
             server_public_key,
+            auth_mode,
         )
         .await?;
     }
@@ -1764,19 +2055,23 @@ where
 }
 
 /// CredSSP/NLA sequence, mirrored from `ironrdp_async::connect_finalize`
-/// (the upstream helper is private). The NTLM-only posture is preserved:
-/// the network client is only consulted when the security package needs the
-/// network (Kerberos KDC), which [`NtlmOnlyNetworkClient`] refuses.
-async fn perform_credssp_step<S>(
+/// (the upstream helper is private). In NTLM mode the historical posture is
+/// preserved bit-for-bit ([`NtlmOnlyNetworkClient`] refuses any network
+/// request). In Kerberos / Restricted Admin mode the sequence runs
+/// credential-less and the network client relays KDC exchanges to the
+/// supervisor.
+async fn perform_credssp_step<S, N>(
     connector: &mut ClientConnector,
     framed: &mut Framed<S>,
-    network_client: &mut NtlmOnlyNetworkClient,
+    network_client: &mut N,
     buf: &mut WriteBuf,
     server_name: connector::ServerName,
     server_public_key: Vec<u8>,
+    auth_mode: RdpAuthMode,
 ) -> ConnectorResult<()>
 where
     S: FramedRead + FramedWrite,
+    N: NetworkClient,
 {
     let selected_protocol = match connector.state {
         ClientConnectorState::Credssp {
@@ -1789,13 +2084,13 @@ where
         }
     };
 
-    let (mut sequence, mut ts_request) = CredsspSequence::init(
-        connector.config.credentials.clone(),
+    let (mut sequence, mut ts_request) = LocalCredsspSequence::init(
+        &connector.config.credentials,
         connector.config.domain.as_deref(),
         selected_protocol,
         server_name,
         server_public_key,
-        None,
+        auth_mode,
     )?;
 
     loop {
@@ -1846,6 +2141,279 @@ where
     connector.mark_credssp_as_done();
 
     Ok(())
+}
+
+/// Sentinel KDC URL handed to sspi in Kerberos mode.
+///
+/// sspi 0.21.2 resolves the KDC as follows when `KerberosConfig.kdc_url` is
+/// `None`: `SSPI_KDC_URL*` env vars, then `/etc/krb5.conf`, then DNS SRV --
+/// all unavailable inside the sealed sandbox. Providing a `tcp://` URL
+/// short-circuits that detection (`Kerberos::get_kdc` uses the pinned URL
+/// verbatim) and forces every KDC exchange through a
+/// `NetworkRequest { protocol: Tcp, .. }`. The HOST part is meaningless by
+/// design: the supervisor relay ignores it and always connects to its own
+/// `[auth.kerberos]` configured KDC (SSRF-safe by construction).
+const KERBEROS_KDC_SENTINEL_URL: &str = "tcp://kdc-via-supervisor:88";
+
+/// PDU hint for a CredSSP TsRequest frame (local mirror of the private
+/// upstream `CredsspTsRequestHint`).
+#[derive(Clone, Copy, Debug)]
+struct CredsspTsRequestHint;
+
+const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
+
+impl PduHint for CredsspTsRequestHint {
+    fn find_size(&self, bytes: &[u8]) -> ironrdp::core::DecodeResult<Option<(bool, usize)>> {
+        match sspi_credssp::TsRequest::read_length(bytes) {
+            Ok(length) => Ok(Some((true, length))),
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
+            Err(e) => Err(ironrdp::core::other_err_with_source(
+                "CredsspTsRequestHint",
+                "invalid TsRequest length",
+                e,
+            )),
+        }
+    }
+}
+
+/// PDU hint for an Early User Authorization Result frame (local mirror of
+/// the private upstream `CredsspEarlyUserAuthResultHint`).
+#[derive(Clone, Copy, Debug)]
+struct CredsspEarlyUserAuthResultHint;
+
+const CREDSSP_EARLY_USER_AUTH_RESULT_HINT: CredsspEarlyUserAuthResultHint =
+    CredsspEarlyUserAuthResultHint;
+
+impl PduHint for CredsspEarlyUserAuthResultHint {
+    fn find_size(&self, _: &[u8]) -> ironrdp::core::DecodeResult<Option<(bool, usize)>> {
+        Ok(Some((true, sspi_credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE)))
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum LocalCredsspState {
+    Ongoing,
+    EarlyUserAuthResult,
+    Finished,
+}
+
+/// Local mirror of `ironrdp-connector 0.10`'s `CredsspSequence` (Kerberos
+/// phase A, audit §7 / "point 7").
+///
+/// Upstream hardcodes `CredSspMode::WithCredentials` (`credssp.rs` L161) and
+/// derives the sspi `ClientMode` solely from an optional KDC-proxy config,
+/// so neither Restricted Admin (credential-less TSCredentials) nor a
+/// fail-closed Kerberos-only package list is reachable through its API. This
+/// mirror keeps the exact upstream state machine (Ongoing ->
+/// EarlyUserAuthResult -> Finished, same PduHints, same TsRequest wire
+/// handling -- everything it touches is public in `sspi 0.21`) and
+/// parameterizes the posture by [`RdpAuthMode`]:
+///
+/// - `Ntlm`: `ClientMode::Ntlm` + `WithCredentials`, byte-identical to the
+///   historical behavior.
+/// - `KerberosRestrictedAdmin`: `ClientMode::Negotiate` restricted to the
+///   `kerberos` package (an NTLM downgrade attempt by the server FAILS the
+///   sequence instead of silently delegating the password) +
+///   `CredentialLess` (the TSCredentials sent after `pubKeyAuth` carry an
+///   EMPTY identity; the password only feeds the in-memory AS-REQ
+///   pre-authentication).
+#[derive(Debug)]
+struct LocalCredsspSequence {
+    client: CredSspClient,
+    state: LocalCredsspState,
+    selected_protocol: nego::SecurityProtocol,
+}
+
+impl LocalCredsspSequence {
+    /// `server_name` must be the actual target server hostname; it seeds
+    /// both the `TERMSRV/<host>` SPN and the sspi client computer name
+    /// (mirroring upstream).
+    fn init(
+        credentials: &Credentials,
+        domain: Option<&str>,
+        protocol: nego::SecurityProtocol,
+        server_name: connector::ServerName,
+        server_public_key: Vec<u8>,
+        auth_mode: RdpAuthMode,
+    ) -> ConnectorResult<(Self, sspi_credssp::TsRequest)> {
+        let sspi_credentials: sspi::Credentials = match credentials {
+            Credentials::UsernamePassword { username, password } => {
+                let username = sspi::Username::new(username, domain)
+                    .map_err(|e| ironrdp::connector::custom_err!("invalid username", e))?;
+                sspi::AuthIdentity {
+                    username,
+                    password: password.to_owned().into(),
+                }
+                .into()
+            }
+            _ => {
+                return Err(ironrdp::connector::general_err!(
+                    "only username/password credentials are supported"
+                ));
+            }
+        };
+
+        let server_name = server_name.into_inner();
+        let service_principal_name = format!("TERMSRV/{server_name}");
+
+        let (credssp_mode, client_mode) = match auth_mode {
+            RdpAuthMode::Ntlm => (
+                CredSspMode::WithCredentials,
+                sspi_credssp::ClientMode::Ntlm(sspi::ntlm::NtlmConfig::default()),
+            ),
+            RdpAuthMode::KerberosRestrictedAdmin => {
+                let kdc_url = sspi::kerberos::config::parse_kdc_url(KERBEROS_KDC_SENTINEL_URL);
+                let kerberos_config = sspi::KerberosConfig {
+                    kdc_url,
+                    client_computer_name: server_name.clone(),
+                };
+                (
+                    CredSspMode::CredentialLess,
+                    sspi_credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
+                        protocol_config: Box::new(kerberos_config),
+                        // Fail-closed: only the Kerberos package is
+                        // permitted; a server-driven NTLM downgrade aborts
+                        // the sequence.
+                        package_list: Some("kerberos".to_owned()),
+                        client_computer_name: server_name,
+                    }),
+                )
+            }
+        };
+
+        let client = CredSspClient::new(
+            server_public_key,
+            sspi_credentials,
+            credssp_mode,
+            client_mode,
+            service_principal_name,
+        )
+        .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
+
+        let sequence = Self {
+            client,
+            state: LocalCredsspState::Ongoing,
+            selected_protocol: protocol,
+        };
+
+        let initial_request = sspi_credssp::TsRequest::default();
+
+        Ok((sequence, initial_request))
+    }
+
+    fn next_pdu_hint(&self) -> Option<&dyn PduHint> {
+        match self.state {
+            LocalCredsspState::Ongoing => Some(&CREDSSP_TS_REQUEST_HINT),
+            LocalCredsspState::EarlyUserAuthResult => Some(&CREDSSP_EARLY_USER_AUTH_RESULT_HINT),
+            LocalCredsspState::Finished => None,
+        }
+    }
+
+    /// Returns `Some(ts_request)` when a TS request is received from the
+    /// server, and `None` when an early user auth result PDU is received
+    /// instead.
+    fn decode_server_message(
+        &mut self,
+        input: &[u8],
+    ) -> ConnectorResult<Option<sspi_credssp::TsRequest>> {
+        match self.state {
+            LocalCredsspState::Ongoing => {
+                let message = sspi_credssp::TsRequest::from_buffer(input)
+                    .map_err(|e| ironrdp::connector::custom_err!("TsRequest", e))?;
+                Ok(Some(message))
+            }
+            LocalCredsspState::EarlyUserAuthResult => {
+                let early_user_auth_result = sspi_credssp::EarlyUserAuthResult::from_buffer(input)
+                    .map_err(|e| ironrdp::connector::custom_err!("EarlyUserAuthResult", e))?;
+
+                match early_user_auth_result {
+                    sspi_credssp::EarlyUserAuthResult::Success => {
+                        self.state = LocalCredsspState::Finished;
+                        Ok(None)
+                    }
+                    sspi_credssp::EarlyUserAuthResult::AccessDenied => Err(ConnectorError::new(
+                        "CredSSP",
+                        ConnectorErrorKind::AccessDenied,
+                    )),
+                }
+            }
+            LocalCredsspState::Finished => Err(ironrdp::connector::general_err!(
+                "attempted to feed server request to CredSSP sequence in an unexpected state"
+            )),
+        }
+    }
+
+    fn process_ts_request(
+        &mut self,
+        request: sspi_credssp::TsRequest,
+    ) -> sspi::generator::Generator<
+        '_,
+        sspi::generator::NetworkRequest,
+        sspi::Result<Vec<u8>>,
+        sspi::Result<ClientState>,
+    > {
+        self.client.process(request)
+    }
+
+    fn handle_process_result(
+        &mut self,
+        result: ClientState,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
+        let (size, next_state) = match self.state {
+            LocalCredsspState::Ongoing => {
+                let (ts_request_from_client, next_state) = match result {
+                    ClientState::ReplyNeeded(ts_request) => {
+                        (ts_request, LocalCredsspState::Ongoing)
+                    }
+                    ClientState::FinalMessage(ts_request) => (
+                        ts_request,
+                        if self
+                            .selected_protocol
+                            .contains(nego::SecurityProtocol::HYBRID_EX)
+                        {
+                            LocalCredsspState::EarlyUserAuthResult
+                        } else {
+                            LocalCredsspState::Finished
+                        },
+                    ),
+                };
+
+                let written = write_credssp_request(ts_request_from_client, output)?;
+
+                Ok((Written::from_size(written)?, next_state))
+            }
+            LocalCredsspState::EarlyUserAuthResult => {
+                Ok((Written::Nothing, LocalCredsspState::Finished))
+            }
+            LocalCredsspState::Finished => Err(ironrdp::connector::general_err!(
+                "CredSSP sequence is already done"
+            )),
+        }?;
+
+        self.state = next_state;
+
+        Ok(size)
+    }
+}
+
+/// Encode a client TsRequest into the output buffer (local mirror of the
+/// private upstream `write_credssp_request`).
+fn write_credssp_request(
+    ts_request: sspi_credssp::TsRequest,
+    output: &mut WriteBuf,
+) -> ConnectorResult<usize> {
+    let length = usize::from(ts_request.buffer_len());
+
+    let unfilled_buffer = output.unfilled_to(length);
+
+    ts_request
+        .encode_ts_request(unfilled_buffer)
+        .map_err(|e| ironrdp::connector::custom_err!("TsRequest", e))?;
+
+    output.advance(length);
+
+    Ok(length)
 }
 
 /// Parameters renegotiated by a completed Deactivation-Reactivation
@@ -2568,6 +3136,96 @@ mod tests {
         assert!(
             source[loop_start..].contains("finalize_step(&mut connector, framed, &mut buf)"),
             "the finalize loop must drive the demuxed finalize_step"
+        );
+    }
+
+    /// Source pin (Kerberos phase A / point 7): the local `connect_begin`
+    /// mirror sets the RESTRICTED_ADMIN_MODE_REQUIRED nego flag ONLY in
+    /// Kerberos mode, and the connect() path uses the local mirror rather
+    /// than the upstream `connect_begin`.
+    #[test]
+    fn test_connect_begin_sets_restricted_admin_flag_in_kerberos_mode() {
+        let source = include_str!("session.rs");
+        assert!(
+            source.contains(
+                "connect_begin_with_nego_flags(&mut framed, &mut connector, extra_nego_flags)"
+            ),
+            "connect() must drive the local connect_begin mirror"
+        );
+        // Needle built at runtime so this pin does not match itself. The
+        // upstream connect_begin remains legitimate ONLY in the cert-fetch
+        // TOFU path (no CredSSP, no nego flag needed): pin that the sole
+        // occurrence lives after fetch_server_cert, i.e. outside connect().
+        let upstream_call = format!("ironrdp_tokio::{}(&mut framed", "connect_begin");
+        let occurrences: Vec<usize> = source
+            .match_indices(&upstream_call)
+            .map(|(i, _)| i)
+            .collect();
+        let fetch_start = source
+            .find("async fn fetch_server_cert")
+            .expect("fetch_server_cert must exist");
+        assert!(
+            occurrences.iter().all(|&i| i > fetch_start),
+            "the upstream connect_begin is only allowed in the cert-fetch \
+             (TOFU) path, never in the authenticated connect() path"
+        );
+        assert_eq!(
+            occurrences.len(),
+            1,
+            "exactly one upstream connect_begin call (cert-fetch) is expected"
+        );
+        let sel_start = source
+            .find("let extra_nego_flags = match config.auth_mode {")
+            .expect("connect() must select nego flags from auth_mode");
+        let sel = &source[sel_start..sel_start + 320];
+        assert!(
+            sel.contains("RdpAuthMode::Ntlm => nego::RequestFlags::empty()"),
+            "NTLM mode must add no extra nego flag"
+        );
+        assert!(
+            sel.contains("RESTRICTED_ADMIN_MODE_REQUIRED"),
+            "Kerberos mode must set RESTRICTED_ADMIN_MODE_REQUIRED"
+        );
+    }
+
+    /// Source pin (Kerberos phase A / point 7): the local CredSSP mirror
+    /// uses `CredentialLess` + a Kerberos-only package list in Restricted
+    /// Admin mode, and keeps `WithCredentials` + NTLM otherwise.
+    #[test]
+    fn test_credssp_uses_credentialless_in_kerberos_mode() {
+        let source = include_str!("session.rs");
+        let fn_start = source
+            .find("impl LocalCredsspSequence {")
+            .expect("LocalCredsspSequence must exist");
+        let body = &source[fn_start..];
+        assert!(
+            body.contains("RdpAuthMode::Ntlm => (")
+                && body.contains("CredSspMode::WithCredentials")
+                && body.contains("ClientMode::Ntlm"),
+            "NTLM mode must keep WithCredentials + ClientMode::Ntlm"
+        );
+        assert!(
+            body.contains("CredSspMode::CredentialLess"),
+            "Kerberos mode must use CredentialLess (Restricted Admin)"
+        );
+        assert!(
+            body.contains("package_list: Some(\"kerberos\".to_owned())"),
+            "Kerberos mode must fail-closed to the kerberos package (no NTLM downgrade)"
+        );
+    }
+
+    /// Source pin: the Kerberos relay NetworkClient refuses every non-TCP
+    /// transport fail-closed.
+    #[test]
+    fn test_kerberos_relay_refuses_non_tcp() {
+        let source = include_str!("session.rs");
+        let fn_start = source
+            .find("impl NetworkClient for KerberosRelayNetworkClient")
+            .expect("KerberosRelayNetworkClient must impl NetworkClient");
+        let body = &source[fn_start..fn_start + 900];
+        assert!(
+            body.contains("NetworkProtocol::Udp | NetworkProtocol::Http | NetworkProtocol::Https"),
+            "the relay must explicitly refuse Udp/Http/Https"
         );
     }
 
@@ -3654,6 +4312,8 @@ mod tests {
             desktop_height: 1080,
             expected_cert_fingerprint: "SHA256:dGVzdA==".to_string(),
             preconnected_fd: None,
+            auth_mode: RdpAuthMode::Ntlm,
+            supervisor_relay: None,
         };
 
         assert_eq!(config.session_id, "test-session");
@@ -3679,6 +4339,8 @@ mod tests {
             desktop_height: 720,
             expected_cert_fingerprint: "SHA256:dGVzdA==".to_string(),
             preconnected_fd: None,
+            auth_mode: RdpAuthMode::Ntlm,
+            supervisor_relay: None,
         };
 
         assert!(config.password.is_none());
@@ -3706,6 +4368,8 @@ mod tests {
             desktop_height: 1080,
             expected_cert_fingerprint: "SHA256:dGVzdA==".to_string(),
             preconnected_fd: Some(fd),
+            auth_mode: RdpAuthMode::Ntlm,
+            supervisor_relay: None,
         };
 
         assert!(config.preconnected_fd.is_some());
@@ -4441,6 +5105,98 @@ mod tests {
                  load-bearing VAU-001 regression: pre-fix the accept-any \
                  verifier returned Ok here."
             );
+        }
+    }
+
+    /// Invariant-based tests for the Kerberos / Restricted Admin auth mode
+    /// (phase A). These pin the fail-closed behaviors on the wire path.
+    mod kerberos_auth_mode {
+        use super::*;
+        use ironrdp::connector::sspi::NetworkProtocol;
+        use ironrdp::connector::sspi::generator::NetworkRequest;
+        use proptest::prelude::*;
+
+        /// The relay refuses any non-TCP transport, for any payload. A
+        /// dummy relay channel is fine: non-TCP returns before it is used.
+        fn assert_relay_refuses(protocol: NetworkProtocol, data: Vec<u8>) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("runtime");
+            rt.block_on(async {
+                let (tx, _rx) = mpsc::unbounded_channel::<Message>();
+                let relay = Arc::new(SupervisorRelay::new(tx));
+                let mut client = KerberosRelayNetworkClient {
+                    relay,
+                    session_id: "sess".to_string(),
+                };
+                let request = NetworkRequest {
+                    protocol,
+                    url: url::Url::parse(KERBEROS_KDC_SENTINEL_URL).expect("url"),
+                    data,
+                };
+                let result = client.send(&request).await;
+                prop_assert!(
+                    result.is_err(),
+                    "relay must refuse {:?} (fail-closed)",
+                    protocol
+                );
+                Ok(())
+            })
+            .expect("prop body");
+        }
+
+        proptest! {
+            /// `RdpAuthMode` round-trips through its canonical wire form for
+            /// both variants; unknown strings never parse to a variant.
+            #[test]
+            fn auth_mode_parse_round_trips(garbage in "[a-z_]{0,32}") {
+                for mode in [RdpAuthMode::Ntlm, RdpAuthMode::KerberosRestrictedAdmin] {
+                    prop_assert_eq!(RdpAuthMode::parse(mode.as_str()), Some(mode));
+                }
+                // A random lowercase string only parses if it IS a canonical
+                // form; otherwise it must be None (never a silent default).
+                let parsed = RdpAuthMode::parse(&garbage);
+                if garbage != "ntlm" && garbage != "kerberos_restricted_admin" {
+                    prop_assert_eq!(parsed, None);
+                }
+            }
+
+            /// The relay refuses UDP, HTTP and HTTPS for ANY payload.
+            #[test]
+            fn relay_refuses_non_tcp_for_any_payload(
+                data in proptest::collection::vec(any::<u8>(), 0..64),
+            ) {
+                assert_relay_refuses(NetworkProtocol::Udp, data.clone());
+                assert_relay_refuses(NetworkProtocol::Http, data.clone());
+                assert_relay_refuses(NetworkProtocol::Https, data);
+            }
+        }
+
+        /// Kerberos mode WITHOUT a supervisor relay fails closed (no NTLM
+        /// fallback), while NTLM mode always builds its network-less client.
+        #[test]
+        fn session_network_client_fails_closed_without_relay() {
+            let ntlm = SessionNetworkClient::for_auth_mode(RdpAuthMode::Ntlm, None, "s");
+            assert!(matches!(ntlm, Ok(SessionNetworkClient::NtlmOnly(_))));
+
+            let kerb_no_relay = SessionNetworkClient::for_auth_mode(
+                RdpAuthMode::KerberosRestrictedAdmin,
+                None,
+                "s",
+            );
+            assert!(
+                kerb_no_relay.is_err(),
+                "Kerberos mode must fail closed without a supervisor relay"
+            );
+
+            let (tx, _rx) = mpsc::unbounded_channel::<Message>();
+            let relay = Arc::new(SupervisorRelay::new(tx));
+            let kerb = SessionNetworkClient::for_auth_mode(
+                RdpAuthMode::KerberosRestrictedAdmin,
+                Some(relay),
+                "s",
+            );
+            assert!(matches!(kerb, Ok(SessionNetworkClient::KerberosRelay(_))));
         }
     }
 }

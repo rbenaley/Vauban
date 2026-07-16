@@ -372,6 +372,10 @@ async fn run_service() -> Result<()> {
     // single-handedly authorise outbound RDP connections (the SSH-side
     // bypass identified in the post-MFA security audit could be replayed
     // verbatim against RDP).
+    // rustfmt::skip: the single-line `from_env(PROTOCOL_RDP, ...)` form is
+    // pinned by `test_proxy_rdp_initialises_access_guard_from_env`; letting
+    // rustfmt wrap the arguments would split the grepped substring.
+    #[rustfmt::skip]
     let access_wiring: AccessGuardWiring =
         AccessGuard::from_env(PROTOCOL_RDP, Arc::clone(&state) as Arc<dyn AccessGuardMetrics>)
             .context(
@@ -467,6 +471,14 @@ async fn main_loop(
     let (response_tx, mut response_rx) = mpsc::unbounded_channel::<Message>();
     let pending_connections = fd_passing.as_ref().map(|fp| Arc::clone(&fp.pending));
 
+    // Kerberos KDC relay (payload relay, no FD): sessions in
+    // KerberosRestrictedAdmin mode push KerberosKdcRequest messages into
+    // this channel; the loop below drains it into the supervisor pipe and
+    // routes the matching KerberosKdcResponse back through the relay's
+    // pending map (same correlation pattern as pending_connections).
+    let (supervisor_out_tx, mut supervisor_out_rx) = mpsc::unbounded_channel::<Message>();
+    let supervisor_relay = Arc::new(session::SupervisorRelay::new(supervisor_out_tx));
+
     loop {
         if state.shutdown_requested.load(Ordering::SeqCst) {
             info!("Shutdown flag set, exiting main loop to run destructors");
@@ -500,6 +512,14 @@ async fn main_loop(
                             warn!(session_id = %session_id, error = ?error, "TCP connection failed");
                         }
                     }
+                    Ok(Message::KerberosKdcResponse { request_id, success, data, error, .. }) => {
+                        let result = if success {
+                            Ok(data.into_inner())
+                        } else {
+                            Err(error.unwrap_or_else(|| "KDC relay failed".to_string()))
+                        };
+                        supervisor_relay.complete(request_id, result).await;
+                    }
                     Ok(msg) => {
                         debug!(?msg, "Received non-control message from supervisor");
                     }
@@ -526,6 +546,7 @@ async fn main_loop(
                             pending_connections.clone(),
                             audit_tx.clone(),
                             Arc::clone(&access_guard),
+                            Arc::clone(&supervisor_relay),
                         ).await {
                             warn!(error = %e, "Error handling web message");
                             state.increment_failed();
@@ -550,6 +571,12 @@ async fn main_loop(
             Some(response) = response_rx.recv() => {
                 if let Err(e) = web_channel.send(&response) {
                     warn!(error = %e, "Failed to send response to web");
+                }
+            }
+
+            Some(kdc_request) = supervisor_out_rx.recv() => {
+                if let Err(e) = supervisor_channel.send(&kdc_request) {
+                    warn!(error = %e, "Failed to relay KDC request to supervisor");
                 }
             }
         }
@@ -603,6 +630,7 @@ async fn handle_web_message(
     pending_connections: Option<PendingConnections>,
     audit_tx: Option<mpsc::Sender<Message>>,
     access_guard: Arc<AccessGuard>,
+    supervisor_relay: Arc<session::SupervisorRelay>,
 ) -> Result<()> {
     match msg {
         Message::RdpSessionOpen {
@@ -619,6 +647,7 @@ async fn handle_web_message(
             desktop_height,
             expected_cert_fingerprint,
             session_token,
+            rdp_auth_mode,
         } => {
             debug!(
                 session_id = %session_id,
@@ -713,6 +742,8 @@ async fn handle_web_message(
                 desktop_height,
                 expected_cert_fingerprint,
                 preconnected_fd,
+                auth_mode: rdp_auth_mode,
+                supervisor_relay: Some(supervisor_relay),
             };
 
             // Spawn session creation in a separate task to avoid blocking

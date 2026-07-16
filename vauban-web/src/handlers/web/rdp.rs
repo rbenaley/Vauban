@@ -124,6 +124,16 @@ pub async fn connect_rdp(
         .get("domain")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    // NLA auth mode: parse the stored value through the closed-set parser
+    // (unknown / absent ⇒ ntlm). Carried into RdpSessionOpenRequest;
+    // fail-closed at the proxy (no NTLM fallback in Kerberos mode).
+    let rdp_auth_mode = shared::messages::RdpAuthMode::parse(
+        config
+            .get("rdp_auth_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+    )
+    .unwrap_or_default();
 
     let username = form
         .username
@@ -488,6 +498,7 @@ pub async fn connect_rdp(
         desktop_height: 720,
         expected_cert_fingerprint: Some(expected_cert_fingerprint),
         session_token: session_token_bytes,
+        rdp_auth_mode,
     };
 
     // Request the proxy to open the RDP session

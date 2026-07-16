@@ -50,6 +50,9 @@ pub struct AssetEdit {
     pub rdp_server_cert_fingerprint: Option<String>,
     /// Windows AD domain extracted from connection_config (RDP only).
     pub rdp_domain: String,
+    /// NLA auth mode (`ntlm` | `kerberos_restricted_admin`) extracted from
+    /// connection_config (RDP only), normalised to the closed set.
+    pub rdp_auth_mode: String,
 }
 
 #[derive(Template)]
@@ -95,6 +98,7 @@ mod tests {
             ssh_host_key_fingerprint: None,
             rdp_server_cert_fingerprint: None,
             rdp_domain: String::new(),
+            rdp_auth_mode: "ntlm".to_string(),
         }
     }
 
