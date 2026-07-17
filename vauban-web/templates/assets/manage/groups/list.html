@@ -15,7 +15,7 @@
             </p>
         </div>
         <div class="mt-4 flex md:ml-4 md:mt-0">
-            <a href="/assets/groups/new"
+            <a href="/assets/manage/groups/new"
                class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
                 <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                     <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
@@ -42,7 +42,7 @@
                    value="{{ search.as_deref().unwrap_or_default() }}"
                    placeholder="Search groups..."
                    autocomplete="off"
-                   hx-get="/assets/groups"
+                   hx-get="/assets/manage/groups"
                    hx-trigger="input changed delay:300ms, search"
                    hx-target="#group-list-container"
                    hx-select="#group-list-container"
@@ -96,7 +96,7 @@
                     </div>
                     <div class="ml-4 flex-1">
                         <h3 class="text-lg font-medium text-gray-900 dark:text-white">
-                            <a href="/assets/groups/{{ group.uuid }}" class="hover:text-vauban-600 dark:hover:text-vauban-400">
+                            <a href="/assets/manage/groups/{{ group.uuid }}" class="hover:text-vauban-600 dark:hover:text-vauban-400">
                                 {{ group.name }}
                             </a>
                         </h3>
@@ -113,7 +113,7 @@
                         </svg>
                         {{ group.asset_count }} asset{% if group.asset_count != 1 %}s{% endif %}
                     </div>
-                    <a href="/assets/groups/{{ group.uuid }}"
+                    <a href="/assets/manage/groups/{{ group.uuid }}"
                        class="text-sm text-vauban-600 hover:text-vauban-900 dark:text-vauban-400 dark:hover:text-vauban-300">
                         View →
                     </a>
@@ -132,7 +132,7 @@
             <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No matching groups</h3>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
                 Try a different search term or
-                <a href="/assets/groups" class="text-vauban-600 hover:underline">clear the search</a>.
+                <a href="/assets/manage/groups" class="text-vauban-600 hover:underline">clear the search</a>.
             </p>
         </div>
     </div>
@@ -147,7 +147,7 @@
                 Get started by creating your first asset group.
             </p>
             <div class="mt-6">
-                <a href="/assets/groups/new"
+                <a href="/assets/manage/groups/new"
                    class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
                     <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                         <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>

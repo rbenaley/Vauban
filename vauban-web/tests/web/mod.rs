@@ -27,6 +27,8 @@ pub mod assets_name_uniqueness_e2e_test;
 pub mod audit_authors_render_test;
 pub mod audit_instrumentation_test;
 pub mod auth_expiry_redirect_test;
+pub mod bac_gate_matrix_test;
+pub mod bac_source_invariants_test;
 pub mod bastion_watch_iacs_count_test;
 pub mod bastion_watch_test;
 pub mod boot_smoke_test;

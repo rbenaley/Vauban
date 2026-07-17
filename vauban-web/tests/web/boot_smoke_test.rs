@@ -79,6 +79,18 @@ fn main_rs_does_not_carry_legacy_asset_redirects() {
         "\"/api/v1/assets/{uuid}/ssh-host-key\"",
         "\"/api/v1/assets/groups\"",
         "\"/api/v1/assets/groups/{uuid}/assets\"",
+        // BAC hardening: asset groups moved under
+        // `/assets/manage/groups/*`. The flat pre-move web paths must
+        // never come back (they lived OUTSIDE the
+        // `require_assets_manage` nest and leaked the catalogue to
+        // any authenticated user).
+        "\"/assets/groups\"",
+        "\"/assets/groups/new\"",
+        "\"/assets/groups/{uuid}\"",
+        "\"/assets/groups/{uuid}/edit\"",
+        "\"/assets/groups/{uuid}/delete\"",
+        "\"/assets/groups/{uuid}/add-asset\"",
+        "\"/assets/groups/{uuid}/remove-asset\"",
     ];
     for p in forbidden_paths {
         assert!(

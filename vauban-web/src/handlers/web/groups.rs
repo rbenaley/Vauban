@@ -21,9 +21,14 @@ fn format_rfc3339_datetime(s: &str, tz: chrono_tz::Tz) -> String {
 pub async fn group_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
+    if !perms.groups_read {
+        return Err(AppError::forbidden("groups:read"));
+    }
+
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Groups".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/accounts/groups");
@@ -132,12 +137,18 @@ pub async fn group_list(
 pub async fn group_detail(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Response {
     let flash = incoming_flash.flash();
+
+    if !perms.groups_read {
+        return AppError::forbidden("groups:read").into_response();
+    }
+
     let user = Some(user_context_from_auth(&auth_user));
 
     // Convert incoming flash messages to template FlashMessages

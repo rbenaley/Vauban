@@ -5,7 +5,7 @@
 //!
 //! - `/assets`             (`asset_list.html`)
 //! - `/assets/manage`      (`assets/manage/list.html`)
-//! - `/assets/groups`      (`assets/group_list.html`)
+//! - `/assets/manage/groups`      (`assets/group_list.html`)
 //! - `/accounts/users`     (`accounts/user_list.html`)
 //! - `/accounts/groups`    (`accounts/group_list.html`)
 //! - `/sessions`           (`sessions/session_list.html`)
@@ -306,7 +306,7 @@ fn assets_manage_list_filtered_empty_state_shows_no_match_branch() {
 }
 
 // ---------------------------------------------------------------------------
-// /assets/groups - asset groups (admin)
+// /assets/manage/groups - asset groups (admin)
 // ---------------------------------------------------------------------------
 
 fn make_asset_group_list(
@@ -333,12 +333,12 @@ fn asset_groups_list_has_live_htmx_filter_contract() {
         .expect("render");
     assert_htmx_live_filter(
         &html,
-        "/assets/groups",
+        "/assets/manage/groups",
         "group-list-container",
         &["[name='search']"],
-        "/assets/groups",
+        "/assets/manage/groups",
     );
-    assert_no_legacy_filter_form(&html, "/assets/groups");
+    assert_no_legacy_filter_form(&html, "/assets/manage/groups");
 }
 
 #[test]
@@ -349,7 +349,7 @@ fn asset_groups_list_filtered_empty_state_shows_no_match_branch() {
     let lowered = html.to_ascii_lowercase();
     assert!(
         lowered.contains("no matching") || (lowered.contains("no") && lowered.contains("group")),
-        "/assets/groups must render a contextual 'no matching' empty state when search is set"
+        "/assets/manage/groups must render a contextual 'no matching' empty state when search is set"
     );
 }
 
@@ -729,7 +729,7 @@ fn every_live_filter_page_renders_an_indicator() {
                 .unwrap(),
         ),
         (
-            "/assets/groups",
+            "/assets/manage/groups",
             make_asset_group_list(vec![], None).render().unwrap(),
         ),
         (

@@ -39,12 +39,20 @@ fn is_virtual_asset_group_uuid(uuid_str: &str) -> bool {
 pub async fn asset_group_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Defence-in-depth on top of the `require_assets_manage`
+    // route_layer: a routing misconfiguration on either side is
+    // caught by the other.
+    if !perms.assets_manage {
+        return Err(AppError::forbidden("assets:manage"));
+    }
+
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Asset Groups".to_string(), user.clone(), browser_tz.0)
-        .with_current_path("/assets/groups");
+        .with_current_path("/assets/manage/groups");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -131,11 +139,19 @@ pub async fn asset_group_detail(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     jar: CookieJar,
     browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Response {
     let flash = incoming_flash.flash();
+
+    // Defence-in-depth on top of the `require_assets_manage`
+    // route_layer (see `asset_group_list`).
+    if !perms.assets_manage {
+        return AppError::forbidden("assets:manage").into_response();
+    }
+
     let user = Some(user_context_from_auth(&auth_user));
 
     let csrf_token = jar
@@ -144,14 +160,20 @@ pub async fn asset_group_detail(
         .unwrap_or_default();
 
     if ::uuid::Uuid::parse_str(&uuid_str).is_err() {
-        return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+        return flash_redirect(
+            flash.error("Invalid group identifier"),
+            "/assets/manage/groups",
+        );
     }
 
     // Virtual "All assets" group is system-managed and never directly
     // browsable: present it as not found so it stays invisible in the
     // asset-groups index.
     if is_virtual_asset_group_uuid(&uuid_str) {
-        return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+        return flash_redirect(
+            flash.error("Asset group not found"),
+            "/assets/manage/groups",
+        );
     }
 
     let client = &state.access_client;
@@ -163,7 +185,10 @@ pub async fn asset_group_detail(
         let group_info = match client.get_asset_group(&uuid_str).await {
             Ok(info) => info,
             Err(_) => {
-                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+                return flash_redirect(
+                    flash.error("Asset group not found"),
+                    "/assets/manage/groups",
+                );
             }
         };
         let mut conn = match state.db_pool.get().await {
@@ -171,7 +196,7 @@ pub async fn asset_group_detail(
             Err(_) => {
                 return flash_redirect(
                     flash.error("Database connection error. Please try again."),
-                    "/assets/groups",
+                    "/assets/manage/groups",
                 );
             }
         };
@@ -188,7 +213,7 @@ pub async fn asset_group_detail(
             Err(_) => {
                 return flash_redirect(
                     flash.error("Database error. Please try again."),
-                    "/assets/groups",
+                    "/assets/manage/groups",
                 );
             }
         };
@@ -257,7 +282,7 @@ pub async fn asset_group_detail(
         user.clone(),
         browser_tz.0,
     )
-    .with_current_path("/assets/groups");
+    .with_current_path("/assets/manage/groups");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -277,7 +302,10 @@ pub async fn asset_group_detail(
 
     match template.render() {
         Ok(html) => Html(html).into_response(),
-        Err(_) => flash_redirect(flash.error("Failed to render page"), "/assets/groups"),
+        Err(_) => flash_redirect(
+            flash.error("Failed to render page"),
+            "/assets/manage/groups",
+        ),
     }
 }
 
@@ -310,7 +338,7 @@ pub async fn asset_group_add_asset_form(
         AssetGroupAddAssetTemplate, AvailableAsset, GroupSummary,
     };
 
-    if !perms.groups_write {
+    if !perms.assets_manage {
         return Err(AppError::Authorization(
             "Only administrators can manage asset group membership".to_string(),
         ));
@@ -437,7 +465,7 @@ pub async fn asset_group_add_asset_form(
         user.clone(),
         browser_tz.0,
     )
-    .with_current_path("/assets/groups")
+    .with_current_path("/assets/manage/groups")
     .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -519,20 +547,23 @@ pub async fn asset_group_add_asset(
     ) {
         return flash_redirect(
             flash.error("Invalid CSRF token. Please refresh the page and try again."),
-            &format!("/assets/groups/{}/add-asset", uuid_str),
+            &format!("/assets/manage/groups/{}/add-asset", uuid_str),
         );
     }
 
-    if !perms.groups_write {
+    if !perms.assets_manage {
         return flash_redirect(
             flash.error("Only administrators can manage asset group membership"),
-            &format!("/assets/groups/{}", uuid_str),
+            &format!("/assets/manage/groups/{}", uuid_str),
         );
     }
 
     // Parse group UUID
     if ::uuid::Uuid::parse_str(&uuid_str).is_err() {
-        return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+        return flash_redirect(
+            flash.error("Invalid group identifier"),
+            "/assets/manage/groups",
+        );
     }
 
     // Defense-in-depth on top of the DB trigger: refuse to even attempt
@@ -540,7 +571,7 @@ pub async fn asset_group_add_asset(
     if is_virtual_asset_group_uuid(&uuid_str) {
         return flash_redirect(
             flash.error("Cannot add assets to the 'All assets' virtual group (system-managed)"),
-            "/assets/groups",
+            "/assets/manage/groups",
         );
     }
 
@@ -548,7 +579,7 @@ pub async fn asset_group_add_asset(
     if form.asset_uuids.is_empty() {
         return flash_redirect(
             flash.error("Please select at least one asset to add"),
-            &format!("/assets/groups/{}/add-asset", uuid_str),
+            &format!("/assets/manage/groups/{}/add-asset", uuid_str),
         );
     }
 
@@ -560,7 +591,7 @@ pub async fn asset_group_add_asset(
             Err(_) => {
                 return flash_redirect(
                     flash.error("Invalid asset identifier"),
-                    &format!("/assets/groups/{}/add-asset", uuid_str),
+                    &format!("/assets/manage/groups/{}/add-asset", uuid_str),
                 );
             }
         }
@@ -572,7 +603,10 @@ pub async fn asset_group_add_asset(
         let group_info = match client.get_asset_group(&uuid_str).await {
             Ok(info) => info,
             Err(_) => {
-                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+                return flash_redirect(
+                    flash.error("Asset group not found"),
+                    "/assets/manage/groups",
+                );
             }
         };
         group_info.id
@@ -583,7 +617,7 @@ pub async fn asset_group_add_asset(
         Err(_) => {
             return flash_redirect(
                 flash.error("Database connection error. Please try again."),
-                &format!("/assets/groups/{}/add-asset", uuid_str),
+                &format!("/assets/manage/groups/{}/add-asset", uuid_str),
             );
         }
     };
@@ -605,7 +639,7 @@ pub async fn asset_group_add_asset(
         Err(_) => {
             return flash_redirect(
                 flash.error("Database error. Please try again."),
-                &format!("/assets/groups/{}/add-asset", uuid_str),
+                &format!("/assets/manage/groups/{}/add-asset", uuid_str),
             );
         }
     };
@@ -626,7 +660,7 @@ pub async fn asset_group_add_asset(
                 Err(_) => {
                     return flash_redirect(
                         flash.error("Database error. Please try again."),
-                        &format!("/assets/groups/{}/add-asset", uuid_str),
+                        &format!("/assets/manage/groups/{}/add-asset", uuid_str),
                     );
                 }
             };
@@ -646,7 +680,7 @@ pub async fn asset_group_add_asset(
                 Err(_) => {
                     return flash_redirect(
                         flash.error("Database error. Please try again."),
-                        &format!("/assets/groups/{}/add-asset", uuid_str),
+                        &format!("/assets/manage/groups/{}/add-asset", uuid_str),
                     );
                 }
             };
@@ -674,7 +708,7 @@ pub async fn asset_group_add_asset(
             Err(_) => {
                 return flash_redirect(
                     flash.error("Failed to add assets to group. Please try again."),
-                    &format!("/assets/groups/{}/add-asset", uuid_str),
+                    &format!("/assets/manage/groups/{}/add-asset", uuid_str),
                 );
             }
         }
@@ -694,15 +728,15 @@ pub async fn asset_group_add_asset(
     match added {
         0 => flash_redirect(
             flash.error("No assets were added. They may already be assigned to groups."),
-            &format!("/assets/groups/{}/add-asset", uuid_str),
+            &format!("/assets/manage/groups/{}/add-asset", uuid_str),
         ),
         1 => flash_redirect(
             flash.success("1 asset added to group successfully"),
-            &format!("/assets/groups/{}", uuid_str),
+            &format!("/assets/manage/groups/{}", uuid_str),
         ),
         n => flash_redirect(
             flash.success(format!("{} assets added to group successfully", n)),
-            &format!("/assets/groups/{}", uuid_str),
+            &format!("/assets/manage/groups/{}", uuid_str),
         ),
     }
 }
@@ -745,15 +779,15 @@ pub async fn asset_group_remove_asset(
         return htmx_or_flash_redirect(
             &headers,
             flash.error("Invalid CSRF token. Please refresh the page and try again."),
-            &format!("/assets/groups/{}", uuid_str),
+            &format!("/assets/manage/groups/{}", uuid_str),
         );
     }
 
-    if !perms.groups_write {
+    if !perms.assets_manage {
         return htmx_or_flash_redirect(
             &headers,
             flash.error("Only administrators can manage asset group membership"),
-            &format!("/assets/groups/{}", uuid_str),
+            &format!("/assets/manage/groups/{}", uuid_str),
         );
     }
 
@@ -764,7 +798,7 @@ pub async fn asset_group_remove_asset(
             &headers,
             flash
                 .error("Cannot remove assets from the 'All assets' virtual group (system-managed)"),
-            "/assets/groups",
+            "/assets/manage/groups",
         );
     }
 
@@ -775,7 +809,7 @@ pub async fn asset_group_remove_asset(
             return htmx_or_flash_redirect(
                 &headers,
                 flash.error("Invalid group identifier"),
-                "/assets/groups",
+                "/assets/manage/groups",
             );
         }
     };
@@ -787,7 +821,7 @@ pub async fn asset_group_remove_asset(
             return htmx_or_flash_redirect(
                 &headers,
                 flash.error("Invalid asset identifier"),
-                &format!("/assets/groups/{}", group_uuid),
+                &format!("/assets/manage/groups/{}", group_uuid),
             );
         }
     };
@@ -798,7 +832,7 @@ pub async fn asset_group_remove_asset(
             return htmx_or_flash_redirect(
                 &headers,
                 flash.error("Database connection error. Please try again."),
-                &format!("/assets/groups/{}", group_uuid),
+                &format!("/assets/manage/groups/{}", group_uuid),
             );
         }
     };
@@ -819,14 +853,14 @@ pub async fn asset_group_remove_asset(
             return htmx_or_flash_redirect(
                 &headers,
                 flash.error("Asset group not found"),
-                "/assets/groups",
+                "/assets/manage/groups",
             );
         }
         Err(_) => {
             return htmx_or_flash_redirect(
                 &headers,
                 flash.error("Database error. Please try again."),
-                &format!("/assets/groups/{}", group_uuid),
+                &format!("/assets/manage/groups/{}", group_uuid),
             );
         }
     };
@@ -843,14 +877,14 @@ pub async fn asset_group_remove_asset(
             return htmx_or_flash_redirect(
                 &headers,
                 flash.error("Asset not found"),
-                &format!("/assets/groups/{}", group_uuid),
+                &format!("/assets/manage/groups/{}", group_uuid),
             );
         }
         Err(_) => {
             return htmx_or_flash_redirect(
                 &headers,
                 flash.error("Database error. Please try again."),
-                &format!("/assets/groups/{}", group_uuid),
+                &format!("/assets/manage/groups/{}", group_uuid),
             );
         }
     };
@@ -867,7 +901,7 @@ pub async fn asset_group_remove_asset(
         Ok(0) => htmx_or_flash_redirect(
             &headers,
             flash.error("Asset was not a member of this group"),
-            &format!("/assets/groups/{}", group_uuid),
+            &format!("/assets/manage/groups/{}", group_uuid),
         ),
         Ok(_) => {
             let _ = diesel::update(a::assets.filter(a::id.eq(asset_pk)))
@@ -888,13 +922,13 @@ pub async fn asset_group_remove_asset(
             htmx_or_flash_redirect(
                 &headers,
                 flash.success("Asset removed from group successfully"),
-                &format!("/assets/groups/{}", group_uuid),
+                &format!("/assets/manage/groups/{}", group_uuid),
             )
         }
         Err(_) => htmx_or_flash_redirect(
             &headers,
             flash.error("Failed to remove asset from group. Please try again."),
-            &format!("/assets/groups/{}", group_uuid),
+            &format!("/assets/manage/groups/{}", group_uuid),
         ),
     }
 }
@@ -910,10 +944,10 @@ pub async fn asset_group_edit(
 ) -> Response {
     let flash = incoming_flash.flash();
 
-    if !perms.groups_write {
+    if !perms.assets_manage {
         return flash_redirect(
             flash.error("Only administrators can edit asset groups"),
-            "/assets/groups",
+            "/assets/manage/groups",
         );
     }
 
@@ -922,7 +956,10 @@ pub async fn asset_group_edit(
     // `block_mutation_on_virtual_groups` would also reject the underlying
     // UPDATE, but failing here is friendlier.
     if is_virtual_asset_group_uuid(&uuid_str) {
-        return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+        return flash_redirect(
+            flash.error("Asset group not found"),
+            "/assets/manage/groups",
+        );
     }
 
     let user = Some(user_context_from_auth(&auth_user));
@@ -942,7 +979,10 @@ pub async fn asset_group_edit(
         let group_info = match client.get_asset_group(&uuid_str).await {
             Ok(info) => info,
             Err(_) => {
-                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+                return flash_redirect(
+                    flash.error("Asset group not found"),
+                    "/assets/manage/groups",
+                );
             }
         };
         crate::templates::assets::group_edit::AssetGroupEdit {
@@ -960,7 +1000,7 @@ pub async fn asset_group_edit(
         user.clone(),
         browser_tz.0,
     )
-    .with_current_path("/assets/groups")
+    .with_current_path("/assets/manage/groups")
     .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -982,7 +1022,10 @@ pub async fn asset_group_edit(
     // (see `vauban-web/src/middleware/flash.rs`).
     match template.render() {
         Ok(html) => Html(html).into_response(),
-        Err(_) => flash_redirect(flash.error("Failed to render page"), "/assets/groups"),
+        Err(_) => flash_redirect(
+            flash.error("Failed to render page"),
+            "/assets/manage/groups",
+        ),
     }
 }
 
@@ -999,7 +1042,7 @@ pub struct UpdateAssetGroupForm {
 
 /// Update asset group handler (Web form with PRG pattern).
 ///
-/// Handles POST /assets/groups/{uuid}/edit with flash messages.
+/// Handles POST /assets/manage/groups/{uuid}/edit with flash messages.
 pub async fn update_asset_group(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
@@ -1019,14 +1062,14 @@ pub async fn update_asset_group(
     ) {
         return flash_redirect(
             flash.error("Invalid CSRF token. Please refresh the page and try again."),
-            &format!("/assets/groups/{}/edit", uuid_str),
+            &format!("/assets/manage/groups/{}/edit", uuid_str),
         );
     }
 
-    if !perms.groups_write {
+    if !perms.assets_manage {
         return flash_redirect(
             flash.error("Only administrators can modify asset groups"),
-            &format!("/assets/groups/{}", uuid_str),
+            &format!("/assets/manage/groups/{}", uuid_str),
         );
     }
 
@@ -1036,7 +1079,7 @@ pub async fn update_asset_group(
     if is_virtual_asset_group_uuid(&uuid_str) {
         return flash_redirect(
             flash.error("Cannot modify the 'All assets' virtual group (system-managed)"),
-            "/assets/groups",
+            "/assets/manage/groups",
         );
     }
 
@@ -1046,7 +1089,7 @@ pub async fn update_asset_group(
         Err(_) => {
             return flash_redirect(
                 flash.error("Invalid group identifier"),
-                &format!("/assets/groups/{}/edit", uuid_str),
+                &format!("/assets/manage/groups/{}/edit", uuid_str),
             );
         }
     };
@@ -1055,14 +1098,14 @@ pub async fn update_asset_group(
     if form.name.trim().is_empty() {
         return flash_redirect(
             flash.error("Group name is required"),
-            &format!("/assets/groups/{}/edit", group_uuid),
+            &format!("/assets/manage/groups/{}/edit", group_uuid),
         );
     }
 
     if form.slug.trim().is_empty() {
         return flash_redirect(
             flash.error("Group slug is required"),
-            &format!("/assets/groups/{}/edit", group_uuid),
+            &format!("/assets/manage/groups/{}/edit", group_uuid),
         );
     }
 
@@ -1098,12 +1141,12 @@ pub async fn update_asset_group(
             );
             flash_redirect(
                 flash.success("Asset group updated successfully"),
-                &format!("/assets/groups/{}", group_uuid),
+                &format!("/assets/manage/groups/{}", group_uuid),
             )
         }
         Err(_) => flash_redirect(
             flash.error("Failed to update asset group. Please try again."),
-            &format!("/assets/groups/{}/edit", group_uuid),
+            &format!("/assets/manage/groups/{}/edit", group_uuid),
         ),
     }
 }
@@ -1119,7 +1162,7 @@ pub async fn asset_group_create_form(
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::assets::group_create::{AssetGroupCreateForm, AssetGroupCreateTemplate};
 
-    if !perms.groups_write {
+    if !perms.assets_manage {
         return Err(AppError::Authorization(
             "Only administrators can create asset groups".to_string(),
         ));
@@ -1137,7 +1180,7 @@ pub async fn asset_group_create_form(
 
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("New Asset Group".to_string(), user.clone(), browser_tz.0)
-        .with_current_path("/assets/groups")
+        .with_current_path("/assets/manage/groups")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -1205,22 +1248,31 @@ pub async fn create_asset_group_web(
         csrf_cookie.map(|c| c.value()),
         &form.csrf_token,
     ) {
-        return flash_redirect(flash.error("Invalid CSRF token"), "/assets/groups/new");
+        return flash_redirect(
+            flash.error("Invalid CSRF token"),
+            "/assets/manage/groups/new",
+        );
     }
 
-    if !perms.groups_write {
+    if !perms.assets_manage {
         return flash_redirect(
             flash.error("Only administrators can create asset groups"),
-            "/assets/groups",
+            "/assets/manage/groups",
         );
     }
 
     // Validate form data
     if form.name.trim().is_empty() {
-        return flash_redirect(flash.error("Group name is required"), "/assets/groups/new");
+        return flash_redirect(
+            flash.error("Group name is required"),
+            "/assets/manage/groups/new",
+        );
     }
     if form.slug.trim().is_empty() {
-        return flash_redirect(flash.error("Group slug is required"), "/assets/groups/new");
+        return flash_redirect(
+            flash.error("Group slug is required"),
+            "/assets/manage/groups/new",
+        );
     }
 
     // Sanitize text fields to prevent stored XSS
@@ -1257,7 +1309,7 @@ pub async fn create_asset_group_web(
             );
             flash_redirect(
                 flash.success(format!("Asset group '{}' created successfully", info.name)),
-                &format!("/assets/groups/{}", info.uuid),
+                &format!("/assets/manage/groups/{}", info.uuid),
             )
         }
         Err(e) => {
@@ -1265,13 +1317,13 @@ pub async fn create_asset_group_web(
             if msg.to_lowercase().contains("slug") || msg.to_lowercase().contains("unique") {
                 flash_redirect(
                     flash.error("An asset group with this slug already exists"),
-                    "/assets/groups/new",
+                    "/assets/manage/groups/new",
                 )
             } else {
                 tracing::error!("Failed to create asset group: {}", e);
                 flash_redirect(
                     flash.error("Failed to create asset group"),
-                    "/assets/groups/new",
+                    "/assets/manage/groups/new",
                 )
             }
         }
@@ -1317,15 +1369,15 @@ pub async fn delete_asset_group_web(
         return htmx_or_flash_redirect(
             &headers,
             flash.error("Invalid CSRF token"),
-            &format!("/assets/groups/{}", uuid_str),
+            &format!("/assets/manage/groups/{}", uuid_str),
         );
     }
 
-    if !perms.groups_write {
+    if !perms.assets_manage {
         return htmx_or_flash_redirect(
             &headers,
             flash.error("Only administrators can delete asset groups"),
-            "/assets/groups",
+            "/assets/manage/groups",
         );
     }
 
@@ -1336,7 +1388,7 @@ pub async fn delete_asset_group_web(
         return htmx_or_flash_redirect(
             &headers,
             flash.error("Cannot delete the 'All assets' virtual group (system-managed)"),
-            "/assets/groups",
+            "/assets/manage/groups",
         );
     }
 
@@ -1345,7 +1397,7 @@ pub async fn delete_asset_group_web(
         return htmx_or_flash_redirect(
             &headers,
             flash.error("Invalid group identifier"),
-            "/assets/groups",
+            "/assets/manage/groups",
         );
     }
 
@@ -1358,7 +1410,7 @@ pub async fn delete_asset_group_web(
                 return htmx_or_flash_redirect(
                     &headers,
                     flash.error("Asset group not found"),
-                    "/assets/groups",
+                    "/assets/manage/groups",
                 );
             }
         };
@@ -1369,7 +1421,7 @@ pub async fn delete_asset_group_web(
                 return htmx_or_flash_redirect(
                     &headers,
                     flash.error("Database connection error"),
-                    &format!("/assets/groups/{}", uuid_str),
+                    &format!("/assets/manage/groups/{}", uuid_str),
                 );
             }
         };
@@ -1400,7 +1452,7 @@ pub async fn delete_asset_group_web(
             htmx_or_flash_redirect(
                 &headers,
                 flash.success(format!("Asset group '{}' deleted successfully", group_name)),
-                "/assets/groups",
+                "/assets/manage/groups",
             )
         }
         Err(e) => {
@@ -1408,7 +1460,7 @@ pub async fn delete_asset_group_web(
             htmx_or_flash_redirect(
                 &headers,
                 flash.error("Failed to delete asset group"),
-                &format!("/assets/groups/{}", uuid_str),
+                &format!("/assets/manage/groups/{}", uuid_str),
             )
         }
     }

@@ -117,6 +117,61 @@ async fn api_admin_routes_do_not_leak_asset_existence() {
     }
 }
 
+/// BAC hardening: same anti-enumeration contract for the asset
+/// groups sub-tree (`/assets/manage/groups/{uuid}`). Before the
+/// move, `GET /assets/groups/{uuid}` was reachable by ANY
+/// authenticated user and rendered every asset of the group (the
+/// production information-disclosure this hardening fixes). Now a
+/// `role:user` MUST receive one stable 403 whether the group
+/// exists or not.
+#[tokio::test]
+#[serial]
+async fn web_asset_group_routes_do_not_leak_group_existence() {
+    use crate::fixtures::create_test_asset_group;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let real = create_test_asset_group(&mut conn, &unique_name("anti-enum-grp")).await;
+    let random = Uuid::new_v4();
+
+    let user_name = unique_name("anti_enum_grp_user");
+    let user = create_test_user(&mut conn, &app.auth_service, &user_name).await;
+
+    let probes = [
+        "/assets/manage/groups".to_string(),
+        format!("/assets/manage/groups/{}", real),
+        format!("/assets/manage/groups/{}", random),
+        format!("/assets/manage/groups/{}/edit", real),
+        format!("/assets/manage/groups/{}/edit", random),
+        format!("/assets/manage/groups/{}/add-asset", real),
+        format!("/assets/manage/groups/{}/add-asset", random),
+    ];
+
+    let mut bodies: Vec<(String, String)> = Vec::with_capacity(probes.len());
+    for url in probes {
+        let resp = app
+            .server
+            .get(&url)
+            .add_header(COOKIE, format!("access_token={}", user.token))
+            .await;
+        assert_status(&resp, 403);
+        bodies.push((url, resp.text()));
+    }
+
+    let baseline = &bodies[0].1;
+    for (url, body) in &bodies[1..] {
+        assert_eq!(
+            body, baseline,
+            "{}: anti-enumeration leak — a `role:user` could distinguish \
+             'group exists' from 'group does not exist' by the response \
+             body. The route_layer middleware MUST return one stable \
+             403 shape for the whole sub-tree.",
+            url
+        );
+    }
+}
+
 /// `POST /assets/manage/{uuid}/delete` MUST also return 403 for
 /// `role:user` regardless of whether the asset exists. This is a
 /// destructive verb so the leak would be especially harmful: a

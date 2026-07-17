@@ -22,11 +22,16 @@ pub(crate) fn validate_password_length(pwd: &str, min_len: usize) -> Result<(), 
 pub async fn user_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::schema::users;
     use crate::templates::accounts::user_list::UserListItem;
+
+    if !perms.users_read {
+        return Err(AppError::forbidden("users:read"));
+    }
 
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Users".to_string(), user.clone(), browser_tz.0)
@@ -237,6 +242,10 @@ pub async fn user_detail(
     use crate::templates::accounts::user_detail::UserDetail;
 
     let flash = incoming_flash.flash();
+
+    if !perms.users_read {
+        return AppError::forbidden("users:read").into_response();
+    }
 
     let user = Some(user_context_from_auth(&auth_user));
 
@@ -1652,6 +1661,7 @@ pub struct ChangeOwnPasswordForm {
 /// `/accounts/profile` with a green flash, so refreshing the page after the
 /// rotation does not re-submit the form (defence against accidental
 /// double-rotation).
+// allow-ungated: self-service; rotates the caller own password behind a step-up TOTP
 pub async fn change_own_password_web(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
@@ -1837,6 +1847,7 @@ pub async fn change_own_password_web(
 }
 
 /// User profile page.
+// allow-ungated: self-service; renders the caller own profile only
 pub async fn profile(
     State(state): State<AppState>,
     jar: axum_extra::extract::CookieJar,
@@ -1991,6 +2002,7 @@ pub async fn profile(
 /// candidate secret is created exclusively by `POST /mfa/setup/init` (CSRF
 /// gated, current-TOTP step-up for rotation) and lives ONLY in the per-session
 /// in-memory store. Renders the same three states as `mfa_setup_page`.
+// allow-ungated: self-service; caller own MFA enrolment
 pub async fn mfa_setup(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
@@ -2063,6 +2075,7 @@ pub async fn mfa_setup(
 }
 
 /// User sessions list page (web sessions, not proxy sessions).
+// allow-ungated: self-service; lists the caller own login sessions only
 pub async fn user_sessions(
     State(state): State<AppState>,
     jar: axum_extra::extract::CookieJar,
@@ -2166,6 +2179,7 @@ pub async fn user_sessions(
 }
 
 /// API keys list page.
+// allow-ungated: self-service; lists the caller own API keys only
 pub async fn api_keys(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
@@ -2242,6 +2256,7 @@ pub async fn api_keys(
 }
 
 /// Revoke an auth session.
+// allow-ungated: self-service; ownership of the auth session is checked in the body
 pub async fn revoke_session(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
@@ -2313,6 +2328,7 @@ pub async fn revoke_session(
 /// Uses UserConnectionRegistry to send personalized HTML to each client,
 /// ensuring each client sees the correct "Current session" indicator.
 /// Also sends via the standard broadcast channel for backwards compatibility.
+// allow-ungated: not a routed handler; WS fan-out helper called after gated mutations
 pub async fn broadcast_sessions_update(state: &AppState, user_uuid: &str, user_id: i32) {
     use crate::models::AuthSession;
     use crate::services::broadcast::{WsChannel, WsMessage};
@@ -2419,6 +2435,7 @@ pub(crate) fn build_sessions_html(
 }
 
 /// Revoke an API key.
+// allow-ungated: self-service; ownership of the API key is checked in the body
 pub async fn revoke_api_key(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
@@ -2502,6 +2519,7 @@ pub async fn revoke_api_key(
 }
 
 /// Create API key form (returns modal HTML).
+// allow-ungated: self-service; creates an API key for the caller only
 pub async fn create_api_key_form(
     State(_state): State<AppState>,
     _auth_user: WebAuthUser,
@@ -2523,6 +2541,7 @@ pub async fn create_api_key_form(
 /// (`scopes=read&scopes=secrets`) and the empty
 /// `expires_in_days=` sent by the "Never" option with a 422
 /// before the handler even runs.
+// allow-ungated: self-service; creates an API key for the caller only
 pub async fn create_api_key(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
@@ -2715,6 +2734,7 @@ pub async fn admin_user_sessions(
 /// Revokes all auth sessions, terminates active proxy sessions (SSH/RDP),
 /// disables API keys, force-logs out all browser sessions via WebSocket,
 /// and broadcasts updates to session pages.
+// allow-ungated: not a routed handler; internal helper invoked after the users:write gate of update_user_web
 pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
     use crate::models::session::ProxySession;
 
@@ -2797,6 +2817,7 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
 /// Reactivate a user account (SEC-07).
 ///
 /// Re-enables all API keys that were disabled during deactivation.
+// allow-ungated: not a routed handler; internal helper invoked after the users:write gate of update_user_web
 pub async fn reactivate_user(state: &AppState, user_id: i32) {
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,

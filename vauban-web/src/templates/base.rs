@@ -224,8 +224,12 @@ impl BaseTemplate {
                 // `/vault/secrets/groups` and `/vault/secrets/access`
                 // belong to the self-contained Vault Secrets section:
                 // they must highlight the "Vault Secrets" entry, not
-                // the PAM "Groups" / "Access Rules" ones.
-                is_groups: path.contains("/groups") && !path.starts_with("/vault"),
+                // the PAM "Groups" / "Access Rules" ones. Same for
+                // `/assets/manage/groups` (asset groups), which lives
+                // in the admin Assets section (`is_manage_assets`).
+                is_groups: path.contains("/groups")
+                    && !path.starts_with("/vault")
+                    && !on_manage_assets,
                 is_approvals: path.contains("/approvals"),
                 is_access_rules: path.contains("/access") && !path.starts_with("/vault"),
                 is_vault_secrets: path.starts_with("/vault/secrets"),

@@ -227,7 +227,7 @@ async fn test_asset_group_detail_with_malformed_uuid() {
 
     let response = app
         .server
-        .get("/assets/groups/totally-not-uuid")
+        .get("/assets/manage/groups/totally-not-uuid")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -236,7 +236,7 @@ async fn test_asset_group_detail_with_malformed_uuid() {
         .headers()
         .get("location")
         .and_then(|v| v.to_str().ok());
-    assert_eq!(location, Some("/assets/groups"));
+    assert_eq!(location, Some("/assets/manage/groups"));
 }
 
 #[tokio::test]

@@ -15,13 +15,9 @@
             </p>
         </div>
         <div class="mt-4 flex flex-wrap gap-2 md:ml-4 md:mt-0 md:flex-nowrap md:space-x-3 md:gap-0">
-            <a href="/assets/groups"
-               class="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600">
-                <svg class="-ml-0.5 mr-1.5 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
-                </svg>
-                Groups
-            </a>
+            {# Asset groups are catalogue administration and live under
+               `/assets/manage/groups` (gated `assets:manage`); the
+               user zone deliberately carries no link to them. #}
             {# IACS / EWS onboarding (palier 6).  Gate via the
                `iacs_request_allowed` boolean precomputed by the
                handler from `perms.iacs_request`, which is itself

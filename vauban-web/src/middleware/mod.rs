@@ -11,6 +11,7 @@ pub mod ip_acl;
 pub mod permissions;
 pub mod require_assets_manage;
 pub mod require_iacs_manage;
+pub mod require_permission;
 pub mod require_vault_secrets_manage;
 pub mod security;
 

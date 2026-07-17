@@ -468,7 +468,7 @@ async fn test_asset_groups_pagination() {
 
     let response = app
         .server
-        .get("/assets/groups?page=2&per_page=10")
+        .get("/assets/manage/groups?page=2&per_page=10")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -500,7 +500,7 @@ async fn test_asset_groups_search() {
     for term in search_terms {
         let response = app
             .server
-            .get(&format!("/assets/groups?search={}", term))
+            .get(&format!("/assets/manage/groups?search={}", term))
             .add_header(COOKIE, format!("access_token={}", token))
             .await;
 

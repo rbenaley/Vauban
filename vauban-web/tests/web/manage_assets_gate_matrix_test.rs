@@ -96,6 +96,59 @@ const WEB_ROUTES: &[Route] = &[
         path_template: "/assets/manage/{uuid}/fetch-host-key",
         needs_uuid: true,
     },
+    // BAC hardening: asset groups joined the `/assets/manage` nest.
+    // Every group route flows through the same `require_assets_manage`
+    // route_layer, so the full matrix applies verbatim.
+    Route {
+        method: Method::Get,
+        path_template: "/assets/manage/groups",
+        needs_uuid: false,
+    },
+    Route {
+        method: Method::Post,
+        path_template: "/assets/manage/groups",
+        needs_uuid: false,
+    },
+    Route {
+        method: Method::Get,
+        path_template: "/assets/manage/groups/new",
+        needs_uuid: false,
+    },
+    Route {
+        method: Method::Get,
+        path_template: "/assets/manage/groups/{uuid}",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Get,
+        path_template: "/assets/manage/groups/{uuid}/edit",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Post,
+        path_template: "/assets/manage/groups/{uuid}/edit",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Post,
+        path_template: "/assets/manage/groups/{uuid}/delete",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Get,
+        path_template: "/assets/manage/groups/{uuid}/add-asset",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Post,
+        path_template: "/assets/manage/groups/{uuid}/add-asset",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Post,
+        path_template: "/assets/manage/groups/{uuid}/remove-asset",
+        needs_uuid: true,
+    },
 ];
 
 /// All routes mounted under the `/api/v1/assets/manage/*` API nest.
@@ -186,7 +239,7 @@ async fn send_api(app: &TestApp, route: &Route, api_key: Option<&str>) -> u16 {
 fn route_inventory_is_exhaustive() {
     assert_eq!(
         WEB_ROUTES.len(),
-        9,
+        19,
         "WEB_ROUTES drift: update the matrix AND the count when adding/removing a /assets/manage/* route \
          (root path is excluded — it is pinned separately, see WEB_ROUTES doc-comment)"
     );

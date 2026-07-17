@@ -14,7 +14,7 @@ pub struct AssetGroupCreateForm {
 }
 
 #[derive(Template)]
-#[template(path = "assets/group_create.html")]
+#[template(path = "assets/manage/groups/create.html")]
 pub struct AssetGroupCreateTemplate {
     pub title: String,
     pub user: Option<UserContext>,

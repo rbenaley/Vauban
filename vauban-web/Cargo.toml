@@ -164,6 +164,9 @@ serde_urlencoded = "0.7.1"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 # VAU-010: `ServiceExt::oneshot` for the in-crate CORS layer E2E tests.
 tower = { version = "0.5", features = ["util"] }
+# BAC hardening: property-based invariants on the require_* route-layer
+# gates (fail-closed for every PermissionContext, anti-oracle paths).
+proptest = "1"
 
 [lints]
 workspace = true

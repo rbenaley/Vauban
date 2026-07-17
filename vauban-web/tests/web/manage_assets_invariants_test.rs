@@ -96,12 +96,36 @@ fn manage_assets_handlers_have_no_session_opening_path() {
             include_str!("../../src/handlers/api/manage_assets.rs"),
         ),
         (
+            "vauban-web/src/handlers/web/asset_groups.rs",
+            include_str!("../../src/handlers/web/asset_groups.rs"),
+        ),
+        (
             "vauban-web/templates/assets/manage/list.html",
             include_str!("../../templates/assets/manage/list.html"),
         ),
         (
             "vauban-web/templates/assets/manage/detail.html",
             include_str!("../../templates/assets/manage/detail.html"),
+        ),
+        (
+            "vauban-web/templates/assets/manage/groups/list.html",
+            include_str!("../../templates/assets/manage/groups/list.html"),
+        ),
+        (
+            "vauban-web/templates/assets/manage/groups/create.html",
+            include_str!("../../templates/assets/manage/groups/create.html"),
+        ),
+        (
+            "vauban-web/templates/assets/manage/groups/detail.html",
+            include_str!("../../templates/assets/manage/groups/detail.html"),
+        ),
+        (
+            "vauban-web/templates/assets/manage/groups/edit.html",
+            include_str!("../../templates/assets/manage/groups/edit.html"),
+        ),
+        (
+            "vauban-web/templates/assets/manage/groups/add_asset.html",
+            include_str!("../../templates/assets/manage/groups/add_asset.html"),
         ),
     ];
 
@@ -177,6 +201,13 @@ fn manage_assets_every_handler_gates_on_assets_manage() {
         (
             "vauban-web/src/handlers/api/manage_assets.rs",
             include_str!("../../src/handlers/api/manage_assets.rs"),
+        ),
+        // BAC hardening: asset groups joined the admin zone
+        // (`/assets/manage/groups/*`), so every handler in the module
+        // must carry the same `assets_manage` re-check.
+        (
+            "vauban-web/src/handlers/web/asset_groups.rs",
+            include_str!("../../src/handlers/web/asset_groups.rs"),
         ),
     ];
 

@@ -266,7 +266,7 @@ async fn test_account_group_remove_member_form_is_htmx_driven() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// Form #4 — Delete asset group, on `/assets/groups/{uuid}`.
+/// Form #4 — Delete asset group, on `/assets/manage/groups/{uuid}`.
 #[tokio::test]
 #[serial]
 async fn test_asset_group_detail_delete_form_is_htmx_driven() {
@@ -278,13 +278,13 @@ async fn test_asset_group_detail_delete_form_is_htmx_driven() {
 
     let response = app
         .server
-        .get(&format!("/assets/groups/{}", group_uuid))
+        .get(&format!("/assets/manage/groups/{}", group_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
     assert_status(&response, 200);
 
     let body = response.text();
-    let endpoint = format!("/assets/groups/{}/delete", group_uuid);
+    let endpoint = format!("/assets/manage/groups/{}/delete", group_uuid);
 
     assert!(
         body.contains(&format!("hx-post=\"{}\"", endpoint)),
@@ -308,7 +308,7 @@ async fn test_asset_group_detail_delete_form_is_htmx_driven() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// Form #5 — Remove asset from asset group, on `/assets/groups/{uuid}`.
+/// Form #5 — Remove asset from asset group, on `/assets/manage/groups/{uuid}`.
 #[tokio::test]
 #[serial]
 async fn test_asset_group_remove_asset_form_is_htmx_driven() {
@@ -330,13 +330,13 @@ async fn test_asset_group_remove_asset_form_is_htmx_driven() {
 
     let response = app
         .server
-        .get(&format!("/assets/groups/{}", group_uuid))
+        .get(&format!("/assets/manage/groups/{}", group_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
     assert_status(&response, 200);
 
     let body = response.text();
-    let endpoint = format!("/assets/groups/{}/remove-asset", group_uuid);
+    let endpoint = format!("/assets/manage/groups/{}/remove-asset", group_uuid);
 
     assert!(
         body.contains(&format!("hx-post=\"{}\"", endpoint)),
@@ -509,13 +509,13 @@ async fn test_htmx_delete_asset_group_returns_hx_redirect() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/delete", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/delete", group_uuid))
         .add_header(COOKIE, auth_csrf_cookie(&token, &csrf))
         .add_header("HX-Request", "true")
         .form(&[("csrf_token", csrf.as_str())])
         .await;
 
-    assert_hx_redirect(&response, "/assets/groups");
+    assert_hx_redirect(&response, "/assets/manage/groups");
 
     use vauban_web::schema::asset_groups;
     let exists: bool = asset_groups::table
@@ -562,7 +562,10 @@ async fn test_htmx_remove_asset_from_group_returns_hx_redirect() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/remove-asset", group_uuid))
+        .post(&format!(
+            "/assets/manage/groups/{}/remove-asset",
+            group_uuid
+        ))
         .add_header(COOKIE, auth_csrf_cookie(&token, &csrf))
         .add_header("HX-Request", "true")
         .form(&[
@@ -571,7 +574,7 @@ async fn test_htmx_remove_asset_from_group_returns_hx_redirect() {
         ])
         .await;
 
-    assert_hx_redirect(&response, &format!("/assets/groups/{}", group_uuid));
+    assert_hx_redirect(&response, &format!("/assets/manage/groups/{}", group_uuid));
 
     use vauban_web::schema::asset_asset_groups;
     let still_linked: i64 = asset_asset_groups::table
@@ -730,12 +733,12 @@ async fn test_native_delete_asset_group_keeps_303_redirect() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/delete", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/delete", group_uuid))
         .add_header(COOKIE, auth_csrf_cookie(&token, &csrf))
         .form(&[("csrf_token", csrf.as_str())])
         .await;
 
-    assert_native_redirect(&response, "/assets/groups");
+    assert_native_redirect(&response, "/assets/manage/groups");
 
     use vauban_web::schema::asset_groups;
     let exists: bool = asset_groups::table
@@ -779,7 +782,10 @@ async fn test_native_remove_asset_from_group_keeps_303_redirect() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/remove-asset", group_uuid))
+        .post(&format!(
+            "/assets/manage/groups/{}/remove-asset",
+            group_uuid
+        ))
         .add_header(COOKIE, auth_csrf_cookie(&token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -787,7 +793,7 @@ async fn test_native_remove_asset_from_group_keeps_303_redirect() {
         ])
         .await;
 
-    assert_native_redirect(&response, &format!("/assets/groups/{}", group_uuid));
+    assert_native_redirect(&response, &format!("/assets/manage/groups/{}", group_uuid));
 
     use vauban_web::schema::asset_asset_groups;
     let still_linked: i64 = asset_asset_groups::table

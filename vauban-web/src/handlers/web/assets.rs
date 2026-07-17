@@ -461,6 +461,7 @@ pub async fn asset_list(
 /// that cannot leak a 200 vs 410 timing difference between known and
 /// unknown UUIDs (the upstream Casbin middleware still applies, so an
 /// unauthenticated caller is bounced to /login first).
+// allow-ungated: constant 410 tombstone, no data access, no oracle
 pub async fn gone_asset_user_view(
     axum::extract::Path(_asset_uuid_str): axum::extract::Path<String>,
 ) -> Response {

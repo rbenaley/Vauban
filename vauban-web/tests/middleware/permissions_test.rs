@@ -770,3 +770,73 @@ fn policy_csv_grants_every_tracked_permission_to_at_least_one_role() {
         );
     }
 }
+
+/// Least-privilege pin (BAC hardening, July 2026): `role:user` MUST
+/// NEVER be granted an administrative `(resource, action)` couple in
+/// `config/access/default_policy.csv`. This is the negative
+/// counterpart of the drift test above (which checks every tracked
+/// permission is granted to *someone*): a line like
+/// `p, role:user, groups, read` sneaking into the CSV would re-open
+/// the very information-disclosure this hardening fixed, without any
+/// code change and therefore without tripping any handler-level test.
+#[test]
+fn policy_csv_never_grants_admin_couples_to_role_user() {
+    let csv = include_str!("../../../config/access/default_policy.csv");
+
+    // Every couple a regular user must NOT hold. Kept in lock-step
+    // with `check_rbac_user_grants_only_self_serve_set` (the live
+    // Casbin drift test): TRACKED_PERMS minus the self-service set.
+    let forbidden_for_user: &[(&str, &str)] = &[
+        ("users", "read"),
+        ("users", "write"),
+        ("users", "manage_admins"),
+        ("assets", "read_all"),
+        ("assets", "manage"),
+        ("groups", "read"),
+        ("groups", "write"),
+        ("groups", "manage_members"),
+        ("access_rules", "read"),
+        ("access_rules", "write"),
+        ("auth_sessions", "read"),
+        ("auth_sessions", "write"),
+        ("sessions", "write"),
+        ("sessions", "supervise"),
+        ("sessions", "bypass_access_rules"),
+        ("admin", "view"),
+        ("iacs", "manage"),
+        ("vault_secrets", "manage"),
+    ];
+
+    for raw in csv.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+        if fields.len() < 4 || fields[0] != "p" {
+            continue;
+        }
+        let (subject, obj, act) = (fields[1], fields[2], fields[3]);
+        if subject != "role:user" {
+            continue;
+        }
+        assert!(
+            obj != "*" && act != "*",
+            "default_policy.csv grants a wildcard to role:user (`{}`) -- \
+             regular users must never hold a wildcard permission.",
+            line
+        );
+        assert!(
+            !forbidden_for_user
+                .iter()
+                .any(|(r, a)| *r == obj && *a == act),
+            "default_policy.csv grants the administrative couple {}:{} to \
+             role:user (`{}`). This re-opens the July 2026 BAC hole \
+             (admin read surfaces leaked to every authenticated user); \
+             grant it to role:staff or a dedicated role instead.",
+            obj,
+            act,
+            line
+        );
+    }
+}

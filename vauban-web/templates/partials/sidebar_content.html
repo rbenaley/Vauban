@@ -166,6 +166,7 @@
                     {% endif %}
 
                     <!-- Users -->
+                    {% if sc.perms.users_read %}
                     <li>
                         <a href="/accounts/users"
                            class="group flex gap-x-3 rounded-md p-2 text-sm font-semibold leading-6 {% if sc.is_users %}bg-gray-800 text-white{% else %}text-gray-400 hover:bg-gray-800 hover:text-white{% endif %}">
@@ -175,6 +176,7 @@
                             Users
                         </a>
                     </li>
+                    {% endif %}
 
                     <!-- Groups -->
                     {% if sc.perms.groups_read %}

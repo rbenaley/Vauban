@@ -56,6 +56,7 @@ fn htmx_error_response(message: &str) -> Response {
 ///
 /// For HTMX requests: Returns HX-Redirect header on success, HX-Trigger toast on error.
 /// For non-HTMX requests: Returns JSON response.
+// allow-ungated: session-open path; authorization delegated to the access-rule pipeline (vauban-access CheckAssetAccess + MFA + JIT)
 pub async fn connect_ssh(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -1678,6 +1679,7 @@ pub async fn verify_ssh_host_key(
 /// from "session exists but belongs to someone else" by probing the URL space.
 /// The underlying `terminal_ws` handler also enforces ownership via
 /// `ws_session_guard`, so this is a defense-in-depth check at the HTML layer.
+// allow-ungated: viewer page; instance authorization via services::session_access::verify
 pub async fn terminal_page(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,

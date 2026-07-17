@@ -16,7 +16,7 @@ pub struct AssetGroupItem {
 }
 
 #[derive(Template)]
-#[template(path = "assets/group_list.html")]
+#[template(path = "assets/manage/groups/list.html")]
 pub struct AssetGroupListTemplate {
     pub title: String,
     pub user: Option<UserContext>,

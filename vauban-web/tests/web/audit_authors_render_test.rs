@@ -210,7 +210,7 @@ fn asset_detail_never_leaks_numeric_id_or_debug_repr() {
 }
 
 // ---------------------------------------------------------------
-// Asset group detail (/assets/groups/{uuid})
+// Asset group detail (/assets/manage/groups/{uuid})
 // ---------------------------------------------------------------
 
 fn make_group_detail(

@@ -134,48 +134,65 @@ async fn iacs_tunnel_active_is_counted_on_bastion_watch_home() {
 }
 
 // ===================================================================
-// 2. HTMX widget handlers carry the composite filter (defence in
-//    depth: the helpers `dashboard_widget_stats` and
-//    `dashboard_widget_active_sessions` are not currently routed,
-//    but they share the SQL contract with `load_hero` /
-//    `load_live_sessions`. A future re-mount must NOT silently
-//    drop IACS rows. Pinned via source-grep on the production
-//    handler module.)
+// 2. The WS-pushed refresh path carries the composite filter, and
+//    the legacy un-routed / un-gated HTMX widget handlers stay
+//    removed (BAC hardening: they ran bastion-wide queries without
+//    a Casbin gate and without the per-user scoping enforced by
+//    `dashboard_home`). The production refresh path is the pusher
+//    in `tasks::dashboard`; its SQL contract with `load_hero` /
+//    `load_live_sessions` is pinned via source-grep.
 // ===================================================================
 
 #[test]
-fn dashboard_widget_handlers_count_iacs_tunnels() {
+fn dashboard_widget_handlers_stay_removed() {
     let src = include_str!("../../src/handlers/web/dashboard.rs");
 
-    let stats_idx = src
-        .find("pub async fn dashboard_widget_stats(")
-        .expect("dashboard_widget_stats must exist");
-    let stats_next = src[stats_idx + 1..]
-        .find("\npub async fn ")
-        .map(|i| stats_idx + 1 + i)
-        .unwrap_or(src.len());
-    let stats_body = &src[stats_idx..stats_next];
-    assert!(
-        stats_body.contains("status.eq_any([\"active\", \"tunnel_active\"])"),
-        "dashboard_widget_stats MUST count both `active` (SSH/RDP) \
-         and `tunnel_active` (IACS) so the HTMX-refreshed LIVE tile \
-         agrees with the first-paint count from `load_hero`."
-    );
+    for legacy in [
+        "pub async fn dashboard_widget_stats(",
+        "pub async fn dashboard_widget_active_sessions(",
+        "pub async fn dashboard_widget_recent_activity(",
+    ] {
+        assert!(
+            !src.contains(legacy),
+            "`{}` was removed by the BAC hardening (un-routed, \
+             un-gated, bastion-wide queries). Re-introducing it \
+             requires a Casbin gate + the dashboard per-user \
+             scoping contract.",
+            legacy
+        );
+    }
+}
 
-    let list_idx = src
-        .find("pub async fn dashboard_widget_active_sessions(")
-        .expect("dashboard_widget_active_sessions must exist");
-    let list_next = src[list_idx + 1..]
-        .find("\npub async fn ")
-        .map(|i| list_idx + 1 + i)
-        .unwrap_or(src.len());
-    let list_body = &src[list_idx..list_next];
-    assert!(
-        list_body.contains("status.eq_any([\"active\", \"tunnel_active\"])"),
-        "dashboard_widget_active_sessions MUST include `tunnel_active` \
-         in its filter so IACS rows surface in the HTMX-refreshed \
-         Live Sessions panel."
-    );
+#[test]
+fn dashboard_pusher_tasks_count_iacs_tunnels() {
+    let src = include_str!("../../src/tasks/dashboard.rs");
+
+    for (fn_name, needle) in [
+        (
+            "fn fetch_stats",
+            "status.eq_any([\"active\", \"tunnel_active\"])",
+        ),
+        (
+            "fn fetch_active_sessions",
+            "status.eq_any([\"active\", \"tunnel_active\"])",
+        ),
+    ] {
+        let idx = src
+            .find(fn_name)
+            .unwrap_or_else(|| panic!("{} must exist in tasks::dashboard", fn_name));
+        let next = src[idx + 1..]
+            .find("\nasync fn ")
+            .map(|i| idx + 1 + i)
+            .unwrap_or(src.len());
+        let body = &src[idx..next];
+        assert!(
+            body.contains(needle),
+            "{} MUST count both `active` (SSH/RDP) and `tunnel_active` \
+             (IACS) so the WS-refreshed LIVE tile agrees with the \
+             first-paint count from `load_hero`.",
+            fn_name
+        );
+    }
 }
 
 // ===================================================================

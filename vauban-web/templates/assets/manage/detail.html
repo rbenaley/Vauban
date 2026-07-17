@@ -175,7 +175,7 @@
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Group</dt>
                     <dd class="mt-1 text-sm">
                         {% if asset.group_uuid.is_some() %}
-                        <a href="/assets/groups/{{ asset.group_uuid.as_ref().unwrap() }}" class="text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
+                        <a href="/assets/manage/groups/{{ asset.group_uuid.as_ref().unwrap() }}" class="text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
                             {{ asset.group_name.as_ref().unwrap() }}
                         </a>
                         {% else %}

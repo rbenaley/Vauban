@@ -50,14 +50,10 @@ pub(crate) use crate::templates::assets::{
 };
 pub(crate) use crate::templates::base::{BaseTemplate, UserContext};
 pub(crate) use crate::templates::dashboard::AdminTemplate;
-pub(crate) use crate::templates::dashboard::widgets::{
-    ActiveSessionsWidget, RecentActivityWidget, StatsWidget,
-};
 pub(crate) use crate::templates::sessions::{
     ActiveListTemplate, ApprovalDetailTemplate, ApprovalListTemplate, RecordingDetailTemplate,
     RecordingListTemplate, SessionListTemplate as WebSessionListTemplate,
 };
-pub(crate) use crate::utils::format_duration;
 pub(crate) use askama::Template;
 
 // ============================================================================

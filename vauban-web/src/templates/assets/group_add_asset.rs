@@ -63,7 +63,7 @@ pub struct GroupSummary {
 }
 
 #[derive(Template)]
-#[template(path = "assets/group_add_asset.html")]
+#[template(path = "assets/manage/groups/add_asset.html")]
 pub struct AssetGroupAddAssetTemplate {
     pub title: String,
     pub user: Option<UserContext>,

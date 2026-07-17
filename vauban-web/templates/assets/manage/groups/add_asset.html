@@ -10,7 +10,7 @@
             <nav class="flex overflow-x-auto" aria-label="Breadcrumb">
                 <ol class="flex items-center space-x-2 whitespace-nowrap">
                     <li>
-                        <a href="/assets/groups" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
+                        <a href="/assets/manage/groups" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
                             <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
                                 <path fill-rule="evenodd" d="M9.293 2.293a1 1 0 011.414 0l7 7A1 1 0 0117 11h-1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-3a1 1 0 00-1-1H9a1 1 0 00-1 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-6H3a1 1 0 01-.707-1.707l7-7z" clip-rule="evenodd"/>
                             </svg>
@@ -21,7 +21,7 @@
                             <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
                                 <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
                             </svg>
-                            <a href="/assets/groups" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Asset Groups</a>
+                            <a href="/assets/manage/groups" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Asset Groups</a>
                         </div>
                     </li>
                     <li>
@@ -29,7 +29,7 @@
                             <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
                                 <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
                             </svg>
-                            <a href="/assets/groups/{{ group.uuid }}" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">{{ group.name }}</a>
+                            <a href="/assets/manage/groups/{{ group.uuid }}" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">{{ group.name }}</a>
                         </div>
                     </li>
                     <li>
@@ -71,7 +71,7 @@
                 All assets are already assigned to a group or there are no assets in the system.
             </p>
             <div class="mt-6">
-                <a href="/assets/groups/{{ group.uuid }}"
+                <a href="/assets/manage/groups/{{ group.uuid }}"
                    class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
                     <svg class="-ml-0.5 mr-1.5 h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
                         <path fill-rule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clip-rule="evenodd"/>
@@ -81,7 +81,7 @@
             </div>
         </div>
         {% else %}
-        <form action="/assets/groups/{{ group.uuid }}/add-asset" method="POST"
+        <form action="/assets/manage/groups/{{ group.uuid }}/add-asset" method="POST"
               x-data="{ search: '' }">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
             
@@ -194,7 +194,7 @@
             </div>
 
             <div class="bg-gray-50 dark:bg-gray-700/50 px-4 py-3 flex justify-end space-x-3 sm:px-6">
-                <a href="/assets/groups/{{ group.uuid }}"
+                <a href="/assets/manage/groups/{{ group.uuid }}"
                    class="inline-flex justify-center rounded-md bg-white dark:bg-gray-600 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-500 hover:bg-gray-50 dark:hover:bg-gray-500">
                     Cancel
                 </a>

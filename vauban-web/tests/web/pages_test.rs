@@ -341,7 +341,7 @@ async fn test_asset_group_detail_with_malformed_uuid() {
 
     let response = app
         .server
-        .get("/assets/groups/totally-not-uuid")
+        .get("/assets/manage/groups/totally-not-uuid")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -350,7 +350,7 @@ async fn test_asset_group_detail_with_malformed_uuid() {
         .headers()
         .get("location")
         .and_then(|v| v.to_str().ok());
-    assert_eq!(location, Some("/assets/groups"));
+    assert_eq!(location, Some("/assets/manage/groups"));
 }
 
 #[tokio::test]
@@ -425,11 +425,14 @@ async fn test_not_found_redirect_sets_flash_cookie() {
     );
 }
 
-/// Same rationale as `test_not_found_redirect_sets_flash_cookie`:
-/// `/assets/{uuid}` is now a hard 410, so the authorization-error
-/// flash redirect is exercised on `/accounts/users/{uuid}` instead.
+/// BAC hardening: authorization errors on the admin nests are no
+/// longer flash redirects — the `require_users_read` route_layer
+/// answers a structural 403 BEFORE any handler / DB access, so a
+/// role:user cannot use the response shape as an existence oracle.
+/// (The flash mechanism itself is still covered by
+/// `test_not_found_redirect_sets_flash_cookie` above.)
 #[tokio::test]
-async fn test_authorization_error_redirect_sets_flash() {
+async fn test_authorization_error_returns_structural_403() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
@@ -445,26 +448,15 @@ async fn test_authorization_error_redirect_sets_flash() {
         .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
         .await;
 
-    // Normal user tries to open the user-edit form -- gated on
-    // users:write -> flash_redirect with an error cookie.
+    // Normal user tries to open the user-edit form -- the
+    // /accounts/users nest gate fires first: structural 403.
     let response = app
         .server
         .get(&format!("/accounts/users/{}/edit", admin_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    assert_status(&response, 303);
-
-    let set_cookie = response
-        .headers()
-        .get("set-cookie")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    assert!(
-        set_cookie.contains("flash="),
-        "Authorization error should set flash cookie"
-    );
+    assert_status(&response, 403);
 }
 
 // =============================================================================
@@ -977,7 +969,7 @@ async fn test_asset_group_list_page_loads() {
 
     let response = app
         .server
-        .get("/assets/groups")
+        .get("/assets/manage/groups")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1005,7 +997,7 @@ async fn test_asset_group_list_with_search() {
     // Test with ILIKE search
     let response = app
         .server
-        .get("/assets/groups?search=production")
+        .get("/assets/manage/groups?search=production")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1034,7 +1026,7 @@ async fn test_asset_group_list_with_special_chars_search() {
     // The single quote is URL-encoded as %27
     let response = app
         .server
-        .get("/assets/groups?search=test%27%3BDROP%20TABLE%20asset_groups%3B--")
+        .get("/assets/manage/groups?search=test%27%3BDROP%20TABLE%20asset_groups%3B--")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1068,7 +1060,7 @@ async fn test_asset_group_list_empty_search_shows_all() {
     // Test 1: No filter - page loads with groups
     let response_no_filter = app
         .server
-        .get("/assets/groups")
+        .get("/assets/manage/groups")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1082,7 +1074,7 @@ async fn test_asset_group_list_empty_search_shows_all() {
     // Test 2: Empty search should behave the same
     let response_empty = app
         .server
-        .get("/assets/groups?search=")
+        .get("/assets/manage/groups?search=")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1106,7 +1098,7 @@ async fn test_asset_group_list_empty_search_shows_all() {
     // Test 3: Case-insensitive search
     let response_upper = app
         .server
-        .get("/assets/groups?search=ASSETGRP-SEARCH")
+        .get("/assets/manage/groups?search=ASSETGRP-SEARCH")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1120,7 +1112,7 @@ async fn test_asset_group_list_empty_search_shows_all() {
     // Test 4: Partial search
     let response_partial = app
         .server
-        .get("/assets/groups?search=assetgrp-search")
+        .get("/assets/manage/groups?search=assetgrp-search")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1155,7 +1147,7 @@ async fn test_asset_group_detail_page_loads() {
 
     let response = app
         .server
-        .get(&format!("/assets/groups/{}", group_uuid))
+        .get(&format!("/assets/manage/groups/{}", group_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1183,7 +1175,7 @@ async fn test_asset_group_detail_not_found() {
     let fake_uuid = Uuid::new_v4();
     let response = app
         .server
-        .get(&format!("/assets/groups/{}", fake_uuid))
+        .get(&format!("/assets/manage/groups/{}", fake_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1193,7 +1185,7 @@ async fn test_asset_group_detail_not_found() {
         .headers()
         .get("location")
         .and_then(|v| v.to_str().ok());
-    assert_eq!(location, Some("/assets/groups"));
+    assert_eq!(location, Some("/assets/manage/groups"));
 }
 
 // =============================================================================
@@ -1218,7 +1210,7 @@ async fn test_asset_group_edit_page_loads() {
 
     let response = app
         .server
-        .get(&format!("/assets/groups/{}/edit", group_uuid))
+        .get(&format!("/assets/manage/groups/{}/edit", group_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1394,7 +1386,7 @@ async fn test_vauban_group_list_empty_search_shows_all() {
     // Test 1: Search by name - group appears
     let response_no_filter = app
         .server
-        .get(&format!("/accounts/groups?search={}", &group_name))
+        .get(&format!("/accounts/groups?search={group_name}"))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1449,7 +1441,7 @@ async fn test_vauban_group_list_empty_search_shows_all() {
     // Test 4: Partial search using a unique substring from the group name
     let response_partial = app
         .server
-        .get(&format!("/accounts/groups?search={}", &group_name))
+        .get(&format!("/accounts/groups?search={group_name}"))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1790,12 +1782,9 @@ async fn test_vauban_group_delete_requires_admin() {
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 303 || status == 302,
-        "Expected redirect, got {}",
-        status
-    );
+    // BAC hardening: the /accounts/groups nest route_layer refuses
+    // role:user with a structural 403 before any handler/DB access.
+    assert_status(&response, 403);
 
     // Verify group still exists (non-admin cannot delete)
     use vauban_web::schema::vauban_groups;
@@ -1916,7 +1905,7 @@ async fn test_update_asset_group_web_form_redirects_on_success() {
     // Submit form with valid data
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/edit", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/edit", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1958,7 +1947,7 @@ async fn test_update_asset_group_web_form_validation_error() {
     // Submit form with empty name (validation error)
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/edit", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/edit", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2128,7 +2117,7 @@ async fn test_asset_group_empty_name_shows_flash_error() {
     // Submit form with empty name (validation error)
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/edit", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/edit", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2158,7 +2147,7 @@ async fn test_asset_group_empty_name_shows_flash_error() {
     );
     let location_str = location.unwrap().to_str().unwrap();
     assert!(
-        location_str.contains(&format!("/assets/groups/{}/edit", group_uuid)),
+        location_str.contains(&format!("/assets/manage/groups/{}/edit", group_uuid)),
         "Should redirect back to edit page, got: {}",
         location_str
     );
@@ -2192,7 +2181,7 @@ async fn test_asset_group_empty_slug_shows_flash_error() {
     // Submit form with empty slug (validation error)
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/edit", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/edit", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2243,7 +2232,7 @@ async fn test_asset_group_edit_page_displays_flash_messages() {
     // First, submit form with empty name to set flash cookie
     let error_response = app
         .server
-        .post(&format!("/assets/groups/{}/edit", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/edit", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2274,7 +2263,7 @@ async fn test_asset_group_edit_page_displays_flash_messages() {
     // Now GET the edit page with the flash cookie to verify message is displayed
     let get_response = app
         .server
-        .get(&format!("/assets/groups/{}/edit", group_uuid))
+        .get(&format!("/assets/manage/groups/{}/edit", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; {}", token, flash_cookie.unwrap()),
@@ -2315,7 +2304,7 @@ async fn test_asset_group_create_form_loads_for_admin() {
 
     let response = app
         .server
-        .get("/assets/groups/new")
+        .get("/assets/manage/groups/new")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -2342,7 +2331,7 @@ async fn test_asset_group_create_form_requires_admin() {
 
     let response = app
         .server
-        .get("/assets/groups/new")
+        .get("/assets/manage/groups/new")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -2373,7 +2362,7 @@ async fn test_asset_group_create_success() {
 
     let response = app
         .server
-        .post("/assets/groups")
+        .post("/assets/manage/groups")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2428,7 +2417,7 @@ async fn test_asset_group_create_normal_user_forbidden() {
 
     let response = app
         .server
-        .post("/assets/groups")
+        .post("/assets/manage/groups")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2442,12 +2431,9 @@ async fn test_asset_group_create_normal_user_forbidden() {
         ])
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 302 || status == 303,
-        "Expected redirect, got {}",
-        status
-    );
+    // BAC hardening: the /assets/manage nest route_layer refuses
+    // role:user with a structural 403 before any handler/DB access.
+    assert_status(&response, 403);
 
     // Verify group was NOT created
     use vauban_web::schema::asset_groups;
@@ -2486,7 +2472,7 @@ async fn test_asset_group_create_duplicate_slug_rejected() {
     // Try to create another group with the same slug
     let response = app
         .server
-        .post("/assets/groups")
+        .post("/assets/manage/groups")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2539,7 +2525,7 @@ async fn test_asset_group_create_duplicate_slug_shows_flash_error() {
     // Try to create another group with the same slug
     let error_response = app
         .server
-        .post("/assets/groups")
+        .post("/assets/manage/groups")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2569,7 +2555,7 @@ async fn test_asset_group_create_duplicate_slug_shows_flash_error() {
     // Now GET the create page with the flash cookie to verify message is displayed
     let get_response = app
         .server
-        .get("/assets/groups/new")
+        .get("/assets/manage/groups/new")
         .add_header(
             COOKIE,
             format!(
@@ -2609,7 +2595,7 @@ async fn test_asset_group_delete_success() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/delete", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/delete", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2663,7 +2649,7 @@ async fn test_asset_group_delete_with_assets() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/delete", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/delete", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2722,7 +2708,7 @@ async fn test_asset_group_add_asset_form_loads() {
 
     let response = app
         .server
-        .get(&format!("/assets/groups/{}/add-asset", group_uuid))
+        .get(&format!("/assets/manage/groups/{}/add-asset", group_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -2760,7 +2746,7 @@ async fn test_asset_group_add_asset_form_requires_admin() {
 
     let response = app
         .server
-        .get(&format!("/assets/groups/{}/add-asset", group_uuid))
+        .get(&format!("/assets/manage/groups/{}/add-asset", group_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -2800,7 +2786,7 @@ async fn test_asset_group_add_asset_success() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/add-asset", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/add-asset", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2888,7 +2874,7 @@ async fn test_asset_group_add_multiple_assets_success() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/add-asset", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/add-asset", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2953,7 +2939,7 @@ async fn test_asset_group_add_asset_normal_user_forbidden() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/add-asset", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/add-asset", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2964,12 +2950,9 @@ async fn test_asset_group_add_asset_normal_user_forbidden() {
         ])
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 302 || status == 303,
-        "Expected redirect (with error), got {}",
-        status
-    );
+    // BAC hardening: the /assets/manage nest route_layer refuses
+    // role:user with a structural 403 before any handler/DB access.
+    assert_status(&response, 403);
 
     assert_eq!(
         count_asset_group_memberships(&mut conn, asset_id).await,
@@ -3016,7 +2999,7 @@ async fn test_asset_group_add_asset_already_in_group() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/add-asset", group2_uuid))
+        .post(&format!("/assets/manage/groups/{}/add-asset", group2_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -3096,7 +3079,10 @@ async fn test_asset_group_remove_asset_success() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/remove-asset", group_uuid))
+        .post(&format!(
+            "/assets/manage/groups/{}/remove-asset",
+            group_uuid
+        ))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -3164,7 +3150,10 @@ async fn test_asset_group_remove_asset_normal_user_forbidden() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/remove-asset", group_uuid))
+        .post(&format!(
+            "/assets/manage/groups/{}/remove-asset",
+            group_uuid
+        ))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -3175,12 +3164,9 @@ async fn test_asset_group_remove_asset_normal_user_forbidden() {
         ])
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 302 || status == 303,
-        "Expected redirect (with error), got {}",
-        status
-    );
+    // BAC hardening: the /assets/manage nest route_layer refuses
+    // role:user with a structural 403 before any handler/DB access.
+    assert_status(&response, 403);
 
     // Verify asset was NOT removed from group
     use vauban_web::schema::asset_groups;
@@ -3215,7 +3201,7 @@ async fn test_asset_group_detail_shows_add_asset_button() {
 
     let response = app
         .server
-        .get(&format!("/assets/groups/{}", group_uuid))
+        .get(&format!("/assets/manage/groups/{}", group_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -3226,7 +3212,7 @@ async fn test_asset_group_detail_shows_add_asset_button() {
         "Group detail page should show 'Add Asset' button"
     );
     assert!(
-        body.contains(&format!("/assets/groups/{}/add-asset", group_uuid)),
+        body.contains(&format!("/assets/manage/groups/{}/add-asset", group_uuid)),
         "Page should contain link to add asset form"
     );
 }
@@ -3255,7 +3241,7 @@ async fn test_asset_group_detail_shows_remove_button() {
 
     let response = app
         .server
-        .get(&format!("/assets/groups/{}", group_uuid))
+        .get(&format!("/assets/manage/groups/{}", group_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -3266,7 +3252,10 @@ async fn test_asset_group_detail_shows_remove_button() {
         "Group detail page should show 'Remove' button for assets"
     );
     assert!(
-        body.contains(&format!("/assets/groups/{}/remove-asset", group_uuid)),
+        body.contains(&format!(
+            "/assets/manage/groups/{}/remove-asset",
+            group_uuid
+        )),
         "Page should contain form action for removing asset"
     );
 }
@@ -3290,7 +3279,7 @@ async fn test_asset_group_delete_normal_user_forbidden() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/delete", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/delete", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -3298,12 +3287,9 @@ async fn test_asset_group_delete_normal_user_forbidden() {
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 302 || status == 303,
-        "Expected redirect, got {}",
-        status
-    );
+    // BAC hardening: the /assets/manage nest route_layer refuses
+    // role:user with a structural 403 before any handler/DB access.
+    assert_status(&response, 403);
 
     // Verify group was NOT deleted
     use vauban_web::schema::asset_groups;
@@ -3338,7 +3324,7 @@ async fn test_asset_group_detail_has_delete_button() {
 
     let response = app
         .server
-        .get(&format!("/assets/groups/{}", group_uuid))
+        .get(&format!("/assets/manage/groups/{}", group_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -3391,7 +3377,7 @@ async fn test_asset_group_icons_rendered_correctly() {
         // Verify icon is rendered on detail page
         let response = app
             .server
-            .get(&format!("/assets/groups/{}", group_uuid))
+            .get(&format!("/assets/manage/groups/{}", group_uuid))
             .add_header(COOKIE, format!("access_token={}", token))
             .await;
 
@@ -3448,7 +3434,7 @@ async fn test_asset_group_create_form_fields_present() {
 
     let response = app
         .server
-        .get("/assets/groups/new")
+        .get("/assets/manage/groups/new")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -3460,7 +3446,7 @@ async fn test_asset_group_create_form_fields_present() {
 
     // Verify form action is correct
     assert!(
-        body.contains("action=\"/assets/groups\"") && body.contains("method=\"POST\""),
+        body.contains("action=\"/assets/manage/groups\"") && body.contains("method=\"POST\""),
         "Form should have correct action and method"
     );
 
@@ -3496,7 +3482,7 @@ async fn test_asset_group_create_form_fields_present() {
     );
 
     // Verify the form structure: form opens before submit and closes after
-    let form_start = body.find("action=\"/assets/groups\"");
+    let form_start = body.find("action=\"/assets/manage/groups\"");
     let submit_button = body.find("Create Group");
     let form_end = body.rfind("</form>");
 
@@ -5211,7 +5197,9 @@ async fn test_vauban_group_create_regular_user_cannot_create() {
         .form(&[("csrf_token", csrf_token.as_str()), ("name", &group_name)])
         .await;
 
-    assert_redirect(&response);
+    // BAC hardening: the /accounts/groups nest route_layer refuses
+    // role:user with a structural 403 before any handler/DB access.
+    assert_status(&response, 403);
 
     use vauban_web::schema::vauban_groups;
     let exists: bool = vauban_groups::table
@@ -5359,7 +5347,9 @@ async fn test_vauban_group_update_denied_for_regular_user() {
         .form(&[("csrf_token", csrf_token.as_str()), ("name", &new_name)])
         .await;
 
-    assert_redirect(&response);
+    // BAC hardening: the /accounts/groups nest route_layer refuses
+    // role:user with a structural 403 before any handler/DB access.
+    assert_status(&response, 403);
 
     let current_name: String = vauban_groups::table
         .filter(vauban_groups::uuid.eq(group_uuid))
@@ -6876,22 +6866,13 @@ async fn test_asset_group_edit_page_normal_user_forbidden() {
     // Try to access edit page
     let response = app
         .server
-        .get(&format!("/assets/groups/{}/edit", group_uuid))
+        .get(&format!("/assets/manage/groups/{}/edit", group_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    // Non-admin users are redirected with flash message
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 303,
-        "Normal user should be redirected from asset group edit page, got {}",
-        status
-    );
-    let location = response
-        .headers()
-        .get("location")
-        .and_then(|v| v.to_str().ok());
-    assert_eq!(location, Some("/assets/groups"));
+    // BAC hardening: the /assets/manage nest route_layer refuses
+    // role:user with a structural 403 before any handler/DB access.
+    assert_status(&response, 403);
 }
 
 #[tokio::test]
@@ -6915,7 +6896,7 @@ async fn test_asset_group_update_normal_user_forbidden() {
     // Try to submit update
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/edit", group_uuid))
+        .post(&format!("/assets/manage/groups/{}/edit", group_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -6929,12 +6910,9 @@ async fn test_asset_group_update_normal_user_forbidden() {
         ])
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 302 || status == 303,
-        "Expected redirect (with error flash), got {}",
-        status
-    );
+    // BAC hardening: the /assets/manage nest route_layer refuses
+    // role:user with a structural 403 before any handler/DB access.
+    assert_status(&response, 403);
 
     // Verify group was NOT modified
     use vauban_web::schema::asset_groups;

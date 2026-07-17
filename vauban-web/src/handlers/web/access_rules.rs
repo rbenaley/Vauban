@@ -256,9 +256,14 @@ pub(crate) fn to_rfc3339_opt(dt: &Option<chrono::DateTime<chrono::Utc>>) -> Opti
 pub async fn access_rules_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
+    if !perms.access_rules_read {
+        return Err(AppError::forbidden("access_rules:read"));
+    }
+
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Access Rules".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/assets/access");

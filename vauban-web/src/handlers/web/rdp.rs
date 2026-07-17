@@ -30,6 +30,7 @@ fn htmx_error_response(message: &str) -> Response {
 /// Initiate RDP connection to an asset.
 ///
 /// POST /assets/{uuid}/connect-rdp
+// allow-ungated: session-open path; authorization delegated to the access-rule pipeline (vauban-access CheckAssetAccess + MFA + JIT)
 pub async fn connect_rdp(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -602,6 +603,7 @@ pub struct RdpViewerTemplate {
 /// Render the RDP viewer page.
 ///
 /// GET /sessions/rdp/{session_id}
+// allow-ungated: viewer page; instance authorization via services::session_access::verify
 pub async fn rdp_page(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,

@@ -842,6 +842,32 @@ fn build_test_router(state: AppState) -> Router {
                 )
                 .route("/deleted", get(handlers::web::asset_deleted_list))
                 .route("/search", get(handlers::web::asset_search))
+                // Asset groups (BAC hardening): mirrored from main.rs,
+                // literal `/groups*` BEFORE the parameterized `{uuid}`.
+                .route("/groups/new", get(handlers::web::asset_group_create_form))
+                .route(
+                    "/groups",
+                    get(handlers::web::asset_group_list)
+                        .post(handlers::web::create_asset_group_web),
+                )
+                .route("/groups/{uuid}", get(handlers::web::asset_group_detail))
+                .route(
+                    "/groups/{uuid}/edit",
+                    get(handlers::web::asset_group_edit).post(handlers::web::update_asset_group),
+                )
+                .route(
+                    "/groups/{uuid}/delete",
+                    post(handlers::web::delete_asset_group_web),
+                )
+                .route(
+                    "/groups/{uuid}/add-asset",
+                    get(handlers::web::asset_group_add_asset_form)
+                        .post(handlers::web::asset_group_add_asset),
+                )
+                .route(
+                    "/groups/{uuid}/remove-asset",
+                    post(handlers::web::asset_group_remove_asset),
+                )
                 .route("/{uuid}", get(handlers::web::asset_detail))
                 .route(
                     "/{uuid}/edit",
@@ -938,111 +964,86 @@ fn build_test_router(state: AppState) -> Router {
                     middleware::require_vault_secrets_manage::require_vault_secrets_manage,
                 )),
         )
-        // Access rules - literal routes MUST come before parameterized routes
-        .route(
-            "/assets/access/new",
-            get(handlers::web::access_rule_create_form),
-        )
-        .route(
+        // ----------------------------------------------------------------
+        // BAC hardening: access rules, PAM groups and user management
+        // nests, mirrored from main.rs. Each sub-tree is fenced by its
+        // `require_*` route_layer (minimum permission of the sub-tree)
+        // BEFORE any handler / DB lookup runs.
+        // ----------------------------------------------------------------
+        .nest(
             "/assets/access",
-            get(handlers::web::access_rules_list).post(handlers::web::create_access_rule_web),
+            Router::new()
+                .route("/new", get(handlers::web::access_rule_create_form))
+                .route(
+                    "/",
+                    get(handlers::web::access_rules_list)
+                        .post(handlers::web::create_access_rule_web),
+                )
+                .route("/{uuid}", get(handlers::web::access_rule_detail))
+                .route(
+                    "/{uuid}/edit",
+                    get(handlers::web::access_rule_edit)
+                        .post(handlers::web::update_access_rule_web),
+                )
+                .route(
+                    "/{uuid}/delete",
+                    post(handlers::web::delete_access_rule_web),
+                )
+                .route_layer(axum::middleware::from_fn(
+                    middleware::require_permission::require_access_rules_read,
+                )),
         )
-        .route(
-            "/assets/access/{uuid}",
-            get(handlers::web::access_rule_detail),
-        )
-        .route(
-            "/assets/access/{uuid}/edit",
-            get(handlers::web::access_rule_edit).post(handlers::web::update_access_rule_web),
-        )
-        .route(
-            "/assets/access/{uuid}/delete",
-            post(handlers::web::delete_access_rule_web),
-        )
-        // Asset groups - literal routes MUST come before parameterized routes
-        .route(
-            "/assets/groups/new",
-            get(handlers::web::asset_group_create_form),
-        )
-        .route(
-            "/assets/groups",
-            get(handlers::web::asset_group_list).post(handlers::web::create_asset_group_web),
-        )
-        .route(
-            "/assets/groups/{uuid}",
-            get(handlers::web::asset_group_detail),
-        )
-        .route(
-            "/assets/groups/{uuid}/edit",
-            get(handlers::web::asset_group_edit).post(handlers::web::update_asset_group),
-        )
-        .route(
-            "/assets/groups/{uuid}/delete",
-            post(handlers::web::delete_asset_group_web),
-        )
-        .route(
-            "/assets/groups/{uuid}/add-asset",
-            get(handlers::web::asset_group_add_asset_form)
-                .post(handlers::web::asset_group_add_asset),
-        )
-        .route(
-            "/assets/groups/{uuid}/remove-asset",
-            post(handlers::web::asset_group_remove_asset),
-        )
-        .route(
+        .nest(
             "/accounts/groups",
-            get(handlers::web::group_list).post(handlers::web::create_vauban_group_web),
+            Router::new()
+                .route(
+                    "/",
+                    get(handlers::web::group_list).post(handlers::web::create_vauban_group_web),
+                )
+                .route("/new", get(handlers::web::vauban_group_create_form))
+                .route("/{uuid}/edit", get(handlers::web::vauban_group_edit_form))
+                .route(
+                    "/{uuid}/members/add",
+                    get(handlers::web::group_add_member_form),
+                )
+                .route(
+                    "/{uuid}/members/search",
+                    get(handlers::web::group_member_search),
+                )
+                .route("/{uuid}/members", post(handlers::web::add_group_member_web))
+                .route(
+                    "/{uuid}/members/{user_uuid}/remove",
+                    post(handlers::web::remove_group_member_web),
+                )
+                .route(
+                    "/{uuid}/delete",
+                    post(handlers::web::delete_vauban_group_web),
+                )
+                .route(
+                    "/{uuid}",
+                    get(handlers::web::group_detail).post(handlers::web::update_vauban_group_web),
+                )
+                .route_layer(axum::middleware::from_fn(
+                    middleware::require_permission::require_groups_read,
+                )),
         )
-        // Group management routes (literal paths before parameterized)
-        .route(
-            "/accounts/groups/new",
-            get(handlers::web::vauban_group_create_form),
-        )
-        .route(
-            "/accounts/groups/{uuid}/edit",
-            get(handlers::web::vauban_group_edit_form),
-        )
-        .route(
-            "/accounts/groups/{uuid}/members/add",
-            get(handlers::web::group_add_member_form),
-        )
-        .route(
-            "/accounts/groups/{uuid}/members/search",
-            get(handlers::web::group_member_search),
-        )
-        .route(
-            "/accounts/groups/{uuid}/members",
-            post(handlers::web::add_group_member_web),
-        )
-        .route(
-            "/accounts/groups/{uuid}/members/{user_uuid}/remove",
-            post(handlers::web::remove_group_member_web),
-        )
-        .route(
-            "/accounts/groups/{uuid}/delete",
-            post(handlers::web::delete_vauban_group_web),
-        )
-        .route(
-            "/accounts/groups/{uuid}",
-            get(handlers::web::group_detail).post(handlers::web::update_vauban_group_web),
-        )
-        // User management pages (literal paths before parameterized)
-        .route("/accounts/users/new", get(handlers::web::user_create_form))
-        .route(
+        .nest(
             "/accounts/users",
-            get(handlers::web::user_list).post(handlers::web::create_user_web),
-        )
-        .route(
-            "/accounts/users/{uuid}/edit",
-            get(handlers::web::user_edit_form),
-        )
-        .route(
-            "/accounts/users/{uuid}/delete",
-            post(handlers::web::delete_user_web),
-        )
-        .route(
-            "/accounts/users/{uuid}",
-            get(handlers::web::user_detail).post(handlers::web::update_user_web),
+            Router::new()
+                .route("/new", get(handlers::web::user_create_form))
+                .route(
+                    "/",
+                    get(handlers::web::user_list).post(handlers::web::create_user_web),
+                )
+                .route("/{uuid}/edit", get(handlers::web::user_edit_form))
+                .route("/{uuid}/delete", post(handlers::web::delete_user_web))
+                .route(
+                    "/{uuid}",
+                    get(handlers::web::user_detail).post(handlers::web::update_user_web),
+                )
+                .route_layer(axum::middleware::from_fn(
+                    middleware::require_permission::require_users_read,
+                )),
         )
         // Account pages (profile, login sessions and API keys)
         .route("/accounts/profile", get(handlers::web::profile))
@@ -1226,6 +1227,9 @@ fn build_test_router(state: AppState) -> Router {
         .route("/htmx/empty", get(handlers::web::htmx_empty))
         // Dashboard home
         .route("/", get(handlers::web::dashboard_home))
+        // Admin dashboard (handler-gated on perms.admin_view; the
+        // bac_gate_matrix_test drives the 403 / anonymous contracts)
+        .route("/admin", get(handlers::web::dashboard_admin))
         // INV-HDR-5: CORS on the web/WS branch ONLY, fed from the same
         // config allowlist as production (VAU-010). Applied here (before
         // the merge below) so the API branch is never wrapped.

@@ -258,6 +258,7 @@ pub async fn session_list(
 ///    that flow we translate the API outcome into a flash + 303
 ///    redirect to `/sessions` (POST-Redirect-GET).
 #[allow(clippy::too_many_arguments)]
+// allow-ungated: instance authorization via services::session_access::verify (owner OR sessions:write)
 pub async fn terminate_session_web(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -1462,6 +1463,7 @@ pub struct AccessRequestForm {
 /// POST /sessions/request
 ///
 /// Creates a pending proxy_session and notifies admins.
+// allow-ungated: self-service; the caller files an access request for themself (access-rule pipeline decides)
 pub async fn submit_access_request(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -2671,6 +2673,7 @@ fn htmx_or_redirect(is_htmx: bool, message: &str, redirect_to: &str) -> Response
 /// Cancel a pending access request (user self-service).
 ///
 /// POST /sessions/my-requests/{uuid}/cancel
+// allow-ungated: self-service; ownership of the request is checked in the body
 pub async fn cancel_access_request(
     State(state): State<AppState>,
     auth_user: WebAuthUser,

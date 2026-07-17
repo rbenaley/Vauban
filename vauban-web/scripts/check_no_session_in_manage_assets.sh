@@ -31,8 +31,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCOPED=(
     "${ROOT}/src/handlers/web/manage_assets.rs:rust"
     "${ROOT}/src/handlers/api/manage_assets.rs:rust"
+    "${ROOT}/src/handlers/web/asset_groups.rs:rust"
     "${ROOT}/templates/assets/manage/list.html:template"
     "${ROOT}/templates/assets/manage/detail.html:template"
+    "${ROOT}/templates/assets/manage/groups/list.html:template"
+    "${ROOT}/templates/assets/manage/groups/create.html:template"
+    "${ROOT}/templates/assets/manage/groups/detail.html:template"
+    "${ROOT}/templates/assets/manage/groups/edit.html:template"
+    "${ROOT}/templates/assets/manage/groups/add_asset.html:template"
 )
 
 # Forbidden tokens. Kept as basic strings (not regex) so the lint is

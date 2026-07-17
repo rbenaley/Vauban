@@ -5,17 +5,17 @@
 //! guards the [`vauban_web::handlers::web::asset_groups`] module installs
 //! on top of the database triggers:
 //!
-//! * **U32** — `GET /assets/groups` HTML never exposes the virtual UUID,
+//! * **U32** — `GET /assets/manage/groups` HTML never exposes the virtual UUID,
 //!   name, or slug (asset-group index hides it).
-//! * **U33** — `GET /assets/groups/{ALL_UUID}` redirects with a flash
+//! * **U33** — `GET /assets/manage/groups/{ALL_UUID}` redirects with a flash
 //!   "not found" (404-equivalent for the PRG pattern).
-//! * **U34** — `POST /assets/groups/{ALL_UUID}/delete` refuses with a
+//! * **U34** — `POST /assets/manage/groups/{ALL_UUID}/delete` refuses with a
 //!   flash error ("System group cannot be deleted") — 403-equivalent.
-//! * **U35** — `GET /assets/groups/{ALL_UUID}/edit` refuses.
-//! * **U36** — `POST /assets/groups/{ALL_UUID}/edit` (update) refuses.
-//! * **U37** — `GET /assets/groups/{ALL_UUID}/add-asset` refuses.
-//! * **U38** — `POST /assets/groups/{ALL_UUID}/add-asset` refuses.
-//! * **U39** — `POST /assets/groups/{ALL_UUID}/remove-asset` refuses.
+//! * **U35** — `GET /assets/manage/groups/{ALL_UUID}/edit` refuses.
+//! * **U36** — `POST /assets/manage/groups/{ALL_UUID}/edit` (update) refuses.
+//! * **U37** — `GET /assets/manage/groups/{ALL_UUID}/add-asset` refuses.
+//! * **U38** — `POST /assets/manage/groups/{ALL_UUID}/add-asset` refuses.
+//! * **U39** — `POST /assets/manage/groups/{ALL_UUID}/remove-asset` refuses.
 //! * **U40** — Access-rule create form's asset-group dropdown DOES
 //!   include the virtual group with a "Virtual" badge.
 //! * **U41** — Access-rule edit form's asset-group dropdown DOES
@@ -73,7 +73,7 @@ async fn u32_virtual_group_hidden_from_asset_groups_index() {
 
     let response = app
         .server
-        .get("/assets/groups")
+        .get("/assets/manage/groups")
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
     assert_status(&response, 200);
@@ -108,7 +108,7 @@ async fn u33_virtual_group_detail_not_browsable() {
 
     let response = app
         .server
-        .get(&format!("/assets/groups/{}", virtual_uuid_str()))
+        .get(&format!("/assets/manage/groups/{}", virtual_uuid_str()))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
     let status = response.status_code().as_u16();
@@ -122,7 +122,7 @@ async fn u33_virtual_group_detail_not_browsable() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert_eq!(
-        location, "/assets/groups",
+        location, "/assets/manage/groups",
         "virtual group detail must redirect back to the index"
     );
 
@@ -143,7 +143,10 @@ async fn u34_virtual_group_delete_refused() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/delete", virtual_uuid_str()))
+        .post(&format!(
+            "/assets/manage/groups/{}/delete",
+            virtual_uuid_str()
+        ))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[("csrf_token", csrf.as_str())])
         .await;
@@ -189,7 +192,10 @@ async fn u35_virtual_group_edit_form_refused() {
 
     let response = app
         .server
-        .get(&format!("/assets/groups/{}/edit", virtual_uuid_str()))
+        .get(&format!(
+            "/assets/manage/groups/{}/edit",
+            virtual_uuid_str()
+        ))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
     let status = response.status_code().as_u16();
@@ -215,7 +221,10 @@ async fn u36_virtual_group_update_refused() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/edit", virtual_uuid_str()))
+        .post(&format!(
+            "/assets/manage/groups/{}/edit",
+            virtual_uuid_str()
+        ))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&serde_json::json!({
             "csrf_token": csrf,
@@ -262,7 +271,10 @@ async fn u37_virtual_group_add_asset_form_refused() {
 
     let response = app
         .server
-        .get(&format!("/assets/groups/{}/add-asset", virtual_uuid_str()))
+        .get(&format!(
+            "/assets/manage/groups/{}/add-asset",
+            virtual_uuid_str()
+        ))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
     let status = response.status_code().as_u16();
@@ -290,7 +302,10 @@ async fn u38_virtual_group_add_asset_post_refused() {
 
     let response = app
         .server
-        .post(&format!("/assets/groups/{}/add-asset", virtual_uuid_str()))
+        .post(&format!(
+            "/assets/manage/groups/{}/add-asset",
+            virtual_uuid_str()
+        ))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&serde_json::json!({
             "csrf_token": csrf,
@@ -336,7 +351,7 @@ async fn u39_virtual_group_remove_asset_refused() {
     let response = app
         .server
         .post(&format!(
-            "/assets/groups/{}/remove-asset",
+            "/assets/manage/groups/{}/remove-asset",
             virtual_uuid_str()
         ))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
