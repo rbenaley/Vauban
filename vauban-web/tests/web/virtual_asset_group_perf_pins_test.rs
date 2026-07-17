@@ -167,7 +167,7 @@ async fn p56_perf_can_access_asset_under_budget() {
     .expect("bulk noise UGs");
     sql_query(format!(
         "INSERT INTO asset_groups (uuid, name, slug, kind, color, icon)
-         SELECT gen_random_uuid(), 'p56-noise-ag-{stamp}-' || gs::text, 'p56-noise-ag-{stamp}-' || gs::text, 'static', '#000', 'folder'
+         SELECT gen_random_uuid(), 'p56-noise-ag-{stamp}-' || gs::text, 'p56-noise-ag-{stamp}-' || gs::text, 'static', '#000000', 'folder'
          FROM generate_series(1, 200) gs"
     ))
     .execute(&mut conn)

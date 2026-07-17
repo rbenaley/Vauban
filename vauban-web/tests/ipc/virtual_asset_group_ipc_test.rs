@@ -142,7 +142,7 @@ async fn c3_asset_group_info_kind_field_correct() {
     let name = unique_name("c3_static");
     let slug = name.to_lowercase().replace('_', "-");
     let static_grp = client
-        .create_asset_group(&name, &slug, None, "#000", "folder", None)
+        .create_asset_group(&name, &slug, None, "#000000", "folder", None)
         .await
         .expect("create static");
     assert_eq!(

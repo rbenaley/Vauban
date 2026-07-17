@@ -536,12 +536,17 @@ pub async fn create_user_web(
     // index is never tripped by an avoidable 500.
     form.username = shared::username::normalize_username(&form.username);
 
-    // Validate username
-    if form.username.len() < 3 || form.username.len() > 50 {
-        return flash_redirect(
-            flash.error("Username must be between 3 and 50 characters"),
-            "/accounts/users/new",
-        );
+    // Validate username: same charset rule as the API zone
+    // (`RE_USERNAME`) plus the historical 3-50 web length bound.
+    if let Err(msg) = super::validate_username_format(&form.username) {
+        return flash_redirect(flash.error(msg), "/accounts/users/new");
+    }
+
+    // Validate email format (same rule as the API zone's
+    // `#[validate(email)]`), on the trimmed value that gets persisted.
+    form.email = form.email.trim().to_string();
+    if let Err(msg) = super::validate_email_format(&form.email) {
+        return flash_redirect(flash.error(msg), "/accounts/users/new");
     }
 
     // Validate password length
@@ -998,10 +1003,21 @@ pub async fn update_user_web(
     // create handler).
     form.username = shared::username::normalize_username(&form.username);
 
-    // Validate username
-    if form.username.len() < 3 || form.username.len() > 50 {
+    // Validate username: same charset rule as the API zone
+    // (`RE_USERNAME`) plus the historical 3-50 web length bound.
+    if let Err(msg) = super::validate_username_format(&form.username) {
         return flash_redirect(
-            flash.error("Username must be between 3 and 50 characters"),
+            flash.error(msg),
+            &format!("/accounts/users/{}/edit", user_uuid),
+        );
+    }
+
+    // Validate email format (same rule as the API zone's
+    // `#[validate(email)]`), on the trimmed value that gets persisted.
+    form.email = form.email.trim().to_string();
+    if let Err(msg) = super::validate_email_format(&form.email) {
+        return flash_redirect(
+            flash.error(msg),
             &format!("/accounts/users/{}/edit", user_uuid),
         );
     }

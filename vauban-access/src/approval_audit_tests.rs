@@ -85,7 +85,7 @@ async fn insert_asset(pool: &DbPool, name: &str) -> i32 {
             assets::hostname.eq(format!("{name}.example.com")),
             assets::port.eq(22i32),
             assets::asset_type.eq("ssh"),
-            assets::status.eq("active"),
+            assets::status.eq("online"),
             assets::connection_config.eq(serde_json::json!({})),
             assets::connection_username.eq("root"),
         ))

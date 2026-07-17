@@ -104,6 +104,15 @@ pub async fn create_asset(
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
+    // Hostname charset gate (DNS / IPv4 / IPv6, no whitespace).
+    if !shared::validation::is_valid_hostname(request.hostname.trim()) {
+        return Err(AppError::Validation(
+            "Hostname must be 1-255 characters: letters, digits, dots, colons, \
+             hyphens and underscores"
+                .to_string(),
+        ));
+    }
+
     // Industrial kill-switch (layer 4 of 4): refuse to create an IACS
     // asset while the master switch is off. The DB list filters
     // (layer 2) would hide the row, so allowing creation would make
@@ -269,6 +278,28 @@ pub async fn update_asset(
         } else {
             return AppError::Validation(msg).into_response();
         }
+    }
+
+    // Closed vocabulary: reject unknown statuses instead of persisting
+    // them verbatim (mirrors the web zone; the column is fenced by the
+    // `assets_status_chk` DB constraint).
+    if let Some(ref requested_status) = request.status
+        && crate::models::asset::AssetStatus::parse_strict(requested_status).is_none()
+    {
+        handle_error!(
+            StatusCode::BAD_REQUEST,
+            "Unknown status: must be one of online, offline, maintenance, unknown"
+        );
+    }
+
+    // Hostname charset gate (DNS / IPv4 / IPv6, no whitespace).
+    if let Some(ref requested_hostname) = request.hostname
+        && !shared::validation::is_valid_hostname(requested_hostname.trim())
+    {
+        handle_error!(
+            StatusCode::BAD_REQUEST,
+            "Hostname must be 1-255 characters: letters, digits, dots, colons, hyphens and underscores"
+        );
     }
 
     let mut conn = match state.db_pool.get().await {

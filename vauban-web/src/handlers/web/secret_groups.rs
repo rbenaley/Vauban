@@ -204,6 +204,11 @@ pub async fn create_secret_group_web(
         );
     }
 
+    // Closed-format field: validate BEFORE any IPC/DB write.
+    if let Err(msg) = super::validate_slug_format("Group slug", form.slug.trim()) {
+        return flash_redirect(flash.error(msg), "/vault/secrets/groups/new");
+    }
+
     let sanitized_name = sanitize(form.name.trim());
     let sanitized_slug = sanitize(form.slug.trim());
     let sanitized_desc = sanitize_opt(form.description.filter(|s| !s.trim().is_empty()));
@@ -508,6 +513,11 @@ pub async fn update_secret_group_web(
 
     if form.name.trim().is_empty() || form.slug.trim().is_empty() {
         return flash_redirect(flash.error("Name and slug are required"), &edit_url);
+    }
+
+    // Closed-format field: validate BEFORE any IPC/DB write.
+    if let Err(msg) = super::validate_slug_format("Group slug", form.slug.trim()) {
+        return flash_redirect(flash.error(msg), &edit_url);
     }
 
     let sanitized_name = sanitize(form.name.trim());

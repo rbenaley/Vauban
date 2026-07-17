@@ -84,7 +84,7 @@ async fn seed_iacs_asset(conn: &mut AsyncPgConnection, admin_id: i32) -> i32 {
             assets::hostname.eq(format!("{}.test.local", label)),
             assets::port.eq(4321),
             assets::asset_type.eq("iacs_modbus"),
-            assets::status.eq("active"),
+            assets::status.eq("online"),
             assets::connection_username.eq(""),
             assets::connection_config.eq(serde_json::json!({})),
             assets::created_by_id.eq(admin_id),

@@ -148,7 +148,7 @@ async fn v2_kind_check_rejects_unknown_value() {
 
     let err = sql_query(
         "INSERT INTO asset_groups (uuid, name, slug, kind, color, icon)
-         VALUES (gen_random_uuid(), 'unknown-kind', 'unknown-kind', 'unknown', '#000', 'folder')",
+         VALUES (gen_random_uuid(), 'unknown-kind', 'unknown-kind', 'unknown', '#000000', 'folder')",
     )
     .execute(&mut conn)
     .await
@@ -170,7 +170,7 @@ async fn v3_unique_singleton_rejects_second_virtual_row() {
     // on (kind) WHERE kind <> 'static' must reject this.
     let err = sql_query(
         "INSERT INTO asset_groups (uuid, name, slug, kind, color, icon)
-         VALUES (gen_random_uuid(), 'fake-all', 'fake-all', 'all', '#000', 'folder')",
+         VALUES (gen_random_uuid(), 'fake-all', 'fake-all', 'all', '#000000', 'folder')",
     )
     .execute(&mut conn)
     .await
@@ -418,7 +418,7 @@ async fn v11_kind_column_default_static() {
     let slug = name.to_lowercase().replace('_', "-");
     sql_query(format!(
         "INSERT INTO asset_groups (uuid, name, slug, color, icon)
-         VALUES (gen_random_uuid(), '{name}', '{slug}', '#000', 'folder')"
+         VALUES (gen_random_uuid(), '{name}', '{slug}', '#000000', 'folder')"
     ))
     .execute(&mut conn)
     .await

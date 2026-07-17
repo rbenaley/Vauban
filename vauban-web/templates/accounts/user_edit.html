@@ -136,7 +136,8 @@
                         <label for="username" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Username</label>
                         <input type="text" name="username" id="username" value="{{ user_data.username }}"
                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
-                               required minlength="3" maxlength="50" pattern="[a-zA-Z0-9_-]+">
+                               required minlength="3" maxlength="50" pattern="[a-zA-Z0-9][a-zA-Z0-9._-]*"
+                               title="Must start with a letter or digit; letters, digits, dots, underscores, hyphens">
                     </div>
                     <div>
                         <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>

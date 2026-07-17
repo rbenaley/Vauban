@@ -2925,7 +2925,7 @@ async fn test_xss_sanitized_in_web_asset_create() {
             ("hostname", asset_hostname.as_str()),
             ("port", "22"),
             ("asset_type", "ssh"),
-            ("status", "active"),
+            ("status", "online"),
             ("description", xss_desc),
             ("ssh_username", "root"),
             ("ssh_auth_type", "password"),

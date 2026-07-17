@@ -27,7 +27,7 @@
 //! `submit_access_request`, `request-access`, `/sessions/request`,
 //! `wss://` or `WebSocket`. The admin zone is structurally session-free.
 use super::*;
-use crate::models::asset::{Asset, AssetType};
+use crate::models::asset::{Asset, AssetStatus, AssetType};
 
 const ASSETS_PER_PAGE: i64 = 30;
 
@@ -155,9 +155,25 @@ pub async fn create_asset_web(
     if form.hostname.trim().is_empty() {
         return flash_redirect(flash.error("Hostname is required"), "/assets/manage/new");
     }
+    if let Err(msg) = super::validate_hostname_format(form.hostname.trim()) {
+        return flash_redirect(flash.error(msg), "/assets/manage/new");
+    }
     if form.port < 1 || form.port > 65535 {
         return flash_redirect(
             flash.error("Port must be between 1 and 65535"),
+            "/assets/manage/new",
+        );
+    }
+
+    // Closed vocabulary: reject unknown statuses instead of persisting
+    // them verbatim (the display-side `AssetStatus::parse` fallback to
+    // `Unknown` must never become a storage-side laundering path).
+    if AssetStatus::parse_strict(&form.status).is_none() {
+        return flash_redirect(
+            flash.error(format!(
+                "Unknown status: {:?}. Must be one of online, offline, maintenance, unknown",
+                form.status
+            )),
             "/assets/manage/new",
         );
     }
@@ -1409,10 +1425,30 @@ pub async fn update_asset_web(
             &format!("/assets/manage/{asset_uuid}/edit"),
         );
     }
+    if let Err(msg) = super::validate_hostname_format(form.hostname.trim()) {
+        return htmx_or_flash_redirect(
+            &headers,
+            flash.error(msg),
+            &format!("/assets/manage/{asset_uuid}/edit"),
+        );
+    }
     if form.port < 1 || form.port > 65535 {
         return htmx_or_flash_redirect(
             &headers,
             flash.error("Port must be between 1 and 65535"),
+            &format!("/assets/manage/{asset_uuid}/edit"),
+        );
+    }
+
+    // Closed vocabulary: reject unknown statuses instead of persisting
+    // them verbatim (see create_asset_web).
+    if AssetStatus::parse_strict(&form.status).is_none() {
+        return htmx_or_flash_redirect(
+            &headers,
+            flash.error(format!(
+                "Unknown status: {:?}. Must be one of online, offline, maintenance, unknown",
+                form.status
+            )),
             &format!("/assets/manage/{asset_uuid}/edit"),
         );
     }
@@ -1696,7 +1732,7 @@ pub async fn update_asset_web(
     let result = diesel::update(a::assets.filter(a::uuid.eq(asset_uuid)))
         .set((
             a::name.eq(&sanitized_name),
-            a::hostname.eq(&form.hostname),
+            a::hostname.eq(form.hostname.trim()),
             a::port.eq(form.port),
             a::asset_type.eq(effective_asset_type),
             a::status.eq(&form.status),

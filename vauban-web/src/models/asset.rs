@@ -538,6 +538,21 @@ impl AssetStatus {
             _ => Self::Unknown,
         }
     }
+
+    /// Strict parse for WRITE paths: `None` for anything outside the
+    /// closed vocabulary. The lenient [`Self::parse`] fallback to
+    /// `Unknown` is display-only; persisting through it would launder
+    /// arbitrary strings into the `assets.status` column (now fenced
+    /// by the `assets_status_chk` DB constraint).
+    pub fn parse_strict(s: &str) -> Option<Self> {
+        match s {
+            "online" => Some(Self::Online),
+            "offline" => Some(Self::Offline),
+            "maintenance" => Some(Self::Maintenance),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
 }
 
 /// Asset database model.

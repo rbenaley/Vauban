@@ -206,6 +206,96 @@ pub(crate) fn sanitize_opt_ref(value: Option<&String>) -> Option<String> {
     value.map(|s| sanitize(s))
 }
 
+// ============================================================================
+// Input-format validation (closed-format fields)
+// ============================================================================
+//
+// Thin flash-message adapters over the canonical validators in
+// `shared::validation` (single source of truth, re-checked fail-closed
+// by vauban-access and pinned by DB CHECK constraints). Every web
+// handler that persists one of these fields MUST call the matching
+// helper BEFORE any DB/IPC write and surface the `Err` message via
+// flash PRG. Pinned by `tests/web/input_format_pin_test.rs` and
+// `scripts/check_input_format_validation.sh`.
+
+/// User-facing contract for slug-shaped identifiers (group slugs,
+/// vault secret names).
+pub(crate) const SLUG_FORMAT_HINT: &str = "must be 1-100 characters: lowercase letters, digits, hyphens and underscores, \
+     starting and ending with a letter or digit";
+
+/// Validate a URL-friendly slug. `label` names the field in the error
+/// message (e.g. "Group slug", "Secret name").
+pub(crate) fn validate_slug_format(label: &str, slug: &str) -> Result<(), String> {
+    if shared::validation::is_valid_slug(slug) {
+        Ok(())
+    } else {
+        Err(format!("{label} {SLUG_FORMAT_HINT}"))
+    }
+}
+
+/// Validate a `#RRGGBB` hex color.
+pub(crate) fn validate_hex_color_format(color: &str) -> Result<(), String> {
+    if shared::validation::is_valid_hex_color(color) {
+        Ok(())
+    } else {
+        Err("Color must be a 6-digit hex value like #3b82f6".to_string())
+    }
+}
+
+/// Validate an icon identifier against the closed catalog.
+pub(crate) fn validate_icon_choice(icon: &str) -> Result<(), String> {
+    if shared::validation::is_valid_icon(icon) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Unknown icon: must be one of {}",
+            shared::validation::ICON_CATALOG.join(", ")
+        ))
+    }
+}
+
+/// Validate a connection hostname (DNS name, IPv4 or IPv6 literal).
+pub(crate) fn validate_hostname_format(hostname: &str) -> Result<(), String> {
+    if shared::validation::is_valid_hostname(hostname) {
+        Ok(())
+    } else {
+        Err(
+            "Hostname must be 1-255 characters: letters, digits, dots, colons, \
+             hyphens and underscores (no spaces)"
+                .to_string(),
+        )
+    }
+}
+
+/// Validate an already-normalized username against the SAME charset
+/// rule as the API zone (`models::user::RE_USERNAME`), plus the 3-50
+/// length bound the web forms have always enforced. Keeping both zones
+/// on one regex is pinned by `tests/web/input_format_proptest.rs`.
+pub(crate) fn validate_username_format(username: &str) -> Result<(), String> {
+    if username.len() < 3 || username.len() > 50 {
+        return Err("Username must be between 3 and 50 characters".to_string());
+    }
+    if crate::models::user::RE_USERNAME.is_match(username) {
+        Ok(())
+    } else {
+        Err("Username contains invalid characters \
+             (use letters, numbers, dots, underscores, hyphens)"
+            .to_string())
+    }
+}
+
+/// Validate an e-mail address with the same rule as the API zone's
+/// `#[validate(email)]` (the `validator` crate's HTML5-compatible
+/// checker).
+pub(crate) fn validate_email_format(email: &str) -> Result<(), String> {
+    use validator::ValidateEmail;
+    if email.validate_email() {
+        Ok(())
+    } else {
+        Err("Invalid email address".to_string())
+    }
+}
+
 /// Reject combinations of `asset_type` + auth fields that are nonsensical
 /// for the chosen protocol. Returns the user-facing error message that
 /// should be surfaced via flash redirect.

@@ -2166,6 +2166,25 @@ async fn handle_list_user_groups(
 
 // ==================== Asset group CRUD ====================
 
+/// Fail-closed re-check of the closed-format asset-group fields.
+///
+/// vauban-web already validates these before dispatching the IPC
+/// request; this second gate (same `shared::validation` source of
+/// truth) protects the DB CHECK constraints from any future caller
+/// that skips the web layer. Returns the user-safe error message.
+fn validate_asset_group_formats(slug: &str, color: &str, icon: &str) -> Result<(), String> {
+    if !shared::validation::is_valid_slug(slug) {
+        return Err(format!("Invalid asset group slug format: {slug:?}"));
+    }
+    if !shared::validation::is_valid_hex_color(color) {
+        return Err(format!("Invalid asset group color format: {color:?}"));
+    }
+    if !shared::validation::is_valid_icon(icon) {
+        return Err(format!("Invalid asset group icon: {icon:?}"));
+    }
+    Ok(())
+}
+
 async fn handle_create_asset_group(
     conn: &mut DbConnection,
     name: &str,
@@ -2175,6 +2194,13 @@ async fn handle_create_asset_group(
     icon: &str,
     actor_uuid: Option<&str>,
 ) -> AccessResponse {
+    if let Err(msg) = validate_asset_group_formats(slug, color, icon) {
+        return AccessResponse::AssetGroup(Err(msg));
+    }
+    // Canonical form pinned by the `asset_groups_color_chk` DB
+    // constraint (`^#[0-9a-f]{6}$`).
+    let color = color.to_lowercase();
+    let color = color.as_str();
     let new_uuid = Uuid::new_v4();
     let now = Utc::now();
     // Issue #22 — stamp the audit pair so the Metadata UI on
@@ -2415,6 +2441,13 @@ async fn handle_update_asset_group(
         Ok(u) => u,
         Err(e) => return AccessResponse::AssetGroup(Err(e)),
     };
+    if let Err(msg) = validate_asset_group_formats(slug, color, icon) {
+        return AccessResponse::AssetGroup(Err(msg));
+    }
+    // Canonical form pinned by the `asset_groups_color_chk` DB
+    // constraint (`^#[0-9a-f]{6}$`).
+    let color = color.to_lowercase();
+    let color = color.as_str();
     // Issue #22 — re-stamp `updated_by_id` on every successful
     // update so the Metadata UI on `/assets/groups/{uuid}` shows
     // the operator that performed the most recent edit.
@@ -5125,7 +5158,7 @@ mod tests {
                 assets::hostname.eq("iacs.test.local"),
                 assets::port.eq(port),
                 assets::asset_type.eq(asset_type),
-                assets::status.eq("active"),
+                assets::status.eq("online"),
                 assets::connection_config.eq(serde_json::json!({})),
                 assets::is_deleted.eq(false),
                 assets::connection_username.eq(""),
@@ -5310,7 +5343,7 @@ mod tests {
                 assets::hostname.eq("ssh.test.local"),
                 assets::port.eq(22),
                 assets::asset_type.eq("ssh"),
-                assets::status.eq("active"),
+                assets::status.eq("online"),
                 assets::connection_config.eq(serde_json::json!({})),
                 assets::is_deleted.eq(true),
                 assets::connection_username.eq("root"),

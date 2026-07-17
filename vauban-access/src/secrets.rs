@@ -97,6 +97,14 @@ pub async fn handle_create_secret_group(
     description: Option<&str>,
     actor_uuid: Option<&str>,
 ) -> AccessResponse {
+    // Fail-closed re-check (vauban-web validates first; same
+    // `shared::validation` source of truth, mirrored by the
+    // `secret_groups_slug_format_chk` DB constraint).
+    if !shared::validation::is_valid_slug(slug) {
+        return AccessResponse::SecretGroup(Err(format!(
+            "Invalid secret group slug format: {slug:?}"
+        )));
+    }
     let new_uuid = Uuid::new_v4();
     let now = Utc::now();
     let actor_id = resolve_actor_id(conn, actor_uuid).await;
@@ -240,6 +248,12 @@ pub async fn handle_update_secret_group(
         Ok(u) => u,
         Err(e) => return AccessResponse::SecretGroup(Err(e)),
     };
+    // Fail-closed re-check (see handle_create_secret_group).
+    if !shared::validation::is_valid_slug(slug) {
+        return AccessResponse::SecretGroup(Err(format!(
+            "Invalid secret group slug format: {slug:?}"
+        )));
+    }
     let actor_id = resolve_actor_id(conn, actor_uuid).await;
 
     // The DB trigger `block_mutation_on_virtual_secret_groups` refuses any

@@ -283,7 +283,7 @@ fn every_close_arm_sets_close_cause() {
              lose the termination reason. Arm preview: `{}`",
             RECEIVER_CLOSE,
             abs,
-            &arm[..std::cmp::min(arm.len(), 200)].replace('\n', " ")
+            arm[..std::cmp::min(arm.len(), 200)].replace('\n', " ")
         );
         count += 1;
         cursor = abs + 1;

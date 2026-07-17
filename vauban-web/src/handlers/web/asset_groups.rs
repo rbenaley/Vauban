@@ -1109,9 +1109,30 @@ pub async fn update_asset_group(
         );
     }
 
+    // Closed-format fields: validate BEFORE any IPC/DB write.
+    if let Err(msg) = super::validate_slug_format("Group slug", form.slug.trim()) {
+        return flash_redirect(
+            flash.error(msg),
+            &format!("/assets/manage/groups/{}/edit", group_uuid),
+        );
+    }
+    if let Err(msg) = super::validate_hex_color_format(&form.color) {
+        return flash_redirect(
+            flash.error(msg),
+            &format!("/assets/manage/groups/{}/edit", group_uuid),
+        );
+    }
+    if let Err(msg) = super::validate_icon_choice(&form.icon) {
+        return flash_redirect(
+            flash.error(msg),
+            &format!("/assets/manage/groups/{}/edit", group_uuid),
+        );
+    }
+
     // Sanitize text fields to prevent stored XSS
     let sanitized_name = sanitize(&form.name);
     let sanitized_description = sanitize_opt(form.description.clone());
+    let normalized_color = form.color.to_lowercase();
 
     let client = &state.access_client;
     // Issue #22 — forward the operator UUID so vauban-access
@@ -1120,9 +1141,9 @@ pub async fn update_asset_group(
         .update_asset_group(
             &uuid_str,
             &sanitized_name,
-            &form.slug,
+            form.slug.trim(),
             sanitized_description,
-            &form.color,
+            &normalized_color,
             &form.icon,
             Some(auth_user.uuid.clone()),
         )
@@ -1275,10 +1296,22 @@ pub async fn create_asset_group_web(
         );
     }
 
+    // Closed-format fields: validate BEFORE any IPC/DB write.
+    if let Err(msg) = super::validate_slug_format("Group slug", form.slug.trim()) {
+        return flash_redirect(flash.error(msg), "/assets/manage/groups/new");
+    }
+    if let Err(msg) = super::validate_hex_color_format(&form.color) {
+        return flash_redirect(flash.error(msg), "/assets/manage/groups/new");
+    }
+    if let Err(msg) = super::validate_icon_choice(&form.icon) {
+        return flash_redirect(flash.error(msg), "/assets/manage/groups/new");
+    }
+
     // Sanitize text fields to prevent stored XSS
     let sanitized_name = sanitize(form.name.trim());
     let sanitized_description =
         sanitize_opt(form.description.as_ref().filter(|s| !s.is_empty()).cloned());
+    let normalized_color = form.color.to_lowercase();
 
     let client = &state.access_client;
     // Issue #22 — forward the operator UUID so vauban-access
@@ -1288,7 +1321,7 @@ pub async fn create_asset_group_web(
             &sanitized_name,
             form.slug.trim(),
             sanitized_description,
-            &form.color,
+            &normalized_color,
             &form.icon,
             Some(auth_user.uuid.clone()),
         )

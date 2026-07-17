@@ -535,7 +535,16 @@ pub async fn create_test_asset_group(conn: &mut AsyncPgConnection, group_name: &
     use vauban_web::schema::asset_groups::dsl;
 
     let group_uuid = Uuid::new_v4();
-    let group_slug = group_name.to_lowercase().replace(" ", "-");
+    // Slugify into the canonical grammar enforced by
+    // `asset_groups_slug_format_chk` (shared::validation::is_valid_slug).
+    let group_slug: String = group_name
+        .to_lowercase()
+        .replace(' ', "-")
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+        .collect::<String>()
+        .trim_matches(|c| matches!(c, '-' | '_'))
+        .to_string();
 
     unwrap_ok!(
         diesel::insert_into(dsl::asset_groups)
@@ -2112,7 +2121,16 @@ pub async fn create_test_vault_secret(
     use vauban_web::schema::vault_secrets;
 
     let secret_uuid = Uuid::new_v4();
-    let unique_name = format!("test-secret-{}_{}", name, &secret_uuid.to_string()[..8]);
+    // Slugify into the canonical grammar enforced by
+    // `vault_secrets_name_format_chk` (shared::validation::is_valid_slug).
+    let unique_name: String = format!("test-secret-{}_{}", name, &secret_uuid.to_string()[..8])
+        .to_lowercase()
+        .replace(' ', "-")
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+        .collect::<String>()
+        .trim_matches(|c| matches!(c, '-' | '_'))
+        .to_string();
 
     let id: i32 = unwrap_ok!(
         diesel::insert_into(vault_secrets::table)
@@ -2137,7 +2155,16 @@ pub async fn create_test_secret_group(conn: &mut AsyncPgConnection, name: &str) 
 
     let group_uuid = Uuid::new_v4();
     let unique_name = format!("test-sg-{}_{}", name, &group_uuid.to_string()[..8]);
-    let slug = unique_name.to_lowercase().replace([' ', '_'], "-");
+    // Slugify into the canonical grammar enforced by
+    // `secret_groups_slug_format_chk` (shared::validation::is_valid_slug).
+    let slug: String = unique_name
+        .to_lowercase()
+        .replace([' ', '_'], "-")
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+        .collect::<String>()
+        .trim_matches(|c| matches!(c, '-' | '_'))
+        .to_string();
 
     let id: i32 = unwrap_ok!(
         diesel::insert_into(secret_groups::table)

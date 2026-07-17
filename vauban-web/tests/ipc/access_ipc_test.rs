@@ -156,7 +156,9 @@ async fn test_ipc_create_and_get_asset_group() {
 
     assert_eq!(group.name, name);
     assert_eq!(group.slug, slug);
-    assert_eq!(group.color, "#FF0000");
+    // Upper-case hex is accepted but persisted in its canonical
+    // lower-case form (asset_groups_color_chk).
+    assert_eq!(group.color, "#ff0000");
     assert_eq!(group.icon, "server");
 
     let fetched = client
@@ -341,7 +343,7 @@ async fn test_ipc_check_access_allowed_and_protocol_filter() {
         .await
         .expect("create ug");
     let ag = client
-        .create_asset_group(&ag_name, &ag_slug, None, "#000", "server", None)
+        .create_asset_group(&ag_name, &ag_slug, None, "#000000", "server", None)
         .await
         .expect("create ag");
 
@@ -403,7 +405,7 @@ async fn test_ipc_list_accessible_groups() {
         .await
         .expect("create ug");
     let ag = client
-        .create_asset_group(&ag_name, &ag_slug, None, "#000", "folder", None)
+        .create_asset_group(&ag_name, &ag_slug, None, "#000000", "folder", None)
         .await
         .expect("create ag");
 
@@ -464,7 +466,7 @@ async fn test_ipc_get_group_options() {
         .await
         .expect("create ug");
     let ag = client
-        .create_asset_group(&ag_name, &ag_slug, None, "#000", "folder", None)
+        .create_asset_group(&ag_name, &ag_slug, None, "#000000", "folder", None)
         .await
         .expect("create ag");
 

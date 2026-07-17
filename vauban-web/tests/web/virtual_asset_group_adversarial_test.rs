@@ -84,7 +84,7 @@ async fn insert_static_group_raw(conn: &mut AsyncPgConnection, name: &str) -> i3
     let slug = format!("{name}-slug");
     let row: Row = sql_query(format!(
         "INSERT INTO asset_groups (uuid, name, slug, kind, color, icon)
-         VALUES (gen_random_uuid(), '{name}', '{slug}', 'static', '#000', 'folder')
+         VALUES (gen_random_uuid(), '{name}', '{slug}', 'static', '#000000', 'folder')
          RETURNING id"
     ))
     .get_result(conn)
@@ -212,7 +212,7 @@ async fn a47_forged_second_virtual_row_rejected() {
 
     let err = sql_query(
         "INSERT INTO asset_groups (uuid, name, slug, kind, color, icon)
-         VALUES (gen_random_uuid(), 'forged-all', 'forged-all', 'all', '#000', 'folder')",
+         VALUES (gen_random_uuid(), 'forged-all', 'forged-all', 'all', '#000000', 'folder')",
     )
     .execute(&mut conn)
     .await

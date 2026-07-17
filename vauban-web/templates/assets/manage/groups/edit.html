@@ -70,8 +70,10 @@
                         <label for="slug" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Slug</label>
                         <input type="text" name="slug" id="slug" value="{{ group.slug }}"
                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono"
-                               required>
-                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">URL-friendly identifier</p>
+                               required
+                               pattern="[a-z0-9]([a-z0-9_-]*[a-z0-9])?" maxlength="100"
+                               title="Lowercase letters, digits, hyphens and underscores; must start and end with a letter or digit">
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">URL-friendly identifier (lowercase letters, digits, hyphens, underscores)</p>
                     </div>
                 </div>
 

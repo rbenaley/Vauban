@@ -227,6 +227,11 @@ pub async fn create_vault_secret_web(
     if form.name.trim().is_empty() {
         return flash_redirect(flash.error("Secret name is required"), "/vault/secrets/new");
     }
+    // The name is the machine-facing lookup key of the M2M API:
+    // enforce the slug grammar BEFORE any DB write.
+    if let Err(msg) = super::validate_slug_format("Secret name", form.name.trim()) {
+        return flash_redirect(flash.error(msg), "/vault/secrets/new");
+    }
     if form.value.is_empty() {
         return flash_redirect(
             flash.error("Secret value is required"),
@@ -559,6 +564,11 @@ pub async fn update_vault_secret_web(
 
     if form.name.trim().is_empty() {
         return flash_redirect(flash.error("Secret name is required"), &edit_url);
+    }
+    // The name is the machine-facing lookup key of the M2M API:
+    // enforce the slug grammar BEFORE any DB write.
+    if let Err(msg) = super::validate_slug_format("Secret name", form.name.trim()) {
+        return flash_redirect(flash.error(msg), &edit_url);
     }
 
     let new_value = form.value.as_deref().filter(|v| !v.is_empty());
