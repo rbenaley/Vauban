@@ -1,6 +1,7 @@
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Session detail template.
 use askama::Template;
+use chrono::{DateTime, Utc};
 
 /// Session detail data.
 #[derive(Debug, Clone)]
@@ -15,7 +16,9 @@ pub struct SessionDetail {
     pub asset_type: String,
     pub session_type: String,
     pub status: String,
+    pub credential_id: String,
     pub credential_username: String,
+    pub tunnel_target_addr: Option<String>,
     pub client_ip: String,
     pub client_user_agent: Option<String>,
     pub proxy_instance: Option<String>,
@@ -29,9 +32,51 @@ pub struct SessionDetail {
     pub bytes_received: i64,
     pub commands_count: i32,
     pub created_at: String,
+    pub created_at_raw: DateTime<Utc>,
+    pub connected_at_raw: Option<DateTime<Utc>>,
+    pub disconnected_at_raw: Option<DateTime<Utc>>,
 }
 
 impl SessionDetail {
+    fn presentation_input(&self) -> super::presentation::SessionPresentationInput<'_> {
+        super::presentation::SessionPresentationInput {
+            credential_id: &self.credential_id,
+            credential_username: &self.credential_username,
+            requester_username: &self.username,
+            session_type: &self.session_type,
+            tunnel_target_addr: self.tunnel_target_addr.as_deref(),
+            status: &self.status,
+            created_at: self.created_at_raw,
+            connected_at: self.connected_at_raw,
+            disconnected_at: self.disconnected_at_raw,
+            recording_path: self.recording_path.as_deref(),
+            is_recorded: self.is_recorded,
+        }
+    }
+
+    pub fn credential_display(&self) -> String {
+        super::presentation::credential_label(&self.presentation_input())
+    }
+
+    pub fn is_jit_grant(&self) -> bool {
+        super::presentation::is_jit_grant(&self.credential_id)
+    }
+
+    pub fn recording_display(&self) -> &'static str {
+        match super::presentation::recording_state(&self.presentation_input()) {
+            super::presentation::RecordingState::NotRecorded => "Not recorded",
+            super::presentation::RecordingState::Enabled => "Recording enabled",
+            super::presentation::RecordingState::Recorded => "Recorded",
+        }
+    }
+
+    pub fn has_recording_evidence(&self) -> bool {
+        !matches!(
+            super::presentation::recording_state(&self.presentation_input()),
+            super::presentation::RecordingState::NotRecorded
+        )
+    }
+
     /// Get status badge class.
     pub fn status_class(&self) -> &str {
         super::session_status_class(&self.status)
@@ -134,6 +179,8 @@ pub struct SessionDetailTemplate {
     pub session: SessionDetail,
     /// Whether to show the "Play Recording" button (only for admin users).
     pub show_play_recording: bool,
+    /// Approval detail is admin-only; owners must not receive a dead link.
+    pub show_approval_link: bool,
 }
 
 #[cfg(test)]
@@ -152,7 +199,9 @@ mod tests {
             asset_type: "linux".to_string(),
             session_type: session_type.to_string(),
             status: status.to_string(),
+            credential_id: "local".to_string(),
             credential_username: "admin".to_string(),
+            tunnel_target_addr: None,
             client_ip: "192.168.1.100".to_string(),
             client_user_agent: Some("Mozilla/5.0".to_string()),
             proxy_instance: Some("proxy-01".to_string()),
@@ -166,6 +215,19 @@ mod tests {
             bytes_received: 20480,
             commands_count: 50,
             created_at: "2026-01-03 09:50:00".to_string(),
+            created_at_raw: DateTime::parse_from_rfc3339("2026-01-03T09:50:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            connected_at_raw: Some(
+                DateTime::parse_from_rfc3339("2026-01-03T10:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            disconnected_at_raw: Some(
+                DateTime::parse_from_rfc3339("2026-01-03T11:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
         }
     }
 
@@ -307,6 +369,7 @@ mod tests {
             header_user: None,
             session: detail,
             show_play_recording: false,
+            show_approval_link: false,
         };
         let html = template.render().expect("render");
         assert!(
@@ -402,6 +465,7 @@ mod tests {
             header_user: None,
             session: create_test_session_detail("active", "ssh"),
             show_play_recording: true,
+            show_approval_link: false,
         };
 
         let result = template.render();
@@ -431,6 +495,7 @@ mod tests {
             header_user: None,
             session: create_test_session_detail("active", "ssh"),
             show_play_recording: false,
+            show_approval_link: false,
         };
 
         assert!(!template.show_play_recording);

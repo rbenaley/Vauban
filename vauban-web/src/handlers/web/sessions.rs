@@ -54,8 +54,12 @@ pub async fn session_list(
         .max(1);
 
     // Build base filters as a closure to apply to both count and data queries
+    use crate::schema::users;
+    use crate::services::session_history::{SessionHistoryDbRow, SessionHistoryRow};
+
     let mut query = proxy_sessions::table
         .inner_join(schema_assets::table)
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
         .into_boxed();
     let mut count_query = proxy_sessions::table
         .inner_join(schema_assets::table)
@@ -117,20 +121,7 @@ pub async fn session_list(
     let page = page.min(total_pages);
     let offset = ((page - 1) as i64) * SESSIONS_PER_PAGE;
 
-    #[allow(clippy::type_complexity)]
-    let db_sessions: Vec<(
-        i32,
-        uuid::Uuid,
-        String,
-        String,
-        SessionType,
-        String,
-        String,
-        Option<String>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        bool,
-    )> = query
+    let db_sessions: Vec<SessionHistoryDbRow> = query
         .select((
             proxy_sessions::id,
             proxy_sessions::uuid,
@@ -138,11 +129,15 @@ pub async fn session_list(
             schema_assets::hostname,
             proxy_sessions::session_type,
             proxy_sessions::status,
+            proxy_sessions::credential_id,
             proxy_sessions::credential_username,
             proxy_sessions::tunnel_target_addr,
             proxy_sessions::connected_at,
             proxy_sessions::disconnected_at,
             proxy_sessions::is_recorded,
+            proxy_sessions::recording_path,
+            users::username,
+            proxy_sessions::created_at,
         ))
         .order(proxy_sessions::created_at.desc())
         .limit(SESSIONS_PER_PAGE)
@@ -150,48 +145,11 @@ pub async fn session_list(
         .load(&mut conn)
         .await?;
 
+    let now = chrono::Utc::now();
     let sessions: Vec<SessionListItem> = db_sessions
         .into_iter()
-        .map(
-            |(
-                id,
-                uuid,
-                asset_name,
-                asset_hostname,
-                session_type,
-                status,
-                credential_username,
-                tunnel_target_addr,
-                connected_at,
-                disconnected_at,
-                is_recorded,
-            )| {
-                let duration_seconds = match (connected_at, disconnected_at) {
-                    (Some(start), Some(end)) => {
-                        Some(end.signed_duration_since(start).num_seconds())
-                    }
-                    (Some(start), None) if status == "active" || status == "tunnel_active" => Some(
-                        chrono::Utc::now()
-                            .signed_duration_since(start)
-                            .num_seconds(),
-                    ),
-                    _ => None,
-                };
-                SessionListItem {
-                    id,
-                    uuid: uuid.to_string(),
-                    asset_name,
-                    asset_hostname,
-                    session_type: session_type.to_string(),
-                    status,
-                    credential_username,
-                    tunnel_target_addr,
-                    connected_at,
-                    duration_seconds,
-                    is_recorded,
-                }
-            },
-        )
+        .map(SessionHistoryRow::from)
+        .map(|row| row.into_list_item(now))
         .collect();
 
     use crate::templates::accounts::user_list::Pagination;
@@ -371,6 +329,8 @@ pub async fn session_detail(
         String,
         String,
         String,
+        String,
+        Option<String>,
         ipnetwork::IpNetwork,
         Option<String>,
         Option<String>,
@@ -398,7 +358,9 @@ pub async fn session_detail(
             schema_assets::asset_type,
             proxy_sessions::session_type,
             proxy_sessions::status,
+            proxy_sessions::credential_id,
             proxy_sessions::credential_username,
+            proxy_sessions::tunnel_target_addr,
             proxy_sessions::client_ip,
             proxy_sessions::client_user_agent,
             proxy_sessions::proxy_instance,
@@ -438,7 +400,9 @@ pub async fn session_detail(
         s_asset_type,
         s_session_type,
         s_status,
+        s_credential_id,
         s_credential_username,
+        s_tunnel_target_addr,
         s_client_ip,
         s_client_user_agent,
         s_proxy_instance,
@@ -524,7 +488,9 @@ pub async fn session_detail(
         asset_type: s_asset_type,
         session_type: s_session_type,
         status: s_status.clone(),
+        credential_id: s_credential_id,
         credential_username: s_credential_username,
+        tunnel_target_addr: s_tunnel_target_addr,
         client_ip: s_client_ip.ip().to_string(),
         client_user_agent: s_client_user_agent,
         proxy_instance: s_proxy_instance,
@@ -540,6 +506,9 @@ pub async fn session_detail(
         bytes_received: s_bytes_received,
         commands_count: s_commands_count,
         created_at: crate::utils::format_local_with_seconds(s_created_at, browser_tz.0),
+        created_at_raw: s_created_at,
+        connected_at_raw: s_connected_at,
+        disconnected_at_raw: s_disconnected_at,
     };
 
     let base = BaseTemplate::new(format!("Session #{}", id), user.clone(), browser_tz.0)
@@ -559,6 +528,7 @@ pub async fn session_detail(
         header_user,
         session,
         show_play_recording: user_is_admin,
+        show_approval_link: user_is_admin,
     };
 
     match template.render() {
@@ -1254,6 +1224,7 @@ pub async fn approval_detail(
         Option<String>,
         ipnetwork::IpNetwork,
         String,
+        String,
         chrono::DateTime<chrono::Utc>,
         bool,
         Option<i32>,
@@ -1273,6 +1244,7 @@ pub async fn approval_detail(
             proxy_sessions::status,
             proxy_sessions::justification,
             proxy_sessions::client_ip,
+            proxy_sessions::credential_id,
             proxy_sessions::credential_username,
             proxy_sessions::created_at,
             proxy_sessions::is_recorded,
@@ -1308,6 +1280,7 @@ pub async fn approval_detail(
         status,
         justification,
         client_ip,
+        credential_id,
         credential_username,
         created_at,
         is_recorded,
@@ -1385,6 +1358,7 @@ pub async fn approval_detail(
         status,
         justification,
         client_ip: client_ip.ip().to_string(),
+        credential_id,
         credential_username,
         created_at: crate::utils::format_local(created_at, browser_tz.0),
         is_recorded,

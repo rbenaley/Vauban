@@ -15,6 +15,7 @@ pub struct ApprovalDetail {
     pub status: String,
     pub justification: Option<String>,
     pub client_ip: String,
+    pub credential_id: String,
     pub credential_username: String,
     pub created_at: String,
     pub is_recorded: bool,
@@ -32,6 +33,16 @@ pub struct ApprovalDetail {
 }
 
 impl ApprovalDetail {
+    pub fn credential_display(&self) -> String {
+        if super::presentation::is_jit_grant(&self.credential_id) {
+            "Not selected (request never connected)".to_string()
+        } else if self.credential_username.trim().is_empty() {
+            "Unavailable".to_string()
+        } else {
+            self.credential_username.trim().to_string()
+        }
+    }
+
     /// Get status badge class.
     pub fn status_class(&self) -> &str {
         super::session_status_class(&self.status)
@@ -88,6 +99,7 @@ mod tests {
             status: status.to_string(),
             justification: Some("Need access for maintenance".to_string()),
             client_ip: "192.168.1.100".to_string(),
+            credential_id: "pending".to_string(),
             credential_username: "admin".to_string(),
             created_at: "2026-01-03 10:00:00".to_string(),
             is_recorded: true,

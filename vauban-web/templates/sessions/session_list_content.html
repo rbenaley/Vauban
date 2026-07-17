@@ -32,7 +32,7 @@
                         <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ session.status_class() }}">
                             {{ session.status_display() }}
                         </span>
-                        {% if session.is_recorded %}
+                        {% if session.has_recording_evidence() %}
                         <span class="inline-flex items-center text-gray-400" title="Recorded">
                             <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z"/>
@@ -43,11 +43,9 @@
                     <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
                         <span>{{ session.session_type_display() }}</span>
                         <span class="hidden sm:inline">&bull;</span>
-                        <span class="break-all">{{ session.display_identity() }}</span>
-                        {% if session.connected_at.is_some() %}
+                        <span class="break-all">{% if !session.identity_label().is_empty() %}{{ session.identity_label() }} {% endif %}{{ session.display_identity() }}</span>
                         <span class="hidden sm:inline">&bull;</span>
-                        <span>{{ session.connected_at|local_opt(tz, "-") }}</span>
-                        {% endif %}
+                        <span>{{ session.event_label }} {{ session.event_at|local(tz) }}</span>
                         {% if session.duration_seconds.is_some() %}
                         <span class="hidden sm:inline">&bull;</span>
                         <span>{{ session.duration_display() }}</span>

@@ -1,6 +1,6 @@
 use askama::Template;
 use chrono::Utc;
-use diesel::{ExpressionMethods, QueryDsl};
+use diesel::{ExpressionMethods, JoinOnDsl, QueryDsl};
 use diesel_async::RunQueryDsl;
 /// VAUBAN Web - Dashboard update tasks.
 ///
@@ -446,22 +446,13 @@ async fn fetch_session_list(
 
     const SESSIONS_PER_PAGE: i64 = 30;
 
-    #[allow(clippy::type_complexity)]
-    let db_sessions: Vec<(
-        i32,
-        uuid::Uuid,
-        String,
-        String,
-        crate::models::session::SessionType,
-        String,
-        String,
-        Option<String>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        bool,
-    )> = {
+    let db_sessions: Vec<crate::services::session_history::SessionHistoryDbRow> = {
         let mut q = proxy_sessions::table
             .inner_join(schema_assets::table)
+            .inner_join(
+                crate::schema::users::table
+                    .on(crate::schema::users::id.eq(proxy_sessions::user_id)),
+            )
             .filter(proxy_sessions::status.ne("pending"))
             .filter(proxy_sessions::status.ne("orphaned"))
             .into_boxed();
@@ -480,11 +471,15 @@ async fn fetch_session_list(
             schema_assets::hostname,
             proxy_sessions::session_type,
             proxy_sessions::status,
+            proxy_sessions::credential_id,
             proxy_sessions::credential_username,
             proxy_sessions::tunnel_target_addr,
             proxy_sessions::connected_at,
             proxy_sessions::disconnected_at,
             proxy_sessions::is_recorded,
+            proxy_sessions::recording_path,
+            crate::schema::users::username,
+            proxy_sessions::created_at,
         ))
         .order(proxy_sessions::created_at.desc())
         .limit(SESSIONS_PER_PAGE)
@@ -496,44 +491,8 @@ async fn fetch_session_list(
     let now = Utc::now();
     Ok(db_sessions
         .into_iter()
-        .map(
-            |(
-                id,
-                uuid,
-                asset_name,
-                asset_hostname,
-                session_type,
-                status,
-                credential_username,
-                tunnel_target_addr,
-                connected_at,
-                disconnected_at,
-                is_recorded,
-            )| {
-                let duration_seconds = match (connected_at, disconnected_at) {
-                    (Some(start), Some(end)) => {
-                        Some(end.signed_duration_since(start).num_seconds())
-                    }
-                    (Some(start), None) if status == "active" || status == "tunnel_active" => {
-                        Some(now.signed_duration_since(start).num_seconds())
-                    }
-                    _ => None,
-                };
-                SessionListItem {
-                    id,
-                    uuid: uuid.to_string(),
-                    asset_name,
-                    asset_hostname,
-                    session_type: session_type.to_string(),
-                    status,
-                    credential_username,
-                    tunnel_target_addr,
-                    connected_at,
-                    duration_seconds,
-                    is_recorded,
-                }
-            },
-        )
+        .map(crate::services::session_history::SessionHistoryRow::from)
+        .map(|row| row.into_list_item(now))
         .collect())
 }
 

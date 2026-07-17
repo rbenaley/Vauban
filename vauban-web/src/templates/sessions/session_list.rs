@@ -20,7 +20,9 @@ pub struct SessionListItem {
     pub asset_hostname: String,
     pub session_type: String,
     pub status: String,
+    pub credential_id: String,
     pub credential_username: String,
+    pub requester_username: String,
     /// Snapshot of `proxy_sessions.tunnel_target_addr`. For IACS
     /// tunnels this is `host:port` of the industrial asset captured
     /// at session creation. SSH / RDP rows leave it `None`. The
@@ -35,11 +37,34 @@ pub struct SessionListItem {
     /// WebSocket render) via the `local` filter. `None` for rows that
     /// never reached the connected state.
     pub connected_at: Option<DateTime<Utc>>,
+    pub disconnected_at: Option<DateTime<Utc>>,
+    /// Creation time of the grant/session. Used as the truthful timeline
+    /// anchor when the row never connected.
+    pub created_at: DateTime<Utc>,
+    pub event_at: DateTime<Utc>,
+    pub event_label: String,
     pub duration_seconds: Option<i64>,
     pub is_recorded: bool,
+    pub recording_path: Option<String>,
 }
 
 impl SessionListItem {
+    fn presentation_input(&self) -> super::presentation::SessionPresentationInput<'_> {
+        super::presentation::SessionPresentationInput {
+            credential_id: &self.credential_id,
+            credential_username: &self.credential_username,
+            requester_username: &self.requester_username,
+            session_type: &self.session_type,
+            tunnel_target_addr: self.tunnel_target_addr.as_deref(),
+            status: &self.status,
+            created_at: self.created_at,
+            connected_at: self.connected_at,
+            disconnected_at: self.disconnected_at,
+            recording_path: self.recording_path.as_deref(),
+            is_recorded: self.is_recorded,
+        }
+    }
+
     /// Get display name for session type.
     pub fn session_type_display(&self) -> &str {
         match self.session_type.as_str() {
@@ -57,16 +82,30 @@ impl SessionListItem {
     /// industrial endpoint snapshot from `tunnel_target_addr`. Falls
     /// back to a placeholder dash so the row never renders an empty
     /// `&bull; &bull;` sequence even on a malformed legacy entry.
-    pub fn display_identity(&self) -> &str {
-        if !self.credential_username.is_empty() {
-            return self.credential_username.as_str();
-        }
-        if let Some(addr) = self.tunnel_target_addr.as_deref()
-            && !addr.is_empty()
-        {
-            return addr;
-        }
-        "-"
+    pub fn display_identity(&self) -> String {
+        super::presentation::display_identity(&self.presentation_input())
+            .value()
+            .to_string()
+    }
+
+    pub fn identity_label(&self) -> &'static str {
+        super::presentation::display_identity(&self.presentation_input()).label()
+    }
+
+    pub fn timeline_label(&self) -> &'static str {
+        super::presentation::timeline_event(&self.presentation_input()).label()
+    }
+
+    pub fn timeline_at(&self) -> DateTime<Utc> {
+        super::presentation::timeline_event(&self.presentation_input()).at()
+    }
+
+    pub fn has_recording_evidence(&self) -> bool {
+        matches!(
+            super::presentation::recording_state(&self.presentation_input()),
+            super::presentation::RecordingState::Enabled
+                | super::presentation::RecordingState::Recorded
+        )
     }
 
     /// Get status badge CSS class.
@@ -179,15 +218,30 @@ mod tests {
             asset_hostname: "test.example.com".to_string(),
             session_type: session_type.to_string(),
             status: status.to_string(),
+            credential_id: "local".to_string(),
             credential_username: "testuser".to_string(),
+            requester_username: "requester".to_string(),
             tunnel_target_addr: None,
             connected_at: Some(
                 DateTime::parse_from_rfc3339("2026-01-03T10:00:00Z")
                     .unwrap()
                     .with_timezone(&Utc),
             ),
+            disconnected_at: Some(
+                DateTime::parse_from_rfc3339("2026-01-03T10:02:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            created_at: DateTime::parse_from_rfc3339("2026-01-03T09:55:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            event_at: DateTime::parse_from_rfc3339("2026-01-03T10:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            event_label: "Connected".to_string(),
             duration_seconds: duration,
             is_recorded: true,
+            recording_path: Some("/recordings/test.cast".to_string()),
         }
     }
 

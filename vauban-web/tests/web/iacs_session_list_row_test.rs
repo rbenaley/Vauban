@@ -94,9 +94,9 @@ fn three_sql_select_sites_pull_tunnel_target_addr() {
     }
 }
 
-/// Each of the three SQL hydration sites also MUST compute
-/// `duration_seconds` for `tunnel_active`, otherwise IACS rows
-/// freeze at "no duration" while the tunnel is alive.
+/// All three hydration sites must delegate duration computation to the shared
+/// mapper, which itself handles `tunnel_active`. This pins the post-BUG-03
+/// architecture without requiring duplicated calculation logic.
 #[test]
 fn three_hydration_sites_compute_duration_for_tunnel_active() {
     for (label, rel) in [
@@ -106,12 +106,15 @@ fn three_hydration_sites_compute_duration_for_tunnel_active() {
     ] {
         let src = read(rel);
         assert!(
-            src.contains("status == \"active\" || status == \"tunnel_active\""),
-            "{label} MUST compute duration_seconds for both \
-             `active` and `tunnel_active` so IACS rows show a \
-             live duration"
+            src.contains("SessionHistoryRow::from"),
+            "{label} MUST delegate session-list projection to SessionHistoryRow"
         );
     }
+    let projection = read("src/templates/sessions/presentation.rs");
+    assert!(
+        projection.contains("input.status == \"active\" || input.status == \"tunnel_active\""),
+        "the shared duration projection MUST keep IACS tunnel_active rows live"
+    );
 }
 
 /// `session_status_class` MUST classify `tunnel_active` and

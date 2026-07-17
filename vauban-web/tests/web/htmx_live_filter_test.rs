@@ -511,15 +511,30 @@ fn one_session() -> SessionListItem {
         asset_hostname: "prod-web-01".to_string(),
         session_type: "ssh".to_string(),
         status: "active".to_string(),
+        credential_id: "local".to_string(),
         credential_username: "alice".to_string(),
+        requester_username: "requester".to_string(),
         tunnel_target_addr: None,
         connected_at: Some(
             chrono::DateTime::parse_from_rfc3339("2026-04-30T10:00:00Z")
                 .unwrap()
                 .with_timezone(&chrono::Utc),
         ),
+        disconnected_at: Some(
+            chrono::DateTime::parse_from_rfc3339("2026-04-30T10:02:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        ),
+        created_at: chrono::DateTime::parse_from_rfc3339("2026-04-30T09:55:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+        event_at: chrono::DateTime::parse_from_rfc3339("2026-04-30T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+        event_label: "Connected".to_string(),
         duration_seconds: Some(120),
         is_recorded: true,
+        recording_path: Some("/recordings/test.cast".to_string()),
     }
 }
 

@@ -108,7 +108,13 @@ async fn run_cleanup_pass(state: &AppState, idle_timeout_secs: u64) {
     }
 
     // Expire stale pending access requests
-    match expire_stale_pending_requests(db_pool).await {
+    match crate::services::session_lifecycle::expire_stale_pending_requests_at(
+        db_pool,
+        Utc::now(),
+        PENDING_REQUEST_TTL_HOURS,
+    )
+    .await
+    {
         Ok(count) => {
             if count > 0 {
                 info!(expired = count, "Expired stale pending access requests");
@@ -118,7 +124,9 @@ async fn run_cleanup_pass(state: &AppState, idle_timeout_secs: u64) {
     }
 
     // Expire approved sessions past their expires_at deadline
-    match expire_stale_approved_sessions(db_pool).await {
+    match crate::services::session_lifecycle::expire_stale_approved_sessions_at(db_pool, Utc::now())
+        .await
+    {
         Ok(count) => {
             if count > 0 {
                 info!(expired = count, "Expired stale approved sessions");
@@ -254,55 +262,6 @@ async fn terminate_expired_proxy_sessions(db_pool: &DbPool) -> Result<Vec<i32>, 
     .map_err(|e| e.to_string())?;
 
     Ok(terminated_ids)
-}
-
-/// Expire approved sessions whose `expires_at` has passed without the user connecting.
-///
-/// This prevents stale approvals from being reused after their validity window
-/// (derived from `max_session_duration`) has elapsed.
-async fn expire_stale_approved_sessions(db_pool: &DbPool) -> Result<usize, String> {
-    use diesel_async::RunQueryDsl;
-
-    let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
-    let now = Utc::now();
-
-    let expired = diesel::update(
-        proxy_sessions::table
-            .filter(proxy_sessions::status.eq("approved"))
-            .filter(proxy_sessions::expires_at.le(now)),
-    )
-    .set((
-        proxy_sessions::status.eq("expired"),
-        proxy_sessions::updated_at.eq(now),
-    ))
-    .execute(&mut conn)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    Ok(expired)
-}
-
-/// Expire pending access requests that are older than PENDING_REQUEST_TTL_HOURS.
-async fn expire_stale_pending_requests(db_pool: &DbPool) -> Result<usize, String> {
-    use diesel_async::RunQueryDsl;
-
-    let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
-    let cutoff = Utc::now() - chrono::Duration::hours(PENDING_REQUEST_TTL_HOURS);
-
-    let expired = diesel::update(
-        proxy_sessions::table
-            .filter(proxy_sessions::status.eq("pending"))
-            .filter(proxy_sessions::created_at.lt(cutoff)),
-    )
-    .set((
-        proxy_sessions::status.eq("expired"),
-        proxy_sessions::updated_at.eq(Utc::now()),
-    ))
-    .execute(&mut conn)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    Ok(expired)
 }
 
 /// Expire sessions stuck in "connecting" for longer than CONNECTING_TTL_MINUTES.

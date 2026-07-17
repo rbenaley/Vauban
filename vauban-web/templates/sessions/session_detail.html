@@ -62,6 +62,12 @@
             </div>
         </div>
         <div class="mt-4 flex md:ml-4 md:mt-0 space-x-3">
+            {% if show_approval_link && session.is_jit_grant() %}
+            <a href="/sessions/approvals/{{ session.uuid }}"
+               class="inline-flex items-center rounded-md bg-white px-4 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 dark:bg-gray-700 dark:text-white dark:ring-gray-600 dark:hover:bg-gray-600">
+                View approval request
+            </a>
+            {% endif %}
             {% if show_play_recording && session.is_recorded && session.recording_path.is_some() %}
             <a href="/sessions/recordings/{{ session.id }}/play"
                class="inline-flex items-center rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
@@ -100,7 +106,7 @@
                 </div>
                 <div>
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Credential</dt>
-                    <dd class="mt-1 text-sm text-gray-900 dark:text-white font-mono">{{ session.credential_username }}</dd>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white font-mono">{{ session.credential_display() }}</dd>
                 </div>
                 <div>
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Session Type</dt>
@@ -121,19 +127,19 @@
                 <div>
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Recording</dt>
                     <dd class="mt-1 text-sm">
-                        {% if session.is_recorded %}
+                        {% if session.has_recording_evidence() %}
                         <span class="inline-flex items-center text-green-600 dark:text-green-400">
                             <svg class="mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                                 <path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/>
                             </svg>
-                            Recorded
+                            {{ session.recording_display() }}
                         </span>
                         {% else %}
                         <span class="inline-flex items-center text-gray-500 dark:text-gray-400">
                             <svg class="mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                                 <path fill-rule="evenodd" d="M4.28 4.28a.75.75 0 011.06 0L10 8.94l4.66-4.66a.75.75 0 111.06 1.06L11.06 10l4.66 4.66a.75.75 0 11-1.06 1.06L10 11.06l-4.66 4.66a.75.75 0 01-1.06-1.06L8.94 10 4.28 5.34a.75.75 0 010-1.06z" clip-rule="evenodd"/>
                             </svg>
-                            Not recorded
+                            {{ session.recording_display() }}
                         </span>
                         {% endif %}
                     </dd>

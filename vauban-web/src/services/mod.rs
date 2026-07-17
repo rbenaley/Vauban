@@ -30,6 +30,8 @@ pub mod role_invariants;
 pub mod secret_access;
 pub mod session_access;
 pub mod session_activity;
+pub mod session_history;
+pub mod session_lifecycle;
 pub mod session_limits;
 pub mod session_revocation;
 pub mod session_termination;

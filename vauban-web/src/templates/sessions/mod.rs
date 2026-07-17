@@ -4,6 +4,7 @@ pub mod approval_list;
 pub mod iacs_tunnel_status;
 pub mod inspect_capture;
 pub mod my_requests;
+pub mod presentation;
 pub mod recording_detail;
 pub mod recording_list;
 pub mod recording_play;
