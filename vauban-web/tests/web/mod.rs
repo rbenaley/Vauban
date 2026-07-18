@@ -75,6 +75,8 @@ pub mod jit_grant_revocation_e2e_test;
 pub mod jit_revocation_pins_test;
 pub mod jwt_cookie_renewal_test;
 pub mod login_post_expiry_test;
+pub mod login_session_guard_proptest;
+pub mod login_session_self_revoke_e2e_test;
 pub mod manage_assets_anti_enumeration_test;
 pub mod manage_assets_gate_matrix_test;
 pub mod manage_assets_invariants_test;

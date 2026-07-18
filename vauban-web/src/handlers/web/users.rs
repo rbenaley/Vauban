@@ -1866,8 +1866,8 @@ pub async fn change_own_password_web(
 // allow-ungated: self-service; renders the caller own profile only
 pub async fn profile(
     State(state): State<AppState>,
-    jar: axum_extra::extract::CookieJar,
     auth_user: WebAuthUser,
+    session_id: crate::middleware::auth::AuthSessionId,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     browser_tz: BrowserTz,
@@ -1875,7 +1875,6 @@ pub async fn profile(
     use crate::models::auth_session::AuthSession;
     use crate::models::user::User;
     use crate::schema::users;
-    use sha3::{Digest, Sha3_256};
 
     let mut conn = state
         .db_pool
@@ -1928,16 +1927,6 @@ pub async fn profile(
         updated_at: crate::utils::format_local_with_seconds(db_user.updated_at, browser_tz.0),
     };
 
-    // Get the current token hash from cookie for session detection
-    let current_token_hash = jar
-        .get("auth_token")
-        .map(|c| c.value().to_string())
-        .map(|token| {
-            let mut hasher = Sha3_256::new();
-            hasher.update(token.as_bytes());
-            hex::encode(hasher.finalize())
-        });
-
     // Fetch active sessions for the user
     let db_sessions: Vec<AuthSession> = auth_sessions::table
         .filter(auth_sessions::user_id.eq(db_user.id))
@@ -1947,14 +1936,17 @@ pub async fn profile(
         .await
         .unwrap_or_default();
 
+    // The current session is identified by the JWT `jti` (the
+    // `auth_sessions.uuid`), never by hashing the access cookie: the
+    // cookie is rotated mid-session, and the pre-fix cookie-hash
+    // comparison silently marked NO row as current, offering a Revoke
+    // button on the caller's own active session.
     let sessions: Vec<ProfileSession> = db_sessions
         .into_iter()
         .map(|s| {
             let device_info = s.device_info.clone();
-            let is_current = current_token_hash
-                .as_ref()
-                .map(|hash| hash == &s.token_hash)
-                .unwrap_or(false);
+            let is_current =
+                crate::services::login_sessions::is_current_session(s.uuid, session_id.0);
             ProfileSession {
                 uuid: s.uuid.to_string(),
                 ip_address: s.ip_address.ip().to_string(),
@@ -2000,7 +1992,6 @@ pub async fn profile(
         header_user,
         profile,
         sessions,
-        current_session_token: current_token_hash,
         perms,
         password_min_length: state.config.security.password_min_length,
     };
@@ -2094,12 +2085,11 @@ pub async fn mfa_setup(
 // allow-ungated: self-service; lists the caller own login sessions only
 pub async fn user_sessions(
     State(state): State<AppState>,
-    jar: axum_extra::extract::CookieJar,
     auth_user: WebAuthUser,
+    session_id: crate::middleware::auth::AuthSessionId,
     browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::models::AuthSession;
-    use sha3::{Digest, Sha3_256};
 
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("My Login Sessions".to_string(), user.clone(), browser_tz.0)
@@ -2115,13 +2105,6 @@ pub async fn user_sessions(
         .get()
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
-
-    // Get current token hash to identify the real current session
-    let current_token_hash = jar.get("access_token").map(|cookie| {
-        let mut hasher = Sha3_256::new();
-        hasher.update(cookie.value().as_bytes());
-        format!("{:x}", hasher.finalize())
-    });
 
     // Debug: log auth_user UUID
     tracing::debug!(auth_uuid = %auth_user.uuid, "Loading sessions for user");
@@ -2157,14 +2140,14 @@ pub async fn user_sessions(
         "Sessions loaded from DB"
     );
 
+    // Current session = JWT `jti` (see `profile()`): immune to the
+    // mid-session access-cookie rotation that breaks hash comparison.
     let sessions: Vec<AuthSessionItem> = db_sessions
         .into_iter()
         .map(|s| {
             let device_info = s.device_info.clone();
-            let is_current = current_token_hash
-                .as_ref()
-                .map(|hash| hash == &s.token_hash)
-                .unwrap_or(false);
+            let is_current =
+                crate::services::login_sessions::is_current_session(s.uuid, session_id.0);
             AuthSessionItem {
                 uuid: s.uuid,
                 ip_address: s.ip_address.ip().to_string(),
@@ -2273,13 +2256,19 @@ pub async fn api_keys(
 
 /// Revoke an auth session.
 // allow-ungated: self-service; ownership of the auth session is checked in the body
+#[allow(clippy::too_many_arguments)] // axum extractors, not a data clump
 pub async fn revoke_session(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    session_id: crate::middleware::auth::AuthSessionId,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    incoming_flash: IncomingFlash,
     axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> AppResult<Response> {
+    use crate::services::login_sessions::{SelfRevocation, self_revocation_guard};
+
     let secret = state.config.secret_key.expose_secret().as_bytes();
     let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
     if !crate::middleware::csrf::validate_double_submit(
@@ -2290,6 +2279,21 @@ pub async fn revoke_session(
         return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
     }
 
+    // Plain HTML forms (profile page) need a PRG redirect back to the
+    // page they came from; the HTMX flow (login-sessions page) swaps
+    // the row out in place. Non-local Referer values fall back to the
+    // canonical sessions page.
+    let is_htmx = headers.get("HX-Request").is_some();
+    let redirect_target = if headers
+        .get(axum::http::header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|r| r.contains("/accounts/profile"))
+    {
+        "/accounts/profile"
+    } else {
+        "/accounts/login-sessions"
+    };
+
     // Parse UUID manually for graceful error handling
     let session_uuid = match uuid::Uuid::parse_str(&session_uuid_str) {
         Ok(uuid) => uuid,
@@ -2297,6 +2301,21 @@ pub async fn revoke_session(
             return Ok(Redirect::to("/accounts/login-sessions").into_response());
         }
     };
+
+    // Fail-closed self-revocation guard: the session authenticating
+    // THIS request can only be ended via logout. Without this check a
+    // forged POST (or a UI regression in the current-session
+    // detection) self-revokes the caller and strands the browser.
+    if self_revocation_guard(session_uuid, session_id.0) == SelfRevocation::RefusedCurrentSession {
+        const REFUSAL: &str = "Cannot revoke the current session (use logout instead)";
+        if is_htmx {
+            return Ok((axum::http::StatusCode::FORBIDDEN, REFUSAL).into_response());
+        }
+        return Ok(flash_redirect(
+            incoming_flash.flash().error(REFUSAL),
+            redirect_target,
+        ));
+    }
 
     let mut conn = state
         .db_pool
@@ -2335,8 +2354,17 @@ pub async fn revoke_session(
         broadcast_sessions_update(&state, &auth_user.uuid, user_id).await;
     }
 
-    // Return empty response (HTMX will remove the element via hx-target)
-    Ok(Html("").into_response())
+    if is_htmx {
+        // Empty response: HTMX removes the row via hx-target/hx-swap.
+        return Ok(Html("").into_response());
+    }
+
+    // Plain form flow (profile page): PRG so the browser never lands
+    // on a blank page.
+    Ok(flash_redirect(
+        incoming_flash.flash().success("Session revoked"),
+        redirect_target,
+    ))
 }
 
 /// Broadcast updated sessions list to WebSocket clients.
@@ -2380,7 +2408,11 @@ pub async fn broadcast_sessions_update(state: &AppState, user_uuid: &str, user_i
 }
 
 /// Build HTML for the sessions list, personalized for the client's token_hash.
-pub(crate) fn build_sessions_html(
+///
+/// Pure (no DB, no state): exposed `pub` so the integration proptests
+/// can pin its invariants (the current row never carries a revoke
+/// form; every other row carries exactly one).
+pub fn build_sessions_html(
     sessions: &[crate::models::AuthSession],
     client_token_hash: &str,
 ) -> String {
@@ -2659,8 +2691,8 @@ pub async fn create_api_key(
 /// Admin: list all users' auth sessions.
 pub async fn admin_user_sessions(
     State(state): State<AppState>,
-    jar: CookieJar,
     auth_user: WebAuthUser,
+    session_id: crate::middleware::auth::AuthSessionId,
     perms: crate::auth::PermissionContext,
     browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
@@ -2672,7 +2704,6 @@ pub async fn admin_user_sessions(
 
     use crate::models::AuthSession;
     use crate::templates::accounts::session_list::AdminAuthSessionItem;
-    use sha3::{Digest, Sha3_256};
 
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("All Login Sessions".to_string(), user.clone(), browser_tz.0)
@@ -2681,12 +2712,6 @@ pub async fn admin_user_sessions(
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
             .into_fields();
-
-    let current_token_hash = jar.get("access_token").map(|cookie| {
-        let mut hasher = Sha3_256::new();
-        hasher.update(cookie.value().as_bytes());
-        format!("{:x}", hasher.finalize())
-    });
 
     let mut conn = state
         .db_pool
@@ -2709,9 +2734,8 @@ pub async fn admin_user_sessions(
         .into_iter()
         .map(|(s, username, user_uuid)| {
             let device_info = s.device_info.clone();
-            let is_current = current_token_hash
-                .as_deref()
-                .is_some_and(|h| h == s.token_hash);
+            let is_current =
+                crate::services::login_sessions::is_current_session(s.uuid, session_id.0);
             AdminAuthSessionItem {
                 uuid: s.uuid,
                 username,
@@ -2859,11 +2883,14 @@ pub async fn reactivate_user(state: &AppState, user_id: i32) {
 pub async fn admin_revoke_session(
     State(state): State<AppState>,
     _auth_user: WebAuthUser,
+    session_id: crate::middleware::auth::AuthSessionId,
     perms: crate::auth::PermissionContext,
     jar: CookieJar,
     axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> AppResult<Response> {
+    use crate::services::login_sessions::{SelfRevocation, self_revocation_guard};
+
     if !perms.auth_sessions_write {
         return Err(AppError::Authorization(
             "Only administrators can revoke user sessions".to_string(),
@@ -2886,6 +2913,18 @@ pub async fn admin_revoke_session(
             return Ok(Redirect::to("/accounts/all-login-sessions").into_response());
         }
     };
+
+    // Fail-closed self-revocation guard (defence in depth with the
+    // template's is_current gating): an admin ending their own current
+    // session must go through logout, and the WS force-logout below
+    // must never target the caller.
+    if self_revocation_guard(session_uuid, session_id.0) == SelfRevocation::RefusedCurrentSession {
+        return Ok((
+            axum::http::StatusCode::FORBIDDEN,
+            "Cannot revoke the current session (use logout instead)",
+        )
+            .into_response());
+    }
 
     let mut conn = state
         .db_pool

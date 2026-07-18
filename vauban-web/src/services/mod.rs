@@ -20,6 +20,7 @@ pub mod dashboard;
 pub mod iacs;
 pub mod iacs_packet_analyzer;
 pub mod iacs_tunnel;
+pub mod login_sessions;
 pub mod mailer;
 pub mod pending_mfa;
 pub mod rate_limit;

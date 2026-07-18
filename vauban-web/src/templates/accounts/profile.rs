@@ -79,7 +79,6 @@ pub struct ProfileTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub profile: ProfileDetail,
     pub sessions: Vec<ProfileSession>,
-    pub current_session_token: Option<String>,
     /// Casbin-backed permissions for the current user; gates UI elements like
     /// the "Edit" button (which requires `users:write`).
     pub perms: PermissionContext,
@@ -178,7 +177,6 @@ mod tests {
             header_user: Some(create_test_user_context()),
             profile: create_test_profile_detail(),
             sessions: vec![create_test_session()],
-            current_session_token: Some("token123".to_string()),
             perms: PermissionContext::default(),
             password_min_length: 12,
         };
@@ -199,12 +197,78 @@ mod tests {
             header_user: Some(create_test_user_context()),
             profile: create_test_profile_detail(),
             sessions: Vec::new(),
-            current_session_token: None,
             perms: PermissionContext::default(),
             password_min_length: 12,
         };
         let result = template.render();
         assert!(result.is_ok());
+    }
+
+    // ============================================================
+    // Self-revocation UI gating: the current session must render
+    // the `Current` badge and NEVER a revoke form; other sessions
+    // must keep their revoke form.
+    // ============================================================
+
+    fn render_profile_with_sessions(sessions: Vec<ProfileSession>) -> String {
+        ProfileTemplate {
+            title: "Profile".to_string(),
+            user: Some(create_test_user_context()),
+            vauban: create_test_vauban_config(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: Some(create_test_user_context()),
+            profile: create_test_profile_detail(),
+            sessions,
+            perms: PermissionContext::default(),
+            password_min_length: 12,
+        }
+        .render()
+        .expect("profile template should render")
+    }
+
+    #[test]
+    fn test_profile_current_session_has_badge_and_no_revoke_form() {
+        let current = create_test_session();
+        let html = render_profile_with_sessions(vec![current.clone()]);
+        assert!(
+            html.contains("Current"),
+            "the current session must carry the `Current` badge"
+        );
+        assert!(
+            !html.contains(&format!("/accounts/login-sessions/{}/revoke", current.uuid)),
+            "the current session must NEVER render a revoke form"
+        );
+    }
+
+    #[test]
+    fn test_profile_other_session_keeps_revoke_form() {
+        let mut other = create_test_session();
+        other.uuid = "session-uuid-456".to_string();
+        other.is_current = false;
+        let html = render_profile_with_sessions(vec![create_test_session(), other.clone()]);
+        assert!(
+            html.contains(&format!("/accounts/login-sessions/{}/revoke", other.uuid)),
+            "a non-current session must keep its revoke form"
+        );
+        assert!(
+            !html.contains("/accounts/login-sessions/session-uuid-123/revoke"),
+            "the current session must stay unrevokable even next to others"
+        );
+    }
+
+    /// Source pin: the profile template must keep gating the revoke
+    /// form on `!session.is_current` (the handler-side jti detection
+    /// is the other half of the fix; this pin catches a template
+    /// regression re-exposing the button).
+    #[test]
+    fn test_profile_template_source_gates_revoke_on_is_current() {
+        let source = include_str!("../../../templates/accounts/profile.html");
+        assert!(
+            source.contains("{% if !session.is_current %}"),
+            "profile.html must gate the revoke form on !session.is_current"
+        );
     }
 
     #[test]
@@ -420,7 +484,6 @@ mod tests {
             header_user: Some(create_test_user_context()),
             profile,
             sessions: Vec::new(),
-            current_session_token: None,
             perms: PermissionContext::default(),
             password_min_length: 12,
         };
@@ -466,7 +529,6 @@ mod tests {
             header_user: Some(create_test_user_context()),
             profile: create_test_profile_detail(),
             sessions,
-            current_session_token: Some("token123".to_string()),
             perms: PermissionContext::default(),
             password_min_length: 12,
         };
@@ -496,7 +558,6 @@ mod tests {
             header_user: Some(create_test_user_context()),
             profile,
             sessions: Vec::new(),
-            current_session_token: None,
             perms: PermissionContext::default(),
             password_min_length: 12,
         };
@@ -524,7 +585,6 @@ mod tests {
             header_user: Some(create_test_user_context()),
             profile,
             sessions: Vec::new(),
-            current_session_token: None,
             perms: PermissionContext::default(),
             password_min_length: 12,
         };
@@ -553,7 +613,6 @@ mod tests {
             header_user: Some(create_test_user_context()),
             profile,
             sessions: Vec::new(),
-            current_session_token: None,
             perms: PermissionContext::default(),
             password_min_length: 12,
         };
@@ -582,7 +641,6 @@ mod tests {
             header_user: Some(create_test_user_context()),
             profile,
             sessions: Vec::new(),
-            current_session_token: None,
             perms: PermissionContext::default(),
             password_min_length: 12,
         };
