@@ -19,6 +19,13 @@ pub(crate) fn validate_password_length(pwd: &str, min_len: usize) -> Result<(), 
     }
 }
 
+/// Closed vocabulary of the `?sort=` param on `/accounts/users`
+/// (Django-style `-` prefix for descending). Anything else degrades
+/// to the default `username ASC` ordering (fail-open, same contract
+/// as the status filters). Pinned by
+/// `tests/web/htmx_live_filter_test.rs` and the E2E ordering suite.
+const USER_SORTS: &[&str] = &["last_login", "-last_login"];
+
 pub async fn user_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
@@ -53,6 +60,7 @@ pub async fn user_list(
     // Filter out empty strings - form sends empty string when "All" is selected
     let search_filter = opt_filter(&params, "search");
     let status_filter = opt_filter(&params, "status");
+    let sort = opt_filter(&params, "sort").filter(|s| USER_SORTS.contains(&s.as_str()));
 
     let mut query = users::table
         .filter(users::is_deleted.eq(false))
@@ -115,6 +123,22 @@ pub async fn user_list(
         usize::try_from(USERS_PER_PAGE).unwrap_or(30),
     );
 
+    // NULL last_login = never logged in = the most dormant account, so
+    // ascending puts the NULLs FIRST (Postgres defaults to NULLS LAST
+    // on ASC, the exact opposite of "spot the dormant accounts").
+    // `username` as secondary key keeps the ordering total, hence the
+    // pagination stable. Unknown `?sort=` values were sanitized away
+    // above and fall back to the historical `username ASC`.
+    query = match sort.as_deref() {
+        Some("last_login") => {
+            query.order((users::last_login.asc().nulls_first(), users::username.asc()))
+        }
+        Some("-last_login") => {
+            query.order((users::last_login.desc().nulls_last(), users::username.asc()))
+        }
+        _ => query.order(users::username.asc()),
+    };
+
     #[allow(clippy::type_complexity)]
     let db_users: Vec<(
         uuid::Uuid,
@@ -142,7 +166,6 @@ pub async fn user_list(
             users::is_superuser,
             users::last_login,
         ))
-        .order(users::username.asc())
         .limit(window.limit_i64())
         .offset(window.offset_i64())
         .load(&mut conn)
@@ -200,6 +223,7 @@ pub async fn user_list(
         pagination,
         search: search_filter,
         status_filter,
+        sort,
     };
 
     let html = template
@@ -1542,6 +1566,23 @@ pub async fn delete_user_web(
             // target is currently a usable superuser (non-superusers
             // and inactive ones don't count toward the minimum).
             check_last_active_superuser(c, in_tx_id, &in_tx_before, ChangeIntent::Delete).await?;
+
+            // Purge the group memberships of the account being
+            // soft-deleted. The `ON DELETE CASCADE` on user_groups only
+            // fires on a physical DELETE (never executed for users), so
+            // without this purge the rows survive and the group list
+            // counts "ghost members" that the detail page filters out
+            // (July 2026 incident: undeletable groups showing
+            // "2 members" with an empty member list). Same SERIALIZABLE
+            // transaction as the fence and the UPDATE: no intermediate
+            // state is observable.
+            {
+                use crate::schema::user_groups;
+                diesel::delete(user_groups::table.filter(user_groups::user_id.eq(in_tx_id)))
+                    .execute(c)
+                    .await
+                    .map_err(CheckError::Db)?;
+            }
 
             // Soft-delete: mark as deleted and retire username/email
             // while preserving audit history. The username retire frees

@@ -57,11 +57,92 @@ pub struct UserListTemplate {
     pub pagination: Option<Pagination>,
     pub search: Option<String>,
     pub status_filter: Option<String>,
+    /// Sanitized `?sort=` value (`last_login` / `-last_login`), `None`
+    /// for the default `username ASC` ordering.
+    pub sort: Option<String>,
+}
+
+impl UserListTemplate {
+    /// `&key=value` suffix carrying every active filter + sort, for
+    /// the `?page=N` pagination links (single source of truth:
+    /// `services::list_filters::query_suffix`).
+    pub fn filter_query_suffix(&self) -> String {
+        crate::services::list_filters::query_suffix(&[
+            ("search", &self.search),
+            ("status", &self.status_filter),
+            ("sort", &self.sort),
+        ])
+    }
+
+    /// The `?sort=` value the "Last Login" header click should
+    /// request next: none -> oldest-first (NULLS FIRST, the dormant
+    /// accounts), oldest-first -> newest-first, newest-first -> back
+    /// to the default username ordering.
+    pub fn next_last_login_sort(&self) -> &'static str {
+        match self.sort.as_deref() {
+            Some("last_login") => "-last_login",
+            Some("-last_login") => "",
+            _ => "last_login",
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn template_with_sort(sort: Option<&str>) -> UserListTemplate {
+        UserListTemplate {
+            title: "Users".to_string(),
+            user: None,
+            vauban: VaubanConfig::default(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            users: Vec::new(),
+            pagination: None,
+            search: None,
+            status_filter: None,
+            sort: sort.map(str::to_string),
+        }
+    }
+
+    // ---- next_last_login_sort: the 3-state cycle ----
+
+    #[test]
+    fn test_next_sort_cycles_none_to_ascending() {
+        assert_eq!(
+            template_with_sort(None).next_last_login_sort(),
+            "last_login"
+        );
+    }
+
+    #[test]
+    fn test_next_sort_cycles_ascending_to_descending() {
+        assert_eq!(
+            template_with_sort(Some("last_login")).next_last_login_sort(),
+            "-last_login"
+        );
+    }
+
+    #[test]
+    fn test_next_sort_cycles_descending_back_to_default() {
+        assert_eq!(
+            template_with_sort(Some("-last_login")).next_last_login_sort(),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_filter_query_suffix_carries_sort() {
+        let mut tpl = template_with_sort(Some("last_login"));
+        tpl.search = Some("ali ce".to_string());
+        assert_eq!(
+            tpl.filter_query_suffix(),
+            "&search=ali%20ce&sort=last_login"
+        );
+    }
 
     fn create_test_pagination(current: i32, total: i32) -> Pagination {
         Pagination {
@@ -286,6 +367,7 @@ mod tests {
             }],
             search: None,
             status_filter: None,
+            sort: None,
             pagination: Some(create_test_pagination(1, 1)),
         };
 

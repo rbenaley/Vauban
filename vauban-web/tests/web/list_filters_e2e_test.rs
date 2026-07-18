@@ -762,3 +762,95 @@ async fn audit_decision_filter_supports_revoke() {
 
     test_db::cleanup(&mut conn).await;
 }
+
+/// `/accounts/users?sort=last_login` orders by last login with the
+/// never-logged-in accounts FIRST (dormant-account spotting: NULLS
+/// FIRST, the opposite of the Postgres ASC default), `-last_login`
+/// reverses with NULLs last, an unknown sort degrades to the default
+/// username ordering (fail-open), and the sort composes with the
+/// live search filter.
+#[tokio::test]
+#[serial]
+async fn users_sort_by_last_login_orders_dormant_first() {
+    use vauban_web::schema::users;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("lf_us")).await;
+
+    // Username order (aa < mm < zz) is deliberately the OPPOSITE of
+    // the dormancy order (zz = never logged in, mm = old login,
+    // aa = recent login) so the two orderings are distinguishable.
+    let uniq = Uuid::new_v4().simple().to_string();
+    let prefix = format!("lfsrt{}", &uniq[..8]);
+    let name_recent = format!("{prefix}aa");
+    let name_old = format!("{prefix}mm");
+    let name_never = format!("{prefix}zz");
+
+    let recent_id = crate::fixtures::create_simple_user(&mut conn, &name_recent).await;
+    let old_id = crate::fixtures::create_simple_user(&mut conn, &name_old).await;
+    let _never_id = crate::fixtures::create_simple_user(&mut conn, &name_never).await;
+
+    let now = chrono::Utc::now();
+    diesel::update(users::table.filter(users::id.eq(recent_id)))
+        .set(users::last_login.eq(now))
+        .execute(&mut conn)
+        .await
+        .expect("set recent last_login");
+    diesel::update(users::table.filter(users::id.eq(old_id)))
+        .set(users::last_login.eq(now - chrono::Duration::days(400)))
+        .execute(&mut conn)
+        .await
+        .expect("set old last_login");
+    // name_never keeps last_login = NULL (fixture default).
+
+    // The search filter scopes every assertion to our three rows
+    // (the shared DB accumulates users) AND proves sort + search
+    // compose.
+    let pos = |body: &str, needle: &str| {
+        body.find(needle)
+            .unwrap_or_else(|| panic!("'{needle}' missing from the page"))
+    };
+
+    // Ascending: never (NULL) first, then oldest, then most recent.
+    let body = get_html(
+        app,
+        &admin.token,
+        &format!("/accounts/users?search={prefix}&sort=last_login"),
+    )
+    .await;
+    assert!(
+        pos(&body, &name_never) < pos(&body, &name_old)
+            && pos(&body, &name_old) < pos(&body, &name_recent),
+        "sort=last_login must order never -> old -> recent (dormant first)"
+    );
+
+    // Descending: most recent first, NULLs last.
+    let body = get_html(
+        app,
+        &admin.token,
+        &format!("/accounts/users?search={prefix}&sort=-last_login"),
+    )
+    .await;
+    assert!(
+        pos(&body, &name_recent) < pos(&body, &name_old)
+            && pos(&body, &name_old) < pos(&body, &name_never),
+        "sort=-last_login must order recent -> old -> never"
+    );
+
+    // Fail-open: unknown sort falls back to username ASC (aa < mm < zz).
+    let body = get_html(
+        app,
+        &admin.token,
+        &format!("/accounts/users?search={prefix}&sort=bogus"),
+    )
+    .await;
+    assert!(
+        pos(&body, &name_recent) < pos(&body, &name_old)
+            && pos(&body, &name_old) < pos(&body, &name_never),
+        "unknown sort must degrade to the default username ordering"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}

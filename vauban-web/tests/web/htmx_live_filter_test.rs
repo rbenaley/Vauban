@@ -383,6 +383,15 @@ fn make_user_list(
     search: Option<String>,
     status_filter: Option<String>,
 ) -> UserListTemplate {
+    make_user_list_sorted(users, search, status_filter, None)
+}
+
+fn make_user_list_sorted(
+    users: Vec<UserListItem>,
+    search: Option<String>,
+    status_filter: Option<String>,
+    sort: Option<String>,
+) -> UserListTemplate {
     UserListTemplate {
         title: "Users".to_string(),
         user: Some(admin_user()),
@@ -395,6 +404,7 @@ fn make_user_list(
         pagination: Option::<Pagination>::None,
         search,
         status_filter,
+        sort,
     }
 }
 
@@ -426,6 +436,101 @@ fn users_list_has_live_htmx_filter_contract() {
         "/accounts/users",
     );
     assert_no_legacy_filter_form(&html, "/accounts/users");
+}
+
+/// The "Last Login" header is a sortable HTMX control: it must carry
+/// the full live-filter contract, cycle none -> last_login ->
+/// -last_login -> none, and expose the current direction via
+/// `aria-sort` (dormant-account spotting, July 2026).
+#[test]
+fn users_list_last_login_header_is_htmx_sortable() {
+    // Unsorted: the header requests oldest-first and carries no
+    // aria-sort.
+    let html = make_user_list(vec![one_user()], None, None)
+        .render()
+        .expect("render");
+    assert!(
+        html.contains(r#"hx-vals='{"sort": "last_login"}'"#),
+        "unsorted header must request sort=last_login"
+    );
+    assert!(
+        !html.contains("aria-sort="),
+        "unsorted table must not claim an aria-sort"
+    );
+    for attr in [
+        r#"hx-get="/accounts/users""#,
+        r##"hx-target="#user-list-container""##,
+        r##"hx-select="#user-list-container""##,
+        r#"hx-swap="outerHTML""#,
+        r#"hx-push-url="true""#,
+        r##"hx-indicator="#user-list-indicator""##,
+    ] {
+        assert!(
+            html.contains(attr),
+            "sortable header must carry the live-filter contract ({attr})"
+        );
+    }
+
+    // Ascending: chevron up, next click flips to descending.
+    let html = make_user_list_sorted(vec![one_user()], None, None, Some("last_login".to_string()))
+        .render()
+        .expect("render");
+    assert!(html.contains(r#"aria-sort="ascending""#));
+    assert!(
+        html.contains(r#"hx-vals='{"sort": "-last_login"}'"#),
+        "ascending header must request sort=-last_login next"
+    );
+
+    // Descending: chevron down, next click clears the sort.
+    let html = make_user_list_sorted(
+        vec![one_user()],
+        None,
+        None,
+        Some("-last_login".to_string()),
+    )
+    .render()
+    .expect("render");
+    assert!(html.contains(r#"aria-sort="descending""#));
+    assert!(
+        html.contains(r#"hx-vals='{"sort": ""}'"#),
+        "descending header must clear the sort next"
+    );
+}
+
+/// The current sort must survive typing in Search / changing Status
+/// (hidden input inside the swapped container + hx-include) and page
+/// changes (filter_query_suffix on the pagination links).
+#[test]
+fn users_list_sort_survives_filters_and_pagination() {
+    let html = make_user_list_sorted(
+        vec![one_user()],
+        Some("ali".to_string()),
+        None,
+        Some("last_login".to_string()),
+    )
+    .render()
+    .expect("render");
+    assert!(
+        html.contains(r#"<input type="hidden" name="sort" value="last_login">"#),
+        "the hidden sort input must live inside the swapped container"
+    );
+    assert_eq!(
+        html.matches("[name='sort']").count(),
+        2,
+        "both toolbar controls must hx-include the sort input"
+    );
+
+    let tpl = make_user_list_sorted(
+        vec![one_user()],
+        Some("ali".to_string()),
+        Some("active".to_string()),
+        Some("-last_login".to_string()),
+    );
+    assert_eq!(
+        tpl.filter_query_suffix(),
+        "&search=ali&status=active&sort=-last_login",
+        "pagination links must carry search + status + sort"
+    );
 }
 
 #[test]

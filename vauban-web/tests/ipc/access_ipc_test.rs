@@ -477,3 +477,215 @@ async fn test_ipc_get_group_options() {
     client.delete_asset_group(&ag.uuid).await.ok();
     client.delete_vauban_group(&ug.uuid).await.ok();
 }
+
+// ==================== Ghost members (soft-deleted users) ====================
+//
+// July 2026 incident: soft-deleting a user left its user_groups rows in
+// place, so the raw member count diverged from the (filtered) member
+// list and groups whose members were all deleted became undeletable.
+// These tests pin the fixed read seam (visible_member_count) end-to-end
+// through the IPC.
+
+/// Create a fresh throwaway user (unique username) and return its id.
+async fn create_fresh_user(app: &TestApp, prefix: &str) -> i32 {
+    use vauban_web::models::user::{AuthSource, NewUser};
+    use vauban_web::schema::users;
+
+    let mut conn = app.get_conn().await;
+    let name = unique_name(prefix);
+    let user: vauban_web::models::user::User = diesel::insert_into(users::table)
+        .values(NewUser {
+            uuid: uuid::Uuid::new_v4(),
+            username: name.clone(),
+            email: format!("{}@test.local", name),
+            password_hash: "not_used".to_string(),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_active: true,
+            is_staff: false,
+            is_superuser: false,
+            is_service_account: false,
+            mfa_enabled: false,
+            mfa_enforced: false,
+            mfa_secret: None,
+            preferences: serde_json::json!({}),
+            auth_source: AuthSource::Local,
+            external_id: None,
+        })
+        .get_result(&mut conn)
+        .await
+        .expect("create fresh user");
+    user.id
+}
+
+/// Soft-delete a user directly in the DB WITHOUT purging user_groups,
+/// simulating the pre-fix orphan rows found in production.
+async fn soft_delete_user_raw(app: &TestApp, user_id: i32) {
+    use vauban_web::schema::users;
+
+    let mut conn = app.get_conn().await;
+    diesel::update(users::table.filter(users::id.eq(user_id)))
+        .set((
+            users::is_deleted.eq(true),
+            users::deleted_at.eq(chrono::Utc::now()),
+        ))
+        .execute(&mut conn)
+        .await
+        .expect("soft-delete user");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_ipc_soft_deleted_member_is_invisible_and_group_deletable() {
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
+
+    let group = client
+        .create_vauban_group(&unique_name("ipc_vg_ghost"), None)
+        .await
+        .expect("create group");
+    let user_id = create_fresh_user(app, "ipc_ghost_user").await;
+
+    client
+        .add_group_member(group.id, user_id)
+        .await
+        .expect("add member");
+    assert_eq!(
+        client
+            .get_vauban_group(&group.uuid)
+            .await
+            .expect("get group")
+            .member_count,
+        1
+    );
+
+    // Orphan the membership: soft-delete the user without purging
+    // user_groups (pre-fix behaviour / pre-migration database state).
+    soft_delete_user_raw(app, user_id).await;
+
+    let refreshed = client
+        .get_vauban_group(&group.uuid)
+        .await
+        .expect("get group after soft-delete");
+    assert_eq!(
+        refreshed.member_count, 0,
+        "member_count must ignore soft-deleted users"
+    );
+
+    let members = client
+        .list_group_members(group.id)
+        .await
+        .expect("list members");
+    assert!(
+        !members.contains(&user_id),
+        "list_group_members must not return soft-deleted user ids"
+    );
+
+    // The bug made such groups undeletable: the delete guard counted
+    // the raw rows. It must now succeed.
+    client
+        .delete_vauban_group(&group.uuid)
+        .await
+        .expect("group whose only member was soft-deleted must be deletable");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_ipc_manually_inserted_orphan_row_is_ignored() {
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
+
+    let group = client
+        .create_vauban_group(&unique_name("ipc_vg_orphan"), None)
+        .await
+        .expect("create group");
+
+    // User soft-deleted FIRST, membership row inserted afterwards by
+    // hand: proves the read layer alone, independently of the
+    // write-path purge and of the cleanup migration.
+    let user_id = create_fresh_user(app, "ipc_orphan_user").await;
+    soft_delete_user_raw(app, user_id).await;
+    {
+        use vauban_web::schema::user_groups;
+        let mut conn = app.get_conn().await;
+        diesel::insert_into(user_groups::table)
+            .values((
+                user_groups::user_id.eq(user_id),
+                user_groups::group_id.eq(group.id),
+            ))
+            .execute(&mut conn)
+            .await
+            .expect("insert orphan membership row");
+    }
+
+    assert_eq!(
+        client
+            .get_vauban_group(&group.uuid)
+            .await
+            .expect("get group")
+            .member_count,
+        0,
+        "an orphan membership row must not be counted"
+    );
+    assert!(
+        !client
+            .list_group_members(group.id)
+            .await
+            .expect("list members")
+            .contains(&user_id)
+    );
+    client
+        .delete_vauban_group(&group.uuid)
+        .await
+        .expect("delete group with only an orphan row");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_ipc_mixed_active_and_deleted_members_counts_active_only() {
+    let app = TestApp::spawn().await;
+    let client = app.access_ipc_client().await;
+
+    let group = client
+        .create_vauban_group(&unique_name("ipc_vg_mixed"), None)
+        .await
+        .expect("create group");
+    let active_id = create_fresh_user(app, "ipc_mixed_active").await;
+    let deleted_id = create_fresh_user(app, "ipc_mixed_deleted").await;
+
+    client
+        .add_group_member(group.id, active_id)
+        .await
+        .expect("add active");
+    client
+        .add_group_member(group.id, deleted_id)
+        .await
+        .expect("add soon-deleted");
+    soft_delete_user_raw(app, deleted_id).await;
+
+    // Production "Administrators" case: 1 active + 1 deleted => 1.
+    assert_eq!(
+        client
+            .get_vauban_group(&group.uuid)
+            .await
+            .expect("get group")
+            .member_count,
+        1
+    );
+    let members = client
+        .list_group_members(group.id)
+        .await
+        .expect("list members");
+    assert!(members.contains(&active_id));
+    assert!(!members.contains(&deleted_id));
+
+    client
+        .remove_group_member(group.id, active_id)
+        .await
+        .expect("remove active");
+    client
+        .delete_vauban_group(&group.uuid)
+        .await
+        .expect("cleanup group");
+}

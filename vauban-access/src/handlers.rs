@@ -855,6 +855,29 @@ async fn load_access_rule_by_uuid(
     Ok(to_access_rule_info(row))
 }
 
+/// Count the VISIBLE members of a vauban group: `user_groups` rows
+/// whose user still exists as a non-deleted account.
+///
+/// Users are soft-deleted (`users.is_deleted = true`) and the July
+/// 2026 audit found their `user_groups` rows survived, so the raw
+/// `COUNT(*)` diverged from the member list rendered by the web
+/// detail page ("2 members" in the list, empty detail) and made such
+/// groups undeletable. Every member-count decision MUST go through
+/// this single seam (pinned by
+/// `member_count_sites_go_through_visible_member_count`).
+async fn visible_member_count(
+    conn: &mut DbConnection,
+    group_id: i32,
+) -> Result<i64, diesel::result::Error> {
+    user_groups::table
+        .inner_join(users::table.on(users::id.eq(user_groups::user_id)))
+        .filter(user_groups::group_id.eq(group_id))
+        .filter(users::is_deleted.eq(false))
+        .count()
+        .get_result(conn)
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn build_vauban_group_info(
     conn: &mut DbConnection,
@@ -868,11 +891,7 @@ async fn build_vauban_group_info(
     updated_at: chrono::DateTime<Utc>,
     last_synced: Option<chrono::DateTime<Utc>>,
 ) -> Result<VaubanGroupInfo, diesel::result::Error> {
-    let member_count: i64 = user_groups::table
-        .filter(user_groups::group_id.eq(id))
-        .count()
-        .get_result(conn)
-        .await?;
+    let member_count: i64 = visible_member_count(conn, id).await?;
 
     Ok(VaubanGroupInfo {
         id,
@@ -1964,15 +1983,14 @@ async fn handle_delete_vauban_group(conn: &mut DbConnection, uuid_str: &str) -> 
         None => return AccessResponse::Deleted(Err(format!("Group {} not found", uuid_str))),
     };
 
-    // Refuse to delete a group that still has members. The caller is expected
-    // to surface a friendly error message mentioning "member" so that the UI
-    // can display a specific hint.
-    let member_count: i64 = match user_groups::table
-        .filter(user_groups::group_id.eq(group_id))
-        .count()
-        .get_result(conn)
-        .await
-    {
+    // Refuse to delete a group that still has VISIBLE members. The
+    // caller is expected to surface a friendly error message
+    // mentioning "member" so that the UI can display a specific hint.
+    // Memberships of soft-deleted users do not count: they are purged
+    // at user-deletion time and by the purge_deleted_user_memberships
+    // migration, and this seam ignores any straggler so a group whose
+    // members were all deleted can never become undeletable again.
+    let member_count: i64 = match visible_member_count(conn, group_id).await {
         Ok(c) => c,
         Err(e) => {
             return AccessResponse::Deleted(Err(format!("Failed to count members: {}", e)));
@@ -2052,8 +2070,13 @@ async fn handle_list_group_members(
 ) -> AccessResponse {
     let (base_limit, offset) = normalize_ipc_page(page);
     let fetch = base_limit.saturating_add(1);
+    // Soft-deleted users are not members anymore: same visibility
+    // filter as `visible_member_count` so the ids returned here and
+    // the count shown in the group list can never diverge.
     let result = user_groups::table
+        .inner_join(users::table.on(users::id.eq(user_groups::user_id)))
         .filter(user_groups::group_id.eq(group_id))
+        .filter(users::is_deleted.eq(false))
         .order_by(user_groups::user_id.asc())
         .select(user_groups::user_id)
         .limit(fetch)
@@ -3378,6 +3401,73 @@ mod tests {
             limit: 0,
             offset: 0,
         }
+    }
+
+    /// Slice the body of a top-level function out of this source file
+    /// (from its signature to the next top-level `fn` declaration).
+    fn function_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("signature `{signature}` not found in handlers.rs"));
+        let rest = &src[start + signature.len()..];
+        let end = ["\nasync fn ", "\npub async fn ", "\nfn ", "\npub fn "]
+            .iter()
+            .filter_map(|pat| rest.find(pat))
+            .min()
+            .unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// Source pin (ghost-members bug, July 2026): every member-count
+    /// decision on a vauban group MUST go through the single
+    /// `visible_member_count` seam, which ignores soft-deleted users.
+    /// A raw `COUNT(*)` on `user_groups` counts memberships of
+    /// soft-deleted users and re-opens the "2 members / empty detail /
+    /// undeletable group" incident.
+    #[test]
+    fn member_count_sites_go_through_visible_member_count() {
+        let src = include_str!("handlers.rs");
+
+        let helper = function_body(src, "async fn visible_member_count(");
+        assert!(
+            helper.contains("inner_join(users::table")
+                && helper.contains("users::is_deleted.eq(false)"),
+            "visible_member_count must JOIN users and filter out soft-deleted accounts"
+        );
+
+        let build = function_body(src, "async fn build_vauban_group_info(");
+        assert!(
+            build.contains("visible_member_count("),
+            "build_vauban_group_info must derive member_count from visible_member_count"
+        );
+        assert!(
+            !build.contains(".count()"),
+            "build_vauban_group_info must not carry a raw COUNT(*) on user_groups"
+        );
+
+        let guard = function_body(src, "async fn handle_delete_vauban_group(");
+        assert!(
+            guard.contains("visible_member_count("),
+            "the delete guard must count members through visible_member_count"
+        );
+        assert!(
+            !guard.contains(".count()"),
+            "the delete guard must not carry a raw COUNT(*) on user_groups"
+        );
+    }
+
+    /// Source pin: the IPC member listing applies the SAME visibility
+    /// filter as `visible_member_count`, so the ids it returns and the
+    /// count shown in the group list can never diverge.
+    #[test]
+    fn list_group_members_filters_soft_deleted_users() {
+        let src = include_str!("handlers.rs");
+        let body = function_body(src, "async fn handle_list_group_members(");
+        assert!(
+            body.contains("inner_join(users::table")
+                && body.contains("users::is_deleted.eq(false)"),
+            "handle_list_group_members must JOIN users and filter out soft-deleted accounts"
+        );
     }
 
     async fn collect_paged<T: std::fmt::Debug>(

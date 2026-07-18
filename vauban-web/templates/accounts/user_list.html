@@ -48,7 +48,7 @@
                            hx-target="#user-list-container"
                            hx-select="#user-list-container"
                            hx-swap="outerHTML"
-                           hx-include="[name='search'], [name='status']"
+                           hx-include="[name='search'], [name='status'], [name='sort']"
                            hx-push-url="true"
                            hx-indicator="#user-list-indicator"
                            class="block w-full rounded-md border-0 py-2 pl-10 pr-3 text-gray-900 dark:text-white ring-1 ring-inset ring-gray-300 dark:ring-gray-600 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-vauban-600 dark:bg-gray-700 sm:text-sm">
@@ -62,7 +62,7 @@
                         hx-target="#user-list-container"
                         hx-select="#user-list-container"
                         hx-swap="outerHTML"
-                        hx-include="[name='search'], [name='status']"
+                        hx-include="[name='search'], [name='status'], [name='sort']"
                         hx-push-url="true"
                         hx-indicator="#user-list-indicator"
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
@@ -85,6 +85,10 @@
 
     <!-- Users list -->
     <div id="user-list-container" class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        {# Lives INSIDE the swapped container so every HTMX swap
+           refreshes it: typing in Search / changing Status re-sends the
+           CURRENT sort via the toolbar `hx-include="[name='sort']"`. #}
+        <input type="hidden" name="sort" value="{% if sort.is_some() %}{{ sort.as_ref().unwrap() }}{% endif %}">
         {% if !users.is_empty() %}
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
@@ -94,7 +98,40 @@
                         <th scope="col" class="hidden lg:table-cell px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Auth Source</th>
                         <th scope="col" class="hidden lg:table-cell px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">MFA</th>
                         <th scope="col" class="px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
-                        <th scope="col" class="hidden md:table-cell px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Last Login</th>
+                        {# Sortable header (dormant-account spotting):
+                           none -> last_login (never-logged-in first) ->
+                           -last_login -> back to username order. #}
+                        <th scope="col"
+                            {% if sort.as_deref() == Some("last_login") %}aria-sort="ascending"{% else if sort.as_deref() == Some("-last_login") %}aria-sort="descending"{% endif %}
+                            class="hidden md:table-cell px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                            <button type="button"
+                                    hx-get="/accounts/users"
+                                    hx-vals='{"sort": "{{ self.next_last_login_sort() }}"}'
+                                    hx-trigger="click"
+                                    hx-target="#user-list-container"
+                                    hx-select="#user-list-container"
+                                    hx-swap="outerHTML"
+                                    hx-include="[name='search'], [name='status']"
+                                    hx-push-url="true"
+                                    hx-indicator="#user-list-indicator"
+                                    class="group -my-1 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium uppercase tracking-wider ring-1 ring-inset transition-colors focus:outline-none focus:ring-2 focus:ring-vauban-500 {% if sort.is_some() %}bg-vauban-50 text-vauban-700 ring-vauban-300 dark:bg-vauban-900/40 dark:text-vauban-300 dark:ring-vauban-700{% else %}text-gray-500 ring-gray-300 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-300 dark:ring-gray-500 dark:hover:bg-gray-600/50 dark:hover:text-white{% endif %}"
+                                    title="Sort by last login (oldest first spots dormant accounts)">
+                                Last Login
+                                {% if sort.as_deref() == Some("last_login") %}
+                                <svg aria-hidden="true" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 15.75 12 8.25l7.5 7.5"/>
+                                </svg>
+                                {% else if sort.as_deref() == Some("-last_login") %}
+                                <svg aria-hidden="true" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/>
+                                </svg>
+                                {% else %}
+                                <svg aria-hidden="true" class="h-3.5 w-3.5 text-gray-400 transition-colors group-hover:text-gray-600 dark:group-hover:text-gray-200" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 15 12 18.75 15.75 15m-7.5-6L12 5.25 15.75 9"/>
+                                </svg>
+                                {% endif %}
+                            </button>
+                        </th>
                         <th scope="col" class="relative px-3 py-3 sm:px-4 lg:px-6"><span class="sr-only">Actions</span></th>
                     </tr>
                 </thead>
@@ -212,13 +249,13 @@
         <div class="bg-white dark:bg-gray-800 px-4 py-3 flex items-center justify-between border-t border-gray-200 dark:border-gray-700 sm:px-6">
             <div class="flex-1 flex justify-between sm:hidden">
                 {% if pagination.as_ref().unwrap().has_previous %}
-                <a href="?page={{ pagination.as_ref().unwrap().current_page - 1 }}{% if search.is_some() %}&search={{ search.as_ref().unwrap() }}{% endif %}{% if status_filter.is_some() %}&status={{ status_filter.as_ref().unwrap() }}{% endif %}"
+                <a href="?page={{ pagination.as_ref().unwrap().current_page - 1 }}{{ self.filter_query_suffix() }}"
                    class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300">
                     Previous
                 </a>
                 {% endif %}
                 {% if pagination.as_ref().unwrap().has_next %}
-                <a href="?page={{ pagination.as_ref().unwrap().current_page + 1 }}{% if search.is_some() %}&search={{ search.as_ref().unwrap() }}{% endif %}{% if status_filter.is_some() %}&status={{ status_filter.as_ref().unwrap() }}{% endif %}"
+                <a href="?page={{ pagination.as_ref().unwrap().current_page + 1 }}{{ self.filter_query_suffix() }}"
                    class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300">
                     Next
                 </a>
@@ -234,7 +271,7 @@
                 <div>
                     <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
                         {% if pagination.as_ref().unwrap().has_previous %}
-                        <a href="?page=1{% if search.is_some() %}&search={{ search.as_ref().unwrap() }}{% endif %}{% if status_filter.is_some() %}&status={{ status_filter.as_ref().unwrap() }}{% endif %}"
+                        <a href="?page=1{{ self.filter_query_suffix() }}"
                            class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-700"
                            title="First page">
                             <span class="sr-only">First</span>
@@ -243,7 +280,7 @@
                                 <path fill-rule="evenodd" d="M9.79 14.77a.75.75 0 01-1.06.02l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 111.06 1.06L5.832 10l3.938 3.71a.75.75 0 01.02 1.06z" clip-rule="evenodd"/>
                             </svg>
                         </a>
-                        <a href="?page={{ pagination.as_ref().unwrap().current_page - 1 }}{% if search.is_some() %}&search={{ search.as_ref().unwrap() }}{% endif %}{% if status_filter.is_some() %}&status={{ status_filter.as_ref().unwrap() }}{% endif %}"
+                        <a href="?page={{ pagination.as_ref().unwrap().current_page - 1 }}{{ self.filter_query_suffix() }}"
                            class="relative inline-flex items-center px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-700"
                            title="Previous page">
                             <span class="sr-only">Previous</span>
@@ -258,14 +295,14 @@
                             {{ num }}
                         </span>
                         {% else %}
-                        <a href="?page={{ num }}{% if search.is_some() %}&search={{ search.as_ref().unwrap() }}{% endif %}{% if status_filter.is_some() %}&status={{ status_filter.as_ref().unwrap() }}{% endif %}"
+                        <a href="?page={{ num }}{{ self.filter_query_suffix() }}"
                            class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:text-gray-100 dark:ring-gray-600 dark:hover:bg-gray-700">
                             {{ num }}
                         </a>
                         {% endif %}
                         {% endfor %}
                         {% if pagination.as_ref().unwrap().has_next %}
-                        <a href="?page={{ pagination.as_ref().unwrap().current_page + 1 }}{% if search.is_some() %}&search={{ search.as_ref().unwrap() }}{% endif %}{% if status_filter.is_some() %}&status={{ status_filter.as_ref().unwrap() }}{% endif %}"
+                        <a href="?page={{ pagination.as_ref().unwrap().current_page + 1 }}{{ self.filter_query_suffix() }}"
                            class="relative inline-flex items-center px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-700"
                            title="Next page">
                             <span class="sr-only">Next</span>
@@ -273,7 +310,7 @@
                                 <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
                             </svg>
                         </a>
-                        <a href="?page={{ pagination.as_ref().unwrap().total_pages }}{% if search.is_some() %}&search={{ search.as_ref().unwrap() }}{% endif %}{% if status_filter.is_some() %}&status={{ status_filter.as_ref().unwrap() }}{% endif %}"
+                        <a href="?page={{ pagination.as_ref().unwrap().total_pages }}{{ self.filter_query_suffix() }}"
                            class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-700"
                            title="Last page">
                             <span class="sr-only">Last</span>
