@@ -91,6 +91,9 @@ pub struct ApprovalListTemplate {
     pub own_pending: Vec<ApprovalListItem>,
     pub pagination: Option<Pagination>,
     pub status_filter: Option<String>,
+    /// `(value, label)` couples of the status filter select, derived
+    /// from `status_vocab::APPROVAL` (single source of truth).
+    pub statuses: Vec<(String, String)>,
 }
 
 #[cfg(test)]
@@ -359,6 +362,7 @@ mod tests {
         own.is_own = true;
         own.uuid = "own-uuid-123".to_string();
         ApprovalListTemplate {
+            statuses: crate::services::status_vocab::APPROVAL.options(),
             title: "Approvals".to_string(),
             user: Some(UserContext {
                 uuid: "test".to_string(),
@@ -428,6 +432,7 @@ mod tests {
         row.is_own = true;
         row.uuid = "leaked-own-uuid".to_string();
         let t = ApprovalListTemplate {
+            statuses: crate::services::status_vocab::APPROVAL.options(),
             title: "Approvals".to_string(),
             user: Some(UserContext {
                 uuid: "x".to_string(),
@@ -464,6 +469,7 @@ mod tests {
         row.is_own = false;
         row.uuid = "other-uuid".to_string();
         let t = ApprovalListTemplate {
+            statuses: crate::services::status_vocab::APPROVAL.options(),
             title: "Approvals".to_string(),
             user: Some(UserContext {
                 uuid: "x".to_string(),
@@ -498,6 +504,7 @@ mod tests {
         use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = ApprovalListTemplate {
+            statuses: crate::services::status_vocab::APPROVAL.options(),
             title: "Approvals".to_string(),
             user: Some(UserContext {
                 uuid: "test".to_string(),

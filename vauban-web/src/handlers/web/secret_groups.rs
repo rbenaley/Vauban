@@ -72,7 +72,12 @@ pub async fn secret_group_list(
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     browser_tz: BrowserTz,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
+    use crate::services::list_filters::{
+        matches_search, opt_filter, paginate, parse_page, slice_page,
+    };
+
     if !perms.vault_secrets_manage {
         return Err(AppError::forbidden("vault_secrets:manage"));
     }
@@ -85,11 +90,21 @@ pub async fn secret_group_list(
             .await
             .into_fields();
 
+    // Live filter (issue #28 pattern): in-memory search on the
+    // IPC-returned catalogue, like /accounts/groups.
+    let search_filter = opt_filter(&params, "search");
+
     // Virtual group intentionally excluded: it is not a browsable entity.
     let mut infos = state.access_client.list_secret_groups().await?;
     infos.sort_by_key(|g| g.name.to_lowercase());
     let groups: Vec<SecretGroupItem> = infos
         .into_iter()
+        .filter(|g| {
+            matches_search(
+                &[g.name.as_str(), g.slug.as_str()],
+                search_filter.as_deref(),
+            )
+        })
         .map(|g| SecretGroupItem {
             uuid: g.uuid,
             name: g.name,
@@ -100,6 +115,13 @@ pub async fn secret_group_list(
         })
         .collect();
 
+    const GROUPS_PER_PAGE: usize = 30;
+    let page = parse_page(&params);
+    let total_items = groups.len();
+    let window = paginate(total_items, page, GROUPS_PER_PAGE);
+    let groups = slice_page(groups, &window);
+    let pagination = (total_items > 0).then(|| window.to_pagination());
+
     let template = SecretGroupListTemplate {
         title,
         user: user_ctx,
@@ -109,6 +131,8 @@ pub async fn secret_group_list(
         sidebar_content,
         header_user,
         groups,
+        search: search_filter,
+        pagination,
     };
 
     let html = template

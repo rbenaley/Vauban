@@ -383,7 +383,7 @@ async fn test_asset_detail_with_sessions() {
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     // Create sessions for this asset
-    let _session1 = create_test_session(&mut conn, user_id, asset_id, "ssh", "completed").await;
+    let _session1 = create_test_session(&mut conn, user_id, asset_id, "ssh", "disconnected").await;
     let _session2 = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
 
     let user_uuid: Uuid = {

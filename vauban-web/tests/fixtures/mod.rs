@@ -1077,7 +1077,7 @@ pub async fn create_recorded_session_with_type(
                 proxy_sessions::credential_id.eq("cred-123"),
                 proxy_sessions::credential_username.eq("testuser"),
                 proxy_sessions::session_type.eq(SessionType::parse(session_type)),
-                proxy_sessions::status.eq("completed"),
+                proxy_sessions::status.eq("disconnected"),
                 proxy_sessions::client_ip.eq(ip),
                 proxy_sessions::connected_at.eq(Utc::now() - Duration::hours(1)),
                 proxy_sessions::disconnected_at.eq(Utc::now()),

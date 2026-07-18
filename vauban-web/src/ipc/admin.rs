@@ -419,6 +419,7 @@ async fn handle_seed_assets(pool: &DbPool, seed_assets: &[SeedAsset]) -> AdminRe
             port: sa.port,
             asset_type: &sa.asset_type,
             description: sa.description.as_deref(),
+            // allow-status-vocab: assets.status seed value, not a proxy_sessions status
             status: "online",
             connection_config: serde_json::json!({}),
         };
@@ -500,7 +501,7 @@ async fn handle_seed_sessions(pool: &DbPool, seed_sessions: &[SeedSession]) -> A
                 "root"
             },
             session_type: &ss.session_type,
-            status: "completed",
+            status: "disconnected",
             client_ip: "127.0.0.1".parse().expect("localhost IP"),
             is_recorded: false,
             bytes_sent: 0,

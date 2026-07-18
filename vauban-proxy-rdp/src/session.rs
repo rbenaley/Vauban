@@ -1028,7 +1028,9 @@ fn translate_input_event(event: RdpInputEvent) -> Vec<rdp_input::Operation> {
                 ops.push(rdp_input::Operation::WheelRotations(
                     rdp_input::WheelRotations {
                         is_vertical: true,
-                        rotation_units: -delta_y, // browser delta is inverted
+                        // Browser delta is inverted. Saturating: a raw
+                        // `-` panics on i16::MIN in debug builds.
+                        rotation_units: delta_y.saturating_neg(),
                     },
                 ));
             }

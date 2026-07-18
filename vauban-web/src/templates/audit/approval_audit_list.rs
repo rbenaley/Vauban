@@ -76,6 +76,10 @@ pub struct ApprovalAuditListTemplate {
     pub rows: Vec<ApprovalAuditRow>,
     pub pagination: AuditPagination,
     pub filters: ApprovalAuditFilters,
+    /// `(value, label)` couples of the decision filter select, derived
+    /// from `status_vocab::AUDIT_DECISIONS` (single source of truth,
+    /// kept in lock-step with the `approval_audit_log.decision` CHECK).
+    pub decisions: Vec<(String, String)>,
 }
 
 #[cfg(test)]

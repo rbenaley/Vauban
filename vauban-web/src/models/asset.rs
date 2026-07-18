@@ -553,6 +553,37 @@ impl AssetStatus {
             _ => None,
         }
     }
+
+    /// Display label for the status filter selects.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Online => "Online",
+            Self::Offline => "Offline",
+            Self::Maintenance => "Maintenance",
+            Self::Unknown => "Unknown",
+        }
+    }
+
+    /// Every status, in select-option order. Exhaustiveness is pinned
+    /// by [`tests::test_filter_options_cover_every_status`].
+    pub const ALL: &'static [Self] = &[
+        Self::Online,
+        Self::Offline,
+        Self::Maintenance,
+        Self::Unknown,
+    ];
+
+    /// `(value, label)` couples for the `/assets` and `/assets/manage`
+    /// status filter selects. Single source of truth: covers the FULL
+    /// closed vocabulary (including `unknown`, which the create/edit
+    /// forms can assign) so no asset state is unfilterable.
+    #[must_use]
+    pub fn filter_options() -> Vec<(String, String)> {
+        Self::ALL
+            .iter()
+            .map(|s| (s.as_str().to_string(), s.label().to_string()))
+            .collect()
+    }
 }
 
 /// Asset database model.

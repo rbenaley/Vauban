@@ -839,7 +839,7 @@ async fn test_proxy_session_fk_survives_asset_soft_delete() {
     );
 
     let session_id =
-        create_test_session(&mut conn, user.user.id, asset_id, "ssh", "completed").await;
+        create_test_session(&mut conn, user.user.id, asset_id, "ssh", "disconnected").await;
 
     let delete = app
         .server

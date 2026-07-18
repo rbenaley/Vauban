@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f8a561597e60233bdd795b8533f51f48d4d221718e027c3b72e405fbaf61cc9a # shrinks to events = [MouseWheel { delta_x: 0, delta_y: -32768 }]

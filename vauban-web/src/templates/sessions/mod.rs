@@ -26,13 +26,13 @@ pub fn session_status_class(status: &str) -> &'static str {
         "expired" | "orphaned" => {
             "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300"
         }
-        "consumed" | "active" | "connecting" | "tunnel_active" => {
+        "active" | "connecting" | "tunnel_active" => {
             "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300"
         }
         "waiting_client" => {
             "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300"
         }
-        "disconnected" | "completed" => {
+        "disconnected" => {
             "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-300"
         }
         "terminated" => "bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-300",
@@ -107,11 +107,6 @@ mod tests {
     }
 
     #[test]
-    fn test_consumed() {
-        assert!(session_status_class("consumed").contains("blue"));
-    }
-
-    #[test]
     fn test_active() {
         assert!(session_status_class("active").contains("blue"));
     }
@@ -124,7 +119,6 @@ mod tests {
     #[test]
     fn test_active_group_shares_same_class() {
         let cls = session_status_class("active");
-        assert_eq!(cls, session_status_class("consumed"));
         assert_eq!(cls, session_status_class("connecting"));
     }
 
@@ -134,16 +128,11 @@ mod tests {
     }
 
     #[test]
-    fn test_completed() {
-        assert!(session_status_class("completed").contains("indigo"));
-    }
-
-    #[test]
-    fn test_disconnected_and_completed_share_same_class() {
-        assert_eq!(
-            session_status_class("disconnected"),
-            session_status_class("completed")
-        );
+    fn test_phantom_statuses_fall_back_to_gray() {
+        // 'completed' / 'consumed' were purged from the vocabulary
+        // (July 2026 status audit): they are no longer classified.
+        assert!(session_status_class("completed").contains("gray"));
+        assert!(session_status_class("consumed").contains("gray"));
     }
 
     #[test]
@@ -170,11 +159,9 @@ mod tests {
             "revoked",
             "expired",
             "orphaned",
-            "consumed",
             "active",
             "connecting",
             "disconnected",
-            "completed",
             "terminated",
             "unknown",
         ];

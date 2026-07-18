@@ -48,6 +48,18 @@ pub struct AccessListTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub rules: Vec<AccessRuleListItem>,
     pub pagination: Option<Pagination>,
+    pub search: Option<String>,
+    pub protocol_filter: Option<String>,
+    pub status_filter: Option<String>,
+}
+
+impl AccessListTemplate {
+    /// True when at least one live filter narrows the list; drives the
+    /// double-branch empty state ("no matching" vs "none configured").
+    #[must_use]
+    pub fn has_filters(&self) -> bool {
+        self.search.is_some() || self.protocol_filter.is_some() || self.status_filter.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -75,6 +87,9 @@ mod tests {
             header_user: None,
             rules: Vec::new(),
             pagination: None,
+            search: None,
+            protocol_filter: None,
+            status_filter: None,
         };
         assert_eq!(template.title, "Access List");
     }
@@ -91,6 +106,9 @@ mod tests {
             header_user: None,
             rules: Vec::new(),
             pagination: None,
+            search: None,
+            protocol_filter: None,
+            status_filter: None,
         };
         let result = template.render();
         assert!(result.is_ok());

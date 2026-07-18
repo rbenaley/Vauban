@@ -98,7 +98,7 @@ async fn recordings_list_renders_requester_arrow_credential() {
     let asset_name = unique_name("idpair_rec_asset");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
     let (session_id, _) =
-        create_test_session_with_uuid(&mut conn, user_id, asset_id, "ssh", "completed").await;
+        create_test_session_with_uuid(&mut conn, user_id, asset_id, "ssh", "disconnected").await;
     unwrap_ok!(
         diesel::update(proxy_sessions::table.filter(proxy_sessions::id.eq(session_id)))
             .set((

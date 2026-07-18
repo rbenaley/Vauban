@@ -44,8 +44,9 @@
                 <select name="decision" id="decision"
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
                     <option value="">All</option>
-                    <option value="approve" {% if filters.decision.as_deref() == Some("approve") %}selected{% endif %}>Approved</option>
-                    <option value="reject" {% if filters.decision.as_deref() == Some("reject") %}selected{% endif %}>Rejected</option>
+                    {% for (value, label) in decisions %}
+                    <option value="{{ value }}" {% if filters.decision.is_some() && filters.decision.as_ref().unwrap() == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
                 </select>
             </div>
             <div>

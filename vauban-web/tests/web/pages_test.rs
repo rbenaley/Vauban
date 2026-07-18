@@ -609,7 +609,7 @@ async fn test_approval_list_status_filter_all_statuses() {
     for (i, status) in statuses.iter().enumerate() {
         let asset_id = create_simple_ssh_asset(
             &mut conn,
-            &format!("status-filter-asset-{}", i),
+            &unique_name(&format!("status_filter_asset_{}", i)),
             requester_id,
         )
         .await;
@@ -708,7 +708,9 @@ async fn test_approval_list_status_filter_all_statuses() {
         );
     }
 
-    // Test 4: Invalid status filter should return empty (no matching approvals)
+    // Test 4: Invalid status filter degrades to the UNFILTERED view
+    // (fail-open sanitize through status_vocab::APPROVAL, July 2026
+    // status audit) instead of a misleading empty list.
     let response_invalid = app
         .server
         .get("/sessions/approvals?status=invalid_status")
@@ -723,8 +725,8 @@ async fn test_approval_list_status_filter_all_statuses() {
 
     let body_invalid = response_invalid.text();
     assert!(
-        body_invalid.contains("No approval requests") || body_invalid.contains("No requests match"),
-        "Invalid status filter should show no results"
+        !body_invalid.contains("No approval requests"),
+        "Invalid status filter must degrade to the unfiltered view (fail-open)"
     );
 }
 
@@ -1085,20 +1087,24 @@ async fn test_asset_group_list_empty_search_shows_all() {
     );
     let body_empty = response_empty.text();
 
-    // Verify the group appears in both cases
-    assert!(
+    // The list is paginated now, so the seeded group may land beyond
+    // page 1 when leftover rows exist. The regression under test is
+    // that an EMPTY search behaves EXACTLY like no filter: both views
+    // must agree on whether the group is on page 1.
+    assert_eq!(
         body_no_filter.contains(&group_name),
-        "Asset group should appear without filter"
-    );
-    assert!(
         body_empty.contains(&group_name),
-        "Asset group should appear with empty search filter"
+        "Empty search must behave exactly like no filter"
     );
 
-    // Test 3: Case-insensitive search
+    // Test 3: Case-insensitive search. The needle is the full unique
+    // name (upper-cased), so the single match is guaranteed on page 1.
     let response_upper = app
         .server
-        .get("/assets/manage/groups?search=ASSETGRP-SEARCH")
+        .get(&format!(
+            "/assets/manage/groups?search={}",
+            group_name.to_uppercase()
+        ))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1109,10 +1115,11 @@ async fn test_asset_group_list_empty_search_shows_all() {
         "Case-insensitive search should find asset group"
     );
 
-    // Test 4: Partial search
+    // Test 4: Partial search on the unique uuid8 suffix of the name.
+    let suffix = &group_name[group_name.len() - 8..];
     let response_partial = app
         .server
-        .get("/assets/manage/groups?search=assetgrp-search")
+        .get(&format!("/assets/manage/groups?search={suffix}"))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 

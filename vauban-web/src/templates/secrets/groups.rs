@@ -26,6 +26,8 @@ pub struct SecretGroupListTemplate {
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub groups: Vec<SecretGroupItem>,
+    pub search: Option<String>,
+    pub pagination: Option<crate::templates::accounts::user_list::Pagination>,
 }
 
 /// Form data for secret-group create/edit.
@@ -143,6 +145,8 @@ mod tests {
                 member_count: 3,
                 created_at: "2026-07-11 10:00 UTC".to_string(),
             }],
+            search: None,
+            pagination: None,
         };
         let html = template.render().expect("render");
         assert!(html.contains("Prod credentials"));

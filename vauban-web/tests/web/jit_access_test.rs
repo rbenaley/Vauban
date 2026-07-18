@@ -340,20 +340,22 @@ async fn test_my_requests_page_has_websocket_connection() {
 }
 
 #[tokio::test]
-async fn test_my_requests_shows_consumed_jit_sessions() {
+async fn test_my_requests_shows_active_jit_sessions_as_connected() {
+    // The 'consumed' phantom status was purged (July 2026 status
+    // audit): a JIT grant being used renders as 'active' / Connected.
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let user_name = unique_name("jit_mr_consumed");
+    let user_name = unique_name("jit_mr_conn");
     let user_id = create_simple_user(&mut conn, &user_name).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let admin_name = unique_name("jit_mr_cons_adm");
+    let admin_name = unique_name("jit_mr_conn_adm");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
 
-    let asset_name = unique_name("jit_mr_cons_ast");
+    let asset_name = unique_name("jit_mr_conn_ast");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
-    let _session_id = create_jit_session(&mut conn, user_id, asset_id, "ssh", "consumed").await;
+    let _session_id = create_jit_session(&mut conn, user_id, asset_id, "ssh", "active").await;
 
     let token = app
         .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
@@ -369,11 +371,11 @@ async fn test_my_requests_shows_consumed_jit_sessions() {
     let body = response.text();
     assert!(
         body.contains("Connected"),
-        "my-requests should show 'Connected' for consumed JIT sessions"
+        "my-requests should show 'Connected' for active JIT sessions"
     );
     assert!(
         body.contains(&asset_name),
-        "my-requests should show the asset name for consumed JIT sessions"
+        "my-requests should show the asset name for active JIT sessions"
     );
 }
 
@@ -463,7 +465,7 @@ async fn test_my_requests_shows_all_jit_lifecycle_statuses() {
     for status in &[
         "pending",
         "approved",
-        "consumed",
+        "active",
         "disconnected",
         "terminated",
     ] {
@@ -485,10 +487,7 @@ async fn test_my_requests_shows_all_jit_lifecycle_statuses() {
 
     assert!(body.contains("Pending"), "should show Pending");
     assert!(body.contains("Approved"), "should show Approved");
-    assert!(
-        body.contains("Connected"),
-        "should show Connected (consumed)"
-    );
+    assert!(body.contains("Connected"), "should show Connected (active)");
     assert!(
         body.contains("Completed"),
         "should show Completed (disconnected)"

@@ -58,8 +58,12 @@ pub async fn asset_group_list(
             .await
             .into_fields();
 
+    use crate::services::list_filters::{
+        matches_search, opt_filter, paginate, parse_page, slice_page,
+    };
+
     // Filter out empty strings - form sends empty string when search is cleared
-    let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
+    let search_filter = opt_filter(&params, "search");
 
     let client = &state.access_client;
     let groups: Vec<crate::templates::assets::group_list::AssetGroupItem> = {
@@ -84,13 +88,13 @@ pub async fn asset_group_list(
             .map(|r| (r.group_id, r.cnt))
             .collect();
 
-        let search_lower = search_filter.as_ref().map(|s| s.to_lowercase());
         let mut groups: Vec<_> = ipc_groups
             .into_iter()
             .filter(|g| {
-                search_lower.as_ref().is_none_or(|s| {
-                    g.name.to_lowercase().contains(s) || g.slug.to_lowercase().contains(s)
-                })
+                matches_search(
+                    &[g.name.as_str(), g.slug.as_str()],
+                    search_filter.as_deref(),
+                )
             })
             .map(|g| crate::templates::assets::group_list::AssetGroupItem {
                 uuid: g.uuid,
@@ -107,6 +111,15 @@ pub async fn asset_group_list(
         groups
     };
 
+    // In-memory pagination (30/page): the pre-fix handler rendered the
+    // full catalogue on one page, which does not scale.
+    const GROUPS_PER_PAGE: usize = 30;
+    let page = parse_page(&params);
+    let total_items = groups.len();
+    let window = paginate(total_items, page, GROUPS_PER_PAGE);
+    let groups = slice_page(groups, &window);
+    let pagination = (total_items > 0).then(|| window.to_pagination());
+
     let template = AssetGroupListTemplate {
         title,
         user: user_ctx,
@@ -117,6 +130,7 @@ pub async fn asset_group_list(
         header_user,
         groups,
         search: search_filter,
+        pagination,
     };
 
     let html = template

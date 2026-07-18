@@ -129,7 +129,12 @@ pub enum SessionStatus {
     Pending,
     Approved,
     Rejected,
+    /// JIT grant revoked by an approver after approval.
+    Revoked,
     Expired,
+    /// The parent asset was irreversibly deleted while the approval
+    /// request was still pending.
+    Orphaned,
     Connecting,
     Active,
     Disconnected,
@@ -146,12 +151,35 @@ pub enum SessionStatus {
 }
 
 impl SessionStatus {
+    /// Every status, i.e. the canonical closed vocabulary of the
+    /// `proxy_sessions.status` column. Kept in lock-step with the
+    /// `proxy_sessions_status_chk` DB constraint and the
+    /// `check_status_vocabulary.sh` lint by
+    /// `tests/web/status_vocab_drift_test.rs`.
+    pub const ALL: &'static [Self] = &[
+        Self::Pending,
+        Self::Approved,
+        Self::Rejected,
+        Self::Revoked,
+        Self::Expired,
+        Self::Orphaned,
+        Self::Connecting,
+        Self::Active,
+        Self::Disconnected,
+        Self::Terminated,
+        Self::Failed,
+        Self::WaitingClient,
+        Self::TunnelActive,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Approved => "approved",
             Self::Rejected => "rejected",
+            Self::Revoked => "revoked",
             Self::Expired => "expired",
+            Self::Orphaned => "orphaned",
             Self::Connecting => "connecting",
             Self::Active => "active",
             Self::Disconnected => "disconnected",
@@ -162,20 +190,38 @@ impl SessionStatus {
         }
     }
 
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "approved" => Self::Approved,
-            "rejected" => Self::Rejected,
-            "expired" => Self::Expired,
-            "connecting" => Self::Connecting,
-            "active" => Self::Active,
-            "disconnected" => Self::Disconnected,
-            "terminated" => Self::Terminated,
-            "failed" => Self::Failed,
-            "waiting_client" => Self::WaitingClient,
-            "tunnel_active" => Self::TunnelActive,
-            _ => Self::Pending,
+    /// Display label. Exhaustive on purpose (no `_` arm): adding a
+    /// variant without classifying its label refuses to compile.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Pending => "Pending",
+            Self::Approved => "Approved",
+            Self::Rejected => "Rejected",
+            Self::Revoked => "Revoked",
+            Self::Expired => "Expired",
+            Self::Orphaned => "Orphaned",
+            Self::Connecting => "Connecting",
+            Self::Active => "Active",
+            Self::Disconnected => "Disconnected",
+            Self::Terminated => "Terminated",
+            Self::Failed => "Failed",
+            Self::WaitingClient => "Waiting client",
+            Self::TunnelActive => "Tunnel active",
         }
+    }
+
+    /// Lenient parse for DISPLAY paths only: unknown values fall back
+    /// to `Pending`. Never persist through this -- use
+    /// [`Self::parse_strict`] on write paths.
+    pub fn parse(s: &str) -> Self {
+        Self::parse_strict(s).unwrap_or(Self::Pending)
+    }
+
+    /// Strict parse for WRITE paths: `None` for anything outside the
+    /// closed vocabulary (mirror of `AssetStatus::parse_strict`; the
+    /// `proxy_sessions_status_chk` DB constraint is the last fence).
+    pub fn parse_strict(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|v| v.as_str() == s)
     }
 
     /// Statuses representing a session that is "live" enough to hold

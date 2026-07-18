@@ -44,6 +44,50 @@ pub struct SecretRuleListTemplate {
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub rules: Vec<SecretRuleItem>,
+    pub pagination: Option<crate::templates::accounts::user_list::Pagination>,
+    pub search: Option<String>,
+    pub user_group_filter: Option<String>,
+    pub secret_group_filter: Option<String>,
+    pub asset_group_filter: Option<String>,
+    pub status_filter: Option<String>,
+    pub eclipsed_filter: Option<String>,
+    /// Distinct option values for the three group selects, derived
+    /// from the full (unfiltered) rule set.
+    pub user_groups: Vec<String>,
+    pub secret_groups: Vec<String>,
+    pub asset_groups: Vec<String>,
+}
+
+impl SecretRuleListTemplate {
+    /// True when at least one live filter narrows the list; drives the
+    /// double-branch empty state ("no matching" vs "none configured").
+    #[must_use]
+    pub fn has_filters(&self) -> bool {
+        self.search.is_some()
+            || self.user_group_filter.is_some()
+            || self.secret_group_filter.is_some()
+            || self.asset_group_filter.is_some()
+            || self.status_filter.is_some()
+            || self.eclipsed_filter.is_some()
+    }
+
+    /// `&key=value` query-string suffix carrying every active filter,
+    /// percent-encoded, appended to the pagination links so switching
+    /// page never drops the filters. With six filterable params the
+    /// inline `{% if %}` idiom used by two-filter templates becomes
+    /// unreadable; Askama HTML-escapes the returned `&` to `&amp;`,
+    /// which is the correct form inside an href attribute.
+    #[must_use]
+    pub fn filter_query_suffix(&self) -> String {
+        crate::services::list_filters::query_suffix(&[
+            ("search", &self.search),
+            ("user_group", &self.user_group_filter),
+            ("secret_group", &self.secret_group_filter),
+            ("asset_group", &self.asset_group_filter),
+            ("status", &self.status_filter),
+            ("eclipsed", &self.eclipsed_filter),
+        ])
+    }
 }
 
 /// Form data for rule creation (re-populated on validation error).
@@ -213,12 +257,24 @@ mod tests {
                 is_active: true,
                 is_eclipsed: false,
             }],
+            pagination: None,
+            search: None,
+            user_group_filter: None,
+            secret_group_filter: None,
+            asset_group_filter: None,
+            status_filter: None,
+            eclipsed_filter: None,
+            user_groups: vec!["Ops".to_string()],
+            secret_groups: vec!["Prod credentials".to_string()],
+            asset_groups: vec!["Prod servers".to_string()],
         };
         let html = template.render().expect("render");
         assert!(html.contains("Ops reads prod"));
         assert!(html.contains("/vault/secrets/access/r1"));
         assert!(html.contains("Prod servers"));
-        assert!(!html.contains("Eclipsed"));
+        // The toolbar always carries the "Eclipsed" filter label; only
+        // the BADGE must be absent for a non-eclipsed rule.
+        assert!(!html.contains(">Eclipsed</span>"));
     }
 
     #[test]
@@ -245,8 +301,18 @@ mod tests {
                 is_active: true,
                 is_eclipsed: true,
             }],
+            pagination: None,
+            search: None,
+            user_group_filter: None,
+            secret_group_filter: None,
+            asset_group_filter: None,
+            status_filter: None,
+            eclipsed_filter: None,
+            user_groups: Vec::new(),
+            secret_groups: Vec::new(),
+            asset_groups: Vec::new(),
         };
         let html = template.render().expect("render");
-        assert!(html.contains("Eclipsed"));
+        assert!(html.contains(">Eclipsed</span>"));
     }
 }

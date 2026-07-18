@@ -919,17 +919,11 @@ pub async fn iacs_admin_list(
         return Err(AppError::NotFound("Not Found".to_string()));
     }
 
+    use crate::services::list_filters::{paginate, parse_page_param};
+
     // ---- Parse query parameters ------------------------------------
-    let pending_page: i64 = params
-        .get("pending_page")
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(1)
-        .max(1);
-    let ews_page: i64 = params
-        .get("ews_page")
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(1)
-        .max(1);
+    let pending_page = parse_page_param(&params, "pending_page");
+    let ews_page = parse_page_param(&params, "ews_page");
     let tab = params.get("tab").map(|s| s.as_str()).unwrap_or(TAB_ACTIVE);
     let tab = if tab == TAB_OFFBOARDED {
         TAB_OFFBOARDED
@@ -960,19 +954,19 @@ pub async fn iacs_admin_list(
         .get_result(&mut conn)
         .await
         .unwrap_or(0);
-    let pending_total_pages = ((pending_total as f64) / (PENDING_PAGE_SIZE as f64))
-        .ceil()
-        .max(1.0) as i64;
-    let pending_page = pending_page.min(pending_total_pages);
-    let pending_offset = (pending_page - 1) * PENDING_PAGE_SIZE;
+    let pending_window = paginate(
+        usize::try_from(pending_total).unwrap_or(0),
+        pending_page,
+        usize::try_from(PENDING_PAGE_SIZE).unwrap_or(3),
+    );
 
     #[allow(clippy::type_complexity)]
     let pending_rows: Vec<(Uuid, String, String, String, String, String, DateTime<Utc>)> = r::table
         .inner_join(users::table.on(users::id.eq(r::user_id)))
         .filter(r::status.eq("pending"))
         .order(r::created_at.desc())
-        .limit(PENDING_PAGE_SIZE)
-        .offset(pending_offset)
+        .limit(pending_window.limit_i64())
+        .offset(pending_window.offset_i64())
         .select((
             r::uuid,
             users::username,
@@ -1008,11 +1002,11 @@ pub async fn iacs_admin_list(
         );
     }
     let ews_total: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
-    let ews_total_pages = ((ews_total as f64) / (EWS_PAGE_SIZE as f64))
-        .ceil()
-        .max(1.0) as i64;
-    let ews_page = ews_page.min(ews_total_pages);
-    let ews_offset = (ews_page - 1) * EWS_PAGE_SIZE;
+    let ews_window = paginate(
+        usize::try_from(ews_total).unwrap_or(0),
+        ews_page,
+        usize::try_from(EWS_PAGE_SIZE).unwrap_or(5),
+    );
 
     let mut data_query = ews::table
         .inner_join(users::table.on(users::id.eq(ews::user_id)))
@@ -1043,8 +1037,8 @@ pub async fn iacs_admin_list(
         DateTime<Utc>,
     )> = data_query
         .order(ews::created_at.desc())
-        .limit(EWS_PAGE_SIZE)
-        .offset(ews_offset)
+        .limit(ews_window.limit_i64())
+        .offset(ews_window.offset_i64())
         .select((
             ews::uuid,
             users::username,
@@ -1113,38 +1107,10 @@ pub async fn iacs_admin_list(
         )
         .collect();
 
-    use crate::templates::accounts::user_list::Pagination;
-
-    let pending_pagination = if pending_total > 0 {
-        let start_index = pending_offset + 1;
-        let end_index = (pending_offset + PENDING_PAGE_SIZE).min(pending_total);
-        Some(Pagination {
-            current_page: pending_page as i32,
-            total_pages: pending_total_pages as i32,
-            total_items: pending_total as i32,
-            items_per_page: PENDING_PAGE_SIZE as i32,
-            has_previous: pending_page > 1,
-            has_next: pending_page < pending_total_pages,
-            start_index: start_index as i32,
-            end_index: end_index as i32,
-        })
-    } else {
-        None
-    };
+    let pending_pagination = (pending_total > 0).then(|| pending_window.to_pagination());
 
     let ews_pagination = if ews_total > 0 {
-        let start_index = ews_offset + 1;
-        let end_index = (ews_offset + EWS_PAGE_SIZE).min(ews_total);
-        Some(Pagination {
-            current_page: ews_page as i32,
-            total_pages: ews_total_pages as i32,
-            total_items: ews_total as i32,
-            items_per_page: EWS_PAGE_SIZE as i32,
-            has_previous: ews_page > 1,
-            has_next: ews_page < ews_total_pages,
-            start_index: start_index as i32,
-            end_index: end_index as i32,
-        })
+        Some(ews_window.to_pagination())
     } else {
         None
     };

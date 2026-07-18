@@ -434,7 +434,7 @@ pub async fn manage_asset_list(
     browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::templates::accounts::user_list::Pagination;
+    use crate::services::list_filters::{opt_filter, paginate, parse_page};
     use crate::templates::assets::manage::{ManageAssetItem, ManageAssetListTemplate};
 
     if !perms.assets_manage {
@@ -457,14 +457,10 @@ pub async fn manage_asset_list(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
-    let type_filter = params.get("type").filter(|s| !s.is_empty()).cloned();
-    let status_filter = params.get("status").filter(|s| !s.is_empty()).cloned();
-    let page: i32 = params
-        .get("page")
-        .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(1)
-        .max(1);
+    let search_filter = opt_filter(&params, "search");
+    let type_filter = opt_filter(&params, "type");
+    let status_filter = opt_filter(&params, "status");
+    let page = parse_page(&params);
 
     let mut count_query = schema_assets::table
         .filter(schema_assets::is_deleted.eq(false))
@@ -514,11 +510,11 @@ pub async fn manage_asset_list(
     }
 
     let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
-    let total_pages = ((total_items as f64) / (ASSETS_PER_PAGE as f64))
-        .ceil()
-        .max(1.0) as i32;
-    let page = page.min(total_pages);
-    let offset = ((page - 1) as i64) * ASSETS_PER_PAGE;
+    let window = paginate(
+        usize::try_from(total_items).unwrap_or(0),
+        page,
+        usize::try_from(ASSETS_PER_PAGE).unwrap_or(30),
+    );
 
     let mut query = schema_assets::table
         .filter(schema_assets::is_deleted.eq(false))
@@ -572,8 +568,8 @@ pub async fn manage_asset_list(
             schema_assets::status,
         ))
         .order(schema_assets::name.asc())
-        .limit(ASSETS_PER_PAGE)
-        .offset(offset)
+        .limit(window.limit_i64())
+        .offset(window.offset_i64())
         .load(&mut conn)
         .await?;
 
@@ -598,23 +594,7 @@ pub async fn manage_asset_list(
         })
         .collect();
 
-    let start_index = if total_items > 0 { offset + 1 } else { 0 };
-    let end_index = (offset + ASSETS_PER_PAGE).min(total_items);
-
-    let pagination = if total_items > 0 {
-        Some(Pagination {
-            current_page: page,
-            total_pages,
-            total_items: total_items as i32,
-            items_per_page: ASSETS_PER_PAGE as i32,
-            has_previous: page > 1,
-            has_next: page < total_pages,
-            start_index: start_index as i32,
-            end_index: end_index as i32,
-        })
-    } else {
-        None
-    };
+    let pagination = (total_items > 0).then(|| window.to_pagination());
 
     let template = ManageAssetListTemplate {
         title,
@@ -630,11 +610,7 @@ pub async fn manage_asset_list(
         type_filter,
         status_filter,
         asset_types: AssetType::filter_options(state.config.industrial.enabled),
-        statuses: vec![
-            ("online".to_string(), "Online".to_string()),
-            ("offline".to_string(), "Offline".to_string()),
-            ("maintenance".to_string(), "Maintenance".to_string()),
-        ],
+        statuses: crate::models::asset::AssetStatus::filter_options(),
     };
 
     let html = template
@@ -657,7 +633,7 @@ pub async fn asset_deleted_list(
     browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::templates::accounts::user_list::Pagination;
+    use crate::services::list_filters::{opt_filter, paginate, parse_page};
     use crate::templates::assets::{AssetDeletedListTemplate, DeletedAssetItem};
 
     if !perms.assets_manage {
@@ -680,11 +656,10 @@ pub async fn asset_deleted_list(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let page: i32 = params
-        .get("page")
-        .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(1)
-        .max(1);
+    // Live search (issue #28 pattern): ILIKE on name / hostname, with
+    // `like_contains` escaping so `%`/`_` in the needle stay literal.
+    let search_filter = opt_filter(&params, "search");
+    let page = parse_page(&params);
 
     // Industrial kill-switch (layer 2 of 4): even tombstones leak the
     // existence of the industrial surface (hostname, deletion date,
@@ -698,12 +673,20 @@ pub async fn asset_deleted_list(
         count_query =
             count_query.filter(schema_assets::asset_type.ne_all(AssetType::iacs_variants()));
     }
+    if let Some(ref search) = search_filter {
+        let pattern = crate::db::like_contains(search);
+        count_query = count_query.filter(
+            schema_assets::name
+                .ilike(pattern.clone())
+                .or(schema_assets::hostname.ilike(pattern)),
+        );
+    }
     let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
-    let total_pages = ((total_items as f64) / (ASSETS_PER_PAGE as f64))
-        .ceil()
-        .max(1.0) as i32;
-    let page = page.min(total_pages);
-    let offset = ((page - 1) as i64) * ASSETS_PER_PAGE;
+    let window = paginate(
+        usize::try_from(total_items).unwrap_or(0),
+        page,
+        usize::try_from(ASSETS_PER_PAGE).unwrap_or(30),
+    );
 
     let mut rows_query = schema_assets::table
         .filter(schema_assets::is_deleted.eq(true))
@@ -711,6 +694,14 @@ pub async fn asset_deleted_list(
     if !state.config.industrial.enabled {
         rows_query =
             rows_query.filter(schema_assets::asset_type.ne_all(AssetType::iacs_variants()));
+    }
+    if let Some(ref search) = search_filter {
+        let pattern = crate::db::like_contains(search);
+        rows_query = rows_query.filter(
+            schema_assets::name
+                .ilike(pattern.clone())
+                .or(schema_assets::hostname.ilike(pattern)),
+        );
     }
     #[allow(clippy::type_complexity)]
     let rows: Vec<(
@@ -737,8 +728,8 @@ pub async fn asset_deleted_list(
         ))
         .order(schema_assets::deleted_at.desc().nulls_last())
         .then_order_by(schema_assets::name.asc())
-        .limit(ASSETS_PER_PAGE)
-        .offset(offset)
+        .limit(window.limit_i64())
+        .offset(window.offset_i64())
         .load(&mut conn)
         .await?;
 
@@ -783,23 +774,7 @@ pub async fn asset_deleted_list(
         )
         .collect();
 
-    let start_index = if total_items > 0 { offset + 1 } else { 0 };
-    let end_index = (offset + ASSETS_PER_PAGE).min(total_items);
-
-    let pagination = if total_items > 0 {
-        Some(Pagination {
-            current_page: page,
-            total_pages,
-            total_items: total_items as i32,
-            items_per_page: ASSETS_PER_PAGE as i32,
-            has_previous: page > 1,
-            has_next: page < total_pages,
-            start_index: start_index as i32,
-            end_index: end_index as i32,
-        })
-    } else {
-        None
-    };
+    let pagination = (total_items > 0).then(|| window.to_pagination());
 
     let template = AssetDeletedListTemplate {
         title,
@@ -811,6 +786,7 @@ pub async fn asset_deleted_list(
         header_user,
         assets,
         pagination,
+        search: search_filter,
     };
 
     let html = template

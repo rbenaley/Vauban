@@ -37,8 +37,12 @@ pub async fn group_list(
             .await
             .into_fields();
 
+    use crate::services::list_filters::{
+        matches_search, opt_filter, paginate, parse_page, slice_page,
+    };
+
     // Filter out empty strings - form sends empty string when search is cleared
-    let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
+    let search_filter = opt_filter(&params, "search");
 
     let client = &state.access_client;
     let group_items: Vec<crate::templates::accounts::group_list::GroupListItem> = {
@@ -59,58 +63,27 @@ pub async fn group_list(
                 },
             )
             .collect();
-        if let Some(ref s) = search_filter {
-            let search_lower = s.to_lowercase();
-            items.retain(|item| {
-                item.name.to_lowercase().contains(&search_lower)
-                    || item
-                        .description
-                        .as_ref()
-                        .is_some_and(|d| d.to_lowercase().contains(&search_lower))
-            });
-        }
+        items.retain(|item| {
+            matches_search(
+                &[
+                    item.name.as_str(),
+                    item.description.as_deref().unwrap_or(""),
+                ],
+                search_filter.as_deref(),
+            )
+        });
         items
     };
 
     const GROUPS_PER_PAGE: usize = 30;
 
-    let page: usize = params
-        .get("page")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1)
-        .max(1);
+    let page = parse_page(&params);
 
     let total_items = group_items.len();
-    let total_pages = ((total_items as f64) / (GROUPS_PER_PAGE as f64))
-        .ceil()
-        .max(1.0) as usize;
-    let page = page.min(total_pages);
-    let offset = (page - 1) * GROUPS_PER_PAGE;
-    let paged_items: Vec<_> = group_items
-        .into_iter()
-        .skip(offset)
-        .take(GROUPS_PER_PAGE)
-        .collect();
+    let window = paginate(total_items, page, GROUPS_PER_PAGE);
+    let paged_items = slice_page(group_items, &window);
 
-    use crate::templates::accounts::user_list::Pagination;
-
-    let start_index = if total_items > 0 { offset + 1 } else { 0 };
-    let end_index = (offset + GROUPS_PER_PAGE).min(total_items);
-
-    let pagination = if total_items > 0 {
-        Some(Pagination {
-            current_page: page as i32,
-            total_pages: total_pages as i32,
-            total_items: total_items as i32,
-            items_per_page: GROUPS_PER_PAGE as i32,
-            has_previous: page > 1,
-            has_next: page < total_pages,
-            start_index: start_index as i32,
-            end_index: end_index as i32,
-        })
-    } else {
-        None
-    };
+    let pagination = (total_items > 0).then(|| window.to_pagination());
 
     let template = GroupListTemplate {
         title,

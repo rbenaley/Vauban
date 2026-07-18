@@ -77,8 +77,10 @@ pub async fn vault_secrets_list(
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     browser_tz: BrowserTz,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::schema::{secret_secret_groups, vault_secrets};
+    use crate::services::list_filters::{opt_filter, paginate, parse_page};
 
     if !perms.vault_secrets_manage {
         return Err(AppError::forbidden("vault_secrets:manage"));
@@ -98,8 +100,47 @@ pub async fn vault_secrets_list(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let rows: Vec<crate::models::vault_secret::VaultSecret> = vault_secrets::table
+    // Live filters (issue #28 pattern): search over name/description
+    // (ILIKE, wildcards escaped by `like_contains`) + status select.
+    let search_filter = opt_filter(&params, "search");
+    let status_filter = opt_filter(&params, "status");
+    let page = parse_page(&params);
+
+    const SECRETS_PER_PAGE: usize = 30;
+
+    let mut count_query = vault_secrets::table.into_boxed();
+    let mut query = vault_secrets::table.into_boxed();
+    if let Some(ref search) = search_filter {
+        let pattern = crate::db::like_contains(search);
+        count_query = count_query.filter(
+            vault_secrets::name
+                .ilike(pattern.clone())
+                .or(vault_secrets::description.ilike(pattern.clone())),
+        );
+        query = query.filter(
+            vault_secrets::name
+                .ilike(pattern.clone())
+                .or(vault_secrets::description.ilike(pattern)),
+        );
+    }
+    if let Some(active) =
+        crate::services::list_filters::parse_active_inactive(status_filter.as_deref())
+    {
+        count_query = count_query.filter(vault_secrets::is_active.eq(active));
+        query = query.filter(vault_secrets::is_active.eq(active));
+    }
+
+    let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
+    let window = paginate(
+        usize::try_from(total_items).unwrap_or(0),
+        page,
+        SECRETS_PER_PAGE,
+    );
+
+    let rows: Vec<crate::models::vault_secret::VaultSecret> = query
         .order(vault_secrets::name.asc())
+        .limit(window.limit_i64())
+        .offset(window.offset_i64())
         .load(&mut conn)
         .await
         .map_err(AppError::Database)?;
@@ -129,6 +170,8 @@ pub async fn vault_secrets_list(
         })
         .collect();
 
+    let pagination = (total_items > 0).then(|| window.to_pagination());
+
     let template = SecretListTemplate {
         title,
         user: user_ctx,
@@ -138,6 +181,9 @@ pub async fn vault_secrets_list(
         sidebar_content,
         header_user,
         secrets,
+        pagination,
+        search: search_filter,
+        status_filter,
     };
 
     let html = template

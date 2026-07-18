@@ -285,13 +285,18 @@ async fn test_session_list_filter_by_all_statuses() {
         "Session list with empty status filter should load"
     );
 
-    // Test all valid statuses
+    // Test all valid statuses (the full SESSION_HISTORY vocabulary --
+    // 'pending' rows are structurally excluded from `/sessions`, so
+    // the select no longer offers a dead 'pending' option).
     let statuses = [
         "active",
+        "connecting",
         "disconnected",
-        "completed",
         "terminated",
-        "pending",
+        "expired",
+        "approved",
+        "rejected",
+        "revoked",
     ];
 
     for status in &statuses {
@@ -589,7 +594,8 @@ async fn test_session_list_admin_sees_all() {
     let other_id = create_simple_user(&mut conn, &other_name).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("all-sess-asset"), admin_id).await;
-    let _session_id = create_test_session(&mut conn, other_id, asset_id, "ssh", "completed").await;
+    let _session_id =
+        create_test_session(&mut conn, other_id, asset_id, "ssh", "disconnected").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -631,7 +637,7 @@ async fn test_session_detail_own_session_allowed() {
         user_id,
         asset_id,
         "ssh",
-        "completed",
+        "disconnected",
     )
     .await;
 
@@ -839,7 +845,8 @@ async fn test_session_detail_other_session_forbidden() {
     let owner_id = create_simple_user(&mut conn, &owner_name).await;
     let asset_name = format!("other-sess-asset-{}", test_id);
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, owner_id).await;
-    let session_id = create_test_session(&mut conn, owner_id, asset_id, "ssh", "completed").await;
+    let session_id =
+        create_test_session(&mut conn, owner_id, asset_id, "ssh", "disconnected").await;
 
     use vauban_web::schema::proxy_sessions;
     let session_exists: bool = proxy_sessions::table
@@ -1037,7 +1044,8 @@ async fn test_recording_play_non_recorded_session() {
         create_simple_ssh_asset(&mut conn, &unique_name("non-rec-asset"), admin_id).await;
 
     // Create a non-recorded session
-    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "completed").await;
+    let session_id =
+        create_test_session(&mut conn, admin_id, asset_id, "ssh", "disconnected").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -1071,7 +1079,8 @@ async fn test_admin_can_view_any_session() {
     let owner_id = create_simple_user(&mut conn, &owner_name).await;
     let asset_name = format!("admin-view-asset-{}", test_id);
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, owner_id).await;
-    let session_id = create_test_session(&mut conn, owner_id, asset_id, "ssh", "completed").await;
+    let session_id =
+        create_test_session(&mut conn, owner_id, asset_id, "ssh", "disconnected").await;
 
     // Create admin user
     let admin_name = format!("admin_viewer_{}", test_id);
@@ -1109,7 +1118,8 @@ async fn test_rdp_session_detail_page() {
     let owner_id = create_simple_user(&mut conn, &owner_name).await;
     let asset_name = format!("rdp-detail-asset-{}", test_id);
     let asset_id = create_simple_rdp_asset(&mut conn, &asset_name, owner_id).await;
-    let session_id = create_test_session(&mut conn, owner_id, asset_id, "rdp", "completed").await;
+    let session_id =
+        create_test_session(&mut conn, owner_id, asset_id, "rdp", "disconnected").await;
 
     let owner_uuid = get_user_uuid(&mut conn, owner_id).await;
     let token = app
@@ -1178,12 +1188,12 @@ async fn test_session_filter_by_rdp_type() {
     let ssh_asset_name = format!("ssh-filter-{}", test_id);
     let ssh_asset_id = create_simple_ssh_asset(&mut conn, &ssh_asset_name, admin_id).await;
     let _ssh_session =
-        create_test_session(&mut conn, admin_id, ssh_asset_id, "ssh", "completed").await;
+        create_test_session(&mut conn, admin_id, ssh_asset_id, "ssh", "disconnected").await;
 
     let rdp_asset_name = format!("rdp-filter-{}", test_id);
     let rdp_asset_id = create_simple_rdp_asset(&mut conn, &rdp_asset_name, admin_id).await;
     let _rdp_session =
-        create_test_session(&mut conn, admin_id, rdp_asset_id, "rdp", "completed").await;
+        create_test_session(&mut conn, admin_id, rdp_asset_id, "rdp", "disconnected").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)

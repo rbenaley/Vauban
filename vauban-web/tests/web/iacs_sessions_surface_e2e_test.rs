@@ -213,6 +213,7 @@ fn session_list_template_hides_iacs_option_under_kill_switch() {
         status_filter: None,
         type_filter: None,
         asset_filter: None,
+        statuses: vauban_web::services::status_vocab::session_history_options(industrial_enabled),
         show_view_link: true,
         pagination: None,
         ws_enabled: false,

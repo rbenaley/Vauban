@@ -51,14 +51,12 @@ pub async fn asset_list(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
-    let type_filter = params.get("type").filter(|s| !s.is_empty()).cloned();
-    let status_filter = params.get("status").filter(|s| !s.is_empty()).cloned();
-    let page: i32 = params
-        .get("page")
-        .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(1)
-        .max(1);
+    use crate::services::list_filters::{opt_filter, paginate, parse_page};
+
+    let search_filter = opt_filter(&params, "search");
+    let type_filter = opt_filter(&params, "type");
+    let status_filter = opt_filter(&params, "status");
+    let page = parse_page(&params);
 
     // Resolve user internal ID for ALL users (incl. superuser/staff) so that
     // the listing, the per-row "Request Access" badge, and the connect
@@ -136,11 +134,11 @@ pub async fn asset_list(
     }
 
     let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
-    let total_pages = ((total_items as f64) / (ASSETS_PER_PAGE as f64))
-        .ceil()
-        .max(1.0) as i32;
-    let page = page.min(total_pages);
-    let offset = ((page - 1) as i64) * ASSETS_PER_PAGE;
+    let window = paginate(
+        usize::try_from(total_items).unwrap_or(0),
+        page,
+        usize::try_from(ASSETS_PER_PAGE).unwrap_or(30),
+    );
 
     let mut query = schema_assets::table
         .filter(schema_assets::is_deleted.eq(false))
@@ -196,8 +194,8 @@ pub async fn asset_list(
             schema_assets::status,
         ))
         .order(schema_assets::name.asc())
-        .limit(ASSETS_PER_PAGE)
-        .offset(offset)
+        .limit(window.limit_i64())
+        .offset(window.offset_i64())
         .load(&mut conn)
         .await?;
 
@@ -350,25 +348,7 @@ pub async fn asset_list(
         })
         .collect();
 
-    use crate::templates::accounts::user_list::Pagination;
-
-    let start_index = if total_items > 0 { offset + 1 } else { 0 };
-    let end_index = (offset + ASSETS_PER_PAGE).min(total_items);
-
-    let pagination = if total_items > 0 {
-        Some(Pagination {
-            current_page: page,
-            total_pages,
-            total_items: total_items as i32,
-            items_per_page: ASSETS_PER_PAGE as i32,
-            has_previous: page > 1,
-            has_next: page < total_pages,
-            start_index: start_index as i32,
-            end_index: end_index as i32,
-        })
-    } else {
-        None
-    };
+    let pagination = (total_items > 0).then(|| window.to_pagination());
 
     // Pre-resolve `user_has_active_ews` once for the entire page so
     // the template branch on the IACS Connect button stays a pure
@@ -403,11 +383,7 @@ pub async fn asset_list(
         type_filter,
         status_filter,
         asset_types: AssetType::filter_options(state.config.industrial.enabled),
-        statuses: vec![
-            ("online".to_string(), "Online".to_string()),
-            ("offline".to_string(), "Offline".to_string()),
-            ("maintenance".to_string(), "Maintenance".to_string()),
-        ],
+        statuses: crate::models::asset::AssetStatus::filter_options(),
         require_justification: state.config.security.require_justification,
         iacs_request_allowed: perms.iacs_request,
         iacs_connect_allowed: perms.assets_connect_iacs,
@@ -509,8 +485,8 @@ mod tests {
             "asset_list must use .offset() for pagination"
         );
         assert!(
-            body.contains("Pagination {"),
-            "asset_list must construct a Pagination struct"
+            body.contains("to_pagination()"),
+            "asset_list must build its Pagination via the shared PageWindow seam"
         );
         assert!(
             !body.contains(".limit(50)"),
@@ -530,13 +506,11 @@ mod tests {
             .unwrap_or(source.len());
         let body = &source[fn_start..fn_end];
 
+        // Page parsing goes through the shared seam: `parse_page` reads
+        // the 'page' query parameter and floors it at 1.
         assert!(
-            body.contains("\"page\""),
-            "asset_list must read the 'page' query parameter"
-        );
-        assert!(
-            body.contains(".max(1)"),
-            "asset_list must clamp page to minimum 1"
+            body.contains("parse_page(&params)"),
+            "asset_list must parse the page via list_filters::parse_page"
         );
     }
 
@@ -552,9 +526,11 @@ mod tests {
             .unwrap_or(source.len());
         let body = &source[fn_start..fn_end];
 
+        // The clamp to total_pages now lives in `list_filters::paginate`
+        // (pinned by list_filters_proptest); the handler must delegate.
         assert!(
-            body.contains(".min(total_pages)"),
-            "asset_list must clamp page to total_pages so ?page=999 stays valid"
+            body.contains("paginate("),
+            "asset_list must clamp the page via list_filters::paginate"
         );
     }
 

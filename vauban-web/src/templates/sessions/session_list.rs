@@ -139,14 +139,12 @@ impl SessionListItem {
             "tunnel_active" => "Active".to_string(),
             "waiting_client" => "Waiting client".to_string(),
             "disconnected" => "Disconnected".to_string(),
-            "completed" => "Completed".to_string(),
             "terminated" => "Terminated".to_string(),
             "pending" => "Pending".to_string(),
             "failed" => "Failed".to_string(),
             "connecting" => "Connecting".to_string(),
             "expired" => "Expired".to_string(),
             "approved" => "Approved".to_string(),
-            "consumed" => "Consumed".to_string(),
             other => {
                 let mut chars = other.chars();
                 match chars.next() {
@@ -183,6 +181,10 @@ pub struct SessionListTemplate {
     pub status_filter: Option<String>,
     pub type_filter: Option<String>,
     pub asset_filter: Option<String>,
+    /// `(value, label)` couples of the status filter select, derived
+    /// from `status_vocab::session_history_options` (single source of
+    /// truth, kill-switch aware).
+    pub statuses: Vec<(String, String)>,
     /// Whether to show the "View" link (only for admin users).
     pub show_view_link: bool,
     pub pagination: Option<Pagination>,
@@ -361,7 +363,9 @@ mod tests {
     }
 
     #[test]
-    fn test_status_display_completed() {
+    fn test_status_display_phantom_completed_capitalizes_raw() {
+        // 'completed' was purged from the vocabulary (July 2026 status
+        // audit): it now goes through the generic capitalize fallback.
         let item = create_test_session_item("ssh", "completed", None);
         assert_eq!(item.status_display(), "Completed");
     }
@@ -409,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_display_consumed() {
+    fn test_status_display_phantom_consumed_capitalizes_raw() {
         let item = create_test_session_item("ssh", "consumed", None);
         assert_eq!(item.status_display(), "Consumed");
     }
@@ -457,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_session_list_item_clone() {
-        let item = create_test_session_item("rdp", "completed", Some(500));
+        let item = create_test_session_item("rdp", "disconnected", Some(500));
         let cloned = item.clone();
         assert_eq!(item.id, cloned.id);
         assert_eq!(item.session_type, cloned.session_type);
@@ -468,6 +472,7 @@ mod tests {
         use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = SessionListTemplate {
+            statuses: crate::services::status_vocab::session_history_options(true),
             title: "Sessions".to_string(),
             user: Some(UserContext {
                 uuid: "test".to_string(),
@@ -506,6 +511,7 @@ mod tests {
         use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = SessionListTemplate {
+            statuses: crate::services::status_vocab::session_history_options(true),
             title: "Sessions".to_string(),
             user: Some(UserContext {
                 uuid: "test".to_string(),
@@ -544,6 +550,7 @@ mod tests {
         use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = SessionListTemplate {
+            statuses: crate::services::status_vocab::session_history_options(true),
             title: "Sessions".to_string(),
             user: Some(UserContext {
                 uuid: "admin".to_string(),
@@ -583,6 +590,7 @@ mod tests {
         use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = SessionListTemplate {
+            statuses: crate::services::status_vocab::session_history_options(true),
             title: "Sessions".to_string(),
             user: Some(UserContext {
                 uuid: "test".to_string(),
@@ -770,6 +778,7 @@ mod tests {
         use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = SessionListTemplate {
+            statuses: crate::services::status_vocab::session_history_options(true),
             title: "Sessions".to_string(),
             user: Some(UserContext {
                 uuid: "admin".to_string(),
@@ -815,6 +824,7 @@ mod tests {
         use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = SessionListTemplate {
+            statuses: crate::services::status_vocab::session_history_options(true),
             title: "Sessions".to_string(),
             user: Some(UserContext {
                 uuid: "test".to_string(),

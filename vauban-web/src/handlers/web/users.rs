@@ -48,9 +48,11 @@ pub async fn user_list(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
+    use crate::services::list_filters::{opt_filter, paginate, parse_page};
+
     // Filter out empty strings - form sends empty string when "All" is selected
-    let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
-    let status_filter = params.get("status").filter(|s| !s.is_empty()).cloned();
+    let search_filter = opt_filter(&params, "search");
+    let status_filter = opt_filter(&params, "status");
 
     let mut query = users::table
         .filter(users::is_deleted.eq(false))
@@ -79,11 +81,7 @@ pub async fn user_list(
 
     const USERS_PER_PAGE: i64 = 30;
 
-    let page: i32 = params
-        .get("page")
-        .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(1)
-        .max(1);
+    let page = parse_page(&params);
 
     let mut count_query = users::table
         .filter(users::is_deleted.eq(false))
@@ -111,12 +109,11 @@ pub async fn user_list(
     }
 
     let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
-
-    let total_pages = ((total_items as f64) / (USERS_PER_PAGE as f64))
-        .ceil()
-        .max(1.0) as i32;
-    let page = page.min(total_pages);
-    let offset = ((page - 1) as i64) * USERS_PER_PAGE;
+    let window = paginate(
+        usize::try_from(total_items).unwrap_or(0),
+        page,
+        usize::try_from(USERS_PER_PAGE).unwrap_or(30),
+    );
 
     #[allow(clippy::type_complexity)]
     let db_users: Vec<(
@@ -146,8 +143,8 @@ pub async fn user_list(
             users::last_login,
         ))
         .order(users::username.asc())
-        .limit(USERS_PER_PAGE)
-        .offset(offset)
+        .limit(window.limit_i64())
+        .offset(window.offset_i64())
         .load(&mut conn)
         .await?;
 
@@ -189,25 +186,7 @@ pub async fn user_list(
         )
         .collect();
 
-    use crate::templates::accounts::user_list::Pagination;
-
-    let start_index = if total_items > 0 { offset + 1 } else { 0 };
-    let end_index = (offset + USERS_PER_PAGE).min(total_items);
-
-    let pagination = if total_items > 0 {
-        Some(Pagination {
-            current_page: page,
-            total_pages,
-            total_items: total_items as i32,
-            items_per_page: USERS_PER_PAGE as i32,
-            has_previous: page > 1,
-            has_next: page < total_pages,
-            start_index: start_index as i32,
-            end_index: end_index as i32,
-        })
-    } else {
-        None
-    };
+    let pagination = (total_items > 0).then(|| window.to_pagination());
 
     let template = UserListTemplate {
         title,

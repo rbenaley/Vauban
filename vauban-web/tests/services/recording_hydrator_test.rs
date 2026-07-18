@@ -372,7 +372,7 @@ async fn test_hydrator_marks_legacy_flat_mp4_as_fmp4_flat_and_is_one_shot() {
             dsl::credential_id.eq("c"),
             dsl::credential_username.eq("u"),
             dsl::session_type.eq(ST::Rdp),
-            dsl::status.eq("completed"),
+            dsl::status.eq("disconnected"),
             dsl::client_ip.eq(ip),
             dsl::is_recorded.eq(true),
             dsl::recording_path.eq("recordings/legacy/abc-123.mp4"),

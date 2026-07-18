@@ -28,6 +28,7 @@ pub struct AssetGroupListTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub groups: Vec<AssetGroupItem>,
     pub search: Option<String>,
+    pub pagination: Option<crate::templates::accounts::user_list::Pagination>,
 }
 
 #[cfg(test)]
@@ -101,6 +102,7 @@ mod tests {
             header_user: None,
             groups: vec![create_test_asset_group_item()],
             search: None,
+            pagination: None,
         };
 
         let result = template.render();

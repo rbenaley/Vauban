@@ -32,6 +32,18 @@ pub struct SecretListTemplate {
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub secrets: Vec<SecretItem>,
+    pub pagination: Option<crate::templates::accounts::user_list::Pagination>,
+    pub search: Option<String>,
+    pub status_filter: Option<String>,
+}
+
+impl SecretListTemplate {
+    /// True when at least one live filter narrows the list; drives the
+    /// double-branch empty state ("no matching" vs "none yet").
+    #[must_use]
+    pub fn has_filters(&self) -> bool {
+        self.search.is_some() || self.status_filter.is_some()
+    }
 }
 
 /// Form data for secret creation (re-populated on validation error;
@@ -155,6 +167,9 @@ mod tests {
                 group_count: 1,
                 updated_at: "2026-07-11 10:00 UTC".to_string(),
             }],
+            pagination: None,
+            search: None,
+            status_filter: None,
         };
         let html = template.render().expect("render");
         assert!(html.contains("db-password"));

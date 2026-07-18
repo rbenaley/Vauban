@@ -35,12 +35,9 @@
                     hx-indicator="#approvals-list-indicator"
                     class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
                 <option value="">All statuses</option>
-                <option value="pending" {% if status_filter.as_deref() == Some("pending") %}selected{% endif %}>Pending</option>
-                <option value="approved" {% if status_filter.as_deref() == Some("approved") %}selected{% endif %}>Approved</option>
-                <option value="rejected" {% if status_filter.as_deref() == Some("rejected") %}selected{% endif %}>Rejected</option>
-                <option value="revoked" {% if status_filter.as_deref() == Some("revoked") %}selected{% endif %}>Revoked</option>
-                <option value="expired" {% if status_filter.as_deref() == Some("expired") %}selected{% endif %}>Expired</option>
-                <option value="orphaned" {% if status_filter.as_deref() == Some("orphaned") %}selected{% endif %}>Orphaned</option>
+                {% for (value, label) in statuses %}
+                <option value="{{ value }}" {% if status_filter.is_some() && status_filter.as_ref().unwrap() == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
             </select>
         </div>
     </div>

@@ -132,7 +132,13 @@ pub async fn secret_access_rules_list(
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     browser_tz: BrowserTz,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
+    use crate::services::list_filters::{
+        distinct_sorted, matches_bool, matches_search, matches_select, opt_filter, paginate,
+        parse_active_inactive, parse_page, slice_page,
+    };
+
     if !perms.vault_secrets_manage {
         return Err(AppError::forbidden("vault_secrets:manage"));
     }
@@ -149,9 +155,26 @@ pub async fn secret_access_rules_list(
             .await
             .into_fields();
 
+    // Live filters (issue #28 pattern): in-memory predicates on the
+    // IPC-returned rule set. The select options are derived from the
+    // FULL (unfiltered) set so they never shrink while filtering.
+    let search_filter = opt_filter(&params, "search");
+    let user_group_filter = opt_filter(&params, "user_group");
+    let secret_group_filter = opt_filter(&params, "secret_group");
+    let asset_group_filter = opt_filter(&params, "asset_group");
+    let status_filter = opt_filter(&params, "status");
+    let eclipsed_filter = opt_filter(&params, "eclipsed");
+    let active_wanted = parse_active_inactive(status_filter.as_deref());
+    let eclipsed_wanted = crate::services::list_filters::parse_yes_no(eclipsed_filter.as_deref());
+
     let mut infos = state.access_client.list_secret_access_rules().await?;
     infos.sort_by_key(|r| r.name.to_lowercase());
     let eclipsed = eclipsed_rule_uuids(&infos);
+
+    let user_groups = distinct_sorted(infos.iter().map(|r| r.user_group_name.as_str()));
+    let secret_groups = distinct_sorted(infos.iter().map(|r| r.secret_group_name.as_str()));
+    let asset_groups = distinct_sorted(infos.iter().map(|r| r.asset_group_name.as_str()));
+
     let rules: Vec<SecretRuleItem> = infos
         .into_iter()
         .map(|r| SecretRuleItem {
@@ -163,7 +186,22 @@ pub async fn secret_access_rules_list(
             asset_group_name: r.asset_group_name,
             is_active: r.is_active,
         })
+        .filter(|r| {
+            matches_search(&[r.name.as_str()], search_filter.as_deref())
+                && matches_select(&r.user_group_name, user_group_filter.as_deref())
+                && matches_select(&r.secret_group_name, secret_group_filter.as_deref())
+                && matches_select(&r.asset_group_name, asset_group_filter.as_deref())
+                && matches_bool(r.is_active, active_wanted)
+                && matches_bool(r.is_eclipsed, eclipsed_wanted)
+        })
         .collect();
+
+    const RULES_PER_PAGE: usize = 30;
+    let page = parse_page(&params);
+    let total_items = rules.len();
+    let window = paginate(total_items, page, RULES_PER_PAGE);
+    let rules = slice_page(rules, &window);
+    let pagination = (total_items > 0).then(|| window.to_pagination());
 
     let template = SecretRuleListTemplate {
         title,
@@ -174,6 +212,16 @@ pub async fn secret_access_rules_list(
         sidebar_content,
         header_user,
         rules,
+        pagination,
+        search: search_filter,
+        user_group_filter,
+        secret_group_filter,
+        asset_group_filter,
+        status_filter,
+        eclipsed_filter,
+        user_groups,
+        secret_groups,
+        asset_groups,
     };
 
     let html = template

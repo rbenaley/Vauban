@@ -253,7 +253,7 @@ async fn test_recording_detail_404_when_session_not_recorded() {
             proxy_sessions::credential_id.eq("c"),
             proxy_sessions::credential_username.eq("u"),
             proxy_sessions::session_type.eq(vauban_web::models::session::SessionType::Ssh),
-            proxy_sessions::status.eq("completed"),
+            proxy_sessions::status.eq("disconnected"),
             proxy_sessions::client_ip.eq(ip),
             proxy_sessions::is_recorded.eq(false),
             proxy_sessions::metadata.eq(serde_json::json!({})),
@@ -548,7 +548,7 @@ async fn test_recording_detail_approval_narrative_when_approved() {
     use vauban_web::schema::proxy_sessions::dsl;
     diesel::update(dsl::proxy_sessions.filter(dsl::id.eq(session_id)))
         .set((
-            dsl::status.eq("completed"),
+            dsl::status.eq("disconnected"),
             dsl::approved_by_id.eq(admin_id),
             dsl::approved_at.eq(Utc::now()),
         ))
@@ -931,7 +931,7 @@ async fn test_download_recording_404_when_session_not_recorded() {
             proxy_sessions::credential_id.eq("c"),
             proxy_sessions::credential_username.eq("u"),
             proxy_sessions::session_type.eq(vauban_web::models::session::SessionType::Ssh),
-            proxy_sessions::status.eq("completed"),
+            proxy_sessions::status.eq("disconnected"),
             proxy_sessions::client_ip.eq(ip),
             proxy_sessions::is_recorded.eq(false),
             proxy_sessions::metadata.eq(serde_json::json!({})),

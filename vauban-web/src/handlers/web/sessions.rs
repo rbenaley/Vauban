@@ -5,6 +5,8 @@ use crate::models::session::SessionType;
 /// Statuses that belong to the approval lifecycle. Session-state
 /// statuses (connecting, active, terminated, disconnected) are
 /// excluded — they belong in the session list, not the approval queue.
+/// Kept in lock-step with `status_vocab::APPROVAL` (the select-option
+/// source of truth) by `approval_statuses_match_status_vocab`.
 const APPROVAL_STATUSES: &[&str] = &[
     "pending", "approved", "rejected", "revoked", "expired", "orphaned",
 ];
@@ -40,18 +42,21 @@ pub async fn session_list(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    // Filter out empty strings - form sends empty string when "All" is selected
-    let status_filter = params.get("status").filter(|s| !s.is_empty()).cloned();
-    let type_filter = params.get("type").filter(|s| !s.is_empty()).cloned();
-    let asset_filter = params.get("asset").filter(|s| !s.is_empty()).cloned();
+    use crate::services::list_filters::{opt_filter, paginate, parse_page};
+
+    // Filter out empty strings - form sends empty string when "All" is
+    // selected. The status select is a closed vocabulary
+    // (`status_vocab::SESSION_HISTORY`): an unknown value degrades to
+    // "no filter" instead of a confusing empty list (fail-open,
+    // anti-oracle).
+    let status_filter =
+        crate::services::status_vocab::session_history_sanitize(opt_filter(&params, "status"));
+    let type_filter = opt_filter(&params, "type");
+    let asset_filter = opt_filter(&params, "asset");
 
     const SESSIONS_PER_PAGE: i64 = 30;
 
-    let page: i32 = params
-        .get("page")
-        .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(1)
-        .max(1);
+    let page = parse_page(&params);
 
     // Build base filters as a closure to apply to both count and data queries
     use crate::schema::users;
@@ -114,12 +119,12 @@ pub async fn session_list(
     }
 
     let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
-
-    let total_pages = ((total_items as f64) / (SESSIONS_PER_PAGE as f64))
-        .ceil()
-        .max(1.0) as i32;
-    let page = page.min(total_pages);
-    let offset = ((page - 1) as i64) * SESSIONS_PER_PAGE;
+    let window = paginate(
+        usize::try_from(total_items).unwrap_or(0),
+        page,
+        usize::try_from(SESSIONS_PER_PAGE).unwrap_or(30),
+    );
+    let page = window.page;
 
     let db_sessions: Vec<SessionHistoryDbRow> = query
         .select((
@@ -140,8 +145,8 @@ pub async fn session_list(
             proxy_sessions::created_at,
         ))
         .order(proxy_sessions::created_at.desc())
-        .limit(SESSIONS_PER_PAGE)
-        .offset(offset)
+        .limit(window.limit_i64())
+        .offset(window.offset_i64())
         .load(&mut conn)
         .await?;
 
@@ -152,25 +157,7 @@ pub async fn session_list(
         .map(|row| row.into_list_item(now))
         .collect();
 
-    use crate::templates::accounts::user_list::Pagination;
-
-    let start_index = if total_items > 0 { offset + 1 } else { 0 };
-    let end_index = (offset + SESSIONS_PER_PAGE).min(total_items);
-
-    let pagination = if total_items > 0 {
-        Some(Pagination {
-            current_page: page,
-            total_pages,
-            total_items: total_items as i32,
-            items_per_page: SESSIONS_PER_PAGE as i32,
-            has_previous: page > 1,
-            has_next: page < total_pages,
-            start_index: start_index as i32,
-            end_index: end_index as i32,
-        })
-    } else {
-        None
-    };
+    let pagination = (total_items > 0).then(|| window.to_pagination());
 
     let has_filters = status_filter.is_some() || type_filter.is_some() || asset_filter.is_some();
     let ws_enabled = !has_filters && page == 1;
@@ -187,6 +174,9 @@ pub async fn session_list(
         status_filter,
         type_filter,
         asset_filter,
+        statuses: crate::services::status_vocab::session_history_options(
+            state.config.industrial.enabled,
+        ),
         show_view_link: true,
         pagination,
         ws_enabled,
@@ -570,16 +560,14 @@ pub async fn recording_list(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
+    use crate::services::list_filters::{opt_filter, paginate, parse_page};
+
     const RECORDINGS_PER_PAGE: i64 = 30;
 
-    let format_filter = params.get("format").cloned();
-    let asset_filter = params.get("asset").cloned();
+    let format_filter = opt_filter(&params, "format");
+    let asset_filter = opt_filter(&params, "asset");
 
-    let page: i32 = params
-        .get("page")
-        .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(1)
-        .max(1);
+    let page = parse_page(&params);
 
     let mut query = proxy_sessions::table
         .inner_join(schema_assets::table)
@@ -614,11 +602,11 @@ pub async fn recording_list(
     }
 
     let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
-    let total_pages = ((total_items as f64) / (RECORDINGS_PER_PAGE as f64))
-        .ceil()
-        .max(1.0) as i32;
-    let page = page.min(total_pages);
-    let offset = ((page - 1) as i64) * RECORDINGS_PER_PAGE;
+    let window = paginate(
+        usize::try_from(total_items).unwrap_or(0),
+        page,
+        usize::try_from(RECORDINGS_PER_PAGE).unwrap_or(30),
+    );
 
     #[allow(clippy::type_complexity)]
     let db_recordings: Vec<(
@@ -646,8 +634,8 @@ pub async fn recording_list(
             proxy_sessions::recording_size_bytes,
         ))
         .order(proxy_sessions::created_at.desc())
-        .limit(RECORDINGS_PER_PAGE)
-        .offset(offset)
+        .limit(window.limit_i64())
+        .offset(window.offset_i64())
         .load(&mut conn)
         .await?;
 
@@ -691,6 +679,7 @@ pub async fn recording_list(
                         crate::templates::sessions::recording_detail::format_bytes_human(b)
                     }),
                     recording_path: recording_path.unwrap_or_default(),
+                    // allow-status-vocab: recording view-model state, not a proxy_sessions status
                     status: "ready".to_string(),
                     show_play_recording: session_type != SessionType::IacsTunnel,
                     show_inspect_capture: session_type == SessionType::IacsTunnel,
@@ -699,25 +688,7 @@ pub async fn recording_list(
         )
         .collect();
 
-    use crate::templates::accounts::user_list::Pagination as RecPagination;
-
-    let start_index = if total_items > 0 { offset + 1 } else { 0 };
-    let end_index = (offset + RECORDINGS_PER_PAGE).min(total_items);
-
-    let pagination = if total_items > 0 {
-        Some(RecPagination {
-            current_page: page,
-            total_pages,
-            total_items: total_items as i32,
-            items_per_page: RECORDINGS_PER_PAGE as i32,
-            has_previous: page > 1,
-            has_next: page < total_pages,
-            start_index: start_index as i32,
-            end_index: end_index as i32,
-        })
-    } else {
-        None
-    };
+    let pagination = (total_items > 0).then(|| window.to_pagination());
 
     let template = RecordingListTemplate {
         title,
@@ -937,12 +908,15 @@ pub async fn approval_list(
         .get()
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
-    // Filter out empty strings - "All statuses" sends status="" which should be treated as None
-    let status_filter = params.get("status").filter(|s| !s.is_empty()).cloned();
-    let page = params
-        .get("page")
-        .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(1);
+    use crate::services::list_filters::{opt_filter, paginate, parse_page};
+
+    // Filter out empty strings - "All statuses" sends status="" which
+    // should be treated as None. Closed vocabulary
+    // (`status_vocab::APPROVAL`): an unknown value degrades to "no
+    // filter" instead of a confusing empty list.
+    let status_filter =
+        crate::services::status_vocab::APPROVAL.sanitize(opt_filter(&params, "status"));
+    let page = parse_page(&params);
     let items_per_page = 30;
 
     use crate::schema::users;
@@ -984,8 +958,15 @@ pub async fn approval_list(
 
     let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
 
-    let total_pages = ((total_items as f64) / (items_per_page as f64)).ceil() as i32;
-    let offset = ((page - 1) * items_per_page) as i64;
+    // Pre-fix drift: this handler skipped both the `max(1.0)` floor
+    // and the `page.min(total_pages)` clamp, so `?page=9999` produced
+    // an empty list with broken pagination. `paginate` restores the
+    // canonical behavior.
+    let window = paginate(
+        usize::try_from(total_items).unwrap_or(0),
+        page,
+        items_per_page,
+    );
 
     let mut list_query = proxy_sessions::table
         .inner_join(schema_assets::table)
@@ -1027,8 +1008,8 @@ pub async fn approval_list(
             proxy_sessions::max_session_duration,
         ))
         .order(proxy_sessions::created_at.desc())
-        .limit(items_per_page as i64)
-        .offset(offset)
+        .limit(window.limit_i64())
+        .offset(window.offset_i64())
         .load(&mut conn)
         .await
         .map_err(AppError::Database)?;
@@ -1141,19 +1122,12 @@ pub async fn approval_list(
             Vec::new()
         };
 
-    let pagination = if total_pages > 1 {
-        Some(crate::templates::sessions::approval_list::Pagination {
-            current_page: page,
-            total_pages,
-            total_items: total_items as i32,
-            has_previous: page > 1,
-            has_next: page < total_pages,
-        })
-    } else {
-        None
-    };
+    // Same display rule as before the refactor: the approvals page
+    // only renders the pager when there is more than one page.
+    let pagination = (window.total_pages > 1).then(|| window.to_approval_pagination());
 
     let template = ApprovalListTemplate {
+        statuses: crate::services::status_vocab::APPROVAL.options(),
         title,
         user: user_ctx,
         vauban,
@@ -2779,39 +2753,51 @@ pub async fn my_requests(
         .map_err(|_| AppError::NotFound("User not found".to_string()))?;
 
     use crate::schema::users;
+    use crate::services::list_filters::{
+        matches_search, matches_select, opt_filter, paginate, parse_page,
+    };
 
-    let page: i32 = params
-        .get("page")
-        .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(1)
-        .max(1);
+    let page = parse_page(&params);
 
-    let statuses = [
-        "pending",
-        "approved",
-        "rejected",
-        "revoked",
-        "expired",
-        "consumed",
-        "active",
-        "disconnected",
-        "terminated",
-    ];
+    // Closed vocabulary of the self-service JIT lifecycle: single
+    // source of truth for the row filter AND the select options.
+    let statuses = crate::services::status_vocab::MY_REQUESTS.values();
 
-    let total_items: i64 = proxy_sessions::table
+    // Live filters (issue #28 pattern), independent per tab:
+    // `search` / `status` drive the Access list (SQL), `ews_search` /
+    // `ews_state` drive the EWS list (in-memory). The status select is
+    // a closed vocabulary: an unknown value degrades to "no filter"
+    // instead of a confusing empty list.
+    let search_filter = opt_filter(&params, "search");
+    let status_filter =
+        crate::services::status_vocab::MY_REQUESTS.sanitize(opt_filter(&params, "status"));
+    let ews_search_filter = opt_filter(&params, "ews_search");
+    let ews_state_filter = opt_filter(&params, "ews_state");
+
+    let mut count_query = proxy_sessions::table
+        .inner_join(schema_assets::table)
         .filter(proxy_sessions::user_id.eq(user_id))
         .filter(proxy_sessions::justification.is_not_null())
         .filter(proxy_sessions::status.eq_any(&statuses))
-        .count()
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
+        .into_boxed();
+    if let Some(ref search) = search_filter {
+        let pattern = crate::db::like_contains(search);
+        count_query = count_query.filter(
+            schema_assets::name
+                .ilike(pattern.clone())
+                .or(schema_assets::hostname.ilike(pattern)),
+        );
+    }
+    if let Some(ref status) = status_filter {
+        count_query = count_query.filter(proxy_sessions::status.eq(status.clone()));
+    }
+    let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
 
-    let total_pages = ((total_items as f64) / (MY_REQUESTS_PER_PAGE as f64))
-        .ceil()
-        .max(1.0) as i32;
-    let page = page.min(total_pages);
-    let offset = ((page - 1) as i64) * MY_REQUESTS_PER_PAGE;
+    let window = paginate(
+        usize::try_from(total_items).unwrap_or(0),
+        page,
+        usize::try_from(MY_REQUESTS_PER_PAGE).unwrap_or(30),
+    );
 
     #[allow(clippy::type_complexity)]
     let requests_data: Vec<(
@@ -2826,31 +2812,46 @@ pub async fn my_requests(
         Option<chrono::DateTime<chrono::Utc>>,
         Option<String>,
         Option<i32>,
-    )> = proxy_sessions::table
-        .inner_join(schema_assets::table)
-        .left_join(users::table.on(users::id.nullable().eq(proxy_sessions::approved_by_id)))
-        .filter(proxy_sessions::user_id.eq(user_id))
-        .filter(proxy_sessions::justification.is_not_null())
-        .filter(proxy_sessions::status.eq_any(&statuses))
-        .select((
-            proxy_sessions::uuid,
-            schema_assets::name,
-            schema_assets::hostname,
-            schema_assets::asset_type,
-            proxy_sessions::session_type,
-            proxy_sessions::status,
-            proxy_sessions::justification,
-            proxy_sessions::created_at,
-            proxy_sessions::approved_at,
-            users::username.nullable(),
-            proxy_sessions::max_session_duration,
-        ))
-        .order(proxy_sessions::created_at.desc())
-        .limit(MY_REQUESTS_PER_PAGE)
-        .offset(offset)
-        .load(&mut conn)
-        .await
-        .map_err(AppError::Database)?;
+    )> = {
+        let mut rows_query = proxy_sessions::table
+            .inner_join(schema_assets::table)
+            .left_join(users::table.on(users::id.nullable().eq(proxy_sessions::approved_by_id)))
+            .filter(proxy_sessions::user_id.eq(user_id))
+            .filter(proxy_sessions::justification.is_not_null())
+            .filter(proxy_sessions::status.eq_any(&statuses))
+            .into_boxed();
+        if let Some(ref search) = search_filter {
+            let pattern = crate::db::like_contains(search);
+            rows_query = rows_query.filter(
+                schema_assets::name
+                    .ilike(pattern.clone())
+                    .or(schema_assets::hostname.ilike(pattern)),
+            );
+        }
+        if let Some(ref status) = status_filter {
+            rows_query = rows_query.filter(proxy_sessions::status.eq(status.clone()));
+        }
+        rows_query
+            .select((
+                proxy_sessions::uuid,
+                schema_assets::name,
+                schema_assets::hostname,
+                schema_assets::asset_type,
+                proxy_sessions::session_type,
+                proxy_sessions::status,
+                proxy_sessions::justification,
+                proxy_sessions::created_at,
+                proxy_sessions::approved_at,
+                users::username.nullable(),
+                proxy_sessions::max_session_duration,
+            ))
+            .order(proxy_sessions::created_at.desc())
+            .limit(window.limit_i64())
+            .offset(window.offset_i64())
+            .load(&mut conn)
+            .await
+            .map_err(AppError::Database)?
+    };
 
     let requests: Vec<crate::templates::sessions::my_requests::MyRequestItem> = requests_data
         .into_iter()
@@ -2885,25 +2886,7 @@ pub async fn my_requests(
         )
         .collect();
 
-    use crate::templates::accounts::user_list::Pagination;
-
-    let start_index = if total_items > 0 { offset + 1 } else { 0 };
-    let end_index = (offset + MY_REQUESTS_PER_PAGE).min(total_items);
-
-    let pagination = if total_items > 0 {
-        Some(Pagination {
-            current_page: page,
-            total_pages,
-            total_items: total_items as i32,
-            items_per_page: MY_REQUESTS_PER_PAGE as i32,
-            has_previous: page > 1,
-            has_next: page < total_pages,
-            start_index: start_index as i32,
-            end_index: end_index as i32,
-        })
-    } else {
-        None
-    };
+    let pagination = (total_items > 0).then(|| window.to_pagination());
 
     // IACS / EWS section integration (palier 6).
     //
@@ -2913,13 +2896,21 @@ pub async fn my_requests(
     // collapses both the Casbin and the kill-switch decisions.
     let iacs_visible = perms.iacs_read;
     let iacs_request_allowed = perms.iacs_request;
-    let ews_items = if iacs_visible {
+    let ews_items: Vec<crate::templates::iacs::MyEwsItem> = if iacs_visible {
         crate::handlers::web::iacs::load_my_ews_items(&state, user_id, browser_tz.0)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "load_my_ews_items failed; rendering empty");
                 Vec::new()
             })
+            .into_iter()
+            .filter(|ews| {
+                matches_search(
+                    &[ews.name.as_str(), ews.fingerprint_short.as_str()],
+                    ews_search_filter.as_deref(),
+                ) && matches_select(ews.state_str(), ews_state_filter.as_deref())
+            })
+            .collect()
     } else {
         Vec::new()
     };
@@ -2942,6 +2933,11 @@ pub async fn my_requests(
         iacs_request_allowed,
         ews_items,
         csrf_token: csrf_token_for_forms,
+        search: search_filter,
+        status_filter,
+        statuses: crate::services::status_vocab::MY_REQUESTS.options(),
+        ews_search: ews_search_filter,
+        ews_state_filter,
     };
 
     let html = template
@@ -2980,14 +2976,11 @@ pub async fn active_sessions(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     use crate::schema::users;
+    use crate::services::list_filters::{paginate, parse_page};
 
     const ACTIVE_PER_PAGE: i64 = 30;
 
-    let page: i32 = params
-        .get("page")
-        .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(1)
-        .max(1);
+    let page = parse_page(&params);
 
     // ACTIVE-LIST FILTER (kept in lock-step across three call sites:
     // here, `tasks::dashboard::fetch_active_sessions_full`, and
@@ -3021,12 +3014,11 @@ pub async fn active_sessions(
         total_query = total_query.filter(proxy_sessions::session_type.ne(SessionType::IacsTunnel));
     }
     let total_items: i64 = total_query.count().get_result(&mut conn).await.unwrap_or(0);
-
-    let total_pages = ((total_items as f64) / (ACTIVE_PER_PAGE as f64))
-        .ceil()
-        .max(1.0) as i32;
-    let page = page.min(total_pages);
-    let offset = ((page - 1) as i64) * ACTIVE_PER_PAGE;
+    let window = paginate(
+        usize::try_from(total_items).unwrap_or(0),
+        page,
+        usize::try_from(ACTIVE_PER_PAGE).unwrap_or(30),
+    );
 
     let mut data_query = proxy_sessions::table
         .inner_join(schema_assets::table)
@@ -3062,8 +3054,8 @@ pub async fn active_sessions(
             proxy_sessions::connected_at,
         ))
         .order(proxy_sessions::connected_at.desc())
-        .limit(ACTIVE_PER_PAGE)
-        .offset(offset)
+        .limit(window.limit_i64())
+        .offset(window.offset_i64())
         .load(&mut conn)
         .await
         .map_err(AppError::Database)?;
@@ -3110,25 +3102,7 @@ pub async fn active_sessions(
         )
         .collect();
 
-    use crate::templates::accounts::user_list::Pagination as ActPagination;
-
-    let start_index = if total_items > 0 { offset + 1 } else { 0 };
-    let end_index = (offset + ACTIVE_PER_PAGE).min(total_items);
-
-    let pagination = if total_items > 0 {
-        Some(ActPagination {
-            current_page: page,
-            total_pages,
-            total_items: total_items as i32,
-            items_per_page: ACTIVE_PER_PAGE as i32,
-            has_previous: page > 1,
-            has_next: page < total_pages,
-            start_index: start_index as i32,
-            end_index: end_index as i32,
-        })
-    } else {
-        None
-    };
+    let pagination = (total_items > 0).then(|| window.to_pagination());
 
     let template = ActiveListTemplate {
         title,
@@ -5326,6 +5300,8 @@ mod tests {
 
     #[test]
     fn test_my_requests_includes_all_lifecycle_statuses() {
+        // The handler derives its row filter from the shared closed
+        // vocabulary; pin both the seam and the vocabulary content.
         let source = include_str!("sessions.rs");
         let my_req_fn = source
             .find("fn my_requests")
@@ -5336,22 +5312,32 @@ mod tests {
             .unwrap_or(source.len());
         let body = &source[my_req_fn..next_fn];
 
+        assert!(
+            body.contains("status_vocab::MY_REQUESTS"),
+            "my_requests handler must derive its statuses from status_vocab::MY_REQUESTS"
+        );
+
+        let vocab = crate::services::status_vocab::MY_REQUESTS;
         for status in &[
             "pending",
             "approved",
             "rejected",
+            "revoked",
             "expired",
-            "consumed",
             "active",
             "disconnected",
             "terminated",
         ] {
             assert!(
-                body.contains(&format!("\"{}\"", status)),
-                "my_requests handler must include status '{}'",
+                vocab.contains(status),
+                "MY_REQUESTS vocabulary must include status '{}'",
                 status
             );
         }
+        assert!(
+            !vocab.contains("consumed"),
+            "the phantom 'consumed' status must stay purged"
+        );
     }
 
     #[test]
@@ -5400,8 +5386,8 @@ mod tests {
             "must reference per-page constant"
         );
         assert!(
-            body.contains("Pagination {"),
-            "must construct Pagination struct"
+            body.contains("to_pagination()"),
+            "must build its Pagination via the shared PageWindow seam"
         );
     }
 
@@ -5418,11 +5404,15 @@ mod tests {
             .unwrap_or(source.len());
         let body = &source[my_req_fn..next_fn];
 
-        assert!(body.contains("\"page\""), "must extract page parameter");
-        assert!(body.contains(".max(1)"), "must clamp page to min 1");
+        // Parsing and both clamps (floor 1, ceiling total_pages) are
+        // delegated to the shared seam, pinned by list_filters_proptest.
         assert!(
-            body.contains(".min(total_pages)"),
-            "must clamp page to max total_pages"
+            body.contains("parse_page(&params)"),
+            "must parse the page via list_filters::parse_page"
+        );
+        assert!(
+            body.contains("paginate("),
+            "must clamp the page via list_filters::paginate"
         );
     }
 
@@ -5553,6 +5543,17 @@ mod tests {
         assert!(
             !APPROVAL_STATUSES.contains(&"disconnected"),
             "APPROVAL_STATUSES must NOT include disconnected"
+        );
+    }
+
+    #[test]
+    fn approval_statuses_match_status_vocab() {
+        // The DB filter constant and the select-option vocabulary must
+        // stay the same closed set, in the same order.
+        assert_eq!(
+            APPROVAL_STATUSES,
+            crate::services::status_vocab::APPROVAL.values().as_slice(),
+            "APPROVAL_STATUSES and status_vocab::APPROVAL drifted apart"
         );
     }
 

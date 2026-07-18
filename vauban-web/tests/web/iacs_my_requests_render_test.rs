@@ -306,10 +306,18 @@ async fn my_requests_renders_approved_ews_as_active_with_green_badge() {
 
     let body = fetch_my_requests(app, &user_token).await;
     assert_section_renders_state(&body, &ews_name, "Active", "bg-green-100");
-    assert!(
-        !body.contains("Pending"),
+    // "Pending" itself always appears in the live-filter status
+    // selects, so pin the absence of a duplicated row via the EWS
+    // name count and the pending badge class instead.
+    assert_eq!(
+        body.matches(ews_name.as_str()).count(),
+        1,
         "after approval the row must not be displayed twice (pending row \
          must be filtered out by load_my_ews_items)"
+    );
+    assert!(
+        !body.contains("bg-yellow-100"),
+        "no pending badge may remain after approval"
     );
 }
 

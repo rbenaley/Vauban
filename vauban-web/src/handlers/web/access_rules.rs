@@ -272,10 +272,35 @@ pub async fn access_rules_list(
             .await
             .into_fields();
 
+    use crate::services::list_filters::{
+        matches_bool, matches_search, opt_filter, paginate, parse_active_inactive, parse_page,
+        protocol_matches, slice_page,
+    };
+
+    // Live filters (issue #28 pattern): search over name / user group /
+    // asset group, protocol select (ssh / rdp / iacs family), status
+    // select (active / inactive). Filtering happens in memory on the
+    // IPC-returned catalogue, exactly like /accounts/groups.
+    let search_filter = opt_filter(&params, "search");
+    let protocol_filter = opt_filter(&params, "protocol");
+    let status_filter = opt_filter(&params, "status");
+    let active_wanted = parse_active_inactive(status_filter.as_deref());
+
     let client = &state.access_client;
     let rules: Vec<AccessRuleListItem> = {
         let list = client.list_access_rules().await?;
         list.into_iter()
+            .filter(|info| {
+                matches_search(
+                    &[
+                        info.name.as_str(),
+                        info.user_group_name.as_str(),
+                        info.asset_group_name.as_str(),
+                    ],
+                    search_filter.as_deref(),
+                ) && protocol_matches(&info.allowed_protocols, protocol_filter.as_deref())
+                    && matches_bool(info.is_active, active_wanted)
+            })
             .map(|info| AccessRuleListItem {
                 uuid: info.uuid,
                 name: info.name,
@@ -291,43 +316,12 @@ pub async fn access_rules_list(
 
     const RULES_PER_PAGE: usize = 30;
 
-    let page: usize = params
-        .get("page")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1)
-        .max(1);
+    let page = parse_page(&params);
 
     let total_items = rules.len();
-    let total_pages = ((total_items as f64) / (RULES_PER_PAGE as f64))
-        .ceil()
-        .max(1.0) as usize;
-    let page = page.min(total_pages);
-    let offset = (page - 1) * RULES_PER_PAGE;
-    let paged_rules: Vec<_> = rules
-        .into_iter()
-        .skip(offset)
-        .take(RULES_PER_PAGE)
-        .collect();
-
-    use crate::templates::accounts::user_list::Pagination;
-
-    let start_index = if total_items > 0 { offset + 1 } else { 0 };
-    let end_index = (offset + RULES_PER_PAGE).min(total_items);
-
-    let pagination = if total_items > 0 {
-        Some(Pagination {
-            current_page: page as i32,
-            total_pages: total_pages as i32,
-            total_items: total_items as i32,
-            items_per_page: RULES_PER_PAGE as i32,
-            has_previous: page > 1,
-            has_next: page < total_pages,
-            start_index: start_index as i32,
-            end_index: end_index as i32,
-        })
-    } else {
-        None
-    };
+    let window = paginate(total_items, page, RULES_PER_PAGE);
+    let paged_rules = slice_page(rules, &window);
+    let pagination = (total_items > 0).then(|| window.to_pagination());
 
     let template = AccessListTemplate {
         title,
@@ -339,6 +333,9 @@ pub async fn access_rules_list(
         header_user,
         rules: paged_rules,
         pagination,
+        search: search_filter,
+        protocol_filter,
+        status_filter,
     };
 
     let html = template

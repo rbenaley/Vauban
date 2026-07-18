@@ -24,7 +24,8 @@ impl MyRequestItem {
         super::session_status_class(&self.status)
     }
 
-    /// User-friendly label for display (avoids raw DB statuses like "consumed").
+    /// User-friendly label for display (avoids raw DB statuses).
+    /// Kept in lock-step with `status_vocab::MY_REQUESTS`.
     pub fn status_label(&self) -> &str {
         match self.status.as_str() {
             "pending" => "Pending",
@@ -32,7 +33,7 @@ impl MyRequestItem {
             "rejected" => "Rejected",
             "revoked" => "Revoked",
             "expired" => "Expired",
-            "consumed" | "active" => "Connected",
+            "active" => "Connected",
             "disconnected" => "Completed",
             "terminated" => "Terminated",
             _ => "Unknown",
@@ -101,8 +102,10 @@ mod tests {
     }
 
     #[test]
-    fn test_status_class_consumed() {
-        assert!(make_item("consumed", None).status_class().contains("blue"));
+    fn test_status_class_phantom_consumed_falls_back_to_gray() {
+        // 'consumed' was purged from the vocabulary (July 2026 status
+        // audit): it is no longer classified.
+        assert!(make_item("consumed", None).status_class().contains("gray"));
     }
 
     #[test]
@@ -168,8 +171,8 @@ mod tests {
     }
 
     #[test]
-    fn test_status_label_consumed_shows_connected() {
-        assert_eq!(make_item("consumed", None).status_label(), "Connected");
+    fn test_status_label_phantom_consumed_shows_unknown() {
+        assert_eq!(make_item("consumed", None).status_label(), "Unknown");
     }
 
     #[test]
@@ -315,6 +318,11 @@ mod tests {
             iacs_request_allowed: false,
             ews_items: Vec::new(),
             csrf_token: "tk".to_string(),
+            search: None,
+            status_filter: None,
+            statuses: crate::services::status_vocab::MY_REQUESTS.options(),
+            ews_search: None,
+            ews_state_filter: None,
         };
 
         let html = template.render().expect("template should render");
@@ -346,7 +354,6 @@ mod tests {
             ("rejected", "Rejected"),
             ("revoked", "Revoked"),
             ("expired", "Expired"),
-            ("consumed", "Connected"),
             ("active", "Connected"),
             ("disconnected", "Completed"),
             ("terminated", "Terminated"),
@@ -378,6 +385,11 @@ mod tests {
                 iacs_request_allowed: false,
                 ews_items: Vec::new(),
                 csrf_token: "tk".to_string(),
+                search: None,
+                status_filter: None,
+                statuses: crate::services::status_vocab::MY_REQUESTS.options(),
+                ews_search: None,
+                ews_state_filter: None,
             };
 
             let html = template
@@ -421,6 +433,11 @@ mod tests {
             iacs_request_allowed: false,
             ews_items: Vec::new(),
             csrf_token: "tk".to_string(),
+            search: None,
+            status_filter: None,
+            statuses: crate::services::status_vocab::MY_REQUESTS.options(),
+            ews_search: None,
+            ews_state_filter: None,
         };
 
         let html = template.render().expect("template should render");
@@ -460,6 +477,11 @@ mod tests {
             iacs_request_allowed: false,
             ews_items: Vec::new(),
             csrf_token: "tk".to_string(),
+            search: None,
+            status_filter: None,
+            statuses: crate::services::status_vocab::MY_REQUESTS.options(),
+            ews_search: None,
+            ews_state_filter: None,
         }
     }
 
@@ -624,4 +646,41 @@ pub struct MyRequestsTemplate {
     pub ews_items: Vec<crate::templates::iacs::MyEwsItem>,
     /// CSRF token reused by the inlined cancel / offboard-self forms.
     pub csrf_token: String,
+    /// Live-filter needles (issue #28 pattern), independent per tab:
+    /// `search` / `status_filter` drive the Access list,
+    /// `ews_search` / `ews_state_filter` drive the EWS list.
+    pub search: Option<String>,
+    pub status_filter: Option<String>,
+    /// `(value, label)` couples of the Access status select, derived
+    /// from `status_vocab::MY_REQUESTS` (single source of truth).
+    pub statuses: Vec<(String, String)>,
+    pub ews_search: Option<String>,
+    pub ews_state_filter: Option<String>,
+}
+
+impl MyRequestsTemplate {
+    /// Whether an Access-tab filter is active (picks the "no match"
+    /// empty state over the onboarding one).
+    #[must_use]
+    pub fn has_filters(&self) -> bool {
+        self.search.is_some() || self.status_filter.is_some()
+    }
+
+    /// Whether an EWS-tab filter is active.
+    #[must_use]
+    pub fn has_ews_filters(&self) -> bool {
+        self.ews_search.is_some() || self.ews_state_filter.is_some()
+    }
+
+    /// `&key=value` suffix for the Access pagination links so
+    /// switching page never drops the filters (either tab's).
+    #[must_use]
+    pub fn filter_query_suffix(&self) -> String {
+        crate::services::list_filters::query_suffix(&[
+            ("search", &self.search),
+            ("status", &self.status_filter),
+            ("ews_search", &self.ews_search),
+            ("ews_state", &self.ews_state_filter),
+        ])
+    }
 }

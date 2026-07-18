@@ -93,14 +93,12 @@ impl SessionDetail {
             "active" | "tunnel_active" => "Active".to_string(),
             "waiting_client" => "Waiting client".to_string(),
             "disconnected" => "Disconnected".to_string(),
-            "completed" => "Completed".to_string(),
             "terminated" => "Terminated".to_string(),
             "pending" => "Pending".to_string(),
             "failed" => "Failed".to_string(),
             "connecting" => "Connecting".to_string(),
             "expired" => "Expired".to_string(),
             "approved" => "Approved".to_string(),
-            "consumed" => "Consumed".to_string(),
             other => {
                 let mut chars = other.chars();
                 match chars.next() {
@@ -263,9 +261,11 @@ mod tests {
     }
 
     #[test]
-    fn test_status_class_consumed() {
+    fn test_status_class_phantom_consumed_falls_back_to_gray() {
+        // 'consumed' was purged from the vocabulary (July 2026 status
+        // audit): it is no longer classified.
         let detail = create_test_session_detail("consumed", "ssh");
-        assert!(detail.status_class().contains("blue"));
+        assert!(detail.status_class().contains("gray"));
     }
 
     #[test]
@@ -281,9 +281,9 @@ mod tests {
     }
 
     #[test]
-    fn test_status_class_completed() {
+    fn test_status_class_phantom_completed_falls_back_to_gray() {
         let detail = create_test_session_detail("completed", "ssh");
-        assert!(detail.status_class().contains("indigo"));
+        assert!(detail.status_class().contains("gray"));
     }
 
     #[test]
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_session_detail_clone() {
-        let detail = create_test_session_detail("completed", "rdp");
+        let detail = create_test_session_detail("disconnected", "rdp");
         let cloned = detail.clone();
         assert_eq!(detail.uuid, cloned.uuid);
     }

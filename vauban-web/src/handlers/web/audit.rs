@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::schema::approval_audit_log;
-use crate::templates::audit::approval_audit_list::{ApprovalAuditFilters, AuditPagination};
+use crate::templates::audit::approval_audit_list::ApprovalAuditFilters;
 use crate::templates::audit::{ApprovalAuditListTemplate, ApprovalAuditRow};
 
 /// Hard ceiling on `LIMIT` so a malicious or accidental
@@ -46,30 +46,28 @@ pub async fn approval_audit_list(
             .await
             .into_fields();
 
+    use crate::services::list_filters::{opt_filter, paginate, parse_page};
+
     let filters = ApprovalAuditFilters {
-        actor: params.get("actor").filter(|s| !s.is_empty()).cloned(),
-        requester: params.get("requester").filter(|s| !s.is_empty()).cloned(),
-        asset: params.get("asset").filter(|s| !s.is_empty()).cloned(),
-        decision: params
-            .get("decision")
-            .filter(|s| matches!(s.as_str(), "approve" | "reject"))
-            .cloned(),
-        from_date: params.get("from_date").filter(|s| !s.is_empty()).cloned(),
-        to_date: params.get("to_date").filter(|s| !s.is_empty()).cloned(),
+        actor: opt_filter(&params, "actor"),
+        requester: opt_filter(&params, "requester"),
+        asset: opt_filter(&params, "asset"),
+        // Closed vocabulary (`status_vocab::AUDIT_DECISIONS`, kept in
+        // lock-step with the `approval_audit_log.decision` CHECK):
+        // unknown values degrade to "no filter".
+        decision: crate::services::status_vocab::AUDIT_DECISIONS
+            .sanitize(opt_filter(&params, "decision")),
+        from_date: opt_filter(&params, "from_date"),
+        to_date: opt_filter(&params, "to_date"),
     };
 
-    let page = params
-        .get("page")
-        .and_then(|s| s.parse::<i32>().ok())
-        .filter(|p| *p >= 1)
-        .unwrap_or(1);
+    let page = parse_page(&params);
     let per_page = params
         .get("per_page")
         .and_then(|s| s.parse::<i64>().ok())
         .filter(|p| *p > 0)
         .unwrap_or(DEFAULT_PER_PAGE)
         .min(MAX_PER_PAGE);
-    let offset = ((page as i64) - 1) * per_page;
 
     let mut conn = state
         .db_pool
@@ -85,6 +83,12 @@ pub async fn approval_audit_list(
         .get_result(&mut conn)
         .await
         .map_err(AppError::Database)?;
+
+    let window = paginate(
+        usize::try_from(total_items).unwrap_or(0),
+        page,
+        usize::try_from(per_page).unwrap_or(30),
+    );
 
     #[allow(clippy::type_complexity)]
     let rows_data: Vec<(
@@ -120,8 +124,8 @@ pub async fn approval_audit_list(
             approval_audit_log::created_at,
         ))
         .order(approval_audit_log::created_at.desc())
-        .limit(per_page)
-        .offset(offset)
+        .limit(window.limit_i64())
+        .offset(window.offset_i64())
         .load(&mut conn)
         .await
         .map_err(AppError::Database)?;
@@ -163,21 +167,10 @@ pub async fn approval_audit_list(
         )
         .collect();
 
-    let total_pages = if total_items == 0 {
-        1
-    } else {
-        ((total_items as f64) / (per_page as f64)).ceil() as i32
-    };
-
-    let pagination = AuditPagination {
-        current_page: page,
-        total_pages,
-        total_items,
-        has_previous: page > 1,
-        has_next: page < total_pages,
-    };
+    let pagination = window.to_audit_pagination();
 
     let template = ApprovalAuditListTemplate {
+        decisions: crate::services::status_vocab::AUDIT_DECISIONS.options(),
         title,
         user: user_ctx,
         vauban,
@@ -229,17 +222,19 @@ fn build_filtered_query<'a>(
 ) -> BoxedAuditQuery<'a> {
     let mut q = approval_audit_log::table.into_boxed();
 
+    // `like_contains` escapes `%`/`_`/`\` so user input is matched
+    // literally (the pre-fix `format!("%{}%", ..)` let a searched `%`
+    // act as a wildcard).
     if let Some(actor) = filters.actor.as_ref() {
-        let pat = format!("%{}%", actor);
-        q = q.filter(approval_audit_log::actor_username.ilike(pat));
+        q = q.filter(approval_audit_log::actor_username.ilike(crate::db::like_contains(actor)));
     }
     if let Some(requester) = filters.requester.as_ref() {
-        let pat = format!("%{}%", requester);
-        q = q.filter(approval_audit_log::requester_username.ilike(pat));
+        q = q.filter(
+            approval_audit_log::requester_username.ilike(crate::db::like_contains(requester)),
+        );
     }
     if let Some(asset) = filters.asset.as_ref() {
-        let pat = format!("%{}%", asset);
-        q = q.filter(approval_audit_log::asset_name.ilike(pat));
+        q = q.filter(approval_audit_log::asset_name.ilike(crate::db::like_contains(asset)));
     }
     if let Some(decision) = filters.decision.as_ref() {
         q = q.filter(approval_audit_log::decision.eq(decision.clone()));

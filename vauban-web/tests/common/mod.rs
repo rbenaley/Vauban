@@ -777,6 +777,7 @@ fn build_test_router(state: AppState) -> Router {
             "/sessions/recordings/{id}/play",
             get(handlers::web::recording_play),
         )
+        .route("/audit/approvals", get(handlers::web::approval_audit_list))
         .route("/sessions/approvals", get(handlers::web::approval_list))
         .route(
             "/sessions/approvals/{uuid}",

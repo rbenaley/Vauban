@@ -63,7 +63,7 @@ async fn age_candidates_select_only_sessions_older_than_cutoff() {
         admin_id,
         asset_id,
         Utc::now() - Duration::days(5000),
-        "completed",
+        "disconnected",
         None,
     )
     .await;
@@ -73,7 +73,7 @@ async fn age_candidates_select_only_sessions_older_than_cutoff() {
         admin_id,
         asset_id,
         Utc::now() - Duration::days(10),
-        "completed",
+        "disconnected",
         None,
     )
     .await;
@@ -131,7 +131,7 @@ async fn quota_candidates_ordered_fifo_and_require_finalized_size() {
         admin_id,
         asset_id,
         Utc::now() - Duration::days(5),
-        "completed",
+        "disconnected",
         Some(500_000_000),
     )
     .await;
@@ -140,7 +140,7 @@ async fn quota_candidates_ordered_fifo_and_require_finalized_size() {
         admin_id,
         asset_id,
         Utc::now() - Duration::days(2),
-        "completed",
+        "disconnected",
         Some(600_000_000),
     )
     .await;

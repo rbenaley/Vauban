@@ -69,6 +69,18 @@ pub struct AssetDeletedListTemplate {
     pub header_user: Option<UserContext>,
     pub assets: Vec<DeletedAssetItem>,
     pub pagination: Option<Pagination>,
+    /// Live-search needle (issue #28 pattern), echoed back into the
+    /// search input and propagated by the pagination links.
+    pub search: Option<String>,
+}
+
+impl AssetDeletedListTemplate {
+    /// Whether a filter is active, to pick the "no match" empty state
+    /// over the "audit trail is empty" one.
+    #[must_use]
+    pub fn has_filters(&self) -> bool {
+        self.search.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +128,7 @@ mod tests {
             header_user: None,
             assets: items,
             pagination: None,
+            search: None,
         }
     }
 
