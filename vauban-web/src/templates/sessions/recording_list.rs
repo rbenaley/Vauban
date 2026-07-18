@@ -15,7 +15,12 @@ pub struct RecordingListItem {
     pub session_uuid: String,
     pub asset_name: String,
     pub session_type: String,
+    /// Raw `proxy_sessions.credential_username` snapshot (may be
+    /// empty for IACS PCAP bundles). Rendering goes through
+    /// [`Self::identity_display`], never through this field directly.
     pub credential_username: String,
+    /// VAUBAN username of the initiating user (joined from `users`).
+    pub requester_username: String,
     pub connected_at: Option<String>,
     pub duration_seconds: Option<i64>,
     /// Populated after hydrator finalization; None while pending.
@@ -32,6 +37,46 @@ pub struct RecordingListItem {
 impl RecordingListItem {
     pub fn is_iacs_tunnel(&self) -> bool {
         self.session_type == "iacs_tunnel"
+    }
+
+    fn identity_pair(&self) -> super::presentation::IdentityPair {
+        super::presentation::recording_identity_pair(
+            &self.requester_username,
+            &self.credential_username,
+        )
+    }
+
+    /// Whether the row renders the full `requester &rarr; credential`
+    /// identity pair (UX-02). False when either side is missing.
+    pub fn show_requester_arrow(&self) -> bool {
+        self.identity_pair().arrow_requester().is_some()
+    }
+
+    /// Trimmed VAUBAN requester username for the arrow rendering.
+    /// Empty when [`Self::show_requester_arrow`] is false.
+    pub fn requester_display(&self) -> String {
+        self.identity_pair()
+            .arrow_requester()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// Right-hand identity of the row: the credential username when
+    /// present; otherwise the VAUBAN requester alone (IACS PCAP
+    /// bundles carry no credential); otherwise the legacy placeholder
+    /// (`Not authenticated (IACS tunnel)` / `Unavailable`).
+    pub fn identity_display(&self) -> String {
+        let pair = self.identity_pair();
+        match pair.target {
+            super::presentation::DisplayIdentity::Credential(credential) => credential,
+            _ => match pair.requester {
+                Some(requester) => requester,
+                None => super::recording_detail::credential_display(
+                    &self.credential_username,
+                    &self.session_type,
+                ),
+            },
+        }
     }
 
     /// Get display name for session type.
@@ -104,6 +149,7 @@ mod tests {
             asset_name: "Test Asset".to_string(),
             session_type: session_type.to_string(),
             credential_username: "testuser".to_string(),
+            requester_username: "alice".to_string(),
             connected_at: Some("2026-01-03 10:00:00".to_string()),
             duration_seconds: duration,
             size_human: None,
@@ -302,6 +348,77 @@ mod tests {
             pagination: None,
         };
         template.render().expect("template should render")
+    }
+
+    // ============================================================
+    // UX-02: requester -> credential identity pair rendering.
+    // ============================================================
+
+    #[test]
+    fn test_recording_row_renders_requester_arrow_pair() {
+        let html = render_recording_list(
+            vec![create_test_recording_item("ssh", Some(60))],
+            None,
+            None,
+        );
+        assert!(
+            html.contains("alice &rarr; testuser"),
+            "recording row must render the full `requester &rarr; credential` pair, got: {html}"
+        );
+        assert!(
+            html.contains("VAUBAN user alice connected as testuser"),
+            "the pair span must carry the accessible title attribute"
+        );
+    }
+
+    #[test]
+    fn test_recording_row_iacs_without_credential_shows_requester_alone() {
+        let mut item = create_test_recording_item("iacs_tunnel", Some(13));
+        item.credential_username = String::new();
+        let html = render_recording_list(vec![item], None, None);
+        assert!(
+            !html.contains("&rarr;"),
+            "IACS PCAP row without credential must not render the arrow"
+        );
+        assert!(
+            html.contains("alice"),
+            "IACS PCAP row must surface the VAUBAN requester alone, got: {html}"
+        );
+    }
+
+    #[test]
+    fn test_recording_row_empty_requester_renders_credential_alone() {
+        let mut item = create_test_recording_item("ssh", Some(60));
+        item.requester_username = String::new();
+        let html = render_recording_list(vec![item], None, None);
+        assert!(
+            !html.contains("&rarr;"),
+            "without a requester the arrow must not render"
+        );
+        assert!(
+            html.contains("testuser"),
+            "the credential must still render alone"
+        );
+    }
+
+    #[test]
+    fn test_recording_row_both_missing_falls_back_to_iacs_placeholder() {
+        let mut item = create_test_recording_item("iacs_tunnel", Some(13));
+        item.credential_username = String::new();
+        item.requester_username = String::new();
+        let html = render_recording_list(vec![item], None, None);
+        assert!(
+            html.contains("Not authenticated (IACS tunnel)"),
+            "orphan IACS row must keep the legacy placeholder, got: {html}"
+        );
+    }
+
+    #[test]
+    fn test_recording_identity_display_prefers_credential() {
+        let item = create_test_recording_item("ssh", None);
+        assert_eq!(item.identity_display(), "testuser");
+        assert!(item.show_requester_arrow());
+        assert_eq!(item.requester_display(), "alice");
     }
 
     #[test]

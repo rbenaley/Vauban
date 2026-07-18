@@ -103,6 +103,7 @@ pub mod session_creation_limits_invariants_test;
 pub mod session_creation_limits_test;
 pub mod session_expired_presentation_test;
 pub mod session_history_presentation_proptest;
+pub mod session_identity_pair_e2e_test;
 pub mod session_pages_test;
 pub mod sidebar_assets_split_test;
 pub mod sidebar_menu_test;

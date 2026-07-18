@@ -43,7 +43,11 @@
                     <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
                         <span>{{ session.session_type_display() }}</span>
                         <span class="hidden sm:inline">&bull;</span>
+                        {% if session.show_requester_arrow() %}
+                        <span class="break-all" title="VAUBAN user {{ session.requester_display() }} connected as {{ session.display_identity() }}">{{ session.requester_display() }} &rarr; {{ session.display_identity() }}</span>
+                        {% else %}
                         <span class="break-all">{% if !session.identity_label().is_empty() %}{{ session.identity_label() }} {% endif %}{{ session.display_identity() }}</span>
+                        {% endif %}
                         <span class="hidden sm:inline">&bull;</span>
                         <span>{{ session.event_label }} {{ session.event_at|local(tz) }}</span>
                         {% if session.duration_seconds.is_some() %}

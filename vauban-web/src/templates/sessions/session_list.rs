@@ -92,6 +92,25 @@ impl SessionListItem {
         super::presentation::display_identity(&self.presentation_input()).label()
     }
 
+    /// Whether the row renders the full `requester &rarr; target`
+    /// identity pair (UX-02). Delegates to the presentation seam:
+    /// true only when the VAUBAN requester is known AND the row has a
+    /// concrete technical identity (never for JIT grants).
+    pub fn show_requester_arrow(&self) -> bool {
+        super::presentation::identity_pair(&self.presentation_input())
+            .arrow_requester()
+            .is_some()
+    }
+
+    /// Trimmed VAUBAN requester username for the arrow rendering.
+    /// Empty when [`Self::show_requester_arrow`] is false.
+    pub fn requester_display(&self) -> String {
+        super::presentation::identity_pair(&self.presentation_input())
+            .arrow_requester()
+            .unwrap_or_default()
+            .to_string()
+    }
+
     pub fn timeline_label(&self) -> &'static str {
         super::presentation::timeline_event(&self.presentation_input()).label()
     }
@@ -634,6 +653,84 @@ mod tests {
         assert!(
             !html.contains("10:00 UTC") && !html.contains("10:00 CET"),
             "Paris widget must not leak the UTC wall clock for connected_at"
+        );
+    }
+
+    // ============================================================
+    // UX-02: requester -> target identity pair rendering.
+    // ============================================================
+
+    fn render_widget(items: Vec<SessionListItem>) -> String {
+        SessionListContentWidget {
+            sessions: items,
+            show_view_link: false,
+            tz: chrono_tz::Tz::UTC,
+        }
+        .render()
+        .expect("widget should render")
+    }
+
+    #[test]
+    fn test_widget_renders_requester_arrow_pair_for_ssh() {
+        let item = create_test_session_item("ssh", "active", Some(60));
+        let html = render_widget(vec![item]);
+        assert!(
+            html.contains("requester &rarr; testuser"),
+            "SSH row must render the full `requester &rarr; credential` pair, got: {html}"
+        );
+        assert!(
+            html.contains("VAUBAN user requester connected as testuser"),
+            "the pair span must carry the accessible title attribute"
+        );
+    }
+
+    #[test]
+    fn test_widget_renders_requester_arrow_pair_for_iacs_tunnel_target() {
+        let mut item = create_test_session_item("iacs_tunnel", "tunnel_active", Some(60));
+        item.credential_username = String::new();
+        item.tunnel_target_addr = Some("10.42.0.7:502".to_string());
+        let html = render_widget(vec![item]);
+        assert!(
+            html.contains("requester &rarr; 10.42.0.7:502"),
+            "IACS row must pair the requester with the tunnel target, got: {html}"
+        );
+    }
+
+    #[test]
+    fn test_widget_jit_grant_has_no_arrow_and_no_sentinel() {
+        let mut item = create_test_session_item("ssh", "approved", None);
+        item.credential_id = "pending".to_string();
+        item.credential_username = String::new();
+        item.requester_username = "alice".to_string();
+        item.connected_at = None;
+        item.disconnected_at = None;
+        let html = render_widget(vec![item]);
+        assert!(
+            html.contains("Requested by alice"),
+            "JIT grant must keep the `Requested by` rendering, got: {html}"
+        );
+        assert!(
+            !html.contains("&rarr;"),
+            "JIT grant must never render the arrow (no `alice -> alice`)"
+        );
+        assert!(
+            !html.contains("pending"),
+            "the credential sentinel must never cross the UI, got: {html}"
+        );
+    }
+
+    #[test]
+    fn test_widget_empty_requester_renders_credential_alone() {
+        let mut item = create_test_session_item("ssh", "active", Some(60));
+        item.requester_username = String::new();
+        let html = render_widget(vec![item]);
+        assert!(
+            !html.contains("&rarr;"),
+            "without a requester the arrow must not render"
+        );
+        assert!(
+            html.contains("testuser"),
+            "the credential must still render alone"
         );
     }
 

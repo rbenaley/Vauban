@@ -433,6 +433,7 @@ mod recording_visibility {
             asset_name: "asset".into(),
             session_type: session_type.into(),
             credential_username: "u".into(),
+            requester_username: "alice".into(),
             connected_at: None,
             duration_seconds: None,
             size_human: None,

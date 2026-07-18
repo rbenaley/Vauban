@@ -132,7 +132,11 @@
                                 <span>{{ size }}</span>
                                 {% endif %}
                                 <span class="hidden sm:inline">&bull;</span>
-                                <span class="break-all">{{ recording.credential_username }}</span>
+                                {% if recording.show_requester_arrow() %}
+                                <span class="break-all" title="VAUBAN user {{ recording.requester_display() }} connected as {{ recording.identity_display() }}">{{ recording.requester_display() }} &rarr; {{ recording.identity_display() }}</span>
+                                {% else %}
+                                <span class="break-all">{{ recording.identity_display() }}</span>
+                                {% endif %}
                                 {% if let Some(connected) = recording.connected_at.as_ref() %}
                                 <span class="hidden sm:inline">&bull;</span>
                                 <span>{{ connected }}</span>

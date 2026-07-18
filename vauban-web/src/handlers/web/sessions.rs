@@ -545,6 +545,7 @@ pub async fn recording_list(
     browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
+    use crate::schema::users;
     use crate::templates::sessions::recording_list::RecordingListItem;
 
     // Only admin users (superuser or staff) can view recordings
@@ -582,6 +583,7 @@ pub async fn recording_list(
 
     let mut query = proxy_sessions::table
         .inner_join(schema_assets::table)
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
         .filter(proxy_sessions::is_recorded.eq(true))
         .filter(proxy_sessions::recording_path.is_not_null())
         .into_boxed();
@@ -625,6 +627,7 @@ pub async fn recording_list(
         String,
         SessionType,
         String,
+        String,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<String>,
@@ -636,6 +639,7 @@ pub async fn recording_list(
             schema_assets::name,
             proxy_sessions::session_type,
             proxy_sessions::credential_username,
+            users::username,
             proxy_sessions::connected_at,
             proxy_sessions::disconnected_at,
             proxy_sessions::recording_path,
@@ -656,6 +660,7 @@ pub async fn recording_list(
                 asset_name,
                 session_type,
                 credential_username,
+                requester_username,
                 connected_at,
                 disconnected_at,
                 recording_path,
@@ -673,12 +678,12 @@ pub async fn recording_list(
                     session_id: id,
                     session_uuid: session_uuid.to_string(),
                     asset_name,
-                    session_type: session_type_str.clone(),
-                    credential_username:
-                        crate::templates::sessions::recording_detail::credential_display(
-                            &credential_username,
-                            &session_type_str,
-                        ),
+                    session_type: session_type_str,
+                    // Raw values: the identity rendering (pair, arrow,
+                    // IACS placeholder) is computed by the template
+                    // helpers via the presentation seam.
+                    credential_username,
+                    requester_username,
                     connected_at: connected_at
                         .map(|dt| crate::utils::format_local(dt, browser_tz.0)),
                     duration_seconds,

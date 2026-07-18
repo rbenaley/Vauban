@@ -48,6 +48,72 @@ impl DisplayIdentity {
     }
 }
 
+/// Full identity of a session row: the VAUBAN user who initiated it
+/// (`requester`) and the technical identity it materialized as
+/// (`target`, reusing the [`display_identity`] rules). Rendered as
+/// `alice &rarr; sysadm` when both sides are present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityPair {
+    /// Trimmed VAUBAN username. `None` when the row is a JIT grant
+    /// (the requester is already the target identity -- never render
+    /// `alice -> alice`) or when the initiating user is unavailable.
+    pub requester: Option<String>,
+    pub target: DisplayIdentity,
+}
+
+impl IdentityPair {
+    /// Left-hand side of the arrow rendering. `Some` only when the
+    /// row has BOTH a requester and a concrete technical identity
+    /// (credential or tunnel target). JIT grants and rows without a
+    /// target identity never show the arrow.
+    pub fn arrow_requester(&self) -> Option<&str> {
+        match (&self.requester, &self.target) {
+            (
+                Some(requester),
+                DisplayIdentity::Credential(_) | DisplayIdentity::TunnelTarget(_),
+            ) => Some(requester),
+            _ => None,
+        }
+    }
+}
+
+/// Compute the requester/target identity pair for a session row.
+///
+/// The target reuses [`display_identity`] verbatim (single source of
+/// truth); the requester side is suppressed for JIT grants so the
+/// same username never appears on both sides of the arrow.
+pub fn identity_pair(input: &SessionPresentationInput<'_>) -> IdentityPair {
+    let target = display_identity(input);
+    let requester = if is_jit_grant(input.credential_id) {
+        None
+    } else {
+        let requester = input.requester_username.trim();
+        (!requester.is_empty()).then(|| requester.to_string())
+    };
+    IdentityPair { requester, target }
+}
+
+/// Identity pair for a recording row. Recording lists only snapshot
+/// the credential username (no tunnel target, no JIT sentinel:
+/// recordings imply a connected session), so the pair is derived from
+/// the two usernames alone.
+pub fn recording_identity_pair(
+    requester_username: &str,
+    credential_username: &str,
+) -> IdentityPair {
+    let credential = credential_username.trim();
+    let target = if credential.is_empty() {
+        DisplayIdentity::Unavailable
+    } else {
+        DisplayIdentity::Credential(credential.to_string())
+    };
+    let requester = requester_username.trim();
+    IdentityPair {
+        requester: (!requester.is_empty()).then(|| requester.to_string()),
+        target,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimelineEvent {
     Connected(DateTime<Utc>),
