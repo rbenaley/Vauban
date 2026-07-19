@@ -283,6 +283,66 @@ async fn proxy_pump_emits_canonical_tunnel_closed_frame_and_terminates_row() {
     assert_eq!(status_value, "terminated");
 }
 
+/// The production stats tick (July 2026, byte counters stuck at
+/// zero): `IacsTunnelStatusUpdate { status = "tunnel_stats" }`
+/// emitted every 5 s by vauban-proxy-iacs' per-login ticker must
+/// surface as a canonical `tunnel_stats` frame carrying the byte
+/// counters, without any lifecycle transition and without touching
+/// the DB row.
+#[tokio::test]
+#[serial]
+async fn proxy_pump_relays_periodic_tunnel_stats_frames() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("wsvocab_ta")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("wsvocab_tu")).await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("wsvocab-tick"), admin_id).await;
+    let (_, session_uuid) =
+        create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "tunnel_active").await;
+
+    let channel = WsChannel::SessionLive(session_uuid.to_string());
+    let mut rx = app.broadcast.subscribe(&channel).await;
+
+    let proxy_side = spawn_proxy_pump(app);
+    proxy_side
+        .send(&shared::messages::Message::IacsTunnelStatusUpdate {
+            session_id: session_uuid.to_string(),
+            status: "tunnel_stats".to_string(),
+            bytes_in: 9000,
+            bytes_out: 4500,
+            peer_ip: None,
+        })
+        .expect("send IacsTunnelStatusUpdate");
+
+    let frame = timeout(Duration::from_secs(3), rx.recv())
+        .await
+        .expect("timed out waiting for the tunnel_stats frame")
+        .expect("broadcast recv");
+    let parsed: serde_json::Value = serde_json::from_str(&frame).expect("frame is JSON");
+    assert_eq!(parsed["type"], ws_vocab::TYPE_TUNNEL_STATS);
+    assert_eq!(parsed["bytes_in"], 9000);
+    assert_eq!(parsed["bytes_out"], 4500);
+
+    // No lifecycle transition: the pill stays on tunnel_active.
+    let model = ws_vocab::ClientState::initial("tunnel_active", -1)
+        .apply_event(parsed["type"].as_str().expect("type is a string"));
+    assert_eq!(model.status, ws_vocab::ClientStatus::TunnelActive);
+    assert!(model.duration_running);
+
+    // And no DB write: stats are ephemeral.
+    use vauban_web::schema::proxy_sessions;
+    let status_value: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(status_value, "tunnel_active");
+}
+
 /// Battle case: an unknown / future status string from the proxy
 /// must surface as a stats frame (fail-safe) — the client model
 /// treats it as byte counters only, so no lifecycle transition can

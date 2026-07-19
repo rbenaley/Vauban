@@ -59,3 +59,5 @@ nix.workspace = true
 # (OS entropy) wrapped in `rand_core::UnwrapErr` provides it.
 getrandom = { workspace = true }
 async-trait.workspace = true
+# Invariant suites on the pure stats accounting (src/stats.rs).
+proptest = "1"

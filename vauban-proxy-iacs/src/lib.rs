@@ -40,4 +40,5 @@ pub mod protocol_gate;
 pub mod registry;
 pub mod relay;
 pub mod server;
+pub mod stats;
 pub mod upstream;

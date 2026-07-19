@@ -12,7 +12,7 @@
 //! `closed` (set exactly once) and `notify` (woken from any clone).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 use tokio::sync::Notify;
@@ -31,6 +31,14 @@ pub struct TunnelHandle {
     pub bytes_out: Arc<AtomicU64>,
     closed: Arc<AtomicBool>,
     notify: Arc<Notify>,
+    /// One-shot guard for [`Self::flush_into`]: the per-channel byte
+    /// counters may be folded into the per-EWS-login totals exactly
+    /// once, whether the relay teardown task or the handler `Drop`
+    /// gets there first (July 2026: `Drop` used to read the totals
+    /// BEFORE the teardown flush landed, so `IacsTunnelClosed`
+    /// reported `(0, 0)` and the status page reset its counters to
+    /// zero at disconnect).
+    flushed: Arc<AtomicBool>,
 }
 
 impl TunnelHandle {
@@ -51,6 +59,7 @@ impl TunnelHandle {
             bytes_out: Arc::new(AtomicU64::new(0)),
             closed: Arc::new(AtomicBool::new(false)),
             notify: Arc::new(Notify::new()),
+            flushed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -79,6 +88,31 @@ impl TunnelHandle {
             self.bytes_in.load(Ordering::Relaxed),
             self.bytes_out.load(Ordering::Relaxed),
         )
+    }
+
+    /// Fold this channel's byte counters into the per-EWS-login
+    /// totals, EXACTLY ONCE (idempotent across callers).
+    ///
+    /// Two racers may attempt the flush: the relay teardown task
+    /// (after `tokio::join!` on both copy directions) and the
+    /// handler `Drop` (when the EWS SSH connection dies while the
+    /// teardown is still in flight). Whoever swaps the guard first
+    /// performs the `fetch_add`; the loser is a no-op. Without the
+    /// guard the totals would either double-count (both flush) or
+    /// under-count everything (`Drop` reads the totals before the
+    /// teardown flush lands -- the `IacsTunnelClosed { 0, 0 }` bug).
+    ///
+    /// Call AFTER [`Self::close`]: the stats ticker skips closed
+    /// handles, so ordering close-then-flush makes a double-count
+    /// (bytes in the totals AND in a still-counted live handle)
+    /// unrepresentable at sampling time.
+    pub fn flush_into(&self, total_in: &AtomicUsize, total_out: &AtomicUsize) {
+        if self.flushed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (b_in, b_out) = self.counters();
+        total_in.fetch_add(b_in as usize, Ordering::SeqCst);
+        total_out.fetch_add(b_out as usize, Ordering::SeqCst);
     }
 }
 
@@ -243,6 +277,42 @@ mod tests {
         let removed = reg.close_and_remove(&uuid).expect("present");
         assert!(removed.is_closed());
         assert!(reg.is_empty());
+    }
+
+    /// The `IacsTunnelClosed { 0, 0 }` regression: two racers (relay
+    /// teardown + handler Drop) flushing the same handle MUST
+    /// accumulate its bytes exactly once.
+    #[test]
+    fn flush_into_is_one_shot_across_racers() {
+        let h = handle();
+        h.bytes_in.store(1500, Ordering::Relaxed);
+        h.bytes_out.store(300, Ordering::Relaxed);
+        let total_in = AtomicUsize::new(0);
+        let total_out = AtomicUsize::new(0);
+
+        h.flush_into(&total_in, &total_out);
+        h.flush_into(&total_in, &total_out);
+        // A clone shares the same one-shot guard (same channel).
+        h.clone().flush_into(&total_in, &total_out);
+
+        assert_eq!(total_in.load(Ordering::SeqCst), 1500);
+        assert_eq!(total_out.load(Ordering::SeqCst), 300);
+    }
+
+    /// Distinct channels (distinct handles) accumulate independently
+    /// into the same login totals.
+    #[test]
+    fn flush_into_accumulates_across_distinct_channels() {
+        let total_in = AtomicUsize::new(0);
+        let total_out = AtomicUsize::new(0);
+        for bytes in [100u64, 200, 300] {
+            let h = handle();
+            h.bytes_in.store(bytes, Ordering::Relaxed);
+            h.bytes_out.store(bytes * 2, Ordering::Relaxed);
+            h.flush_into(&total_in, &total_out);
+        }
+        assert_eq!(total_in.load(Ordering::SeqCst), 600);
+        assert_eq!(total_out.load(Ordering::SeqCst), 1200);
     }
 
     #[test]

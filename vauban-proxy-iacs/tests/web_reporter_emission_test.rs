@@ -91,20 +91,37 @@ fn handler_emits_iacs_tunnel_closed_on_drop() {
     );
 }
 
-/// The relay tasks accumulate per-channel byte counts into the
-/// per-EWS-login totals (`session_total_bytes_in/out`) so the
-/// `IacsTunnelClosed` payload carries the cumulative traffic.
-/// Drift here would either double-count (counters incremented twice)
-/// or under-count (relay never flushes into the session totals).
+/// The relay teardown AND the handler `Drop` both fold per-channel
+/// byte counts into the per-EWS-login totals through the ONE-SHOT
+/// `TunnelHandle::flush_into` seam (idempotent guard in
+/// registry.rs). Two racers exist by design: the teardown task
+/// (channel closed cleanly) and the `Drop` (EWS connection died with
+/// the teardown still in flight). Ad-hoc `fetch_add` calls in
+/// server.rs would reintroduce either the double-count (both flush)
+/// or the `IacsTunnelClosed { 0, 0 }` under-count (Drop reads the
+/// totals before the teardown flush lands -- the July 2026 bug that
+/// reset the status-page counters to zero at disconnect).
 #[test]
-fn relay_accumulates_byte_counters_into_session_totals() {
+fn relay_and_drop_flush_byte_counters_through_one_shot_seam() {
     let src = read_src("server.rs");
     assert!(
-        src.contains("session_total_bytes_in.fetch_add(")
-            && src.contains("session_total_bytes_out.fetch_add("),
-        "spawn_relay MUST push the per-channel byte counts into the \
-         per-login totals so IacsTunnelClosed reports cumulative \
-         traffic across every direct-tcpip channel of the EWS login"
+        src.matches(".flush_into(").count() >= 2,
+        "BOTH the relay teardown task and the handler Drop MUST fold \
+         channel counters into the login totals via \
+         TunnelHandle::flush_into"
+    );
+    assert!(
+        !src.contains("session_total_bytes_in.fetch_add(")
+            && !src.contains("session_total_bytes_out.fetch_add("),
+        "server.rs MUST NOT fetch_add into the session totals \
+         directly; the one-shot flush_into seam is the only writer \
+         (double-count / zero-count protection)"
+    );
+    let registry_src = read_src("registry.rs");
+    assert!(
+        registry_src.contains("if self.flushed.swap(true, Ordering::SeqCst)"),
+        "TunnelHandle::flush_into MUST be guarded by a one-shot \
+         swap so concurrent flushers cannot double-count"
     );
 }
 
@@ -155,6 +172,77 @@ fn web_ipc_writes_serialised_through_single_writer_task() {
          the web pipe (found {direct_web_send_count} occurrences); \
          every emission must go through the mpsc to preserve \
          single-writer-task serialisation"
+    );
+}
+
+/// The per-EWS-login stats ticker (July 2026: status-page byte
+/// counters stuck at zero because the privsep proxy never emitted
+/// periodic `tunnel_stats`). The ticker MUST:
+/// - be spawned by the SAME one-shot `tunnel_active_emitted` guard
+///   as the activation message (one ticker per login, only after
+///   the first `direct-tcpip`);
+/// - tag its reports `status = "tunnel_stats"` so the vauban-web
+///   pump maps them to the canonical stats frame (no lifecycle
+///   transition, no DB write);
+/// - stop on the `SessionHandles` removal performed by the
+///   handler's `Drop` (the same lifecycle signal the terminate IPC
+///   relies on);
+/// - route its accounting through the invariant-covered pure seam
+///   (`stats::cumulative_bytes` + `stats::MonotonicReport`), not
+///   ad-hoc arithmetic.
+#[test]
+fn handler_spawns_stats_ticker_on_first_channel_open() {
+    let src = read_src("server.rs");
+    assert!(
+        src.contains("spawn_stats_ticker(StatsTickerJob {"),
+        "channel_open_direct_tcpip MUST spawn the per-login stats \
+         ticker (status-page byte counters stay at zero without it)"
+    );
+    assert!(
+        src.contains("status: \"tunnel_stats\".to_string()"),
+        "the ticker MUST tag its IacsTunnelStatusUpdate as \
+         `tunnel_stats` (any other status would be demoted or, \
+         worse, replay `tunnel_active`)"
+    );
+    assert!(
+        src.contains("session_handles.get(&session_uuid).is_none()"),
+        "the ticker MUST stop when the handler Drop removes the \
+         session from SessionHandles (no leaked 5 s tasks after \
+         EWS disconnect)"
+    );
+    assert!(
+        src.contains("crate::stats::cumulative_bytes(")
+            && src.contains("crate::stats::MonotonicReport::new()"),
+        "the ticker MUST compute its report through the pure \
+         `crate::stats` seam (unit + proptest coverage) so the \
+         skip-closed / monotonic invariants apply to production"
+    );
+    assert!(
+        src.contains("login_channels\n                .iter()")
+            || src.contains("login_channels.iter()"),
+        "the ticker MUST sample EVERY live channel of the login \
+         (login_channels), NOT the session-keyed TunnelRegistry \
+         whose insert() replaces the previous handle -- sampling \
+         only the newest channel under-counts every earlier or \
+         concurrent one"
+    );
+}
+
+/// The handler `Drop` MUST close + flush EVERY remaining channel of
+/// the login (`login_channels`), not just the newest registry
+/// handle: with the normal `ssh -L` workflow every local TCP
+/// `accept()` opens a new channel, and only flushing the last one
+/// under-counted the `IacsTunnelClosed` totals.
+#[test]
+fn drop_flushes_every_login_channel() {
+    let src = read_src("server.rs");
+    assert!(
+        src.contains("for entry in self.login_channels.iter()"),
+        "Drop MUST iterate login_channels and flush each handle"
+    );
+    assert!(
+        src.contains("self.login_channels.clear()"),
+        "Drop MUST clear login_channels after the flush"
     );
 }
 

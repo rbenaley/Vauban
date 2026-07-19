@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use russh::keys::{PrivateKey, PublicKey};
 use russh::server::{Auth, Config as ServerConfig, Handler, Msg, Server, Session};
@@ -78,6 +78,11 @@ pub struct IacsTunnelServer {
     pub web_reporter: WebReporter,
     /// PCAP recording hub (ProxyIacs → Audit). `None` when recording disabled.
     pub recording: Option<IacsRecordingHub>,
+    /// Interval between two `tunnel_stats` reports per EWS login.
+    /// Production keeps [`crate::stats::STATS_INTERVAL`] (5 s); the
+    /// E2E harness shrinks it so the suite does not sleep for
+    /// multiples of 5 s. See [`IacsTunnelServer::with_stats_interval`].
+    pub stats_interval: Duration,
 }
 
 impl IacsTunnelServer {
@@ -98,7 +103,19 @@ impl IacsTunnelServer {
             max_channels_per_session,
             web_reporter,
             recording,
+            stats_interval: crate::stats::STATS_INTERVAL,
         }
+    }
+
+    /// Override the `tunnel_stats` tick interval (test harness
+    /// seam; production sticks to the [`Self::new`] default).
+    // dead_code: only the lib target's E2E harness calls this; the
+    // binary target (main.rs compiles the same source) never does.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn with_stats_interval(mut self, interval: Duration) -> Self {
+        self.stats_interval = interval;
+        self
     }
 }
 
@@ -118,10 +135,12 @@ impl Server for IacsTunnelServer {
             web_reporter: self.web_reporter.clone(),
             recording: self.recording.clone(),
             channel_counter: Arc::new(AtomicUsize::new(0)),
+            login_channels: Arc::new(dashmap::DashMap::new()),
             tunnel_active_emitted: Arc::new(AtomicBool::new(false)),
             session_total_bytes_in: Arc::new(AtomicUsize::new(0)),
             session_total_bytes_out: Arc::new(AtomicUsize::new(0)),
             connected_at_us: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            stats_interval: self.stats_interval,
         }
     }
 
@@ -162,6 +181,18 @@ pub struct IacsTunnelHandler {
     pub recording: Option<IacsRecordingHub>,
     /// Monotonic `channel_id` counter for this EWS SSH login.
     pub channel_counter: Arc<AtomicUsize>,
+    /// Every live `direct-tcpip` channel of THIS login, keyed by
+    /// `channel_id`. The stats ticker samples the SUM of these
+    /// handles (plus the flushed totals); the handler `Drop`
+    /// closes + flushes every remaining entry.
+    ///
+    /// Why not the [`TunnelRegistry`]: the registry is keyed by
+    /// `session_uuid`, so each new channel REPLACES the previous
+    /// handle -- with the normal `ssh -L` workflow (one channel per
+    /// local TCP `accept()`) every channel but the newest became
+    /// invisible to the ticker, and at disconnect only the newest
+    /// was folded into the `IacsTunnelClosed` totals (under-count).
+    pub login_channels: Arc<dashmap::DashMap<u32, TunnelHandle>>,
     /// `true` once the per-EWS-login `IacsTunnelStatusUpdate { status =
     /// "tunnel_active" }` has been emitted on the web IPC. The first
     /// successful `direct-tcpip` flips it; subsequent channels do not
@@ -180,6 +211,9 @@ pub struct IacsTunnelHandler {
     /// (`YYYY/MM/UUID/`) matches the `proxy_sessions.connected_at`
     /// row in the DB and cannot drift across a month boundary.
     pub connected_at_us: Arc<std::sync::atomic::AtomicU64>,
+    /// Snapshot of [`IacsTunnelServer::stats_interval`] at
+    /// handler-creation time.
+    pub stats_interval: Duration,
 }
 
 impl Handler for IacsTunnelHandler {
@@ -461,6 +495,20 @@ impl Handler for IacsTunnelHandler {
                     "iacs_tunnel: failed to enqueue IacsTunnelStatusUpdate (web channel closed?)"
                 );
             }
+            // One stats ticker per EWS login, started with the same
+            // one-shot guard as the `tunnel_active` emission above.
+            // Without it the status page byte counters stayed at
+            // zero for the whole session (the 5 s tick only existed
+            // in the legacy in-process sshd).
+            spawn_stats_ticker(StatsTickerJob {
+                web_reporter: tx.clone(),
+                session_uuid: pending.session_uuid,
+                login_channels: Arc::clone(&self.login_channels),
+                session_handles: self.session_handles.clone(),
+                session_total_bytes_in: Arc::clone(&self.session_total_bytes_in),
+                session_total_bytes_out: Arc::clone(&self.session_total_bytes_out),
+                interval: self.stats_interval,
+            });
         }
         // Extract the resolved upstream peer address BEFORE the
         // stream is split into reader/writer halves -- once split
@@ -492,6 +540,12 @@ impl Handler for IacsTunnelHandler {
         );
         self.registry.insert(handle.clone());
         let channel_id = self.channel_counter.fetch_add(1, Ordering::SeqCst) as u32 + 1;
+        // Track EVERY live channel of this login for the stats
+        // ticker + the Drop-time flush. The registry above only
+        // keeps the NEWEST handle per session (keyed by
+        // session_uuid), which made earlier channels invisible to
+        // the byte accounting. Removed by the relay teardown task.
+        self.login_channels.insert(channel_id, handle.clone());
         let recorder = self.recording.as_ref().map(|hub| {
             hub.send_channel_start(
                 &pending.session_uuid.to_string(),
@@ -508,6 +562,7 @@ impl Handler for IacsTunnelHandler {
             upstream: upstream_stream,
             handle,
             live_channels: Arc::clone(&self.live_channels),
+            login_channels: Arc::clone(&self.login_channels),
             session_total_bytes_in: Arc::clone(&self.session_total_bytes_in),
             session_total_bytes_out: Arc::clone(&self.session_total_bytes_out),
             expected_profile: ExpectedProfile::from_industrial_label(&pending.industrial_protocol),
@@ -601,6 +656,20 @@ impl Drop for IacsTunnelHandler {
             // IPC for the same `session_uuid` becomes a no-op
             // instead of trying to disconnect a dead session.
             self.session_handles.remove(&p.session_uuid);
+            // Close + fold EVERY remaining channel of this login into
+            // the totals BEFORE reading them for IacsTunnelClosed:
+            // the relay teardown tasks race this Drop, and losing
+            // the race used to ship `IacsTunnelClosed { bytes:
+            // (0, 0) }` -- the status page then reset its counters
+            // to zero at disconnect. `flush_into` is idempotent
+            // (one-shot per channel), so whoever runs second is a
+            // no-op.
+            for entry in self.login_channels.iter() {
+                let h = entry.value();
+                h.close();
+                h.flush_into(&self.session_total_bytes_in, &self.session_total_bytes_out);
+            }
+            self.login_channels.clear();
             debug!(session_uuid = %p.session_uuid, "iacs_tunnel: drop cleanup");
             // Notify vauban-web so the `proxy_sessions.status` row
             // flips to `terminated`, `disconnected_at` is anchored,
@@ -645,6 +714,7 @@ struct RelayJob {
     upstream: tokio::net::TcpStream,
     handle: TunnelHandle,
     live_channels: Arc<AtomicUsize>,
+    login_channels: Arc<dashmap::DashMap<u32, TunnelHandle>>,
     session_total_bytes_in: Arc<AtomicUsize>,
     session_total_bytes_out: Arc<AtomicUsize>,
     expected_profile: ExpectedProfile,
@@ -659,6 +729,7 @@ fn spawn_relay(job: RelayJob) {
         upstream,
         handle,
         live_channels,
+        login_channels,
         session_total_bytes_in,
         session_total_bytes_out,
         expected_profile,
@@ -713,13 +784,25 @@ fn spawn_relay(job: RelayJob) {
             hub.send_channel_end(&session_id_str, channel_id);
         }
         let (bin, bout) = h_close.counters();
+        // Close FIRST, then flush: the stats ticker skips closed
+        // handles, so this ordering makes a double-count (bytes in
+        // the totals AND in a still-counted live handle) impossible;
+        // the transient closed-but-not-flushed dip is absorbed by
+        // the ticker's MonotonicReport clamp.
+        h_close.close();
         // Accumulate this channel's traffic into the per-EWS-login
         // totals so the `IacsTunnelClosed` IPC emitted at handler
         // drop carries the cumulative byte counts (sum across every
-        // `direct-tcpip` channel of the same session).
-        session_total_bytes_in.fetch_add(bin as usize, Ordering::SeqCst);
-        session_total_bytes_out.fetch_add(bout as usize, Ordering::SeqCst);
-        h_close.close();
+        // `direct-tcpip` channel of the same session). Idempotent
+        // one-shot per channel -- the handler `Drop` may have flushed
+        // this handle already if the EWS connection died first.
+        h_close.flush_into(&session_total_bytes_in, &session_total_bytes_out);
+        // Only AFTER the flush: drop the ticker's view of this
+        // channel. Removing first would open a window where the
+        // channel's bytes are in neither the totals nor the live
+        // set (transient dip; the MonotonicReport would clamp it,
+        // but there is no reason to create the window at all).
+        login_channels.remove(&channel_id);
         // Release the per-login channel slot so the EWS can open a
         // new `direct-tcpip` for the next local TCP `accept()`.
         // Saturating sub: a panic in the relay task that ran before
@@ -734,6 +817,101 @@ fn spawn_relay(job: RelayJob) {
             channel_count_after = live_channels.load(Ordering::SeqCst),
             "iacs_tunnel: tunnel_closed"
         );
+    });
+}
+
+/// Everything the per-EWS-login stats ticker needs, captured at the
+/// `tunnel_active` transition.
+struct StatsTickerJob {
+    web_reporter: UnboundedSender<Message>,
+    session_uuid: uuid::Uuid,
+    login_channels: Arc<dashmap::DashMap<u32, TunnelHandle>>,
+    session_handles: SessionHandles,
+    session_total_bytes_in: Arc<AtomicUsize>,
+    session_total_bytes_out: Arc<AtomicUsize>,
+    interval: Duration,
+}
+
+/// Periodic `IacsTunnelStatusUpdate { status = "tunnel_stats" }`
+/// reporter for one EWS login. Ported from the 5 s tick of the
+/// legacy in-process sshd; without it the status-page byte counters
+/// stayed at zero for the whole session on the privsep path.
+///
+/// Accounting: flushed-channel totals + EVERY live channel of this
+/// login (`login_channels`, NOT the session-keyed registry whose
+/// insert REPLACES the previous handle -- sampling only the newest
+/// channel under-counted every concurrent/earlier one), clamped
+/// monotonic -- see [`crate::stats`] for the model and its
+/// invariant suites (skip-closed avoids double-counting a flushed
+/// handle; the monotonic clamp absorbs the flush/close race).
+///
+/// Lifecycle: starts on the first successful `direct-tcpip` (same
+/// one-shot guard as the `tunnel_active` emission) and stops when
+/// the handler's `Drop` removes the session from [`SessionHandles`]
+/// -- the same signal the terminate IPC relies on, so no new
+/// shutdown state is introduced. A closed web channel also stops
+/// the ticker (vauban-web is gone; nobody is listening).
+///
+/// Emission is unconditional every tick (no change-detection): a
+/// status page (re)loaded mid-session converges to the real
+/// counters within one interval even on an idle tunnel.
+fn spawn_stats_ticker(job: StatsTickerJob) {
+    let StatsTickerJob {
+        web_reporter,
+        session_uuid,
+        login_channels,
+        session_handles,
+        session_total_bytes_in,
+        session_total_bytes_out,
+        interval,
+    } = job;
+    tokio::spawn(async move {
+        let mut report = crate::stats::MonotonicReport::new();
+        let mut tick = tokio::time::interval(interval);
+        // The first `interval.tick()` fires immediately; skip it so
+        // the first report lands one full interval after activation
+        // (the `tunnel_active` message just went out with zeros).
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            // Handler dropped (EWS disconnected / terminated): the
+            // authoritative `IacsTunnelClosed` totals are on their
+            // way on the same ordered channel; stop reporting.
+            if session_handles.get(&session_uuid).is_none() {
+                break;
+            }
+            let totals_in = session_total_bytes_in.load(Ordering::SeqCst) as u64;
+            let totals_out = session_total_bytes_out.load(Ordering::SeqCst) as u64;
+            let live: Vec<(u64, u64, bool)> = login_channels
+                .iter()
+                .map(|entry| {
+                    let h = entry.value();
+                    let (b_in, b_out) = h.counters();
+                    (b_in, b_out, h.is_closed())
+                })
+                .collect();
+            let (raw_in, raw_out) = crate::stats::cumulative_bytes(totals_in, totals_out, live);
+            let (bytes_in, bytes_out) = report.next(raw_in, raw_out);
+            let msg = Message::IacsTunnelStatusUpdate {
+                session_id: session_uuid.to_string(),
+                status: "tunnel_stats".to_string(),
+                bytes_in,
+                bytes_out,
+                peer_ip: None,
+            };
+            if web_reporter.send(msg).is_err() {
+                // vauban-web side of the pipe is gone; the whole
+                // proxy is about to be restarted by the supervisor.
+                break;
+            }
+            debug!(
+                session_uuid = %session_uuid,
+                bytes_in = bytes_in,
+                bytes_out = bytes_out,
+                "iacs_tunnel: tunnel_stats reported"
+            );
+        }
+        debug!(session_uuid = %session_uuid, "iacs_tunnel: stats ticker stopped");
     });
 }
 

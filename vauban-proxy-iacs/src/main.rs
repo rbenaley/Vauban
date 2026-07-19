@@ -40,6 +40,7 @@ mod protocol_gate;
 mod registry;
 mod relay;
 mod server;
+mod stats;
 mod upstream;
 
 use anyhow::{Context, Result};
