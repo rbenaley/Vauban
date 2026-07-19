@@ -398,7 +398,7 @@ impl Handler for IacsTunnelHandler {
             &self.broadcast,
             &handle.session_uuid,
             serde_json::json!({
-                "type": "tunnel_active",
+                "type": super::ws_vocab::TYPE_TUNNEL_ACTIVE,
                 "peer_ip": self.peer_addr.map(|a| a.ip().to_string()),
                 "ews_uuid": handle.ews_uuid.to_string(),
             }),
@@ -551,7 +551,7 @@ fn spawn_relay(
                         &stats_broadcast,
                         &stats_handle.session_uuid,
                         serde_json::json!({
-                            "type": "tunnel_stats",
+                            "type": super::ws_vocab::TYPE_TUNNEL_STATS,
                             "bytes_in": bytes_in,
                             "bytes_out": bytes_out,
                         }),
@@ -595,7 +595,7 @@ fn spawn_relay(
             &broadcast,
             &h_close.session_uuid,
             serde_json::json!({
-                "type": "tunnel_closed",
+                "type": super::ws_vocab::TYPE_TUNNEL_CLOSED,
                 "bytes_in": bin,
                 "bytes_out": bout,
                 "reason": "ews_disconnect",

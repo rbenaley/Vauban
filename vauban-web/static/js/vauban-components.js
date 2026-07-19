@@ -187,9 +187,10 @@ document.addEventListener('alpine:init', function () {
     //     server-side from created_at + waiting_client_ttl_seconds
     //     (the revocation watchdog's reference); -1 means "no
     //     countdown" (TTL disabled or not waiting). At zero the pill
-    //     flips to `expired` locally -- waiting_client rows get no WS
-    //     push, and the DB flip follows within
-    //     revocation_poll_interval_seconds.
+    //     flips to `expired` locally (optimistic guess); the
+    //     authoritative signal stays server-side -- a late
+    //     tunnel_active push recovers the pill, a tunnel_closed push
+    //     (watchdog reap via proxy-iacs) finalizes it.
     Alpine.data('iacsTunnelStatus', function (opts) {
         return {
             status: opts.initialStatus,
@@ -220,15 +221,30 @@ document.addEventListener('alpine:init', function () {
                     this.ws.onerror = function () {};
                 } catch (e) { /* swallow: status page still useful without WS */ }
             },
+            // Twin of services::iacs_tunnel::ws_vocab::ClientState::
+            // apply_event -- the transition table lives there (unit +
+            // proptest coverage) and MUST stay in lock-step with this
+            // function. Both wire emitters (in-process dev sshd AND
+            // the privsep proxy pump in ipc/proxy_iacs.rs) speak this
+            // exact vocabulary; pinned by tests/web/iacs_ws_vocab_test.rs.
             handle: function (raw) {
                 var msg;
                 try { msg = JSON.parse(raw); } catch (e) { return; }
                 if (!msg || !msg.type) return;
                 if (msg.type === 'tunnel_active') {
-                    this.status = 'tunnel_active';
+                    // Terminated is authoritative-final: a replayed
+                    // activation must not resurrect a closed tunnel.
+                    // 'expired' is only the local optimistic guess at
+                    // countdown zero, so activation DOES recover it.
+                    if (this.status === 'terminated') return;
                     this.stopCountdown();
                     if (msg.peer_ip) this.peerIp = msg.peer_ip;
-                    this.startedAt = Date.now();
+                    if (this.status !== 'tunnel_active') {
+                        // Idempotence: a re-delivered activation must
+                        // not reset the duration wall-clock anchor.
+                        this.startedAt = Date.now();
+                    }
+                    this.status = 'tunnel_active';
                     this.startDurationTimer();
                 } else if (msg.type === 'tunnel_stats') {
                     if (typeof msg.bytes_in === 'number') this.bytesIn = msg.bytes_in;
@@ -240,6 +256,8 @@ document.addEventListener('alpine:init', function () {
                     this.stopDurationTimer();
                     this.stopCountdown();
                 }
+                // Any other type: no lifecycle transition (fail-safe
+                // against future message types on the same channel).
             },
             startCountdown: function () {
                 if (this.countdownTimer) return;

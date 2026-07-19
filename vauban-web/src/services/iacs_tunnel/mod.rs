@@ -42,6 +42,7 @@ pub mod registry;
 pub mod relay;
 pub mod revocation;
 pub mod server;
+pub mod ws_vocab;
 
 pub use countdown::{format_countdown_label, remaining_waiting_seconds};
 pub use port_mapping::derive_local_forward_port;

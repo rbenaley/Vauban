@@ -391,10 +391,20 @@ impl ProxyIacsClient {
                         }
                     }
                 }
+                // Wire vocabulary: the SAME event types as the
+                // in-process dev sshd (`services/iacs_tunnel/server.rs`)
+                // so the Alpine `iacsTunnelStatus` component reacts
+                // identically under supervisor (privsep) and dev mode.
+                // The pre-fix envelope (a distinct iacs_tunnel_*
+                // type plus a nested status field) was invisible to
+                // the component: the status page countdown kept
+                // ticking over an active tunnel. Pinned by
+                // `tests/web/iacs_ws_vocab_test.rs`.
+                let event_type =
+                    crate::services::iacs_tunnel::ws_vocab::event_type_for_status(&status);
                 let payload = json!({
-                    "type": "iacs_tunnel_status",
+                    "type": event_type,
                     "session_id": session_id,
-                    "status": status,
                     "bytes_in": bytes_in,
                     "bytes_out": bytes_out,
                     "peer_ip": peer_ip,
@@ -491,8 +501,10 @@ impl ProxyIacsClient {
                         }
                     }
                 }
+                // Canonical close event -- see the vocabulary note on
+                // the `IacsTunnelStatusUpdate` arm above.
                 let payload = json!({
-                    "type": "iacs_tunnel_closed",
+                    "type": crate::services::iacs_tunnel::ws_vocab::TYPE_TUNNEL_CLOSED,
                     "session_id": session_id,
                     "reason": reason,
                     "bytes_in": bytes_in,

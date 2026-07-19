@@ -65,6 +65,7 @@ pub mod iacs_test;
 pub mod iacs_tunnel_handler_test;
 pub mod iacs_tunnel_hardening_test;
 pub mod iacs_tunnel_status_ux_test;
+pub mod iacs_ws_vocab_test;
 pub mod input_format_e2e_test;
 pub mod input_format_pin_test;
 pub mod input_format_proptest;
