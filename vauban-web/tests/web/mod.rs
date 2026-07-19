@@ -51,6 +51,7 @@ pub mod iacs_admin_ux_test;
 pub mod iacs_asset_create_test;
 pub mod iacs_assets_surface_e2e_test;
 pub mod iacs_connect_button_test;
+pub mod iacs_countdown_e2e_test;
 pub mod iacs_drift_test;
 pub mod iacs_kill_switch_test;
 pub mod iacs_local_forward_port_test;

@@ -303,17 +303,49 @@ async fn template_renders_ws_subscription_scaffolding() {
         target_port: 502,
         tunnel_target_addr: "127.0.0.1:502".to_string(),
         session_status: "waiting_client".to_string(),
+        waiting_countdown_seconds: Some(300),
         csrf_token: "test".to_string(),
     };
     use askama::Template;
     let html = template.render().expect("render");
     assert!(
-        html.contains("Alpine.data('iacsTunnelStatus'"),
-        "template must register the Alpine status component"
+        html.contains("x-data=\"iacsTunnelStatus("),
+        "template must mount the Alpine status component"
     );
+    // CSP pin: `script-src 'self' 'unsafe-eval'` has NO
+    // 'unsafe-inline', so the component MUST live in the compiled
+    // static asset, never in an inline <script> block (the
+    // pre-countdown regression: the inline registration silently
+    // never ran and every x-data on the page threw
+    // "Can't find variable: iacsTunnelStatus"). `<script src=...>`
+    // tags from base.html are fine -- only bare `<script>` blocks
+    // (inline body) are forbidden.
     assert!(
-        html.contains("/ws/session/"),
-        "template must subscribe to /ws/session/ for real-time updates"
+        !html.contains("<script>"),
+        "status page must not carry inline <script> blocks (CSP has no unsafe-inline)"
+    );
+    let components = vauban_web::static_assets::lookup("js/vauban-components.js")
+        .expect("vauban-components.js must be a compiled static asset");
+    let js = std::str::from_utf8(components.content).expect("utf8");
+    assert!(
+        js.contains("Alpine.data('iacsTunnelStatus'"),
+        "iacsTunnelStatus must be registered in vauban-components.js"
+    );
+    for needle in [
+        "startCountdown",
+        "stopCountdown",
+        "expireNow",
+        "formatCountdown",
+        "remainingSeconds",
+    ] {
+        assert!(
+            js.contains(needle),
+            "vauban-components.js must carry the countdown seam '{needle}'"
+        );
+    }
+    assert!(
+        js.contains("/ws/session/"),
+        "the external component must subscribe to /ws/session/ for real-time updates"
     );
     assert!(
         html.contains("data-testid=\"iacs-tunnel-bytes-in\""),

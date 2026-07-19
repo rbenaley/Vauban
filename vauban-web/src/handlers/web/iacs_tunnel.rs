@@ -676,6 +676,7 @@ pub async fn iacs_tunnel_status_page(
         String,
         Option<String>,
         Option<String>,
+        chrono::DateTime<chrono::Utc>,
     ) = match proxy_sessions::table
         .inner_join(schema_assets::table)
         .filter(proxy_sessions::uuid.eq(session_uuid))
@@ -688,6 +689,7 @@ pub async fn iacs_tunnel_status_page(
             schema_assets::hostname,
             proxy_sessions::industrial_protocol,
             proxy_sessions::tunnel_target_addr,
+            proxy_sessions::created_at,
         ))
         .first(&mut conn)
         .await
@@ -704,8 +706,34 @@ pub async fn iacs_tunnel_status_page(
         }
     };
 
-    let (status, asset_name, _asset_type_raw, _asset_hostname, industrial_protocol, target_addr) =
-        row;
+    let (
+        status,
+        asset_name,
+        _asset_type_raw,
+        _asset_hostname,
+        industrial_protocol,
+        target_addr,
+        session_created_at,
+    ) = row;
+
+    // Countdown to the waiting_client deadline. Anchored on
+    // `created_at` -- the SAME reference the revocation watchdog
+    // uses for its SQL cutoff -- so a page refresh renders the true
+    // remaining window, not a restarted one. `None` (no countdown)
+    // for non-waiting states and when the TTL is disabled.
+    let waiting_countdown_seconds = if status == "waiting_client" {
+        crate::services::iacs_tunnel::remaining_waiting_seconds(
+            session_created_at,
+            chrono::Utc::now(),
+            state
+                .config
+                .industrial
+                .iacs_tunnel
+                .waiting_client_ttl_seconds,
+        )
+    } else {
+        None
+    };
 
     // Derive the per-session `(target_host, target_port)` from the
     // `proxy_sessions.tunnel_target_addr` snapshot taken at session
@@ -780,6 +808,7 @@ pub async fn iacs_tunnel_status_page(
         target_port,
         tunnel_target_addr: target_addr_str,
         session_status: status,
+        waiting_countdown_seconds,
         csrf_token,
     };
 

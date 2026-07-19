@@ -171,6 +171,131 @@ document.addEventListener('alpine:init', function () {
         };
     });
 
+    // IACS tunnel status page component (sessions/iacs_tunnel_status.html).
+    //
+    // Registered here (external file) and NOT in an inline <script>
+    // block: the CSP is `script-src 'self' 'unsafe-eval'` -- no
+    // 'unsafe-inline' -- so an inline registration never executes and
+    // every x-data/x-show on the page throws
+    // "Can't find variable: iacsTunnelStatus".
+    //
+    // Drives three live surfaces on the status page:
+    //   * the state pill (waiting_client -> tunnel_active ->
+    //     terminated/expired) via the /ws/session/{uuid} push feed;
+    //   * the bytes in/out + duration counters (tunnel_stats);
+    //   * the waiting_client countdown. The seed is computed
+    //     server-side from created_at + waiting_client_ttl_seconds
+    //     (the revocation watchdog's reference); -1 means "no
+    //     countdown" (TTL disabled or not waiting). At zero the pill
+    //     flips to `expired` locally -- waiting_client rows get no WS
+    //     push, and the DB flip follows within
+    //     revocation_poll_interval_seconds.
+    Alpine.data('iacsTunnelStatus', function (opts) {
+        return {
+            status: opts.initialStatus,
+            sessionUuid: opts.sessionUuid,
+            peerIp: '',
+            bytesIn: 0,
+            bytesOut: 0,
+            startedAt: null,
+            duration: '',
+            ws: null,
+            durationTimer: null,
+            remaining: opts.remainingSeconds,
+            countdownTimer: null,
+            init: function () {
+                if (this.status === 'tunnel_active') {
+                    this.startedAt = Date.now();
+                    this.startDurationTimer();
+                }
+                if (this.status === 'waiting_client' && this.remaining >= 0) {
+                    this.startCountdown();
+                }
+                var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                var url = proto + '//' + window.location.host + '/ws/session/' + this.sessionUuid;
+                var self = this;
+                try {
+                    this.ws = new WebSocket(url);
+                    this.ws.onmessage = function (ev) { self.handle(ev.data); };
+                    this.ws.onerror = function () {};
+                } catch (e) { /* swallow: status page still useful without WS */ }
+            },
+            handle: function (raw) {
+                var msg;
+                try { msg = JSON.parse(raw); } catch (e) { return; }
+                if (!msg || !msg.type) return;
+                if (msg.type === 'tunnel_active') {
+                    this.status = 'tunnel_active';
+                    this.stopCountdown();
+                    if (msg.peer_ip) this.peerIp = msg.peer_ip;
+                    this.startedAt = Date.now();
+                    this.startDurationTimer();
+                } else if (msg.type === 'tunnel_stats') {
+                    if (typeof msg.bytes_in === 'number') this.bytesIn = msg.bytes_in;
+                    if (typeof msg.bytes_out === 'number') this.bytesOut = msg.bytes_out;
+                } else if (msg.type === 'tunnel_closed') {
+                    this.status = 'terminated';
+                    if (typeof msg.bytes_in === 'number') this.bytesIn = msg.bytes_in;
+                    if (typeof msg.bytes_out === 'number') this.bytesOut = msg.bytes_out;
+                    this.stopDurationTimer();
+                    this.stopCountdown();
+                }
+            },
+            startCountdown: function () {
+                if (this.countdownTimer) return;
+                if (this.remaining <= 0) { this.expireNow(); return; }
+                var self = this;
+                this.countdownTimer = setInterval(function () {
+                    if (self.status !== 'waiting_client') { self.stopCountdown(); return; }
+                    self.remaining -= 1;
+                    if (self.remaining <= 0) { self.remaining = 0; self.expireNow(); }
+                }, 1000);
+            },
+            stopCountdown: function () {
+                if (this.countdownTimer) { clearInterval(this.countdownTimer); this.countdownTimer = null; }
+            },
+            expireNow: function () {
+                this.stopCountdown();
+                this.status = 'expired';
+            },
+            formatCountdown: function (s) {
+                // Twin of services::iacs_tunnel::format_countdown_label --
+                // keep the two in lock-step (M:SS below one hour,
+                // H:MM:SS above).
+                if (s === null || s < 0) return '';
+                var h = Math.floor(s / 3600);
+                var m = Math.floor((s % 3600) / 60);
+                var sec = s % 60;
+                var pad = function (n) { return String(n).padStart(2, '0'); };
+                return h > 0 ? h + ':' + pad(m) + ':' + pad(sec) : m + ':' + pad(sec);
+            },
+            startDurationTimer: function () {
+                if (this.durationTimer) return;
+                var self = this;
+                var tick = function () {
+                    if (!self.startedAt) return;
+                    var s = Math.floor((Date.now() - self.startedAt) / 1000);
+                    var h = Math.floor(s / 3600);
+                    var m = Math.floor((s % 3600) / 60);
+                    var sec = s % 60;
+                    self.duration = (h > 0 ? h + 'h ' : '') + (m > 0 || h > 0 ? m + 'm ' : '') + sec + 's';
+                };
+                tick();
+                this.durationTimer = setInterval(tick, 1000);
+            },
+            stopDurationTimer: function () {
+                if (this.durationTimer) { clearInterval(this.durationTimer); this.durationTimer = null; }
+            },
+            formatBytes: function (n) {
+                if (!n) return '0 B';
+                var u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+                var v = n, i = 0;
+                while (v >= 1024 && i < u.length - 1) { v /= 1024; i += 1; }
+                return v.toFixed(i === 0 ? 0 : 1) + ' ' + u[i];
+            }
+        };
+    });
+
     // SSH Terminal component (requires xterm.js loaded)
     Alpine.data('sshTerminal', function (sessionId) {
         return {

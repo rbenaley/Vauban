@@ -73,6 +73,16 @@ pub struct IacsTunnelStatusTemplate {
     /// `terminated`). Used for the initial state pill; L5 mutates
     /// it client-side via the WebSocket push.
     pub session_status: String,
+    /// Seconds left before the revocation watchdog flips this
+    /// `waiting_client` row to `expired`, computed by
+    /// [`crate::services::iacs_tunnel::remaining_waiting_seconds`]
+    /// from the SAME reference the watchdog uses
+    /// (`proxy_sessions.created_at + waiting_client_ttl_seconds`).
+    /// `None` when the countdown must not render: TTL disabled
+    /// (`waiting_client_ttl_seconds == 0`) or session no longer in
+    /// `waiting_client`. The Alpine component ticks the value down
+    /// client-side and flips the pill to `expired` at zero.
+    pub waiting_countdown_seconds: Option<i64>,
     /// CSRF token for the Disconnect form.
     pub csrf_token: String,
 }
@@ -131,6 +141,23 @@ impl IacsTunnelStatusTemplate {
             tp = self.target_port,
         )
     }
+
+    /// Numeric seed handed to the Alpine `iacsTunnelStatus`
+    /// component. `-1` is the "no countdown" sentinel (TTL disabled
+    /// or non-`waiting_client` status): the client never starts the
+    /// timer nor renders the label for a negative seed.
+    pub fn countdown_seed(&self) -> i64 {
+        self.waiting_countdown_seconds.unwrap_or(-1)
+    }
+
+    /// Server-rendered initial countdown label (`M:SS` / `H:MM:SS`)
+    /// so the value is meaningful before the first client-side tick.
+    /// Empty when no countdown renders.
+    pub fn countdown_initial_label(&self) -> String {
+        self.waiting_countdown_seconds
+            .map(crate::services::iacs_tunnel::format_countdown_label)
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -161,6 +188,7 @@ mod tests {
             target_port: 502,
             tunnel_target_addr: "10.42.0.7:502".to_string(),
             session_status: "waiting_client".to_string(),
+            waiting_countdown_seconds: Some(272),
             csrf_token: "csrf-token".to_string(),
         }
     }
@@ -278,6 +306,61 @@ mod tests {
         // Sanity: the page still renders, the modbus badge just
         // disappears (the iacs_tcp catch-all has no protocol label).
         assert!(html.contains("PLC-Modbus-A1"));
+    }
+
+    #[test]
+    fn countdown_seed_maps_none_to_negative_sentinel() {
+        let mut t = make_template();
+        t.waiting_countdown_seconds = None;
+        assert_eq!(t.countdown_seed(), -1);
+        assert_eq!(t.countdown_initial_label(), "");
+        t.waiting_countdown_seconds = Some(0);
+        assert_eq!(t.countdown_seed(), 0);
+        assert_eq!(t.countdown_initial_label(), "0:00");
+    }
+
+    #[test]
+    fn template_renders_countdown_when_waiting_with_ttl() {
+        let t = make_template();
+        let html = t.render().expect("render must succeed");
+        assert!(
+            html.contains("data-testid=\"iacs-tunnel-countdown\""),
+            "waiting_client with an enabled TTL must render the countdown slot"
+        );
+        assert!(
+            html.contains("remainingSeconds: 272"),
+            "Alpine seed must carry the server-computed remaining seconds"
+        );
+        assert!(
+            html.contains("4:32"),
+            "initial label must be server-rendered so the first paint is meaningful"
+        );
+    }
+
+    #[test]
+    fn template_seeds_negative_sentinel_when_countdown_disabled() {
+        let mut t = make_template();
+        t.waiting_countdown_seconds = None;
+        let html = t.render().expect("render must succeed");
+        assert!(
+            html.contains("remainingSeconds: -1"),
+            "disabled countdown must seed the -1 sentinel so the client never starts the timer"
+        );
+        assert!(
+            !html.contains("data-testid=\"iacs-tunnel-countdown\""),
+            "no countdown slot must render when the TTL is disabled or the tunnel is past waiting_client"
+        );
+    }
+
+    /// A row the watchdog is about to reap (remaining == 0) still
+    /// renders: the client flips the pill to `expired` on first tick.
+    #[test]
+    fn template_renders_zero_countdown_for_reapable_row() {
+        let mut t = make_template();
+        t.waiting_countdown_seconds = Some(0);
+        let html = t.render().expect("render must succeed");
+        assert!(html.contains("remainingSeconds: 0"));
+        assert!(html.contains("0:00"));
     }
 
     #[test]
