@@ -729,12 +729,17 @@ pub async fn update_vault_secret_web(
 // DELETE (POST) — hard delete, the WORM audit trail is the trace
 // ============================================================================
 
+// Speaks both dialects (BUG-12): plain forms get 303 + Location, HTMX
+// requests get 200 + HX-Redirect. The delete form on the detail page is
+// HTMX-driven (styled deleteConfirm modal) since the CSP hardening.
+#[allow(clippy::too_many_arguments)]
 pub async fn delete_vault_secret_web(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<DeleteVaultSecretWebForm>,
 ) -> Response {
@@ -747,27 +752,34 @@ pub async fn delete_vault_secret_web(
         csrf_cookie.map(|c| c.value()),
         &form.csrf_token,
     ) {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Invalid CSRF token"),
             &format!("/vault/secrets/{}", uuid_str),
         );
     }
 
     if !perms.vault_secrets_manage {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("You do not have permission to manage vault secrets"),
             "/vault/secrets",
         );
     }
 
     let Ok(parsed_uuid) = ::uuid::Uuid::parse_str(&uuid_str) else {
-        return flash_redirect(flash.error("Invalid identifier"), "/vault/secrets");
+        return htmx_or_flash_redirect(
+            &headers,
+            flash.error("Invalid identifier"),
+            "/vault/secrets",
+        );
     };
 
     let mut conn = match state.db_pool.get().await {
         Ok(c) => c,
         Err(_) => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("Database connection error. Please try again."),
                 "/vault/secrets",
             );
@@ -778,7 +790,9 @@ pub async fn delete_vault_secret_web(
         .execute(&mut conn)
         .await
     {
-        Ok(0) => flash_redirect(flash.error("Secret not found"), "/vault/secrets"),
+        Ok(0) => {
+            htmx_or_flash_redirect(&headers, flash.error("Secret not found"), "/vault/secrets")
+        }
         Ok(_) => {
             crate::services::emit_audit(
                 &state,
@@ -788,11 +802,12 @@ pub async fn delete_vault_secret_web(
                 )
                 .user(auth_user.uuid.clone()),
             );
-            flash_redirect(flash.success("Secret deleted"), "/vault/secrets")
+            htmx_or_flash_redirect(&headers, flash.success("Secret deleted"), "/vault/secrets")
         }
         Err(e) => {
             tracing::error!("Failed to delete vault secret: {}", e);
-            flash_redirect(
+            htmx_or_flash_redirect(
+                &headers,
                 flash.error("Failed to delete secret"),
                 &format!("/vault/secrets/{}", uuid_str),
             )

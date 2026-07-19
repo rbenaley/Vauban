@@ -133,26 +133,37 @@ fn resolve_actor_ip(
 /// enumeration on `RequestNotFound` / `EwsNotFound` / `NotOwner`).
 ///
 /// `redirect_target` is used for flash redirects; the 404 path returns
-/// the constant `404 Not Found`.
+/// the constant `404 Not Found`. Redirects speak both dialects
+/// (BUG-12): plain forms get 303 + `Location`, HTMX requests get
+/// 200 + `HX-Redirect` (the offboard forms are HTMX-driven since the
+/// CSP hardening removed their inline `onsubmit=` confirms).
 fn iacs_error_to_response(
+    headers: &axum::http::HeaderMap,
     error: IacsError,
     flash: crate::middleware::flash::Flash,
     redirect_target: &str,
 ) -> Response {
     use shared::messages::EwsDenyReason;
     match error {
-        IacsError::InvalidInput(msg) => flash_redirect(flash.error(msg), redirect_target),
+        IacsError::InvalidInput(msg) => {
+            htmx_or_flash_redirect(headers, flash.error(msg), redirect_target)
+        }
         IacsError::Deny(reason) => match reason {
             EwsDenyReason::RequestNotFound
             | EwsDenyReason::EwsNotFound
             | EwsDenyReason::NotOwner => {
                 (axum::http::StatusCode::NOT_FOUND, "Not Found").into_response()
             }
-            other => flash_redirect(flash.error(other.as_message().to_string()), redirect_target),
+            other => htmx_or_flash_redirect(
+                headers,
+                flash.error(other.as_message().to_string()),
+                redirect_target,
+            ),
         },
         IacsError::Internal(app_err) => {
             tracing::error!(error = %app_err, "IACS IPC failure");
-            flash_redirect(
+            htmx_or_flash_redirect(
+                headers,
                 flash.error("Operation failed; please retry later".to_string()),
                 redirect_target,
             )
@@ -317,7 +328,7 @@ pub async fn iacs_submit_onboarding(
 
     let (request_uuid, _audit_log_id) = match outcome {
         Ok(pair) => pair,
-        Err(e) => return iacs_error_to_response(e, flash, "/iacs/onboard"),
+        Err(e) => return iacs_error_to_response(&headers, e, flash, "/iacs/onboard"),
     };
 
     tracing::info!(
@@ -516,7 +527,7 @@ pub async fn iacs_edit_request(
     .await;
 
     if let Err(e) = outcome {
-        return iacs_error_to_response(e, flash, &edit_form_url);
+        return iacs_error_to_response(&headers, e, flash, &edit_form_url);
     }
 
     tracing::info!(
@@ -582,7 +593,7 @@ pub async fn iacs_cancel_request(
                 "/sessions/my-requests",
             )
         }
-        Err(e) => iacs_error_to_response(e, flash, "/sessions/my-requests"),
+        Err(e) => iacs_error_to_response(&headers, e, flash, "/sessions/my-requests"),
     }
 }
 
@@ -632,12 +643,13 @@ pub async fn iacs_offboard_self(
                 user = %auth_user.username,
                 "IACS EWS auto-offboarded by owner"
             );
-            flash_redirect(
+            htmx_or_flash_redirect(
+                &headers,
                 flash.success("EWS offboarded.".to_string()),
                 "/sessions/my-requests",
             )
         }
-        Err(e) => iacs_error_to_response(e, flash, "/sessions/my-requests"),
+        Err(e) => iacs_error_to_response(&headers, e, flash, "/sessions/my-requests"),
     }
 }
 
@@ -1541,7 +1553,7 @@ pub async fn iacs_admin_approve(
                 "/iacs/admin",
             )
         }
-        Err(e) => iacs_error_to_response(e, flash, "/iacs/admin"),
+        Err(e) => iacs_error_to_response(&headers, e, flash, "/iacs/admin"),
     }
 }
 
@@ -1629,7 +1641,7 @@ pub async fn iacs_admin_reject(
                 "/iacs/admin",
             )
         }
-        Err(e) => iacs_error_to_response(e, flash, "/iacs/admin"),
+        Err(e) => iacs_error_to_response(&headers, e, flash, "/iacs/admin"),
     }
 }
 
@@ -1676,7 +1688,7 @@ pub async fn iacs_admin_disable(
             );
             flash_redirect(flash.success("EWS disabled.".to_string()), "/iacs/admin")
         }
-        Err(e) => iacs_error_to_response(e, flash, "/iacs/admin"),
+        Err(e) => iacs_error_to_response(&headers, e, flash, "/iacs/admin"),
     }
 }
 
@@ -1723,7 +1735,7 @@ pub async fn iacs_admin_enable(
             );
             flash_redirect(flash.success("EWS enabled.".to_string()), "/iacs/admin")
         }
-        Err(e) => iacs_error_to_response(e, flash, "/iacs/admin"),
+        Err(e) => iacs_error_to_response(&headers, e, flash, "/iacs/admin"),
     }
 }
 
@@ -1779,9 +1791,13 @@ pub async fn iacs_admin_offboard(
                     "Failed to queue iacs.offboarded email"
                 );
             }
-            flash_redirect(flash.success("EWS offboarded.".to_string()), "/iacs/admin")
+            htmx_or_flash_redirect(
+                &headers,
+                flash.success("EWS offboarded.".to_string()),
+                "/iacs/admin",
+            )
         }
-        Err(e) => iacs_error_to_response(e, flash, "/iacs/admin"),
+        Err(e) => iacs_error_to_response(&headers, e, flash, "/iacs/admin"),
     }
 }
 

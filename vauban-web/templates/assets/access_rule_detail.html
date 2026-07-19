@@ -48,7 +48,19 @@
                class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
                 Edit
             </a>
-            <form action="/assets/access/{{ rule.uuid }}/delete" method="POST" onsubmit="return confirm('Are you sure you want to delete this access rule?');" x-data="csrf">
+            {# CSP-compliant confirmation (BUG-12 pattern): inline `onsubmit=` is  #}
+            {# dead under `script-src 'self'`; HTMX + styled modal instead.        #}
+            <form hx-post="/assets/access/{{ rule.uuid }}/delete" x-data="csrf"
+                  hx-confirm="Delete access rule '{{ rule.name }}'? This cannot be undone."
+                  data-confirm-title="Delete access rule"
+                  data-confirm-message="Delete access rule '{{ rule.name }}'?&#10;Users covered by this rule will immediately lose access. This cannot be undone."
+                  data-confirm-label="Delete rule"
+                  @htmx:confirm.prevent="$store.deleteConfirm.openWith({
+                      title: $el.dataset.confirmTitle,
+                      message: $el.dataset.confirmMessage,
+                      confirmLabel: $el.dataset.confirmLabel,
+                      sourceEvent: $event
+                  })">
                 <input type="hidden" name="csrf_token" x-model="token" />
                 <button type="submit"
                         class="inline-flex items-center rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500">

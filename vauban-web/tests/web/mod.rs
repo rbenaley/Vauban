@@ -88,6 +88,7 @@ pub mod manage_assets_invariants_test;
 pub mod manage_assets_render_snapshot_test;
 pub mod mfa_setup_vau008_test;
 pub mod mfa_test;
+pub mod no_inline_event_handlers_test;
 pub mod pages_test;
 pub mod profile_password_test;
 pub mod rdp_cert_lints_test;

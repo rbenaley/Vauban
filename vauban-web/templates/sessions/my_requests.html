@@ -457,10 +457,19 @@
                             </form>
                             {% endif %}
                             {% if ews.allows_self_offboard() %}
-                            <form method="post"
-                                  action="/iacs/{{ ews.uuid }}/offboard-self"
+                            {# CSP-compliant confirmation (BUG-12 pattern): HTMX + styled modal. #}
+                            <form hx-post="/iacs/{{ ews.uuid }}/offboard-self"
                                   class="inline"
-                                  onsubmit="return confirm('Offboard this EWS? This action is irreversible: the public key will no longer be usable.');">
+                                  hx-confirm="Offboard EWS '{{ ews.name }}'? This action is irreversible: the public key will no longer be usable."
+                                  data-confirm-title="Offboard EWS"
+                                  data-confirm-message="Offboard EWS '{{ ews.name }}'?&#10;This action is irreversible: the public key will no longer be usable."
+                                  data-confirm-label="Offboard"
+                                  @htmx:confirm.prevent="$store.deleteConfirm.openWith({
+                                      title: $el.dataset.confirmTitle,
+                                      message: $el.dataset.confirmMessage,
+                                      confirmLabel: $el.dataset.confirmLabel,
+                                      sourceEvent: $event
+                                  })">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                                 <button type="submit"
                                         class="inline-flex items-center rounded-md bg-red-100 dark:bg-red-900/50 px-3 py-1.5 text-sm font-medium text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/80">

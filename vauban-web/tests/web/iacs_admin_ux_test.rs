@@ -1,9 +1,14 @@
 //! IACS admin-zone UX -- end-to-end tests for paliers introduced in
 //! May 2026:
 //!
-//! 1. Confirmation dialogs (`onsubmit="return confirm(...)"`) on every
-//!    `Offboard` action -- both user-zone (`/sessions/my-requests`)
-//!    and admin-zone (`/iacs/admin` + `/iacs/admin/ews/{uuid}`).
+//! 1. Confirmation dialogs on every `Offboard` action -- both
+//!    user-zone (`/sessions/my-requests`) and admin-zone
+//!    (`/iacs/admin` + `/iacs/admin/ews/{uuid}`). Since the CSP
+//!    hardening (July 2026) the confirms are HTMX-driven
+//!    (`hx-confirm` + styled deleteConfirm modal); inline
+//!    `onsubmit="return confirm(...)"` is dead code under
+//!    `script-src 'self'` and is forbidden by
+//!    `scripts/check_no_inline_event_handlers.sh`.
 //! 2. Copy-to-clipboard buttons on the SSH-keygen command
 //!    (`/iacs/onboard`) and on the full public key
 //!    (`/iacs/admin/ews/{uuid}`).
@@ -181,10 +186,11 @@ async fn spawn_user(app: &TestApp, suffix: &str) -> (i32, String, String) {
 // ===================================================================
 
 /// Self-offboard from the user's "My Requests" page MUST present a
-/// `confirm(...)` dialog so an accidental click does not destroy
+/// confirmation dialog so an accidental click does not destroy
 /// the EWS irreversibly. Pinned by grepping the rendered HTML for
-/// `onsubmit="return confirm(`. The action target proves it is the
-/// `offboard-self` form (and not e.g. the `cancel` form).
+/// `hx-confirm=` (CSP-compliant; inline `onsubmit=` is dead code).
+/// The action target proves it is the `offboard-self` form (and not
+/// e.g. the `cancel` form).
 #[tokio::test]
 async fn my_requests_self_offboard_form_has_confirm_dialog() {
     let app = TestApp::spawn().await;
@@ -222,15 +228,18 @@ async fn my_requests_self_offboard_form_has_confirm_dialog() {
         body.contains("/offboard-self"),
         "self-offboard form must be rendered when EWS is active"
     );
-    // Either the legacy `onsubmit=` form attribute OR an HTMX
-    // `hx-confirm` attribute satisfies the requirement; both fire a
-    // browser-level prompt that blocks the destructive action.
-    let has_native_confirm = body.contains("onsubmit=\"return confirm(");
-    let has_hx_confirm = body.contains("hx-confirm=");
+    // CSP hardening: ONLY the HTMX `hx-confirm` attribute counts.
+    // Inline `onsubmit=` is silently disabled by `script-src 'self'`
+    // (the guard would be dead code) and is forbidden by the
+    // `check_no_inline_event_handlers.sh` lint.
     assert!(
-        has_native_confirm || has_hx_confirm,
-        "self-offboard form must present a confirm() dialog; \
-         neither `onsubmit=\"return confirm(` nor `hx-confirm=` appears in body"
+        body.contains("hx-confirm="),
+        "self-offboard form must present an HTMX confirm dialog; \
+         `hx-confirm=` does not appear in body"
+    );
+    assert!(
+        !body.contains("onsubmit="),
+        "inline onsubmit= is dead code under the CSP and must not reappear"
     );
 }
 
@@ -272,11 +281,15 @@ async fn admin_landing_offboard_form_has_confirm_dialog() {
         body.contains("Offboarding is irreversible"),
         "the confirm() dialog text must be present (Tailwind / HTMX confirm message)"
     );
-    let has_native_confirm = body.contains("onsubmit=\"return confirm(");
-    let has_hx_confirm = body.contains("hx-confirm=");
+    // CSP hardening: only `hx-confirm=` counts (see the self-offboard
+    // test above for the rationale).
     assert!(
-        has_native_confirm || has_hx_confirm,
-        "admin offboard form must present a confirm() dialog"
+        body.contains("hx-confirm="),
+        "admin offboard form must present an HTMX confirm dialog"
+    );
+    assert!(
+        !body.contains("onsubmit="),
+        "inline onsubmit= is dead code under the CSP and must not reappear"
     );
 }
 
@@ -314,9 +327,15 @@ async fn admin_detail_offboard_form_has_confirm_dialog() {
         body.contains(&format!("/iacs/admin/ews/{}/offboard", ews_uuid)),
         "EWS detail must render the offboard form action"
     );
+    // CSP hardening: only `hx-confirm=` counts (inline onsubmit= is
+    // dead code under `script-src 'self'`).
     assert!(
-        body.contains("onsubmit=\"return confirm("),
-        "EWS detail offboard form must guard the action with confirm()"
+        body.contains("hx-confirm="),
+        "EWS detail offboard form must guard the action with an HTMX confirm"
+    );
+    assert!(
+        !body.contains("onsubmit="),
+        "inline onsubmit= is dead code under the CSP and must not reappear"
     );
 }
 

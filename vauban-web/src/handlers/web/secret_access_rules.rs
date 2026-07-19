@@ -730,12 +730,17 @@ pub async fn update_secret_access_rule_web(
 // DELETE (POST)
 // ============================================================================
 
+// Speaks both dialects (BUG-12): plain forms get 303 + Location, HTMX
+// requests get 200 + HX-Redirect. The delete form on the detail page is
+// HTMX-driven (styled deleteConfirm modal) since the CSP hardening.
+#[allow(clippy::too_many_arguments)]
 pub async fn delete_secret_access_rule_web(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<DeleteSecretAccessRuleWebForm>,
 ) -> Response {
@@ -748,18 +753,23 @@ pub async fn delete_secret_access_rule_web(
         csrf_cookie.map(|c| c.value()),
         &form.csrf_token,
     ) {
-        return flash_redirect(flash.error("Invalid CSRF token"), &detail_url);
+        return htmx_or_flash_redirect(&headers, flash.error("Invalid CSRF token"), &detail_url);
     }
 
     if !perms.vault_secrets_manage {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("You do not have permission to manage vault secrets"),
             "/vault/secrets",
         );
     }
 
     if ::uuid::Uuid::parse_str(&uuid_str).is_err() {
-        return flash_redirect(flash.error("Invalid identifier"), "/vault/secrets/access");
+        return htmx_or_flash_redirect(
+            &headers,
+            flash.error("Invalid identifier"),
+            "/vault/secrets/access",
+        );
     }
 
     match state
@@ -776,18 +786,23 @@ pub async fn delete_secret_access_rule_web(
                 )
                 .user(auth_user.uuid.clone()),
             );
-            flash_redirect(
+            htmx_or_flash_redirect(
+                &headers,
                 flash.success("Secret access rule deleted"),
                 "/vault/secrets/access",
             )
         }
-        Err(AppError::Ipc(ref msg)) if msg.to_lowercase().contains("not found") => flash_redirect(
-            flash.error("Secret access rule not found"),
-            "/vault/secrets/access",
-        ),
+        Err(AppError::Ipc(ref msg)) if msg.to_lowercase().contains("not found") => {
+            htmx_or_flash_redirect(
+                &headers,
+                flash.error("Secret access rule not found"),
+                "/vault/secrets/access",
+            )
+        }
         Err(e) => {
             tracing::error!("Failed to delete secret access rule: {}", e);
-            flash_redirect(
+            htmx_or_flash_redirect(
+                &headers,
                 flash.error("Failed to delete secret access rule"),
                 &detail_url,
             )

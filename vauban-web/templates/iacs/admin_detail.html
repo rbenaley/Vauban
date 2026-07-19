@@ -354,8 +354,18 @@
                 </button>
             </form>
             {% endif %}
-            <form method="post" action="/iacs/admin/ews/{{ e.ews_uuid }}/offboard"
-                  onsubmit="return confirm('Offboarding is irreversible. Continue?');">
+            {# CSP-compliant confirmation (BUG-12 pattern): HTMX + styled modal. #}
+            <form hx-post="/iacs/admin/ews/{{ e.ews_uuid }}/offboard"
+                  hx-confirm="Offboard EWS '{{ e.name }}'? Offboarding is irreversible."
+                  data-confirm-title="Offboard EWS"
+                  data-confirm-message="Offboard EWS '{{ e.name }}'?&#10;Offboarding is irreversible. Continue?"
+                  data-confirm-label="Offboard"
+                  @htmx:confirm.prevent="$store.deleteConfirm.openWith({
+                      title: $el.dataset.confirmTitle,
+                      message: $el.dataset.confirmMessage,
+                      confirmLabel: $el.dataset.confirmLabel,
+                      sourceEvent: $event
+                  })">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                 <button type="submit"
                         class="inline-flex items-center rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500">

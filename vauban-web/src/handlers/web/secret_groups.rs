@@ -598,12 +598,17 @@ pub async fn update_secret_group_web(
 // DELETE (POST)
 // ============================================================================
 
+// Speaks both dialects (BUG-12): plain forms get 303 + Location, HTMX
+// requests get 200 + HX-Redirect. The delete form on the detail page is
+// HTMX-driven (styled deleteConfirm modal) since the CSP hardening.
+#[allow(clippy::too_many_arguments)]
 pub async fn delete_secret_group_web(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<DeleteSecretGroupWebForm>,
 ) -> Response {
@@ -615,24 +620,31 @@ pub async fn delete_secret_group_web(
         csrf_cookie.map(|c| c.value()),
         &form.csrf_token,
     ) {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Invalid CSRF token"),
             &format!("/vault/secrets/groups/{}", uuid_str),
         );
     }
 
     if !perms.vault_secrets_manage {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("You do not have permission to manage vault secrets"),
             "/vault/secrets",
         );
     }
 
     if ::uuid::Uuid::parse_str(&uuid_str).is_err() {
-        return flash_redirect(flash.error("Invalid identifier"), "/vault/secrets/groups");
+        return htmx_or_flash_redirect(
+            &headers,
+            flash.error("Invalid identifier"),
+            "/vault/secrets/groups",
+        );
     }
     if is_virtual_secret_group_uuid(&uuid_str) {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("The virtual secret group cannot be deleted"),
             "/vault/secrets/groups",
         );
@@ -648,18 +660,23 @@ pub async fn delete_secret_group_web(
                 )
                 .user(auth_user.uuid.clone()),
             );
-            flash_redirect(
+            htmx_or_flash_redirect(
+                &headers,
                 flash.success("Secret group deleted"),
                 "/vault/secrets/groups",
             )
         }
-        Err(AppError::Ipc(ref msg)) if msg.to_lowercase().contains("not found") => flash_redirect(
-            flash.error("Secret group not found"),
-            "/vault/secrets/groups",
-        ),
+        Err(AppError::Ipc(ref msg)) if msg.to_lowercase().contains("not found") => {
+            htmx_or_flash_redirect(
+                &headers,
+                flash.error("Secret group not found"),
+                "/vault/secrets/groups",
+            )
+        }
         Err(e) => {
             tracing::error!("Failed to delete secret group: {}", e);
-            flash_redirect(
+            htmx_or_flash_redirect(
+                &headers,
                 flash.error("Failed to delete secret group"),
                 &format!("/vault/secrets/groups/{}", uuid_str),
             )
