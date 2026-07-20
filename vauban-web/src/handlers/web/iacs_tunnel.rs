@@ -281,7 +281,7 @@ pub async fn connect_iacs(
         let live: i64 = ps::table
             .filter(ps::user_id.eq(user_id))
             .filter(ps::session_type.eq("iacs_tunnel"))
-            .filter(ps::status.eq_any(["waiting_client", "tunnel_active"]))
+            .filter(ps::status.eq_any(["waiting_client", "ews_connected", "tunnel_active"]))
             .count()
             .get_result(&mut conn)
             .await
@@ -306,7 +306,7 @@ pub async fn connect_iacs(
         let live: i64 = ps::table
             .filter(ps::ews_uuid.eq(pinned_ews_uuid))
             .filter(ps::session_type.eq("iacs_tunnel"))
-            .filter(ps::status.eq_any(["waiting_client", "tunnel_active"]))
+            .filter(ps::status.eq_any(["waiting_client", "ews_connected", "tunnel_active"]))
             .count()
             .get_result(&mut conn)
             .await
@@ -677,6 +677,7 @@ pub async fn iacs_tunnel_status_page(
         Option<String>,
         Option<String>,
         chrono::DateTime<chrono::Utc>,
+        Option<chrono::DateTime<chrono::Utc>>,
     ) = match proxy_sessions::table
         .inner_join(schema_assets::table)
         .filter(proxy_sessions::uuid.eq(session_uuid))
@@ -690,6 +691,7 @@ pub async fn iacs_tunnel_status_page(
             proxy_sessions::industrial_protocol,
             proxy_sessions::tunnel_target_addr,
             proxy_sessions::created_at,
+            proxy_sessions::connected_at,
         ))
         .first(&mut conn)
         .await
@@ -714,25 +716,33 @@ pub async fn iacs_tunnel_status_page(
         industrial_protocol,
         target_addr,
         session_created_at,
+        session_connected_at,
     ) = row;
 
-    // Countdown to the waiting_client deadline. Anchored on
-    // `created_at` -- the SAME reference the revocation watchdog
-    // uses for its SQL cutoff -- so a page refresh renders the true
-    // remaining window, not a restarted one. `None` (no countdown)
-    // for non-waiting states and when the TTL is disabled.
-    let waiting_countdown_seconds = if status == "waiting_client" {
-        crate::services::iacs_tunnel::remaining_waiting_seconds(
+    // Countdown to the reap deadline, anchored on the SAME reference
+    // the revocation watchdog uses for its SQL cutoff so a page
+    // refresh renders the true remaining window, not a restarted
+    // one: `created_at` while `waiting_client` (pre-auth),
+    // `connected_at` once `ews_connected` (the TTL restarts at SSH
+    // auth). `None` (no countdown) for non-waiting states and when
+    // the TTL is disabled.
+    let waiting_ttl_seconds = state
+        .config
+        .industrial
+        .iacs_tunnel
+        .waiting_client_ttl_seconds;
+    let waiting_countdown_seconds = match status.as_str() {
+        "waiting_client" => crate::services::iacs_tunnel::remaining_waiting_seconds(
             session_created_at,
             chrono::Utc::now(),
-            state
-                .config
-                .industrial
-                .iacs_tunnel
-                .waiting_client_ttl_seconds,
-        )
-    } else {
-        None
+            waiting_ttl_seconds,
+        ),
+        "ews_connected" => crate::services::iacs_tunnel::remaining_waiting_seconds(
+            session_connected_at.unwrap_or(session_created_at),
+            chrono::Utc::now(),
+            waiting_ttl_seconds,
+        ),
+        _ => None,
     };
 
     // Derive the per-session `(target_host, target_port)` from the
@@ -809,6 +819,7 @@ pub async fn iacs_tunnel_status_page(
         tunnel_target_addr: target_addr_str,
         session_status: status,
         waiting_countdown_seconds,
+        waiting_ttl_seconds,
         csrf_token,
     };
 

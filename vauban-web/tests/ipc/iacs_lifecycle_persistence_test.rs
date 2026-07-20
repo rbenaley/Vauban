@@ -1,15 +1,16 @@
 //! IPC integration tests: IACS lifecycle persistence.
 //!
 //! These tests pin the behaviour of [`vauban_web::ipc::proxy_iacs`]'s
-//! `persist_tunnel_active` / `persist_tunnel_closed` helpers without
-//! spawning a full `vauban-proxy-iacs` subprocess. The helpers are
-//! the seam that bridges:
+//! `persist_ews_connected` / `persist_tunnel_active` /
+//! `persist_tunnel_closed` helpers without spawning a full
+//! `vauban-proxy-iacs` subprocess. The helpers are the seam that
+//! bridges:
 //!
 //!  - the `IacsTunnelStatusUpdate` / `IacsTunnelClosed` IPC messages
 //!    pushed by `vauban-proxy-iacs`,
 //!  - the admin `/sessions/active` page (whose SQL filter is
-//!    `status IN ('active', 'tunnel_active') AND connected_at IS
-//!    NOT NULL`).
+//!    `status IN ('active', 'ews_connected', 'tunnel_active') AND
+//!    connected_at IS NOT NULL`).
 //!
 //! Without this seam the IACS lifecycle would never propagate to
 //! the DB and the admin page would always show `0 IACS` (the bug
@@ -22,6 +23,199 @@ use crate::fixtures::{
 };
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::RunQueryDsl;
+
+// ===================================================================
+// 0. ews_connected path (SSH auth, pre-channel)
+// ===================================================================
+
+/// Receiving `IacsTunnelStatusUpdate { status = "ews_connected",
+/// peer_ip = Some(<EWS IP>) }` MUST flip the row from
+/// `waiting_client` to `ews_connected`, anchor `connected_at` (the
+/// watchdog TTL restarts on it) and overwrite `client_ip` with the
+/// EWS source.
+#[tokio::test]
+async fn persist_ews_connected_flips_waiting_client_row() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("ews_conn_admin")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("ews_conn_user")).await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("ews-conn-iacs"), admin_id).await;
+    let (_, session_uuid) =
+        create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "waiting_client").await;
+
+    let updated = unwrap_ok!(
+        vauban_web::ipc::proxy_iacs::persist_ews_connected(
+            &app.db_pool,
+            &session_uuid.to_string(),
+            Some("203.0.113.50"),
+            false,
+            "",
+        )
+        .await
+    );
+    assert!(updated, "persist_ews_connected must report a row update");
+
+    use vauban_web::schema::proxy_sessions;
+    let (status_value, connected_at, client_ip, recording_path): (
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        ipnetwork::IpNetwork,
+        Option<String>,
+    ) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select((
+                proxy_sessions::status,
+                proxy_sessions::connected_at,
+                proxy_sessions::client_ip,
+                proxy_sessions::recording_path,
+            ))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(status_value, "ews_connected");
+    assert!(
+        connected_at.is_some(),
+        "connected_at MUST be anchored at the SSH auth"
+    );
+    assert_eq!(client_ip.ip().to_string(), "203.0.113.50");
+    assert!(
+        recording_path.is_none(),
+        "recording disabled: recording_path must NOT be set"
+    );
+}
+
+/// When IACS recording is enabled, the `ews_connected` transition
+/// MUST set `is_recorded` + `recording_path` immediately: a
+/// zero-channel session already points at its audit manifest.
+#[tokio::test]
+async fn persist_ews_connected_sets_recording_fields_when_enabled() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("ews_rec_admin")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("ews_rec_user")).await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("ews-rec-iacs"), admin_id).await;
+    let (_, session_uuid) =
+        create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "waiting_client").await;
+
+    let updated = unwrap_ok!(
+        vauban_web::ipc::proxy_iacs::persist_ews_connected(
+            &app.db_pool,
+            &session_uuid.to_string(),
+            None,
+            true,
+            "/var/vauban/recordings",
+        )
+        .await
+    );
+    assert!(updated);
+
+    use vauban_web::schema::proxy_sessions;
+    let (is_recorded, recording_path): (bool, Option<String>) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select((proxy_sessions::is_recorded, proxy_sessions::recording_path))
+            .first(&mut conn)
+            .await
+    );
+    assert!(is_recorded, "recording enabled: is_recorded must flip");
+    let path = recording_path.expect("recording_path must be set at auth");
+    assert!(
+        path.starts_with("/var/vauban/recordings") && path.contains(&session_uuid.to_string()),
+        "recording_path must be anchored under the storage path with \
+         the session uuid, got {path}"
+    );
+}
+
+/// Idempotence + rank monotonicity: a re-delivered `ews_connected`
+/// is a no-op (first `connected_at` wins), and a LATE arrival after
+/// `tunnel_active` cannot demote the row.
+#[tokio::test]
+async fn persist_ews_connected_is_idempotent_and_never_demotes() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("ews_idem_admin")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("ews_idem_user")).await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("ews-idem-iacs"), admin_id).await;
+    let (_, session_uuid) =
+        create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "waiting_client").await;
+
+    let first = unwrap_ok!(
+        vauban_web::ipc::proxy_iacs::persist_ews_connected(
+            &app.db_pool,
+            &session_uuid.to_string(),
+            Some("198.51.100.20"),
+            false,
+            "",
+        )
+        .await
+    );
+    assert!(first);
+
+    use vauban_web::schema::proxy_sessions;
+    let connected_after_first: Option<chrono::DateTime<chrono::Utc>> = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select(proxy_sessions::connected_at)
+            .first(&mut conn)
+            .await
+    );
+
+    let second = unwrap_ok!(
+        vauban_web::ipc::proxy_iacs::persist_ews_connected(
+            &app.db_pool,
+            &session_uuid.to_string(),
+            Some("198.51.100.99"),
+            false,
+            "",
+        )
+        .await
+    );
+    assert!(!second, "re-delivery MUST be a no-op");
+
+    // Promote to tunnel_active, then replay ews_connected: the row
+    // must stay active (rank-monotone lifecycle).
+    let promoted = unwrap_ok!(
+        vauban_web::ipc::proxy_iacs::persist_tunnel_active(
+            &app.db_pool,
+            &session_uuid.to_string(),
+            None,
+        )
+        .await
+    );
+    assert!(promoted, "ews_connected -> tunnel_active must succeed");
+    let late = unwrap_ok!(
+        vauban_web::ipc::proxy_iacs::persist_ews_connected(
+            &app.db_pool,
+            &session_uuid.to_string(),
+            None,
+            false,
+            "",
+        )
+        .await
+    );
+    assert!(!late, "a late ews_connected must not demote an active row");
+
+    let (status_value, connected_final): (String, Option<chrono::DateTime<chrono::Utc>>) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select((proxy_sessions::status, proxy_sessions::connected_at))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(status_value, "tunnel_active");
+    assert_eq!(
+        connected_after_first, connected_final,
+        "connected_at MUST stay anchored to the SSH-auth transition \
+         across the whole lifecycle (COALESCE in persist_tunnel_active)"
+    );
+}
 
 // ===================================================================
 // 1. tunnel_active path
@@ -39,7 +233,8 @@ async fn persist_tunnel_active_flips_waiting_client_to_tunnel_active() {
     let admin_username = unique_name("persist_active_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let user_id = create_simple_user(&mut conn, "persist_active_user").await;
-    let asset_id = create_simple_iacs_asset(&mut conn, "persist-active-iacs", admin_id).await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("persist-active-iacs"), admin_id).await;
 
     let (_, session_uuid) =
         create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "waiting_client").await;
@@ -93,7 +288,8 @@ async fn persist_tunnel_active_without_peer_ip_preserves_existing_client_ip() {
     let admin_username = unique_name("no_peer_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let user_id = create_simple_user(&mut conn, "no_peer_user").await;
-    let asset_id = create_simple_iacs_asset(&mut conn, "no-peer-iacs", admin_id).await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("no-peer-iacs"), admin_id).await;
     let (_, session_uuid) =
         create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "waiting_client").await;
 
@@ -142,7 +338,7 @@ async fn persist_tunnel_active_is_idempotent_against_redelivery() {
     let admin_username = unique_name("idem_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let user_id = create_simple_user(&mut conn, "idem_user").await;
-    let asset_id = create_simple_iacs_asset(&mut conn, "idem-iacs", admin_id).await;
+    let asset_id = create_simple_iacs_asset(&mut conn, &unique_name("idem-iacs"), admin_id).await;
     let (_, session_uuid) =
         create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "waiting_client").await;
 
@@ -176,7 +372,8 @@ async fn persist_tunnel_active_is_idempotent_against_redelivery() {
     assert!(
         !second,
         "second call MUST be a no-op once the row is already active \
-         (the filter is gated on `status = waiting_client`)"
+         (the filter is gated on the pre-active statuses \
+         `waiting_client` / `ews_connected`)"
     );
 
     let (connected_after_second, client_ip): (
@@ -214,7 +411,7 @@ async fn persist_tunnel_closed_flips_tunnel_active_to_terminated() {
     let admin_username = unique_name("closed_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let user_id = create_simple_user(&mut conn, "closed_user").await;
-    let asset_id = create_simple_iacs_asset(&mut conn, "closed-iacs", admin_id).await;
+    let asset_id = create_simple_iacs_asset(&mut conn, &unique_name("closed-iacs"), admin_id).await;
     let (_, session_uuid) =
         create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "tunnel_active").await;
 
@@ -252,7 +449,7 @@ async fn persist_tunnel_closed_handles_waiting_client_orphan() {
     let admin_username = unique_name("orphan_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let user_id = create_simple_user(&mut conn, "orphan_user").await;
-    let asset_id = create_simple_iacs_asset(&mut conn, "orphan-iacs", admin_id).await;
+    let asset_id = create_simple_iacs_asset(&mut conn, &unique_name("orphan-iacs"), admin_id).await;
     let (_, session_uuid) =
         create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "waiting_client").await;
 
@@ -278,6 +475,54 @@ async fn persist_tunnel_closed_handles_waiting_client_orphan() {
     assert_eq!(status_value, "terminated");
 }
 
+/// `IacsTunnelClosed` arriving on an `ews_connected` row (the EWS
+/// authenticated then disconnected without ever opening a channel)
+/// MUST flip to `terminated` -- the zero-channel audit-trail path.
+#[tokio::test]
+async fn persist_tunnel_closed_handles_ews_connected_zero_channel_login() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("zc_admin")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("zc_user")).await;
+    let asset_id = create_simple_iacs_asset(&mut conn, &unique_name("zc-iacs"), admin_id).await;
+    let (_, session_uuid) =
+        create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "waiting_client").await;
+    let flipped = unwrap_ok!(
+        vauban_web::ipc::proxy_iacs::persist_ews_connected(
+            &app.db_pool,
+            &session_uuid.to_string(),
+            None,
+            false,
+            "",
+        )
+        .await
+    );
+    assert!(flipped);
+
+    let updated = unwrap_ok!(
+        vauban_web::ipc::proxy_iacs::persist_tunnel_closed(
+            &app.db_pool,
+            &session_uuid.to_string(),
+            false,
+            "",
+        )
+        .await
+    );
+    assert!(updated, "ews_connected rows must be closeable");
+
+    use vauban_web::schema::proxy_sessions;
+    let (status_value, disconnected_at): (String, Option<chrono::DateTime<chrono::Utc>>) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select((proxy_sessions::status, proxy_sessions::disconnected_at))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(status_value, "terminated");
+    assert!(disconnected_at.is_some());
+}
+
 /// Idempotent: re-delivery on an already-terminated row MUST be a
 /// silent no-op.
 #[tokio::test]
@@ -288,7 +533,8 @@ async fn persist_tunnel_closed_is_idempotent() {
     let admin_username = unique_name("idem_close_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let user_id = create_simple_user(&mut conn, "idem_close_user").await;
-    let asset_id = create_simple_iacs_asset(&mut conn, "idem-close-iacs", admin_id).await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("idem-close-iacs"), admin_id).await;
     let (_, session_uuid) =
         create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "tunnel_active").await;
 

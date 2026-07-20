@@ -10,7 +10,8 @@
 
 use crate::common::TestApp;
 use crate::fixtures::{
-    create_recorded_session_with_type, create_simple_admin_user, create_simple_ssh_asset,
+    create_iacs_test_session_with_uuid, create_recorded_session_with_type,
+    create_simple_admin_user, create_simple_iacs_asset, create_simple_ssh_asset,
     create_simple_user, unique_name,
 };
 use axum::http::header::COOKIE;
@@ -82,6 +83,65 @@ async fn fill_rdp_integrity(conn: &mut AsyncPgConnection, session_id: i32) {
         .execute(conn)
         .await
         .expect("rdp integrity update");
+}
+
+/// Populate the integrity bundle of an IACS pcap-bundle recording with
+/// a configurable channel count (`recording_segment_count` mirrors
+/// `meta.json` `channels.len()`; 0 = auth-only zero-channel session).
+async fn fill_iacs_integrity(conn: &mut AsyncPgConnection, session_id: i32, segment_count: i32) {
+    use vauban_web::schema::proxy_sessions::dsl;
+    let now = Utc::now();
+    diesel::update(dsl::proxy_sessions.filter(dsl::id.eq(session_id)))
+        .set((
+            dsl::recording_blake3
+                .eq("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"),
+            dsl::recording_size_bytes.eq(4_096_i64),
+            dsl::recording_duration_ms.eq(12_000_i64),
+            dsl::recording_event_count.eq(segment_count * 10),
+            dsl::recording_format.eq("pcap-bundle"),
+            dsl::recording_segment_count.eq(segment_count),
+            dsl::recording_finalized_at.eq(now),
+        ))
+        .execute(conn)
+        .await
+        .expect("iacs integrity update");
+}
+
+/// Spawn an app + admin + one recorded IACS session, returning
+/// `(app, token, session_id, session_uuid)`. The session satisfies
+/// the `proxy_sessions_iacs_consistency` CHECK (ews row + protocol)
+/// and is flagged recorded with a pcap-bundle path.
+async fn spawn_iacs_recording(prefix: &str) -> (&'static TestApp, String, i32, Uuid) {
+    use vauban_web::schema::proxy_sessions::dsl;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name(&format!("{prefix}_admin"));
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let asset_id = create_simple_iacs_asset(
+        &mut conn,
+        &unique_name(&format!("{prefix}-asset")),
+        admin_id,
+    )
+    .await;
+    let (session_id, uuid) =
+        create_iacs_test_session_with_uuid(&mut conn, admin_id, asset_id, "terminated").await;
+    diesel::update(dsl::proxy_sessions.filter(dsl::id.eq(session_id)))
+        .set((
+            dsl::is_recorded.eq(true),
+            dsl::recording_path.eq(format!("/recordings/iacs/2026/07/{}/", uuid)),
+        ))
+        .execute(&mut conn)
+        .await
+        .expect("mark iacs session recorded");
+    drop(conn);
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    (app, token, session_id, uuid)
 }
 
 // ===========================================================================
@@ -1161,4 +1221,160 @@ fn recording_list_template_extends_filter_to_hydration_events() {
         "list filter must ALSO match `recording_hydrated` so the size \
          column lights up after the hydrator finalises a row"
     );
+}
+
+// ===========================================================================
+// Group 4: Inspect button visibility for IACS bundles.
+//
+// /sessions/recordings/{uuid}/inspect 404s when the bundle carries
+// zero channels (auth-only session) or is not hydrated yet. The UI
+// must therefore hide the Inspect button in those two cases instead
+// of rendering a dead link (regression: 404 on zero-pcap recordings).
+// ===========================================================================
+
+#[tokio::test]
+async fn test_inspect_button_disabled_for_iacs_zero_channel_recording() {
+    let (app, token, session_id, uuid) = spawn_iacs_recording("ri_zero").await;
+    let mut conn = app.get_conn().await;
+    // Hydrated zero-channel bundle: meta.json existed with channels: [].
+    fill_iacs_integrity(&mut conn, session_id, 0).await;
+    drop(conn);
+
+    let response = app
+        .server
+        .get(&format!("/sessions/recordings/{}", uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+    assert!(
+        !body.contains(&format!("/sessions/recordings/{}/inspect", uuid)),
+        "zero-channel IACS recording must NOT link to /inspect (it 404s)"
+    );
+    assert!(
+        body.contains("Inspect Capture")
+            && body.contains("aria-disabled=\"true\"")
+            && body.contains("cursor-not-allowed"),
+        "zero-channel IACS recording must keep the Inspect Capture \
+         button visible but disabled (layout consistency, no dead link)"
+    );
+}
+
+#[tokio::test]
+async fn test_inspect_button_disabled_for_iacs_recording_pending_hydration() {
+    // recording_segment_count is still NULL (hydrator has not run):
+    // /inspect 404s on the missing finalized_at, so the button renders
+    // disabled until hydration lands a positive channel count.
+    let (app, token, _session_id, uuid) = spawn_iacs_recording("ri_pending").await;
+
+    let response = app
+        .server
+        .get(&format!("/sessions/recordings/{}", uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+    assert!(
+        !body.contains(&format!("/sessions/recordings/{}/inspect", uuid)),
+        "pending-hydration IACS recording must NOT link to /inspect"
+    );
+    assert!(
+        body.contains("Inspect Capture") && body.contains("aria-disabled=\"true\""),
+        "pending-hydration IACS recording must render the disabled button"
+    );
+}
+
+#[tokio::test]
+async fn test_inspect_button_shown_for_iacs_recording_with_channels() {
+    let (app, token, session_id, uuid) = spawn_iacs_recording("ri_chan").await;
+    let mut conn = app.get_conn().await;
+    fill_iacs_integrity(&mut conn, session_id, 2).await;
+    drop(conn);
+
+    let response = app
+        .server
+        .get(&format!("/sessions/recordings/{}", uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+    assert!(
+        body.contains(&format!("/sessions/recordings/{}/inspect", uuid)),
+        "hydrated IACS recording with channels must keep its Inspect link"
+    );
+    assert!(
+        body.contains("Inspect Capture"),
+        "hydrated IACS recording with channels must render the Inspect button"
+    );
+}
+
+#[tokio::test]
+async fn test_recording_list_disables_inspect_for_zero_channel_but_keeps_link_for_channels() {
+    // One list, two IACS rows: zero-channel (disabled button, no link)
+    // vs 3 channels (live link). Sharing the app pins both branches of
+    // the row gate against the same rendered HTML. The disabled button
+    // stays in the DOM so the action column keeps its alignment.
+    let (app, token, zero_session_id, zero_uuid) = spawn_iacs_recording("rl_insp").await;
+    let mut conn = app.get_conn().await;
+    fill_iacs_integrity(&mut conn, zero_session_id, 0).await;
+
+    let admin_name = unique_name("rl_insp_admin2");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("rl-insp-asset2"), admin_id).await;
+    let (chan_session_id, chan_uuid) =
+        create_iacs_test_session_with_uuid(&mut conn, admin_id, asset_id, "terminated").await;
+    {
+        use vauban_web::schema::proxy_sessions::dsl;
+        diesel::update(dsl::proxy_sessions.filter(dsl::id.eq(chan_session_id)))
+            .set((
+                dsl::is_recorded.eq(true),
+                dsl::recording_path.eq(format!("/recordings/iacs/2026/07/{}/", chan_uuid)),
+            ))
+            .execute(&mut conn)
+            .await
+            .expect("mark second iacs session recorded");
+    }
+    fill_iacs_integrity(&mut conn, chan_session_id, 3).await;
+    drop(conn);
+
+    let response = app
+        .server
+        .get("/sessions/recordings")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+    assert!(
+        !body.contains(&format!("/sessions/recordings/{}/inspect", zero_uuid)),
+        "list row of a zero-channel IACS recording must NOT link to /inspect"
+    );
+    assert!(
+        body.contains("aria-disabled=\"true\"") && body.contains("cursor-not-allowed"),
+        "the zero-channel row must render the Inspect button as a \
+         disabled, non-clickable element (alignment preserved)"
+    );
+    assert!(
+        body.contains(&format!("/sessions/recordings/{}/inspect", chan_uuid)),
+        "list row of an IACS recording with channels must keep its Inspect link"
+    );
+}
+
+#[tokio::test]
+async fn test_inspect_route_returns_404_for_zero_channel_recording() {
+    // The server-side contract the visibility gate mirrors: /inspect
+    // stays a 404 for zero-channel bundles (anti-enumeration), the UI
+    // just stops advertising it. If this ever becomes a 200, the
+    // button gate should be revisited.
+    let (app, token, session_id, uuid) = spawn_iacs_recording("ri_404").await;
+    let mut conn = app.get_conn().await;
+    fill_iacs_integrity(&mut conn, session_id, 0).await;
+    drop(conn);
+
+    let response = app
+        .server
+        .get(&format!("/sessions/recordings/{}/inspect", uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_eq!(response.status_code().as_u16(), 404);
 }

@@ -102,6 +102,20 @@ pub struct IacsRecordingHub {
     pub metrics: Arc<RecordingMetrics>,
 }
 
+/// Session identity captured at SSH-auth time, forwarded to
+/// vauban-audit in `IacsRecordingSessionStart` so `session.json`
+/// records who / which key / from where / when -- even for logins
+/// that never open a `direct-tcpip` channel.
+#[derive(Debug, Clone)]
+pub struct SessionStartInfo {
+    pub user_uuid: String,
+    pub asset_uuid: String,
+    pub ews_fingerprint: String,
+    pub peer_ip: String,
+    pub authenticated_at_us: u64,
+    pub connected_at_us: u64,
+}
+
 impl IacsRecordingHub {
     pub fn channel_recorder(&self, session_id: String, channel_id: u32) -> ChannelRecorder {
         ChannelRecorder {
@@ -145,9 +159,25 @@ impl IacsRecordingHub {
         });
     }
 
-    pub fn send_session_end(&self, session_id: &str) {
+    /// Fire-and-forget `IacsRecordingSessionStart` at SSH-auth time.
+    /// vauban-audit creates the session state and writes
+    /// `session.json` immediately.
+    pub fn send_session_start(&self, session_id: &str, info: SessionStartInfo) {
+        let _ = self.audit_tx.send(Message::IacsRecordingSessionStart {
+            session_id: session_id.to_string(),
+            user_uuid: info.user_uuid,
+            asset_uuid: info.asset_uuid,
+            ews_fingerprint: info.ews_fingerprint,
+            peer_ip: info.peer_ip,
+            authenticated_at_us: info.authenticated_at_us,
+            connected_at_us: info.connected_at_us,
+        });
+    }
+
+    pub fn send_session_end(&self, session_id: &str, reason: &str) {
         let _ = self.audit_tx.send(Message::IacsRecordingSessionEnd {
             session_id: session_id.to_string(),
+            reason: reason.to_string(),
         });
     }
 }

@@ -15,8 +15,13 @@
 //! 3. `IacsTunnelClosed` carries final totals >= the last stats
 //!    report, and the ticker STOPS after the handler drop (no leaked
 //!    5 s tasks spamming the IPC bus);
-//! 4. a login that never opens a `direct-tcpip` channel never spawns
-//!    a ticker (same one-shot guard as the `tunnel_active` emission).
+//! 4. a login that never opens a `direct-tcpip` channel emits the
+//!    lifecycle pair `ews_connected` (at auth) then
+//!    `IacsTunnelClosed` (at drop) but NEVER spawns a ticker nor a
+//!    `tunnel_active`;
+//! 5. the terminate seam works pre-channel: the russh handle
+//!    registered at auth force-disconnects an authenticated login
+//!    that never opened a channel.
 //!
 //! The pure accounting invariants (skip-closed, saturation,
 //! monotonic clamp) are proptest-covered in `src/stats.rs`; the
@@ -40,6 +45,7 @@ use tokio::time::{Duration, timeout};
 use uuid::Uuid;
 
 use vauban_proxy_iacs::auth::{PendingSessions, PendingTunnel, fingerprint_sha256_hex};
+use vauban_proxy_iacs::iacs_recording::{AckRouter, IacsRecordingHub, RecordingMetrics};
 use vauban_proxy_iacs::registry::{SessionHandles, TunnelRegistry};
 use vauban_proxy_iacs::server::{IacsTunnelServer, UpstreamOpener, build_server_config};
 
@@ -111,15 +117,22 @@ async fn spawn_echo_target() -> std::net::SocketAddr {
 }
 
 /// Spawn the production sshd with a live `WebReporter` and the test
-/// tick interval; returns the bound address and the IPC message
-/// receiver (what vauban-web's pump would drain).
+/// tick interval; returns the bound address, the IPC message
+/// receiver (what vauban-web's pump would drain) and the shared
+/// `SessionHandles` map (what the `IacsTunnelTerminate` IPC arm
+/// consults to force-disconnect).
 async fn spawn_reporting_sshd(
     pending: PendingSessions,
     target: std::net::SocketAddr,
-) -> (std::net::SocketAddr, UnboundedReceiver<Message>) {
+) -> (
+    std::net::SocketAddr,
+    UnboundedReceiver<Message>,
+    SessionHandles,
+) {
     let cfg = build_server_config(fresh_ed25519_key());
     let registry = TunnelRegistry::new();
     let session_handles = SessionHandles::new();
+    let handles_out = session_handles.clone();
     let upstream: Arc<dyn UpstreamOpener> = Arc::new(EchoUpstreamOpener { target });
     let (web_tx, web_rx) = mpsc::unbounded_channel::<Message>();
 
@@ -150,7 +163,64 @@ async fn spawn_reporting_sshd(
         }
     });
     tokio::time::sleep(Duration::from_millis(20)).await;
-    (addr, web_rx)
+    (addr, web_rx, handles_out)
+}
+
+/// Like [`spawn_reporting_sshd`] but ALSO wires a live
+/// `IacsRecordingHub`; returns the audit-side IPC receiver so the
+/// suite can assert on `IacsRecordingSessionStart` /
+/// `IacsRecordingSessionEnd` (the zero-channel `session.json` /
+/// `meta.json` contract).
+async fn spawn_recording_sshd(
+    pending: PendingSessions,
+    target: std::net::SocketAddr,
+) -> (
+    std::net::SocketAddr,
+    UnboundedReceiver<Message>,
+    UnboundedReceiver<Message>,
+    SessionHandles,
+) {
+    let cfg = build_server_config(fresh_ed25519_key());
+    let registry = TunnelRegistry::new();
+    let session_handles = SessionHandles::new();
+    let handles_out = session_handles.clone();
+    let upstream: Arc<dyn UpstreamOpener> = Arc::new(EchoUpstreamOpener { target });
+    let (web_tx, web_rx) = mpsc::unbounded_channel::<Message>();
+    let (audit_tx, audit_rx) = mpsc::unbounded_channel::<Message>();
+    let hub = IacsRecordingHub {
+        audit_tx,
+        ack_router: Arc::new(AckRouter::new()),
+        metrics: Arc::new(RecordingMetrics::default()),
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind sshd");
+    let addr = listener.local_addr().expect("local_addr");
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, peer) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let mut server = IacsTunnelServer::new(
+                registry.clone(),
+                pending.clone(),
+                session_handles.clone(),
+                Arc::clone(&upstream),
+                16,
+                Some(web_tx.clone()),
+                Some(hub.clone()),
+            )
+            .with_stats_interval(TEST_TICK);
+            let handler = russh::server::Server::new_client(&mut server, Some(peer));
+            let cfg = Arc::clone(&cfg);
+            tokio::spawn(async move {
+                let _ = russh::server::run_stream(cfg, stream, handler).await;
+            });
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    (addr, web_rx, audit_rx, handles_out)
 }
 
 fn make_pending(
@@ -248,7 +318,8 @@ async fn ticker_reports_nonzero_monotonic_bytes_while_relaying() {
     let session_uuid = Uuid::new_v4();
     let target = spawn_echo_target().await;
     let pending = PendingSessions::new();
-    let (sshd_addr, mut web_rx) = spawn_reporting_sshd(pending.clone(), target).await;
+    let (sshd_addr, mut web_rx, _session_handles) =
+        spawn_reporting_sshd(pending.clone(), target).await;
     pending
         .insert(make_pending(session_uuid, &key, target))
         .await;
@@ -282,9 +353,26 @@ async fn ticker_reports_nonzero_monotonic_bytes_while_relaying() {
     })
     .await;
 
-    // Lifecycle ordering: the first message on the pipe is the
-    // activation, tagged tunnel_active with the EWS peer IP.
+    // Lifecycle ordering: the SSH auth emits `ews_connected` first,
+    // then the first direct-tcpip emits `tunnel_active`; both carry
+    // the EWS peer IP.
     match msgs.first() {
+        Some(Message::IacsTunnelStatusUpdate {
+            session_id,
+            status,
+            peer_ip,
+            ..
+        }) => {
+            assert_eq!(session_id, &session_uuid.to_string());
+            assert_eq!(status, "ews_connected");
+            assert!(
+                peer_ip.is_some(),
+                "the auth event must carry the EWS peer IP"
+            );
+        }
+        other => panic!("first IPC message must be ews_connected, got {other:?}"),
+    }
+    match msgs.get(1) {
         Some(Message::IacsTunnelStatusUpdate {
             session_id,
             status,
@@ -295,7 +383,7 @@ async fn ticker_reports_nonzero_monotonic_bytes_while_relaying() {
             assert_eq!(status, "tunnel_active");
             assert!(peer_ip.is_some(), "activation must carry the EWS peer IP");
         }
-        other => panic!("first IPC message must be tunnel_active, got {other:?}"),
+        other => panic!("second IPC message must be tunnel_active, got {other:?}"),
     }
 
     let stats: Vec<(u64, u64)> = msgs.iter().filter_map(stats_bytes).collect();
@@ -329,7 +417,8 @@ async fn ticker_stops_after_disconnect_and_close_totals_dominate() {
     let session_uuid = Uuid::new_v4();
     let target = spawn_echo_target().await;
     let pending = PendingSessions::new();
-    let (sshd_addr, mut web_rx) = spawn_reporting_sshd(pending.clone(), target).await;
+    let (sshd_addr, mut web_rx, _session_handles) =
+        spawn_reporting_sshd(pending.clone(), target).await;
     pending
         .insert(make_pending(session_uuid, &key, target))
         .await;
@@ -427,7 +516,8 @@ async fn ticker_sums_bytes_across_concurrent_channels() {
     let session_uuid = Uuid::new_v4();
     let target = spawn_echo_target().await;
     let pending = PendingSessions::new();
-    let (sshd_addr, mut web_rx) = spawn_reporting_sshd(pending.clone(), target).await;
+    let (sshd_addr, mut web_rx, _session_handles) =
+        spawn_reporting_sshd(pending.clone(), target).await;
     pending
         .insert(make_pending(session_uuid, &key, target))
         .await;
@@ -481,18 +571,19 @@ async fn ticker_sums_bytes_across_concurrent_channels() {
     drop(handle);
 }
 
-/// One-shot guard: an authenticated login that never opens a
-/// `direct-tcpip` channel (the `waiting_client` phase) must emit
-/// NOTHING -- no activation, no stats ticker. The countdown surface
-/// on the status page relies on the server-rendered TTL, not on
-/// proxy pushes.
+/// Zero-channel lifecycle: an authenticated login that never opens
+/// a `direct-tcpip` channel emits EXACTLY the pair `ews_connected`
+/// (at auth) then `IacsTunnelClosed { 0, 0 }` (at drop) -- never a
+/// `tunnel_active`, never a `tunnel_stats` ticker. This is the
+/// audit-trail contract for silent authenticated EWS logins.
 #[tokio::test]
 async fn no_ticker_without_a_direct_tcpip_channel() {
     let key = fresh_ed25519_key();
     let session_uuid = Uuid::new_v4();
     let target = spawn_echo_target().await;
     let pending = PendingSessions::new();
-    let (sshd_addr, mut web_rx) = spawn_reporting_sshd(pending.clone(), target).await;
+    let (sshd_addr, mut web_rx, _session_handles) =
+        spawn_reporting_sshd(pending.clone(), target).await;
     pending
         .insert(make_pending(session_uuid, &key, target))
         .await;
@@ -513,9 +604,269 @@ async fn no_ticker_without_a_direct_tcpip_channel() {
     while let Ok(msg) = web_rx.try_recv() {
         received.push(msg);
     }
-    assert!(
-        received.is_empty(),
-        "no IPC message may be emitted for a login that never \
-         reached direct-tcpip, got {received:?}"
+    assert_eq!(
+        received.len(),
+        2,
+        "an auth-only login must emit exactly ews_connected then \
+         IacsTunnelClosed, got {received:?}"
     );
+    match &received[0] {
+        Message::IacsTunnelStatusUpdate {
+            session_id,
+            status,
+            peer_ip,
+            ..
+        } => {
+            assert_eq!(session_id, &session_uuid.to_string());
+            assert_eq!(status, "ews_connected");
+            assert!(peer_ip.is_some(), "auth event must carry the peer IP");
+        }
+        other => panic!("first message must be ews_connected, got {other:?}"),
+    }
+    match &received[1] {
+        Message::IacsTunnelClosed {
+            session_id,
+            reason,
+            bytes_in,
+            bytes_out,
+            ..
+        } => {
+            assert_eq!(session_id, &session_uuid.to_string());
+            assert_eq!(reason, "ews_disconnect");
+            assert_eq!(
+                (*bytes_in, *bytes_out),
+                (0, 0),
+                "zero-channel login must close with zero totals"
+            );
+        }
+        other => panic!("second message must be IacsTunnelClosed, got {other:?}"),
+    }
+}
+
+/// Pre-channel terminate: the russh handle registered by
+/// `auth_succeeded` in `SessionHandles` must be able to
+/// force-disconnect an authenticated login that never opened a
+/// channel (the sequence the `Message::IacsTunnelTerminate` IPC arm
+/// in main.rs drives, pinned by terminate_disconnects_ssh_test.rs).
+/// The EWS-side connection MUST actually break, the pending token
+/// MUST be purged, and the handler drop MUST still emit the
+/// `IacsTunnelClosed` audit event.
+#[tokio::test]
+async fn terminate_after_auth_without_channel_disconnects_ssh() {
+    let key = fresh_ed25519_key();
+    let session_uuid = Uuid::new_v4();
+    let target = spawn_echo_target().await;
+    let pending = PendingSessions::new();
+    let (sshd_addr, mut web_rx, session_handles) =
+        spawn_reporting_sshd(pending.clone(), target).await;
+    pending
+        .insert(make_pending(session_uuid, &key, target))
+        .await;
+
+    let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key).await;
+
+    // The auth event must arrive before the terminate is issued
+    // (vauban-web only surfaces the Terminate button once the row
+    // is ews_connected).
+    let msgs = drain_until(&mut web_rx, Duration::from_secs(3), |m| {
+        matches!(
+            m,
+            Message::IacsTunnelStatusUpdate { status, .. } if status == "ews_connected"
+        )
+    })
+    .await;
+    assert!(
+        msgs.iter().any(|m| matches!(
+            m,
+            Message::IacsTunnelStatusUpdate { status, .. } if status == "ews_connected"
+        )),
+        "ews_connected must be emitted at auth, got {msgs:?}"
+    );
+
+    // Drive the SAME sequence as the IacsTunnelTerminate arm in
+    // main.rs: purge the pending token, then force-disconnect via
+    // the auth-time russh handle.
+    pending.take(&session_uuid).await;
+    let server_handle = session_handles
+        .get(&session_uuid)
+        .expect("auth_succeeded must have registered the russh handle pre-channel");
+    server_handle
+        .disconnect(
+            russh::Disconnect::ByApplication,
+            "session terminated".to_string(),
+            "".to_string(),
+        )
+        .await
+        .expect("server-side disconnect must dispatch");
+
+    // The EWS-side connection must actually break.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while !handle.is_closed() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        handle.is_closed(),
+        "the EWS SSH connection must be closed by the server-side terminate"
+    );
+
+    // Handler drop emits the audit close for the zero-channel login.
+    let msgs = drain_until(&mut web_rx, Duration::from_secs(3), |m| {
+        matches!(m, Message::IacsTunnelClosed { .. })
+    })
+    .await;
+    match msgs.last() {
+        Some(Message::IacsTunnelClosed {
+            session_id,
+            bytes_in,
+            bytes_out,
+            ..
+        }) => {
+            assert_eq!(session_id, &session_uuid.to_string());
+            assert_eq!((*bytes_in, *bytes_out), (0, 0));
+        }
+        other => panic!("terminate must still produce IacsTunnelClosed, got {other:?}"),
+    }
+
+    // The pending token is gone: a reconnect with the same key must
+    // be refused.
+    assert!(
+        pending.take(&session_uuid).await.is_none(),
+        "the pending token must stay purged after terminate"
+    );
+}
+
+/// Zero-channel audit manifest: an authenticated login that never
+/// opens a channel MUST still produce `IacsRecordingSessionStart`
+/// at auth (vauban-audit writes `session.json` immediately) and
+/// `IacsRecordingSessionEnd { reason: "ews_disconnect" }` at drop
+/// (vauban-audit writes `meta.json` with `channels: []` and
+/// finalizes `session.json`). The `authenticated_at_us` /
+/// `connected_at_us` anchors MUST be equal (directory-layout
+/// identity with the channel PCAPs).
+#[tokio::test]
+async fn zero_channel_login_emits_recording_session_start_and_end() {
+    let key = fresh_ed25519_key();
+    let session_uuid = Uuid::new_v4();
+    let target = spawn_echo_target().await;
+    let pending = PendingSessions::new();
+    let (sshd_addr, _web_rx, mut audit_rx, _handles) =
+        spawn_recording_sshd(pending.clone(), target).await;
+    let pending_row = make_pending(session_uuid, &key, target);
+    let expected_user = pending_row.user_uuid;
+    let expected_asset = pending_row.asset_uuid;
+    let expected_fp = pending_row.ews_pubkey_fp.clone();
+    pending.insert(pending_row).await;
+
+    let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key).await;
+
+    let msgs = drain_until(&mut audit_rx, Duration::from_secs(3), |m| {
+        matches!(m, Message::IacsRecordingSessionStart { .. })
+    })
+    .await;
+    match msgs.last() {
+        Some(Message::IacsRecordingSessionStart {
+            session_id,
+            user_uuid,
+            asset_uuid,
+            ews_fingerprint,
+            peer_ip,
+            authenticated_at_us,
+            connected_at_us,
+        }) => {
+            assert_eq!(session_id, &session_uuid.to_string());
+            assert_eq!(user_uuid, &expected_user.to_string());
+            assert_eq!(asset_uuid, &expected_asset.to_string());
+            assert_eq!(ews_fingerprint, &expected_fp);
+            assert!(!peer_ip.is_empty(), "auth event must carry the peer IP");
+            assert!(*authenticated_at_us > 0);
+            assert_eq!(
+                authenticated_at_us, connected_at_us,
+                "the auth instant IS the directory-layout anchor"
+            );
+        }
+        other => panic!("expected IacsRecordingSessionStart, got {other:?}"),
+    }
+
+    handle
+        .disconnect(russh::Disconnect::ByApplication, "test done", "")
+        .await
+        .ok();
+    drop(handle);
+
+    let msgs = drain_until(&mut audit_rx, Duration::from_secs(3), |m| {
+        matches!(m, Message::IacsRecordingSessionEnd { .. })
+    })
+    .await;
+    match msgs.last() {
+        Some(Message::IacsRecordingSessionEnd { session_id, reason }) => {
+            assert_eq!(session_id, &session_uuid.to_string());
+            assert_eq!(
+                reason, "ews_disconnect",
+                "a voluntary close must be attributed to the EWS"
+            );
+        }
+        other => panic!("expected IacsRecordingSessionEnd, got {other:?}"),
+    }
+}
+
+/// Forced-close attribution: when the terminate seam records a
+/// close reason before the disconnect (the `IacsTunnelTerminate`
+/// arm), the drop-time `IacsRecordingSessionEnd` MUST carry THAT
+/// reason instead of the `ews_disconnect` fallback.
+#[tokio::test]
+async fn terminate_reason_propagates_to_recording_session_end() {
+    let key = fresh_ed25519_key();
+    let session_uuid = Uuid::new_v4();
+    let target = spawn_echo_target().await;
+    let pending = PendingSessions::new();
+    let (sshd_addr, _web_rx, mut audit_rx, session_handles) =
+        spawn_recording_sshd(pending.clone(), target).await;
+    pending
+        .insert(make_pending(session_uuid, &key, target))
+        .await;
+
+    let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key).await;
+
+    // Wait for the auth-time SessionStart so the russh handle is
+    // guaranteed registered.
+    let msgs = drain_until(&mut audit_rx, Duration::from_secs(3), |m| {
+        matches!(m, Message::IacsRecordingSessionStart { .. })
+    })
+    .await;
+    assert!(
+        msgs.iter()
+            .any(|m| matches!(m, Message::IacsRecordingSessionStart { .. })),
+        "SessionStart must be emitted at auth"
+    );
+
+    // Same sequence as the IacsTunnelTerminate IPC arm: record the
+    // cause, then force-disconnect.
+    session_handles.set_close_reason(session_uuid, "user_terminated");
+    let server_handle = session_handles
+        .get(&session_uuid)
+        .expect("russh handle registered at auth");
+    server_handle
+        .disconnect(
+            russh::Disconnect::ByApplication,
+            "session terminated".to_string(),
+            "".to_string(),
+        )
+        .await
+        .expect("server-side disconnect must dispatch");
+
+    let msgs = drain_until(&mut audit_rx, Duration::from_secs(3), |m| {
+        matches!(m, Message::IacsRecordingSessionEnd { .. })
+    })
+    .await;
+    match msgs.last() {
+        Some(Message::IacsRecordingSessionEnd { session_id, reason }) => {
+            assert_eq!(session_id, &session_uuid.to_string());
+            assert_eq!(
+                reason, "user_terminated",
+                "the recorded close reason must dominate the fallback"
+            );
+        }
+        other => panic!("expected IacsRecordingSessionEnd, got {other:?}"),
+    }
+    drop(handle);
 }

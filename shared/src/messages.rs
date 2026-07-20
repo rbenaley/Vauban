@@ -2446,6 +2446,34 @@ pub enum Message {
     },
 
     // ========== IACS Recording (ProxyIacs <-> Audit) ==========
+    /// Signal vauban-audit that an EWS SSH login has authenticated
+    /// (the `ews_connected` transition). Fire-and-forget, no ACK.
+    ///
+    /// vauban-audit creates the session recording state immediately
+    /// (base dir anchored on `connected_at_us`, the SAME anchor as
+    /// every subsequent `IacsRecordingChannelStart`) and writes
+    /// `{YYYY}/{MM}/{uuid}/session.json` -- who (user / EWS key
+    /// fingerprint), from where (peer IP), and when -- so even a
+    /// session that never opens a `direct-tcpip` channel leaves an
+    /// audit artefact on disk.
+    IacsRecordingSessionStart {
+        session_id: String,
+        user_uuid: String,
+        asset_uuid: String,
+        /// SHA-256 hex fingerprint of the EWS public key that
+        /// authenticated the login.
+        ews_fingerprint: String,
+        /// EWS source IP as observed by the proxy (empty when the
+        /// peer address is unavailable).
+        peer_ip: String,
+        /// Wall-clock instant of the successful SSH auth (us since
+        /// UNIX epoch).
+        authenticated_at_us: u64,
+        /// Directory-layout anchor; equals `authenticated_at_us`
+        /// for sessions born after the `ews_connected` rollout.
+        connected_at_us: u64,
+    },
+
     /// Signal vauban-audit to start recording a new `direct-tcpip` channel.
     ///
     /// `client_ip` / `client_port` carry the SSH `direct-tcpip`
@@ -2500,9 +2528,15 @@ pub enum Message {
         closed_at_us: u64,
     },
 
-    /// Signal vauban-audit to finalize the session bundle (`meta.json`).
+    /// Signal vauban-audit to finalize the session bundle
+    /// (`meta.json`, written even with zero recorded channels) and
+    /// rewrite `session.json` with the close cause.
     IacsRecordingSessionEnd {
         session_id: String,
+        /// Close cause: `ews_disconnect` (EWS closed the SSH
+        /// session), `admin_terminate` (operator terminate /
+        /// revocation cascade), or `expired` (watchdog TTL reap).
+        reason: String,
     },
 
     // ========== Recording File Requests (Service -> Supervisor) ==========
@@ -5376,12 +5410,49 @@ mod tests {
     fn test_message_iacs_recording_session_end_roundtrip() {
         let msg = Message::IacsRecordingSessionEnd {
             session_id: "iacs-1".to_string(),
+            reason: "ews_disconnect".to_string(),
         };
         let deserialized: Message = deserialize(&serialize(&msg));
-        assert!(matches!(
-            deserialized,
-            Message::IacsRecordingSessionEnd { .. }
-        ));
+        if let Message::IacsRecordingSessionEnd { session_id, reason } = deserialized {
+            assert_eq!(session_id, "iacs-1");
+            assert_eq!(reason, "ews_disconnect");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_iacs_recording_session_start_roundtrip() {
+        let msg = Message::IacsRecordingSessionStart {
+            session_id: "iacs-1".to_string(),
+            user_uuid: "0d9f5bd8-0000-0000-0000-000000000001".to_string(),
+            asset_uuid: "0d9f5bd8-0000-0000-0000-000000000002".to_string(),
+            ews_fingerprint: "ab".repeat(32),
+            peer_ip: "203.0.113.7".to_string(),
+            authenticated_at_us: 1_700_000_000_000_000,
+            connected_at_us: 1_700_000_000_000_000,
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        if let Message::IacsRecordingSessionStart {
+            session_id,
+            user_uuid,
+            asset_uuid,
+            ews_fingerprint,
+            peer_ip,
+            authenticated_at_us,
+            connected_at_us,
+        } = deserialized
+        {
+            assert_eq!(session_id, "iacs-1");
+            assert_eq!(user_uuid, "0d9f5bd8-0000-0000-0000-000000000001");
+            assert_eq!(asset_uuid, "0d9f5bd8-0000-0000-0000-000000000002");
+            assert_eq!(ews_fingerprint, "ab".repeat(32));
+            assert_eq!(peer_ip, "203.0.113.7");
+            assert_eq!(authenticated_at_us, 1_700_000_000_000_000);
+            assert_eq!(connected_at_us, 1_700_000_000_000_000);
+        } else {
+            panic!("Wrong variant");
+        }
     }
 
     #[test]

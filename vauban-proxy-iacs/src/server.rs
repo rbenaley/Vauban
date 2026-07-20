@@ -136,6 +136,7 @@ impl Server for IacsTunnelServer {
             recording: self.recording.clone(),
             channel_counter: Arc::new(AtomicUsize::new(0)),
             login_channels: Arc::new(dashmap::DashMap::new()),
+            ews_connected_emitted: Arc::new(AtomicBool::new(false)),
             tunnel_active_emitted: Arc::new(AtomicBool::new(false)),
             session_total_bytes_in: Arc::new(AtomicUsize::new(0)),
             session_total_bytes_out: Arc::new(AtomicUsize::new(0)),
@@ -194,9 +195,21 @@ pub struct IacsTunnelHandler {
     /// was folded into the `IacsTunnelClosed` totals (under-count).
     pub login_channels: Arc<dashmap::DashMap<u32, TunnelHandle>>,
     /// `true` once the per-EWS-login `IacsTunnelStatusUpdate { status =
+    /// "ews_connected" }` has been emitted on the web IPC.
+    /// `auth_succeeded` flips it: a successful SSH handshake is an
+    /// authenticated presence on the bastion even before the first
+    /// `direct-tcpip` channel, so vauban-web flips the row to
+    /// `ews_connected`, anchors `connected_at` / `client_ip`, and the
+    /// session becomes visible (and terminable) on
+    /// `/sessions/active`. Also gates the Drop-time
+    /// `IacsTunnelClosed`: an authenticated login that never opened a
+    /// channel still terminates its row (audit trail + no stuck
+    /// `ews_connected` rows).
+    pub ews_connected_emitted: Arc<AtomicBool>,
+    /// `true` once the per-EWS-login `IacsTunnelStatusUpdate { status =
     /// "tunnel_active" }` has been emitted on the web IPC. The first
     /// successful `direct-tcpip` flips it; subsequent channels do not
-    /// re-emit (the DB transition `waiting_client -> tunnel_active`
+    /// re-emit (the DB transition `ews_connected -> tunnel_active`
     /// is idempotent in vauban-web but we still avoid the log noise).
     pub tunnel_active_emitted: Arc<AtomicBool>,
     /// Cumulative byte counters across every channel of this EWS
@@ -205,11 +218,13 @@ pub struct IacsTunnelHandler {
     pub session_total_bytes_in: Arc<AtomicUsize>,
     pub session_total_bytes_out: Arc<AtomicUsize>,
     /// Wall-clock anchor (microseconds since UNIX epoch) of the
-    /// `tunnel_active` transition. Captured on the first successful
-    /// `direct-tcpip`; passed to vauban-audit on every
-    /// `IacsRecordingChannelStart` so the on-disk directory layout
-    /// (`YYYY/MM/UUID/`) matches the `proxy_sessions.connected_at`
-    /// row in the DB and cannot drift across a month boundary.
+    /// authenticated presence. Captured in `auth_succeeded` (the
+    /// `ews_connected` transition, matching the DB `connected_at`),
+    /// with a first-`direct-tcpip` fallback; passed to vauban-audit
+    /// on every `IacsRecordingChannelStart` so the on-disk directory
+    /// layout (`YYYY/MM/UUID/`) matches the
+    /// `proxy_sessions.connected_at` row in the DB and cannot drift
+    /// across a month boundary.
     pub connected_at_us: Arc<std::sync::atomic::AtomicU64>,
     /// Snapshot of [`IacsTunnelServer::stats_interval`] at
     /// handler-creation time.
@@ -297,6 +312,68 @@ impl Handler for IacsTunnelHandler {
                 session_uuid = %p.session_uuid,
                 "iacs_tunnel: russh handle registered for forced disconnect"
             );
+            // Anchor `connected_at_us` at the SSH handshake: the
+            // authenticated presence starts HERE, and the recording
+            // directory layout (`YYYY/MM/UUID/`) must match the
+            // `proxy_sessions.connected_at` row that vauban-web
+            // anchors on the `ews_connected` transition below.
+            let now_us = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros() as u64;
+            let _ = self.connected_at_us.compare_exchange(
+                0,
+                now_us,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            // One-shot `ews_connected` IPC: flips the row from
+            // `waiting_client` to `ews_connected` so the session is
+            // visible (and terminable) on /sessions/active even
+            // before the first direct-tcpip channel, and leaves an
+            // audit anchor for zero-channel logins.
+            if !self.ews_connected_emitted.swap(true, Ordering::SeqCst) {
+                if let Some(tx) = self.web_reporter.as_ref() {
+                    let peer_ip = self.peer_addr.map(|sa| sa.ip().to_string());
+                    let msg = Message::IacsTunnelStatusUpdate {
+                        session_id: p.session_uuid.to_string(),
+                        status: "ews_connected".to_string(),
+                        bytes_in: 0,
+                        bytes_out: 0,
+                        peer_ip,
+                    };
+                    if let Err(e) = tx.send(msg) {
+                        warn!(
+                            session_uuid = %p.session_uuid,
+                            error = %e,
+                            "iacs_tunnel: failed to enqueue ews_connected status (web channel closed?)"
+                        );
+                    }
+                }
+                // Audit manifest at auth: `session.json` (who /
+                // which key / from where / when) is written by
+                // vauban-audit as soon as the login is proven, so
+                // even a zero-channel session leaves an on-disk
+                // artefact. Same `connected_at_us` anchor as every
+                // subsequent channel PCAP.
+                if let Some(ref hub) = self.recording {
+                    let anchor_us = self.connected_at_us.load(Ordering::SeqCst);
+                    hub.send_session_start(
+                        &p.session_uuid.to_string(),
+                        crate::iacs_recording::SessionStartInfo {
+                            user_uuid: p.user_uuid.to_string(),
+                            asset_uuid: p.asset_uuid.to_string(),
+                            ews_fingerprint: p.ews_pubkey_fp.clone(),
+                            peer_ip: self
+                                .peer_addr
+                                .map(|sa| sa.ip().to_string())
+                                .unwrap_or_default(),
+                            authenticated_at_us: anchor_us,
+                            connected_at_us: anchor_us,
+                        },
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -458,11 +535,13 @@ impl Handler for IacsTunnelHandler {
         // sessions surfaces (issue: 0.7.11 active-list integration
         // landed without the producer side, so the IPC hooks were
         // dormant).
-        // Capture `connected_at_us` on the first successful
-        // direct-tcpip and reuse it for every subsequent channel of
-        // this EWS login so the on-disk recording layout
-        // (`YYYY/MM/UUID/`) is anchored on the same wall-clock
-        // moment as `proxy_sessions.connected_at` in the DB.
+        // `connected_at_us` is normally anchored in `auth_succeeded`
+        // (the `ews_connected` transition); the compare_exchange
+        // below is a belt-and-braces fallback that only wins when
+        // the auth hook somehow did not run. Every channel of this
+        // EWS login reuses the same anchor so the on-disk recording
+        // layout (`YYYY/MM/UUID/`) matches
+        // `proxy_sessions.connected_at` in the DB.
         let now_us = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
@@ -673,12 +752,14 @@ impl Drop for IacsTunnelHandler {
             debug!(session_uuid = %p.session_uuid, "iacs_tunnel: drop cleanup");
             // Notify vauban-web so the `proxy_sessions.status` row
             // flips to `terminated`, `disconnected_at` is anchored,
-            // and the row leaves `/sessions/active`. Only fires if a
-            // `tunnel_active` was previously emitted -- a connection
-            // that never reached `direct-tcpip` (failed auth, no
-            // channel) was never persisted as `tunnel_active`, so
-            // there is nothing to close in vauban-web's view.
-            if self.tunnel_active_emitted.load(Ordering::SeqCst)
+            // and the row leaves `/sessions/active`. Fires as soon
+            // as an `ews_connected` was emitted: an authenticated
+            // login that never opened a `direct-tcpip` channel still
+            // has a live `ews_connected` row to close (audit trail);
+            // a connection that never authenticated was never
+            // persisted past `waiting_client`, so there is nothing
+            // to close in vauban-web's view.
+            if self.ews_connected_emitted.load(Ordering::SeqCst)
                 && let Some(tx) = self.web_reporter.as_ref()
             {
                 let peer_ip = self.peer_addr.map(|sa| sa.ip().to_string());
@@ -700,10 +781,22 @@ impl Drop for IacsTunnelHandler {
                     );
                 }
             }
-            if self.tunnel_active_emitted.load(Ordering::SeqCst)
+            // Finalize the audit bundle for EVERY authenticated
+            // login (gate on `ews_connected_emitted`, not
+            // `tunnel_active_emitted`): a zero-channel session must
+            // still get its `meta.json` (`channels: []`) and its
+            // `session.json` rewritten with the close cause. The
+            // cause comes from the terminate IPC when the close was
+            // forced (admin terminate / revocation / TTL reap) and
+            // falls back to `ews_disconnect` for a voluntary close.
+            if self.ews_connected_emitted.load(Ordering::SeqCst)
                 && let Some(ref hub) = self.recording
             {
-                hub.send_session_end(&p.session_uuid.to_string());
+                let reason = self
+                    .session_handles
+                    .take_close_reason(&p.session_uuid)
+                    .unwrap_or_else(|| "ews_disconnect".to_string());
+                hub.send_session_end(&p.session_uuid.to_string(), &reason);
             }
         }
     }

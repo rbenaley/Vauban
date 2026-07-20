@@ -180,17 +180,23 @@ document.addEventListener('alpine:init', function () {
     // "Can't find variable: iacsTunnelStatus".
     //
     // Drives three live surfaces on the status page:
-    //   * the state pill (waiting_client -> tunnel_active ->
-    //     terminated/expired) via the /ws/session/{uuid} push feed;
+    //   * the state pill (waiting_client -> ews_connected ->
+    //     tunnel_active -> terminated/expired) via the
+    //     /ws/session/{uuid} push feed;
     //   * the bytes in/out + duration counters (tunnel_stats);
-    //   * the waiting_client countdown. The seed is computed
-    //     server-side from created_at + waiting_client_ttl_seconds
-    //     (the revocation watchdog's reference); -1 means "no
-    //     countdown" (TTL disabled or not waiting). At zero the pill
-    //     flips to `expired` locally (optimistic guess); the
-    //     authoritative signal stays server-side -- a late
-    //     tunnel_active push recovers the pill, a tunnel_closed push
-    //     (watchdog reap via proxy-iacs) finalizes it.
+    //   * the waiting countdown (runs while waiting_client AND
+    //     ews_connected -- an authenticated-but-silent EWS is still
+    //     reaped). The seed is computed server-side from the
+    //     watchdog's anchor (created_at pre-auth, connected_at
+    //     post-auth) + waiting_client_ttl_seconds; -1 means "no
+    //     countdown" (TTL disabled or not waiting). On a live
+    //     ews_connected push the TTL restarts server-side, so the
+    //     countdown re-arms at the full TTL (opts.ttlSeconds). At
+    //     zero the pill flips to `expired` locally (optimistic
+    //     guess); the authoritative signal stays server-side -- a
+    //     late ews_connected/tunnel_active push recovers the pill, a
+    //     tunnel_closed push (watchdog reap via proxy-iacs)
+    //     finalizes it.
     Alpine.data('iacsTunnelStatus', function (opts) {
         return {
             status: opts.initialStatus,
@@ -203,13 +209,18 @@ document.addEventListener('alpine:init', function () {
             ws: null,
             durationTimer: null,
             remaining: opts.remainingSeconds,
+            ttl: (typeof opts.ttlSeconds === 'number') ? opts.ttlSeconds : -1,
             countdownTimer: null,
+            // Twin of ws_vocab::ClientStatus::is_waiting.
+            isWaiting: function () {
+                return this.status === 'waiting_client' || this.status === 'ews_connected';
+            },
             init: function () {
                 if (this.status === 'tunnel_active') {
                     this.startedAt = Date.now();
                     this.startDurationTimer();
                 }
-                if (this.status === 'waiting_client' && this.remaining >= 0) {
+                if (this.isWaiting() && this.remaining >= 0) {
                     this.startCountdown();
                 }
                 var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -231,7 +242,23 @@ document.addEventListener('alpine:init', function () {
                 var msg;
                 try { msg = JSON.parse(raw); } catch (e) { return; }
                 if (!msg || !msg.type) return;
-                if (msg.type === 'tunnel_active') {
+                if (msg.type === 'ews_connected') {
+                    // Lifecycle rank is monotone: never demote an
+                    // active tunnel, never resurrect a terminated
+                    // one. 'expired' is only the local optimistic
+                    // guess, so the authenticated push recovers it.
+                    if (this.status === 'terminated' || this.status === 'tunnel_active') return;
+                    if (msg.peer_ip) this.peerIp = msg.peer_ip;
+                    if (this.status !== 'ews_connected') {
+                        // The reap TTL restarted server-side
+                        // (anchored on the auth moment): re-arm the
+                        // countdown at the full TTL. Idempotence: a
+                        // re-delivered event must not reset it.
+                        if (this.ttl >= 0) this.remaining = this.ttl;
+                        this.status = 'ews_connected';
+                        this.startCountdown();
+                    }
+                } else if (msg.type === 'tunnel_active') {
                     // Terminated is authoritative-final: a replayed
                     // activation must not resurrect a closed tunnel.
                     // 'expired' is only the local optimistic guess at
@@ -264,7 +291,7 @@ document.addEventListener('alpine:init', function () {
                 if (this.remaining <= 0) { this.expireNow(); return; }
                 var self = this;
                 this.countdownTimer = setInterval(function () {
-                    if (self.status !== 'waiting_client') { self.stopCountdown(); return; }
+                    if (!self.isWaiting()) { self.stopCountdown(); return; }
                     self.remaining -= 1;
                     if (self.remaining <= 0) { self.remaining = 0; self.expireNow(); }
                 }, 1000);

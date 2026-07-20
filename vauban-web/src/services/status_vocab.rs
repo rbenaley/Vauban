@@ -75,6 +75,7 @@ pub const SESSION_HISTORY: StatusVocab = StatusVocab {
 pub const SESSION_HISTORY_IACS: StatusVocab = StatusVocab {
     entries: &[
         ("waiting_client", "Waiting client"),
+        ("ews_connected", "EWS connected"),
         ("tunnel_active", "Tunnel active"),
     ],
 };
@@ -165,9 +166,11 @@ mod tests {
         let without = session_history_options(false);
         assert!(with.iter().any(|(v, _)| v == "tunnel_active"));
         assert!(with.iter().any(|(v, _)| v == "waiting_client"));
+        assert!(with.iter().any(|(v, _)| v == "ews_connected"));
         assert!(!without.iter().any(|(v, _)| v == "tunnel_active"));
         assert!(!without.iter().any(|(v, _)| v == "waiting_client"));
-        assert_eq!(with.len(), without.len() + 2);
+        assert!(!without.iter().any(|(v, _)| v == "ews_connected"));
+        assert_eq!(with.len(), without.len() + 3);
     }
 
     #[test]

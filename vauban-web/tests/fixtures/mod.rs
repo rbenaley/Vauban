@@ -970,7 +970,7 @@ pub async fn create_iacs_test_session_with_uuid(
         Option<chrono::DateTime<Utc>>,
         Option<chrono::DateTime<Utc>>,
     ) = match status {
-        "tunnel_active" => (Some(now), None),
+        "tunnel_active" | "ews_connected" => (Some(now), None),
         "waiting_client" => (None, None),
         "terminated" | "expired" | "disconnected" | "failed" => {
             (Some(now - Duration::hours(1)), Some(now))

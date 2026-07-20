@@ -91,7 +91,7 @@ fn active_sessions_db_filter_is_gated_on_industrial_enabled() {
         exclusions
     );
     assert!(
-        body.contains(r#"status.eq_any(["active", "tunnel_active"])"#),
+        body.contains(r#"status.eq_any(["active", "ews_connected", "tunnel_active"])"#),
         "active_sessions MUST keep the base `status.eq_any([\"active\", \
          \"tunnel_active\"])` clause (the kill-switch ADDS an exclusion, \
          it does not replace the status filter)"

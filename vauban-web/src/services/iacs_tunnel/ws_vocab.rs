@@ -36,6 +36,13 @@
 //! twin exists so the transition table can be unit- and
 //! property-tested (the JS runs only in a browser).
 
+/// The EWS SSH handshake succeeded (authenticated presence on the
+/// bastion) but no `direct-tcpip` channel has opened yet. Carries
+/// `peer_ip` (EWS source) when known. The reap TTL restarts on this
+/// transition (anchored on `connected_at`), so the client resets its
+/// countdown to the full TTL.
+pub const TYPE_EWS_CONNECTED: &str = "ews_connected";
+
 /// Tunnel became active: the EWS opened its first `direct-tcpip`
 /// channel. Carries `peer_ip` (EWS source) when known.
 pub const TYPE_TUNNEL_ACTIVE: &str = "tunnel_active";
@@ -49,7 +56,12 @@ pub const TYPE_TUNNEL_STATS: &str = "tunnel_stats";
 pub const TYPE_TUNNEL_CLOSED: &str = "tunnel_closed";
 
 /// Every event type a `SessionLive` IACS consumer must handle.
-pub const ALL_TYPES: [&str; 3] = [TYPE_TUNNEL_ACTIVE, TYPE_TUNNEL_STATS, TYPE_TUNNEL_CLOSED];
+pub const ALL_TYPES: [&str; 4] = [
+    TYPE_EWS_CONNECTED,
+    TYPE_TUNNEL_ACTIVE,
+    TYPE_TUNNEL_STATS,
+    TYPE_TUNNEL_CLOSED,
+];
 
 /// Map an IPC `IacsTunnelStatusUpdate.status` value to the wire
 /// event type. Known statuses pass through; anything unknown is
@@ -58,6 +70,7 @@ pub const ALL_TYPES: [&str; 3] = [TYPE_TUNNEL_ACTIVE, TYPE_TUNNEL_STATS, TYPE_TU
 /// an unexpected status string).
 pub fn event_type_for_status(status: &str) -> &'static str {
     match status {
+        s if s == TYPE_EWS_CONNECTED => TYPE_EWS_CONNECTED,
         s if s == TYPE_TUNNEL_ACTIVE => TYPE_TUNNEL_ACTIVE,
         s if s == TYPE_TUNNEL_CLOSED => TYPE_TUNNEL_CLOSED,
         _ => TYPE_TUNNEL_STATS,
@@ -70,19 +83,25 @@ pub fn event_type_for_status(status: &str) -> &'static str {
 pub enum ClientStatus {
     /// Session created, EWS not connected yet (countdown may run).
     WaitingClient,
+    /// EWS authenticated (SSH handshake done), no channel yet. The
+    /// countdown keeps running (fresh TTL anchored on the auth
+    /// moment): a silent authenticated login is still reaped.
+    EwsConnected,
     /// EWS relaying traffic (duration timer runs).
     TunnelActive,
     /// Authoritative server-side close -- ABSORBING state.
     Terminated,
     /// Local optimistic flip when the countdown hits zero. NOT
-    /// absorbing: a late `tunnel_active` push recovers it (the EWS
-    /// connected in the reap window; the server is the authority).
+    /// absorbing: a late `ews_connected` / `tunnel_active` push
+    /// recovers it (the EWS connected in the reap window; the
+    /// server is the authority).
     Expired,
 }
 
 impl ClientStatus {
     pub fn parse(s: &str) -> Self {
         match s {
+            "ews_connected" => Self::EwsConnected,
             "tunnel_active" => Self::TunnelActive,
             "terminated" => Self::Terminated,
             "expired" => Self::Expired,
@@ -91,6 +110,13 @@ impl ClientStatus {
             // component's fallback `x-show` arm.
             _ => Self::WaitingClient,
         }
+    }
+
+    /// `true` while the reap countdown is meaningful: the session
+    /// waits for the EWS (pre-auth) or for its first channel
+    /// (post-auth).
+    pub fn is_waiting(self) -> bool {
+        matches!(self, Self::WaitingClient | Self::EwsConnected)
     }
 }
 
@@ -113,7 +139,7 @@ impl ClientState {
         let status = ClientStatus::parse(server_status);
         Self {
             status,
-            countdown_running: status == ClientStatus::WaitingClient && remaining_seed >= 0,
+            countdown_running: status.is_waiting() && remaining_seed >= 0,
             duration_running: status == ClientStatus::TunnelActive,
         }
     }
@@ -124,6 +150,26 @@ impl ClientState {
     #[must_use]
     pub fn apply_event(self, event_type: &str) -> Self {
         match event_type {
+            t if t == TYPE_EWS_CONNECTED => {
+                // Lifecycle rank is monotone: `ews_connected` may
+                // only move the pill FORWARD from waiting (or
+                // recover the local optimistic expiry). Terminated
+                // stays absorbing; an out-of-order arrival after
+                // `tunnel_active` must not demote an active tunnel.
+                if self.status == ClientStatus::Terminated
+                    || self.status == ClientStatus::TunnelActive
+                {
+                    return self;
+                }
+                // The reap TTL restarted server-side (anchored on
+                // the auth moment): the countdown (re)arms at the
+                // full TTL.
+                Self {
+                    status: ClientStatus::EwsConnected,
+                    countdown_running: true,
+                    duration_running: false,
+                }
+            }
             t if t == TYPE_TUNNEL_ACTIVE => {
                 // Terminated is authoritative-final: a replayed or
                 // out-of-order activation must not resurrect a
@@ -152,11 +198,12 @@ impl ClientState {
 
     /// The countdown interval ticked down to zero: flip to the
     /// local optimistic `expired` pill. Only meaningful while
-    /// waiting; twin of `expireNow()` guarded by the
-    /// `status !== 'waiting_client'` check in `startCountdown()`.
+    /// waiting (pre-auth OR authenticated-but-silent); twin of
+    /// `expireNow()` guarded by the `isWaiting()` check in
+    /// `startCountdown()`.
     #[must_use]
     pub fn expire_tick(self) -> Self {
-        if self.status != ClientStatus::WaitingClient {
+        if !self.status.is_waiting() {
             return Self {
                 countdown_running: false,
                 ..self
@@ -233,6 +280,61 @@ mod tests {
         assert_eq!(active.apply_event(TYPE_TUNNEL_STATS), active);
     }
 
+    /// SSH auth done, no channel yet: the pill flips to
+    /// `ews_connected` and the countdown (re)arms at the fresh TTL.
+    #[test]
+    fn ews_connected_flips_pill_and_rearms_countdown() {
+        let s = waiting().apply_event(TYPE_EWS_CONNECTED);
+        assert_eq!(s.status, ClientStatus::EwsConnected);
+        assert!(s.countdown_running, "countdown must keep running");
+        assert!(!s.duration_running);
+    }
+
+    /// Race: local countdown hit zero but the EWS authenticated
+    /// inside the reap window. The server push recovers the pill.
+    #[test]
+    fn ews_connected_recovers_local_optimistic_expiry() {
+        let s = waiting().expire_tick().apply_event(TYPE_EWS_CONNECTED);
+        assert_eq!(s.status, ClientStatus::EwsConnected);
+        assert!(s.countdown_running);
+    }
+
+    /// Out-of-order delivery: an `ews_connected` arriving after
+    /// `tunnel_active` must not demote the active tunnel, and after
+    /// the authoritative close must not resurrect anything.
+    #[test]
+    fn ews_connected_never_demotes_active_nor_resurrects_terminated() {
+        let active = waiting().apply_event(TYPE_TUNNEL_ACTIVE);
+        assert_eq!(active.apply_event(TYPE_EWS_CONNECTED), active);
+        let closed = active.apply_event(TYPE_TUNNEL_CLOSED);
+        assert_eq!(closed.apply_event(TYPE_EWS_CONNECTED), closed);
+    }
+
+    /// Full nominal lifecycle: waiting -> ews_connected ->
+    /// tunnel_active -> terminated, with the timers matching each
+    /// stage.
+    #[test]
+    fn nominal_lifecycle_walk() {
+        let s0 = waiting();
+        assert!(s0.countdown_running);
+        let s1 = s0.apply_event(TYPE_EWS_CONNECTED);
+        assert!(s1.countdown_running && !s1.duration_running);
+        let s2 = s1.apply_event(TYPE_TUNNEL_ACTIVE);
+        assert!(!s2.countdown_running && s2.duration_running);
+        let s3 = s2.apply_event(TYPE_TUNNEL_CLOSED);
+        assert_eq!(s3.status, ClientStatus::Terminated);
+        assert!(!s3.countdown_running && !s3.duration_running);
+    }
+
+    /// Authenticated-but-silent EWS: the countdown still expires
+    /// (the reap TTL keeps running on `ews_connected`).
+    #[test]
+    fn ews_connected_still_expires_on_tick() {
+        let s = waiting().apply_event(TYPE_EWS_CONNECTED).expire_tick();
+        assert_eq!(s.status, ClientStatus::Expired);
+        assert!(!s.countdown_running);
+    }
+
     /// Battle cases: garbage, legacy vocabulary, and empty types are
     /// all no-ops (the legacy `iacs_tunnel_status` envelope must
     /// never transition anything if it ever reappears on the wire).
@@ -257,6 +359,9 @@ mod tests {
     fn initial_state_matrix() {
         assert!(ClientState::initial("waiting_client", 300).countdown_running);
         assert!(!ClientState::initial("waiting_client", -1).countdown_running);
+        assert!(ClientState::initial("ews_connected", 300).countdown_running);
+        assert!(!ClientState::initial("ews_connected", -1).countdown_running);
+        assert!(!ClientState::initial("ews_connected", 300).duration_running);
         assert!(!ClientState::initial("tunnel_active", 300).countdown_running);
         assert!(ClientState::initial("tunnel_active", -1).duration_running);
         assert!(!ClientState::initial("terminated", 300).countdown_running);
@@ -272,6 +377,7 @@ mod tests {
     /// transition).
     #[test]
     fn event_type_for_status_mapping() {
+        assert_eq!(event_type_for_status("ews_connected"), TYPE_EWS_CONNECTED);
         assert_eq!(event_type_for_status("tunnel_active"), TYPE_TUNNEL_ACTIVE);
         assert_eq!(event_type_for_status("tunnel_closed"), TYPE_TUNNEL_CLOSED);
         assert_eq!(event_type_for_status("tunnel_stats"), TYPE_TUNNEL_STATS);
@@ -299,6 +405,7 @@ mod tests {
                 // Canonical vocabulary (weighted so sequences are
                 // realistic), legacy envelope, and pure garbage.
                 4 => prop_oneof![
+                    Just(TYPE_EWS_CONNECTED.to_string()),
                     Just(TYPE_TUNNEL_ACTIVE.to_string()),
                     Just(TYPE_TUNNEL_STATS.to_string()),
                     Just(TYPE_TUNNEL_CLOSED.to_string()),
@@ -313,6 +420,7 @@ mod tests {
             (
                 prop_oneof![
                     Just("waiting_client"),
+                    Just("ews_connected"),
                     Just("tunnel_active"),
                     Just("terminated"),
                     Just("expired"),
@@ -336,9 +444,10 @@ mod tests {
         proptest! {
             /// INVARIANT 1 -- the user-visible bug, generalized: after
             /// ANY sequence of events, the countdown may only be
-            /// running while the pill shows `waiting_client`. A
-            /// countdown ticking over an active/closed/expired tunnel
-            /// is unrepresentable.
+            /// running while the pill shows a waiting state
+            /// (`waiting_client` or `ews_connected`). A countdown
+            /// ticking over an active/closed/expired tunnel is
+            /// unrepresentable.
             #[test]
             fn countdown_only_runs_while_waiting(
                 init in initial_strategy(),
@@ -346,7 +455,7 @@ mod tests {
             ) {
                 let s = run(init, &steps);
                 prop_assert!(
-                    !s.countdown_running || s.status == ClientStatus::WaitingClient,
+                    !s.countdown_running || s.status.is_waiting(),
                     "countdown running in {s:?} after {steps:?}"
                 );
             }
@@ -400,8 +509,51 @@ mod tests {
                 init in initial_strategy(),
                 evt in "[a-zA-Z_ ]{0,24}",
             ) {
-                prop_assume!(evt != TYPE_TUNNEL_ACTIVE && evt != TYPE_TUNNEL_CLOSED);
+                prop_assume!(
+                    evt != TYPE_EWS_CONNECTED
+                        && evt != TYPE_TUNNEL_ACTIVE
+                        && evt != TYPE_TUNNEL_CLOSED
+                );
                 prop_assert_eq!(init.apply_event(&evt), init, "evt={:?}", evt);
+            }
+
+            /// INVARIANT 7 -- lifecycle rank is monotone (modulo the
+            /// Expired <-> waiting recovery): applying any event
+            /// never DECREASES the rank
+            /// waiting(0) -> ews_connected(1) -> tunnel_active(2)
+            /// -> terminated(3).
+            #[test]
+            fn lifecycle_rank_is_monotone(
+                init in initial_strategy(),
+                steps in proptest::collection::vec(step_strategy(), 0..25),
+            ) {
+                fn rank(s: ClientStatus) -> u8 {
+                    match s {
+                        ClientStatus::WaitingClient => 0,
+                        // Expired is the local optimistic guess that
+                        // a waiting deadline passed; it is reachable
+                        // from BOTH waiting ranks and recoverable to
+                        // rank 1+, so it shares rank 1 with
+                        // EwsConnected.
+                        ClientStatus::EwsConnected | ClientStatus::Expired => 1,
+                        ClientStatus::TunnelActive => 2,
+                        ClientStatus::Terminated => 3,
+                    }
+                }
+                let mut state = init;
+                let mut prev_rank = rank(state.status);
+                for step in &steps {
+                    state = match step {
+                        Step::Event(t) => state.apply_event(t),
+                        Step::ExpireTick => state.expire_tick(),
+                    };
+                    let r = rank(state.status);
+                    prop_assert!(
+                        r >= prev_rank,
+                        "rank regression {prev_rank} -> {r} in {state:?} after {step:?}"
+                    );
+                    prev_rank = r;
+                }
             }
 
             /// INVARIANT 6 -- `event_type_for_status` is total and

@@ -111,9 +111,14 @@ fn three_hydration_sites_compute_duration_for_tunnel_active() {
         );
     }
     let projection = read("src/templates/sessions/presentation.rs");
+    let collapsed: String = projection.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        projection.contains("input.status == \"active\" || input.status == \"tunnel_active\""),
-        "the shared duration projection MUST keep IACS tunnel_active rows live"
+        collapsed.contains(
+            "input.status == \"active\" || input.status == \"ews_connected\" || \
+             input.status == \"tunnel_active\""
+        ),
+        "the shared duration projection MUST keep IACS ews_connected \
+         AND tunnel_active rows live"
     );
 }
 

@@ -63,7 +63,8 @@ async fn iacs_tunnel_active_surfaces_on_active_sessions_page() {
     let admin_uuid = user_uuid(&mut conn, admin_id).await;
 
     let user_id = create_simple_user(&mut conn, "iacs_active_user").await;
-    let asset_id = create_simple_iacs_asset(&mut conn, "iacs-active-target", admin_id).await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("iacs-active-target"), admin_id).await;
     let (_session_id, session_uuid) =
         create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "tunnel_active").await;
 
@@ -101,6 +102,167 @@ async fn iacs_tunnel_active_surfaces_on_active_sessions_page() {
     );
 }
 
+/// An IACS session in `ews_connected` (SSH login proven, zero
+/// channel yet) MUST surface on `/sessions/active`: an authenticated
+/// presence on the bastion is an operational fact the operator must
+/// see and be able to cut.
+#[tokio::test]
+async fn iacs_ews_connected_surfaces_on_active_sessions_page() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("iacs_ewsc_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = user_uuid(&mut conn, admin_id).await;
+
+    let user_id = create_simple_user(&mut conn, "iacs_ewsc_user").await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("iacs-ewsc-target"), admin_id).await;
+    let (_session_id, session_uuid) =
+        create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "ews_connected").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+    assert!(
+        body.contains(&session_uuid.to_string()),
+        "active list must include the ews_connected IACS session \
+         (authenticated login, zero channel); body=\n{}",
+        &body[..body.len().min(2000)]
+    );
+    assert!(
+        body.contains(">IACS<"),
+        "ews_connected row must carry the IACS badge"
+    );
+}
+
+/// The Disconnect button must ALSO work on an `ews_connected` row
+/// (terminate pre-channel): the SSH login exists even though no
+/// `direct-tcpip` channel ever opened.
+#[tokio::test]
+async fn disconnect_button_terminates_ews_connected_session() {
+    use vauban_web::schema::proxy_sessions;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("disc_ewsc_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = user_uuid(&mut conn, admin_id).await;
+
+    let user_id = create_simple_user(&mut conn, "disc_ewsc_user").await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("disc-ewsc-iacs"), admin_id).await;
+    let (_, session_uuid) =
+        create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "ews_connected").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+    let csrf = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/{}/terminate", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf),
+        )
+        .form(&serde_json::json!({"csrf_token": csrf}))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303,
+        "terminate must succeed for an ews_connected IACS session; got {}",
+        status
+    );
+
+    let new_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(
+        new_status, "terminated",
+        "ews_connected row must flip to terminated after disconnect"
+    );
+
+    let after = app
+        .server
+        .get("/sessions/active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert!(
+        !after.text().contains(&session_uuid.to_string()),
+        "terminated row must disappear from the active list"
+    );
+}
+
+/// A late `IacsTunnelClosed` (the Drop that follows the forced
+/// disconnect) must NOT overwrite `terminated`:
+/// `persist_tunnel_closed` is gated on live statuses only.
+#[tokio::test]
+async fn drop_after_admin_terminate_does_not_overwrite_terminated() {
+    use vauban_web::schema::proxy_sessions;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("drop_admin")).await;
+    let user_id = create_simple_user(&mut conn, "drop_user").await;
+    let asset_id = create_simple_iacs_asset(&mut conn, &unique_name("drop-iacs"), admin_id).await;
+    let (_, session_uuid) =
+        create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "ews_connected").await;
+
+    // Admin terminate flipped the row (simulated directly).
+    unwrap_ok!(
+        diesel::update(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)))
+            .set((
+                proxy_sessions::status.eq("terminated"),
+                proxy_sessions::disconnected_at.eq(diesel::dsl::now),
+            ))
+            .execute(&mut conn)
+            .await
+    );
+
+    // The proxy-side Drop then emits IacsTunnelClosed; the persist
+    // gate must treat it as a no-op.
+    let updated = unwrap_ok!(
+        vauban_web::ipc::proxy_iacs::persist_tunnel_closed(
+            &app.db_pool,
+            &session_uuid.to_string(),
+            false,
+            "",
+        )
+        .await
+    );
+    assert!(
+        !updated,
+        "IacsTunnelClosed after admin terminate must be a no-op"
+    );
+
+    let status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(status, "terminated", "terminated must stay terminated");
+}
+
 /// IACS sessions in `waiting_client` (no EWS connected yet, no
 /// `connected_at`) MUST NOT appear on the active list. Symmetric to
 /// the existing exclusion of SSH/RDP rows with `connected_at` NULL.
@@ -114,7 +276,8 @@ async fn iacs_waiting_client_is_excluded_from_active_sessions_page() {
     let admin_uuid = user_uuid(&mut conn, admin_id).await;
 
     let user_id = create_simple_user(&mut conn, "iacs_waiting_user").await;
-    let asset_id = create_simple_iacs_asset(&mut conn, "iacs-waiting-target", admin_id).await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("iacs-waiting-target"), admin_id).await;
     let (_session_id, session_uuid) =
         create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "waiting_client").await;
 
@@ -148,7 +311,8 @@ async fn iacs_terminated_is_excluded_from_active_sessions_page() {
     let admin_uuid = user_uuid(&mut conn, admin_id).await;
 
     let user_id = create_simple_user(&mut conn, "iacs_term_user").await;
-    let asset_id = create_simple_iacs_asset(&mut conn, "iacs-term-target", admin_id).await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("iacs-term-target"), admin_id).await;
     let (_session_id, session_uuid) =
         create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "terminated").await;
 
@@ -188,9 +352,12 @@ async fn active_sessions_page_renders_all_three_protocols_with_distinct_badges()
 
     let user_id = create_simple_user(&mut conn, "mixed_user").await;
 
-    let ssh_asset_id = create_simple_ssh_asset(&mut conn, "mixed-ssh", admin_id).await;
-    let rdp_asset_id = create_simple_rdp_asset(&mut conn, "mixed-rdp", admin_id).await;
-    let iacs_asset_id = create_simple_iacs_asset(&mut conn, "mixed-iacs", admin_id).await;
+    let ssh_asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("mixed-ssh"), admin_id).await;
+    let rdp_asset_id =
+        create_simple_rdp_asset(&mut conn, &unique_name("mixed-rdp"), admin_id).await;
+    let iacs_asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("mixed-iacs"), admin_id).await;
 
     let (_, ssh_uuid) =
         create_test_session_with_uuid(&mut conn, user_id, ssh_asset_id, "ssh", "active").await;
@@ -245,7 +412,8 @@ async fn active_sessions_stats_count_iacs_tunnels_separately() {
     let admin_uuid = user_uuid(&mut conn, admin_id).await;
 
     let user_id = create_simple_user(&mut conn, "stats_user").await;
-    let iacs_asset_id = create_simple_iacs_asset(&mut conn, "stats-iacs", admin_id).await;
+    let iacs_asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("stats-iacs"), admin_id).await;
 
     let _ = create_iacs_test_session_with_uuid(&mut conn, user_id, iacs_asset_id, "tunnel_active")
         .await;
@@ -291,7 +459,7 @@ async fn disconnect_button_terminates_iacs_tunnel_and_removes_it_from_active_lis
     let admin_uuid = user_uuid(&mut conn, admin_id).await;
 
     let user_id = create_simple_user(&mut conn, "disc_user").await;
-    let asset_id = create_simple_iacs_asset(&mut conn, "disc-iacs", admin_id).await;
+    let asset_id = create_simple_iacs_asset(&mut conn, &unique_name("disc-iacs"), admin_id).await;
     let (_, session_uuid) =
         create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "tunnel_active").await;
 

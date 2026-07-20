@@ -66,6 +66,17 @@
                 </svg>
                 Inspect Capture
             </a>
+            {% else if recording.session_type == "iacs_tunnel" %}
+            {# Zero-channel bundle (auth-only session) or not hydrated
+               yet: /inspect would 404, so the button stays visible for
+               layout consistency but inert. #}
+            <span aria-disabled="true" title="No packet capture for this session"
+                  class="inline-flex items-center rounded-md bg-gray-200 dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-400 dark:text-gray-500 shadow-sm cursor-not-allowed select-none">
+                <svg class="-ml-0.5 mr-1.5 h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd"/>
+                </svg>
+                Inspect Capture
+            </span>
             {% endif %}
             <a href="{{ recording.download_url }}"
                class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">

@@ -17,7 +17,7 @@
 //! `per_asset_target_test.rs` suite; here we only pin the call
 //! graph.
 
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 const SRC: &str = "src";
 
@@ -65,10 +65,12 @@ fn handler_emits_iacs_tunnel_status_update_on_first_channel_open() {
 /// On handler drop (the EWS SSH connection ends) the proxy MUST
 /// emit `Message::IacsTunnelClosed` so vauban-web can flip the row
 /// to `terminated`, anchor `disconnected_at`, and remove it from
-/// the active sessions surfaces. Only fires when a `tunnel_active`
-/// was previously emitted -- a connection that never reached
-/// `direct-tcpip` (failed auth, no channel) was never persisted as
-/// `tunnel_active`, so there is nothing to close.
+/// the active sessions surfaces. Fires as soon as an
+/// `ews_connected` was emitted (the SSH handshake succeeded): an
+/// authenticated login that never opened a `direct-tcpip` channel
+/// still has a live `ews_connected` row to close. A connection that
+/// never authenticated was never persisted past `waiting_client`,
+/// so there is nothing to close.
 #[test]
 fn handler_emits_iacs_tunnel_closed_on_drop() {
     let src = read_src("server.rs");
@@ -77,17 +79,53 @@ fn handler_emits_iacs_tunnel_closed_on_drop() {
         "server.rs MUST emit IacsTunnelClosed at handler-drop time"
     );
     assert!(
-        src.contains("self.tunnel_active_emitted.load(Ordering::SeqCst)"),
+        src.contains("self.ews_connected_emitted.load(Ordering::SeqCst)"),
         "server.rs MUST gate the IacsTunnelClosed emission on the \
-         `tunnel_active_emitted` flag so a failed-auth connection \
-         (which never persisted `tunnel_active`) does not generate a \
-         spurious close event"
+         `ews_connected_emitted` flag: an authenticated zero-channel \
+         login still terminates its row, while a failed-auth \
+         connection (never persisted past waiting_client) does not \
+         generate a spurious close event"
     );
     assert!(
         src.contains("reason: \"ews_disconnect\""),
         "server.rs MUST tag the drop-time IacsTunnelClosed reason \
          as `ews_disconnect` so operators can distinguish a clean \
          EWS shutdown from a server-initiated terminate"
+    );
+}
+
+/// `auth_succeeded` MUST emit the one-shot `IacsTunnelStatusUpdate
+/// { status = "ews_connected", peer_ip }`: the SSH handshake is an
+/// authenticated presence on the bastion even before the first
+/// `direct-tcpip`, and vauban-web needs it to flip the row, anchor
+/// `connected_at` / `client_ip`, and surface the session (with its
+/// Terminate button) on `/sessions/active`.
+#[test]
+fn auth_succeeded_emits_one_shot_ews_connected() {
+    let src = read_src("server.rs");
+    assert!(
+        src.contains("status: \"ews_connected\".to_string()"),
+        "server.rs MUST tag the auth-time IacsTunnelStatusUpdate as \
+         `ews_connected` so `persist_ews_connected` flips the DB row"
+    );
+    assert!(
+        src.contains("ews_connected_emitted.swap(true"),
+        "server.rs MUST guard the ews_connected emission behind a \
+         one-shot `ews_connected_emitted` flag (re-auth on the same \
+         connection must not re-emit)"
+    );
+    // The recording/DB wall-clock anchor is captured at auth (the
+    // ews_connected transition), matching `connected_at` in the DB.
+    let auth_zone = src
+        .split("async fn auth_succeeded")
+        .nth(1)
+        .and_then(|rest| rest.split("async fn channel_open_session").next())
+        .expect("auth_succeeded body present");
+    assert!(
+        auth_zone.contains("self.connected_at_us.compare_exchange("),
+        "auth_succeeded MUST anchor connected_at_us (the recording \
+         directory layout must match the DB connected_at set at the \
+         ews_connected transition)"
     );
 }
 
@@ -243,6 +281,91 @@ fn drop_flushes_every_login_channel() {
     assert!(
         src.contains("self.login_channels.clear()"),
         "Drop MUST clear login_channels after the flush"
+    );
+}
+
+/// Audit manifest at auth: `auth_succeeded` MUST fire
+/// `IacsRecordingSessionStart` (via `IacsRecordingHub::
+/// send_session_start`) with the SAME `connected_at_us` anchor as
+/// every subsequent channel, so vauban-audit writes
+/// `session.json` immediately and a zero-channel login still
+/// leaves an on-disk artefact.
+#[test]
+fn auth_succeeded_sends_recording_session_start() {
+    let src = read_src("server.rs");
+    let auth_zone = src
+        .split("async fn auth_succeeded")
+        .nth(1)
+        .and_then(|rest| rest.split("async fn channel_open_session").next())
+        .expect("auth_succeeded body present");
+    assert!(
+        auth_zone.contains("hub.send_session_start("),
+        "auth_succeeded MUST call IacsRecordingHub::send_session_start \
+         so session.json is written at auth (zero-channel audit)"
+    );
+    assert!(
+        auth_zone.contains("authenticated_at_us: anchor_us")
+            && auth_zone.contains("connected_at_us: anchor_us"),
+        "the SessionStart MUST reuse the connected_at_us anchor \
+         captured at auth (directory-layout identity with the \
+         channel PCAPs)"
+    );
+}
+
+/// Drop-time audit finalization: `send_session_end` MUST be gated
+/// on `ews_connected_emitted` (NOT `tunnel_active_emitted`) so a
+/// zero-channel authenticated login still gets its `meta.json`
+/// (`channels: []`) and its `session.json` close cause. The reason
+/// comes from `SessionHandles::take_close_reason` (populated by the
+/// terminate IPC) with the `ews_disconnect` fallback.
+#[test]
+fn drop_finalizes_recording_for_every_authenticated_login() {
+    let src = read_src("server.rs");
+    let drop_zone = src
+        .split("impl Drop for IacsTunnelHandler")
+        .nth(1)
+        .expect("Drop impl present");
+    assert!(
+        drop_zone.contains("hub.send_session_end("),
+        "Drop MUST call send_session_end so the audit bundle is \
+         finalized"
+    );
+    assert!(
+        !drop_zone.contains("self.tunnel_active_emitted.load(Ordering::SeqCst)\n                && let Some(ref hub) = self.recording"),
+        "the send_session_end gate MUST NOT be tunnel_active_emitted \
+         (that swallowed zero-channel sessions)"
+    );
+    assert!(
+        drop_zone.contains("take_close_reason(&p.session_uuid)")
+            && drop_zone.contains("\"ews_disconnect\".to_string()"),
+        "Drop MUST attribute the close cause via \
+         SessionHandles::take_close_reason with the ews_disconnect \
+         fallback"
+    );
+}
+
+/// The terminate IPC handler MUST record the close cause BEFORE
+/// dispatching the russh disconnect, so the Handler `Drop` (which
+/// russh fires asynchronously) attributes the
+/// `IacsRecordingSessionEnd` to the terminate instead of a
+/// voluntary `ews_disconnect`.
+#[test]
+fn terminate_ipc_records_close_reason_before_disconnect() {
+    let src = read_src("main.rs");
+    let terminate_zone = src
+        .split("Message::IacsTunnelTerminate {")
+        .nth(1)
+        .expect("terminate arm present");
+    let set_pos = terminate_zone
+        .find("session_handles.set_close_reason(parsed, &reason)")
+        .expect("terminate arm MUST call set_close_reason");
+    let disconnect_pos = terminate_zone
+        .find(".disconnect(")
+        .expect("terminate arm dispatches Handle::disconnect");
+    assert!(
+        set_pos < disconnect_pos,
+        "set_close_reason MUST run BEFORE the disconnect dispatch \
+         (the Drop can fire as soon as russh processes the close)"
     );
 }
 

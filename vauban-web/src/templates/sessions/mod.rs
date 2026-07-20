@@ -32,6 +32,7 @@ pub fn session_status_class(status: &str) -> &'static str {
         "waiting_client" => {
             "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300"
         }
+        "ews_connected" => "bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-300",
         "disconnected" => {
             "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-300"
         }

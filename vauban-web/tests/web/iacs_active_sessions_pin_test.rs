@@ -58,10 +58,11 @@ fn every_active_list_query_site_includes_tunnel_active_status() {
     for (rel, what) in ACTIVE_LIST_SITES {
         let src = read_production_only(rel);
         assert!(
-            src.contains(r#"status.eq_any(["active", "tunnel_active"])"#),
+            src.contains(r#"status.eq_any(["active", "ews_connected", "tunnel_active"])"#),
             "{} ({}) MUST filter the active list with \
-             `status.eq_any([\"active\", \"tunnel_active\"])` so IACS \
-             tunnels surface alongside SSH/RDP. Pinned at \
+             `status.eq_any([\"active\", \"ews_connected\", \"tunnel_active\"])` \
+             so IACS tunnels (channel-less authenticated logins included) \
+             surface alongside SSH/RDP. Pinned at \
              tests/web/iacs_active_sessions_pin_test.rs",
             rel,
             what
@@ -79,11 +80,11 @@ fn every_active_list_query_site_includes_tunnel_active_status() {
             let win_start = abs.saturating_sub(200);
             let window = &src[win_start..abs];
             assert!(
-                window.contains(r#"eq_any(["active", "tunnel_active"])"#),
+                window.contains(r#"eq_any(["active", "ews_connected", "tunnel_active"])"#),
                 "{} ({}): a `connected_at.is_not_null()` filter is not \
                  paired with the IACS-aware `status.eq_any([\"active\", \
-                 \"tunnel_active\"])` within the preceding 200 chars. \
-                 Window:\n---\n{}\n---",
+                 \"ews_connected\", \"tunnel_active\"])` within the \
+                 preceding 200 chars. Window:\n---\n{}\n---",
                 rel,
                 what,
                 window

@@ -738,7 +738,7 @@ async fn fetch_initial_stats(
     // dashboard tile reflects what the operator sees on the
     // active-sessions page.
     let active_count: i64 = proxy_sessions
-        .filter(status.eq_any(["active", "tunnel_active"]))
+        .filter(status.eq_any(["active", "ews_connected", "tunnel_active"]))
         .count()
         .get_result(&mut conn)
         .await
@@ -790,7 +790,7 @@ async fn fetch_initial_sessions(
     // see `tasks::dashboard::fetch_active_sessions`. SSH/RDP are
     // `active`, IACS tunnels are `tunnel_active`.
     let sessions: Vec<ProxySession> = proxy_sessions
-        .filter(status.eq_any(["active", "tunnel_active"]))
+        .filter(status.eq_any(["active", "ews_connected", "tunnel_active"]))
         .order(created_at.desc())
         .limit(10)
         .load(&mut conn)
@@ -1388,7 +1388,7 @@ pub(crate) async fn fetch_active_sessions_list(
         let mut q = proxy_sessions::table
             .inner_join(schema_assets::table)
             .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-            .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
+            .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
             .filter(proxy_sessions::connected_at.is_not_null())
             .into_boxed();
         // Industrial kill-switch (layer 2): exclude IACS tunnels from

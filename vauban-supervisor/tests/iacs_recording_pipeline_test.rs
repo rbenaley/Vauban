@@ -4,6 +4,7 @@
 fn shared_messages_include_iacs_recording_variants() {
     let src = include_str!("../../shared/src/messages.rs");
     for variant in [
+        "IacsRecordingSessionStart",
         "IacsRecordingChannelStart",
         "IacsRecordingData",
         "IacsRecordingDataAck",

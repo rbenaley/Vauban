@@ -2827,6 +2827,7 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
             "connecting",
             "active",
             "waiting_client",
+            "ews_connected",
             "tunnel_active",
         ]))
         .load(&mut conn)

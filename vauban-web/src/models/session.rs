@@ -145,6 +145,11 @@ pub enum SessionStatus {
     /// `[industrial.iacs_tunnel].waiting_client_ttl_seconds` if no EWS
     /// connects (then transitions to `Expired`).
     WaitingClient,
+    /// IACS-only: the EWS SSH handshake has succeeded (key proven,
+    /// authenticated presence on the bastion) but no `direct-tcpip`
+    /// channel has opened yet. Reaped after the same TTL anchored on
+    /// `connected_at` if the EWS stays silent.
+    EwsConnected,
     /// IACS-only: the EWS handshake has succeeded and a `direct-tcpip`
     /// channel is forwarding bytes to the configured target.
     TunnelActive,
@@ -169,6 +174,7 @@ impl SessionStatus {
         Self::Terminated,
         Self::Failed,
         Self::WaitingClient,
+        Self::EwsConnected,
         Self::TunnelActive,
     ];
 
@@ -186,6 +192,7 @@ impl SessionStatus {
             Self::Terminated => "terminated",
             Self::Failed => "failed",
             Self::WaitingClient => "waiting_client",
+            Self::EwsConnected => "ews_connected",
             Self::TunnelActive => "tunnel_active",
         }
     }
@@ -206,6 +213,7 @@ impl SessionStatus {
             Self::Terminated => "Terminated",
             Self::Failed => "Failed",
             Self::WaitingClient => "Waiting client",
+            Self::EwsConnected => "EWS connected",
             Self::TunnelActive => "Tunnel active",
         }
     }
@@ -229,7 +237,11 @@ impl SessionStatus {
     pub fn is_live(&self) -> bool {
         matches!(
             self,
-            Self::Connecting | Self::Active | Self::WaitingClient | Self::TunnelActive
+            Self::Connecting
+                | Self::Active
+                | Self::WaitingClient
+                | Self::EwsConnected
+                | Self::TunnelActive
         )
     }
 }
@@ -461,12 +473,18 @@ mod tests {
             SessionStatus::WaitingClient
         );
         assert_eq!(
+            SessionStatus::parse("ews_connected"),
+            SessionStatus::EwsConnected
+        );
+        assert_eq!(
             SessionStatus::parse("tunnel_active"),
             SessionStatus::TunnelActive
         );
         assert_eq!(SessionStatus::WaitingClient.as_str(), "waiting_client");
+        assert_eq!(SessionStatus::EwsConnected.as_str(), "ews_connected");
         assert_eq!(SessionStatus::TunnelActive.as_str(), "tunnel_active");
         assert!(SessionStatus::WaitingClient.is_live());
+        assert!(SessionStatus::EwsConnected.is_live());
         assert!(SessionStatus::TunnelActive.is_live());
         assert!(!SessionStatus::Terminated.is_live());
         assert!(SessionStatus::Active.is_live());

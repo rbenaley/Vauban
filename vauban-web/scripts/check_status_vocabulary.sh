@@ -23,7 +23,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CANONICAL="pending approved rejected revoked expired orphaned connecting active disconnected terminated failed waiting_client tunnel_active"
+CANONICAL="pending approved rejected revoked expired orphaned connecting active disconnected terminated failed waiting_client ews_connected tunnel_active"
 
 # Files that INSERT proxy_sessions rows with a literal status (the
 # struct-literal `status: "..."` pattern is too generic to scan

@@ -1325,6 +1325,53 @@ fn handle_iacs_recording_message(
     };
 
     match msg {
+        Message::IacsRecordingSessionStart {
+            session_id,
+            user_uuid,
+            asset_uuid,
+            ews_fingerprint,
+            peer_ip,
+            authenticated_at_us,
+            connected_at_us,
+        } => {
+            let info = crate::iacs_recording_manager::IacsSessionStartInfo {
+                user_uuid,
+                asset_uuid,
+                ews_fingerprint,
+                peer_ip,
+                authenticated_at_us,
+                connected_at_us,
+            };
+            let session_json_relative = mgr.start_session(&session_id, info.clone());
+            let session_json =
+                IacsRecordingManager::serialize_session_json(&session_id, &info, None);
+            match request_file_from_supervisor(
+                supervisor_channel,
+                fd_passing_socket,
+                &session_id,
+                &session_json_relative,
+            ) {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    if let Err(e) = file
+                        .write_all(session_json.as_bytes())
+                        .and_then(|_| file.flush())
+                    {
+                        error!(session_id, error = %e, "Failed to write IACS session.json");
+                    } else {
+                        info!(session_id, "IACS session.json written at auth");
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        session_id,
+                        error = %e,
+                        "Failed to obtain IACS session.json file from supervisor"
+                    );
+                }
+            }
+            state.requests_processed += 1;
+        }
         Message::IacsRecordingChannelStart {
             session_id,
             channel_id,
@@ -1440,8 +1487,11 @@ fn handle_iacs_recording_message(
             }
             state.requests_processed += 1;
         }
-        Message::IacsRecordingSessionEnd { session_id } => {
+        Message::IacsRecordingSessionEnd { session_id, reason } => {
             if let Some(result) = mgr.end_session(&session_id) {
+                // `meta.json` is written even with `channels: []`:
+                // a zero-channel authenticated login still leaves a
+                // complete, hydratable audit bundle.
                 let meta_json = IacsRecordingManager::serialize_meta_json(&result);
                 match request_file_from_supervisor(
                     supervisor_channel,
@@ -1467,6 +1517,47 @@ fn handle_iacs_recording_message(
                             error = %e,
                             "Failed to obtain IACS meta.json file from supervisor"
                         );
+                    }
+                }
+
+                // Rewrite `session.json` with the close cause when
+                // the session carried auth-time identity.
+                if let (Some(rel), Some(info)) =
+                    (&result.session_json_relative_path, &result.start_info)
+                {
+                    let ended_at_us = std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_micros() as u64;
+                    let session_json = IacsRecordingManager::serialize_session_json(
+                        &session_id,
+                        info,
+                        Some((ended_at_us, &reason)),
+                    );
+                    match request_file_from_supervisor(
+                        supervisor_channel,
+                        fd_passing_socket,
+                        &session_id,
+                        rel,
+                    ) {
+                        Ok(mut file) => {
+                            use std::io::Write;
+                            if let Err(e) = file
+                                .write_all(session_json.as_bytes())
+                                .and_then(|_| file.flush())
+                            {
+                                error!(session_id, error = %e, "Failed to rewrite IACS session.json");
+                            } else {
+                                info!(session_id, reason, "IACS session.json finalized");
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                session_id,
+                                error = %e,
+                                "Failed to obtain IACS session.json file from supervisor"
+                            );
+                        }
                     }
                 }
             }

@@ -92,6 +92,7 @@ impl SessionDetail {
         match self.status.as_str() {
             "active" | "tunnel_active" => "Active".to_string(),
             "waiting_client" => "Waiting client".to_string(),
+            "ews_connected" => "EWS connected".to_string(),
             "disconnected" => "Disconnected".to_string(),
             "terminated" => "Terminated".to_string(),
             "pending" => "Pending".to_string(),

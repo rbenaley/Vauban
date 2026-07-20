@@ -148,9 +148,18 @@ pub struct TunnelRegistry {
 ///
 /// The handle is `Clone + Debug` (russh contract) so the DashMap
 /// stores an owned copy and lookups never block writers.
+///
+/// `close_reasons` carries the audit close cause across the forced-
+/// disconnect seam: the `IacsTunnelTerminate` IPC handler records
+/// the reason (`admin_terminate` / `expired` / `revoked`) BEFORE
+/// dispatching `Handle::disconnect`, and the Handler's `Drop` takes
+/// it back when emitting `IacsRecordingSessionEnd`. A voluntary EWS
+/// disconnect never populated the map, so `take_close_reason`
+/// returns `None` and the Drop falls back to `ews_disconnect`.
 #[derive(Debug, Default, Clone)]
 pub struct SessionHandles {
     inner: Arc<DashMap<Uuid, russh::server::Handle>>,
+    close_reasons: Arc<DashMap<Uuid, String>>,
 }
 
 #[allow(dead_code)] // Several methods surface in Lot 5 (terminate / WS pusher)
@@ -199,7 +208,22 @@ impl SessionHandles {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(DashMap::new()),
+            close_reasons: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Record the audit close cause of a forced disconnect. Called
+    /// by the `IacsTunnelTerminate` IPC handler BEFORE
+    /// `Handle::disconnect` so the Handler `Drop` (which fires when
+    /// russh tears the session down) can attribute the close.
+    pub fn set_close_reason(&self, session_uuid: Uuid, reason: &str) {
+        self.close_reasons.insert(session_uuid, reason.to_string());
+    }
+
+    /// Take (and clear) the recorded close cause. `None` for a
+    /// voluntary EWS disconnect.
+    pub fn take_close_reason(&self, session_uuid: &Uuid) -> Option<String> {
+        self.close_reasons.remove(session_uuid).map(|(_, v)| v)
     }
 
     /// Idempotent: a second `insert` for the same session_uuid

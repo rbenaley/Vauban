@@ -238,7 +238,15 @@ async fn ws_pushes_tunnel_active_then_closed_on_handshake_lifecycle() {
         .await
         .expect("direct-tcpip");
 
-    // Expect a tunnel_active event within 1 s.
+    // The SSH auth pushed `ews_connected` first, then the first
+    // direct-tcpip promotes to `tunnel_active`.
+    let first = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("timeout waiting for ews_connected")
+        .expect("recv");
+    let parsed: serde_json::Value = serde_json::from_str(&first).expect("payload is JSON");
+    assert_eq!(parsed["type"], "ews_connected");
+
     let active = timeout(Duration::from_secs(2), rx.recv())
         .await
         .expect("timeout waiting for tunnel_active")
@@ -304,6 +312,7 @@ async fn template_renders_ws_subscription_scaffolding() {
         tunnel_target_addr: "127.0.0.1:502".to_string(),
         session_status: "waiting_client".to_string(),
         waiting_countdown_seconds: Some(300),
+        waiting_ttl_seconds: 300,
         csrf_token: "test".to_string(),
     };
     use askama::Template;

@@ -124,6 +124,17 @@ fn js_component_pins_absorbing_and_idempotence_guards() {
         "iacsTunnelStatus must not reset startedAt on a re-delivered \
          tunnel_active (idempotence — see ws_vocab proptest invariant 4)"
     );
+    assert!(
+        js.contains("if (this.status === 'terminated' || this.status === 'tunnel_active') return;"),
+        "iacsTunnelStatus must ignore ews_connected after tunnel_active \
+         or the authoritative close (monotone lifecycle rank — see \
+         ws_vocab proptest invariant 7)"
+    );
+    assert!(
+        js.contains("if (this.status !== 'ews_connected')"),
+        "iacsTunnelStatus must not re-arm the countdown on a \
+         re-delivered ews_connected (idempotence)"
+    );
 }
 
 // =============================================================================
@@ -152,6 +163,133 @@ fn spawn_proxy_pump(app: &TestApp) -> shared::ipc::IpcChannel {
             .await;
     });
     proxy_side
+}
+
+/// Auth path: `IacsTunnelStatusUpdate { status = "ews_connected" }`
+/// from the proxy (emitted by `auth_succeeded`) must fan out the
+/// canonical `ews_connected` frame AND flip the row from
+/// `waiting_client` to `ews_connected`, anchoring `connected_at` and
+/// the EWS `client_ip`.
+#[tokio::test]
+#[serial]
+async fn proxy_pump_emits_canonical_ews_connected_frame_and_flips_row() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("wsvocab_ea")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("wsvocab_eu")).await;
+    let asset_id = create_simple_iacs_asset(&mut conn, &unique_name("wsvocab-ews"), admin_id).await;
+    let (_, session_uuid) =
+        create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "waiting_client").await;
+
+    let channel = WsChannel::SessionLive(session_uuid.to_string());
+    let mut rx = app.broadcast.subscribe(&channel).await;
+
+    let proxy_side = spawn_proxy_pump(app);
+    proxy_side
+        .send(&shared::messages::Message::IacsTunnelStatusUpdate {
+            session_id: session_uuid.to_string(),
+            status: "ews_connected".to_string(),
+            bytes_in: 0,
+            bytes_out: 0,
+            peer_ip: Some("203.0.113.88".to_string()),
+        })
+        .expect("send IacsTunnelStatusUpdate");
+
+    let frame = timeout(Duration::from_secs(3), rx.recv())
+        .await
+        .expect("timed out waiting for the ews_connected frame")
+        .expect("broadcast recv");
+    let parsed: serde_json::Value = serde_json::from_str(&frame).expect("frame is JSON");
+    assert_eq!(
+        parsed["type"],
+        ws_vocab::TYPE_EWS_CONNECTED,
+        "privsep auth frame must use the canonical type (got: {frame})"
+    );
+    assert_eq!(parsed["peer_ip"], "203.0.113.88");
+
+    // Model: waiting + this frame = ews_connected, countdown re-armed.
+    let model = ws_vocab::ClientState::initial("waiting_client", 300)
+        .apply_event(parsed["type"].as_str().expect("type is a string"));
+    assert_eq!(model.status, ws_vocab::ClientStatus::EwsConnected);
+    assert!(model.countdown_running, "countdown keeps running post-auth");
+
+    // DB flip: status + connected_at anchor + EWS client_ip.
+    use vauban_web::schema::proxy_sessions;
+    let (status_value, connected_at, client_ip): (
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        ipnetwork::IpNetwork,
+    ) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select((
+                proxy_sessions::status,
+                proxy_sessions::connected_at,
+                proxy_sessions::client_ip,
+            ))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(status_value, "ews_connected");
+    assert!(
+        connected_at.is_some(),
+        "ews_connected must anchor connected_at (the watchdog TTL restarts on it)"
+    );
+    assert_eq!(client_ip.ip().to_string(), "203.0.113.88");
+}
+
+/// Out-of-order battle case: a `tunnel_active` that raced ahead of
+/// the `ews_connected` re-delivery must win — the late auth event
+/// cannot demote an active tunnel (rank-monotone gate in
+/// `persist_ews_connected`).
+#[tokio::test]
+#[serial]
+async fn late_ews_connected_cannot_demote_an_active_row() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("wsvocab_oa")).await;
+    let user_id = create_simple_user(&mut conn, &unique_name("wsvocab_ou")).await;
+    let asset_id =
+        create_simple_iacs_asset(&mut conn, &unique_name("wsvocab-order"), admin_id).await;
+    let (_, session_uuid) =
+        create_iacs_test_session_with_uuid(&mut conn, user_id, asset_id, "waiting_client").await;
+
+    let channel = WsChannel::SessionLive(session_uuid.to_string());
+    let mut rx = app.broadcast.subscribe(&channel).await;
+
+    let proxy_side = spawn_proxy_pump(app);
+    for status in ["tunnel_active", "ews_connected"] {
+        proxy_side
+            .send(&shared::messages::Message::IacsTunnelStatusUpdate {
+                session_id: session_uuid.to_string(),
+                status: status.to_string(),
+                bytes_in: 0,
+                bytes_out: 0,
+                peer_ip: None,
+            })
+            .expect("send IacsTunnelStatusUpdate");
+        // Serialize on the broadcast frame so both messages are
+        // fully processed before the DB assertion.
+        let _ = timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .expect("timed out waiting for the frame")
+            .expect("broadcast recv");
+    }
+
+    use vauban_web::schema::proxy_sessions;
+    let status_value: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(
+        status_value, "tunnel_active",
+        "a late ews_connected must not demote an active row"
+    );
 }
 
 /// Full activation path: `IacsTunnelStatusUpdate { status =

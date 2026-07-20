@@ -160,6 +160,14 @@
                            class="inline-flex w-20 justify-center items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600">
                             Inspect
                         </a>
+                        {% elif recording.is_iacs_tunnel() %}
+                        {# Zero-channel bundle (auth-only session) or not
+                           hydrated yet: /inspect would 404, so the button
+                           stays visible for column alignment but inert. #}
+                        <span aria-disabled="true" title="No packet capture for this session"
+                              class="inline-flex w-20 justify-center items-center rounded-md border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 px-3 py-1.5 text-sm font-semibold text-gray-400 dark:text-gray-500 cursor-not-allowed select-none">
+                            Inspect
+                        </span>
                         {% endif %}
                     </div>
                 </div>

@@ -55,44 +55,49 @@
                     initialStatus: '{{ session_status }}',
                     sessionUuid: '{{ session_uuid }}',
                     remainingSeconds: {{ self.countdown_seed() }},
+                    ttlSeconds: {{ self.ttl_seed() }},
                  })"
          x-init="init()">
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div class="flex items-center gap-3">
                 <span class="relative flex h-3 w-3">
-                    <template x-if="status === 'waiting_client'">
-                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+                    <template x-if="isWaiting()">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
+                              :class="status === 'ews_connected' ? 'bg-sky-400' : 'bg-yellow-400'"></span>
                     </template>
                     <span class="relative inline-flex rounded-full h-3 w-3"
                           :class="{
                               'bg-yellow-500': status === 'waiting_client',
+                              'bg-sky-500': status === 'ews_connected',
                               'bg-green-500': status === 'tunnel_active',
-                              'bg-gray-400': status !== 'waiting_client' && status !== 'tunnel_active'
+                              'bg-gray-400': !isWaiting() && status !== 'tunnel_active'
                           }"></span>
                 </span>
                 <div>
                     <p class="text-sm font-semibold text-gray-900 dark:text-white" data-testid="iacs-tunnel-status">
                         <span x-show="status === 'waiting_client'">Waiting for EWS connection&hellip;</span>
+                        <span x-show="status === 'ews_connected'">EWS connected &mdash; waiting for first channel&hellip;</span>
                         <span x-show="status === 'tunnel_active'">Tunnel active</span>
                         <span x-show="status === 'terminated'">Tunnel terminated</span>
                         <span x-show="status === 'expired'">Tunnel expired</span>
-                        <span x-show="!['waiting_client','tunnel_active','terminated','expired'].includes(status)" x-text="status"></span>
+                        <span x-show="!['waiting_client','ews_connected','tunnel_active','terminated','expired'].includes(status)" x-text="status"></span>
                     </p>
                     {% if waiting_countdown_seconds.is_some() %}
-                    {# Countdown to the waiting_client deadline. The
-                       seed is computed server-side from created_at +
-                       waiting_client_ttl_seconds (the SAME reference
-                       the revocation watchdog uses) so a page refresh
-                       resumes the true remaining window. Alpine ticks
-                       it down and flips the pill to `expired` at 0;
-                       the DB flip follows within
+                    {# Countdown to the reap deadline. The seed is
+                       computed server-side from the watchdog's anchor
+                       (created_at while waiting_client, connected_at
+                       once ews_connected) + waiting_client_ttl_seconds
+                       so a page refresh resumes the true remaining
+                       window. Alpine ticks it down and flips the pill
+                       to `expired` at 0; the DB flip follows within
                        revocation_poll_interval_seconds. Purely a UX
                        hint: enforcement stays server-side. #}
                     <p class="text-xs"
                        data-testid="iacs-tunnel-countdown"
-                       x-show="status === 'waiting_client' && remaining >= 0"
+                       x-show="isWaiting() && remaining >= 0"
                        :class="remaining <= 60 ? 'text-red-600 dark:text-red-400 font-semibold' : 'text-gray-500 dark:text-gray-400'">
-                        Time left to connect:
+                        <span x-show="status === 'waiting_client'">Time left to connect:</span>
+                        <span x-show="status === 'ews_connected'">Time left to open a channel:</span>
                         <span class="font-mono" x-text="formatCountdown(remaining)">{{ self.countdown_initial_label() }}</span>
                     </p>
                     {% endif %}
@@ -116,8 +121,8 @@
     </div>
 
     {# L5: WS subscription to /ws/session/{uuid}. The broadcast
-       layer pushes JSON payloads (`tunnel_active`, `tunnel_stats`,
-       `tunnel_closed`); the Alpine `iacsTunnelStatus` component
+       layer pushes JSON payloads (`ews_connected`, `tunnel_active`,
+       `tunnel_stats`, `tunnel_closed`); the Alpine `iacsTunnelStatus` component
        (registered in static/js/vauban-components.js -- the CSP has
        no 'unsafe-inline', so an inline <script> here would silently
        never run) dispatches on `payload.type` and updates the panel

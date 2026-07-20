@@ -270,9 +270,12 @@ pub(crate) async fn load_hero(
     // The `eq_any` filter mirrors `tasks::dashboard::fetch_stats`
     // (the WS-pushed counterpart) so the HTTP-rendered first paint
     // and the live WS update agree on the same set.
-    let live: i64 = count_with_scope!(
-        proxy_sessions::table.filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
-    );
+    let live: i64 =
+        count_with_scope!(proxy_sessions::table.filter(proxy_sessions::status.eq_any([
+            "active",
+            "ews_connected",
+            "tunnel_active"
+        ])));
     let live_u64 = live.max(0) as u64;
     // Push the freshly-observed live count into the per-scope
     // rolling history BEFORE building the sparkline so the trace's
@@ -350,7 +353,7 @@ pub(crate) async fn load_live_sessions(
         DashboardScope::Global => proxy_sessions::table
             .inner_join(assets::table)
             .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-            .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
+            .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
             .select((
                 proxy_sessions::uuid,
                 assets::name,
@@ -369,7 +372,7 @@ pub(crate) async fn load_live_sessions(
         DashboardScope::User(uid) => proxy_sessions::table
             .inner_join(assets::table)
             .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-            .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
+            .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
             .filter(proxy_sessions::user_id.eq(uid))
             .select((
                 proxy_sessions::uuid,
@@ -810,11 +813,13 @@ mod tests {
             .unwrap_or(src.len());
         let body = &src[load_hero_idx..next_fn];
 
-        let collapsed: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        // Strip ALL whitespace so rustfmt line-splitting of the
+        // array literal cannot break the pin.
+        let collapsed: String = body.split_whitespace().collect();
         assert!(
-            collapsed.contains("status.eq_any([\"active\", \"tunnel_active\"])"),
+            collapsed.contains("status.eq_any([\"active\",\"ews_connected\",\"tunnel_active\"])"),
             "load_hero MUST filter the `live` count on \
-             `status.eq_any([\"active\", \"tunnel_active\"])` so IACS \
+             `status.eq_any([\"active\", \"ews_connected\", \"tunnel_active\"])` so IACS \
              tunnels are counted on the Bastion Watch hero band. \
              Whitespace-collapsed body:\n{}",
             collapsed
@@ -916,8 +921,11 @@ mod tests {
         // would mean one of the two branches still uses the bare
         // `status.eq("active")` and would silently drop IACS rows
         // for that scope.
-        let needle = "status.eq_any([\"active\", \"tunnel_active\"])";
-        let count = body.matches(needle).count();
+        // Strip ALL whitespace so rustfmt line-splitting of the
+        // array literal cannot break the pin.
+        let collapsed: String = body.split_whitespace().collect();
+        let needle = "status.eq_any([\"active\",\"ews_connected\",\"tunnel_active\"])";
+        let count = collapsed.matches(needle).count();
         assert!(
             count >= 2,
             "load_live_sessions MUST apply `{}` in BOTH scope arms \

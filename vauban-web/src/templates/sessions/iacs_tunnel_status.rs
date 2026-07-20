@@ -79,10 +79,16 @@ pub struct IacsTunnelStatusTemplate {
     /// from the SAME reference the watchdog uses
     /// (`proxy_sessions.created_at + waiting_client_ttl_seconds`).
     /// `None` when the countdown must not render: TTL disabled
-    /// (`waiting_client_ttl_seconds == 0`) or session no longer in
-    /// `waiting_client`. The Alpine component ticks the value down
-    /// client-side and flips the pill to `expired` at zero.
+    /// (`waiting_client_ttl_seconds == 0`) or session past the
+    /// waiting states (`waiting_client` / `ews_connected`). The
+    /// Alpine component ticks the value down client-side and flips
+    /// the pill to `expired` at zero.
     pub waiting_countdown_seconds: Option<i64>,
+    /// The configured `waiting_client_ttl_seconds` (0 = disabled).
+    /// Handed to the Alpine component so a LIVE `ews_connected` push
+    /// can re-arm the countdown at the full window (the watchdog TTL
+    /// restarts anchored on `connected_at` at that transition).
+    pub waiting_ttl_seconds: u32,
     /// CSRF token for the Disconnect form.
     pub csrf_token: String,
 }
@@ -150,6 +156,17 @@ impl IacsTunnelStatusTemplate {
         self.waiting_countdown_seconds.unwrap_or(-1)
     }
 
+    /// Full-TTL seed handed to the Alpine component for the
+    /// countdown re-arm on a live `ews_connected` push. `-1` is the
+    /// "disabled" sentinel (mirrors [`Self::countdown_seed`]).
+    pub fn ttl_seed(&self) -> i64 {
+        if self.waiting_ttl_seconds == 0 {
+            -1
+        } else {
+            i64::from(self.waiting_ttl_seconds)
+        }
+    }
+
     /// Server-rendered initial countdown label (`M:SS` / `H:MM:SS`)
     /// so the value is meaningful before the first client-side tick.
     /// Empty when no countdown renders.
@@ -189,6 +206,7 @@ mod tests {
             tunnel_target_addr: "10.42.0.7:502".to_string(),
             session_status: "waiting_client".to_string(),
             waiting_countdown_seconds: Some(272),
+            waiting_ttl_seconds: 300,
             csrf_token: "csrf-token".to_string(),
         }
     }

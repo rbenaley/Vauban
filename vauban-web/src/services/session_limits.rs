@@ -30,7 +30,13 @@ use crate::error::{AppError, AppResult};
 /// Session statuses that count as "live" (holding resources). Kept in lock-step
 /// with [`crate::models::session::SessionStatus::is_live`]; the drift test
 /// `live_statuses_match_is_live` pins the alignment.
-pub const LIVE_STATUSES: [&str; 4] = ["connecting", "active", "waiting_client", "tunnel_active"];
+pub const LIVE_STATUSES: [&str; 5] = [
+    "connecting",
+    "active",
+    "waiting_client",
+    "ews_connected",
+    "tunnel_active",
+];
 
 /// A session-creation control denied the request.
 ///
@@ -208,6 +214,7 @@ mod tests {
             "terminated",
             "failed",
             "waiting_client",
+            "ews_connected",
             "tunnel_active",
         ];
         for s in all {
@@ -223,8 +230,8 @@ mod tests {
     }
 
     #[test]
-    fn live_statuses_has_four_entries() {
-        assert_eq!(LIVE_STATUSES.len(), 4);
+    fn live_statuses_has_five_entries() {
+        assert_eq!(LIVE_STATUSES.len(), 5);
     }
 
     #[test]

@@ -109,6 +109,57 @@ fn resolve_inspect_target_rejects_non_iacs_or_unfinalized_with_404() {
 }
 
 #[test]
+fn resolve_inspect_target_rejects_zero_channel_bundles_with_404() {
+    // Auth-only IACS sessions produce a bundle with `channels: []`
+    // (recording_segment_count = 0). /inspect must 404 on them BEFORE
+    // any supervisor round-trip.
+    let resolve_idx = SESSIONS_RS
+        .find("async fn resolve_inspect_target(")
+        .expect("helper exists");
+    let body = &SESSIONS_RS[resolve_idx..];
+    let next_fn = body[1..].find("\nasync fn ").unwrap_or(body.len());
+    let body: String = body[..next_fn].split_whitespace().collect();
+    assert!(
+        body.contains("s_segment_count.is_none_or(|c|c<=0)"),
+        "zero-channel (or not-yet-hydrated) bundles must 404 on /inspect"
+    );
+}
+
+#[test]
+fn inspect_button_is_gated_on_positive_segment_count_in_detail_and_list() {
+    // UI mirror of the server-side zero-channel 404: neither the
+    // Recording Details page nor the recordings list may render an
+    // Inspect link for a bundle without at least one captured channel
+    // (regression: dead button returning 404 on auth-only sessions).
+    let collapsed: String = SESSIONS_RS.split_whitespace().collect();
+    assert!(
+        collapsed.contains(
+            "lethas_inspectable_capture=s_type==SessionType::IacsTunnel\
+             &&s_segment_count.is_some_and(|c|c>0);"
+        ),
+        "recording_detail must compute has_inspectable_capture from \
+         recording_segment_count > 0"
+    );
+    assert!(
+        collapsed.contains("show_inspect_capture:has_inspectable_capture"),
+        "recording_detail must gate show_inspect_capture on \
+         has_inspectable_capture (not on session_type alone)"
+    );
+    assert!(
+        collapsed.contains(
+            "show_inspect_capture:session_type==SessionType::IacsTunnel\
+             &&recording_segment_count.is_some_and(|c|c>0)"
+        ),
+        "the recordings list must gate the per-row Inspect link on \
+         recording_segment_count > 0"
+    );
+    assert!(
+        !collapsed.contains("show_inspect_capture:session_type==SessionType::IacsTunnel,"),
+        "no site may gate the Inspect button on session_type alone"
+    );
+}
+
+#[test]
 fn packet_list_handler_applies_direction_kind_search_filters() {
     let start = SESSIONS_RS
         .find("pub async fn inspect_capture_packet_list(")

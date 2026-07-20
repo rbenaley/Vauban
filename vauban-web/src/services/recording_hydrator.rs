@@ -1227,6 +1227,31 @@ mod tests {
         assert_eq!(bundle.codec, None);
     }
 
+    /// Zero-channel audit bundle (`ews_connected` login that never
+    /// opened a `direct-tcpip`): `meta.json` carries `channels: []`
+    /// and MUST hydrate cleanly (`segment_count = 0`), unlike the
+    /// RDP parser which rejects empty segments. The `blake3_hex` is
+    /// the BLAKE3 of the empty input (aggregate of zero channels).
+    #[test]
+    fn test_parse_meta_iacs_zero_channel_bundle() {
+        let empty_agg = blake3::Hasher::new().finalize().to_hex().to_string();
+        let json = format!(
+            r#"{{
+            "format": "pcap-bundle",
+            "blake3_hex": "{empty_agg}",
+            "total_bytes": 0,
+            "total_packets": 0,
+            "duration_ms": 0,
+            "channels": []
+        }}"#
+        );
+        let bundle = parse_meta(SessionType::IacsTunnel, &json).unwrap();
+        assert_eq!(bundle.format, "pcap-bundle");
+        assert_eq!(bundle.size_bytes, 0);
+        assert_eq!(bundle.event_count, Some(0));
+        assert_eq!(bundle.segment_count, Some(0));
+    }
+
     #[test]
     fn test_recording_dir_for_session_uses_anchor_month() {
         use chrono::{TimeZone, Utc};

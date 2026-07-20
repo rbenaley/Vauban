@@ -985,6 +985,11 @@ async fn handle_web_message(
             //   - already gone (Drop ran): `session_handles.get`
             //     returns `None` -> no-op.
             if let Some(handle) = session_handles.get(&parsed) {
+                // Record the audit close cause BEFORE the disconnect
+                // so the Handler `Drop` attributes the
+                // `IacsRecordingSessionEnd` to this terminate
+                // instead of a voluntary `ews_disconnect`.
+                session_handles.set_close_reason(parsed, &reason);
                 let reason_for_task = reason.clone();
                 let session_id_for_task = session_id.clone();
                 tokio::spawn(async move {

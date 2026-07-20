@@ -212,13 +212,18 @@ fn no_caller_reimplements_the_terminated_update() {
 }
 
 /// The revocation cascade must cover ALL live statuses -- including
-/// the IACS ones (`waiting_client`, `tunnel_active`) whose omission
-/// was the historical deactivate_user gap.
+/// the IACS ones (`waiting_client`, `ews_connected`, `tunnel_active`)
+/// whose omission was the historical deactivate_user gap.
 #[test]
 fn cascade_covers_iacs_live_statuses() {
+    // Whitespace-collapsed so rustfmt line-splitting of the array
+    // literal cannot break the pin.
+    let collapsed: String = WEB_SESSIONS_RS.split_whitespace().collect();
     assert!(
-        WEB_SESSIONS_RS.contains(r#"["connecting", "active", "waiting_client", "tunnel_active"]"#),
-        "LIVE_SESSION_STATUSES must include the IACS statuses"
+        collapsed
+            .contains(r#"["connecting","active","waiting_client","ews_connected","tunnel_active"#),
+        "LIVE_SESSION_STATUSES must include the IACS statuses \
+         (ews_connected included)"
     );
 }
 

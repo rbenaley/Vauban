@@ -356,6 +356,61 @@ impl ProxyIacsClient {
                     "IACS tunnel status update received"
                 );
                 let mut db_persisted = false;
+                if status == "ews_connected"
+                    && let Some(pool) = self.db_pool.lock().await.as_ref()
+                {
+                    // The EWS SSH handshake succeeded: anchor
+                    // `connected_at` / `client_ip` and surface the
+                    // row on /sessions/active even before the first
+                    // direct-tcpip channel. When IACS recording is
+                    // on, `is_recorded` / `recording_path` are set
+                    // HERE (not at close) so a zero-channel session
+                    // already points at its audit manifest.
+                    let app_state = self.app_state.lock().await.clone();
+                    let iacs_recording = app_state
+                        .as_ref()
+                        .map(|s| s.config.recording.iacs_recording_enabled())
+                        .unwrap_or(false);
+                    let storage_path = app_state
+                        .as_ref()
+                        .map(|s| s.config.recording.storage_path.as_str())
+                        .unwrap_or("");
+                    match persist_ews_connected(
+                        pool,
+                        &session_id,
+                        peer_ip.as_deref(),
+                        iacs_recording,
+                        storage_path,
+                    )
+                    .await
+                    {
+                        Ok(updated) => {
+                            if updated {
+                                debug!(
+                                    session_id = %session_id,
+                                    "iacs_tunnel: proxy_sessions row \
+                                     flipped to ews_connected"
+                                );
+                                db_persisted = true;
+                            } else {
+                                debug!(
+                                    session_id = %session_id,
+                                    "iacs_tunnel: no waiting_client \
+                                     row to flip to ews_connected \
+                                     (already active or terminated)"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                session_id = %session_id,
+                                error = %e,
+                                "iacs_tunnel: failed to flip status \
+                                 to ews_connected in DB"
+                            );
+                        }
+                    }
+                }
                 if status == "tunnel_active"
                     && let Some(pool) = self.db_pool.lock().await.as_ref()
                 {
@@ -376,8 +431,8 @@ impl ProxyIacsClient {
                                 debug!(
                                     session_id = %session_id,
                                     "iacs_tunnel: no waiting_client \
-                                     row to flip (already active or \
-                                     terminated)"
+                                     or ews_connected row to flip \
+                                     (already active or terminated)"
                                 );
                             }
                         }
@@ -538,17 +593,117 @@ impl ProxyIacsClient {
 }
 
 /// Flip a `proxy_sessions` row from `waiting_client` to
-/// `tunnel_active`, anchor `connected_at` at the current wall clock,
+/// `ews_connected`, anchor `connected_at` at the current wall clock,
 /// and (if `peer_ip` is provided and parses as a valid IP) update
 /// `client_ip` so the admin `/sessions/active` page shows the EWS's
 /// actual source instead of the WebUI browser IP captured at
 /// session creation time.
 ///
+/// When `iacs_recording` is on, `is_recorded` / `recording_path`
+/// are set in the SAME statement (anchored on the fresh
+/// `connected_at`): a zero-channel authenticated session must
+/// already point at its audit manifest directory.
+///
+/// Returns `Ok(true)` if a row was updated, `Ok(false)` if no row
+/// matched (idempotent). Gated on `status = 'waiting_client'` so a
+/// re-delivery cannot reset `connected_at`, and an out-of-order
+/// arrival AFTER `tunnel_active` cannot demote the row.
+///
+/// Exposed publicly (with `#[doc(hidden)]`) for the integration
+/// suite -- see [`persist_tunnel_active`].
+#[doc(hidden)]
+pub async fn persist_ews_connected(
+    pool: &DbPool,
+    session_id: &str,
+    peer_ip: Option<&str>,
+    iacs_recording: bool,
+    storage_path: &str,
+) -> AppResult<bool> {
+    use crate::schema::proxy_sessions::dsl as ps;
+    use diesel::ExpressionMethods;
+    use diesel_async::RunQueryDsl;
+
+    let session_uuid = uuid::Uuid::parse_str(session_id)
+        .map_err(|e| AppError::Validation(format!("invalid session UUID: {}", e)))?;
+
+    let mut conn = pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB pool: {}", e)))?;
+
+    let now = chrono::Utc::now();
+    let parsed_peer_ip = peer_ip.and_then(|s| s.parse::<std::net::IpAddr>().ok());
+    let recording_path = iacs_recording.then(|| {
+        crate::services::recording_hydrator::recording_dir_for_session(
+            storage_path,
+            session_id,
+            now,
+        )
+    });
+
+    // Four flavours of the UPDATE so we never write a `client_ip`
+    // value that did not come from the proxy, nor recording flags
+    // when recording is off (same rationale as
+    // `persist_tunnel_active`).
+    let base = diesel::update(ps::proxy_sessions)
+        .filter(ps::uuid.eq(session_uuid))
+        .filter(ps::status.eq("waiting_client"));
+    let updated = match (parsed_peer_ip, recording_path) {
+        (Some(ip), Some(path)) => {
+            base.set((
+                ps::status.eq("ews_connected"),
+                ps::connected_at.eq(now),
+                ps::client_ip.eq(ipnetwork::IpNetwork::from(ip)),
+                ps::is_recorded.eq(true),
+                ps::recording_path.eq(path),
+            ))
+            .execute(&mut conn)
+            .await
+        }
+        (Some(ip), None) => {
+            base.set((
+                ps::status.eq("ews_connected"),
+                ps::connected_at.eq(now),
+                ps::client_ip.eq(ipnetwork::IpNetwork::from(ip)),
+            ))
+            .execute(&mut conn)
+            .await
+        }
+        (None, Some(path)) => {
+            base.set((
+                ps::status.eq("ews_connected"),
+                ps::connected_at.eq(now),
+                ps::is_recorded.eq(true),
+                ps::recording_path.eq(path),
+            ))
+            .execute(&mut conn)
+            .await
+        }
+        (None, None) => {
+            base.set((ps::status.eq("ews_connected"), ps::connected_at.eq(now)))
+                .execute(&mut conn)
+                .await
+        }
+    }
+    .map_err(AppError::Database)?;
+    Ok(updated > 0)
+}
+
+/// Flip a `proxy_sessions` row from `waiting_client` or
+/// `ews_connected` to `tunnel_active`. `connected_at` is anchored
+/// via `COALESCE`: the `ews_connected` transition normally set it at
+/// SSH-auth time and the first `direct-tcpip` must NOT move it (the
+/// recording directory layout is derived from it); the legacy
+/// in-process path that jumps straight from `waiting_client` still
+/// gets a fresh anchor. If `peer_ip` is provided and parses as a
+/// valid IP, `client_ip` is updated so the admin `/sessions/active`
+/// page shows the EWS's actual source instead of the WebUI browser
+/// IP captured at session creation time.
+///
 /// Returns `Ok(true)` if a row was updated, `Ok(false)` if no row
 /// matched (idempotent, e.g. the session was terminated before the
-/// proxy reported the active status). The transition is gated on
-/// `status = 'waiting_client'` so a re-delivery of the same IPC
-/// message cannot reset `connected_at` mid-session.
+/// proxy reported the active status). The status gate makes a
+/// re-delivery of the same IPC message a no-op.
 ///
 /// Exposed publicly (with `#[doc(hidden)]`) so the integration
 /// suite at `tests/ipc/iacs_lifecycle_persistence_test.rs` can pin
@@ -573,8 +728,16 @@ pub async fn persist_tunnel_active(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB pool: {}", e)))?;
 
-    let now = chrono::Utc::now();
     let parsed_peer_ip = peer_ip.and_then(|s| s.parse::<std::net::IpAddr>().ok());
+
+    // `COALESCE(connected_at, NOW())`: keep the ews_connected-time
+    // anchor when present, seed one otherwise (legacy in-process
+    // sshd emits tunnel_active without a prior ews_connected).
+    fn keep_or_now()
+    -> diesel::expression::SqlLiteral<diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>>
+    {
+        diesel::dsl::sql("COALESCE(connected_at, NOW())")
+    }
 
     // Two flavours of the UPDATE so we never write a `client_ip`
     // value that did not come from the proxy. Diesel's typed
@@ -585,10 +748,10 @@ pub async fn persist_tunnel_active(
         let net = ipnetwork::IpNetwork::from(ip);
         diesel::update(ps::proxy_sessions)
             .filter(ps::uuid.eq(session_uuid))
-            .filter(ps::status.eq("waiting_client"))
+            .filter(ps::status.eq_any(["waiting_client", "ews_connected"]))
             .set((
                 ps::status.eq("tunnel_active"),
-                ps::connected_at.eq(now),
+                ps::connected_at.eq(keep_or_now()),
                 ps::client_ip.eq(net),
             ))
             .execute(&mut conn)
@@ -597,8 +760,11 @@ pub async fn persist_tunnel_active(
     } else {
         diesel::update(ps::proxy_sessions)
             .filter(ps::uuid.eq(session_uuid))
-            .filter(ps::status.eq("waiting_client"))
-            .set((ps::status.eq("tunnel_active"), ps::connected_at.eq(now)))
+            .filter(ps::status.eq_any(["waiting_client", "ews_connected"]))
+            .set((
+                ps::status.eq("tunnel_active"),
+                ps::connected_at.eq(keep_or_now()),
+            ))
             .execute(&mut conn)
             .await
             .map_err(AppError::Database)?
@@ -607,10 +773,10 @@ pub async fn persist_tunnel_active(
 }
 
 /// Flip a `proxy_sessions` row from a live IACS state
-/// (`waiting_client` or `tunnel_active`) to `terminated` and anchor
-/// `disconnected_at`. Idempotent: subsequent calls for the same
-/// session find no matching row and return `Ok(false)` without
-/// touching the timestamp.
+/// (`waiting_client`, `ews_connected` or `tunnel_active`) to
+/// `terminated` and anchor `disconnected_at`. Idempotent: subsequent
+/// calls for the same session find no matching row and return
+/// `Ok(false)` without touching the timestamp.
 ///
 /// Counter-balances the optimistic `tunnel_active` filter from
 /// [`persist_tunnel_active`]: if proxy-iacs misses the
@@ -660,7 +826,7 @@ pub async fn persist_tunnel_closed(
         );
         diesel::update(ps::proxy_sessions)
             .filter(ps::uuid.eq(session_uuid))
-            .filter(ps::status.eq_any(["waiting_client", "tunnel_active"]))
+            .filter(ps::status.eq_any(["waiting_client", "ews_connected", "tunnel_active"]))
             .set((
                 ps::status.eq("terminated"),
                 ps::disconnected_at.eq(now),
@@ -673,7 +839,7 @@ pub async fn persist_tunnel_closed(
     } else {
         diesel::update(ps::proxy_sessions)
             .filter(ps::uuid.eq(session_uuid))
-            .filter(ps::status.eq_any(["waiting_client", "tunnel_active"]))
+            .filter(ps::status.eq_any(["waiting_client", "ews_connected", "tunnel_active"]))
             .set((ps::status.eq("terminated"), ps::disconnected_at.eq(now)))
             .execute(&mut conn)
             .await

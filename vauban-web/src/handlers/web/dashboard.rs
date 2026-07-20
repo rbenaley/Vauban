@@ -132,5 +132,5 @@ pub async fn dashboard_admin(
 // gate, and ran bastion-wide queries without the per-user scoping
 // that `dashboard_home` enforces. The production refresh path is the
 // WebSocket pusher in `tasks::dashboard`, which keeps the composite
-// `["active", "tunnel_active"]` filter (pinned by
+// `["active", "ews_connected", "tunnel_active"]` filter (pinned by
 // `bastion_watch_iacs_count_test.rs`).

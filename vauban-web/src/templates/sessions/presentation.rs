@@ -196,7 +196,11 @@ pub fn timeline_event(input: &SessionPresentationInput<'_>) -> TimelineEvent {
 pub fn duration_seconds(input: &SessionPresentationInput<'_>, now: DateTime<Utc>) -> Option<i64> {
     match (input.connected_at, input.disconnected_at) {
         (Some(start), Some(end)) => Some(end.signed_duration_since(start).num_seconds()),
-        (Some(start), None) if input.status == "active" || input.status == "tunnel_active" => {
+        (Some(start), None)
+            if input.status == "active"
+                || input.status == "ews_connected"
+                || input.status == "tunnel_active" =>
+        {
             Some(now.signed_duration_since(start).num_seconds())
         }
         _ => None,

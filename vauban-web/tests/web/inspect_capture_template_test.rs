@@ -425,6 +425,30 @@ mod recording_visibility {
         assert!(!html.contains("Inspect Capture"));
     }
 
+    #[test]
+    fn inspect_capture_button_disabled_for_iacs_without_capture() {
+        // IACS bundle with nothing to inspect (zero-channel or not yet
+        // hydrated): the button must stay visible for layout
+        // consistency but render as an inert, non-clickable element.
+        let html = render_detail(make_recording_vm("iacs_tunnel", false));
+        assert!(
+            html.contains("Inspect Capture"),
+            "the button label must remain on the page"
+        );
+        assert!(
+            !html.contains("/inspect"),
+            "no /inspect href may be emitted when there is no capture"
+        );
+        assert!(
+            html.contains("aria-disabled=\"true\""),
+            "the placeholder must be marked aria-disabled"
+        );
+        assert!(
+            html.contains("cursor-not-allowed"),
+            "the placeholder must look non-clickable"
+        );
+    }
+
     fn make_list_item(session_type: &str, show_inspect: bool) -> RecordingListItem {
         RecordingListItem {
             id: 1,
@@ -486,6 +510,33 @@ mod recording_visibility {
         ]);
         assert!(
             !html.contains("/sessions/recordings/00000000-0000-0000-0000-000000000100/inspect")
+        );
+        // Non-IACS rows never show Inspect, not even disabled.
+        assert!(!html.contains(">Inspect<") && !html.contains("aria-disabled"));
+    }
+
+    #[test]
+    fn inspect_button_disabled_in_list_for_iacs_row_without_capture() {
+        // Zero-channel (auth-only) or not-yet-hydrated IACS bundle:
+        // /inspect would 404, so the row keeps the Inspect button for
+        // column alignment but renders it inert (no <a>, no href).
+        let html = render_list(vec![make_list_item("iacs_tunnel", false)]);
+        assert!(
+            !html.contains("/sessions/recordings/00000000-0000-0000-0000-000000000100/inspect"),
+            "no /inspect link may be emitted for a non-inspectable bundle"
+        );
+        assert!(
+            html.contains("aria-disabled=\"true\""),
+            "the placeholder must be marked aria-disabled for assistive tech"
+        );
+        assert!(
+            html.contains("cursor-not-allowed"),
+            "the placeholder must look non-clickable"
+        );
+        assert!(
+            html.contains("w-20 justify-center"),
+            "the placeholder must keep the fixed-width layout so the \
+             action column stays aligned with linked Inspect buttons"
         );
     }
 }

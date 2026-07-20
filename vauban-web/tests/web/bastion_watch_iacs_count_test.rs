@@ -170,11 +170,11 @@ fn dashboard_pusher_tasks_count_iacs_tunnels() {
     for (fn_name, needle) in [
         (
             "fn fetch_stats",
-            "status.eq_any([\"active\", \"tunnel_active\"])",
+            "status.eq_any([\"active\", \"ews_connected\", \"tunnel_active\"])",
         ),
         (
             "fn fetch_active_sessions",
-            "status.eq_any([\"active\", \"tunnel_active\"])",
+            "status.eq_any([\"active\", \"ews_connected\", \"tunnel_active\"])",
         ),
     ] {
         let idx = src

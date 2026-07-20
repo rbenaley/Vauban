@@ -89,8 +89,11 @@ fn parse_check_values(sql: &str, column: &str) -> Vec<String> {
 
 #[test]
 fn migration_check_matches_session_status_all() {
+    // The LATEST migration touching the CHECK owns the canonical list
+    // (20260720000000 superseded the original 20260718000000 one when
+    // the IACS 'ews_connected' status landed).
     let sql = include_str!(
-        "../../../vauban-db/migrations/20260718000000_proxy_sessions_status_chk/up.sql"
+        "../../../vauban-db/migrations/20260720000000_iacs_ews_connected_status/up.sql"
     );
     let check_values = parse_check_values(sql, "status");
     let enum_values: Vec<String> = SessionStatus::ALL

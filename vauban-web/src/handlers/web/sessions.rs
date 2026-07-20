@@ -620,6 +620,7 @@ pub async fn recording_list(
         Option<chrono::DateTime<chrono::Utc>>,
         Option<String>,
         Option<i64>,
+        Option<i32>,
     )> = query
         .select((
             proxy_sessions::id,
@@ -632,6 +633,7 @@ pub async fn recording_list(
             proxy_sessions::disconnected_at,
             proxy_sessions::recording_path,
             proxy_sessions::recording_size_bytes,
+            proxy_sessions::recording_segment_count,
         ))
         .order(proxy_sessions::created_at.desc())
         .limit(window.limit_i64())
@@ -653,6 +655,7 @@ pub async fn recording_list(
                 disconnected_at,
                 recording_path,
                 recording_size_bytes,
+                recording_segment_count,
             )| {
                 let duration_seconds = match (connected_at, disconnected_at) {
                     (Some(start), Some(end)) => {
@@ -682,7 +685,12 @@ pub async fn recording_list(
                     // allow-status-vocab: recording view-model state, not a proxy_sessions status
                     status: "ready".to_string(),
                     show_play_recording: session_type != SessionType::IacsTunnel,
-                    show_inspect_capture: session_type == SessionType::IacsTunnel,
+                    // Same gate as recording_detail: an IACS bundle is
+                    // inspectable only once hydrated with >= 1 channel;
+                    // a zero-channel (auth-only) or pending row would
+                    // 404 on /inspect, so no button.
+                    show_inspect_capture: session_type == SessionType::IacsTunnel
+                        && recording_segment_count.is_some_and(|c| c > 0),
                 }
             },
         )
@@ -1876,8 +1884,13 @@ impl UpdateDurationForm {
 /// be flowing): SSH/RDP handshake or active, IACS waiting for its
 /// client or relaying. Used by the revocation cascade and the
 /// duration clamp.
-const LIVE_SESSION_STATUSES: [&str; 4] =
-    ["connecting", "active", "waiting_client", "tunnel_active"];
+const LIVE_SESSION_STATUSES: [&str; 5] = [
+    "connecting",
+    "active",
+    "waiting_client",
+    "ews_connected",
+    "tunnel_active",
+];
 
 /// Revoke an APPROVED access grant (instant cut).
 ///
@@ -3001,13 +3014,13 @@ pub async fn active_sessions(
     // Industrial kill-switch (layer 2): when `industrial.enabled =
     // false`, IACS tunnels are excluded from the operational
     // `/sessions/active` pane (`session_type.ne(IacsTunnel)`). The
-    // base `status.eq_any(["active", "tunnel_active"])` clause is
+    // base `status.eq_any(["active", "ews_connected", "tunnel_active"])` clause is
     // preserved so the three-site lock-step pin stays exact; the
     // extra exclusion simply removes the IACS leg under the switch.
     let mut total_query = proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
+        .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
         .filter(proxy_sessions::connected_at.is_not_null())
         .into_boxed();
     if !state.config.industrial.enabled {
@@ -3023,7 +3036,7 @@ pub async fn active_sessions(
     let mut data_query = proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::status.eq_any(["active", "tunnel_active"]))
+        .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
         .filter(proxy_sessions::connected_at.is_not_null())
         .into_boxed();
     // Industrial kill-switch (layer 2): same exclusion as the count
@@ -3569,6 +3582,15 @@ pub async fn recording_detail(
         (None, false)
     };
 
+    // Inspect Capture is only reachable when the hydrator has
+    // finalized the bundle AND at least one direct-tcpip channel was
+    // captured (`recording_segment_count` = channels.len()). A
+    // zero-channel IACS login (auth-only, no traffic) or a
+    // not-yet-hydrated row would 404 on /inspect, so the button must
+    // not be rendered at all in those cases.
+    let has_inspectable_capture =
+        s_type == SessionType::IacsTunnel && s_segment_count.is_some_and(|c| c > 0);
+
     let session_uuid_str = s_uuid.to_string();
     let recording_vm = RecordingDetailViewModel {
         session_uuid: session_uuid_str.clone(),
@@ -3603,8 +3625,8 @@ pub async fn recording_detail(
         back_url: "/sessions/recordings".to_string(),
         list_url: "/sessions/recordings".to_string(),
         show_play_recording: s_type != SessionType::IacsTunnel,
-        show_inspect_capture: s_type == SessionType::IacsTunnel,
-        inspect_url: if s_type == SessionType::IacsTunnel {
+        show_inspect_capture: has_inspectable_capture,
+        inspect_url: if has_inspectable_capture {
             format!("/sessions/recordings/{}/inspect", session_uuid_str)
         } else {
             String::new()
@@ -4062,6 +4084,7 @@ async fn resolve_inspect_target(
         Option<String>,
         bool,
         Option<chrono::DateTime<chrono::Utc>>,
+        Option<i32>,
         Option<String>,
         String,
         String,
@@ -4076,6 +4099,7 @@ async fn resolve_inspect_target(
             ps::recording_path,
             ps::is_recorded,
             ps::recording_finalized_at,
+            ps::recording_segment_count,
             ps::industrial_protocol,
             schema_assets::name,
             schema_assets::hostname,
@@ -4093,12 +4117,20 @@ async fn resolve_inspect_target(
         s_path,
         _is_recorded,
         s_finalized_at,
+        s_segment_count,
         s_industrial_protocol,
         asset_name,
         asset_hostname,
     ) = row;
 
     if s_type != SessionType::IacsTunnel || s_finalized_at.is_none() {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+    // Zero-channel bundle (auth-only session, `channels: []` in
+    // meta.json): there is no capture to inspect. 404 BEFORE any
+    // supervisor round-trip -- this is the server-side contract the
+    // `show_inspect_capture` UI gate mirrors.
+    if s_segment_count.is_none_or(|c| c <= 0) {
         return Err(AppError::NotFound("Not found".to_string()));
     }
     let recording_path = s_path.ok_or_else(|| AppError::NotFound("Not found".to_string()))?;

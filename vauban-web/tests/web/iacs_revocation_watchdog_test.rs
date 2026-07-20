@@ -394,6 +394,167 @@ async fn watchdog_does_not_expire_recent_waiting_client() {
     );
 }
 
+/// TTL reap of an authenticated-but-silent EWS: a row in
+/// `ews_connected` whose `connected_at` anchor is past the TTL must
+/// flip to `expired`. The `created_at` is deliberately FRESH so the
+/// test also pins the anchor choice (auth instant, not row creation).
+#[tokio::test]
+async fn watchdog_expires_stale_ews_connected_past_ttl() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_id = create_simple_user(&mut conn, &unique_name("watchdog_ews_ttl")).await;
+    let asset_id = seed_iacs_asset(&mut conn, user_id).await;
+    let ews_uuid = seed_ews(&mut conn, user_id).await;
+
+    let session_uuid = Uuid::new_v4();
+    let stale = Utc::now() - chrono::Duration::seconds(120);
+    diesel::sql_query(
+        "INSERT INTO proxy_sessions \
+         (uuid, user_id, asset_id, credential_id, credential_username, \
+          session_type, status, client_ip, ews_uuid, industrial_protocol, \
+          tunnel_target_addr, created_at, connected_at) \
+         VALUES ($1, $2, $3, '', '', 'iacs_tunnel', 'ews_connected', \
+                 '127.0.0.1'::inet, $4, 'iacs_modbus', '127.0.0.1:4321', NOW(), $5)",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(session_uuid)
+    .bind::<diesel::sql_types::Integer, _>(user_id)
+    .bind::<diesel::sql_types::Integer, _>(asset_id)
+    .bind::<diesel::sql_types::Uuid, _>(ews_uuid)
+    .bind::<diesel::sql_types::Timestamptz, _>(stale)
+    .execute(&mut conn)
+    .await
+    .expect("seed stale ews_connected");
+
+    let registry = TunnelRegistry::new();
+    let (_, transitions) =
+        watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(60), true).await;
+    assert!(transitions >= 1, "stale ews_connected must transition");
+    assert_eq!(
+        read_session_status(&mut conn, session_uuid).await,
+        "expired"
+    );
+}
+
+/// The symmetric anchor pin: an `ews_connected` row whose
+/// `connected_at` is FRESH must survive even when `created_at` is far
+/// past the TTL (the EWS may have waited long before authenticating;
+/// the auth restarted the clock).
+#[tokio::test]
+async fn watchdog_does_not_expire_ews_connected_with_fresh_connected_at() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_id = create_simple_user(&mut conn, &unique_name("watchdog_ews_fresh")).await;
+    let asset_id = seed_iacs_asset(&mut conn, user_id).await;
+    let ews_uuid = seed_ews(&mut conn, user_id).await;
+
+    let session_uuid = Uuid::new_v4();
+    let stale_created = Utc::now() - chrono::Duration::seconds(3600);
+    diesel::sql_query(
+        "INSERT INTO proxy_sessions \
+         (uuid, user_id, asset_id, credential_id, credential_username, \
+          session_type, status, client_ip, ews_uuid, industrial_protocol, \
+          tunnel_target_addr, created_at, connected_at) \
+         VALUES ($1, $2, $3, '', '', 'iacs_tunnel', 'ews_connected', \
+                 '127.0.0.1'::inet, $4, 'iacs_modbus', '127.0.0.1:4321', $5, NOW())",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(session_uuid)
+    .bind::<diesel::sql_types::Integer, _>(user_id)
+    .bind::<diesel::sql_types::Integer, _>(asset_id)
+    .bind::<diesel::sql_types::Uuid, _>(ews_uuid)
+    .bind::<diesel::sql_types::Timestamptz, _>(stale_created)
+    .execute(&mut conn)
+    .await
+    .expect("seed fresh ews_connected");
+
+    let registry = TunnelRegistry::new();
+    let _ = watchdog_run_once(&registry, &app.db_pool, &cfg_with_ttl(60), true).await;
+    assert_eq!(
+        read_session_status(&mut conn, session_uuid).await,
+        "ews_connected",
+        "fresh ews_connected (anchored on connected_at) must NOT expire"
+    );
+}
+
+/// Proxy topology: when the TTL reaps an `ews_connected` row, the
+/// watchdog must ALSO dispatch `IacsTunnelTerminate { reason =
+/// "expired" }` over IPC -- the silent SSH login lives in proxy-iacs
+/// and has no relay task to break, so only the IPC can cut it.
+#[tokio::test]
+async fn watchdog_dispatches_terminate_ipc_for_expired_ews_connected() {
+    use std::sync::Arc;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_id = create_simple_user(&mut conn, &unique_name("watchdog_ews_ipc")).await;
+    let asset_id = seed_iacs_asset(&mut conn, user_id).await;
+    let ews_uuid = seed_ews(&mut conn, user_id).await;
+
+    let session_uuid = Uuid::new_v4();
+    let stale = Utc::now() - chrono::Duration::seconds(120);
+    diesel::sql_query(
+        "INSERT INTO proxy_sessions \
+         (uuid, user_id, asset_id, credential_id, credential_username, \
+          session_type, status, client_ip, ews_uuid, industrial_protocol, \
+          tunnel_target_addr, created_at, connected_at) \
+         VALUES ($1, $2, $3, '', '', 'iacs_tunnel', 'ews_connected', \
+                 '127.0.0.1'::inet, $4, 'iacs_modbus', '127.0.0.1:4321', $5, $5)",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(session_uuid)
+    .bind::<diesel::sql_types::Integer, _>(user_id)
+    .bind::<diesel::sql_types::Integer, _>(asset_id)
+    .bind::<diesel::sql_types::Uuid, _>(ews_uuid)
+    .bind::<diesel::sql_types::Timestamptz, _>(stale)
+    .execute(&mut conn)
+    .await
+    .expect("seed stale ews_connected");
+
+    // Real IPC pair: the web side goes into a ProxyIacsClient, the
+    // proxy side plays vauban-proxy-iacs and receives the terminate.
+    let (web_side, proxy_side) = shared::ipc::IpcChannel::pair().expect("ipc pair");
+    let read_fd = web_side.read_fd();
+    let write_fd = web_side.write_fd();
+    std::mem::forget(web_side);
+    let client = Arc::new(
+        vauban_web::ipc::proxy_iacs::ProxyIacsClient::new(read_fd, write_fd)
+            .expect("proxy iacs client"),
+    );
+
+    let registry = TunnelRegistry::new();
+    let (_, transitions) = vauban_web::services::iacs_tunnel::run_once_with_proxy(
+        &registry,
+        &app.db_pool,
+        &cfg_with_ttl(60),
+        Some(&client),
+        false,
+    )
+    .await;
+    assert!(transitions >= 1, "stale ews_connected must be reaped");
+    assert_eq!(
+        read_session_status(&mut conn, session_uuid).await,
+        "expired"
+    );
+
+    // The IPC message is written synchronously before
+    // run_once_with_proxy returns; a blocking recv drains it.
+    let msg = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::task::spawn_blocking(move || proxy_side.recv()),
+    )
+    .await
+    .expect("timed out waiting for the terminate IPC")
+    .expect("join")
+    .expect("recv");
+    match msg {
+        shared::messages::Message::IacsTunnelTerminate {
+            session_id, reason, ..
+        } => {
+            assert_eq!(session_id, session_uuid.to_string());
+            assert_eq!(reason, "expired");
+        }
+        other => panic!("expected IacsTunnelTerminate, got {:?}", other),
+    }
+}
+
 #[tokio::test]
 async fn watchdog_appends_tunnel_closed_audit_row() {
     let app = TestApp::spawn().await;

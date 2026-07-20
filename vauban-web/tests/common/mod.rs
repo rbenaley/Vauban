@@ -772,6 +772,12 @@ fn build_test_router(state: AppState) -> Router {
             "/sessions/recordings/{uuid}/download",
             get(handlers::web::download_recording),
         )
+        // IACS Inspect Capture: mounted so the suite can pin the
+        // zero-channel 404 contract of `resolve_inspect_target`.
+        .route(
+            "/sessions/recordings/{uuid}/inspect",
+            get(handlers::web::inspect_capture),
+        )
         .route("/sessions/{id}", get(handlers::web::session_detail))
         .route(
             "/sessions/recordings/{id}/play",

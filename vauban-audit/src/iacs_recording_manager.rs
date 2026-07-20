@@ -66,6 +66,20 @@ pub struct IacsChannelMeta {
     pub closed_at_us: u64,
 }
 
+/// Session identity received in `IacsRecordingSessionStart` at
+/// SSH-auth time. Serialized into `{base_dir}/session.json` so even
+/// a zero-channel login leaves an audit artefact: who, which key,
+/// from where, when.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IacsSessionStartInfo {
+    pub user_uuid: String,
+    pub asset_uuid: String,
+    pub ews_fingerprint: String,
+    pub peer_ip: String,
+    pub authenticated_at_us: u64,
+    pub connected_at_us: u64,
+}
+
 /// Result of finalizing an entire IACS SSH session recording.
 pub struct IacsSessionEndResult {
     pub meta_json_relative_path: String,
@@ -74,6 +88,12 @@ pub struct IacsSessionEndResult {
     pub total_bytes: u64,
     pub total_packets: u64,
     pub duration_ms: u64,
+    /// `session.json` path + identity when a
+    /// `IacsRecordingSessionStart` was received (sessions born
+    /// after the `ews_connected` rollout). `None` for legacy
+    /// sessions created lazily by the first channel.
+    pub session_json_relative_path: Option<String>,
+    pub start_info: Option<IacsSessionStartInfo>,
 }
 
 /// Paths needed to gzip a channel PCAP via the supervisor.
@@ -117,6 +137,10 @@ struct IacsRecordingSession {
     channels: HashMap<u32, ActiveChannel>,
     completed: Vec<IacsChannelMeta>,
     session_opened_at_us: Option<u64>,
+    /// Set by `start_session` (auth-time `SessionStart` IPC);
+    /// `None` for legacy sessions created lazily by the first
+    /// channel.
+    start_info: Option<IacsSessionStartInfo>,
 }
 
 /// Manages concurrent IACS PCAP recordings keyed by Vauban session UUID.
@@ -171,6 +195,68 @@ impl IacsRecordingManager {
         )
     }
 
+    /// Create the session recording state at SSH-auth time
+    /// (`IacsRecordingSessionStart`). The base directory is anchored
+    /// on `info.connected_at_us` -- the SAME anchor every subsequent
+    /// `start_channel` carries -- so `session.json`, `meta.json`
+    /// and the channel PCAPs always land in one directory.
+    ///
+    /// Returns the relative path of `session.json` so the caller
+    /// can broker the file from the supervisor and write the
+    /// serialized identity immediately. Idempotent: a re-delivered
+    /// `SessionStart` refreshes `start_info` but never moves an
+    /// existing `base_dir`.
+    pub fn start_session(&mut self, session_id: &str, info: IacsSessionStartInfo) -> String {
+        let connected_at_us = info.connected_at_us;
+        let session = self
+            .sessions
+            .entry(session_id.to_string())
+            .or_insert_with(|| IacsRecordingSession {
+                base_dir: Self::compute_base_dir(session_id, connected_at_us),
+                channels: HashMap::new(),
+                completed: Vec::new(),
+                session_opened_at_us: Some(info.authenticated_at_us),
+                start_info: None,
+            });
+        session.start_info = Some(info);
+        format!("{}/session.json", session.base_dir)
+    }
+
+    /// Serialize the `session.json` document. `ended` carries
+    /// `(ended_at_us, reason)` at session end; `None` at start.
+    pub fn serialize_session_json(
+        session_id: &str,
+        info: &IacsSessionStartInfo,
+        ended: Option<(u64, &str)>,
+    ) -> String {
+        #[derive(serde::Serialize)]
+        struct SessionJson<'a> {
+            session_id: &'a str,
+            user_uuid: &'a str,
+            asset_uuid: &'a str,
+            ews_fingerprint: &'a str,
+            peer_ip: &'a str,
+            authenticated_at_us: u64,
+            connected_at_us: u64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            ended_at_us: Option<u64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            reason: Option<&'a str>,
+        }
+        let doc = SessionJson {
+            session_id,
+            user_uuid: &info.user_uuid,
+            asset_uuid: &info.asset_uuid,
+            ews_fingerprint: &info.ews_fingerprint,
+            peer_ip: &info.peer_ip,
+            authenticated_at_us: info.authenticated_at_us,
+            connected_at_us: info.connected_at_us,
+            ended_at_us: ended.map(|(us, _)| us),
+            reason: ended.map(|(_, r)| r),
+        };
+        serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string())
+    }
+
     /// Open a new channel recording. The supervisor-brokered `file`
     /// is used as the write FD; vauban-audit never `open()`s
     /// directly. The `endpoints` are used to build the synthetic
@@ -198,6 +284,7 @@ impl IacsRecordingManager {
                 channels: HashMap::new(),
                 completed: Vec::new(),
                 session_opened_at_us: Some(opened_at_us),
+                start_info: None,
             });
 
         if session.channels.contains_key(&channel_id) {
@@ -414,6 +501,12 @@ impl IacsRecordingManager {
         }
     }
 
+    /// Finalize a session. Returns `Some` for every known session,
+    /// INCLUDING zero-channel logins created by `start_session`
+    /// (`channels` is then empty and `meta.json` still gets
+    /// written -- the pre-`ews_connected` behaviour of swallowing
+    /// channel-less sessions is exactly what this fixes). `None`
+    /// only for sessions the manager never heard about.
     pub fn end_session(&mut self, session_id: &str) -> Option<IacsSessionEndResult> {
         let session = self.sessions.remove(session_id)?;
         if !session.channels.is_empty() {
@@ -444,6 +537,11 @@ impl IacsRecordingManager {
             total_bytes,
             total_packets,
             duration_ms,
+            session_json_relative_path: session
+                .start_info
+                .as_ref()
+                .map(|_| format!("{}/session.json", session.base_dir)),
+            start_info: session.start_info,
         })
     }
 
@@ -691,11 +789,115 @@ mod tests {
             total_bytes: 100,
             total_packets: 3,
             duration_ms: 1000,
+            session_json_relative_path: None,
+            start_info: None,
         };
         let json = IacsRecordingManager::serialize_meta_json(&result);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["format"], "pcap-bundle");
         assert_eq!(parsed["channels"].as_array().unwrap().len(), 1);
+    }
+
+    fn start_info(connected_at_us: u64) -> IacsSessionStartInfo {
+        IacsSessionStartInfo {
+            user_uuid: "0d9f5bd8-0000-0000-0000-000000000001".into(),
+            asset_uuid: "0d9f5bd8-0000-0000-0000-000000000002".into(),
+            ews_fingerprint: "ab".repeat(32),
+            peer_ip: "203.0.113.9".into(),
+            authenticated_at_us: connected_at_us,
+            connected_at_us,
+        }
+    }
+
+    #[test]
+    fn start_session_anchors_base_dir_on_connected_at() {
+        let mut mgr = IacsRecordingManager::new();
+        // 1714521600_000_000 = 2024-05-01 00:00:00 UTC
+        let rel = mgr.start_session("s1", start_info(1_714_521_600_000_000));
+        assert_eq!(rel, "2024/05/s1/session.json");
+        assert_eq!(mgr.session_base_dir("s1").as_deref(), Some("2024/05/s1"));
+    }
+
+    #[test]
+    fn start_channel_after_start_session_reuses_the_same_base_dir() {
+        // The session/channel anchor identity: `session.json`,
+        // `meta.json` and every channel PCAP land in ONE directory.
+        let mut mgr = IacsRecordingManager::new();
+        let anchor = 1_714_521_600_000_000u64;
+        let rel = mgr.start_session("s1", start_info(anchor));
+        let (f, _) = temp_pair();
+        mgr.start_channel("s1", 1, f, "h".into(), 502, anchor + 5, anchor, endpoints());
+        let base = mgr.session_base_dir("s1").expect("session");
+        assert!(rel.starts_with(&base));
+        mgr.end_channel("s1", 1, anchor + 10);
+        let end = mgr.end_session("s1").expect("session");
+        assert_eq!(end.meta_json_relative_path, format!("{base}/meta.json"));
+        assert_eq!(
+            end.session_json_relative_path.as_deref(),
+            Some("2024/05/s1/session.json")
+        );
+    }
+
+    #[test]
+    fn end_session_zero_channel_still_returns_meta_json() {
+        // The pre-`ews_connected` regression: a session that never
+        // opened a channel was swallowed (`remove(...)? -> None`)
+        // and left NO artefact. With `start_session` the entry
+        // exists, `end_session` returns `Some`, and `meta.json`
+        // is written with `channels: []`.
+        let mut mgr = IacsRecordingManager::new();
+        mgr.start_session("s1", start_info(1_714_521_600_000_000));
+        let end = mgr.end_session("s1").expect("zero-channel session");
+        assert!(end.channels.is_empty());
+        assert_eq!(end.meta_json_relative_path, "2024/05/s1/meta.json");
+        assert!(end.start_info.is_some());
+
+        let json = IacsRecordingManager::serialize_meta_json(&end);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["format"], "pcap-bundle");
+        assert_eq!(parsed["channels"].as_array().unwrap().len(), 0);
+        assert_eq!(parsed["total_bytes"], 0);
+        // Aggregate of zero channels: BLAKE3 of the empty input --
+        // still a valid 64-char hex the hydrator accepts.
+        assert_eq!(parsed["blake3_hex"].as_str().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn end_session_unknown_session_stays_none() {
+        let mut mgr = IacsRecordingManager::new();
+        assert!(mgr.end_session("never-seen").is_none());
+    }
+
+    #[test]
+    fn start_session_is_idempotent_and_never_moves_base_dir() {
+        let mut mgr = IacsRecordingManager::new();
+        let first = mgr.start_session("s1", start_info(1_714_521_600_000_000));
+        // Re-delivery with a different (later) anchor must NOT
+        // relocate the directory.
+        let second = mgr.start_session("s1", start_info(1_717_200_000_000_000));
+        assert_eq!(first, second);
+        assert_eq!(mgr.session_base_dir("s1").as_deref(), Some("2024/05/s1"));
+    }
+
+    #[test]
+    fn session_json_start_and_end_forms() {
+        let info = start_info(1_714_521_600_000_000);
+        let at_start = IacsRecordingManager::serialize_session_json("s1", &info, None);
+        let parsed: serde_json::Value = serde_json::from_str(&at_start).unwrap();
+        assert_eq!(parsed["session_id"], "s1");
+        assert_eq!(parsed["peer_ip"], "203.0.113.9");
+        assert_eq!(parsed["ews_fingerprint"], "ab".repeat(32));
+        assert!(parsed.get("ended_at_us").is_none());
+        assert!(parsed.get("reason").is_none());
+
+        let at_end = IacsRecordingManager::serialize_session_json(
+            "s1",
+            &info,
+            Some((1_714_521_660_000_000, "admin_terminate")),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&at_end).unwrap();
+        assert_eq!(parsed["ended_at_us"], 1_714_521_660_000_000u64);
+        assert_eq!(parsed["reason"], "admin_terminate");
     }
 
     #[test]

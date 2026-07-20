@@ -245,6 +245,58 @@ impl Handler for IacsTunnelHandler {
                     *slot = Some(handle.clone());
                 }
                 self.registry.insert(handle);
+                // Authenticated presence starts here: flip the row
+                // from `waiting_client` to `ews_connected`, anchor
+                // `connected_at`, and push the lifecycle event so
+                // the status page reacts before the first
+                // direct-tcpip channel (dev-mode parity with the
+                // privsep proxy-iacs path).
+                let pool = self.db_pool.clone();
+                let peer_ip = self.peer_addr.map(|a| a.ip());
+                tokio::spawn(async move {
+                    if let Ok(mut c) = pool.get().await {
+                        use crate::schema::proxy_sessions as ps;
+                        use diesel::prelude::*;
+                        use diesel_async::RunQueryDsl;
+                        let base = diesel::update(
+                            ps::table
+                                .filter(ps::uuid.eq(session_uuid))
+                                .filter(ps::status.eq("waiting_client")),
+                        );
+                        let res = if let Some(ip) = peer_ip {
+                            base.set((
+                                ps::status.eq("ews_connected"),
+                                ps::connected_at.eq(chrono::Utc::now()),
+                                ps::client_ip.eq(ipnetwork::IpNetwork::from(ip)),
+                            ))
+                            .execute(&mut c)
+                            .await
+                        } else {
+                            base.set((
+                                ps::status.eq("ews_connected"),
+                                ps::connected_at.eq(chrono::Utc::now()),
+                            ))
+                            .execute(&mut c)
+                            .await
+                        };
+                        if let Err(e) = res {
+                            error!(
+                                session_uuid = %session_uuid,
+                                error = %e,
+                                "iacs_tunnel: failed to flip row to ews_connected"
+                            );
+                        }
+                    }
+                });
+                push_event(
+                    &self.broadcast,
+                    &session_uuid,
+                    serde_json::json!({
+                        "type": super::ws_vocab::TYPE_EWS_CONNECTED,
+                        "peer_ip": self.peer_addr.map(|a| a.ip().to_string()),
+                    }),
+                )
+                .await;
                 Ok(Auth::Accept)
             }
             AuthOutcome::Reject(reason) => {
@@ -385,10 +437,17 @@ impl Handler for IacsTunnelHandler {
                 use crate::schema::proxy_sessions as ps;
                 use diesel::prelude::*;
                 use diesel_async::RunQueryDsl;
+                // COALESCE keeps the `ews_connected`-time anchor
+                // (set at SSH auth); a session that somehow skipped
+                // it still gets a fresh `connected_at`.
                 let _ = diesel::update(ps::table.filter(ps::uuid.eq(sess)))
                     .set((
                         ps::status.eq("tunnel_active"),
-                        ps::connected_at.eq(chrono::Utc::now()),
+                        ps::connected_at.eq(diesel::dsl::sql::<
+                            diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>,
+                        >(
+                            "COALESCE(connected_at, NOW())"
+                        )),
                     ))
                     .execute(&mut c)
                     .await;
