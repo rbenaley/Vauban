@@ -40,15 +40,19 @@ async fn select_columns(prefix: &str) -> Vec<ColumnRow> {
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: every new column added by the migration is present and
-// nullable so pre-existing rows survive without a backfill.
+// Test 1: every column added by `20260430000000_recording_integrity_metadata`
+// is present and nullable so pre-existing rows survive without a backfill.
+//
+// Later columns that also match `recording_%` (e.g. `recording_lossy`,
+// NOT NULL DEFAULT FALSE) are intentionally excluded from the nullability
+// sweep -- they have their own migration + pin tests.
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn test_migration_added_all_ten_recording_columns_nullable() {
     let cols = select_columns("recording_").await;
     let names: Vec<&str> = cols.iter().map(|c| c.column_name.as_str()).collect();
 
-    let expected = [
+    let expected_nullable = [
         "recording_blake3",
         "recording_size_bytes",
         "recording_duration_ms",
@@ -59,10 +63,8 @@ async fn test_migration_added_all_ten_recording_columns_nullable() {
         "recording_segment_count",
         "recording_codec",
         "recording_finalized_at",
-        // Pre-existing column also matches the prefix:
-        "recording_path",
     ];
-    for name in &expected {
+    for name in &expected_nullable {
         assert!(
             names.contains(name),
             "expected column `{}` missing; got: {:?}",
@@ -70,13 +72,14 @@ async fn test_migration_added_all_ten_recording_columns_nullable() {
             names
         );
     }
+    assert!(
+        names.contains(&"recording_path"),
+        "pre-existing recording_path must still exist; got: {names:?}"
+    );
 
-    // Each new column must be nullable (no backfill required).
+    // Only the integrity-metadata columns must be nullable.
     for c in &cols {
-        if c.column_name == "recording_path" {
-            continue;
-        }
-        if !c.column_name.starts_with("recording_") || c.column_name == "recording_path" {
+        if !expected_nullable.contains(&c.column_name.as_str()) {
             continue;
         }
         assert!(
