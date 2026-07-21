@@ -11,12 +11,19 @@
 //! lock across an `await`. The handle's close signal flows through
 //! `closed` (set exactly once) and `notify` (woken from any clone).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use dashmap::DashMap;
+use shared::messages::{
+    IACS_SNAPSHOT_PHASE_EWS_CONNECTED, IACS_SNAPSHOT_PHASE_TUNNEL_ACTIVE,
+    IACS_SNAPSHOT_PHASE_WAITING_CLIENT, IacsTunnelSnapshotEntry,
+};
 use tokio::sync::Notify;
 use uuid::Uuid;
+
+use crate::auth::PendingSessions;
 
 /// Reference-counted handle to a live IACS tunnel.
 #[allow(dead_code)] // Several fields are surfaced via WS / audit in Lot 5
@@ -121,6 +128,18 @@ pub struct TunnelRegistry {
     inner: Arc<DashMap<Uuid, TunnelHandle>>,
 }
 
+/// Lightweight identity retained after `PendingTunnel` is consumed at
+/// `auth_publickey`, so boot snapshots can still report
+/// `(user, asset, ews)` for an `ews_connected` login that has no
+/// `TunnelRegistry` entry yet.
+#[derive(Debug, Clone)]
+pub struct SessionMeta {
+    pub user_uuid: Uuid,
+    pub asset_uuid: Uuid,
+    pub ews_uuid: Uuid,
+    pub peer_ip: Option<String>,
+}
+
 /// Keyed map of `russh::server::Handle` for every authenticated EWS
 /// SSH session, indexed by its `session_uuid`.
 ///
@@ -156,10 +175,16 @@ pub struct TunnelRegistry {
 /// it back when emitting `IacsRecordingSessionEnd`. A voluntary EWS
 /// disconnect never populated the map, so `take_close_reason`
 /// returns `None` and the Drop falls back to `ews_disconnect`.
+///
+/// `meta` is populated in the same `auth_succeeded` callback (from
+/// the accepted `PendingTunnel`) and cleared with `remove`, so boot
+/// `IacsTunnelSnapshot*` responses can rehydrate DB rows for
+/// `ews_connected` sessions that have not yet opened a channel.
 #[derive(Debug, Default, Clone)]
 pub struct SessionHandles {
     inner: Arc<DashMap<Uuid, russh::server::Handle>>,
     close_reasons: Arc<DashMap<Uuid, String>>,
+    meta: Arc<DashMap<Uuid, SessionMeta>>,
 }
 
 #[allow(dead_code)] // Several methods surface in Lot 5 (terminate / WS pusher)
@@ -209,6 +234,7 @@ impl SessionHandles {
         Self {
             inner: Arc::new(DashMap::new()),
             close_reasons: Arc::new(DashMap::new()),
+            meta: Arc::new(DashMap::new()),
         }
     }
 
@@ -235,12 +261,32 @@ impl SessionHandles {
         self.inner.insert(session_uuid, handle);
     }
 
+    /// Store identity for boot snapshot rehydrate. Called from
+    /// `auth_succeeded` alongside [`Self::insert`]. Cleared by
+    /// [`Self::remove`].
+    pub fn insert_meta(&self, session_uuid: Uuid, meta: SessionMeta) {
+        self.meta.insert(session_uuid, meta);
+    }
+
+    pub fn get_meta(&self, session_uuid: &Uuid) -> Option<SessionMeta> {
+        self.meta.get(session_uuid).map(|r| r.clone())
+    }
+
     pub fn get(&self, session_uuid: &Uuid) -> Option<russh::server::Handle> {
         self.inner.get(session_uuid).map(|r| r.clone())
     }
 
-    /// Idempotent: `remove` of a missing key is a no-op.
+    /// Keys currently holding a russh handle (authenticated logins).
+    pub fn session_uuids(&self) -> Vec<Uuid> {
+        self.inner.iter().map(|r| *r.key()).collect()
+    }
+
+    /// Idempotent: `remove` of a missing key is a no-op. Also clears
+    /// the matching `SessionMeta`. Close-reason slots stay until
+    /// [`Self::take_close_reason`] (Handler `Drop` reads them AFTER
+    /// `remove`).
     pub fn remove(&self, session_uuid: &Uuid) -> Option<russh::server::Handle> {
+        self.meta.remove(session_uuid);
         self.inner.remove(session_uuid).map(|(_, v)| v)
     }
 
@@ -251,6 +297,88 @@ impl SessionHandles {
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
+}
+
+/// Build the boot-resync snapshot: union of pending / authenticated /
+/// active tunnels with `phase = max` across sources.
+///
+/// SECURITY: never copies `PendingTunnel::session_token` or
+/// `ews_pubkey_fp` into the wire entries.
+pub async fn build_tunnel_snapshot(
+    pending: &PendingSessions,
+    session_handles: &SessionHandles,
+    registry: &TunnelRegistry,
+) -> Vec<IacsTunnelSnapshotEntry> {
+    #[derive(Default)]
+    struct Acc {
+        phase: u8,
+        peer_ip: Option<String>,
+        bytes_in: u64,
+        bytes_out: u64,
+        user_uuid: Option<Uuid>,
+        asset_uuid: Option<Uuid>,
+        ews_uuid: Option<Uuid>,
+    }
+
+    let mut map: HashMap<Uuid, Acc> = HashMap::new();
+
+    for p in pending.snapshot().await {
+        let acc = map.entry(p.session_uuid).or_default();
+        // Pending is the first pass and WAITING_CLIENT == 0 (== Acc::default().phase),
+        // so `.max(WAITING_CLIENT)` is a no-op; assign explicitly for clarity.
+        acc.phase = IACS_SNAPSHOT_PHASE_WAITING_CLIENT;
+        acc.user_uuid = Some(p.user_uuid);
+        acc.asset_uuid = Some(p.asset_uuid);
+        acc.ews_uuid = Some(p.ews_uuid);
+        // Intentionally omit p.session_token and p.ews_pubkey_fp.
+    }
+
+    for uuid in session_handles.session_uuids() {
+        let acc = map.entry(uuid).or_default();
+        acc.phase = acc.phase.max(IACS_SNAPSHOT_PHASE_EWS_CONNECTED);
+        if let Some(meta) = session_handles.get_meta(&uuid) {
+            acc.user_uuid = Some(meta.user_uuid);
+            acc.asset_uuid = Some(meta.asset_uuid);
+            acc.ews_uuid = Some(meta.ews_uuid);
+            if acc.peer_ip.is_none() {
+                acc.peer_ip = meta.peer_ip;
+            }
+        }
+    }
+
+    for h in registry.snapshot() {
+        let acc = map.entry(h.session_uuid).or_default();
+        acc.phase = acc.phase.max(IACS_SNAPSHOT_PHASE_TUNNEL_ACTIVE);
+        acc.user_uuid = Some(h.user_uuid);
+        acc.asset_uuid = Some(h.asset_uuid);
+        acc.ews_uuid = Some(h.ews_uuid);
+        acc.peer_ip = h.peer_addr.map(|sa| sa.ip().to_string());
+        let (bin, bout) = h.counters();
+        acc.bytes_in = bin;
+        acc.bytes_out = bout;
+    }
+
+    let mut entries: Vec<IacsTunnelSnapshotEntry> = map
+        .into_iter()
+        .map(|(session_uuid, acc)| IacsTunnelSnapshotEntry {
+            session_id: session_uuid.to_string(),
+            phase: acc.phase,
+            peer_ip: acc.peer_ip,
+            bytes_in: acc.bytes_in,
+            bytes_out: acc.bytes_out,
+            user_uuid: acc
+                .user_uuid
+                .map(|u| u.to_string())
+                .unwrap_or_default(),
+            asset_uuid: acc
+                .asset_uuid
+                .map(|u| u.to_string())
+                .unwrap_or_default(),
+            ews_uuid: acc.ews_uuid.map(|u| u.to_string()).unwrap_or_default(),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    entries
 }
 
 #[cfg(test)]
@@ -355,5 +483,126 @@ mod tests {
         // (idempotency contract of the SessionHandles API).
         assert!(s.remove(&Uuid::new_v4()).is_none());
         assert!(s.is_empty());
+    }
+
+    #[test]
+    fn session_handles_session_uuids_lists_keys() {
+        let s = SessionHandles::new();
+        assert!(s.session_uuids().is_empty());
+        let u = Uuid::new_v4();
+        s.insert_meta(
+            u,
+            SessionMeta {
+                user_uuid: Uuid::new_v4(),
+                asset_uuid: Uuid::new_v4(),
+                ews_uuid: Uuid::new_v4(),
+                peer_ip: None,
+            },
+        );
+        // meta alone does not count as an authenticated handle.
+        assert!(s.session_uuids().is_empty());
+        s.remove(&u);
+        assert!(s.get_meta(&u).is_none());
+    }
+
+    #[tokio::test]
+    async fn build_tunnel_snapshot_unions_pending_and_registry() {
+        use crate::auth::PendingTunnel;
+        use std::time::{Duration, Instant};
+
+        let pending = PendingSessions::new();
+        let handles = SessionHandles::new();
+        let registry = TunnelRegistry::new();
+
+        let pending_uuid = Uuid::new_v4();
+        let user = Uuid::new_v4();
+        let asset = Uuid::new_v4();
+        let ews = Uuid::new_v4();
+        pending
+            .insert(PendingTunnel {
+                session_uuid: pending_uuid,
+                user_uuid: user,
+                asset_uuid: asset,
+                ews_uuid: ews,
+                ews_pubkey_fp: "a".repeat(64),
+                asset_host: "10.0.0.1".into(),
+                asset_port: 502,
+                industrial_protocol: "modbus".into(),
+                session_token: b"SECRET_TOKEN_BYTES_MUST_NOT_LEAK".to_vec(),
+                deadline: Instant::now() + Duration::from_secs(60),
+            })
+            .await;
+
+        let active_uuid = Uuid::new_v4();
+        let h = TunnelHandle::new(
+            active_uuid,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Some("203.0.113.10:1234".parse().unwrap()),
+        );
+        h.bytes_in.store(11, Ordering::Relaxed);
+        h.bytes_out.store(22, Ordering::Relaxed);
+        registry.insert(h);
+
+        // Meta without a russh handle is invisible to session_uuids();
+        // phase=1 is covered by auth_succeeded insert_meta + handshake
+        // e2e. Here we pin pending + registry and the no-token contract.
+        let entries = build_tunnel_snapshot(&pending, &handles, &registry).await;
+        assert_eq!(entries.len(), 2, "pending + registry");
+
+        let pending_entry = entries
+            .iter()
+            .find(|e| e.session_id == pending_uuid.to_string())
+            .expect("pending entry");
+        assert_eq!(pending_entry.phase, IACS_SNAPSHOT_PHASE_WAITING_CLIENT);
+        assert_eq!(pending_entry.user_uuid, user.to_string());
+        assert_eq!(pending_entry.bytes_in, 0);
+        assert!(pending_entry.peer_ip.is_none());
+
+        let active_entry = entries
+            .iter()
+            .find(|e| e.session_id == active_uuid.to_string())
+            .expect("active entry");
+        assert_eq!(active_entry.phase, IACS_SNAPSHOT_PHASE_TUNNEL_ACTIVE);
+        assert_eq!(active_entry.bytes_in, 11);
+        assert_eq!(active_entry.bytes_out, 22);
+        assert_eq!(active_entry.peer_ip.as_deref(), Some("203.0.113.10"));
+
+        // SECURITY pin: no token bytes appear in any string field.
+        let blob = format!("{entries:?}");
+        assert!(
+            !blob.contains("SECRET_TOKEN_BYTES_MUST_NOT_LEAK"),
+            "snapshot must never copy session_token bytes"
+        );
+    }
+
+    /// Source pin: the snapshot builder body must never reference
+    /// token/fp fields as assignment targets on the wire entry.
+    #[test]
+    fn build_tunnel_snapshot_source_never_copies_token_or_pubkey() {
+        let src = include_str!("registry.rs");
+        let start = src
+            .find("pub async fn build_tunnel_snapshot")
+            .expect("build_tunnel_snapshot present");
+        let body = &src[start..];
+        let end = body
+            .find("\npub ")
+            .or_else(|| body.find("\n#[cfg(test)]"))
+            .unwrap_or(body.len());
+        let fn_body = &body[..end];
+        assert!(
+            !fn_body.contains("session_token:")
+                && !fn_body.contains("ews_pubkey_fp:"),
+            "build_tunnel_snapshot must not assign session_token / \
+             ews_pubkey_fp onto snapshot entries"
+        );
+        // Reading them only to explicitly discard is documented; the
+        // wire struct construction uses IacsTunnelSnapshotEntry {{ ... }}
+        // without those fields.
+        assert!(
+            fn_body.contains("IacsTunnelSnapshotEntry"),
+            "builder must construct IacsTunnelSnapshotEntry"
+        );
     }
 }

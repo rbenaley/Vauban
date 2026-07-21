@@ -5,8 +5,8 @@
 //!
 //! These tests drive `IacsRecordingManager` with realistic
 //! industrial-protocol payloads (Modbus/TCP, OPC-UA, S7), gzip the
-//! resulting `.pcap` (simulating the supervisor broker), then
-//! reparse the bytes to confirm:
+//! resulting `.pcap` via [`gzip_channel_pcap_on_fds`] (same path as
+//! production audit ChannelEnd), then reparse the bytes to confirm:
 //!
 //! - the libpcap classic global header is correct,
 //! - the synthetic L3/L4 layer produces well-formed IPv4 + TCP
@@ -19,9 +19,7 @@
 //!   (concat-of-channel-digests, ASCII hex bytes hashed).
 
 use etherparse::{NetHeaders, PacketHeaders, TransportHeader};
-use flate2::Compression;
 use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
 use shared::messages::IacsRecordingDirection;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -30,6 +28,7 @@ use vauban_audit::iacs_pcap_synth::{
 };
 use vauban_audit::iacs_recording_manager::{
     IacsChannelEndpoints, IacsChannelMeta, IacsRecordingManager, aggregate_channel_blake3,
+    gzip_channel_pcap_on_fds,
 };
 
 /// Modbus/TCP "Read Holding Registers" PDU (function code 0x03).
@@ -260,11 +259,21 @@ fn s7_payload_dissectable() {
 #[test]
 fn gzip_roundtrip_preserves_pcap_bytes_and_dissection() {
     let (raw, _meta) = run_modbus_session();
+    let mut src = tempfile::tempfile().unwrap();
+    src.write_all(&raw).unwrap();
+    src.sync_data().unwrap();
+    src.seek(SeekFrom::Start(0)).unwrap();
+    let mut dst = tempfile::tempfile().unwrap();
+    let (size, hex) = gzip_channel_pcap_on_fds(&mut src, &mut dst).unwrap();
+    assert!(size > 0);
+    assert_eq!(hex.len(), 64);
+
+    dst.seek(SeekFrom::Start(0)).unwrap();
     let mut compressed = Vec::new();
-    {
-        let mut enc = GzEncoder::new(&mut compressed, Compression::default());
-        enc.write_all(&raw).unwrap();
-    }
+    dst.read_to_end(&mut compressed).unwrap();
+    assert_eq!(compressed.len() as u64, size);
+    assert_eq!(blake3::hash(&compressed).to_hex().as_str(), hex);
+
     let mut decompressed = Vec::new();
     GzDecoder::new(&compressed[..])
         .read_to_end(&mut decompressed)

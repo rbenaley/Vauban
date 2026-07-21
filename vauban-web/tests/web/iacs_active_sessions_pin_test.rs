@@ -10,9 +10,9 @@
 //!    `status.eq_any([... , "tunnel_active"])` -- not just
 //!    `status.eq("active")`. Otherwise IACS rows go missing.
 //! 2. The terminate handler dispatches IACS termination via
-//!    `state.proxy_iacs` first, with the legacy in-process registry
-//!    only as a fallback. Otherwise production IACS terminate would
-//!    silently no-op (proxy-iacs would never receive the signal).
+//!    `state.proxy_iacs` exclusively (IPC-only). Otherwise production
+//!    IACS terminate would silently no-op (proxy-iacs would never
+//!    receive the signal).
 
 use std::path::PathBuf;
 
@@ -194,7 +194,7 @@ fn every_active_list_query_site_has_kill_switch_branch() {
 // ===================================================================
 
 #[test]
-fn terminate_session_handler_dispatches_iacs_via_proxy_iacs_ipc_first() {
+fn terminate_session_handler_dispatches_iacs_via_proxy_iacs_ipc_only() {
     // The dispatch moved from the terminate_session handler into the
     // shared terminate core (services/session_termination.rs); every
     // terminate caller routes through it (pinned by
@@ -211,34 +211,20 @@ fn terminate_session_handler_dispatches_iacs_via_proxy_iacs_ipc_first() {
     );
     let block = &src[block_start..(block_start + 2_500).min(src.len())];
 
-    let proxy_iacs_pos = block.find("state.proxy_iacs").expect(
+    assert!(
+        block.contains("state.proxy_iacs"),
         "IACS terminate arm MUST reference `state.proxy_iacs` so the \
-         supervised topology is the canonical dispatch path",
+         supervised topology is the canonical dispatch path"
     );
-    let terminate_call_pos = block.find("terminate_tunnel(").expect(
+    assert!(
+        block.contains("terminate_tunnel("),
         "IACS terminate arm MUST call `terminate_tunnel(...)` on \
-         `state.proxy_iacs` so the IPC reaches proxy-iacs",
-    );
-    // rustfmt may split the chained call across lines, so anchor on the
-    // registry field and require the close call after it.
-    let legacy_registry_pos = block.find("iacs_tunnel_registry").expect(
-        "Legacy in-process registry MUST stay as the fallback (used \
-         by tests / pre-supervisor dev mode)",
+         `state.proxy_iacs` so the IPC reaches proxy-iacs"
     );
     assert!(
-        block[legacy_registry_pos..].contains("close_and_remove"),
-        "The legacy registry fallback must call `close_and_remove(...)`"
-    );
-
-    assert!(
-        proxy_iacs_pos < legacy_registry_pos,
-        "`state.proxy_iacs.terminate_tunnel(...)` MUST appear BEFORE \
-         `iacs_tunnel_registry.close_and_remove(...)` in the IACS \
-         terminate arm so the IPC path is preferred."
-    );
-    assert!(
-        terminate_call_pos < legacy_registry_pos,
-        "The IPC terminate call must precede the legacy fallback."
+        !block.contains("iacs_tunnel_registry"),
+        "Lot A: IACS terminate MUST NOT fall back to an in-process \
+         TunnelRegistry (sshd lives only in proxy-iacs)"
     );
 }
 

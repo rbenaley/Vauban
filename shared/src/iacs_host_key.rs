@@ -16,7 +16,7 @@
 //!   returns `errno 94` ("Not permitted in capability mode"), which
 //!   is exactly the bug this module exists to fix.
 //!
-//! See `docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.0).md` for
+//! See `docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.1).md` for
 //! the full FD passing scheme analogous to the HTTPS listener.
 
 use std::io;

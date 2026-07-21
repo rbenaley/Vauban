@@ -40,6 +40,11 @@ fn validate_recording_relative_structure(relative_path: &str) -> Result<(), Stri
 }
 
 /// Validate gzip source/destination paths for IACS PCAP recording.
+///
+/// Kept for callers that still validate both sides together; the
+/// live ChannelEnd path uses [`validate_recording_unlink_relative_path`]
+/// for the raw `.pcap` and [`validate_recording_file_relative_path`]
+/// for the `.pcap.gz` FD request.
 pub fn validate_recording_gzip_relative_paths(
     src_relative: &str,
     dst_relative: &str,
@@ -55,6 +60,31 @@ pub fn validate_recording_gzip_relative_paths(
     }
     if !dst_relative.ends_with(".pcap.gz") {
         return Err("gzip destination must be a .pcap.gz file".into());
+    }
+    Ok(())
+}
+
+/// Validate a relative path before the supervisor unlinks a raw IACS
+/// `.pcap` after audit has gzipped it on SCM_RIGHTS FDs.
+///
+/// # Invariants
+///
+/// - Must end with `.pcap` (NOT `.pcap.gz`).
+/// - Must contain `session_id`.
+/// - Same anti-traversal rules as other recording path validators.
+pub fn validate_recording_unlink_relative_path(
+    relative_path: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    validate_recording_relative_structure(relative_path)?;
+    if !relative_path.contains(session_id) {
+        return Err("relative_path must contain session_id".into());
+    }
+    if relative_path.ends_with(".pcap.gz") {
+        return Err("unlink path must be a raw .pcap, not .pcap.gz".into());
+    }
+    if !relative_path.ends_with(".pcap") {
+        return Err("unlink path must be a .pcap file".into());
     }
     Ok(())
 }
@@ -298,5 +328,44 @@ mod tests {
         let base = tempfile::tempdir().expect("tempdir");
         assert!(resolve_recording_file_target(base.path(), "../escape", UUID).is_err());
         assert!(resolve_recording_file_target(base.path(), "/etc/passwd", UUID).is_err());
+    }
+
+    // ==================== Recording unlink (IACS raw .pcap) ====================
+
+    #[test]
+    fn validate_recording_unlink_accepts_raw_pcap() {
+        let rel = format!("2026/05/{UUID}/channels/001.pcap");
+        assert!(validate_recording_unlink_relative_path(&rel, UUID).is_ok());
+    }
+
+    #[test]
+    fn validate_recording_unlink_rejects_pcap_gz() {
+        let rel = format!("2026/05/{UUID}/channels/001.pcap.gz");
+        assert!(validate_recording_unlink_relative_path(&rel, UUID).is_err());
+    }
+
+    #[test]
+    fn validate_recording_unlink_rejects_wrong_suffix() {
+        let rel = format!("2026/05/{UUID}/meta.json");
+        assert!(validate_recording_unlink_relative_path(&rel, UUID).is_err());
+    }
+
+    #[test]
+    fn validate_recording_unlink_rejects_traversal_and_session_mismatch() {
+        assert!(
+            validate_recording_unlink_relative_path(
+                &format!("2026/05/{UUID}/../../../etc/passwd.pcap"),
+                UUID
+            )
+            .is_err()
+        );
+        assert!(
+            validate_recording_unlink_relative_path("2026/05/other/channels/001.pcap", UUID)
+                .is_err()
+        );
+        assert!(validate_recording_unlink_relative_path("", UUID).is_err());
+        assert!(
+            validate_recording_unlink_relative_path(&format!("/abs/{UUID}/x.pcap"), UUID).is_err()
+        );
     }
 }

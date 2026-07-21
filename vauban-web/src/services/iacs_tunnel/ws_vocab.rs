@@ -4,27 +4,19 @@
 //!
 //! ## Why this module exists (July 2026 incident)
 //!
-//! Two independent emitters push IACS lifecycle events on the same
-//! per-session channel:
+//! The production privsep pump ([`crate::ipc::proxy_iacs`]) once
+//! emitted a divergent envelope (`{"type": "iacs_tunnel_status",
+//! "status": ...}` / `{"type": "iacs_tunnel_closed"}`) that the
+//! Alpine component (`iacsTunnelStatus` in
+//! `static/js/vauban-components.js`) never understood. In production
+//! the page therefore NEVER reacted: the `waiting_client` countdown
+//! kept ticking while the tunnel was active, and at zero the pill
+//! flipped to a false "expired". The divergence was invisible
+//! pre-CSP-fix because the component lived in an inline `<script>`
+//! that the CSP blocked from ever executing.
 //!
-//! * the in-process dev sshd
-//!   ([`super::server`]) emitted `{"type": "tunnel_active" | "tunnel_stats"
-//!   | "tunnel_closed"}`,
-//! * the production privsep pump ([`crate::ipc::proxy_iacs`])
-//!   emitted `{"type": "iacs_tunnel_status", "status": ...}` and
-//!   `{"type": "iacs_tunnel_closed"}`.
-//!
-//! The Alpine component (`iacsTunnelStatus` in
-//! `static/js/vauban-components.js`) only understood the first
-//! vocabulary. In production (under vauban-supervisor) the page
-//! therefore NEVER reacted: the `waiting_client` countdown kept
-//! ticking while the tunnel was active, and at zero the pill flipped
-//! to a false "expired". The divergence was invisible pre-CSP-fix
-//! because the component lived in an inline `<script>` that the CSP
-//! blocked from ever executing.
-//!
-//! This module is now the single source of truth: BOTH emitters
-//! reference the constants below, and
+//! This module is now the single source of truth: the IPC pump
+//! references the constants below, and
 //! `tests/web/iacs_ws_vocab_test.rs` pins (a) that the legacy
 //! `iacs_tunnel_*` envelope never reappears, and (b) that the JS
 //! component handles every constant.

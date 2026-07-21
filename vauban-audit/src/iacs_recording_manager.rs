@@ -2,9 +2,11 @@
 //!
 //! Writes one PCAP file per `direct-tcpip` channel with batching,
 //! `fdatasync`, and a session-level `meta.json` for the
-//! `pcap-bundle` recording format. File creation, gzip and unlink
-//! are delegated to the supervisor (vauban-audit runs under
-//! Capsicum and cannot `open()` / `unlink()` directly).
+//! `pcap-bundle` recording format. File creation and unlink are
+//! delegated to the supervisor via SCM_RIGHTS / Unlink IPC
+//! (vauban-audit runs under Capsicum and cannot `open()` /
+//! `unlink()` directly). Gzip + BLAKE3 of the `.pcap.gz` run
+//! in-process on the received FDs.
 //!
 //! Each recorded chunk is wrapped in a synthetic IPv4 (or IPv6)
 //! plus TCP layer (see [`crate::iacs_pcap_synth`]) so the resulting
@@ -22,10 +24,12 @@
 use crate::iacs_pcap_synth::{
     self, Direction, Endpoints, TcpFlow, build_global_header, build_handshake,
 };
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use shared::messages::IacsRecordingDirection;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
@@ -96,10 +100,14 @@ pub struct IacsSessionEndResult {
     pub start_info: Option<IacsSessionStartInfo>,
 }
 
-/// Paths needed to gzip a channel PCAP via the supervisor.
+/// Paths + live raw FD returned by [`IacsRecordingManager::end_channel`]
+/// so the ChannelEnd handler can gzip in-process then unlink via IPC.
 pub struct IacsChannelEndPaths {
     pub src_relative: String,
     pub dst_relative: String,
+    /// Raw `.pcap` FD (O_RDWR), flushed and synced; caller must seek
+    /// to start before [`gzip_channel_pcap_on_fds`].
+    pub raw_file: File,
 }
 
 /// Endpoints supplied by the proxy at channel-open time, used to
@@ -428,7 +436,8 @@ impl IacsRecordingManager {
     }
 
     /// Flush, write the FIN-FIN close, and close a channel. Returns
-    /// gzip paths for the supervisor broker.
+    /// the raw FD plus relative paths so the caller can gzip locally
+    /// then request an unlink from the supervisor.
     pub fn end_channel(
         &mut self,
         session_id: &str,
@@ -454,15 +463,27 @@ impl IacsRecordingManager {
         channel.packet_count += close_records.len() as u64;
 
         let _ = durable_sync(&mut channel);
-        let _ = channel.writer.flush();
+        let raw_file = match channel.writer.into_inner() {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(
+                    session_id = %session_id,
+                    channel_id,
+                    error = %e.error(),
+                    "Failed to unwrap IACS PCAP BufWriter"
+                );
+                return None;
+            }
+        };
 
         let paths = IacsChannelEndPaths {
             src_relative: channel.pcap_relative.clone(),
             dst_relative: channel.gz_relative.clone(),
+            raw_file,
         };
 
-        // Placeholder meta; blake3/size filled after supervisor gzip
-        // response.
+        // Placeholder meta; blake3/size filled after local gzip +
+        // successful unlink.
         session.completed.push(IacsChannelMeta {
             index: channel.channel_index,
             target_host: channel.target_host.clone(),
@@ -484,7 +505,7 @@ impl IacsRecordingManager {
         Some(paths)
     }
 
-    /// Attach gzip integrity metadata returned by the supervisor.
+    /// Attach gzip integrity metadata after local gzip + unlink OK.
     pub fn finalize_channel_gzip(
         &mut self,
         session_id: &str,
@@ -615,6 +636,53 @@ fn durable_sync(channel: &mut ActiveChannel) -> Result<(), IacsRecordingError> {
         .map_err(|e| IacsRecordingError::Io(e.to_string()))
 }
 
+/// Stream-gzip `src` into `dst` while hashing the compressed bytes
+/// (BLAKE3 of the final `.pcap.gz`). Caller must have seeked `src`
+/// to the start. Returns `(dst_size, blake3_hex)`.
+pub fn gzip_channel_pcap_on_fds(src: &mut File, dst: &mut File) -> Result<(u64, String), String> {
+    struct HashingWriter<'a> {
+        inner: &'a mut File,
+        hasher: blake3::Hasher,
+        written: u64,
+    }
+
+    impl Write for HashingWriter<'_> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let n = self.inner.write(buf)?;
+            if n > 0 {
+                self.hasher.update(&buf[..n]);
+                self.written = self.written.saturating_add(n as u64);
+            }
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    let hashing = HashingWriter {
+        inner: dst,
+        hasher: blake3::Hasher::new(),
+        written: 0,
+    };
+    let mut encoder = GzEncoder::new(hashing, Compression::default());
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match src.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                encoder
+                    .write_all(&buf[..n])
+                    .map_err(|e| format!("gzip write: {e}"))?;
+            }
+            Err(e) => return Err(format!("read src: {e}")),
+        }
+    }
+    let hashing = encoder.finish().map_err(|e| format!("gzip finish: {e}"))?;
+    Ok((hashing.written, hashing.hasher.finalize().to_hex().to_string()))
+}
+
 /// BLAKE3 over the concatenated ASCII hex digests of every channel
 /// (in `completed` order). Mirrors the RDP segment aggregation rule
 /// (see `vauban-web::recording_hydrator::aggregate_rdp_blake3`) so
@@ -646,7 +714,7 @@ fn unix_days_to_year_month(days: u64) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Seek, SeekFrom};
+    use std::io::{Read, Seek, SeekFrom, Write};
 
     fn temp_pair() -> (File, File) {
         let f = tempfile::tempfile().unwrap();
@@ -1062,13 +1130,45 @@ mod tests {
     }
 
     #[test]
-    fn end_channel_returns_gzip_paths() {
+    fn end_channel_returns_gzip_paths_and_raw_fd() {
         let mut mgr = IacsRecordingManager::new();
         let (f, _) = temp_pair();
         mgr.start_channel("s1", 1, f, "h".into(), 502, 0, 0, endpoints());
         let paths = mgr.end_channel("s1", 1, 1_000).unwrap();
         assert!(paths.src_relative.ends_with("/channels/001.pcap"));
         assert!(paths.dst_relative.ends_with("/channels/001.pcap.gz"));
+        // Raw FD must still be readable after end_channel.
+        let mut raw = paths.raw_file;
+        raw.seek(SeekFrom::Start(0)).unwrap();
+        let mut buf = [0u8; 4];
+        raw.read_exact(&mut buf).unwrap();
+        assert_eq!(u32::from_le_bytes(buf), iacs_pcap_synth::PCAP_GLOBAL_MAGIC);
+    }
+
+    #[test]
+    fn gzip_channel_pcap_on_fds_roundtrips_and_hashes() {
+        let mut src = tempfile::tempfile().unwrap();
+        let payload = b"hello-pcap-bytes-for-gzip";
+        src.write_all(payload).unwrap();
+        src.sync_data().unwrap();
+        src.seek(SeekFrom::Start(0)).unwrap();
+
+        let mut dst = tempfile::tempfile().unwrap();
+        let (size, hex) = gzip_channel_pcap_on_fds(&mut src, &mut dst).unwrap();
+        assert!(size > 0);
+        assert_eq!(hex.len(), 64);
+
+        dst.seek(SeekFrom::Start(0)).unwrap();
+        let mut compressed = Vec::new();
+        dst.read_to_end(&mut compressed).unwrap();
+        assert_eq!(compressed.len() as u64, size);
+        assert_eq!(blake3::hash(&compressed).to_hex().as_str(), hex);
+
+        let mut decoded = Vec::new();
+        flate2::read::GzDecoder::new(&compressed[..])
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, payload);
     }
 
     #[test]

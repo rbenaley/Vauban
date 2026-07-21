@@ -1211,9 +1211,10 @@ pub struct IndustrialConfig {
     #[serde(default = "IndustrialConfig::default_max_ews_per_user")]
     pub max_ews_per_user: u32,
 
-    /// IACS tunnel sub-module (russh server in-process within
-    /// `vauban-web`). Optional `[industrial.iacs_tunnel]` TOML
-    /// section; when omitted, defaults are used and the sub-module
+    /// IACS tunnel operational parameters for the web-side
+    /// watchdog / status page. The sshd itself lives in
+    /// `vauban-proxy-iacs`. Optional `[industrial.iacs_tunnel]` TOML
+    /// section; when omitted, defaults are used and the surface
     /// is enabled iff `industrial.enabled` is also true.
     #[serde(default)]
     pub iacs_tunnel: IacsTunnelConfig,
@@ -1239,23 +1240,20 @@ impl Default for IndustrialConfig {
     }
 }
 
-/// Configuration for the in-process IACS tunnel sshd, exposed under
-/// `[industrial.iacs_tunnel]` in TOML. Lives in `vauban-web` (no new
-/// service / no new IPC -- the sshd is a `tokio::spawn` task driven
-/// by `russh`).
+/// Configuration for the IACS tunnel surface, exposed under
+/// `[industrial.iacs_tunnel]` in TOML. Consumed by vauban-web
+/// (watchdog, status page, connect handler) and by the supervisor
+/// when spawning `vauban-proxy-iacs` (`bind_addr`, `host_key_path`).
 ///
-/// Single gate: `industrial.enabled` (parent). When `false`, the
-/// tunnel server never binds and every `/iacs/*` route returns 404.
-/// The previous per-feature `industrial.iacs_tunnel.enabled` switch
-/// has been retired (May 2026): if industrial mode is on, the IACS
-/// tunnel is on. The fields below are operational parameters
-/// (bind address, host key path, caps, ...) that are only consumed
-/// when `industrial.enabled = true`.
+/// Single gate: `industrial.enabled` (parent). When `false`, every
+/// `/iacs/*` route returns 404. The previous per-feature
+/// `industrial.iacs_tunnel.enabled` switch has been retired
+/// (May 2026): if industrial mode is on, the IACS tunnel is on.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IacsTunnelConfig {
-    /// `host:port` the sshd listens on. Default `0.0.0.0:22322`. The
-    /// canonical `22` is reserved for the regular VAUBAN proxy on
-    /// the same host.
+    /// `host:port` the proxy-iacs sshd listens on.
+    /// Default `0.0.0.0:22322`. The canonical `22` is reserved for
+    /// the regular VAUBAN proxy on the same host.
     #[serde(default = "IacsTunnelConfig::default_bind_addr")]
     pub bind_addr: String,
 
@@ -1266,18 +1264,9 @@ pub struct IacsTunnelConfig {
     #[serde(default = "IacsTunnelConfig::default_advertise_hostname")]
     pub advertise_hostname: String,
 
-    /// DEPRECATED: legacy fixed `host:port` of the in-process iacs
-    /// sshd's MVP target. Per-asset target resolution now snapshots
-    /// `asset.hostname:asset.port` into `proxy_sessions.tunnel_target_addr`
-    /// at session creation; the in-process iacs sshd module
-    /// (`vauban-web/src/services/iacs_tunnel/server.rs`) is kept only
-    /// to compile until Lot 5 deletes it in favour of `vauban-proxy-iacs`.
-    /// Keep at the legacy default; nothing else reads this in production.
-    #[serde(default = "IacsTunnelConfig::default_target_addr")]
-    pub target_addr: String,
-
     /// Filesystem path of the ed25519 host key. Generated on first
-    /// boot if absent; created with mode 0600.
+    /// boot if absent; created with mode 0600. Owned by the
+    /// supervisor / proxy-iacs path (not by vauban-web).
     #[serde(default = "IacsTunnelConfig::default_host_key_path")]
     pub host_key_path: String,
 
@@ -1334,9 +1323,6 @@ impl IacsTunnelConfig {
     fn default_advertise_hostname() -> String {
         "localhost".to_string()
     }
-    fn default_target_addr() -> String {
-        "127.0.0.1:4321".to_string()
-    }
     fn default_host_key_path() -> String {
         "/var/lib/vauban/iacs_tunnel_host_ed25519".to_string()
     }
@@ -1373,7 +1359,6 @@ impl Default for IacsTunnelConfig {
         Self {
             bind_addr: Self::default_bind_addr(),
             advertise_hostname: Self::default_advertise_hostname(),
-            target_addr: Self::default_target_addr(),
             host_key_path: Self::default_host_key_path(),
             max_concurrent_per_user: Self::default_max_concurrent_per_user(),
             max_concurrent_per_ews: Self::default_max_concurrent_per_ews(),

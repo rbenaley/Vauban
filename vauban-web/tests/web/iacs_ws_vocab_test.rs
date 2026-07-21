@@ -1,15 +1,13 @@
 //! IACS SessionLive WebSocket vocabulary — anti-drift suite.
 //!
-//! July 2026 incident: two emitters push IACS lifecycle events on
-//! `WsChannel::SessionLive(<uuid>)` — the in-process dev sshd
-//! (`services/iacs_tunnel/server.rs`) and the production privsep
-//! pump (`ipc/proxy_iacs.rs`). The proxy pump used a divergent
-//! envelope (`type: "iacs_tunnel_status"` + `status` field) that the
-//! Alpine `iacsTunnelStatus` component never understood, so in
-//! production the status page NEVER reacted: the waiting-client
-//! countdown kept ticking over an established tunnel, and at zero it
-//! flipped to a false "expired" pill. Invisible pre-CSP-fix because
-//! the component lived in an inline `<script>` the CSP blocked.
+//! July 2026 incident: the production privsep pump
+//! (`ipc/proxy_iacs.rs`) used a divergent envelope
+//! (`type: "iacs_tunnel_status"` + `status` field) that the Alpine
+//! `iacsTunnelStatus` component never understood, so in production
+//! the status page NEVER reacted: the waiting-client countdown kept
+//! ticking over an established tunnel, and at zero it flipped to a
+//! false "expired" pill. Invisible pre-CSP-fix because the
+//! component lived in an inline `<script>` the CSP blocked.
 //!
 //! The fix centralizes the vocabulary in
 //! `services::iacs_tunnel::ws_vocab` (constants + a pure Rust twin
@@ -26,9 +24,8 @@
 //!   channel with the canonical `type` AND flip the DB row. This is
 //!   exactly the test that would have caught the incident.
 //!
-//! The in-process emitter's E2E lives in
-//! `iacs_tunnel_status_ux_test.rs` (full russh handshake); this file
-//! covers the proxy flavour without spawning a subprocess.
+//! This file covers the proxy-iacs IPC pump without spawning a
+//! subprocess.
 
 use std::time::Duration;
 
@@ -91,20 +88,15 @@ fn legacy_envelope_types_are_gone_everywhere() {
     }
 }
 
-/// Both emitters must reference the canonical vocabulary module, so
-/// a new event type necessarily lands in `ws_vocab` first (where the
-/// transition model and its proptests live).
+/// The production IPC pump must reference the canonical vocabulary
+/// module, so a new event type necessarily lands in `ws_vocab` first
+/// (where the transition model and its proptests live).
 #[test]
-fn both_emitters_reference_ws_vocab() {
+fn proxy_pump_references_ws_vocab() {
     let proxy_pump = include_str!("../../src/ipc/proxy_iacs.rs");
-    let inprocess = include_str!("../../src/services/iacs_tunnel/server.rs");
     assert!(
         proxy_pump.contains("ws_vocab::"),
         "ipc/proxy_iacs.rs must build SessionLive payload types from ws_vocab"
-    );
-    assert!(
-        inprocess.contains("ws_vocab::"),
-        "services/iacs_tunnel/server.rs must build SessionLive payload types from ws_vocab"
     );
 }
 

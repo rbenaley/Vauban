@@ -36,7 +36,9 @@ use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
-use vauban_audit::iacs_recording_manager::{self, IacsRecordingManager};
+use vauban_audit::iacs_recording_manager::{
+    self, IacsChannelEndPaths, IacsRecordingManager, gzip_channel_pcap_on_fds,
+};
 use vauban_audit::worm::{AuditRecord, GENESIS_HASH, WormLog};
 
 /// Seal the chain (Ed25519) every N persisted records inside a segment.
@@ -1466,11 +1468,11 @@ fn handle_iacs_recording_message(
             closed_at_us,
         } => {
             if let Some(paths) = mgr.end_channel(&session_id, channel_id, closed_at_us) {
-                match request_gzip_from_supervisor(
+                match gzip_channel_and_unlink(
                     supervisor_channel,
+                    fd_passing_socket,
                     &session_id,
-                    &paths.src_relative,
-                    &paths.dst_relative,
+                    paths,
                 ) {
                     Ok((dst_size, blake3_hex)) => {
                         mgr.finalize_channel_gzip(&session_id, channel_id, blake3_hex, dst_size);
@@ -1480,7 +1482,7 @@ fn handle_iacs_recording_message(
                             session_id,
                             channel_id,
                             error = %e,
-                            "Failed to gzip IACS PCAP via supervisor"
+                            "Failed to gzip/unlink IACS PCAP"
                         );
                     }
                 }
@@ -1571,44 +1573,83 @@ fn handle_iacs_recording_message(
     Ok(())
 }
 
-/// Request gzip of a PCAP file from the supervisor via IPC.
-fn request_gzip_from_supervisor(
+/// Gzip the raw channel PCAP on SCM_RIGHTS FDs, fdatasync the
+/// `.pcap.gz`, then ask the supervisor to unlink the raw `.pcap`.
+///
+/// Fail-closed: success requires `dst.sync_data()` OK **then** unlink
+/// OK. If unlink fails after the gz is written, returns `Err` so the
+/// caller does **not** call `finalize_channel_gzip`.
+fn gzip_channel_and_unlink(
+    channel: &IpcChannel,
+    fd_passing_socket: Option<RawFd>,
+    session_id: &str,
+    paths: IacsChannelEndPaths,
+) -> Result<(u64, String)> {
+    use std::io::{Seek, SeekFrom};
+
+    let mut src = paths.raw_file;
+    src.sync_data()
+        .map_err(|e| anyhow::anyhow!("sync_data raw pcap: {e}"))?;
+    src.seek(SeekFrom::Start(0))
+        .map_err(|e| anyhow::anyhow!("seek raw pcap: {e}"))?;
+
+    let mut dst = request_file_from_supervisor(
+        channel,
+        fd_passing_socket,
+        session_id,
+        &paths.dst_relative,
+    )?;
+
+    let (dst_size, blake3_hex) = gzip_channel_pcap_on_fds(&mut src, &mut dst)
+        .map_err(|e| anyhow::anyhow!("gzip on FDs: {e}"))?;
+
+    dst.sync_data()
+        .map_err(|e| anyhow::anyhow!("sync_data pcap.gz: {e}"))?;
+
+    // Drop the raw FD before unlink (Unix allows open+unlink, but
+    // releasing first keeps the Capsicum story simple).
+    drop(src);
+
+    request_unlink_from_supervisor(channel, session_id, &paths.src_relative)?;
+
+    Ok((dst_size, blake3_hex))
+}
+
+/// Request unlink of a raw `.pcap` from the supervisor via IPC.
+fn request_unlink_from_supervisor(
     channel: &IpcChannel,
     session_id: &str,
-    src_relative: &str,
-    dst_relative: &str,
-) -> Result<(u64, String)> {
-    channel.send(&Message::RecordingFileGzipRequest {
+    relative_path: &str,
+) -> Result<()> {
+    channel.send(&Message::RecordingFileUnlinkRequest {
         request_id: 0,
         session_id: session_id.to_string(),
-        src_relative: src_relative.to_string(),
-        dst_relative: dst_relative.to_string(),
+        relative_path: relative_path.to_string(),
     })?;
 
     loop {
         match channel.recv() {
-            Ok(Message::RecordingFileGzipResponse {
+            Ok(Message::RecordingFileUnlinkResponse {
                 request_id: _,
                 session_id: sid,
                 success,
-                dst_size,
-                blake3_hex,
                 error,
             }) => {
                 if sid != session_id {
-                    warn!(expected = session_id, got = %sid, "Mismatched RecordingFileGzipResponse session_id");
+                    warn!(
+                        expected = session_id,
+                        got = %sid,
+                        "Mismatched RecordingFileUnlinkResponse session_id"
+                    );
                     continue;
                 }
                 if !success {
                     return Err(anyhow::anyhow!(
-                        "supervisor refused gzip: {}",
+                        "supervisor refused unlink: {}",
                         error.unwrap_or_default()
                     ));
                 }
-                let hash = blake3_hex.ok_or_else(|| {
-                    anyhow::anyhow!("supervisor gzip succeeded but no blake3_hex")
-                })?;
-                return Ok((dst_size, hash));
+                return Ok(());
             }
             Ok(Message::Control(ControlMessage::Ping { seq })) => {
                 let stats = ServiceStats {
@@ -1621,11 +1662,14 @@ fn request_gzip_from_supervisor(
                 let _ = channel.send(&Message::Control(ControlMessage::Pong { seq, stats }));
             }
             Ok(other) => {
-                debug!(msg = ?other, "Unexpected message while waiting for RecordingFileGzipResponse");
+                debug!(
+                    msg = ?other,
+                    "Unexpected message while waiting for RecordingFileUnlinkResponse"
+                );
             }
             Err(e) => {
                 return Err(anyhow::anyhow!(
-                    "IPC error waiting for RecordingFileGzipResponse: {e}"
+                    "IPC error waiting for RecordingFileUnlinkResponse: {e}"
                 ));
             }
         }

@@ -4,8 +4,6 @@
 // Re-export test macros for all test files
 pub use vauban_web::{assert_err, assert_none, assert_ok, assert_some, unwrap_ok, unwrap_some};
 
-pub mod iacs_tunnel_fixture;
-
 use axum::{Router, extract::Path, http::HeaderValue, response::Redirect};
 use axum_test::TestServer;
 use diesel::{ExpressionMethods, QueryDsl};
@@ -331,7 +329,6 @@ impl TestApp {
                     std::sync::Arc::new(vauban_web::services::system_health::HttpRateTracker::new()),
                 ),
             ),
-            iacs_tunnel_registry: vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
             pending_mfa: vauban_web::services::pending_mfa::PendingMfaStore::new(),
             client_acl: std::sync::Arc::new(unwrap_ok!(shared::client_acl::ClientAcl::parse(
                 &config.security.allowed_client_networks

@@ -186,8 +186,8 @@ fn init_rdp_proxy_client() -> Option<Arc<ProxyRdpClient>> {
 ///
 /// Returns `Some(Arc<ProxyIacsClient>)` when both
 /// `VAUBAN_PROXY_IACS_IPC_READ` and `VAUBAN_PROXY_IACS_IPC_WRITE` are
-/// set by the supervisor, `None` otherwise (dev / test mode where the
-/// legacy in-process iacs sshd is used as a fallback).
+/// set by the supervisor, `None` otherwise (dev / test mode -- IACS
+/// connect is fail-closed without this client).
 fn init_iacs_proxy_client() -> Option<Arc<ProxyIacsClient>> {
     use std::os::unix::io::RawFd;
 
@@ -741,31 +741,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("RDP proxy IPC processing task started");
     }
 
-    // ========================================================================
-    // IACS tunnel orphan reconciliation (boot)
-    // ========================================================================
-    // proxy-iacs / in-process sshd state is in-memory only. A supervisor
-    // restart leaves `tunnel_active` rows in proxy_sessions until we
-    // explicitly flip them (SSH/RDP get the same treatment via cleanup).
-    if config.industrial.enabled {
-        match vauban_web::services::iacs_tunnel::reconcile_orphaned_iacs_tunnels_on_boot(&db_pool)
-            .await
-        {
-            Ok(n) if n > 0 => tracing::info!(
-                reconciled = n,
-                "iacs_tunnel: boot reconciliation cleared stale active rows"
-            ),
-            Ok(_) => tracing::debug!("iacs_tunnel: boot reconciliation found no stale rows"),
-            Err(e) => tracing::warn!(
-                error = %e,
-                "iacs_tunnel: boot reconciliation failed (stale rows may linger)"
-            ),
-        }
-    }
-
     // Create IACS proxy client if running under supervisor (Lot 3:
     // per-asset target resolution). IPC processing starts after
     // `AppState` is built so tunnel-close can enqueue hydration.
+    // Boot Snapshot resync runs AFTER the IPC pump is started (below).
     let proxy_iacs = init_iacs_proxy_client();
 
     // Create vault crypto client if running under supervisor
@@ -880,7 +859,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_rate,
         live_session_history,
         system_health_cache,
-        iacs_tunnel_registry: vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
         pending_mfa: vauban_web::services::pending_mfa::PendingMfaStore::new(),
         client_acl,
         login_timing_sacrifice_hash,
@@ -923,87 +901,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("IACS proxy IPC processing task started");
     }
 
-    // === Lot 5: legacy in-process IACS sshd is deprecated in favour
-    // of the privileged-separated `vauban-proxy-iacs` service.
-    //
-    // When `app_state.proxy_iacs.is_some()` (production / supervised
-    // mode), the in-process sshd MUST NOT be spawned -- the listener
-    // bind would race with the supervisor's pre-bind on the same
-    // port, and the in-process path is incompatible with Capsicum on
-    // FreeBSD anyway. The watchdog still runs (it is DB-backed and
-    // protocol-agnostic; it terminates revoked tunnels via the new
-    // IPC instead of the in-process registry).
-    //
-    // The legacy in-process sshd is only spawned when no proxy-iacs
-    // IPC channel exists (dev / test mode without supervisor). This
-    // branch survives until the legacy module is fully retired in a
-    // follow-up cleanup; deletion would cascade through dozens of
-    // unit tests and is out of scope for this lot.
-    let proxy_iacs_present = app_state.proxy_iacs.is_some();
-    if config.industrial.enabled && !proxy_iacs_present {
-        if _sealed.is_active() {
-            // Dev-only branch running under a REAL OS sandbox: the
-            // in-process sshd needs to bind a listener and open upstream
-            // TCP connections, both of which are denied post-sandbox
-            // (EPERM on Linux seccomp, ECAPMODE on FreeBSD Capsicum).
-            // Surface it loudly at boot instead of letting every tunnel
-            // fail at first use.
-            tracing::warn!(
-                "iacs_tunnel: in-process sshd branch active under an ACTIVE \
-                 OS sandbox -- listener bind and upstream connects WILL fail. \
-                 Run under vauban-supervisor (proxy-iacs) in production."
-            );
-        }
-        let registry = app_state.iacs_tunnel_registry.clone();
-        let pool = app_state.db_pool.clone();
-        let tunnel_cfg = config.industrial.iacs_tunnel.clone();
-        let server_registry = registry.clone();
-        let server_pool = pool.clone();
-        let server_cfg = tunnel_cfg.clone();
-        let server_broadcast = app_state.broadcast.clone();
-        tokio::spawn(async move {
-            match vauban_web::services::iacs_tunnel::spawn_iacs_tunnel_server_with_broadcast(
-                server_registry,
-                server_pool,
-                server_cfg,
-                Some(server_broadcast),
+    // ========================================================================
+    // IACS tunnel boot resync via Snapshot IPC (Lot B)
+    // ========================================================================
+    // Must run AFTER the proxy_iacs pump is spawned so
+    // `snapshot_tunnels` can receive `IacsTunnelSnapshotResponse`.
+    // Proxy is the authority for which tunnels are alive; DB rows
+    // are rehydrated or terminated to match.
+    if config.industrial.enabled {
+        if let Some(ref client) = app_state.proxy_iacs {
+            match vauban_web::services::iacs_tunnel::reconcile_iacs_from_proxy_snapshot(
+                &db_pool, client.as_ref(),
             )
             .await
             {
-                Ok((addr, join)) => {
-                    tracing::info!(bind_addr = %addr, "iacs_tunnel: sshd boot OK");
-                    if let Err(e) = join.await {
-                        tracing::error!(error = ?e, "iacs_tunnel: sshd task ended unexpectedly");
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        error = %e,
-                        "iacs_tunnel: sshd boot FAILED -- IACS tunnels disabled \
-                         until restart, web UI and other features keep running"
-                    );
-                }
+                Ok(stats) => tracing::info!(
+                    rehydrated = stats.rehydrated,
+                    terminated_db = stats.terminated_db,
+                    terminated_proxy = stats.terminated_proxy,
+                    "iacs_tunnel: boot resync from proxy snapshot complete"
+                ),
+                Err(e) => tracing::error!(
+                    error = %e,
+                    "iacs_tunnel: boot resync from proxy snapshot failed"
+                ),
             }
-        });
-        // L4: revocation + TTL watchdog. Runs forever; intentionally
-        // de-coupled from the sshd task so a sshd panic does not
-        // also stop revocation.
-        let _watchdog =
-            vauban_web::services::iacs_tunnel::spawn_watchdog(registry, pool, tunnel_cfg);
-        tracing::info!("iacs_tunnel: revocation watchdog spawned");
-    } else if config.industrial.enabled {
-        // proxy_iacs_present == true: spawn the revocation watchdog
-        // anyway. The watchdog is DB-backed and protocol-agnostic;
-        // it runs in vauban-web (which holds the DB pool) rather
-        // than vauban-proxy-iacs (which is DB-less). Revoked tunnels
-        // are terminated via the new `IacsTunnelTerminate` IPC sent
-        // to proxy-iacs.
+        } else {
+            tracing::error!(
+                "industrial.enabled but proxy_iacs absent — IACS boot resync skipped"
+            );
+        }
+    }
+
+    // IACS tunnels are served exclusively by `vauban-proxy-iacs`.
+    // The revocation / TTL watchdog runs in vauban-web (DB pool) and
+    // dispatches `IacsTunnelTerminate` over IPC when a client is wired.
+    if config.industrial.enabled {
+        if app_state.proxy_iacs.is_none() {
+            tracing::error!(
+                "iacs_tunnel: industrial.enabled but proxy-iacs IPC client is \
+                 absent -- IACS tunnels cannot be served (fail-closed). Run \
+                 under vauban-supervisor so vauban-proxy-iacs is attached."
+            );
+        }
         let pool = app_state.db_pool.clone();
         let tunnel_cfg = config.industrial.iacs_tunnel.clone();
-        let registry = app_state.iacs_tunnel_registry.clone();
         let proxy_iacs_for_wd = app_state.proxy_iacs.clone();
         let _watchdog = vauban_web::services::iacs_tunnel::spawn_watchdog_with_proxy_iacs(
-            registry,
             pool,
             tunnel_cfg,
             proxy_iacs_for_wd,
@@ -1012,7 +956,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tracing::info!(
             industrial_enabled = config.industrial.enabled,
-            "iacs_tunnel: sshd not started (industrial.enabled = false)"
+            "iacs_tunnel: surface idle (industrial.enabled = false)"
         );
     }
 

@@ -17,8 +17,7 @@
 //!    recorded).
 //! 3. Proxy-side force-close so the live data pump breaks immediately:
 //!    SSH/RDP via `close_session` + `unsubscribe_session`, IACS via
-//!    the `IacsTunnelTerminate` IPC (with the legacy in-process
-//!    registry as dev/test fall-through) + a per-session WS hint.
+//!    the `IacsTunnelTerminate` IPC + a per-session WS hint.
 //! 4. NO list broadcasts here: callers batch them once via
 //!    [`broadcast_session_list_updates`] (a deactivation or a
 //!    revocation cascade may terminate several sessions).
@@ -117,26 +116,17 @@ pub async fn terminate_live_session(
                 proxy.unsubscribe_session(&session_uuid_str).await;
             }
         }
-        // IACS tunnels live in two flavours:
-        // - PRODUCTION (proxy-iacs spawned by the supervisor):
-        //   `state.proxy_iacs.terminate_tunnel(...)` dispatches an
-        //   `IacsTunnelTerminate` IPC; proxy-iacs drains the relay,
-        //   closes the SSH login, and emits `IacsTunnelClosed` which
-        //   the IPC pump (`ipc::proxy_iacs::handle_message`)
-        //   already persists as `status = 'terminated'` and pushes
-        //   to the active-list WS subscribers.
-        // - LEGACY (in-process russh server, used by tests and
-        //   pre-supervisor dev mode): the in-memory registry is the
-        //   only handle on the live tunnel; closing it drains the
-        //   relay tasks within milliseconds.
-        // We always try the IPC path first when wired so the
-        // supervised topology stays canonical; the legacy registry
-        // remains as a no-op fall-through for dev / test fixtures.
-        // Belt-and-braces: even if BOTH handles are missing, the row
-        // is already `terminated`, so the proxy-iacs revocation
-        // watchdog (2 s poll) cuts the tunnel on its next tick.
+        // IACS tunnels live exclusively in `vauban-proxy-iacs`.
+        // `state.proxy_iacs.terminate_tunnel(...)` dispatches an
+        // `IacsTunnelTerminate` IPC; proxy-iacs drains the relay,
+        // closes the SSH login, and emits `IacsTunnelClosed` which
+        // the IPC pump (`ipc::proxy_iacs::handle_message`) already
+        // persists as `status = 'terminated'` and pushes to the
+        // active-list WS subscribers. Belt-and-braces: even if the
+        // IPC client is missing / the send fails, the row is already
+        // `terminated`, so the revocation watchdog (2 s poll) cuts
+        // the tunnel on its next tick when a client is wired.
         SessionType::IacsTunnel => {
-            let mut handled_via_ipc = false;
             if let Some(ref proxy) = state.proxy_iacs {
                 match proxy.terminate_tunnel(&session_uuid_str, reason) {
                     Ok(()) => {
@@ -145,27 +135,19 @@ pub async fn terminate_live_session(
                             reason = %reason,
                             "iacs_tunnel: terminate IPC dispatched to proxy-iacs"
                         );
-                        handled_via_ipc = true;
                     }
                     Err(e) => {
                         tracing::warn!(
                             session_uuid = %session_uuid_str,
                             error = %e,
-                            "iacs_tunnel: terminate IPC dispatch failed; \
-                             falling back to in-process registry"
+                            "iacs_tunnel: terminate IPC dispatch failed"
                         );
                     }
                 }
-            }
-            if !handled_via_ipc
-                && let Some(handle) = state
-                    .iacs_tunnel_registry
-                    .close_and_remove(&updated_session.uuid)
-            {
-                tracing::info!(
+            } else {
+                tracing::error!(
                     session_uuid = %session_uuid_str,
-                    ews_uuid = %handle.ews_uuid,
-                    "iacs_tunnel: tunnel closed via legacy in-process registry"
+                    "iacs_tunnel: proxy-iacs IPC client absent; cannot terminate live tunnel"
                 );
             }
             // Per-session WS hint so the status page flips its pill

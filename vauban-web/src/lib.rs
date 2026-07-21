@@ -76,11 +76,10 @@ pub struct AppState {
     pub rdp_proxy: Option<Arc<ProxyRdpClient>>,
     /// IACS proxy client for IPC with vauban-proxy-iacs.
     ///
-    /// `None` when running outside the supervisor (dev/test mode); in
-    /// that legacy fallback the in-process iacs sshd in
-    /// `services::iacs_tunnel` handles tunnels with a fixed
-    /// `127.0.0.1:4321` target. Production must run under supervisor
-    /// so this field is `Some`. The field is read by
+    /// `None` when running outside the supervisor (dev/test mode).
+    /// Without this client IACS tunnels are fail-closed: connect
+    /// handlers refuse to mint a session. Production must run under
+    /// supervisor so this field is `Some`. Read by
     /// [`handlers::web::iacs_tunnel::connect_iacs`] which mints a
     /// `SessionToken` and pushes a pending tunnel to proxy-iacs.
     pub proxy_iacs: Option<Arc<ipc::ProxyIacsClient>>,
@@ -128,13 +127,6 @@ pub struct AppState {
     /// dashboard. Re-uses `db_pool` and the supervisor's broker
     /// latency tracker, so this struct is lightweight to clone.
     pub system_health_cache: Arc<SystemHealthCache>,
-    /// In-memory registry of live IACS tunnels (`session_uuid` ->
-    /// handle). Threaded through every consumer (axum terminate
-    /// route, watchdog, WS pusher, in-process russh handler) so
-    /// the lifecycle of a tunnel is owned in exactly one place.
-    /// Empty by default; populated by the russh server task when
-    /// `[industrial.iacs_tunnel].enabled` is `true`.
-    pub iacs_tunnel_registry: services::iacs_tunnel::TunnelRegistry,
     /// VAU-008: process-local, per-session store of candidate MFA secrets
     /// awaiting enrolment confirmation. The candidate is NEVER persisted to
     /// `users` before a valid code is submitted, and is isolated per login

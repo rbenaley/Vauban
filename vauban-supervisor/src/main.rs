@@ -305,7 +305,7 @@ const TOPOLOGY: &[PipeTopology] = &[
     // Proxy IACS connections (no Vault edge: IACS tunnels do not
     // hold target-asset credentials -- the EWS authenticates with its
     // own pinned public key. AccessGuard re-check + audit are still
-    // required, see docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.0).md).
+    // required, see docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.1).md).
     PipeTopology {
         from: Service::ProxyIacs,
         to: Service::Access,
@@ -3032,7 +3032,15 @@ fn handle_recording_file_request(
             return;
         }
 
-        match std::fs::File::create(&full_path) {
+        // O_RDWR so audit can seek+read the raw IACS `.pcap` FD for
+        // in-process gzip after ChannelEnd (Capsicum: no second open).
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&full_path)
+        {
             Ok(f) => f,
             Err(e) => {
                 error!(session_id, path = %full_path.display(), error = %e, "Failed to create recording file");
@@ -3259,128 +3267,108 @@ fn handle_audit_log_file_request(
         });
 }
 
-/// Gzip a PCAP recording file and remove the raw source (root-only).
+/// DEPRECATED wire-compat stub: gzip of IACS PCAPs now runs in
+/// vauban-audit on SCM_RIGHTS FDs. Always fails closed so a stale
+/// peer cannot re-introduce root-side gzip CPU work.
 fn handle_recording_file_gzip_request(
     request_id: u64,
     session_id: &str,
-    src_relative: &str,
-    dst_relative: &str,
+    _src_relative: &str,
+    _dst_relative: &str,
+    _storage_base: &str,
+    requester_state: &ChildState,
+) {
+    let _ = requester_state
+        .channel
+        .send(&Message::RecordingFileGzipResponse {
+            request_id,
+            session_id: session_id.to_string(),
+            success: false,
+            dst_size: 0,
+            blake3_hex: None,
+            error: Some("deprecated: gzip moved to vauban-audit".into()),
+        });
+}
+
+/// Unlink a raw IACS `.pcap` after audit has gzipped it (root-only).
+fn handle_recording_file_unlink_request(
+    request_id: u64,
+    session_id: &str,
+    relative_path: &str,
     storage_base: &str,
     requester_state: &ChildState,
 ) {
-    use flate2::Compression;
-    use flate2::write::GzEncoder;
-    use std::io::{Read, Write};
-
     let fail = |error: String| {
         let _ = requester_state
             .channel
-            .send(&Message::RecordingFileGzipResponse {
+            .send(&Message::RecordingFileUnlinkResponse {
                 request_id,
                 session_id: session_id.to_string(),
                 success: false,
-                dst_size: 0,
-                blake3_hex: None,
                 error: Some(error),
             });
     };
 
-    if let Err(e) = shared::recording_paths::validate_recording_gzip_relative_paths(
-        src_relative,
-        dst_relative,
+    if let Err(e) = shared::recording_paths::validate_recording_unlink_relative_path(
+        relative_path,
         session_id,
     ) {
         fail(e);
         return;
     }
 
-    let src_path = std::path::Path::new(storage_base).join(src_relative);
-    let dst_path = std::path::Path::new(storage_base).join(dst_relative);
+    let full_path = match shared::recording_paths::resolve_recording_file_target(
+        std::path::Path::new(storage_base),
+        relative_path,
+        session_id,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            fail(e);
+            return;
+        }
+    };
 
-    if let Some(parent) = dst_path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        error!(session_id, error = %e, "Failed to create gzip destination directory");
-        fail(format!("mkdir: {e}"));
+    if !full_path.exists() {
+        // Idempotent: missing raw after a prior unlink is success.
+        debug!(
+            session_id,
+            path = %relative_path,
+            "Recording unlink: raw PCAP already absent"
+        );
+        let _ = requester_state
+            .channel
+            .send(&Message::RecordingFileUnlinkResponse {
+                request_id,
+                session_id: session_id.to_string(),
+                success: true,
+                error: None,
+            });
         return;
     }
 
-    let mut src_file = match std::fs::File::open(&src_path) {
-        Ok(f) => f,
-        Err(e) => {
-            error!(session_id, path = %src_path.display(), error = %e, "Failed to open PCAP for gzip");
-            fail(format!("open src: {e}"));
-            return;
-        }
-    };
-
-    let dst_file = match std::fs::File::create(&dst_path) {
-        Ok(f) => f,
-        Err(e) => {
-            error!(session_id, path = %dst_path.display(), error = %e, "Failed to create gzip destination");
-            fail(format!("create dst: {e}"));
-            return;
-        }
-    };
-
-    let mut encoder = GzEncoder::new(dst_file, Compression::default());
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        match src_file.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                if let Err(e) = encoder.write_all(&buf[..n]) {
-                    fail(format!("gzip write: {e}"));
-                    let _ = std::fs::remove_file(&dst_path);
-                    return;
-                }
-            }
-            Err(e) => {
-                fail(format!("read src: {e}"));
-                let _ = std::fs::remove_file(&dst_path);
-                return;
-            }
-        }
-    }
-
-    if let Err(e) = encoder.finish() {
-        fail(format!("gzip finish: {e}"));
-        let _ = std::fs::remove_file(&dst_path);
-        return;
-    }
-
-    let dst_bytes = match std::fs::read(&dst_path) {
-        Ok(b) => b,
-        Err(e) => {
-            fail(format!("read dst: {e}"));
-            return;
-        }
-    };
-    let dst_size = dst_bytes.len() as u64;
-    let blake3_hex = blake3::hash(&dst_bytes).to_hex().to_string();
-
-    if let Err(e) = std::fs::remove_file(&src_path) {
-        error!(session_id, path = %src_path.display(), error = %e, "Failed to unlink raw PCAP after gzip");
-        fail(format!("unlink src: {e}"));
-        let _ = std::fs::remove_file(&dst_path);
+    if let Err(e) = std::fs::remove_file(&full_path) {
+        error!(
+            session_id,
+            path = %full_path.display(),
+            error = %e,
+            "Failed to unlink raw PCAP"
+        );
+        fail(format!("unlink: {e}"));
         return;
     }
 
     debug!(
         session_id,
-        src = %src_relative,
-        dst = %dst_relative,
-        dst_size,
-        "Recording PCAP gzipped"
+        path = %relative_path,
+        "Recording raw PCAP unlinked"
     );
     let _ = requester_state
         .channel
-        .send(&Message::RecordingFileGzipResponse {
+        .send(&Message::RecordingFileUnlinkResponse {
             request_id,
             session_id: session_id.to_string(),
             success: true,
-            dst_size,
-            blake3_hex: Some(blake3_hex),
             error: None,
         });
 }
@@ -3555,7 +3543,7 @@ fn process_service_messages(
                             session_id = %session_id,
                             src = %src_relative,
                             dst = %dst_relative,
-                            "Received RecordingFileGzipRequest from {}",
+                            "Received deprecated RecordingFileGzipRequest from {}",
                             service_key
                         );
                         handle_recording_file_gzip_request(
@@ -3563,6 +3551,26 @@ fn process_service_messages(
                             &session_id,
                             &src_relative,
                             &dst_relative,
+                            recording_storage_path,
+                            state,
+                        );
+                    }
+                    Ok(Message::RecordingFileUnlinkRequest {
+                        request_id,
+                        session_id,
+                        relative_path,
+                    }) => {
+                        debug!(
+                            request_id,
+                            session_id = %session_id,
+                            path = %relative_path,
+                            "Received RecordingFileUnlinkRequest from {}",
+                            service_key
+                        );
+                        handle_recording_file_unlink_request(
+                            request_id,
+                            &session_id,
+                            &relative_path,
                             recording_storage_path,
                             state,
                         );

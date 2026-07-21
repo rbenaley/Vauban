@@ -27,9 +27,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use vauban_web::config::IacsTunnelConfig;
 use vauban_web::models::asset::AssetType;
-use vauban_web::services::iacs_tunnel::{
-    TunnelRegistry, format_countdown_label, watchdog_run_once,
-};
+use vauban_web::services::iacs_tunnel::{format_countdown_label, watchdog_run_once};
 
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
@@ -242,7 +240,6 @@ fn watchdog_cfg() -> IacsTunnelConfig {
     IacsTunnelConfig {
         bind_addr: "127.0.0.1:0".to_string(),
         advertise_hostname: "127.0.0.1".to_string(),
-        target_addr: "127.0.0.1:65535".to_string(),
         host_key_path: "/tmp/never_used_countdown".to_string(),
         max_concurrent_per_user: 0,
         max_concurrent_per_ews: 0,
@@ -320,9 +317,7 @@ async fn countdown_is_zero_past_deadline_and_watchdog_reaps_the_same_row() {
 
     // Lock-step with the enforcement layer: the SAME row is reaped
     // by the revocation watchdog on its next tick.
-    let registry = TunnelRegistry::new();
-    let (_closed, transitions) =
-        watchdog_run_once(&registry, &app.db_pool, &watchdog_cfg(), false).await;
+    let (_closed, transitions) = watchdog_run_once(&app.db_pool, &watchdog_cfg(), None).await;
     assert!(
         transitions >= 1,
         "watchdog must transition at least the backdated row (got {transitions})"

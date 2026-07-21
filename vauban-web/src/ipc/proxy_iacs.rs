@@ -8,7 +8,10 @@
 //!
 //! The wire surface is intentionally small: a single open verb
 //! (`IacsTunnelOpen` -> `IacsTunnelOpened`), a terminate verb
-//! (`IacsTunnelTerminate`) used by the revocation watchdog, and a
+//! (`IacsTunnelTerminate`) used by the revocation watchdog, a boot
+//! resync verb (`IacsTunnelSnapshotRequest` ->
+//! `IacsTunnelSnapshotResponse`) so vauban-web can rehydrate DB rows
+//! from the proxy as source of truth after a web-only restart, and a
 //! status-update notification (`IacsTunnelStatusUpdate` /
 //! `IacsTunnelClosed`) that proxy-iacs pushes on its own when the
 //! lifecycle changes. See [`shared/src/messages.rs`] for the full
@@ -20,7 +23,7 @@ use crate::error::{AppError, AppResult};
 use crate::services::broadcast::{BroadcastService, WsChannel};
 use serde_json::json;
 use shared::ipc::IpcChannel;
-use shared::messages::Message;
+use shared::messages::{IacsTunnelSnapshotEntry, Message};
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
@@ -87,6 +90,8 @@ pub struct ProxyIacsClient {
     read_async_fd: AsyncFd<RawFd>,
     next_request_id: AtomicU64,
     pending_open_requests: Mutex<HashMap<u64, oneshot::Sender<IacsTunnelOpened>>>,
+    pending_snapshot_requests:
+        Mutex<HashMap<u64, oneshot::Sender<Vec<IacsTunnelSnapshotEntry>>>>,
     /// Optional broadcast handle, set by
     /// [`ProxyIacsClient::process_incoming_with_state`] before
     /// the loop starts. When present, every incoming
@@ -130,6 +135,7 @@ impl ProxyIacsClient {
             read_async_fd,
             next_request_id: AtomicU64::new(1),
             pending_open_requests: Mutex::new(HashMap::new()),
+            pending_snapshot_requests: Mutex::new(HashMap::new()),
             broadcast: Mutex::new(None),
             db_pool: Mutex::new(None),
             app_state: Mutex::new(None),
@@ -261,6 +267,43 @@ impl ProxyIacsClient {
             .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
     }
 
+    /// Ask proxy-iacs for all live IACS tunnel state (boot resync).
+    ///
+    /// Requires [`Self::process_incoming`] (or
+    /// [`Self::process_incoming_with_state`]) to be running so the
+    /// `IacsTunnelSnapshotResponse` can be delivered. Times out after
+    /// 10 s; callers treat timeout/error as fail-closed (empty
+    /// snapshot => terminate every live DB row).
+    pub async fn snapshot_tunnels(&self) -> AppResult<Vec<IacsTunnelSnapshotEntry>> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        debug!(request_id, "Requesting IACS tunnel snapshot from proxy");
+
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self.pending_snapshot_requests.lock().await;
+            pending.insert(request_id, tx);
+        }
+
+        let msg = Message::IacsTunnelSnapshotRequest { request_id };
+        if let Err(e) = self.channel.send(&msg) {
+            let mut pending = self.pending_snapshot_requests.lock().await;
+            pending.remove(&request_id);
+            return Err(AppError::Ipc(format!("IPC send failed: {}", e)));
+        }
+
+        match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+            Ok(Ok(entries)) => Ok(entries),
+            Ok(Err(_)) => Err(AppError::Ipc(
+                "IACS snapshot response channel dropped".to_string(),
+            )),
+            Err(_) => {
+                let mut pending = self.pending_snapshot_requests.lock().await;
+                pending.remove(&request_id);
+                Err(AppError::Ipc("IACS tunnel snapshot timeout".to_string()))
+            }
+        }
+    }
+
     /// Drain incoming messages from the proxy.
     ///
     /// Run forever in a dedicated task. Closes the loop on a
@@ -323,6 +366,21 @@ impl ProxyIacsClient {
                 let mut pending = self.pending_open_requests.lock().await;
                 if let Some(tx) = pending.remove(&request_id) {
                     let _ = tx.send(response);
+                }
+            }
+
+            Message::IacsTunnelSnapshotResponse {
+                request_id,
+                entries,
+            } => {
+                debug!(
+                    request_id = request_id,
+                    entries = entries.len(),
+                    "IACS tunnel snapshot response"
+                );
+                let mut pending = self.pending_snapshot_requests.lock().await;
+                if let Some(tx) = pending.remove(&request_id) {
+                    let _ = tx.send(entries);
                 }
             }
 
@@ -446,14 +504,13 @@ impl ProxyIacsClient {
                         }
                     }
                 }
-                // Wire vocabulary: the SAME event types as the
-                // in-process dev sshd (`services/iacs_tunnel/server.rs`)
-                // so the Alpine `iacsTunnelStatus` component reacts
-                // identically under supervisor (privsep) and dev mode.
-                // The pre-fix envelope (a distinct iacs_tunnel_*
-                // type plus a nested status field) was invisible to
-                // the component: the status page countdown kept
-                // ticking over an active tunnel. Pinned by
+                // Wire vocabulary: canonical SessionLive types from
+                // `services::iacs_tunnel::ws_vocab` so the Alpine
+                // `iacsTunnelStatus` component reacts. The pre-fix
+                // envelope (a distinct iacs_tunnel_* type plus a
+                // nested status field) was invisible to the
+                // component: the status page countdown kept ticking
+                // over an active tunnel. Pinned by
                 // `tests/web/iacs_ws_vocab_test.rs`.
                 let event_type =
                     crate::services::iacs_tunnel::ws_vocab::event_type_for_status(&status);

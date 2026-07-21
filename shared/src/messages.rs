@@ -200,7 +200,7 @@ pub enum Service {
     /// to with `ssh -L`, and brokers the upstream TCP connection to
     /// the industrial asset (`asset.hostname:asset.port`) via the
     /// supervisor's SCM_RIGHTS broker. See
-    /// `docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.0).md`.
+    /// `docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.1).md`.
     ProxyIacs,
 }
 
@@ -1848,6 +1848,37 @@ pub enum SshRecordingEvent {
     Resize,
 }
 
+/// Frozen phase codes for [`IacsTunnelSnapshotEntry::phase`].
+///
+/// Mapping mirrors the proxy's live-state sources:
+/// - `0` = pending EWS handshake ([`PendingSessions`])
+/// - `1` = authenticated SSH login, no open channel yet
+/// - `2` = at least one `direct-tcpip` channel in the tunnel registry
+pub const IACS_SNAPSHOT_PHASE_WAITING_CLIENT: u8 = 0;
+pub const IACS_SNAPSHOT_PHASE_EWS_CONNECTED: u8 = 1;
+pub const IACS_SNAPSHOT_PHASE_TUNNEL_ACTIVE: u8 = 2;
+
+/// One live IACS tunnel as reported by `vauban-proxy-iacs` on boot
+/// resync.
+///
+/// SECURITY: this struct MUST NOT grow fields that carry
+/// `session_token` bytes or `ews_pubkey_fp`. Those stay proxy-local;
+/// the snapshot is only enough for vauban-web to rehydrate
+/// `proxy_sessions` status / peer / counters. Pinned by the proxy
+/// snapshot-builder source pin (no token copy).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IacsTunnelSnapshotEntry {
+    pub session_id: String,
+    /// Frozen phase: 0=waiting_client, 1=ews_connected, 2=tunnel_active
+    pub phase: u8,
+    pub peer_ip: Option<String>,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub user_uuid: String,
+    pub asset_uuid: String,
+    pub ews_uuid: String,
+}
+
 /// All IPC messages exchanged between services.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -2583,8 +2614,9 @@ pub enum Message {
         error: Option<String>,
     },
 
-    /// Request the supervisor to gzip a PCAP file and remove the raw source.
-    /// Used by vauban-audit after a channel closes (Capsicum-safe).
+    /// DEPRECATED (wire-compat stub): gzip moved to vauban-audit on
+    /// SCM_RIGHTS FDs. Kept mid-enum so bincode discriminants stay
+    /// stable; supervisor always replies `success: false`.
     RecordingFileGzipRequest {
         request_id: u64,
         session_id: String,
@@ -2592,7 +2624,7 @@ pub enum Message {
         dst_relative: String,
     },
 
-    /// Response to a RecordingFileGzipRequest.
+    /// DEPRECATED (wire-compat stub): see [`Message::RecordingFileGzipRequest`].
     RecordingFileGzipResponse {
         request_id: u64,
         session_id: String,
@@ -2901,6 +2933,49 @@ pub enum Message {
         /// Kerberos disabled in supervisor config, timeout, ...).
         error: Option<String>,
     },
+
+    // ========== IACS tunnel boot snapshot (Web <-> ProxyIacs) ==========
+    //
+    // Appended at the END of the enum to preserve bincode discriminant
+    // indices of every variant above (wire compat). Conceptually these
+    // belong with the other `IacsTunnel*` lifecycle messages; they are
+    // not inserted mid-enum next to `IacsTunnelStatusUpdate`.
+    //
+    // SECURITY: `IacsTunnelSnapshotEntry` MUST NEVER carry
+    // `session_token` or `ews_pubkey_fp` bytes. The proxy is the
+    // authority for which tunnels are alive after a web-only restart.
+    /// Boot / resync: web asks proxy for all live IACS tunnel state.
+    IacsTunnelSnapshotRequest {
+        request_id: u64,
+    },
+
+    /// Response: proxy is source of truth for which tunnels are alive.
+    IacsTunnelSnapshotResponse {
+        request_id: u64,
+        entries: Vec<IacsTunnelSnapshotEntry>,
+    },
+
+    // ========== IACS PCAP raw unlink (Audit -> Supervisor) ==========
+    //
+    // Appended at the END of the enum to preserve bincode discriminant
+    // indices. After audit gzips the raw `.pcap` on SCM_RIGHTS FDs and
+    // `fdatasync`s the `.pcap.gz`, it asks the supervisor (root) to
+    // unlink the raw file — Capsicum forbids `unlink` in audit.
+    /// Request the supervisor to unlink a raw IACS `.pcap` after gzip.
+    RecordingFileUnlinkRequest {
+        request_id: u64,
+        session_id: String,
+        /// Relative path ending in `.pcap` (raw file to remove after gzip).
+        relative_path: String,
+    },
+
+    /// Response to a [`Message::RecordingFileUnlinkRequest`].
+    RecordingFileUnlinkResponse {
+        request_id: u64,
+        session_id: String,
+        success: bool,
+        error: Option<String>,
+    },
 }
 
 impl Message {
@@ -2939,6 +3014,10 @@ impl Message {
             | Message::IacsTunnelOpened { request_id, .. }
             | Message::IacsTunnelClosed { request_id, .. }
             | Message::IacsTunnelTerminate { request_id, .. }
+            | Message::IacsTunnelSnapshotRequest { request_id, .. }
+            | Message::IacsTunnelSnapshotResponse { request_id, .. }
+            | Message::RecordingFileUnlinkRequest { request_id, .. }
+            | Message::RecordingFileUnlinkResponse { request_id, .. }
             | Message::AcmeRenewRequest { request_id, .. }
             | Message::AcmeRenewResponse { request_id, .. }
             | Message::AcmeChallengeInstall { request_id, .. }
@@ -5422,6 +5501,90 @@ mod tests {
     }
 
     #[test]
+    fn test_message_iacs_tunnel_snapshot_request_roundtrip() {
+        let msg = Message::IacsTunnelSnapshotRequest { request_id: 42 };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        match deserialized {
+            Message::IacsTunnelSnapshotRequest { request_id } => {
+                assert_eq!(request_id, 42);
+                assert_eq!(
+                    Message::IacsTunnelSnapshotRequest { request_id: 42 }.request_id(),
+                    Some(42)
+                );
+            }
+            other => panic!("Wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_message_iacs_tunnel_snapshot_response_roundtrip() {
+        let entry = IacsTunnelSnapshotEntry {
+            session_id: "0d9f5bd8-0000-0000-0000-000000000001".to_string(),
+            phase: IACS_SNAPSHOT_PHASE_TUNNEL_ACTIVE,
+            peer_ip: Some("203.0.113.9".to_string()),
+            bytes_in: 100,
+            bytes_out: 200,
+            user_uuid: "0d9f5bd8-0000-0000-0000-000000000002".to_string(),
+            asset_uuid: "0d9f5bd8-0000-0000-0000-000000000003".to_string(),
+            ews_uuid: "0d9f5bd8-0000-0000-0000-000000000004".to_string(),
+        };
+        let msg = Message::IacsTunnelSnapshotResponse {
+            request_id: 7,
+            entries: vec![entry.clone()],
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        match deserialized {
+            Message::IacsTunnelSnapshotResponse {
+                request_id,
+                entries,
+            } => {
+                assert_eq!(request_id, 7);
+                assert_eq!(entries, vec![entry]);
+                assert_eq!(
+                    Message::IacsTunnelSnapshotResponse {
+                        request_id: 7,
+                        entries: vec![],
+                    }
+                    .request_id(),
+                    Some(7)
+                );
+            }
+            other => panic!("Wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_iacs_tunnel_snapshot_entry_has_no_token_or_pubkey_fields() {
+        // Structural pin: the snapshot entry type must stay free of
+        // secrets. Field names are the contract; renaming/adding a
+        // token/fp field fails this test.
+        let src = include_str!("messages.rs");
+        let start = src
+            .find("pub struct IacsTunnelSnapshotEntry")
+            .expect("IacsTunnelSnapshotEntry present");
+        let body = &src[start..];
+        let end = body.find("\n}").expect("struct body end");
+        let struct_body = &body[..end];
+        assert!(
+            !struct_body.contains("session_token"),
+            "IacsTunnelSnapshotEntry MUST NOT carry session_token"
+        );
+        assert!(
+            !struct_body.contains("ews_pubkey_fp"),
+            "IacsTunnelSnapshotEntry MUST NOT carry ews_pubkey_fp"
+        );
+        assert!(
+            struct_body.contains("session_id")
+                && struct_body.contains("phase")
+                && struct_body.contains("user_uuid"),
+            "IacsTunnelSnapshotEntry must keep the rehydrate fields"
+        );
+        assert_eq!(IACS_SNAPSHOT_PHASE_WAITING_CLIENT, 0);
+        assert_eq!(IACS_SNAPSHOT_PHASE_EWS_CONNECTED, 1);
+        assert_eq!(IACS_SNAPSHOT_PHASE_TUNNEL_ACTIVE, 2);
+    }
+
+    #[test]
     fn test_message_iacs_recording_session_start_roundtrip() {
         let msg = Message::IacsRecordingSessionStart {
             session_id: "iacs-1".to_string(),
@@ -5502,6 +5665,72 @@ mod tests {
             assert_eq!(blake3_hex.as_deref(), Some("ab".repeat(32).as_str()));
         } else {
             panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_recording_file_unlink_request_roundtrip() {
+        let msg = Message::RecordingFileUnlinkRequest {
+            request_id: 11,
+            session_id: "iacs-1".to_string(),
+            relative_path: "2026/05/iacs-1/channels/001.pcap".to_string(),
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        match deserialized {
+            Message::RecordingFileUnlinkRequest {
+                request_id,
+                session_id,
+                relative_path,
+            } => {
+                assert_eq!(request_id, 11);
+                assert_eq!(session_id, "iacs-1");
+                assert_eq!(relative_path, "2026/05/iacs-1/channels/001.pcap");
+                assert_eq!(
+                    Message::RecordingFileUnlinkRequest {
+                        request_id: 11,
+                        session_id: "iacs-1".to_string(),
+                        relative_path: "x".to_string(),
+                    }
+                    .request_id(),
+                    Some(11)
+                );
+            }
+            other => panic!("Wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_message_recording_file_unlink_response_roundtrip() {
+        let msg = Message::RecordingFileUnlinkResponse {
+            request_id: 11,
+            session_id: "iacs-1".to_string(),
+            success: true,
+            error: None,
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        match deserialized {
+            Message::RecordingFileUnlinkResponse {
+                request_id,
+                session_id,
+                success,
+                error,
+            } => {
+                assert_eq!(request_id, 11);
+                assert_eq!(session_id, "iacs-1");
+                assert!(success);
+                assert!(error.is_none());
+                assert_eq!(
+                    Message::RecordingFileUnlinkResponse {
+                        request_id: 11,
+                        session_id: "iacs-1".to_string(),
+                        success: false,
+                        error: Some("x".into()),
+                    }
+                    .request_id(),
+                    Some(11)
+                );
+            }
+            other => panic!("Wrong variant: {other:?}"),
         }
     }
 

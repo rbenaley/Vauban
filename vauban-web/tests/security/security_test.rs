@@ -5013,11 +5013,10 @@ fn test_credential_auth_uses_expose_secret() {
 // IACS sshd Host Key Hygiene Tests
 // =============================================================================
 
-/// The IACS sshd Ed25519 host key transits through a transient `String`
-/// buffer when read off disk (in `vauban-web`'s in-process variant) or
-/// off the supervisor-provided FD (in `shared::iacs_host_key`). Both
-/// buffers MUST be zeroized before they are dropped, mirroring the
-/// hygiene already enforced for TLS keys (`SensitiveString` +
+/// The IACS sshd Ed25519 host key transits through a transient
+/// buffer in `shared::iacs_host_key` (disk load / supervisor FD).
+/// Both buffers MUST be zeroized before they are dropped, mirroring
+/// the hygiene already enforced for TLS keys (`SensitiveString` +
 /// explicit `zeroize()` in `vauban-supervisor` / `vauban-web`) and SSH
 /// client keys (`SecretString` in `vauban-proxy-ssh`).
 ///
@@ -5035,16 +5034,6 @@ fn test_iacs_host_key_pem_is_zeroized() {
     assert!(
         shared_src.contains("buf.zeroize();"),
         "shared::iacs_host_key::read_host_key_from_fd MUST zeroize the PEM `buf` buffer"
-    );
-
-    let web_src = include_str!("../../src/services/iacs_tunnel/server.rs");
-    assert!(
-        web_src.contains("data.zeroize();"),
-        "vauban-web in-process IACS load_or_generate_host_key MUST zeroize the PEM `data` buffer"
-    );
-    assert!(
-        web_src.contains("use zeroize::Zeroize;"),
-        "vauban-web/src/services/iacs_tunnel/server.rs MUST import zeroize::Zeroize"
     );
 }
 

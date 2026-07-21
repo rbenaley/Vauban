@@ -397,12 +397,9 @@ pub async fn connect_iacs(
         max_session_duration: None,
         industrial_protocol,
         ews_uuid: Some(pinned_ews_uuid),
-        // Per-session pinned target. Replaces the legacy MVP fixed
-        // `target_addr` (the in-process iacs_tunnel sshd used to
-        // unconditionally connect to `127.0.0.1:4321`). The asset's
-        // hostname / port snapshot lives on `proxy_sessions` so a
-        // mid-session edit on `assets` does NOT redirect the live
-        // tunnel.
+        // Per-session pinned target. The asset's hostname / port
+        // snapshot lives on `proxy_sessions` so a mid-session edit
+        // on `assets` does NOT redirect the live tunnel.
         tunnel_target_addr: Some(format!("{}:{}", asset.hostname, asset.port)),
     };
 
@@ -427,8 +424,7 @@ pub async fn connect_iacs(
     // ----- Mint SessionToken + push pending tunnel to proxy-iacs -----
     //
     // SECURITY: this is the per-asset, per-session, crypto-bound
-    // authorization the legacy MVP could not deliver. The token is
-    // BLAKE3-keyed and bound to
+    // authorization. The token is BLAKE3-keyed and bound to
     // (user, asset, "iacs_tunnel", host, port, ProxyIacs, session_id).
     // proxy-iacs verifies it locally (Verifier::Proxy) BEFORE caching
     // the pending tunnel; the supervisor's TCP broker re-verifies it
@@ -442,115 +438,123 @@ pub async fn connect_iacs(
     // access-rule layer (Casbin allowed the action; the rule decides
     // which assets the user can reach with this protocol) gates the
     // token issuance even if the in-process Casbin cache had drifted.
-    if let Some(proxy_iacs_client) = state.proxy_iacs.as_ref() {
-        let token_params = shared::session_token::SessionTokenParams {
-            session_id: session_uuid.to_string(),
-            user_uuid: auth_user.uuid.clone(),
-            asset_uuid: asset_uuid.to_string(),
-            protocol: shared::access_guard::PROTOCOL_IACS_TUNNEL.to_string(),
-            host: asset.hostname.clone(),
-            port: asset.port as u16,
-            target_service: shared::messages::Service::ProxyIacs,
-        };
-
-        let session_token = match state.access_client.issue_session_token(token_params).await {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::warn!(
-                    user = %auth_user.username,
-                    session_uuid = %session_uuid,
-                    error = %e,
-                    "iacs_tunnel: session token mint failed -- rolling back proxy_session row"
-                );
-                let _ = diesel::delete(
-                    proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
-                )
-                .execute(&mut conn)
-                .await;
-                return iacs_tunnel_error_response(
-                    &headers,
-                    StatusCode::FORBIDDEN,
-                    "Access denied",
-                );
-            }
-        };
-
-        let open_req = crate::ipc::IacsTunnelOpenRequest {
-            session_id: session_uuid.to_string(),
-            user_uuid: auth_user.uuid.clone(),
-            asset_uuid: asset_uuid.to_string(),
-            ews_uuid: pinned_ews_uuid.to_string(),
-            ews_pubkey_fp: ews_fp.clone(),
-            asset_host: asset.hostname.clone(),
-            asset_port: asset.port as u16,
-            industrial_protocol: new_session
-                .industrial_protocol
-                .clone()
-                .unwrap_or_else(|| "tcp".to_string()),
-            ttl_seconds: tunnel_cfg.waiting_client_ttl_seconds,
-            session_token,
-        };
-
-        match proxy_iacs_client.open_tunnel(open_req).await {
-            Ok(opened) if opened.success => {
-                tracing::info!(
-                    user = %auth_user.username,
-                    session_uuid = %session_uuid,
-                    asset_host = %asset.hostname,
-                    asset_port = asset.port,
-                    "iacs_tunnel: pending session materialized on proxy-iacs"
-                );
-            }
-            Ok(opened) => {
-                let err = opened
-                    .error
-                    .unwrap_or_else(|| "proxy-iacs refused".to_string());
-                tracing::warn!(
-                    user = %auth_user.username,
-                    session_uuid = %session_uuid,
-                    error = %err,
-                    "iacs_tunnel: proxy-iacs rejected open -- rolling back"
-                );
-                let _ = diesel::delete(
-                    proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
-                )
-                .execute(&mut conn)
-                .await;
-                return iacs_tunnel_error_response(
-                    &headers,
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to materialize tunnel",
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    user = %auth_user.username,
-                    session_uuid = %session_uuid,
-                    error = %e,
-                    "iacs_tunnel: IPC to proxy-iacs failed -- rolling back"
-                );
-                let _ = diesel::delete(
-                    proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
-                )
-                .execute(&mut conn)
-                .await;
-                return iacs_tunnel_error_response(
-                    &headers,
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Tunnel proxy unavailable",
-                );
-            }
-        }
-    } else {
-        // Legacy in-process iacs_tunnel sshd path. Kept until Lot 5
-        // deletes `vauban-web/src/services/iacs_tunnel/server.rs`.
-        // The in-process path does NOT mint a SessionToken because
-        // the relay is local; per-asset target validation is still
-        // enforced via `proxy_sessions.tunnel_target_addr`.
-        tracing::debug!(
+    //
+    // Fail-closed: without proxy-iacs there is no sshd path.
+    let Some(proxy_iacs_client) = state.proxy_iacs.as_ref() else {
+        tracing::error!(
+            user = %auth_user.username,
             session_uuid = %session_uuid,
-            "iacs_tunnel: proxy-iacs IPC client unavailable, using legacy in-process path"
+            "iacs_tunnel: proxy-iacs IPC client unavailable -- fail-closed"
         );
+        let _ = diesel::delete(
+            proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+        )
+        .execute(&mut conn)
+        .await;
+        return iacs_tunnel_error_response(
+            &headers,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Tunnel proxy unavailable",
+        );
+    };
+
+    let token_params = shared::session_token::SessionTokenParams {
+        session_id: session_uuid.to_string(),
+        user_uuid: auth_user.uuid.clone(),
+        asset_uuid: asset_uuid.to_string(),
+        protocol: shared::access_guard::PROTOCOL_IACS_TUNNEL.to_string(),
+        host: asset.hostname.clone(),
+        port: asset.port as u16,
+        target_service: shared::messages::Service::ProxyIacs,
+    };
+
+    let session_token = match state.access_client.issue_session_token(token_params).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(
+                user = %auth_user.username,
+                session_uuid = %session_uuid,
+                error = %e,
+                "iacs_tunnel: session token mint failed -- rolling back proxy_session row"
+            );
+            let _ = diesel::delete(
+                proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+            )
+            .execute(&mut conn)
+            .await;
+            return iacs_tunnel_error_response(
+                &headers,
+                StatusCode::FORBIDDEN,
+                "Access denied",
+            );
+        }
+    };
+
+    let open_req = crate::ipc::IacsTunnelOpenRequest {
+        session_id: session_uuid.to_string(),
+        user_uuid: auth_user.uuid.clone(),
+        asset_uuid: asset_uuid.to_string(),
+        ews_uuid: pinned_ews_uuid.to_string(),
+        ews_pubkey_fp: ews_fp.clone(),
+        asset_host: asset.hostname.clone(),
+        asset_port: asset.port as u16,
+        industrial_protocol: new_session
+            .industrial_protocol
+            .clone()
+            .unwrap_or_else(|| "tcp".to_string()),
+        ttl_seconds: tunnel_cfg.waiting_client_ttl_seconds,
+        session_token,
+    };
+
+    match proxy_iacs_client.open_tunnel(open_req).await {
+        Ok(opened) if opened.success => {
+            tracing::info!(
+                user = %auth_user.username,
+                session_uuid = %session_uuid,
+                asset_host = %asset.hostname,
+                asset_port = asset.port,
+                "iacs_tunnel: pending session materialized on proxy-iacs"
+            );
+        }
+        Ok(opened) => {
+            let err = opened
+                .error
+                .unwrap_or_else(|| "proxy-iacs refused".to_string());
+            tracing::warn!(
+                user = %auth_user.username,
+                session_uuid = %session_uuid,
+                error = %err,
+                "iacs_tunnel: proxy-iacs rejected open -- rolling back"
+            );
+            let _ = diesel::delete(
+                proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+            )
+            .execute(&mut conn)
+            .await;
+            return iacs_tunnel_error_response(
+                &headers,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to materialize tunnel",
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                user = %auth_user.username,
+                session_uuid = %session_uuid,
+                error = %e,
+                "iacs_tunnel: IPC to proxy-iacs failed -- rolling back"
+            );
+            let _ = diesel::delete(
+                proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+            )
+            .execute(&mut conn)
+            .await;
+            return iacs_tunnel_error_response(
+                &headers,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Tunnel proxy unavailable",
+            );
+        }
     }
 
     // L4: append-only forensic audit. The CHECK on

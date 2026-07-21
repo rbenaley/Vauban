@@ -1,12 +1,11 @@
 # Vauban IACS Proxy Architecture
 
-> **Superseded.** This document is retained for archaeology. The current
-> revision is
-> [Vauban_IACS_Proxy_Architecture_EN(1.1).md](Vauban_IACS_Proxy_Architecture_EN(1.1).md).
-
-**Version:** 1.0  
-**Date:** 15 May 2026  
+**Version:** 1.1  
+**Date:** 21 July 2026  
 **Author:** Richard Ben Aleya
+
+> Supersedes
+> [Vauban_IACS_Proxy_Architecture_EN(1.0).md](Vauban_IACS_Proxy_Architecture_EN(1.0).md).
 
 ---
 
@@ -206,6 +205,28 @@ sequenceDiagram
     P-->>W: IacsTunnelClosed { cause, bytes_in, bytes_out }
 ```
 
+### 8.1 Boot resync (web restart, proxy still alive)
+
+When `vauban-web` restarts alone, `proxy_sessions` may disagree with the
+in-memory tunnels still held by `vauban-proxy-iacs`. Boot order:
+
+1. `init_iacs_proxy_client()`
+2. Spawn `ProxyIacsClient::process_incoming_with_state` (IPC pump)
+3. `reconcile_iacs_from_proxy_snapshot` — web sends
+   `IacsTunnelSnapshotRequest`; proxy replies with
+   `IacsTunnelSnapshotResponse { entries }` built from the union of
+   `PendingSessions` (phase 0), authenticated `SessionHandles` (phase 1),
+   and `TunnelRegistry` (phase 2). Entries never carry `session_token`
+   or `ews_pubkey_fp`.
+4. Pure planner `reconcile_iacs_boot` (proxy = authority for "alive"):
+   rehydrate matching DB rows (including previously `terminated`),
+   `TerminateDb` for live rows missing from the proxy, `TerminateProxy`
+   (`boot_orphan`) for proxy UUIDs with no DB row.
+5. Spawn the revocation watchdog.
+
+Snapshot timeout / IPC error is fail-closed: treat the snapshot as empty
+(terminate every live DB row) and log at `error!`.
+
 ## 9. Revocation watchdog (DB-driven, IPC-dispatched)
 
 The watchdog still lives inside `vauban-web` (DB-resident logic) but no longer manipulates an in-process registry. The Lot 5 refactor introduced `services::iacs_tunnel::revocation::spawn_watchdog_with_proxy_iacs` which takes an `Option<Arc<ProxyIacsClient>>`. Each tick:
@@ -240,7 +261,7 @@ The pump is `ProxyIacsClient::process_incoming_with_broadcast(b)` and is spawned
 | Mid-session access-rule revoke. | DB-driven watchdog dispatches `IacsTunnelTerminate` to the proxy within `revocation_poll_interval_seconds`. | `iacs_revocation_watchdog_test::watchdog_closes_tunnels_when_*`. |
 | Compromised proxy attempts a direct `connect()`. | Capsicum `cap_enter` post-listener-fd setup; every outbound goes through the supervisor broker. Lint catches `TcpStream::connect(` / `TcpListener::bind(` in `vauban-proxy-iacs/src/`. | `proxy_iacs_does_not_call_socket_or_bind`. |
 | Anti-replay of a captured `TcpConnectRequest`. | For SSH/RDP (single-shot): token's `(session_id, nonce)` is consumed by the supervisor's bounded `replay_cache` on first use. For IACS (multi-use): the cache is **deliberately bypassed** (see §13); compensating controls are the per-asset crypto binding, the anti-self-listener / anti-loopback guards (§7), and the revocation watchdog (§9). | `test_supervisor_tcp_broker_records_replay` + `test_supervisor_tcp_broker_bypasses_replay_cache_for_iacs`. |
-| Legacy in-process IACS sshd silently still running. | Spawn gated on `!proxy_iacs_present`; lint catches reintroduction. | `legacy_in_process_iacs_sshd_is_gated_behind_proxy_iacs_absence`. |
+| Legacy in-process IACS sshd reintroduced into `vauban-web`. | Module deleted (Lot 5); connect path fail-closed without `proxy_iacs`; pin + lint assert absence of `mod server` / `russh` in web. | `in_process_iacs_sshd_module_is_absent` + `vauban_web_cargo_toml_has_no_russh`. |
 
 ## 11.1 Per-target_service token TTL (`shared::session_token::token_ttl_for`)
 
@@ -275,10 +296,10 @@ The 12 h figure is intentionally conservative: making the IACS TTL longer than t
 | Per-asset target unit | `vauban-proxy-iacs/tests/per_asset_target_test.rs` | `validate_target` matches per-session pin; cross-asset swap rejected; legacy fixed target rejected for remote asset; loopback-equivalence semantics. |
 | Per-asset target structural | same | Source-grep pins on `validate_target`, `Service::ProxyIacs`, `Message::TcpConnectRequest`, `verify_proxy`, `access_guard.authorize`, `VAUBAN_IACS_LISTENER_FD`, `setup_service_sandbox_with_listeners`. Lint pin: no `TcpStream::connect` / `TcpListener::bind` anywhere in `src/`. |
 | Per-asset target lint | `vauban-proxy-iacs/scripts/check_no_hardcoded_target.sh` | No `127.0.0.1:4321` literal anywhere in `vauban-proxy-iacs/src/`. |
-| Web wiring structural | `vauban-web/tests/web/iacs_per_asset_target_pin_test.rs` | `tunnel_target_addr` derived from `asset.hostname:asset.port`; `SessionTokenParams` carries per-asset binding; IPC `IacsTunnelOpenRequest` carries `asset_host` / `asset_port`; rollback on token mint failure AND proxy-iacs refusal; legacy in-process sshd suppressed when proxy-iacs is wired; watchdog uses proxy-iacs-aware spawn; broadcast pump forwards `IacsTunnelStatusUpdate` and `IacsTunnelClosed`. |
+| Web wiring structural | `vauban-web/tests/web/iacs_per_asset_target_pin_test.rs` | `tunnel_target_addr` derived from `asset.hostname:asset.port`; `SessionTokenParams` carries per-asset binding; IPC `IacsTunnelOpenRequest` carries `asset_host` / `asset_port`; rollback on token mint / proxy refusal; in-process sshd module absent; watchdog uses proxy-iacs-aware spawn; broadcast pump forwards lifecycle IPC. Boot resync: `iacs_boot_resync_e2e_test.rs` + `iacs_boot_reconcile_proptest.rs`. |
 | Supervisor anti-SSRF | `vauban-supervisor/src/main.rs::tests::test_iacs_broker_*` | Anti-self-listener and anti-loopback guards exist, log `target_resolved_ip`, threaded through `process_service_messages`. |
 | Watchdog | `vauban-web/tests/web/iacs_revocation_watchdog_test.rs` | EWS disabled / offboarded / user deactivated / TTL expired -> tunnel killed; user A's revoke does not touch user B's tunnel; `tunnel_closed` audit row appended. |
-| Adversarial sshd | `vauban-web/tests/web/iacs_tunnel_handler_test.rs` | publickey-only auth; every other surface refused (password, kbd-int, session/x11/forwarded-tcpip, second `direct-tcpip`, wrong target, shell/exec/subsystem/pty/agent, tcpip-forward, streamlocal-forward). |
+| Adversarial sshd | `vauban-proxy-iacs/tests/iacs_server_handshake_test.rs` | publickey-only auth against production `IacsTunnelServer`; refused surfaces and wrong-target opens exercised on the Capsicum proxy binary (Lot 5 moved coverage out of `vauban-web`). |
 | Drift | `vauban-web/tests/web/iacs_drift_test.rs` | Asset-type CHECK matches Rust `AssetType::ALL`; `proxy_sessions_iacs_consistency` CHECK exists; `ews_audit_log_event_chk` admits IACS events; `all_iacs` virtual asset_group seeded. |
 | Protocol recognition unit | `shared/src/iacs_protocol/` (`--features iacs-protocol`) | Peek classifiers for Modbus / OPC UA / IEC 104 / PROFINET; conformity matrix; drift pin on `WireProtocol` catalogue. |
 | Protocol recognition auth | `vauban-access/src/handlers.rs` | `iacs_tunnel_rule_includes_asset_type` binds `asset.asset_type` to granting `allowed_protocols`; cross-type and non-IACS deny tests. |
@@ -293,9 +314,10 @@ The 12 h figure is intentionally conservative: making the IACS TTL longer than t
 - `vauban-supervisor/src/main.rs` -- `IacsTunnelGuards`, listener pre-bind (`VAUBAN_IACS_LISTENER_FD`), `Service::ProxyIacs` routing in `handle_tcp_connect_request`
 - `vauban-supervisor/src/config.rs` -- `IacsTunnelSupervisorConfig { enabled, bind_addr, allow_loopback_targets }`
 - `vauban-web/src/handlers/web/iacs_tunnel.rs` -- per-asset `tunnel_target_addr` + token mint + `IacsTunnelOpenRequest` dispatch
-- `vauban-web/src/ipc/proxy_iacs.rs` -- `ProxyIacsClient` (`open_tunnel`, `terminate_tunnel`, `process_incoming_with_broadcast`)
+- `vauban-web/src/ipc/proxy_iacs.rs` -- `ProxyIacsClient` (`open_tunnel`, `terminate_tunnel`, `snapshot_tunnels`, `process_incoming_with_state`)
+- `vauban-web/src/services/iacs_tunnel/boot_reconcile.rs` -- boot Snapshot resync (pure plan + apply)
 - `vauban-web/src/services/iacs_tunnel/revocation.rs` -- `spawn_watchdog_with_proxy_iacs`
-- `shared/src/messages.rs` -- `Service::ProxyIacs` + `IacsTunnel*` message variants
+- `shared/src/messages.rs` -- `Service::ProxyIacs` + `IacsTunnel*` message variants (incl. Snapshot)
 - `shared/src/access_guard.rs` -- `PROTOCOL_IACS_TUNNEL`
 - `shared/src/iacs_protocol/` -- peek classifiers + conformity (`--features iacs-protocol`)
 - `shared/src/session_token/proxy_gate.rs` -- factorized `init_from_env` / `verify_proxy` consumed verbatim by the proxy
@@ -347,6 +369,5 @@ Constants (v1, not configurable): `CLASSIFY_MAX_BYTES = 4096`, `CLASSIFY_TIMEOUT
 
 | Version | Date | Notes |
 |---------|------|-------|
+| 1.1 | 2026-07-21 | Document revision. Boot Snapshot resync (§8.1): `IacsTunnelSnapshotRequest` / `Response`, pure `reconcile_iacs_boot`, proxy authority for "alive" after web-only restart. Lot 5: remove in-process IACS sshd from `vauban-web` (fail-closed without `proxy_iacs`; IPC-only watchdog). Updated source-of-truth and pins. Baseline also includes May 2026 amendments previously logged under the 1.0 filename: §11.1 token TTL / replay bypass (2026-05-16) and §14-15 protocol recognition (2026-05-23). |
 | 1.0 | 2026-05-15 | Initial release: per-asset target resolution, three-layer authorization, anti-SSRF guards, supervisor broker via SCM_RIGHTS, DB-driven IPC-dispatched revocation watchdog, real-time WebSocket fan-out. |
-| 1.1 | 2026-05-16 | §11.1 (per-target_service token TTL): `Service::ProxyIacs` gets a 12 h `TOKEN_TTL_SECONDS_IACS_TUNNEL` (vs. 30 s `TOKEN_TTL_SECONDS` for SSH/RDP/etc.) and the supervisor's replay cache is bypassed for `ProxyIacs`. Fixes the May 2026 production bug where the second `direct-tcpip` channel of a multi-client `ssh -L` failed with `session token rejected: token expired` (the operator workflow on every IACS asset). Compensating controls unchanged: crypto binding, anti-SSRF guards, watchdog. |
-| 1.2 | 2026-05-23 | §14-15 Protocol recognition: `vauban-access` binds `iacs_tunnel` grants to `asset.asset_type`; `vauban-proxy-iacs` gates the EWS -> asset leg with `shared::iacs_protocol` peek classifiers. Battle-tested lint + structural pins + E2E auth tests. No command-level filtering; `iacs_tcp` stays passthrough. |

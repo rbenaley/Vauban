@@ -7,9 +7,9 @@
 //! out-of-process proxy-iacs path.
 //!
 //! Runtime semantics are pinned by the existing DB-backed integration
-//! tests (`iacs_tunnel_handler_test.rs`,
-//! `iacs_revocation_watchdog_test.rs`); this file is the structural
-//! lockstep companion.
+//! tests (`iacs_revocation_watchdog_test.rs`,
+//! `vauban-proxy-iacs/tests/iacs_server_handshake_test.rs`); this
+//! file is the structural lockstep companion.
 
 use std::path::Path;
 
@@ -140,35 +140,77 @@ fn iacs_handler_rolls_back_on_proxy_iacs_failure() {
     // Both must roll back the proxy_session row to avoid orphan
     // `waiting_client` entries that the watchdog would later expire
     // anyway, but it's cleaner to fail fast here.
-    let rollback_count = src
-        .matches("diesel::delete(\n                    proxy_sessions::table")
-        .count();
+    // Lot A fail-closed: mint failure, proxy refusal, IPC failure, and
+    // missing proxy client all DELETE the waiting_client row. Match on
+    // the delete call site (formatting-independent).
+    let rollback_count = src.matches("diesel::delete(").count();
     assert!(
         rollback_count >= 2,
         "the IACS handler must roll back the proxy_session row on \
          BOTH session-token mint failure AND proxy-iacs open \
-         refusal. Found {} rollback site(s).",
+         refusal. Found {} diesel::delete( site(s).",
         rollback_count
     );
 }
 
 #[test]
-fn legacy_in_process_iacs_sshd_is_gated_behind_proxy_iacs_absence() {
-    let src = read_src("main.rs");
-    // The `proxy_iacs_present` flag is the bridge: when proxy-iacs
-    // is wired the legacy in-process sshd MUST NOT be spawned.
+fn iacs_tunnel_config_has_no_target_addr_field() {
+    let src = read_src("config.rs");
+    // Narrow to the IacsTunnelConfig struct body.
+    let start = src
+        .find("pub struct IacsTunnelConfig")
+        .expect("IacsTunnelConfig must exist");
+    let body = &src[start..];
+    let end = body
+        .find("impl IacsTunnelConfig")
+        .expect("IacsTunnelConfig impl must follow the struct");
+    let struct_body = &body[..end];
     assert!(
-        src.contains("proxy_iacs_present"),
-        "Lot 5: main.rs MUST track whether the proxy-iacs IPC client \
-         is connected (the `proxy_iacs_present` boolean) so the \
-         legacy in-process IACS sshd is suppressed when the new \
-         out-of-process proxy is active."
+        !struct_body.contains("target_addr"),
+        "Lot A: IacsTunnelConfig MUST NOT carry a process-wide \
+         `target_addr` (per-asset targets live on proxy_sessions)"
+    );
+}
+
+#[test]
+fn vauban_web_cargo_toml_has_no_russh() {
+    let cargo = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
+    )
+    .expect("read Cargo.toml");
+    assert!(
+        !cargo.lines().any(|l| l.trim_start().starts_with("russh")),
+        "Lot A: vauban-web/Cargo.toml MUST NOT depend on russh \
+         (sshd lives in vauban-proxy-iacs)"
+    );
+}
+
+#[test]
+fn in_process_iacs_sshd_module_is_absent() {
+    let server_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(SRC_ROOT)
+        .join("services/iacs_tunnel/server.rs");
+    assert!(
+        !server_path.exists(),
+        "Lot A: vauban-web MUST NOT ship an in-process IACS sshd \
+         (`services/iacs_tunnel/server.rs` must be deleted; sshd \
+         lives exclusively in vauban-proxy-iacs)"
+    );
+    let mod_src = read_src("services/iacs_tunnel/mod.rs");
+    assert!(
+        !mod_src.contains("mod server") && !mod_src.contains("pub mod server"),
+        "Lot A: iacs_tunnel/mod.rs MUST NOT declare `mod server`"
     );
     assert!(
-        src.contains("&& !proxy_iacs_present"),
-        "Lot 5: the spawn of the legacy in-process IACS sshd MUST \
-         be gated by `!proxy_iacs_present` so we never run two \
-         IACS sshds at once (port collision + double registry)."
+        !mod_src.contains("mod relay")
+            && !mod_src.contains("mod auth")
+            && !mod_src.contains("mod registry"),
+        "Lot A: iacs_tunnel/mod.rs MUST NOT re-export server/relay/auth/registry"
+    );
+    let main_src = read_src("main.rs");
+    assert!(
+        !main_src.contains("spawn_iacs_tunnel_server"),
+        "Lot A: main.rs MUST NOT spawn an in-process IACS sshd"
     );
 }
 

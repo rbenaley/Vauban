@@ -448,8 +448,8 @@ restore the previous filter combination.
 
 | Document | Relevance |
 |----------|-----------|
-| [Session Recording Architecture](Vauban_Recording_Architecture_EN(1.5).md) | PCAP file format, `meta.json`, integrity hash, FD broker contract |
-| [IACS Proxy Architecture](Vauban_IACS_Proxy_Architecture_EN(1.0).md) | Upstream proxy that produced the PCAP; protocol gates |
+| [Session Recording Architecture](Vauban_Recording_Architecture_EN(1.6).md) | PCAP file format, `meta.json`, integrity hash, FD broker contract |
+| [IACS Proxy Architecture](Vauban_IACS_Proxy_Architecture_EN(1.1).md) | Upstream proxy that produced the PCAP; protocol gates |
 | [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.2).md) | Supervisor FD broker, Capsicum sandboxing |
 | [IAM Architecture](Vauban_IAM_Architecture_EN(1.0).md) | Casbin / `PermissionContext`, three-layer authorization |
 

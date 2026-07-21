@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # check_iacs_proxy_no_shell.sh
 #
-# Defence-in-depth lint for the in-process IACS sshd
-# (vauban-web/src/services/iacs_tunnel/). The russh `Handler` MUST
+# Defence-in-depth lint for the privileged-separated IACS sshd
+# (vauban-proxy-iacs/src/server.rs). The russh `Handler` MUST
 # refuse every channel type other than `direct-tcpip` to the
-# configured target_addr. The `Handler` trait has many opt-in
+# per-session pinned target. The `Handler` trait has many opt-in
 # methods (`shell_request`, `exec_request`, `subsystem_request`,
 # `pty_request`, `tcpip_forward`, `streamlocal_forward`, ...);
 # accidentally implementing any of them with a permissive return
@@ -26,14 +26,14 @@
 # accidentally widens the surface is caught immediately.
 #
 # Pinned by:
-#   - vauban-web/tests/web/iacs_tunnel_handler_test.rs
-#     (runtime adversarial suite, 1 test per refusal path)
+#   - vauban-proxy-iacs/tests/iacs_server_handshake_test.rs
+#     (runtime adversarial suite)
 #   - this lint runs in CI before `cargo test` (cheap, ~50ms)
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HANDLER="$ROOT/src/services/iacs_tunnel/server.rs"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+HANDLER="$REPO_ROOT/vauban-proxy-iacs/src/server.rs"
 
 if [[ ! -f "$HANDLER" ]]; then
     echo "FAIL: $HANDLER not found" >&2
@@ -139,4 +139,4 @@ if [[ $fail -ne 0 ]]; then
     exit 1
 fi
 
-echo "OK: iacs_tunnel handler rejects all non-direct-tcpip surfaces"
+echo "OK: vauban-proxy-iacs handler rejects all non-direct-tcpip surfaces"

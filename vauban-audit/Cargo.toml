@@ -20,6 +20,9 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
+# IACS ChannelEnd: gzip `.pcap` -> `.pcap.gz` on SCM_RIGHTS FDs
+# (CPU work stays out of the supervisor root process).
+flate2 = "1"
 # WORM tamper-evidence: Ed25519 segment sealing + base64/hex encodings.
 ed25519-dalek = "2.1"
 base64.workspace = true
@@ -28,4 +31,3 @@ hex = "0.4"
 [dev-dependencies]
 tempfile = "3"
 etherparse = "0.18"
-flate2 = "1"

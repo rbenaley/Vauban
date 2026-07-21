@@ -25,7 +25,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::auth::{AuthOutcome, PendingSessions, PendingTunnel, verify_publickey};
 use crate::iacs_recording::{ChannelEndpoints, ChannelRecorder, IacsRecordingHub};
-use crate::registry::{SessionHandles, TunnelHandle, TunnelRegistry};
+use crate::registry::{SessionHandles, SessionMeta, TunnelHandle, TunnelRegistry};
 use crate::relay::{copy_with_counter_and_record, validate_target};
 use shared::iacs_protocol::ExpectedProfile;
 use shared::messages::IacsRecordingDirection;
@@ -308,6 +308,18 @@ impl Handler for IacsTunnelHandler {
         if let Some(p) = self.authorized.lock().await.as_ref() {
             self.session_handles
                 .insert(p.session_uuid, session.handle());
+            // Retain identity after PendingTunnel was consumed at
+            // auth_publickey so boot Snapshot can rehydrate
+            // ews_connected rows (no TunnelRegistry entry yet).
+            self.session_handles.insert_meta(
+                p.session_uuid,
+                SessionMeta {
+                    user_uuid: p.user_uuid,
+                    asset_uuid: p.asset_uuid,
+                    ews_uuid: p.ews_uuid,
+                    peer_ip: self.peer_addr.map(|sa| sa.ip().to_string()),
+                },
+            );
             debug!(
                 session_uuid = %p.session_uuid,
                 "iacs_tunnel: russh handle registered for forced disconnect"

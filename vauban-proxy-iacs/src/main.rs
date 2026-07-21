@@ -16,7 +16,7 @@
 //! with `ssh -L`, and brokers the upstream TCP connection to the
 //! industrial asset (`asset.hostname:asset.port`) via the supervisor's
 //! SCM_RIGHTS broker. See
-//! [`docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.0).md`] for
+//! [`docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.1).md`] for
 //! the full architecture.
 //!
 //! Bootstrap order (mirrors `vauban-proxy-ssh`):
@@ -65,7 +65,7 @@ use uuid::Uuid;
 use crate::auth::{PendingSessions, PendingTunnel};
 use crate::iacs_recording::{AckRouter, IacsRecordingHub, RecordingMetrics};
 use crate::ipc::AsyncIpcChannel;
-use crate::registry::{SessionHandles, TunnelRegistry};
+use crate::registry::{SessionHandles, TunnelRegistry, build_tunnel_snapshot};
 use crate::server::{IacsTunnelServer, build_server_config};
 use crate::upstream::{PendingConnections, SupervisorBrokerOpener};
 
@@ -943,6 +943,19 @@ async fn handle_web_message(
                 session_id,
                 success: true,
                 error: None,
+            });
+        }
+
+        Message::IacsTunnelSnapshotRequest { request_id } => {
+            let entries = build_tunnel_snapshot(&pending, &session_handles, &registry).await;
+            info!(
+                request_id,
+                entries = entries.len(),
+                "iacs_tunnel: snapshot response built"
+            );
+            let _ = web_tx.send(Message::IacsTunnelSnapshotResponse {
+                request_id,
+                entries,
             });
         }
 

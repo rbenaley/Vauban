@@ -8,18 +8,16 @@
 //! exercise the same call sequence the audit `main_loop` performs
 //! when it dispatches `IacsRecordingChannelStart` / `Data` /
 //! `ChannelEnd` / `SessionEnd` messages. The supervisor's role
-//! (broker the file FD, gzip+unlink the raw PCAP) is simulated
-//! with `tempfile`-backed FDs and a `flate2` round-trip so the
-//! whole post-channel-end pipeline is exercised end-to-end.
+//! (broker write FDs + unlink the raw PCAP) is simulated with
+//! `tempfile`-backed FDs; gzip + BLAKE3 run locally via
+//! [`gzip_channel_pcap_on_fds`] as in production.
 
-use flate2::Compression;
 use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
 use shared::messages::IacsRecordingDirection;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use vauban_audit::iacs_recording_manager::{
-    IacsChannelEndpoints, IacsRecordingConfig, IacsRecordingManager,
+    IacsChannelEndpoints, IacsRecordingConfig, IacsRecordingManager, gzip_channel_pcap_on_fds,
 };
 
 fn endpoints() -> IacsChannelEndpoints {
@@ -181,60 +179,71 @@ fn multi_channel_session_produces_independent_pcap_files() {
 }
 
 #[test]
-fn gzip_roundtrip_simulates_supervisor_broker_correctly() {
-    // The supervisor `RecordingFileGzipRequest` flow:
-    //   1. read raw `.pcap` (root-only)
-    //   2. gzip + write `.pcap.gz`
-    //   3. unlink `.pcap`
-    //   4. return BLAKE3 + size of the `.pcap.gz`
+fn gzip_roundtrip_simulates_audit_local_gzip_and_unlink() {
+    // Production ChannelEnd flow (Lot C):
+    //   1. end_channel returns the raw O_RDWR FD
+    //   2. audit: gzip_channel_pcap_on_fds(src, dst) + blake3
+    //   3. dst.sync_data()
+    //   4. RecordingFileUnlinkRequest -> supervisor removes raw
+    //   5. finalize_channel_gzip(blake3, size)
     //
-    // Audit then calls `finalize_channel_gzip(blake3, size)`. We
-    // simulate (1) -> (3) here against a tempdir to make sure the
-    // PCAP we wrote is actually compressible and decompresses back
-    // to the same bytes.
+    // We simulate (1)-(4) against a tempdir (unlink = remove_file).
     let dir = tempfile::tempdir().unwrap();
     let raw_path = dir.path().join("001.pcap");
     let gz_path = dir.path().join("001.pcap.gz");
 
-    {
-        let mut mgr = IacsRecordingManager::with_config(IacsRecordingConfig {
-            batch_max_bytes: 1024,
-            batch_max_ms: 100,
-        });
-        let f = File::create(&raw_path).unwrap();
-        mgr.start_channel("s", 1, f, "h".into(), 502, 0, 0, endpoints());
-        for i in 0..16 {
-            mgr.handle_data(
-                "s",
-                1,
-                i,
-                IacsRecordingDirection::EwsToAsset,
-                1_000 + i,
-                b"\x00\x01\x00\x00\x00\x06\x01\x03\x00\x00\x00\x0a",
-            )
-            .unwrap();
-        }
-        mgr.end_channel("s", 1, 999_999);
+    let mut mgr = IacsRecordingManager::with_config(IacsRecordingConfig {
+        batch_max_bytes: 1024,
+        batch_max_ms: 100,
+    });
+    // O_RDWR so the returned FD can be seeked+read for gzip.
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&raw_path)
+        .unwrap();
+    mgr.start_channel("s", 1, f, "h".into(), 502, 0, 0, endpoints());
+    for i in 0..16 {
+        mgr.handle_data(
+            "s",
+            1,
+            i,
+            IacsRecordingDirection::EwsToAsset,
+            1_000 + i,
+            b"\x00\x01\x00\x00\x00\x06\x01\x03\x00\x00\x00\x0a",
+        )
+        .unwrap();
     }
+    let paths = mgr.end_channel("s", 1, 999_999).expect("end_channel");
 
-    let raw = read_all(&raw_path);
-    assert!(raw.len() > 24);
+    let mut src = paths.raw_file;
+    src.sync_data().unwrap();
+    src.seek(SeekFrom::Start(0)).unwrap();
+    let mut dst = File::create(&gz_path).unwrap();
+    let (dst_size, blake3_hex) = gzip_channel_pcap_on_fds(&mut src, &mut dst).unwrap();
+    dst.sync_data().unwrap();
+    drop(src);
+    drop(dst);
 
-    {
-        let gz = File::create(&gz_path).unwrap();
-        let mut encoder = GzEncoder::new(gz, Compression::default());
-        encoder.write_all(&raw).unwrap();
-        encoder.finish().unwrap();
-    }
+    // Simulate supervisor unlink broker.
     std::fs::remove_file(&raw_path).unwrap();
     assert!(!raw_path.exists(), "raw pcap unlinked");
 
-    let mut decoder = GzDecoder::new(File::open(&gz_path).unwrap());
+    mgr.finalize_channel_gzip("s", 1, blake3_hex.clone(), dst_size);
+    let result = mgr.end_session("s").unwrap();
+    assert_eq!(result.channels[0].blake3_hex, blake3_hex);
+    assert_eq!(result.channels[0].file_size, dst_size);
+
+    let compressed = read_all(&gz_path);
+    assert_eq!(compressed.len() as u64, dst_size);
+    assert_eq!(blake3::hash(&compressed).to_hex().as_str(), blake3_hex);
+
+    let mut decoder = GzDecoder::new(&compressed[..]);
     let mut decompressed = Vec::new();
     decoder.read_to_end(&mut decompressed).unwrap();
-    assert_eq!(decompressed, raw, "gzip round-trip preserves bytes");
-
-    // PCAP magic still intact post-roundtrip.
+    assert!(decompressed.len() > 24, "decompressed pcap empty");
     let magic = u32::from_le_bytes([
         decompressed[0],
         decompressed[1],
