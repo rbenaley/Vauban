@@ -245,6 +245,114 @@ async fn test_recording_detail_renders_pending_integrity_state() {
     assert!(body.contains("Awaiting hydration"));
 }
 
+/// E2E: a pending Recording Details page must ship the dual safety net
+/// (WS filter on this UUID + `every 5s` poll) so a lost
+/// `recording_hydrated` push still flips the panels without a manual
+/// reload / second tab.
+#[tokio::test]
+async fn e2e_pending_detail_page_embeds_hydrate_ws_safety_net() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("rd_ws_net_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("rd-ws-net-asset"), admin_id).await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let uuid = get_session_uuid(&mut conn, session_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/sessions/recordings/{}", uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+
+    assert!(
+        body.contains(r#"id="recording-detail-ws-trigger""#),
+        "pending page must render the hidden WS refresh trigger"
+    );
+    assert!(
+        body.contains("every 5s"),
+        "E2E: rendered HTML must include every 5s poll (I-HYDRATE-WS-4)"
+    );
+    assert!(
+        body.contains("recording_hydrated"),
+        "E2E: rendered HTML must filter on recording_hydrated"
+    );
+    assert!(
+        body.contains(&uuid.to_string()),
+        "E2E: rendered trigger must bind THIS session uuid (not a placeholder)"
+    );
+    // The hx-get must target the same UUID route the operator is on.
+    assert!(
+        body.contains(&format!(
+            r#"hx-get="/sessions/recordings/{}""#,
+            uuid
+        )),
+        "E2E: hx-get must refetch this recording detail URL"
+    );
+}
+
+/// E2E: after integrity is persisted, a refetch (simulating the WS /
+/// every-5s trigger) must render the hydrated panels — proving the
+/// swap target HTML is what the client would install.
+#[tokio::test]
+async fn e2e_detail_refetch_after_hydration_shows_integrity_panels() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("rd_ws_refetch_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("rd-ws-refetch-asset"), admin_id).await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let uuid = get_session_uuid(&mut conn, session_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    // Pending first load.
+    let pending = app
+        .server
+        .get(&format!("/sessions/recordings/{}", uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_eq!(pending.status_code().as_u16(), 200);
+    assert!(pending.text().contains("Awaiting hydration"));
+
+    // Hydrator (or WS-triggered refetch after finalize) persists bundle.
+    fill_ssh_integrity(&mut conn, session_id).await;
+
+    let hydrated = app
+        .server
+        .get(&format!("/sessions/recordings/{}", uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_eq!(hydrated.status_code().as_u16(), 200);
+    let body = hydrated.text();
+    assert!(
+        body.contains("BLAKE3 hash recorded"),
+        "refetch after finalize must show integrity checklist"
+    );
+    assert!(
+        body.contains("Hydrated at"),
+        "refetch after finalize must show hydration timestamp"
+    );
+    assert!(
+        !body.contains("Awaiting hydration"),
+        "pending copy must be gone after finalize"
+    );
+}
+
 #[tokio::test]
 async fn test_recording_detail_404_when_uuid_unknown() {
     let app = TestApp::spawn().await;
@@ -1152,8 +1260,13 @@ fn recording_detail_template_carries_ws_refresh_trigger() {
     let body = RECORDING_DETAIL_HTML;
     assert!(
         body.contains("htmx:wsAfterMessage"),
-        "recording_detail.html must hook into `htmx:wsAfterMessage` \
-         (no client-side polling)"
+        "recording_detail.html must hook into `htmx:wsAfterMessage`"
+    );
+    assert!(
+        body.contains("every 5s"),
+        "recording_detail.html must poll every 5s as a safety net for \
+         the race where `recording_hydrated` is broadcast before this \
+         tab's /ws/notifications subscription is live"
     );
     assert!(
         body.contains("'recording_hydrated'"),

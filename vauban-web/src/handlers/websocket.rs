@@ -1092,12 +1092,29 @@ async fn handle_notifications_socket(
                 }
             }
 
-            // General notifications channel
+            // General notifications channel. Lagged drops are logged
+            // (not fatal): the Recording Details page also polls every
+            // 5s so a missed `recording_hydrated` still lands.
             result = notifications_rx.recv() => {
-                if let Ok(html) = result
-                    && sender.send(Message::Text(html.into())).await.is_err()
-                {
-                    should_close = true;
+                match result {
+                    Ok(html) => {
+                        if sender.send(Message::Text(html.into())).await.is_err() {
+                            close_cause = "send_fail";
+                            should_close = true;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(
+                            channel = %channel,
+                            user = %user.username,
+                            lagged = n,
+                            "WebSocket notifications channel lagged; dropped messages"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        close_cause = "server_close";
+                        should_close = true;
+                    }
                 }
             }
 

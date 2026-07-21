@@ -346,10 +346,6 @@ pub struct ProxySession {
     pub recording_segment_count: Option<i32>,
     pub recording_codec: Option<String>,
     pub recording_finalized_at: Option<DateTime<Utc>>,
-    /// Sticky latch: SSH/RDP audit `try_send` dropped >=1 frame.
-    /// Always false for IACS (ack-block). Set by web on
-    /// `Message::RecordingLossObserved`.
-    pub recording_lossy: bool,
     /// IACS-specific. NULL for SSH / RDP rows; pinned by the SQL CHECK
     /// constraint `proxy_sessions_iacs_consistency`.
     pub industrial_protocol: Option<String>,
@@ -368,6 +364,13 @@ pub struct ProxySession {
     pub revoked_by_id: Option<i32>,
     /// Timestamp of the revocation decision.
     pub revoked_at: Option<DateTime<Utc>>,
+    /// Sticky latch: SSH/RDP audit `try_send` dropped >=1 frame.
+    /// Always false for IACS (ack-block). Set by web on
+    /// `Message::RecordingLossObserved`.
+    ///
+    /// Column order must match `schema::proxy_sessions` (appended after
+    /// `revoked_at` by migration `20260722000000_recording_lossy_flag`).
+    pub recording_lossy: bool,
 }
 
 /// New session for insertion.
@@ -477,12 +480,12 @@ mod tests {
             recording_segment_count: None,
             recording_codec: None,
             recording_finalized_at: None,
-            recording_lossy: false,
             industrial_protocol: None,
             ews_uuid: None,
             tunnel_target_addr: None,
             revoked_by_id: None,
             revoked_at: None,
+            recording_lossy: false,
         }
     }
 

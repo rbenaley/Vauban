@@ -809,6 +809,44 @@ pub fn is_valid_blake3_hex(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Delay before the late-subscriber catch-up re-send of
+/// `recording_hydrated`. Covers the common race where an operator
+/// opens `/sessions/recordings/{uuid}` in the same second the
+/// hydrator finalizes: the page's `/ws/notifications` socket is not
+/// subscribed yet, and `tokio::broadcast` does not replay.
+///
+/// Invariant **I-HYDRATE-WS-2**: every successful finalize schedules
+/// exactly one retry after this delay (fire-and-forget).
+pub const RECORDING_HYDRATED_RETRY_SECS: u64 = 2;
+
+/// Wire event kind embedded in the Notifications payload.
+///
+/// Invariant **I-HYDRATE-WS-1**: templates filter with
+/// `indexOf('recording_hydrated')` — this literal must never drift.
+pub const RECORDING_HYDRATED_EVENT: &str = "recording_hydrated";
+
+/// Build the JSON body of a `recording_hydrated` notification.
+///
+/// Pure / allocation-only: no IO, no broadcast. Shape is the contract
+/// shared by the hydrator, the Recording Details HTMX filter, and the
+/// Recording List filter (**I-HYDRATE-WS-1**).
+pub fn recording_hydrated_json_payload(session_uuid: &::uuid::Uuid) -> String {
+    format!(
+        r#"{{"type":"{}","session_uuid":"{}"}}"#,
+        RECORDING_HYDRATED_EVENT, session_uuid
+    )
+}
+
+/// Mirror of the Recording Details page HTMX filter:
+/// `detail.message.indexOf('recording_hydrated')>-1 &&
+///  detail.message.indexOf('<uuid>')>-1`.
+///
+/// Kept as a pure helper so proptest / battle tests pin the client
+/// contract without driving a browser (**I-HYDRATE-WS-3**).
+pub fn recording_detail_ws_filter_matches(message: &str, session_uuid: &::uuid::Uuid) -> bool {
+    message.contains(RECORDING_HYDRATED_EVENT) && message.contains(&session_uuid.to_string())
+}
+
 /// Push a `recording_hydrated` WebSocket notification on the
 /// `Notifications` channel.
 ///
@@ -820,6 +858,8 @@ pub fn is_valid_blake3_hex(s: &str) -> bool {
 /// legacy-flat. Quietly skipped when no `BroadcastService` was wired
 /// (CLI / offline batch contexts).
 ///
+/// Always schedules one delayed re-send ([`RECORDING_HYDRATED_RETRY_SECS`])
+/// so a tab that connects just after the first push still refreshes.
 /// Failures are logged at `debug` and never bubble up: a broken WS
 /// channel must not stop the hydrator from finalizing rows.
 async fn broadcast_recording_hydrated(
@@ -827,22 +867,46 @@ async fn broadcast_recording_hydrated(
     session_uuid: &::uuid::Uuid,
 ) {
     let Some(b) = broadcast else { return };
-    let payload = format!(
-        r#"{{"type":"recording_hydrated","session_uuid":"{}"}}"#,
-        session_uuid
-    );
-    if let Err(()) = b
+    let payload = recording_hydrated_json_payload(session_uuid);
+    match b
         .send(
             &WsChannel::Notifications,
-            WsMessage::new("jit-notification", payload),
+            WsMessage::new("jit-notification", payload.clone()),
         )
         .await
     {
-        debug!(
-            session_uuid = %session_uuid,
-            "hydrator: WS notify failed (no live subscriber); ignoring"
-        );
+        Ok(0) => {
+            debug!(
+                session_uuid = %session_uuid,
+                "hydrator: WS notify had zero receivers; will retry"
+            );
+        }
+        Ok(_) => {}
+        Err(()) => {
+            debug!(
+                session_uuid = %session_uuid,
+                "hydrator: WS notify failed (channel absent); will retry"
+            );
+        }
     }
+
+    let b_retry = b.clone();
+    let uuid = *session_uuid;
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(RECORDING_HYDRATED_RETRY_SECS)).await;
+        if let Err(()) = b_retry
+            .send(
+                &WsChannel::Notifications,
+                WsMessage::new("jit-notification", payload),
+            )
+            .await
+        {
+            debug!(
+                session_uuid = %uuid,
+                "hydrator: WS notify retry failed (still no subscriber); ignoring"
+            );
+        }
+    });
 }
 
 async fn persist_bundle(
@@ -1445,6 +1509,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn broadcast_recording_hydrated_retries_for_late_subscribers() {
+        // Race: hydrator finalizes while the detail tab's WS is still
+        // connecting. First push sees no channel / zero receivers;
+        // the delayed retry must land after subscribe.
+        let svc = BroadcastService::new();
+        let uuid = ::uuid::Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        broadcast_recording_hydrated(&Some(svc.clone()), &uuid).await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut rx = svc.subscribe(&WsChannel::Notifications).await;
+
+        let payload = tokio::time::timeout(
+            Duration::from_secs(RECORDING_HYDRATED_RETRY_SECS + 1),
+            rx.recv(),
+        )
+        .await
+        .expect("late subscriber must receive the retry push")
+        .expect("subscriber must not be closed");
+        assert!(
+            recording_detail_ws_filter_matches(&payload, &uuid),
+            "retry envelope must satisfy the detail-page HTMX filter"
+        );
+    }
+
+    #[tokio::test]
+    async fn battle_live_subscriber_receives_immediate_and_retry() {
+        // Early subscriber (page already open) must see the first push
+        // promptly AND the catch-up re-send (idempotent refetch).
+        let svc = BroadcastService::new();
+        let mut rx = svc.subscribe(&WsChannel::Notifications).await;
+        let uuid = ::uuid::Uuid::new_v4();
+        broadcast_recording_hydrated(&Some(svc.clone()), &uuid).await;
+
+        let first = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect("immediate push")
+            .expect("open");
+        assert!(recording_detail_ws_filter_matches(&first, &uuid));
+
+        let second = tokio::time::timeout(
+            Duration::from_secs(RECORDING_HYDRATED_RETRY_SECS + 1),
+            rx.recv(),
+        )
+        .await
+        .expect("retry push")
+        .expect("open");
+        assert!(recording_detail_ws_filter_matches(&second, &uuid));
+        assert_eq!(
+            first, second,
+            "retry must be a byte-identical re-send (idempotent UI refetch)"
+        );
+    }
+
+    #[tokio::test]
+    async fn battle_concurrent_subscribers_all_see_hydration() {
+        // Several open admin tabs share Notifications; none may be
+        // starved when the hydrator fires.
+        let svc = BroadcastService::new();
+        let mut rxs = Vec::new();
+        for _ in 0..8 {
+            rxs.push(svc.subscribe(&WsChannel::Notifications).await);
+        }
+        let uuid = ::uuid::Uuid::new_v4();
+        broadcast_recording_hydrated(&Some(svc), &uuid).await;
+
+        for (i, rx) in rxs.iter_mut().enumerate() {
+            let payload = tokio::time::timeout(Duration::from_millis(300), rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("subscriber {i} missed immediate push"))
+                .expect("open");
+            assert!(
+                recording_detail_ws_filter_matches(&payload, &uuid),
+                "subscriber {i} payload must match detail filter"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn battle_unrelated_uuid_does_not_match_detail_filter() {
+        let svc = BroadcastService::new();
+        let mut rx = svc.subscribe(&WsChannel::Notifications).await;
+        let hydrated = ::uuid::Uuid::new_v4();
+        let other = ::uuid::Uuid::new_v4();
+        broadcast_recording_hydrated(&Some(svc), &hydrated).await;
+        let payload = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(recording_detail_ws_filter_matches(&payload, &hydrated));
+        assert!(
+            !recording_detail_ws_filter_matches(&payload, &other),
+            "detail filter must ignore hydration events for other sessions \
+             (thundering-herd guard)"
+        );
+    }
+
+    #[test]
+    fn broadcast_recording_hydrated_schedules_late_subscriber_retry() {
+        let body = fn_body(
+            include_str!("recording_hydrator.rs"),
+            "async fn broadcast_recording_hydrated(",
+        );
+        assert!(
+            body.contains("RECORDING_HYDRATED_RETRY_SECS"),
+            "must schedule a delayed re-send for late /ws/notifications \
+             subscribers (tokio broadcast does not replay)"
+        );
+        assert!(
+            body.contains("tokio::spawn"),
+            "retry must be fire-and-forget so hydrate_session_id is \
+             not blocked on the catch-up delay"
+        );
+        assert!(
+            body.contains("recording_hydrated_json_payload"),
+            "must build the payload via the pure helper so proptest \
+             and the wire path stay lock-step"
+        );
+    }
+
+    #[tokio::test]
     async fn broadcast_recording_hydrated_payload_carries_no_pii() {
         // Anti-leak guard: only the (opaque) session_uuid travels on the
         // global Notifications channel. Any future change adding e.g.
@@ -1650,10 +1834,10 @@ mod tests {
         );
     }
 
-    /// Pin: the broadcast helper itself uses the agreed-upon
-    /// `Notifications` channel + `jit-notification` OOB target +
-    /// stable JSON shape. Changing any of these three would silently
-    /// break the page filters that read `detail.message.indexOf(...)`.
+    /// Pin: the broadcast helper uses Notifications + jit-notification
+    /// OOB, and delegates JSON shape to the pure payload helper
+    /// (I-HYDRATE-WS-1/6). Changing any of these would silently break
+    /// the page filters that read `detail.message.indexOf(...)`.
     #[test]
     fn broadcast_helper_uses_stable_wire_contract() {
         let src = include_str!("recording_hydrator.rs");
@@ -1670,14 +1854,18 @@ mod tests {
              `htmx:wsAfterMessage`"
         );
         assert!(
-            body.contains(r#""type":"recording_hydrated""#),
-            "JSON payload MUST embed `\"type\":\"recording_hydrated\"` \
-             verbatim -- the page filter is a substring match"
+            body.contains("recording_hydrated_json_payload"),
+            "must build JSON via recording_hydrated_json_payload \
+             (single definition; proptest-locked)"
+        );
+        let payload_body = fn_body(src, "pub fn recording_hydrated_json_payload(");
+        assert!(
+            payload_body.contains("RECORDING_HYDRATED_EVENT"),
+            "payload helper MUST use RECORDING_HYDRATED_EVENT"
         );
         assert!(
-            body.contains(r#""session_uuid":"{}"#),
-            "JSON payload MUST embed the session_uuid so per-page \
-             filters can ignore unrelated hydration events"
+            payload_body.contains("session_uuid"),
+            "payload helper MUST embed session_uuid"
         );
     }
 }

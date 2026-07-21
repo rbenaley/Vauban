@@ -104,6 +104,8 @@ pub mod rdp_kerberos_mode_test;
 pub mod recording_daily_cron_e2e_test;
 pub mod recording_detail_test;
 pub mod recording_durability_pin_test;
+pub mod recording_hydrate_ws_invariants_test;
+pub mod recording_hydrate_ws_proptest;
 pub mod recording_iacs_download_e2e_test;
 pub mod recording_integrity_migration_test;
 pub mod recording_lossy_pin_test;

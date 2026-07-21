@@ -301,13 +301,14 @@
     {# Hidden WS-driven refresh trigger. Listens on the inherited
        `ws-connect="/ws/notifications"` from base.html (no extra
        socket), filters on `recording_hydrated` AND THIS session's
-       UUID, throttled to 1 s. Hydration is a one-shot transition per
-       row, so no `every Ns` fallback is needed here -- once the row
-       is finalized, the next page load shows the integrity panels
-       directly. #}
+       UUID, throttled to 1 s. `every 5s` is the safety net for the
+       race where the hydrator broadcasts before this tab's
+       /ws/notifications subscription is live (tokio broadcast does
+       not replay). Once finalized, the refetch is a cheap no-op
+       visually (same integrity panels). #}
     <div id="recording-detail-ws-trigger" class="hidden"
          hx-get="/sessions/recordings/{{ recording.session_uuid }}"
-         hx-trigger="htmx:wsAfterMessage[detail.message&&detail.message.indexOf('recording_hydrated')>-1&&detail.message.indexOf('{{ recording.session_uuid }}')>-1] from:body throttle:1s"
+         hx-trigger="htmx:wsAfterMessage[detail.message&&detail.message.indexOf('recording_hydrated')>-1&&detail.message.indexOf('{{ recording.session_uuid }}')>-1] from:body throttle:1s, every 5s"
          hx-select="#recording-detail-container"
          hx-target="#recording-detail-container"
          hx-swap="outerHTML"></div>
