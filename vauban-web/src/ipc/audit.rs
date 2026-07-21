@@ -45,7 +45,12 @@ use tracing::{debug, error, warn};
 const EMIT_QUEUE_DEPTH: usize = 2048;
 
 /// How long `emit_critical` waits for a durable ack before failing closed.
-const CRITICAL_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+///
+/// Public so lint / proptest / cross-crate budget pins can read the same
+/// constant the runtime uses (must stay above audit's
+/// `SUPERVISOR_BROKER_TIMEOUT_SECS`).
+pub const CRITICAL_ACK_TIMEOUT_SECS: u64 = 5;
+const CRITICAL_ACK_TIMEOUT: Duration = Duration::from_secs(CRITICAL_ACK_TIMEOUT_SECS);
 
 /// A fully-formed audit event ready to emit.
 #[derive(Debug, Clone)]

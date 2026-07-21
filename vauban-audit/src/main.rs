@@ -39,12 +39,19 @@ use tracing::{debug, error, info, warn};
 use vauban_audit::iacs_recording_manager::{
     self, IacsChannelEndPaths, IacsRecordingManager, gzip_channel_pcap_on_fds,
 };
+use vauban_audit::mfa_hol_budget::SUPERVISOR_BROKER_TIMEOUT_SECS;
 use vauban_audit::worm::{AuditRecord, GENESIS_HASH, WormLog};
 
 /// Seal the chain (Ed25519) every N persisted records inside a segment.
 const SEAL_THRESHOLD: u64 = 64;
 /// Rotate to a fresh segment every M persisted records.
 const ROTATION_THRESHOLD: u64 = 10_000;
+/// Max time to wait for a supervisor broker reply (FD / unlink) while the
+/// audit main loop is blocked. MUST stay below web's
+/// `CRITICAL_ACK_TIMEOUT` (see [`vauban_audit::WEB_CRITICAL_ACK_TIMEOUT_SECS`]):
+/// a wedged broker or version-skewed peer used to wait forever, HOL-blocking
+/// WORM `AuditAck` and failing MFA closed with `audit ack timed out`.
+const SUPERVISOR_BROKER_TIMEOUT: Duration = Duration::from_secs(SUPERVISOR_BROKER_TIMEOUT_SECS);
 
 /// Service runtime state.
 struct ServiceState {
@@ -559,6 +566,12 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
             last_sync_sweep = Instant::now();
         }
 
+        // Priority drain: WORM / fail-closed producers (MFA, auth) must not
+        // wait behind a long IACS gzip or a stuck recording FD broker wait.
+        // Runs even when `ready` is empty so a web event that arrived during
+        // the previous handler still gets a chance before the next poll.
+        drain_web_audit_channel(web_channel, channel, fd_passing_socket, state);
+
         if ready.is_empty() {
             continue;
         }
@@ -675,6 +688,7 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
                             channel,
                             iacs_ch,
                             fd_passing_socket,
+                            web_channel,
                             msg,
                         )
                     };
@@ -692,28 +706,48 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
             }
         }
 
-        // Web channel (if present): the broad AuditEvent stream from vauban-web.
-        if let Some(idx) = web_poll_idx
-            && ready.contains(&idx)
-        {
-            // SAFETY: web_poll_idx is only Some when web_channel is Some.
-            #[allow(clippy::unwrap_used)]
-            let web_ch = web_channel.unwrap();
-            match web_ch.recv() {
-                Ok(msg) => {
-                    if let Err(e) =
-                        route_audit_event(web_ch, channel, fd_passing_socket, state, msg)
-                    {
-                        warn!("Error handling web audit message: {}", e);
-                        state.requests_failed += 1;
-                    }
+        // Web AuditEvents are drained at the top of every iteration via
+        // `drain_web_audit_channel` (priority over recording/IACS work).
+        // `web_poll_idx` remains in `poll_fds` so traffic wakes `poll`.
+        let _ = web_poll_idx;
+    }
+}
+
+/// Drain every pending `AuditEvent` on the web→audit pipe.
+///
+/// Invoked at the start of each main-loop iteration so fail-closed
+/// producers (MFA `emit_critical`, auth escalation) are not stuck behind
+/// IACS gzip / recording FD broker work on the same thread.
+fn drain_web_audit_channel(
+    web_channel: Option<&IpcChannel>,
+    supervisor_channel: &IpcChannel,
+    fd_passing_socket: Option<RawFd>,
+    state: &mut ServiceState,
+) {
+    let Some(web_ch) = web_channel else {
+        return;
+    };
+    loop {
+        match poll_readable(&[web_ch.read_fd()], 0) {
+            Ok(ready) if !ready.is_empty() => {}
+            _ => break,
+        }
+        match web_ch.recv() {
+            Ok(msg) => {
+                if let Err(e) =
+                    route_audit_event(web_ch, supervisor_channel, fd_passing_socket, state, msg)
+                {
+                    warn!("Error handling web audit message: {e}");
+                    state.requests_failed += 1;
                 }
-                Err(shared::ipc::IpcError::ConnectionClosed) => {
-                    info!("Web IPC connection closed");
-                }
-                Err(e) => {
-                    debug!(error = %e, "Web IPC receive error");
-                }
+            }
+            Err(shared::ipc::IpcError::ConnectionClosed) => {
+                info!("Web IPC connection closed");
+                break;
+            }
+            Err(e) => {
+                debug!(error = %e, "Web IPC receive error");
+                break;
             }
         }
     }
@@ -936,6 +970,11 @@ fn handle_audit_event(
             state.events_persisted += 1;
             state.requests_processed += 1;
 
+            // Ack immediately after the durable append. Seal / rotate may
+            // block on the supervisor FD broker; delaying the Ack behind
+            // that work HOL-blocks web's fail-closed `emit_critical` (MFA).
+            reply_channel.send(&Message::AuditAck { timestamp })?;
+
             // Seal on the threshold (Ed25519), when a key is available.
             let should_seal = state
                 .worm
@@ -958,7 +997,6 @@ fn handle_audit_event(
                 rotate_segment(supervisor_channel, fd_passing_socket, state);
             }
 
-            reply_channel.send(&Message::AuditAck { timestamp })?;
             Ok(())
         }
         Err(e) => {
@@ -1008,6 +1046,85 @@ fn rotate_segment(
     }
 }
 
+/// Zeroed `ServiceStats` for Ping→Pong while blocked in a broker wait.
+fn broker_wait_stats() -> ServiceStats {
+    ServiceStats {
+        uptime_secs: 0,
+        requests_processed: 0,
+        requests_failed: 0,
+        active_connections: 0,
+        pending_requests: 0,
+        recording_ack_timeouts: 0,
+        recording_ack_dropped: 0,
+        recording_try_send_full: 0,
+        recording_ack_wait_ms_max: 0,
+    }
+}
+
+/// Wait for a matching supervisor reply, answering Pings, until `deadline`.
+///
+/// Prevents an infinite `recv` when the peer is wedged or a version-skewed
+/// supervisor drops an unrecognised request (bytes consumed, no response).
+fn recv_from_supervisor_until(
+    channel: &IpcChannel,
+    deadline: Instant,
+    mut pred: impl FnMut(&Message) -> bool,
+) -> Result<Message> {
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(anyhow::anyhow!("supervisor broker reply timed out"));
+        }
+        let remaining_ms = (deadline - now).as_millis().min(i32::MAX as u128) as i32;
+        let ready = poll_readable(&[channel.read_fd()], remaining_ms.max(1))?;
+        if ready.is_empty() {
+            if Instant::now() >= deadline {
+                return Err(anyhow::anyhow!("supervisor broker reply timed out"));
+            }
+            continue;
+        }
+        match channel.recv() {
+            Ok(Message::Control(ControlMessage::Ping { seq })) => {
+                let _ = channel.send(&Message::Control(ControlMessage::Pong {
+                    seq,
+                    stats: broker_wait_stats(),
+                }));
+            }
+            Ok(msg) if pred(&msg) => return Ok(msg),
+            Ok(other) => {
+                warn!(
+                    msg = ?other,
+                    "Unexpected message while waiting for supervisor broker reply"
+                );
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "IPC error waiting for supervisor broker reply: {e}"
+                ));
+            }
+        }
+    }
+}
+
+/// Timed `recv_fd` so a missing SCM_RIGHTS payload cannot wedge the main loop.
+fn recv_fd_timed(socket_fd: RawFd, deadline: Instant) -> Result<std::os::fd::OwnedFd> {
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(anyhow::anyhow!("recv_fd timed out waiting for SCM_RIGHTS"));
+        }
+        let remaining_ms = (deadline - now).as_millis().min(i32::MAX as u128) as i32;
+        let ready = poll_readable(&[socket_fd], remaining_ms.max(1))?;
+        if ready.is_empty() {
+            if Instant::now() >= deadline {
+                return Err(anyhow::anyhow!("recv_fd timed out waiting for SCM_RIGHTS"));
+            }
+            continue;
+        }
+        return recv_fd(socket_fd).map_err(|e| anyhow::anyhow!("recv_fd failed: {e}"));
+    }
+}
+
 /// Request an APPEND-ONLY WORM segment FD from the supervisor broker.
 ///
 /// Unlike `request_file_from_supervisor`, the path is a confined `segment_name`
@@ -1020,53 +1137,33 @@ fn request_audit_log_file_from_supervisor(
 ) -> Result<std::fs::File> {
     let fd_socket =
         fd_passing_socket.ok_or_else(|| anyhow::anyhow!("no fd_passing socket available"))?;
+    let deadline = Instant::now() + SUPERVISOR_BROKER_TIMEOUT;
 
     channel.send(&Message::AuditLogFileRequest {
         request_id: 0,
         segment_name: segment_name.to_string(),
     })?;
 
-    loop {
-        match channel.recv() {
-            Ok(Message::AuditLogFileResponse {
-                request_id: _,
-                success,
-                error,
-            }) => {
-                if !success {
-                    return Err(anyhow::anyhow!(
-                        "supervisor refused audit segment: {}",
-                        error.unwrap_or_default()
-                    ));
-                }
-                let owned_fd =
-                    recv_fd(fd_socket).map_err(|e| anyhow::anyhow!("recv_fd failed: {e}"))?;
-                let file = unsafe { std::fs::File::from_raw_fd(owned_fd.into_raw_fd()) };
-                return Ok(file);
-            }
-            Ok(Message::Control(ControlMessage::Ping { seq })) => {
-                let stats = ServiceStats {
-                    uptime_secs: 0,
-                    requests_processed: 0,
-                    requests_failed: 0,
-                    active_connections: 0,
-                    pending_requests: 0,
-                    recording_ack_timeouts: 0,
-                    recording_ack_dropped: 0,
-                    recording_try_send_full: 0,
-                    recording_ack_wait_ms_max: 0,
-                };
-                let _ = channel.send(&Message::Control(ControlMessage::Pong { seq, stats }));
-            }
-            Ok(other) => {
-                debug!(msg = ?other, "Unexpected message while waiting for AuditLogFileResponse");
-            }
-            Err(e) => {
+    let msg = recv_from_supervisor_until(channel, deadline, |m| {
+        matches!(m, Message::AuditLogFileResponse { .. })
+    })?;
+
+    match msg {
+        Message::AuditLogFileResponse {
+            success, error, ..
+        } => {
+            if !success {
                 return Err(anyhow::anyhow!(
-                    "IPC error waiting for AuditLogFileResponse: {e}"
+                    "supervisor refused audit segment: {}",
+                    error.unwrap_or_default()
                 ));
             }
+            let owned_fd = recv_fd_timed(fd_socket, deadline)?;
+            Ok(unsafe { std::fs::File::from_raw_fd(owned_fd.into_raw_fd()) })
         }
+        other => Err(anyhow::anyhow!(
+            "internal: expected AuditLogFileResponse, got {other:?}"
+        )),
     }
 }
 
@@ -1323,6 +1420,7 @@ fn handle_iacs_recording_message(
     supervisor_channel: &IpcChannel,
     proxy_iacs_channel: &IpcChannel,
     fd_passing_socket: Option<RawFd>,
+    web_channel: Option<&IpcChannel>,
     msg: Message,
 ) -> Result<()> {
     let Some(mgr) = iacs_recording_mgr.as_mut() else {
@@ -1472,6 +1570,15 @@ fn handle_iacs_recording_message(
             closed_at_us,
         } => {
             if let Some(paths) = mgr.end_channel(&session_id, channel_id, closed_at_us) {
+                // Drain fail-closed WORM events before CPU-bound gzip so an
+                // MFA `emit_critical` that arrived mid-session is not stranded
+                // for the full compress window (> CRITICAL_ACK_TIMEOUT).
+                drain_web_audit_channel(
+                    web_channel,
+                    supervisor_channel,
+                    fd_passing_socket,
+                    state,
+                );
                 match gzip_channel_and_unlink(
                     supervisor_channel,
                     fd_passing_socket,
@@ -1621,6 +1728,7 @@ fn request_unlink_from_supervisor(
     session_id: &str,
     relative_path: &str,
 ) -> Result<()> {
+    let deadline = Instant::now() + SUPERVISOR_BROKER_TIMEOUT;
     channel.send(&Message::RecordingFileUnlinkRequest {
         request_id: 0,
         session_id: session_id.to_string(),
@@ -1628,13 +1736,16 @@ fn request_unlink_from_supervisor(
     })?;
 
     loop {
-        match channel.recv() {
-            Ok(Message::RecordingFileUnlinkResponse {
-                request_id: _,
+        let msg = recv_from_supervisor_until(channel, deadline, |m| {
+            matches!(m, Message::RecordingFileUnlinkResponse { .. })
+        })?;
+        match msg {
+            Message::RecordingFileUnlinkResponse {
                 session_id: sid,
                 success,
                 error,
-            }) => {
+                ..
+            } => {
                 if sid != session_id {
                     warn!(
                         expected = session_id,
@@ -1651,29 +1762,9 @@ fn request_unlink_from_supervisor(
                 }
                 return Ok(());
             }
-            Ok(Message::Control(ControlMessage::Ping { seq })) => {
-                let stats = ServiceStats {
-                    uptime_secs: 0,
-                    requests_processed: 0,
-                    requests_failed: 0,
-                    active_connections: 0,
-                    pending_requests: 0,
-                    recording_ack_timeouts: 0,
-                    recording_ack_dropped: 0,
-                    recording_try_send_full: 0,
-                    recording_ack_wait_ms_max: 0,
-                };
-                let _ = channel.send(&Message::Control(ControlMessage::Pong { seq, stats }));
-            }
-            Ok(other) => {
-                debug!(
-                    msg = ?other,
-                    "Unexpected message while waiting for RecordingFileUnlinkResponse"
-                );
-            }
-            Err(e) => {
+            other => {
                 return Err(anyhow::anyhow!(
-                    "IPC error waiting for RecordingFileUnlinkResponse: {e}"
+                    "internal: expected RecordingFileUnlinkResponse, got {other:?}"
                 ));
             }
         }
@@ -1692,6 +1783,7 @@ fn request_file_from_supervisor(
 ) -> Result<std::fs::File> {
     let fd_socket =
         fd_passing_socket.ok_or_else(|| anyhow::anyhow!("no fd_passing socket available"))?;
+    let deadline = Instant::now() + SUPERVISOR_BROKER_TIMEOUT;
 
     channel.send(&Message::RecordingFileRequest {
         request_id: 0,
@@ -1700,17 +1792,23 @@ fn request_file_from_supervisor(
         read_only: false,
     })?;
 
-    // Blocking wait for response. Handle Pings while waiting.
     loop {
-        match channel.recv() {
-            Ok(Message::RecordingFileResponse {
-                request_id: _,
+        let msg = recv_from_supervisor_until(channel, deadline, |m| {
+            matches!(m, Message::RecordingFileResponse { .. })
+        })?;
+        match msg {
+            Message::RecordingFileResponse {
                 session_id: sid,
                 success,
                 error,
-            }) => {
+                ..
+            } => {
                 if sid != session_id {
-                    warn!(expected = session_id, got = %sid, "Mismatched RecordingFileResponse session_id");
+                    warn!(
+                        expected = session_id,
+                        got = %sid,
+                        "Mismatched RecordingFileResponse session_id"
+                    );
                     continue;
                 }
                 if !success {
@@ -1719,31 +1817,12 @@ fn request_file_from_supervisor(
                         error.unwrap_or_default()
                     ));
                 }
-                let owned_fd =
-                    recv_fd(fd_socket).map_err(|e| anyhow::anyhow!("recv_fd failed: {e}"))?;
-                let file = unsafe { std::fs::File::from_raw_fd(owned_fd.into_raw_fd()) };
-                return Ok(file);
+                let owned_fd = recv_fd_timed(fd_socket, deadline)?;
+                return Ok(unsafe { std::fs::File::from_raw_fd(owned_fd.into_raw_fd()) });
             }
-            Ok(Message::Control(ControlMessage::Ping { seq })) => {
-                let stats = ServiceStats {
-                    uptime_secs: 0,
-                    requests_processed: 0,
-                    requests_failed: 0,
-                    active_connections: 0,
-                    pending_requests: 0,
-                    recording_ack_timeouts: 0,
-                    recording_ack_dropped: 0,
-                    recording_try_send_full: 0,
-                    recording_ack_wait_ms_max: 0,
-                };
-                let _ = channel.send(&Message::Control(ControlMessage::Pong { seq, stats }));
-            }
-            Ok(other) => {
-                debug!(msg = ?other, "Unexpected message while waiting for RecordingFileResponse");
-            }
-            Err(e) => {
+            other => {
                 return Err(anyhow::anyhow!(
-                    "IPC error waiting for RecordingFileResponse: {e}"
+                    "internal: expected RecordingFileResponse, got {other:?}"
                 ));
             }
         }
@@ -1925,6 +2004,34 @@ mod tests {
                 }
             ),
             "expected AuditAck, got {response:?}"
+        );
+    }
+
+    /// A silent supervisor must not wedge the audit main loop forever.
+    #[test]
+    fn test_request_audit_log_file_times_out_when_supervisor_silent() {
+        use std::os::unix::io::AsRawFd;
+        let (audit_ch, _sup_ch) = IpcChannel::pair().unwrap();
+        let (fd_sock, _peer) = shared::ipc::socketpair_for_fd_passing().unwrap();
+        let start = Instant::now();
+        let err = request_audit_log_file_from_supervisor(
+            &audit_ch,
+            Some(fd_sock.as_raw_fd()),
+            "2026/07/audit-1.jsonl",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("timed out"),
+            "expected timeout error, got: {err}"
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= SUPERVISOR_BROKER_TIMEOUT,
+            "timeout fired too early: {elapsed:?}"
+        );
+        assert!(
+            elapsed < SUPERVISOR_BROKER_TIMEOUT + Duration::from_secs(2),
+            "timeout took too long: {elapsed:?}"
         );
     }
 
@@ -2389,6 +2496,54 @@ mod tests {
         assert!(
             main_loop_source.contains("iacs_poll_idx"),
             "main_loop must poll the IACS recording channel"
+        );
+    }
+
+    /// MFA fail-closed (`emit_critical`, 5 s) must not hang forever when the
+    /// supervisor broker is wedged: broker waits are capped below that budget.
+    #[test]
+    fn test_supervisor_broker_timeout_below_web_critical_ack() {
+        assert!(
+            vauban_audit::production_broker_budget_is_safe(),
+            "lib budget pair must stay safe"
+        );
+        assert!(
+            SUPERVISOR_BROKER_TIMEOUT.as_secs()
+                < vauban_audit::WEB_CRITICAL_ACK_TIMEOUT_SECS,
+            "SUPERVISOR_BROKER_TIMEOUT must be < web CRITICAL_ACK_TIMEOUT"
+        );
+        let source = prod_source();
+        assert!(
+            source.contains("SUPERVISOR_BROKER_TIMEOUT"),
+            "broker waits must use SUPERVISOR_BROKER_TIMEOUT"
+        );
+        assert!(
+            source.contains("fn recv_from_supervisor_until"),
+            "timed supervisor recv helper must exist"
+        );
+        assert!(
+            source.contains("fn drain_web_audit_channel"),
+            "web AuditEvent priority drain must exist"
+        );
+    }
+
+    /// Durable append Ack must not wait on seal/rotate (supervisor FD broker).
+    #[test]
+    fn test_audit_ack_sent_before_rotate_segment() {
+        let source = prod_source();
+        let fn_start = source
+            .find("fn handle_audit_event")
+            .expect("handle_audit_event must exist");
+        let body = &source[fn_start..];
+        let ack = body
+            .find("Message::AuditAck")
+            .expect("AuditAck send must exist");
+        let rotate = body
+            .find("rotate_segment(")
+            .expect("rotate_segment call must exist");
+        assert!(
+            ack < rotate,
+            "AuditAck must be sent before rotate_segment to avoid HOL-blocking MFA"
         );
     }
 

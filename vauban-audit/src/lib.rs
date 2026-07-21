@@ -19,4 +19,10 @@
 
 pub mod iacs_pcap_synth;
 pub mod iacs_recording_manager;
+pub mod mfa_hol_budget;
 pub mod worm;
+
+pub use mfa_hol_budget::{
+    SUPERVISOR_BROKER_TIMEOUT_SECS, WEB_CRITICAL_ACK_TIMEOUT_SECS,
+    broker_timeout_fits_under_critical_ack, production_broker_budget_is_safe,
+};

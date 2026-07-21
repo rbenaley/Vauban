@@ -18,7 +18,7 @@ pub mod vault;
 pub use correlated::{CorrelatedIpcCore, CorrelatedIpcError, PendingGuard};
 
 pub use access::AccessIpcClient;
-pub use audit::{AuditClient, AuditEvent};
+pub use audit::{AuditClient, AuditEvent, CRITICAL_ACK_TIMEOUT_SECS};
 pub use auth::AuthIpcClient;
 pub use clients::*;
 pub use proxy_iacs::{IacsTunnelOpenRequest, IacsTunnelOpened, ProxyIacsClient};

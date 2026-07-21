@@ -51,6 +51,8 @@ fn audit_client_module_exists() {
         "pub async fn emit_critical",
         "AuditAck",
         "AuditNack",
+        "pub const CRITICAL_ACK_TIMEOUT_SECS: u64 = 5",
+        "audit ack timed out",
     ] {
         assert!(
             body.contains(needle),

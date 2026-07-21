@@ -91,6 +91,7 @@ pub mod manage_assets_anti_enumeration_test;
 pub mod manage_assets_gate_matrix_test;
 pub mod manage_assets_invariants_test;
 pub mod manage_assets_render_snapshot_test;
+pub mod mfa_audit_critical_pins_test;
 pub mod mfa_setup_vau008_test;
 pub mod mfa_test;
 pub mod no_inline_event_handlers_test;
