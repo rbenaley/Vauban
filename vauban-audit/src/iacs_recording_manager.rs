@@ -680,7 +680,10 @@ pub fn gzip_channel_pcap_on_fds(src: &mut File, dst: &mut File) -> Result<(u64, 
         }
     }
     let hashing = encoder.finish().map_err(|e| format!("gzip finish: {e}"))?;
-    Ok((hashing.written, hashing.hasher.finalize().to_hex().to_string()))
+    Ok((
+        hashing.written,
+        hashing.hasher.finalize().to_hex().to_string(),
+    ))
 }
 
 /// BLAKE3 over the concatenated ASCII hex digests of every channel

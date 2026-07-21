@@ -174,10 +174,8 @@ fn iacs_tunnel_config_has_no_target_addr_field() {
 
 #[test]
 fn vauban_web_cargo_toml_has_no_russh() {
-    let cargo = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
-    )
-    .expect("read Cargo.toml");
+    let cargo = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+        .expect("read Cargo.toml");
     assert!(
         !cargo.lines().any(|l| l.trim_start().starts_with("russh")),
         "Lot A: vauban-web/Cargo.toml MUST NOT depend on russh \

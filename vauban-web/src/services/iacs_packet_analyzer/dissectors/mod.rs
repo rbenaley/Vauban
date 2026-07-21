@@ -5,15 +5,17 @@
 //! [`PacketKind`] classification + a tree of [`FieldNode`]s with
 //! absolute byte offsets relative to the captured **frame**.
 //!
-//! Dissectors operate on a single segment: TCP cross-segment
-//! reassembly is explicitly out of scope (see plan section 2).
-//! Industrial protocols are mono-segment in 99%+ of recordings;
-//! the rare fragmented PDU is rendered with a "(fragment)" hint
-//! in the summary.
+//! TCP cross-segment reassembly is handled upstream in
+//! [`crate::services::iacs_packet_analyzer::reassembly`]; dissectors
+//! always receive a complete application PDU when `complete == true`.
+//! Incomplete fragments are routed through [`dissect_fragment`] so
+//! they never classify as `Cmd`.
 
 pub mod iec104;
 pub mod modbus;
+pub mod opcua;
 pub mod passthrough;
+pub mod profinet;
 
 use crate::services::iacs_packet_analyzer::types::{Direction, FieldNode, PacketKind};
 
@@ -52,13 +54,20 @@ pub fn dissect(
     match profile {
         ExpectedProfile::Modbus => modbus::dissect(payload, payload_offset, direction),
         ExpectedProfile::Iec104 => iec104::dissect(payload, payload_offset, direction),
-        // OPC-UA Binary and PROFINET dissectors land in v1 (post-MVP).
-        // Until then we render them through the raw TCP fallback so
-        // the timeline + hex view is still usable.
-        ExpectedProfile::OpcUa | ExpectedProfile::Profinet | ExpectedProfile::Passthrough => {
-            passthrough::dissect(payload, payload_offset, direction)
-        }
+        ExpectedProfile::OpcUa => opcua::dissect(payload, payload_offset, direction),
+        ExpectedProfile::Profinet => profinet::dissect(payload, payload_offset, direction),
+        ExpectedProfile::Passthrough => passthrough::dissect(payload, payload_offset, direction),
     }
+}
+
+/// Dissect an incomplete TCP reassembly fragment. Never returns `Cmd`.
+pub fn dissect_fragment(payload: &[u8], payload_offset: usize, direction: Direction) -> Dissection {
+    let mut d = passthrough::dissect(payload, payload_offset, direction);
+    if !d.summary.contains("(fragment)") {
+        d.summary = format!("{} (fragment)", d.summary);
+    }
+    d.kind = PacketKind::Read;
+    d
 }
 
 /// Re-export so handler/template code can pattern-match on it

@@ -91,8 +91,11 @@ max_ews_per_user = 0      # 0 = no cap; otherwise a per-user EWS quota
 bind_addr = "0.0.0.0:22322"
 advertise_hostname = "localhost"
 host_key_path = "vauban-proxy-iacs/certs/iacs_tunnel_host_ed25519.test"
-max_concurrent_per_user = 4
-max_concurrent_per_ews = 2
+# Raised for Lot A E2E suites: many connect-iacs tests leave
+# `waiting_client` rows in the shared TestApp DB; the production
+# caps (4 / 2) would flake later tests in the same binary.
+max_concurrent_per_user = 64
+max_concurrent_per_ews = 64
 # Per-login concurrent SSH `direct-tcpip` channels. Each TCP
 # `accept()` on the EWS-side `ssh -L LP:asset:AP` listener spawns a
 # new channel by OpenSSH design; capping the count protects against

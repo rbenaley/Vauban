@@ -53,6 +53,9 @@ fn broker_has_no_naked_join() {
 
 /// INV-2 (pre-syscall order): the path resolution happens before every
 /// filesystem syscall in the handler.
+///
+/// Write opens use `OpenOptions` (O_RDWR + create) so audit can later
+/// gzip the raw IACS `.pcap` on the same FD -- not bare `File::create`.
 #[test]
 fn broker_validates_before_fs_calls() {
     let body = fn_body(SUPERVISOR_MAIN, "fn handle_recording_file_request(");
@@ -61,7 +64,7 @@ fn broker_validates_before_fs_calls() {
         .find("resolve_recording_file_target")
         .expect("resolve seam must be present");
 
-    for syscall in ["File::open", "File::create", "create_dir_all"] {
+    for syscall in ["File::open", "OpenOptions::new", "create_dir_all"] {
         let at = body
             .find(syscall)
             .unwrap_or_else(|| panic!("`{syscall}` must be present in the handler"));
@@ -70,4 +73,13 @@ fn broker_validates_before_fs_calls() {
             "Path resolution MUST precede `{syscall}` (INV-2, fail-closed pre-syscall)."
         );
     }
+
+    assert!(
+        body.contains(".create(true)") && body.contains(".read(true)") && body.contains(".write(true)"),
+        "write path MUST open O_RDWR via OpenOptions (audit gzip on same FD)."
+    );
+    assert!(
+        !body.contains("File::create"),
+        "write path MUST NOT use bare File::create (O_WRONLY would break audit gzip)."
+    );
 }

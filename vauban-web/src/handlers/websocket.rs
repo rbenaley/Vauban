@@ -33,6 +33,7 @@ use crate::utils::format_duration;
 
 use crate::AppState;
 use crate::middleware::auth::{AuthSessionId, AuthUser, WsAuthUser};
+use crate::models::session::SessionStatus;
 use crate::services::broadcast::WsChannel;
 use crate::services::connections::WsConnectionGuard;
 use crate::services::session_activity::ActivityThrottle;
@@ -738,7 +739,7 @@ async fn fetch_initial_stats(
     // dashboard tile reflects what the operator sees on the
     // active-sessions page.
     let active_count: i64 = proxy_sessions
-        .filter(status.eq_any(["active", "ews_connected", "tunnel_active"]))
+        .filter(status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
         .count()
         .get_result(&mut conn)
         .await
@@ -790,7 +791,7 @@ async fn fetch_initial_sessions(
     // see `tasks::dashboard::fetch_active_sessions`. SSH/RDP are
     // `active`, IACS tunnels are `tunnel_active`.
     let sessions: Vec<ProxySession> = proxy_sessions
-        .filter(status.eq_any(["active", "ews_connected", "tunnel_active"]))
+        .filter(status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
         .order(created_at.desc())
         .limit(10)
         .load(&mut conn)
@@ -1388,7 +1389,7 @@ pub(crate) async fn fetch_active_sessions_list(
         let mut q = proxy_sessions::table
             .inner_join(schema_assets::table)
             .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-            .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
+            .filter(proxy_sessions::status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
             .filter(proxy_sessions::connected_at.is_not_null())
             .into_boxed();
         // Industrial kill-switch (layer 2): exclude IACS tunnels from
@@ -2044,7 +2045,7 @@ async fn handle_terminal_socket(
                     let update_result = diesel::update(
                         dsl::proxy_sessions
                             .filter(dsl::uuid.eq(session_uuid))
-                            .filter(dsl::status.eq_any(["active", "connecting"])),
+                            .filter(dsl::status.eq_any(SessionStatus::SSH_RDP_INFLIGHT_AS_STR)),
                     )
                     .set((
                         dsl::is_recorded.eq(true),
@@ -2096,7 +2097,7 @@ async fn handle_terminal_socket(
                     let update_result = diesel::update(
                         dsl::proxy_sessions
                             .filter(dsl::uuid.eq(session_uuid))
-                            .filter(dsl::status.eq_any(["active", "connecting"])),
+                            .filter(dsl::status.eq_any(SessionStatus::SSH_RDP_INFLIGHT_AS_STR)),
                     )
                     .set((dsl::status.eq("disconnected"), dsl::disconnected_at.eq(now)))
                     .execute(&mut conn)
@@ -2547,7 +2548,7 @@ async fn handle_rdp_socket(
                     let update_result = diesel::update(
                         dsl::proxy_sessions
                             .filter(dsl::uuid.eq(session_uuid))
-                            .filter(dsl::status.eq_any(["active", "connecting"])),
+                            .filter(dsl::status.eq_any(SessionStatus::SSH_RDP_INFLIGHT_AS_STR)),
                     )
                     .set((
                         dsl::is_recorded.eq(true),
@@ -2596,7 +2597,7 @@ async fn handle_rdp_socket(
                     let update_result = diesel::update(
                         dsl::proxy_sessions
                             .filter(dsl::uuid.eq(session_uuid))
-                            .filter(dsl::status.eq_any(["active", "connecting"])),
+                            .filter(dsl::status.eq_any(SessionStatus::SSH_RDP_INFLIGHT_AS_STR)),
                     )
                     .set((dsl::status.eq("disconnected"), dsl::disconnected_at.eq(now)))
                     .execute(&mut conn)

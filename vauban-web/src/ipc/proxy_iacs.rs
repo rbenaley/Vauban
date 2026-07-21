@@ -20,6 +20,7 @@
 
 use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
+use crate::models::session::SessionStatus;
 use crate::services::broadcast::{BroadcastService, WsChannel};
 use serde_json::json;
 use shared::ipc::IpcChannel;
@@ -29,6 +30,7 @@ use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::{Mutex, oneshot};
@@ -59,8 +61,9 @@ pub struct IacsTunnelOpenRequest {
     pub asset_host: String,
     pub asset_port: u16,
     /// Industrial protocol label (`"modbus"`, `"opcua"`, `"tcp"`,
-    /// ...). Currently used only for forensic logs; future versions
-    /// may use it to gate `direct-tcpip` per-protocol.
+    /// ...). Forwarded to proxy-iacs for the per-channel wire-protocol
+    /// gate (`ExpectedProfile` / `classify_peek`) and retained for
+    /// forensic Inspect Capture / session metadata.
     pub industrial_protocol: String,
     /// Pending-session deadline (seconds from now). Mirrors
     /// `[industrial.iacs_tunnel].waiting_client_ttl_seconds` so the
@@ -90,8 +93,7 @@ pub struct ProxyIacsClient {
     read_async_fd: AsyncFd<RawFd>,
     next_request_id: AtomicU64,
     pending_open_requests: Mutex<HashMap<u64, oneshot::Sender<IacsTunnelOpened>>>,
-    pending_snapshot_requests:
-        Mutex<HashMap<u64, oneshot::Sender<Vec<IacsTunnelSnapshotEntry>>>>,
+    pending_snapshot_requests: Mutex<HashMap<u64, oneshot::Sender<Vec<IacsTunnelSnapshotEntry>>>>,
     /// Optional broadcast handle, set by
     /// [`ProxyIacsClient::process_incoming_with_state`] before
     /// the loop starts. When present, every incoming
@@ -308,6 +310,11 @@ impl ProxyIacsClient {
     ///
     /// Run forever in a dedicated task. Closes the loop on a
     /// `ConnectionClosed` IPC error (proxy-iacs respawn).
+    ///
+    /// Uses [`AsyncFdReadyGuard::try_io`] so the WouldBlock /
+    /// `clear_ready` race cannot strand a response in the pipe
+    /// (classic edge-triggered lost-wakeup). Without that, dense
+    /// E2E connect-iacs suites flake on `open_tunnel` 30 s timeouts.
     pub async fn process_incoming(&self) -> AppResult<()> {
         loop {
             let mut guard = self
@@ -317,25 +324,60 @@ impl ProxyIacsClient {
                 .map_err(|e| AppError::Ipc(format!("AsyncFd ready failed: {}", e)))?;
 
             loop {
-                match self.channel.try_recv() {
-                    Ok(msg) => {
-                        self.handle_message(msg).await;
-                    }
+                let try_result = guard.try_io(|_| match self.channel.try_recv() {
+                    Ok(msg) => Ok(msg),
                     Err(shared::ipc::IpcError::Io(ref e))
                         if e.kind() == io::ErrorKind::WouldBlock =>
                     {
-                        guard.clear_ready();
-                        break;
+                        Err(io::Error::new(io::ErrorKind::WouldBlock, "would block"))
                     }
-                    Err(shared::ipc::IpcError::ConnectionClosed) => {
+                    Err(shared::ipc::IpcError::ConnectionClosed) => Err(io::Error::new(
+                        io::ErrorKind::ConnectionReset,
+                        "IPC connection closed",
+                    )),
+                    Err(e) => Err(io::Error::other(e.to_string())),
+                });
+
+                match try_result {
+                    Ok(Ok(msg)) => {
+                        self.handle_message(msg).await;
+                    }
+                    Ok(Err(e)) if e.kind() == io::ErrorKind::ConnectionReset => {
                         info!("IACS proxy IPC connection closed");
                         return Err(AppError::Ipc("IPC connection closed".to_string()));
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         error!(error = %e, "IPC receive error");
-                        guard.clear_ready();
                         break;
                     }
+                    // `try_io` already cleared readiness on WouldBlock.
+                    Err(_would_block) => break,
+                }
+            }
+        }
+    }
+
+    /// Blocking IPC drain for integration-test mocks.
+    ///
+    /// Preferable to [`Self::process_incoming`] when the pump runs on
+    /// a dedicated OS thread: `recv` uses `poll(2)` and never depends
+    /// on the Tokio `AsyncFd` edge-trigger path. Each message is
+    /// handled via `rt.block_on` on the caller's current-thread
+    /// runtime (must be invoked from that runtime's owning thread,
+    /// outside any nested `block_on`).
+    pub fn process_incoming_blocking_on(&self, rt: &tokio::runtime::Runtime) -> AppResult<()> {
+        loop {
+            match self.channel.recv() {
+                Ok(msg) => {
+                    rt.block_on(self.handle_message(msg));
+                }
+                Err(shared::ipc::IpcError::ConnectionClosed) => {
+                    info!("IACS proxy IPC connection closed");
+                    return Err(AppError::Ipc("IPC connection closed".to_string()));
+                }
+                Err(e) => {
+                    error!(error = %e, "IPC receive error");
+                    return Err(AppError::Ipc(format!("IPC receive error: {e}")));
                 }
             }
         }
@@ -642,6 +684,53 @@ impl ProxyIacsClient {
                 }
             }
 
+            Message::IacsProxyHealth {
+                ack_timeouts,
+                ack_dropped,
+                ack_wait_ms_max,
+            } => {
+                let app_state = self.app_state.lock().await.clone();
+                if let Some(state) = app_state.as_ref() {
+                    let tel = &state.iacs_recording_telemetry;
+                    let prev_timeouts = tel.ack_timeouts.load(Ordering::SeqCst);
+                    tel.ack_timeouts.store(ack_timeouts, Ordering::SeqCst);
+                    tel.ack_dropped.store(ack_dropped, Ordering::SeqCst);
+                    tel.ack_wait_ms_max.store(ack_wait_ms_max, Ordering::SeqCst);
+
+                    if ack_timeouts > prev_timeouts {
+                        let should_notify = tel
+                            .ack_timeouts_notified_at
+                            .lock()
+                            .ok()
+                            .map(|mut last| {
+                                let notify = last
+                                    .map(|t| t.elapsed() >= Duration::from_secs(60))
+                                    .unwrap_or(true);
+                                if notify {
+                                    *last = Some(Instant::now());
+                                }
+                                notify
+                            })
+                            .unwrap_or(false);
+                        if should_notify {
+                            let payload = json!({
+                                "type": "iacs_recording_ack_timeout",
+                                "ack_timeouts": ack_timeouts,
+                                "ack_wait_ms_max": ack_wait_ms_max,
+                            });
+                            if let Some(b) = self.broadcast.lock().await.as_ref() {
+                                let _ = b
+                                    .send_raw(
+                                        &WsChannel::Notifications.as_str(),
+                                        payload.to_string(),
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            }
+
             _ => {
                 warn!(?msg, "Ignoring unexpected message from proxy-iacs");
             }
@@ -805,7 +894,7 @@ pub async fn persist_tunnel_active(
         let net = ipnetwork::IpNetwork::from(ip);
         diesel::update(ps::proxy_sessions)
             .filter(ps::uuid.eq(session_uuid))
-            .filter(ps::status.eq_any(["waiting_client", "ews_connected"]))
+            .filter(ps::status.eq_any(SessionStatus::WAITING_TTL_AS_STR))
             .set((
                 ps::status.eq("tunnel_active"),
                 ps::connected_at.eq(keep_or_now()),
@@ -817,7 +906,7 @@ pub async fn persist_tunnel_active(
     } else {
         diesel::update(ps::proxy_sessions)
             .filter(ps::uuid.eq(session_uuid))
-            .filter(ps::status.eq_any(["waiting_client", "ews_connected"]))
+            .filter(ps::status.eq_any(SessionStatus::WAITING_TTL_AS_STR))
             .set((
                 ps::status.eq("tunnel_active"),
                 ps::connected_at.eq(keep_or_now()),
@@ -883,7 +972,7 @@ pub async fn persist_tunnel_closed(
         );
         diesel::update(ps::proxy_sessions)
             .filter(ps::uuid.eq(session_uuid))
-            .filter(ps::status.eq_any(["waiting_client", "ews_connected", "tunnel_active"]))
+            .filter(ps::status.eq_any(SessionStatus::IACS_OPEN_AS_STR))
             .set((
                 ps::status.eq("terminated"),
                 ps::disconnected_at.eq(now),
@@ -896,7 +985,7 @@ pub async fn persist_tunnel_closed(
     } else {
         diesel::update(ps::proxy_sessions)
             .filter(ps::uuid.eq(session_uuid))
-            .filter(ps::status.eq_any(["waiting_client", "ews_connected", "tunnel_active"]))
+            .filter(ps::status.eq_any(SessionStatus::IACS_OPEN_AS_STR))
             .set((ps::status.eq("terminated"), ps::disconnected_at.eq(now)))
             .execute(&mut conn)
             .await

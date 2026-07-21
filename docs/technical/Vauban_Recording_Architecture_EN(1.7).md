@@ -1,12 +1,11 @@
 # Vauban Session Recording Architecture
 
-> **Superseded.** This document is retained for archaeology. The current
-> revision is
-> [Vauban_Recording_Architecture_EN(1.7).md](Vauban_Recording_Architecture_EN(1.7).md).
-
-**Version:** 1.5  
-**Date:** 24 May 2026  
+**Version:** 1.7  
+**Date:** 21 July 2026  
 **Author:** Richard Ben Aleya
+
+> Supersedes
+> [Vauban_Recording_Architecture_EN(1.6).md](Vauban_Recording_Architecture_EN(1.6).md).
 
 ---
 
@@ -66,7 +65,7 @@ PostgreSQL columns so the UI never re-parses files on the hot path
 | Crash resilience | fMP4 fragments / asciicast lines (process-kill safe) + periodic `fdatasync` sweep (RDP/SSH, power-loss safe) / per-batch `fdatasync` (IACS) | All |
 | Wireshark/tcpdump compatibility | Synthetic IPv4 + TCP layer around captured chunks | IACS |
 | Tamper detection | BLAKE3 -- per-segment (RDP), per-session (SSH), per-channel + aggregate (IACS) | All |
-| Sandbox compatibility | SCM_RIGHTS for I/O; gzip/unlink delegated to supervisor | All |
+| Sandbox compatibility | SCM_RIGHTS for I/O; unlink delegated to supervisor; IACS gzip on audit FDs | All |
 | Bounded backpressure | `fdatasync` then ack; relay blocks on ack with a timeout (IACS) | IACS |
 | Backward compatibility | Legacy single-file RDP recordings still play through `<video>` | RDP |
 
@@ -78,7 +77,7 @@ PostgreSQL columns so the UI never re-parses files on the hot path
 | `vauban-proxy-ssh` | Terminates SSH PTY sessions, redacts input, tees data to audit | Capsicum |
 | `vauban-proxy-iacs` | Brokers EWS SSH tunnels, tees `direct-tcpip` bytes to audit | Capsicum |
 | `vauban-audit` | Persists artefacts, writes `meta.json`, emits per-batch ack (IACS) | Capsicum |
-| `vauban-supervisor` | Brokers FDs (write side for proxies/audit, read side for web), gzip/unlink for IACS | Root |
+| `vauban-supervisor` | Brokers FDs (write side for proxies/audit, read side for web), unlink raw IACS `.pcap` after audit gzip | Root |
 | `vauban-web` | Serves Recording List, Recording Details, playback, download; runs the hydrator | Capsicum |
 
 ---
@@ -159,11 +158,12 @@ flowchart LR
     subgraph audit["vauban-audit"]
         IRM["IacsRecordingManager"] --> SYN["synth IPv4/v6 + TCP"]
         SYN --> CHWR["channel pcap writer"]
-        IRM --> B3["BLAKE3 (per channel + aggregate)"]
+        IRM --> GZ["gzip on SCM_RIGHTS FDs"]
+        GZ --> B3["BLAKE3 (per channel + aggregate)"]
     end
     subgraph sup["vauban-supervisor"]
-        FD["FD broker"]
-        GZ["gzip + unlink broker"]
+        FD["FD broker (O_RDWR write)"]
+        UL["unlink raw .pcap"]
     end
     subgraph fs["recordings/YYYY/MM/UUID/"]
         PCAP["channels/NNN.pcap.gz"]
@@ -176,6 +176,7 @@ flowchart LR
     FD --> IRM
     CHWR --> PCAP
     GZ --> PCAP
+    UL --> PCAP
 ```
 
 ### 2.4 Module Layout
@@ -211,7 +212,9 @@ vauban-web/src/
 shared/src/
     messages.rs                  RecordingFileRequest/Response,
                                   Rdp/Ssh/Iacs Recording IPC variants,
-                                  RecordingFileGzip{Request,Response}
+                                  RecordingFileUnlink{Request,Response}
+                                  (Gzip variants kept mid-enum as
+                                  deprecated wire-compat stubs)
 ```
 
 ### 2.5 Recording Path Convention
@@ -236,8 +239,9 @@ older recordings.
 
 | Family | Direction | Purpose |
 |--------|-----------|---------|
-| `RecordingFileRequest` / `RecordingFileResponse` | proxy/audit/web -> supervisor | Request a write- or read-side FD via SCM_RIGHTS |
-| `RecordingFileGzipRequest` / `RecordingFileGzipResponse` | audit -> supervisor | Gzip + unlink raw IACS PCAP outside the sandbox |
+| `RecordingFileRequest` / `RecordingFileResponse` | proxy/audit/web -> supervisor | Request a write- or read-side FD via SCM_RIGHTS (write opens are O_RDWR so audit can seek+gzip) |
+| `RecordingFileUnlinkRequest` / `RecordingFileUnlinkResponse` | audit -> supervisor | Unlink raw IACS `.pcap` after audit gzip + fdatasync of `.pcap.gz` |
+| `RecordingFileGzipRequest` / `RecordingFileGzipResponse` | (deprecated stub) | Mid-enum wire-compat only; supervisor always replies `success: false` |
 | `RecordingDeleteRequest` / `RecordingDeleteResponse` | web -> supervisor | Reaper: remove the per-session directory |
 | `RdpVideoFrame`, `RdpRecordingStart/End` | proxy-rdp -> audit | RDP recording control + frames |
 | `SshRecordingStart`, `SshRecordingData`, `SshRecordingEnd` | proxy-ssh -> audit | SSH recording control + events |
@@ -534,22 +538,28 @@ This is the durability backbone: a slow audit produces backpressure
 on the relay, never silent frame drops; a dead audit closes the
 tunnel within five seconds with a visible signal.
 
-### 5.4 Supervisor Gzip Broker
+### 5.4 Audit Gzip + Supervisor Unlink
 
-`vauban-audit` cannot `gzip` or `unlink` files itself (Capsicum has
-no file-system rights). On `IacsRecordingChannelEnd` the audit emits
-a `RecordingFileGzipRequest{src,dst,session_id,channel_id}`; the
-supervisor:
+`vauban-audit` cannot `open()` / `unlink()` under Capsicum, but it
+**can** gzip and hash on FDs already received via SCM_RIGHTS. On
+`IacsRecordingChannelEnd`:
 
-1. Opens the raw `.pcap` (root, under `recording.storage_path`).
-2. Streams it through `flate2::GzEncoder` into the `.pcap.gz`.
-3. Computes BLAKE3 and stats the resulting file.
-4. Unlinks the raw `.pcap`.
-5. Returns `RecordingFileGzipResponse{blake3_hex, file_size}`.
+1. Audit flushes + `fdatasync`s the raw `.pcap` FD (opened O_RDWR
+   by the supervisor write broker) and seeks to start.
+2. Audit requests a write FD for `channels/NNN.pcap.gz` via
+   `RecordingFileRequest`.
+3. Audit streams `flate2::GzEncoder` from the raw FD to the dst FD
+   while hashing BLAKE3 of the compressed bytes, then
+   `dst.sync_data()`.
+4. Audit emits `RecordingFileUnlinkRequest{relative_path=.pcap}`;
+   the supervisor validates the path and `unlink`s the raw file.
+5. Only when unlink succeeds does audit call
+   `finalize_channel_gzip(blake3_hex, file_size)`.
 
-The audit attaches the digest and size to the in-memory channel
-metadata. `IacsRecordingSessionEnd` then triggers the `meta.json`
-serialisation and a final write-side `RecordingFileRequest`.
+Fail-closed order: success requires `sync_data(dst)` OK **then**
+unlink OK. If unlink fails after the gz is written, the channel is
+**not** finalized. Gzip CPU work never runs in the supervisor root
+process.
 
 ### 5.5 `meta.json`
 
@@ -589,8 +599,8 @@ drift apart.
 | Service | Recording I/O |
 |---------|--------------|
 | `vauban-proxy-iacs` | IPC tee only; `AsyncIpcChannel` to audit constructed **before** `cap_enter`; `peer_addr()` of upstream read **before** `into_split()` |
-| `vauban-audit` | Writes only on FDs received via SCM_RIGHTS; no DNS; gzip / unlink delegated to supervisor |
-| `vauban-supervisor` | Owns `create_dir_all`, gzip and unlink under `recording.storage_path` |
+| `vauban-audit` | Writes / gzip / BLAKE3 only on FDs received via SCM_RIGHTS; no DNS; unlink delegated to supervisor |
+| `vauban-supervisor` | Owns `create_dir_all` and unlink under `recording.storage_path` (no flate2 / GzEncoder) |
 | `vauban-web` | Read-only SCM_RIGHTS for ZIP assembly |
 
 Two source-grep CI scripts pin these invariants:
@@ -613,7 +623,7 @@ the protocol:
 |----------|---------------|-----------------------------------------|
 | RDP | One BLAKE3 per fMP4 segment (over raw Annex-B NAL data, before AVCC conversion) | `BLAKE3(concat(ASCII hex bytes of every segment hash, in segment order))` |
 | SSH | One BLAKE3 over the full `.cast` (header + every event line) | Same single digest |
-| IACS | One BLAKE3 per `.pcap.gz` (computed by the supervisor after gzip) | `BLAKE3(concat(ASCII hex bytes of every channel hash, in channel order))` |
+| IACS | One BLAKE3 per `.pcap.gz` (computed by audit after gzip + fdatasync, before unlink) | `BLAKE3(concat(ASCII hex bytes of every channel hash, in channel order))` |
 
 The aggregate rule is intentionally identical for RDP and IACS. A
 verifier with only `meta.json` and the artefacts can recompute and
@@ -991,9 +1001,10 @@ retention_batch_size = 50
 |----------|-----------|
 | [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.2).md) | SCM_RIGHTS broker, Capsicum sandboxing, IPC envelope |
 | [RDP Session Architecture](Vauban_RDP_Architecture_EN(1.0).md) | H.264 encoding pipeline, encoder thread, frame flow |
-| [IACS Proxy Architecture](Vauban_IACS_Proxy_Architecture_EN(1.0).md) | EWS-to-asset SSH tunnel, `direct-tcpip` brokering, protocol gates |
+| [IACS Proxy Architecture](Vauban_IACS_Proxy_Architecture_EN(1.1).md) | EWS-to-asset SSH tunnel, `direct-tcpip` brokering, protocol gates |
 | [IAM Architecture](Vauban_IAM_Architecture_EN(1.0).md) | Casbin / `PermissionContext`, role invariants |
 | [recording_retention runbook](../runbooks/recording_retention.md) | Operational reference for the reaper |
+| [ADR 001 -- Recording durability per protocol](../adr/001-recording-durability-per-protocol.md) | IACS ack-block vs SSH/RDP best-effort + detectable loss |
 
 ---
 
@@ -1002,6 +1013,33 @@ retention_batch_size = 50
 This appendix is informational; the current sections describe the
 *current* architecture. Each prior version of this document remains
 available alongside this one for archaeological purposes.
+
+### 1.7 (21 July 2026)
+
+- **Observability:** IACS recording plafond metrics exported on
+  `ServiceStats` (`recording_ack_timeouts`, `recording_ack_dropped`,
+  `recording_ack_wait_ms_max`) and pushed to vauban-web every 10 s via
+  `Message::IacsProxyHealth`.
+- **Observability:** SSH/RDP `try_send` full drops surfaced as
+  `ServiceStats.recording_try_send_full` (rate-limited warn in proxy).
+- **Dashboard:** Bastion Watch SYSTEM HEALTH tile shows IACS ack
+  timeouts and 60 s max ack wait; coalesced Notifications (1/min) when
+  `ack_timeouts` increases.
+- **Alerting guidance:** any sustained `ack_timeouts` rate > 0 warrants
+  investigation before sharding; watch `ack_wait_ms_max` approaching the
+  5 s `ACK_TIMEOUT` ceiling.
+- **Decision record:** [ADR 001](../adr/001-recording-durability-per-protocol.md)
+  freezes the per-protocol durability contract.
+
+### 1.6 (21 July 2026)
+
+- IACS PCAP gzip + BLAKE3 moved from the supervisor root loop into
+  `vauban-audit` (SCM_RIGHTS FDs; write opens are O_RDWR so audit can
+  seek and stream-compress). Supervisor only unlinks the raw `.pcap`
+  via `RecordingFileUnlinkRequest` / `RecordingFileUnlinkResponse`
+  after audit `fdatasync`s the `.pcap.gz`. Deprecated
+  `RecordingFileGzip*` variants retained mid-enum for bincode
+  discriminant stability (always fail-closed). See §5.4 and §5.6.
 
 ### 1.5 (24-25 May 2026)
 
@@ -1047,7 +1085,7 @@ available alongside this one for archaeological purposes.
   `IacsRecordingData` / `IacsRecordingDataAck` /
   `IacsRecordingChannelEnd` / `IacsRecordingSessionEnd`).
 - Supervisor gzip broker (`RecordingFileGzipRequest` /
-  `RecordingFileGzipResponse`).
+  `RecordingFileGzipResponse`) -- later moved to audit (see 1.6).
 - Web download: streaming ZIP (`meta.json` +
   `channels/NNN.pcap.gz`) for IACS sessions; Recording Details hides
   the Play action.

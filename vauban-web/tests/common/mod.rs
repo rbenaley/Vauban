@@ -68,6 +68,89 @@ impl vauban_web::services::vault_provenance::HostIdentityVerifier for StaticHost
     }
 }
 
+/// Long-lived mock `proxy-iacs` for integration tests.
+///
+/// Answers `IacsTunnelOpen` with success, `IacsTunnelSnapshotRequest`
+/// with an empty entry list, and ignores terminate/health noise.
+/// Required after Lot A: connect-iacs is fail-closed when
+/// `AppState.proxy_iacs` is `None`.
+///
+/// The client's response pump MUST run on a dedicated OS thread with
+/// its own Tokio runtime -- NOT `tokio::spawn` on the per-test
+/// runtime. `TestApp` is a process-wide `OnceCell`; a pump tied to
+/// the first `#[tokio::test]` runtime dies when that test ends and
+/// leaves every later connect-iacs call hanging / 500.
+///
+/// The pump uses `process_incoming_blocking_on` (poll-based `recv`)
+/// rather than the AsyncFd `process_incoming` loop so dense E2E
+/// suites cannot lose an `IacsTunnelOpened` to an edge-trigger race.
+pub fn spawn_mock_proxy_iacs_always_open()
+-> std::sync::Arc<vauban_web::ipc::proxy_iacs::ProxyIacsClient> {
+    use shared::messages::Message;
+
+    let (web_side, proxy_side) = shared::ipc::IpcChannel::pair().expect("iacs mock ipc pair");
+    let read_fd = web_side.read_fd();
+    let write_fd = web_side.write_fd();
+    std::mem::forget(web_side);
+    let client = vauban_web::ipc::proxy_iacs::ProxyIacsClient::new(read_fd, write_fd)
+        .expect("mock ProxyIacsClient");
+
+    let client_for_pump = std::sync::Arc::clone(&client);
+    std::thread::Builder::new()
+        .name("mock-proxy-iacs-pump".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("mock-proxy-iacs pump runtime");
+            let _ = client_for_pump.process_incoming_blocking_on(&rt);
+        })
+        .expect("spawn mock-proxy-iacs pump thread");
+
+    std::thread::Builder::new()
+        .name("mock-proxy-iacs".into())
+        .spawn(move || {
+            loop {
+                match proxy_side.recv() {
+                    Ok(Message::IacsTunnelOpen {
+                        request_id,
+                        session_id,
+                        ..
+                    }) => {
+                        if let Err(e) = proxy_side.send(&Message::IacsTunnelOpened {
+                            request_id,
+                            session_id,
+                            success: true,
+                            error: None,
+                        }) {
+                            eprintln!("mock-proxy-iacs: open ack failed: {e}");
+                            break;
+                        }
+                    }
+                    Ok(Message::IacsTunnelSnapshotRequest { request_id }) => {
+                        if let Err(e) = proxy_side.send(&Message::IacsTunnelSnapshotResponse {
+                            request_id,
+                            entries: vec![],
+                        }) {
+                            eprintln!("mock-proxy-iacs: snapshot ack failed: {e}");
+                            break;
+                        }
+                    }
+                    Ok(Message::IacsTunnelTerminate { .. })
+                    | Ok(Message::IacsProxyHealth { .. }) => {}
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("mock-proxy-iacs: recv ended: {e}");
+                        break;
+                    }
+                }
+            }
+        })
+        .expect("spawn mock-proxy-iacs thread");
+
+    client
+}
+
 /// Test application wrapper.
 pub struct TestApp {
     pub server: TestServer,
@@ -291,6 +374,15 @@ impl TestApp {
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let identity_challenges = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
+        let iacs_recording_telemetry =
+            vauban_web::services::system_health::IacsRecordingTelemetry::default();
+
+        // Lot A removed the in-process IACS sshd fallback: connect-iacs is
+        // fail-closed without `proxy_iacs`. Install a long-lived mock that
+        // ACKs `IacsTunnelOpen` / empty Snapshot so E2E connect/status/
+        // countdown tests exercise the real handler path.
+        let proxy_iacs = Some(spawn_mock_proxy_iacs_always_open());
+
         // Create app state
         let state = AppState {
             config: config.clone(),
@@ -303,7 +395,7 @@ impl TestApp {
             rate_limiter,
             ssh_proxy: None,    // No SSH proxy in tests
             rdp_proxy: None,    // No RDP proxy in tests
-            proxy_iacs: None,   // No IACS proxy in tests
+            proxy_iacs,
             supervisor: None,   // No supervisor in tests
             vault_client: None, // No vault in tests (dev mode fallback)
             audit_client: None, // No audit sink in tests (emissions no-op)
@@ -320,6 +412,7 @@ impl TestApp {
             live_session_history: std::sync::Arc::new(
                 vauban_web::services::system_health::LiveSessionHistory::default(),
             ),
+            iacs_recording_telemetry: iacs_recording_telemetry.clone(),
             system_health_cache: std::sync::Arc::new(
                 vauban_web::services::system_health::SystemHealthCache::new(
                     db_pool.clone(),
@@ -327,6 +420,7 @@ impl TestApp {
                         vauban_web::services::broker_latency::BrokerLatencyTracker::default(),
                     ),
                     std::sync::Arc::new(vauban_web::services::system_health::HttpRateTracker::new()),
+                    Some(iacs_recording_telemetry),
                 ),
             ),
             pending_mfa: vauban_web::services::pending_mfa::PendingMfaStore::new(),
@@ -1372,7 +1466,8 @@ pub mod ipc_test_service {
 
     use casbin::prelude::*;
     use shared::ipc::{IpcChannel, IpcError};
-    use shared::messages::{AccessResponse, Message, RbacResult};
+    use shared::messages::{AccessRequest, AccessResponse, Message, RbacResult};
+    use shared::session_token::{SessionTokenParams, TokenKey};
     use vauban_web::ipc::AccessIpcClient;
 
     pub struct InProcessAccessService {
@@ -1471,6 +1566,11 @@ pub mod ipc_test_service {
 
         let enforcer = load_test_enforcer(&rt);
 
+        // Test-only MAC key (production loads VAUBAN_SESSION_TOKEN_KEY
+        // from the supervisor). Required so IssueSessionToken can mint
+        // for IACS connect-iacs after Lot A (proxy-only path).
+        let session_token_key = TokenKey::from_bytes([0xABu8; 32]);
+
         // Initialize vauban-access's virtual-group OnceLock from the test
         // database. The handlers that special-case the "All assets"
         // virtual group rely on this resolved id, so without this call
@@ -1489,6 +1589,43 @@ pub mod ipc_test_service {
 
         loop {
             match channel.recv() {
+                Ok(Message::AccessRequest {
+                    request_id,
+                    request: AccessRequest::IssueSessionToken {
+                        user_uuid,
+                        asset_uuid,
+                        protocol,
+                        host,
+                        port,
+                        target_service,
+                        session_id,
+                    },
+                }) => {
+                    // Mirror vauban-access main.rs: mint needs the key and
+                    // must NOT fall through to handle_access_request
+                    // (that arm is fail-closed SessionTokenDenied).
+                    let params = SessionTokenParams {
+                        session_id,
+                        user_uuid,
+                        asset_uuid,
+                        protocol,
+                        host,
+                        port,
+                        target_service,
+                    };
+                    let response = rt.block_on(vauban_access::handlers::handle_issue_session_token(
+                        &pool,
+                        &session_token_key,
+                        params,
+                    ));
+                    let msg = Message::AccessResponse {
+                        request_id,
+                        response,
+                    };
+                    if channel.send(&msg).is_err() {
+                        break;
+                    }
+                }
                 Ok(Message::AccessRequest {
                     request_id,
                     request,

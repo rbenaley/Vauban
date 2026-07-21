@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::config::Config;
+use crate::models::session::SessionStatus;
 
 /// Minimum interval between two `last_activity` refreshes driven by
 /// SSH/RDP WebSocket input (the [`ActivityThrottle`] window used by the
@@ -153,7 +154,7 @@ pub async fn is_proxy_session_live(state: &AppState, session_id: &str) -> bool {
     let now = chrono::Utc::now();
     let count: i64 = proxy_sessions::table
         .filter(proxy_sessions::uuid.eq(session_uuid))
-        .filter(proxy_sessions::status.eq_any(["connecting", "active"]))
+        .filter(proxy_sessions::status.eq_any(SessionStatus::SSH_RDP_INFLIGHT_AS_STR))
         .filter(
             proxy_sessions::expires_at
                 .is_null()

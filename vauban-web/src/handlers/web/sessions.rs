@@ -1,6 +1,6 @@
 /// Session and approval page handlers.
 use super::*;
-use crate::models::session::SessionType;
+use crate::models::session::{SessionStatus, SessionType};
 
 /// Statuses that belong to the approval lifecycle. Session-state
 /// statuses (connecting, active, terminated, disconnected) are
@@ -1880,18 +1880,6 @@ impl UpdateDurationForm {
     }
 }
 
-/// `proxy_sessions.status` values that denote a LIVE session (data may
-/// be flowing): SSH/RDP handshake or active, IACS waiting for its
-/// client or relaying. Used by the revocation cascade and the
-/// duration clamp.
-const LIVE_SESSION_STATUSES: [&str; 5] = [
-    "connecting",
-    "active",
-    "waiting_client",
-    "ews_connected",
-    "tunnel_active",
-];
-
 /// Revoke an APPROVED access grant (instant cut).
 ///
 /// POST /sessions/approvals/{uuid}/revoke
@@ -2081,7 +2069,7 @@ async fn cascade_terminate_grant_sessions(state: &AppState, grant_uuid: ::uuid::
     let live_sessions: Vec<ProxySession> = proxy_sessions::table
         .filter(proxy_sessions::user_id.eq(grant_user_id))
         .filter(proxy_sessions::asset_id.eq(grant_asset_id))
-        .filter(proxy_sessions::status.eq_any(LIVE_SESSION_STATUSES))
+        .filter(proxy_sessions::status.eq_any(SessionStatus::LIVE_AS_STR))
         .load(&mut conn)
         .await
         .unwrap_or_default();
@@ -2151,7 +2139,7 @@ async fn clamp_grant_live_sessions(state: &AppState, grant_uuid: ::uuid::Uuid) {
         proxy_sessions::table
             .filter(proxy_sessions::user_id.eq(grant_user_id))
             .filter(proxy_sessions::asset_id.eq(grant_asset_id))
-            .filter(proxy_sessions::status.eq_any(LIVE_SESSION_STATUSES))
+            .filter(proxy_sessions::status.eq_any(SessionStatus::LIVE_AS_STR))
             .filter(
                 proxy_sessions::expires_at
                     .is_null()
@@ -3014,13 +3002,13 @@ pub async fn active_sessions(
     // Industrial kill-switch (layer 2): when `industrial.enabled =
     // false`, IACS tunnels are excluded from the operational
     // `/sessions/active` pane (`session_type.ne(IacsTunnel)`). The
-    // base `status.eq_any(["active", "ews_connected", "tunnel_active"])` clause is
-    // preserved so the three-site lock-step pin stays exact; the
-    // extra exclusion simply removes the IACS leg under the switch.
+    // base `SessionStatus::OPERATOR_ACTIVE_AS_STR` clause is preserved so
+    // the three-site lock-step pin stays exact; the extra exclusion
+    // simply removes the IACS leg under the switch.
     let mut total_query = proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
+        .filter(proxy_sessions::status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
         .filter(proxy_sessions::connected_at.is_not_null())
         .into_boxed();
     if !state.config.industrial.enabled {
@@ -3036,7 +3024,7 @@ pub async fn active_sessions(
     let mut data_query = proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
+        .filter(proxy_sessions::status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
         .filter(proxy_sessions::connected_at.is_not_null())
         .into_boxed();
     // Industrial kill-switch (layer 2): same exclusion as the count

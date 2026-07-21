@@ -632,6 +632,10 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     requests_failed: inner.requests_failed.load(Ordering::Relaxed),
                     active_connections: 0, // TODO: track WebSocket connections
                     pending_requests: 0,
+                    recording_ack_timeouts: 0,
+                    recording_ack_dropped: 0,
+                    recording_try_send_full: 0,
+                    recording_ack_wait_ms_max: 0,
                 };
                 let pong = Message::Control(ControlMessage::Pong { seq, stats });
                 if let Err(e) = inner.channel.send(&pong) {

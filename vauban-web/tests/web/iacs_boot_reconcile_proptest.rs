@@ -13,7 +13,7 @@ use shared::messages::{
 };
 use uuid::Uuid;
 use vauban_web::services::iacs_tunnel::{
-    BootAction, DbLiveRow, is_live_status, phase_to_status, reconcile_iacs_boot,
+    BootAction, DbLiveRow, is_iacs_open, phase_to_status, reconcile_iacs_boot,
 };
 
 #[derive(Debug, Clone)]
@@ -95,7 +95,7 @@ proptest! {
             .filter_map(|e| Uuid::parse_str(&e.session_id).ok())
             .collect();
         for row in &case.db {
-            let should = is_live_status(&row.status) && !proxy_ids.contains(&row.session_id);
+            let should = is_iacs_open(&row.status) && !proxy_ids.contains(&row.session_id);
             let has = plan.iter().any(|a| {
                 matches!(a, BootAction::TerminateDb { session_id } if *session_id == row.session_id)
             });
@@ -139,7 +139,7 @@ proptest! {
                 continue;
             };
             let target = phase_to_status(e.phase);
-            let should = !is_live_status(&row.status) || row.status != target;
+            let should = !is_iacs_open(&row.status) || row.status != target;
             let has = plan.iter().any(|a| {
                 matches!(a, BootAction::Rehydrate { session_id, .. } if *session_id == id)
             });

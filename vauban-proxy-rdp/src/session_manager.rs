@@ -10,6 +10,9 @@ use std::time::Instant;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info};
 
+/// Hook invoked when the audit recording channel rejects a `try_send`.
+pub type RecordingDropHook = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Handle for communicating with a session task.
 pub struct SessionHandle {
     tx: mpsc::Sender<SessionCommand>,
@@ -51,6 +54,7 @@ impl SessionManager {
         config: SessionConfig,
         web_tx: mpsc::Sender<Message>,
         audit_tx: Option<mpsc::Sender<Message>>,
+        recording_on_full: Option<RecordingDropHook>,
     ) -> SessionResult<(String, u16, u16)> {
         let session_id = config.session_id.clone();
 
@@ -68,7 +72,8 @@ impl SessionManager {
 
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
 
-        let rdp_session = RdpSession::connect(config, web_tx, cmd_rx, audit_tx).await?;
+        let rdp_session =
+            RdpSession::connect(config, web_tx, cmd_rx, audit_tx, recording_on_full).await?;
 
         let desktop_width = rdp_session.desktop_width;
         let desktop_height = rdp_session.desktop_height;

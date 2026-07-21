@@ -12,9 +12,7 @@ use chrono::Utc;
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use serial_test::serial;
-use shared::messages::{
-    IACS_SNAPSHOT_PHASE_TUNNEL_ACTIVE, IacsTunnelSnapshotEntry, Message,
-};
+use shared::messages::{IACS_SNAPSHOT_PHASE_TUNNEL_ACTIVE, IacsTunnelSnapshotEntry, Message};
 use std::sync::Arc;
 use uuid::Uuid;
 use vauban_web::services::iacs_tunnel::{
@@ -147,8 +145,8 @@ fn spawn_mock_proxy(
     let read_fd = web_side.read_fd();
     let write_fd = web_side.write_fd();
     std::mem::forget(web_side);
-    let client = vauban_web::ipc::proxy_iacs::ProxyIacsClient::new(read_fd, write_fd)
-        .expect("client");
+    let client =
+        vauban_web::ipc::proxy_iacs::ProxyIacsClient::new(read_fd, write_fd).expect("client");
 
     let (term_tx, term_rx) = std::sync::mpsc::channel();
     let client_for_pump = Arc::clone(&client);
@@ -220,7 +218,10 @@ async fn boot_rehydrate_restores_terminated_row_from_proxy_entry() {
         .first(&mut conn)
         .await
         .expect("disconnected_at");
-    assert!(disconnected.is_none(), "rehydrate must clear disconnected_at");
+    assert!(
+        disconnected.is_none(),
+        "rehydrate must clear disconnected_at"
+    );
 }
 
 #[tokio::test]
@@ -311,7 +312,10 @@ async fn apply_plan_rehydrate_and_terminate_db_without_snapshot() {
     let stats = apply_boot_reconcile_plan(&app.db_pool, Some(client.as_ref()), &plan)
         .await
         .expect("apply");
-    assert_eq!(stats.rehydrated, 1, "rehydrate must update the terminated row");
+    assert_eq!(
+        stats.rehydrated, 1,
+        "rehydrate must update the terminated row"
+    );
     assert_eq!(stats.terminated_db, 1);
 
     let mut conn = app.get_conn().await;

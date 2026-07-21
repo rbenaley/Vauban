@@ -688,6 +688,7 @@ async fn build_state_from(app: &TestApp) -> vauban_web::AppState {
         live_session_history: std::sync::Arc::new(
             vauban_web::services::system_health::LiveSessionHistory::default(),
         ),
+        iacs_recording_telemetry: app.app_state.iacs_recording_telemetry.clone(),
         system_health_cache: std::sync::Arc::new(
             vauban_web::services::system_health::SystemHealthCache::new(
                 app.db_pool.clone(),
@@ -695,6 +696,7 @@ async fn build_state_from(app: &TestApp) -> vauban_web::AppState {
                     vauban_web::services::broker_latency::BrokerLatencyTracker::default(),
                 ),
                 std::sync::Arc::new(vauban_web::services::system_health::HttpRateTracker::new()),
+                Some(app.app_state.iacs_recording_telemetry.clone()),
             ),
         ),
         pending_mfa: vauban_web::services::pending_mfa::PendingMfaStore::new(),

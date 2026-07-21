@@ -21,6 +21,7 @@
 pub mod dissectors;
 pub mod flow;
 pub mod parser;
+pub mod reassembly;
 pub mod types;
 
 use std::io::Read;
@@ -74,6 +75,75 @@ pub fn analyze_channel_bytes(
 fn summaries_from_raw(raw: &[RawPacket], profile: ExpectedProfile) -> Vec<PacketSummary> {
     let endpoints = ChannelEndpoints::infer_from_first_packets(raw);
 
+    let mut reasm_ews_to_asset = reassembly::TcpReassembler::new(profile);
+    let mut reasm_asset_to_ews = reassembly::TcpReassembler::new(profile);
+
+    // frame_idx -> (kind, summary) from the last segment that completed
+    // (or overflow-flushed) a reassembled PDU.
+    let mut frame_dissections: std::collections::HashMap<usize, (PacketKind, String)> =
+        std::collections::HashMap::new();
+
+    for p in raw {
+        if p.payload.is_empty() {
+            continue;
+        }
+        let direction = endpoints
+            .as_ref()
+            .map(|e| e.direction_of(p))
+            .unwrap_or(Direction::EwsToAsset);
+
+        let reasm = match direction {
+            Direction::EwsToAsset => &mut reasm_ews_to_asset,
+            Direction::AssetToEws => &mut reasm_asset_to_ews,
+        };
+
+        let pdus = reasm.push(&p.payload);
+        if pdus.is_empty() && reasm.has_buffered() {
+            let d = dissectors::dissect_fragment(&p.payload, p.payload_offset, direction);
+            frame_dissections.insert(p.frame_idx, (d.kind, d.summary));
+            continue;
+        }
+
+        for pdu in pdus {
+            let d = if pdu.complete {
+                dissectors::dissect(&pdu.data, p.payload_offset, direction, profile)
+            } else {
+                dissectors::dissect_fragment(&pdu.data, p.payload_offset, direction)
+            };
+            frame_dissections.insert(p.frame_idx, (d.kind, d.summary));
+        }
+    }
+
+    for (reasm, direction) in [
+        (&mut reasm_ews_to_asset, Direction::EwsToAsset),
+        (&mut reasm_asset_to_ews, Direction::AssetToEws),
+    ] {
+        if let Some(pdu) = reasm.flush_fragment() {
+            let payload_offset = raw
+                .iter()
+                .rev()
+                .find(|p| {
+                    !p.payload.is_empty()
+                        && endpoints
+                            .as_ref()
+                            .map(|e| e.direction_of(p) == direction)
+                            .unwrap_or(direction == Direction::EwsToAsset)
+                })
+                .map(|p| p.payload_offset)
+                .unwrap_or(0);
+            let d = dissectors::dissect_fragment(&pdu.data, payload_offset, direction);
+            if let Some(last) = raw.iter().rev().find(|p| {
+                !p.payload.is_empty()
+                    && endpoints
+                        .as_ref()
+                        .map(|e| e.direction_of(p) == direction)
+                        .unwrap_or(direction == Direction::EwsToAsset)
+            }) {
+                frame_dissections.insert(last.frame_idx, (d.kind, d.summary));
+            }
+        }
+    }
+
     raw.iter()
         .map(|p| {
             let direction = endpoints
@@ -81,16 +151,18 @@ fn summaries_from_raw(raw: &[RawPacket], profile: ExpectedProfile) -> Vec<Packet
                 .map(|e| e.direction_of(p))
                 .unwrap_or(Direction::EwsToAsset);
 
-            let summary_text;
-            let kind;
-            if p.payload.is_empty() {
-                kind = PacketKind::Tcp;
-                summary_text = format!("{} {}", direction.arrow(), p.tcp_flags.label());
+            let (kind, summary_text) = if p.payload.is_empty() {
+                (
+                    PacketKind::Tcp,
+                    format!("{} {}", direction.arrow(), p.tcp_flags.label()),
+                )
+            } else if let Some((k, s)) = frame_dissections.get(&p.frame_idx) {
+                (*k, s.clone())
             } else {
                 let d = dissectors::dissect(&p.payload, p.payload_offset, direction, profile);
-                kind = d.kind;
-                summary_text = d.summary;
-            }
+                (d.kind, d.summary)
+            };
+
             PacketSummary {
                 frame_idx: p.frame_idx,
                 timestamp_us: p.timestamp_us,

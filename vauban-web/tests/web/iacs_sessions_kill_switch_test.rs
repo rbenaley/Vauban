@@ -72,7 +72,7 @@ fn session_list_db_filter_is_gated_on_industrial_enabled() {
 
 /// `active_sessions` MUST drop IACS rows under the kill-switch, on
 /// both the count and the data query, while preserving the
-/// `status.eq_any(["active", "tunnel_active"])` base clause (pinned
+/// `SessionStatus::OPERATOR_ACTIVE_AS_STR` base clause (pinned
 /// separately by `iacs_active_sessions_pin_test`).
 #[test]
 fn active_sessions_db_filter_is_gated_on_industrial_enabled() {
@@ -91,10 +91,10 @@ fn active_sessions_db_filter_is_gated_on_industrial_enabled() {
         exclusions
     );
     assert!(
-        body.contains(r#"status.eq_any(["active", "ews_connected", "tunnel_active"])"#),
-        "active_sessions MUST keep the base `status.eq_any([\"active\", \
-         \"tunnel_active\"])` clause (the kill-switch ADDS an exclusion, \
-         it does not replace the status filter)"
+        body.contains("SessionStatus::OPERATOR_ACTIVE_AS_STR"),
+        "active_sessions MUST keep the base \
+         `SessionStatus::OPERATOR_ACTIVE_AS_STR` clause (the kill-switch \
+         ADDS an exclusion, it does not replace the status filter)"
     );
 }
 

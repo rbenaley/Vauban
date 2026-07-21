@@ -244,6 +244,56 @@ impl SessionStatus {
                 | Self::TunnelActive
         )
     }
+
+    /// Wire strings for [`Self::is_live`] -- resource-hold / cascade
+    /// terminate / session-limit accounting.
+    pub const LIVE_AS_STR: [&str; 5] = [
+        "connecting",
+        "active",
+        "waiting_client",
+        "ews_connected",
+        "tunnel_active",
+    ];
+
+    /// Operator "Active Sessions" / Bastion Watch LIVE surface
+    /// (connected enough to show; excludes `waiting_client` and
+    /// `connecting`).
+    pub const OPERATOR_ACTIVE_AS_STR: [&str; 3] = ["active", "ews_connected", "tunnel_active"];
+
+    /// IACS open lifecycle (pending EWS, authenticated, or tunneling).
+    pub const IACS_OPEN_AS_STR: [&str; 3] = ["waiting_client", "ews_connected", "tunnel_active"];
+
+    /// IACS pre-channel TTL reap window.
+    pub const WAITING_TTL_AS_STR: [&str; 2] = ["waiting_client", "ews_connected"];
+
+    /// IACS post-auth (EWS proven; channel may or may not be open).
+    pub const IACS_AUTH_AS_STR: [&str; 2] = ["ews_connected", "tunnel_active"];
+
+    /// SSH/RDP handshake + active (WS revalidate / activity).
+    pub const SSH_RDP_INFLIGHT_AS_STR: [&str; 2] = ["connecting", "active"];
+
+    pub fn is_operator_active(&self) -> bool {
+        matches!(self, Self::Active | Self::EwsConnected | Self::TunnelActive)
+    }
+
+    pub fn is_iacs_open(&self) -> bool {
+        matches!(
+            self,
+            Self::WaitingClient | Self::EwsConnected | Self::TunnelActive
+        )
+    }
+
+    pub fn is_waiting_ttl(&self) -> bool {
+        matches!(self, Self::WaitingClient | Self::EwsConnected)
+    }
+
+    pub fn is_iacs_authenticated(&self) -> bool {
+        matches!(self, Self::EwsConnected | Self::TunnelActive)
+    }
+
+    pub fn is_ssh_rdp_inflight(&self) -> bool {
+        matches!(self, Self::Connecting | Self::Active)
+    }
 }
 
 /// Proxy session database model.

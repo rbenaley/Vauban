@@ -64,12 +64,13 @@ Detailed technical architecture documents are available in [`docs/technical/`](d
 | [RDP Session Architecture](docs/technical/Vauban_RDP_Architecture_EN(1.0).md) | H.264 encoding, WebCodecs decoding, dynamic resolution, input pipeline |
 | [OpenH264 AVX2 Optimizations](docs/technical/Vauban_OpenH264_AVX2_Optimizations_EN(1.0).md) | Custom AVX2 assembly for SAD and intra prediction (~50% CPU reduction) |
 | [ACME TLS Certificate Architecture](docs/technical/Vauban_ACME_TLS_Architecture_EN(1.0).md) | Automatic certificate renewal, TLS-ALPN-01, zero-downtime rotation |
-| [Session Recording Architecture](docs/technical/Vauban_Recording_Architecture_EN(1.6).md) | RDP segmented fMP4 + SSH asciicast v2 + IACS PCAP bundle (`pcap-bundle`) with synthetic L3/L4 (Wireshark-compatible); IACS gzip+BLAKE3 in audit; input redaction, DASH/asciinema playback, ZIP download |
+| [Session Recording Architecture](docs/technical/Vauban_Recording_Architecture_EN(1.7).md) | RDP segmented fMP4 + SSH asciicast v2 + IACS PCAP bundle (`pcap-bundle`) with synthetic L3/L4 (Wireshark-compatible); IACS gzip+BLAKE3 in audit; input redaction, DASH/asciinema playback, ZIP download |
+| [ADR 001 -- Recording durability](docs/adr/001-recording-durability-per-protocol.md) | IACS ack-block fail-closed vs SSH/RDP best-effort with detectable loss |
 | [IAM Architecture](docs/technical/Vauban_IAM_Architecture_EN(1.0).md) | Two-layer authorization (Casbin RBAC + instance-level access rules), Argon2id auth service, JIT approval audit & separation of duties |
 | [LDAPS Auth Architecture](docs/technical/Vauban_LDAPS_Auth_Architecture_EN(1.0).md) | Directory-backed login, LDAPS bind via vauban-auth, JIT provisioning, anti-downgrade |
 | [AccessGuard Architecture](docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md) | Shared `shared::access_guard` defense-in-depth RBAC re-check gate (fail-closed, 10s timeout, RAII pending-map) |
 | [IACS Proxy Architecture](docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.1).md) | EWS-facing russh sshd, per-asset target resolution, Capsicum-aware FD passing (listener + Ed25519 host key), anti-SSRF supervisor broker, BLAKE3 session-token gate, boot Snapshot resync |
-| [IACS Inspect Capture](docs/technical/Vauban_IACS_Inspect_Capture_EN(1.0).md) | Admin-only inline PCAP analyzer for IACS recordings: industrial-protocol-aware dissectors (Modbus/TCP, IEC-104, passthrough), tree<->hex bidirectional highlight, server-rendered HTMX + Tailwind, no inline JavaScript |
+| [IACS Inspect Capture](docs/technical/Vauban_IACS_Inspect_Capture_EN(1.1).md) | Admin-only inline PCAP analyzer for IACS recordings: industrial-protocol-aware dissectors (Modbus/TCP, IEC-104, OPC-UA, PROFINET, passthrough), bounded TCP reassembly, tree<->hex bidirectional highlight, server-rendered HTMX + Tailwind, no inline JavaScript |
 
 ## Security Model
 

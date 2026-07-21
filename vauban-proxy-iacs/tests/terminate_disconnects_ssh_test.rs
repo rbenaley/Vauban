@@ -212,9 +212,16 @@ fn handler_drop_removes_russh_handle() {
 fn main_loop_threads_session_handles_to_terminate_handler() {
     let src = read_src("main.rs");
 
+    // Import may also pull `build_tunnel_snapshot` (boot Snapshot resync);
+    // pin the symbols, not the exact brace list.
+    let registry_import = src
+        .lines()
+        .find(|l| l.contains("use crate::registry::{") && l.contains("SessionHandles"))
+        .unwrap_or("");
     assert!(
-        src.contains("use crate::registry::{SessionHandles, TunnelRegistry};"),
-        "main.rs MUST import `SessionHandles` from the registry module."
+        registry_import.contains("SessionHandles") && registry_import.contains("TunnelRegistry"),
+        "main.rs MUST import `SessionHandles` and `TunnelRegistry` from \
+         the registry module (got: {registry_import:?})."
     );
     assert!(
         src.contains("let session_handles = SessionHandles::new();"),

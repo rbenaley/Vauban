@@ -38,7 +38,7 @@ use axum::http::StatusCode;
 use uuid::Uuid;
 
 use crate::models::asset::Asset;
-use crate::models::session::{NewProxySession, SessionType};
+use crate::models::session::{NewProxySession, SessionStatus, SessionType};
 use crate::templates::sessions::IacsTunnelStatusTemplate;
 
 // ===================================================================
@@ -281,7 +281,7 @@ pub async fn connect_iacs(
         let live: i64 = ps::table
             .filter(ps::user_id.eq(user_id))
             .filter(ps::session_type.eq("iacs_tunnel"))
-            .filter(ps::status.eq_any(["waiting_client", "ews_connected", "tunnel_active"]))
+            .filter(ps::status.eq_any(SessionStatus::IACS_OPEN_AS_STR))
             .count()
             .get_result(&mut conn)
             .await
@@ -306,7 +306,7 @@ pub async fn connect_iacs(
         let live: i64 = ps::table
             .filter(ps::ews_uuid.eq(pinned_ews_uuid))
             .filter(ps::session_type.eq("iacs_tunnel"))
-            .filter(ps::status.eq_any(["waiting_client", "ews_connected", "tunnel_active"]))
+            .filter(ps::status.eq_any(SessionStatus::IACS_OPEN_AS_STR))
             .count()
             .get_result(&mut conn)
             .await
@@ -446,11 +446,9 @@ pub async fn connect_iacs(
             session_uuid = %session_uuid,
             "iacs_tunnel: proxy-iacs IPC client unavailable -- fail-closed"
         );
-        let _ = diesel::delete(
-            proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
-        )
-        .execute(&mut conn)
-        .await;
+        let _ = diesel::delete(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)))
+            .execute(&mut conn)
+            .await;
         return iacs_tunnel_error_response(
             &headers,
             StatusCode::SERVICE_UNAVAILABLE,
@@ -477,16 +475,11 @@ pub async fn connect_iacs(
                 error = %e,
                 "iacs_tunnel: session token mint failed -- rolling back proxy_session row"
             );
-            let _ = diesel::delete(
-                proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
-            )
-            .execute(&mut conn)
-            .await;
-            return iacs_tunnel_error_response(
-                &headers,
-                StatusCode::FORBIDDEN,
-                "Access denied",
-            );
+            let _ =
+                diesel::delete(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)))
+                    .execute(&mut conn)
+                    .await;
+            return iacs_tunnel_error_response(&headers, StatusCode::FORBIDDEN, "Access denied");
         }
     };
 
@@ -526,11 +519,10 @@ pub async fn connect_iacs(
                 error = %err,
                 "iacs_tunnel: proxy-iacs rejected open -- rolling back"
             );
-            let _ = diesel::delete(
-                proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
-            )
-            .execute(&mut conn)
-            .await;
+            let _ =
+                diesel::delete(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)))
+                    .execute(&mut conn)
+                    .await;
             return iacs_tunnel_error_response(
                 &headers,
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -544,11 +536,10 @@ pub async fn connect_iacs(
                 error = %e,
                 "iacs_tunnel: IPC to proxy-iacs failed -- rolling back"
             );
-            let _ = diesel::delete(
-                proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
-            )
-            .execute(&mut conn)
-            .await;
+            let _ =
+                diesel::delete(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)))
+                    .execute(&mut conn)
+                    .await;
             return iacs_tunnel_error_response(
                 &headers,
                 StatusCode::INTERNAL_SERVER_ERROR,

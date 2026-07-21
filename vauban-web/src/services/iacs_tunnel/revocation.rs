@@ -27,6 +27,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::models::session::SessionStatus;
 use chrono::Utc;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
@@ -52,11 +53,7 @@ pub async fn reconcile_orphaned_iacs_tunnels_on_boot(pool: &DbPool) -> Result<us
     let terminated = diesel::update(
         crate::schema::proxy_sessions::table
             .filter(crate::schema::proxy_sessions::session_type.eq("iacs_tunnel"))
-            .filter(crate::schema::proxy_sessions::status.eq_any([
-                "tunnel_active",
-                "ews_connected",
-                "waiting_client",
-            ])),
+            .filter(crate::schema::proxy_sessions::status.eq_any(SessionStatus::IACS_OPEN_AS_STR)),
     )
     .set((
         crate::schema::proxy_sessions::status.eq("terminated"),
@@ -123,7 +120,7 @@ pub async fn run_once_with_proxy(
             .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
             .left_join(ews::table.on(ews::uuid.nullable().eq(proxy_sessions::ews_uuid)))
             .filter(proxy_sessions::session_type.eq("iacs_tunnel"))
-            .filter(proxy_sessions::status.eq_any(["ews_connected", "tunnel_active"]))
+            .filter(proxy_sessions::status.eq_any(SessionStatus::IACS_AUTH_AS_STR))
             .filter(
                 users::is_active
                     .eq(false)
@@ -143,7 +140,7 @@ pub async fn run_once_with_proxy(
             let updated = diesel::update(
                 proxy_sessions::table
                     .filter(proxy_sessions::uuid.eq(sess_uuid))
-                    .filter(proxy_sessions::status.eq_any(["ews_connected", "tunnel_active"])),
+                    .filter(proxy_sessions::status.eq_any(SessionStatus::IACS_AUTH_AS_STR)),
             )
             .set((
                 proxy_sessions::status.eq("terminated"),
@@ -185,7 +182,7 @@ pub async fn run_once_with_proxy(
             Option<chrono::DateTime<Utc>>,
         )> = proxy_sessions::table
             .filter(proxy_sessions::session_type.eq("iacs_tunnel"))
-            .filter(proxy_sessions::status.eq_any(["waiting_client", "ews_connected"]))
+            .filter(proxy_sessions::status.eq_any(SessionStatus::WAITING_TTL_AS_STR))
             .select((
                 proxy_sessions::uuid,
                 proxy_sessions::status,
@@ -217,7 +214,7 @@ pub async fn run_once_with_proxy(
             let _ = diesel::update(
                 proxy_sessions::table
                     .filter(proxy_sessions::uuid.eq_any(&uuids))
-                    .filter(proxy_sessions::status.eq_any(["waiting_client", "ews_connected"])),
+                    .filter(proxy_sessions::status.eq_any(SessionStatus::WAITING_TTL_AS_STR)),
             )
             .set((
                 proxy_sessions::status.eq("expired"),
@@ -385,8 +382,7 @@ pub fn spawn_watchdog_with_proxy_iacs(
         tick.tick().await;
         loop {
             tick.tick().await;
-            let (closed, transitions) =
-                run_once_with_proxy(&pool, &cfg, proxy_iacs.as_ref()).await;
+            let (closed, transitions) = run_once_with_proxy(&pool, &cfg, proxy_iacs.as_ref()).await;
             if closed > 0 || transitions > 0 {
                 tracing::debug!(closed, transitions, "iacs_tunnel watchdog: tick complete");
             }

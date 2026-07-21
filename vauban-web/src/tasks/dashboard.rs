@@ -227,9 +227,10 @@ async fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
     // Count active sessions: SSH/RDP run as `active`, IACS tunnels
     // run as `tunnel_active`. Both are "live" so the dashboard tile
     // reflects what an operator would see on `/sessions/active`.
+    use crate::models::session::SessionStatus;
     use crate::schema::proxy_sessions::dsl::*;
     let active_sessions_count: i64 = proxy_sessions
-        .filter(status.eq_any(["active", "ews_connected", "tunnel_active"]))
+        .filter(status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
         .count()
         .get_result(&mut conn)
         .await
@@ -270,13 +271,14 @@ async fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem
     let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
 
     use crate::models::session::ProxySession;
+    use crate::models::session::SessionStatus;
     use crate::schema::proxy_sessions::dsl::*;
 
     // Same composite filter as `fetch_active_sessions_full`: SSH/RDP
     // (`active`) and IACS (`tunnel_active`) both surface on the home
     // dashboard "live sessions" widget.
     let sessions: Vec<ProxySession> = proxy_sessions
-        .filter(status.eq_any(["active", "ews_connected", "tunnel_active"]))
+        .filter(status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
         .order(created_at.desc())
         .limit(10)
         .load(&mut conn)
@@ -310,6 +312,7 @@ async fn fetch_active_sessions_full(
 ) -> Result<Vec<FullActiveSessionItem>, String> {
     let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
 
+    use crate::models::session::SessionStatus;
     use crate::schema::{assets as schema_assets, proxy_sessions, users};
     use diesel::{ExpressionMethods, JoinOnDsl, QueryDsl};
     use diesel_async::RunQueryDsl;
@@ -333,7 +336,7 @@ async fn fetch_active_sessions_full(
         let mut q = proxy_sessions::table
             .inner_join(schema_assets::table)
             .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-            .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
+            .filter(proxy_sessions::status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
             .filter(proxy_sessions::connected_at.is_not_null())
             .into_boxed();
         // Industrial kill-switch (layer 2): drop IACS tunnels from the

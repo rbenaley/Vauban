@@ -1,10 +1,7 @@
 # Vauban IACS Inspect Capture Architecture
 
-> **Superseded:** This document is superseded by
-> [Vauban_IACS_Inspect_Capture_EN(1.1).md](Vauban_IACS_Inspect_Capture_EN(1.1).md).
-
-**Version:** 1.0  
-**Date:** 25 May 2026  
+**Version:** 1.1  
+**Date:** 21 July 2026  
 **Author:** Richard Ben Aleya
 
 ---
@@ -169,7 +166,7 @@ flowchart TD
     Parse["parser<br/><i>gunzip + libpcap headers<br/>IPv4/IPv6 + TCP decode<br/>payload slice</i>"]
     Raw["Vec&lt;RawPacket&gt;"]
     Flow["flow inference<br/><i>canonical client / server tuple<br/>from the first SYN</i>"]
-    Dis["dissector<br/><i>Modbus . IEC-104 . Passthrough</i><br/>-> { kind, summary, field tree }"]
+    Dis["dissector + reassembly<br/><i>Modbus . IEC-104 . OPC-UA . PROFINET . Passthrough</i><br/>-> { kind, summary, field tree }"]
     Sum["PacketSummary timeline"]
     Page["filter + paginate<br/><b>list view</b>"]
     Detail["per-frame dissection +<br/>byte&lt;-&gt;field map<br/><b>detail view</b>"]
@@ -191,11 +188,15 @@ The pipeline has four stages, each with a narrow contract:
    SYN of the channel. This is what lets the rest of the pipeline
    answer "EWS->asset" vs "asset->EWS" deterministically, without
    having to consult `meta.json` again at every frame.
-3. **Dissection** -- dispatch on the asset's industrial profile.
-   Each dissector returns a small, uniform structure: a
-   classification (`read` / `cmd` / `exception`), a one-line summary
-   for the list view, and a tree of fields with absolute byte
-   offsets for the detail view.
+3. **Reassembly + dissection** -- per-direction TCP stream buffers
+   reassemble length-framed PDUs (Modbus, OPC-UA, IEC-104) with hard
+   caps (`64 KiB`, `64` segments). Incomplete fragments are dissected
+   through the passthrough floor (never `Cmd`). Complete PDUs are
+   dispatched on the asset's industrial profile. Each dissector
+   returns a small, uniform structure: a classification
+   (`read` / `cmd` / `exception`), a one-line summary for the list
+   view, and a tree of fields with absolute byte offsets for the
+   detail view.
 4. **Project** -- two views are derived from the timeline. The list
    view applies an optional filter (direction, kind, free-text
    search on the summary) and pages the result. The detail view
@@ -232,7 +233,9 @@ a glance every state-changing intent the EWS sent to the asset.
 |------------------------------------------------------|---------------|----------|
 | Modbus/TCP                                           | `modbus`      | MBAP header, function code, request- vs response-shaped sub-tree, exception bit |
 | IEC 60870-5-104                                      | `iec104`      | APCI start byte / format / sequence numbers, ASDU type ID, Cause of Transmission |
-| OPC-UA, PROFINET, BACnet/SC, MQTT/TLS, DNP3, generic | `passthrough` | byte count + ASCII preview |
+| OPC-UA Binary (UA TCP)                               | `opcua`       | Message type header, heuristic service-id classification for `MSG` frames |
+| PROFINET DCE/RPC                                     | `profinet`    | CO PDU version / ptype / frag length |
+| BACnet/SC, MQTT/TLS, DNP3, generic                   | `passthrough` | byte count + ASCII preview |
 
 ### 5.3 The Passthrough Floor
 
@@ -327,6 +330,7 @@ mis-truncated PCAP from exhausting memory:
 | Per-record size cap       | Reject impossibly large pcap records before allocation |
 | Per-channel record cap    | Hard ceiling on the number of frames the analyzer materialises in one pass |
 | Decompressed bytes cap    | Limit gunzip output for a single channel |
+| TCP reassembly cap        | `64 KiB` buffer + `64` segment ceiling per direction; overflow flushes as incomplete fragment (never `Cmd`) |
 
 Beyond these caps the parser returns a typed `TooLarge` error and
 the handler falls back to the generic 404. The recording itself is
@@ -363,13 +367,14 @@ upstream-network code in the analyzer module. Inspect Capture
 
 ## 9. Limitations & Future Work
 
-- **Protocol coverage.** v1.0 ships dissectors for Modbus/TCP and
-  IEC-60870-5-104. OPC-UA Binary and PROFINET DCE/RPC are next
-  candidates; until they ship, those captures fall back to
-  `passthrough`.
-- **TCP cross-segment reassembly.** Industrial frames are
-  mono-segment in 99%+ of observed flows; the analyzer therefore
-  dissects per-segment. A reassembly pass is a future addition.
+- **Protocol coverage.** v1.1 ships dissectors for Modbus/TCP,
+  IEC-60870-5-104, OPC-UA Binary (UA TCP), and PROFINET DCE/RPC.
+  BACnet/SC, MQTT/TLS, DNP3, and other exotic profiles still fall
+  back to `passthrough`.
+- **TCP cross-segment reassembly.** Bounded per-direction reassembly
+  is implemented for length-framed protocols (Modbus, OPC-UA,
+  IEC-104). PROFINET and passthrough treat each TCP segment as an
+  atomic PDU unless a partial DCE header is detected.
 - **Filter expressiveness.** Filters are bounded to direction, kind,
   and free-text search on summaries. BPF-style expressions are
   intentionally out of scope for v1.0.
@@ -388,10 +393,13 @@ upstream-network code in the analyzer module. Inspect Capture
 vauban-web/src/services/iacs_packet_analyzer/
     parser.rs               libpcap + etherparse decode (inverse of audit's synthesiser)
     flow.rs                 canonical client/server endpoint inference
+    reassembly.rs           bounded per-direction TCP PDU reassembly
     dissectors/
         mod.rs              registry, classification contract
         modbus.rs           Modbus/TCP
         iec104.rs           IEC 60870-5-104
+        opcua.rs            OPC-UA Binary (UA TCP)
+        profinet.rs         PROFINET DCE/RPC
         passthrough.rs      conservative fallback (never `Cmd`)
     types.rs                PacketSummary, FieldNode, filters, paging
     mod.rs                  analyze_channel, page_summaries, analyze_packet
@@ -462,6 +470,13 @@ restore the previous filter combination.
 
 This appendix is informational; the current sections describe the
 *current* architecture.
+
+### 1.1 (21 July 2026)
+
+- OPC-UA Binary (UA TCP) and PROFINET DCE/RPC dissectors.
+- Bounded per-direction TCP reassembly (`64 KiB`, `64` segments) for
+  length-framed protocols; incomplete fragments never classify as `Cmd`.
+- E2E and property tests for reassembly + new dissectors.
 
 ### 1.0 (25 May 2026)
 

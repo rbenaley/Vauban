@@ -43,8 +43,28 @@ fn recording_metrics_struct_present_with_atomic_u64() {
         "metrics struct required so the supervisor can observe recording health"
     );
     assert!(
-        RECORDING_RS.contains("pub ack_timeouts: AtomicU64"),
-        "RecordingMetrics MUST expose ack_timeouts counter"
+        RECORDING_RS.contains("pub ack_dropped: AtomicU64"),
+        "RecordingMetrics MUST expose ack_dropped counter"
+    );
+    assert!(
+        RECORDING_RS.contains("pub ack_wait_ms_max: AtomicU64"),
+        "RecordingMetrics MUST expose ack_wait_ms_max counter"
+    );
+}
+
+#[test]
+fn stats_reads_recording_ack_timeouts_from_metrics() {
+    assert!(
+        MAIN_RS.contains("recording.get()"),
+        "ServiceState::stats MUST read recording metrics"
+    );
+    assert!(
+        MAIN_RS.contains("recording_ack_timeouts"),
+        "ServiceState::stats MUST populate recording_ack_timeouts"
+    );
+    assert!(
+        MAIN_RS.contains("Message::IacsProxyHealth"),
+        "proxy-iacs MUST push IacsProxyHealth to vauban-web"
     );
 }
 

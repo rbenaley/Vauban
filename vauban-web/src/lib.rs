@@ -48,7 +48,9 @@ use services::broadcast::BroadcastService;
 use services::connections::{UserConnectionRegistry, WsConnectionCounter};
 use services::mailer::Mailer;
 use services::rate_limit::RateLimiter;
-use services::system_health::{HttpRateTracker, LiveSessionHistory, SystemHealthCache};
+use services::system_health::{
+    HttpRateTracker, IacsRecordingTelemetry, LiveSessionHistory, SystemHealthCache,
+};
 use std::sync::Arc;
 
 pub mod static_assets;
@@ -127,6 +129,10 @@ pub struct AppState {
     /// dashboard. Re-uses `db_pool` and the supervisor's broker
     /// latency tracker, so this struct is lightweight to clone.
     pub system_health_cache: Arc<SystemHealthCache>,
+    /// IACS PCAP recording health pushed by proxy-iacs
+    /// (`Message::IacsProxyHealth`). Surfaced on Bastion Watch SYSTEM
+    /// HEALTH and coalesced Notifications on ack-timeout growth.
+    pub iacs_recording_telemetry: IacsRecordingTelemetry,
     /// VAU-008: process-local, per-session store of candidate MFA secrets
     /// awaiting enrolment confirmation. The candidate is NEVER persisted to
     /// `users` before a valid code is submitted, and is isolated per login

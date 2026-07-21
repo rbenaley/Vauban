@@ -85,8 +85,9 @@ fn build_iec104_capture() -> Vec<u8> {
         buf.extend_from_slice(&r);
     }
     // I-frame C_SC_NA_1 (Single Command) -- type 45, cot 6.
+    // APDU length 0x0D -> 15-byte frame (2 + 13).
     let cmd = vec![
-        0x68, 0x0E, 0x00, 0x00, 0x00, 0x00, // APCI
+        0x68, 0x0D, 0x00, 0x00, 0x00, 0x00, // APCI
         45, 0x01, 0x06, 0x00, 0x01, 0x00, // ASDU header: type=45, vsq=1, cot=6, oa=0, ca=1
         0x00, 0x00, 0x00, // info object addr
     ];
@@ -198,4 +199,142 @@ fn passthrough_profile_classifies_application_payload_as_read() {
     // never Cmd.
     let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Passthrough).unwrap();
     assert!(summaries.iter().all(|s| s.kind != PacketKind::Cmd));
+}
+
+fn build_opcua_capture() -> Vec<u8> {
+    let mut flow = synth::TcpFlow::new(
+        "uuid",
+        3,
+        synth::Endpoints::parse("192.0.2.30", 49_154, "198.51.100.22", 4840),
+    );
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&synth::build_global_header());
+    for r in synth::build_handshake(&flow, 0) {
+        buf.extend_from_slice(&r);
+    }
+    // HEL handshake.
+    let mut hel = vec![0u8; 28];
+    hel[..3].copy_from_slice(b"HEL");
+    hel[4..8].copy_from_slice(&28u32.to_le_bytes());
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &hel, 1_000) {
+        buf.extend_from_slice(&r);
+    }
+    // MSG WriteRequest (service id 672 at offset 16).
+    let mut msg = vec![0u8; 32];
+    msg[..3].copy_from_slice(b"MSG");
+    msg[4..8].copy_from_slice(&32u32.to_le_bytes());
+    msg[16..20].copy_from_slice(&672u32.to_le_bytes());
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &msg, 2_000) {
+        buf.extend_from_slice(&r);
+    }
+    for r in synth::build_close(&flow, 3_000) {
+        buf.extend_from_slice(&r);
+    }
+    buf
+}
+
+fn build_profinet_capture() -> Vec<u8> {
+    let mut flow = synth::TcpFlow::new(
+        "uuid",
+        4,
+        synth::Endpoints::parse("192.0.2.40", 49_155, "198.51.100.23", 102),
+    );
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&synth::build_global_header());
+    for r in synth::build_handshake(&flow, 0) {
+        buf.extend_from_slice(&r);
+    }
+    let mut dce = vec![0u8; 16];
+    dce[0] = 0x05;
+    dce[1] = 0x00;
+    dce[2] = 0x00; // request -> Cmd
+    dce[8..10].copy_from_slice(&32u16.to_le_bytes());
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &dce, 1_000) {
+        buf.extend_from_slice(&r);
+    }
+    for r in synth::build_close(&flow, 2_000) {
+        buf.extend_from_slice(&r);
+    }
+    buf
+}
+
+fn build_modbus_split_write_capture() -> Vec<u8> {
+    let mut flow = synth::TcpFlow::new(
+        "uuid",
+        5,
+        synth::Endpoints::parse("192.0.2.50", 49_156, "198.51.100.24", 502),
+    );
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&synth::build_global_header());
+    for r in synth::build_handshake(&flow, 0) {
+        buf.extend_from_slice(&r);
+    }
+    let write = b"\x00\x02\x00\x00\x00\x06\x01\x06\x00\x05\x00\x2a";
+    // First half: MBAP header only (6 bytes).
+    for r in synth::build_data_records(
+        &mut flow,
+        synth::Direction::ClientToServer,
+        &write[..6],
+        1_000,
+    ) {
+        buf.extend_from_slice(&r);
+    }
+    // Second half: PDU body (6 bytes).
+    for r in synth::build_data_records(
+        &mut flow,
+        synth::Direction::ClientToServer,
+        &write[6..],
+        2_000,
+    ) {
+        buf.extend_from_slice(&r);
+    }
+    for r in synth::build_close(&flow, 3_000) {
+        buf.extend_from_slice(&r);
+    }
+    buf
+}
+
+#[test]
+fn opcua_capture_classifies_hel_and_write_request() {
+    let buf = build_opcua_capture();
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::OpcUa).unwrap();
+    assert!(
+        summaries.iter().any(|s| s.summary.contains("HEL")),
+        "HEL handshake must appear in the timeline"
+    );
+    let cmds: Vec<_> = summaries
+        .iter()
+        .filter(|s| s.kind == PacketKind::Cmd)
+        .collect();
+    assert_eq!(cmds.len(), 1, "WriteRequest MSG -> exactly one Cmd");
+}
+
+#[test]
+fn profinet_capture_classifies_dce_request_as_cmd() {
+    let buf = build_profinet_capture();
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Profinet).unwrap();
+    let cmds: Vec<_> = summaries
+        .iter()
+        .filter(|s| s.kind == PacketKind::Cmd)
+        .collect();
+    assert_eq!(cmds.len(), 1, "DCE request -> Cmd");
+}
+
+#[test]
+fn modbus_split_fc06_write_yields_single_cmd() {
+    let buf = build_modbus_split_write_capture();
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Modbus).unwrap();
+    let cmds: Vec<_> = summaries
+        .iter()
+        .filter(|s| s.kind == PacketKind::Cmd)
+        .collect();
+    assert_eq!(
+        cmds.len(),
+        1,
+        "reassembly must collapse split FC06 into one Cmd"
+    );
+    assert!(
+        summaries.iter().any(|s| s.summary.contains("(fragment)")),
+        "first segment should surface as a fragment"
+    );
 }

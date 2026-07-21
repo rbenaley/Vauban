@@ -1051,6 +1051,10 @@ fn request_audit_log_file_from_supervisor(
                     requests_failed: 0,
                     active_connections: 0,
                     pending_requests: 0,
+                    recording_ack_timeouts: 0,
+                    recording_ack_dropped: 0,
+                    recording_try_send_full: 0,
+                    recording_ack_wait_ms_max: 0,
                 };
                 let _ = channel.send(&Message::Control(ControlMessage::Pong { seq, stats }));
             }
@@ -1593,12 +1597,8 @@ fn gzip_channel_and_unlink(
     src.seek(SeekFrom::Start(0))
         .map_err(|e| anyhow::anyhow!("seek raw pcap: {e}"))?;
 
-    let mut dst = request_file_from_supervisor(
-        channel,
-        fd_passing_socket,
-        session_id,
-        &paths.dst_relative,
-    )?;
+    let mut dst =
+        request_file_from_supervisor(channel, fd_passing_socket, session_id, &paths.dst_relative)?;
 
     let (dst_size, blake3_hex) = gzip_channel_pcap_on_fds(&mut src, &mut dst)
         .map_err(|e| anyhow::anyhow!("gzip on FDs: {e}"))?;
@@ -1658,6 +1658,10 @@ fn request_unlink_from_supervisor(
                     requests_failed: 0,
                     active_connections: 0,
                     pending_requests: 0,
+                    recording_ack_timeouts: 0,
+                    recording_ack_dropped: 0,
+                    recording_try_send_full: 0,
+                    recording_ack_wait_ms_max: 0,
                 };
                 let _ = channel.send(&Message::Control(ControlMessage::Pong { seq, stats }));
             }
@@ -1727,6 +1731,10 @@ fn request_file_from_supervisor(
                     requests_failed: 0,
                     active_connections: 0,
                     pending_requests: 0,
+                    recording_ack_timeouts: 0,
+                    recording_ack_dropped: 0,
+                    recording_try_send_full: 0,
+                    recording_ack_wait_ms_max: 0,
                 };
                 let _ = channel.send(&Message::Control(ControlMessage::Pong { seq, stats }));
             }
@@ -1755,6 +1763,10 @@ fn handle_control(
                 requests_failed: state.requests_failed,
                 active_connections: 0,
                 pending_requests: 0,
+                recording_ack_timeouts: 0,
+                recording_ack_dropped: 0,
+                recording_try_send_full: 0,
+                recording_ack_wait_ms_max: 0,
             };
             let pong = Message::Control(ControlMessage::Pong { seq, stats });
             channel.send(&pong)?;

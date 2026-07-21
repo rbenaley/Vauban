@@ -252,6 +252,14 @@ pub struct ServiceStats {
     pub requests_failed: u64,
     pub active_connections: u32,
     pub pending_requests: u32,
+    /// IACS: count of recording ack timeouts (5s ceiling).
+    pub recording_ack_timeouts: u64,
+    /// IACS: ack oneshot dropped (receiver closed without timeout).
+    pub recording_ack_dropped: u64,
+    /// SSH/RDP: try_send full drops (silent loss made visible).
+    pub recording_try_send_full: u64,
+    /// IACS: max ack wait observed in the current 60s window (ms).
+    pub recording_ack_wait_ms_max: u64,
 }
 
 /// Authentication result from vauban-auth.
@@ -2976,6 +2984,13 @@ pub enum Message {
         success: bool,
         error: Option<String>,
     },
+
+    /// Periodic health push ProxyIacs -> Web (recording backlog / plafond).
+    IacsProxyHealth {
+        ack_timeouts: u64,
+        ack_dropped: u64,
+        ack_wait_ms_max: u64,
+    },
 }
 
 impl Message {
@@ -3177,6 +3192,10 @@ mod tests {
             requests_failed: 5,
             active_connections: 10,
             pending_requests: 2,
+            recording_ack_timeouts: 0,
+            recording_ack_dropped: 0,
+            recording_try_send_full: 0,
+            recording_ack_wait_ms_max: 0,
         };
         let pong = ControlMessage::Pong { seq: 42, stats };
 
@@ -3219,6 +3238,10 @@ mod tests {
         assert_eq!(stats.requests_failed, 0);
         assert_eq!(stats.active_connections, 0);
         assert_eq!(stats.pending_requests, 0);
+        assert_eq!(stats.recording_ack_timeouts, 0);
+        assert_eq!(stats.recording_ack_dropped, 0);
+        assert_eq!(stats.recording_try_send_full, 0);
+        assert_eq!(stats.recording_ack_wait_ms_max, 0);
     }
 
     #[test]
@@ -3229,6 +3252,10 @@ mod tests {
             requests_failed: 50,
             active_connections: 25,
             pending_requests: 3,
+            recording_ack_timeouts: 0,
+            recording_ack_dropped: 0,
+            recording_try_send_full: 0,
+            recording_ack_wait_ms_max: 0,
         };
         let serialized = serialize(&stats);
         let deserialized: ServiceStats = deserialize(&serialized);

@@ -80,6 +80,12 @@ pub struct SystemHealth {
     pub pg_pool: PoolHealth,
     /// `email_outbox` rows still `pending` (queued but not delivered).
     pub mailer_outbox_pending: u64,
+    /// IACS recording ack timeouts (cumulative, from proxy-iacs health push).
+    pub iacs_ack_timeouts: u64,
+    /// IACS recording ack oneshot drops (cumulative).
+    pub iacs_ack_dropped: u64,
+    /// IACS max ack wait (ms) in the proxy's current 60 s window.
+    pub iacs_ack_wait_ms_max: u64,
     /// Wall-clock at which the snapshot was computed; the dashboard
     /// uses this for "last updated" labels.
     pub computed_at: chrono::DateTime<chrono::Utc>,
@@ -98,7 +104,31 @@ impl SystemHealth {
             rdp_active_sessions: 0,
             pg_pool,
             mailer_outbox_pending: 0,
+            iacs_ack_timeouts: 0,
+            iacs_ack_dropped: 0,
+            iacs_ack_wait_ms_max: 0,
             computed_at: chrono::Utc::now(),
+        }
+    }
+}
+
+/// Process-local IACS recording telemetry pushed by `vauban-proxy-iacs`
+/// via [`shared::messages::Message::IacsProxyHealth`].
+#[derive(Clone)]
+pub struct IacsRecordingTelemetry {
+    pub ack_timeouts: Arc<AtomicU64>,
+    pub ack_dropped: Arc<AtomicU64>,
+    pub ack_wait_ms_max: Arc<AtomicU64>,
+    pub ack_timeouts_notified_at: Arc<Mutex<Option<Instant>>>,
+}
+
+impl Default for IacsRecordingTelemetry {
+    fn default() -> Self {
+        Self {
+            ack_timeouts: Arc::new(AtomicU64::new(0)),
+            ack_dropped: Arc::new(AtomicU64::new(0)),
+            ack_wait_ms_max: Arc::new(AtomicU64::new(0)),
+            ack_timeouts_notified_at: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -330,6 +360,7 @@ pub struct SystemHealthCache {
     db_pool: DbPool,
     broker_latency: Arc<BrokerLatencyTracker>,
     http_rate: Arc<HttpRateTracker>,
+    iacs_recording: Option<IacsRecordingTelemetry>,
     cached: Mutex<Option<(Instant, SystemHealth)>>,
 }
 
@@ -338,11 +369,13 @@ impl SystemHealthCache {
         db_pool: DbPool,
         broker_latency: Arc<BrokerLatencyTracker>,
         http_rate: Arc<HttpRateTracker>,
+        iacs_recording: Option<IacsRecordingTelemetry>,
     ) -> Self {
         Self {
             db_pool,
             broker_latency,
             http_rate,
+            iacs_recording,
             cached: Mutex::new(None),
         }
     }
@@ -435,6 +468,17 @@ impl SystemHealthCache {
         };
 
         let req_last_60s = self.http_rate.last_60s();
+        let (iacs_ack_timeouts, iacs_ack_dropped, iacs_ack_wait_ms_max) = self
+            .iacs_recording
+            .as_ref()
+            .map(|telemetry| {
+                (
+                    AtomicU64::load(&telemetry.ack_timeouts, Ordering::Relaxed),
+                    AtomicU64::load(&telemetry.ack_dropped, Ordering::Relaxed),
+                    AtomicU64::load(&telemetry.ack_wait_ms_max, Ordering::Relaxed),
+                )
+            })
+            .unwrap_or((0, 0, 0));
         SystemHealth {
             http_req_last_60s: req_last_60s,
             http_req_per_sec: req_last_60s / 60,
@@ -443,6 +487,9 @@ impl SystemHealthCache {
             rdp_active_sessions: rdp_active.max(0) as u64,
             pg_pool,
             mailer_outbox_pending: outbox_pending.max(0) as u64,
+            iacs_ack_timeouts,
+            iacs_ack_dropped,
+            iacs_ack_wait_ms_max,
             computed_at: chrono::Utc::now(),
         }
     }
@@ -655,6 +702,9 @@ mod tests {
         assert_eq!(h.ssh_active_sessions, 0);
         assert_eq!(h.rdp_active_sessions, 0);
         assert_eq!(h.mailer_outbox_pending, 0);
+        assert_eq!(h.iacs_ack_timeouts, 0);
+        assert_eq!(h.iacs_ack_dropped, 0);
+        assert_eq!(h.iacs_ack_wait_ms_max, 0);
     }
 
     #[test]

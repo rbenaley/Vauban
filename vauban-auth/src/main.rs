@@ -590,6 +590,10 @@ fn handle_control(
                 requests_failed: state.requests_failed,
                 active_connections: 0,
                 pending_requests: 0,
+                recording_ack_timeouts: 0,
+                recording_ack_dropped: 0,
+                recording_try_send_full: 0,
+                recording_ack_wait_ms_max: 0,
             };
             let pong = Message::Control(ControlMessage::Pong { seq, stats });
             channel.send(&pong)?;

@@ -26,17 +26,12 @@ use diesel_async::{AsyncPgConnection, RunQueryDsl};
 
 use crate::AppState;
 use crate::error::{AppError, AppResult};
+use crate::models::session::SessionStatus;
 
 /// Session statuses that count as "live" (holding resources). Kept in lock-step
-/// with [`crate::models::session::SessionStatus::is_live`]; the drift test
-/// `live_statuses_match_is_live` pins the alignment.
-pub const LIVE_STATUSES: [&str; 5] = [
-    "connecting",
-    "active",
-    "waiting_client",
-    "ews_connected",
-    "tunnel_active",
-];
+/// with [`SessionStatus::is_live`]; the drift test `live_statuses_match_is_live`
+/// pins the alignment.
+pub const LIVE_STATUSES: [&str; 5] = SessionStatus::LIVE_AS_STR;
 
 /// A session-creation control denied the request.
 ///
@@ -202,23 +197,9 @@ mod tests {
     #[test]
     fn live_statuses_match_is_live() {
         // LIVE_STATUSES must be exactly the set of SessionStatus variants for
-        // which is_live() is true. Iterate every variant via parse() round-trip.
-        let all = [
-            "pending",
-            "approved",
-            "rejected",
-            "expired",
-            "connecting",
-            "active",
-            "disconnected",
-            "terminated",
-            "failed",
-            "waiting_client",
-            "ews_connected",
-            "tunnel_active",
-        ];
-        for s in all {
-            let status = SessionStatus::parse(s);
+        // which is_live() is true.
+        for status in SessionStatus::ALL {
+            let s = status.as_str();
             let in_const = LIVE_STATUSES.contains(&s);
             assert_eq!(
                 status.is_live(),

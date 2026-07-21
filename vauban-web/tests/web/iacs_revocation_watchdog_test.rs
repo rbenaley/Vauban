@@ -23,9 +23,7 @@ use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use serial_test::serial;
 use uuid::Uuid;
 use vauban_web::config::IacsTunnelConfig;
-use vauban_web::services::iacs_tunnel::{
-    BootAction, apply_boot_reconcile_plan, watchdog_run_once,
-};
+use vauban_web::services::iacs_tunnel::{BootAction, apply_boot_reconcile_plan, watchdog_run_once};
 
 // ===================================================================
 // Test fixtures

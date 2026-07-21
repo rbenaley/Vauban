@@ -15,6 +15,7 @@
 use crate::auth::permissions::PermissionContext;
 use crate::db::DbPool;
 use crate::middleware::WebAuthUser;
+use crate::models::session::SessionStatus;
 use crate::schema::{access_rules, assets, email_outbox, proxy_sessions, users};
 use crate::services::dashboard::widgets::{Bar, Donut, Heatmap, Sparkline};
 use crate::services::system_health::{LiveSessionHistory, ScopeKey, SystemHealth};
@@ -270,12 +271,10 @@ pub(crate) async fn load_hero(
     // The `eq_any` filter mirrors `tasks::dashboard::fetch_stats`
     // (the WS-pushed counterpart) so the HTTP-rendered first paint
     // and the live WS update agree on the same set.
-    let live: i64 =
-        count_with_scope!(proxy_sessions::table.filter(proxy_sessions::status.eq_any([
-            "active",
-            "ews_connected",
-            "tunnel_active"
-        ])));
+    let live: i64 = count_with_scope!(
+        proxy_sessions::table
+            .filter(proxy_sessions::status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
+    );
     let live_u64 = live.max(0) as u64;
     // Push the freshly-observed live count into the per-scope
     // rolling history BEFORE building the sparkline so the trace's
@@ -353,7 +352,7 @@ pub(crate) async fn load_live_sessions(
         DashboardScope::Global => proxy_sessions::table
             .inner_join(assets::table)
             .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-            .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
+            .filter(proxy_sessions::status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
             .select((
                 proxy_sessions::uuid,
                 assets::name,
@@ -372,7 +371,7 @@ pub(crate) async fn load_live_sessions(
         DashboardScope::User(uid) => proxy_sessions::table
             .inner_join(assets::table)
             .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-            .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
+            .filter(proxy_sessions::status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
             .filter(proxy_sessions::user_id.eq(uid))
             .select((
                 proxy_sessions::uuid,
@@ -817,9 +816,9 @@ mod tests {
         // array literal cannot break the pin.
         let collapsed: String = body.split_whitespace().collect();
         assert!(
-            collapsed.contains("status.eq_any([\"active\",\"ews_connected\",\"tunnel_active\"])"),
+            collapsed.contains("status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR)"),
             "load_hero MUST filter the `live` count on \
-             `status.eq_any([\"active\", \"ews_connected\", \"tunnel_active\"])` so IACS \
+             `SessionStatus::OPERATOR_ACTIVE_AS_STR` so IACS \
              tunnels are counted on the Bastion Watch hero band. \
              Whitespace-collapsed body:\n{}",
             collapsed
@@ -924,7 +923,7 @@ mod tests {
         // Strip ALL whitespace so rustfmt line-splitting of the
         // array literal cannot break the pin.
         let collapsed: String = body.split_whitespace().collect();
-        let needle = "status.eq_any([\"active\",\"ews_connected\",\"tunnel_active\"])";
+        let needle = "status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR)";
         let count = collapsed.matches(needle).count();
         assert!(
             count >= 2,

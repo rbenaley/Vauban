@@ -55,8 +55,8 @@ use std::collections::HashMap;
 use std::os::fd::FromRawFd;
 use std::os::unix::io::{OwnedFd, RawFd};
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
@@ -77,6 +77,8 @@ struct ServiceState {
     rbac_recheck_timeouts: AtomicU64,
     draining: AtomicBool,
     shutdown_requested: AtomicBool,
+    /// Set once when IACS PCAP recording is wired to audit.
+    recording: OnceLock<Arc<RecordingMetrics>>,
 }
 
 impl Default for ServiceState {
@@ -88,18 +90,28 @@ impl Default for ServiceState {
             rbac_recheck_timeouts: AtomicU64::new(0),
             draining: AtomicBool::new(false),
             shutdown_requested: AtomicBool::new(false),
+            recording: OnceLock::new(),
         }
     }
 }
 
 impl ServiceState {
     fn stats(&self, active: u32) -> ServiceStats {
+        let (recording_ack_timeouts, recording_ack_dropped, recording_ack_wait_ms_max) = self
+            .recording
+            .get()
+            .map(|m| m.snapshot())
+            .unwrap_or((0, 0, 0));
         ServiceStats {
             uptime_secs: self.start_time.elapsed().as_secs(),
             requests_processed: self.requests_processed.load(Ordering::SeqCst),
             requests_failed: self.requests_failed.load(Ordering::SeqCst),
             active_connections: active,
             pending_requests: 0,
+            recording_ack_timeouts,
+            recording_ack_dropped,
+            recording_try_send_full: 0,
+            recording_ack_wait_ms_max,
         }
     }
 }
@@ -513,11 +525,13 @@ async fn run_service() -> Result<()> {
             }
         });
         info!("IACS PCAP recording enabled (audit IPC wired)");
-        Some(IacsRecordingHub {
+        let hub = IacsRecordingHub {
             audit_tx,
             ack_router,
             metrics,
-        })
+        };
+        let _ = state.recording.set(Arc::clone(&hub.metrics));
+        Some(hub)
     } else {
         None
     };
@@ -661,6 +675,28 @@ async fn run_service() -> Result<()> {
                 if let Err(e) = web_writer.send(&msg) {
                     error!(error = %e, "iacs_tunnel: web send failed");
                 }
+            }
+        });
+    }
+
+    // Periodic IACS recording health push (ProxyIacs -> Web).
+    {
+        let health_tx = web_tx.clone();
+        let health_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let Some(metrics) = health_state.recording.get() else {
+                    continue;
+                };
+                let (ack_timeouts, ack_dropped, ack_wait_ms_max) = metrics.snapshot();
+                let _ = health_tx.send(Message::IacsProxyHealth {
+                    ack_timeouts,
+                    ack_dropped,
+                    ack_wait_ms_max,
+                });
             }
         });
     }

@@ -168,13 +168,10 @@ fn dashboard_pusher_tasks_count_iacs_tunnels() {
     let src = include_str!("../../src/tasks/dashboard.rs");
 
     for (fn_name, needle) in [
-        (
-            "fn fetch_stats",
-            "status.eq_any([\"active\", \"ews_connected\", \"tunnel_active\"])",
-        ),
+        ("fn fetch_stats", "SessionStatus::OPERATOR_ACTIVE_AS_STR"),
         (
             "fn fetch_active_sessions",
-            "status.eq_any([\"active\", \"ews_connected\", \"tunnel_active\"])",
+            "SessionStatus::OPERATOR_ACTIVE_AS_STR",
         ),
     ] {
         let idx = src

@@ -2796,7 +2796,7 @@ pub async fn admin_user_sessions(
 /// and broadcasts updates to session pages.
 // allow-ungated: not a routed handler; internal helper invoked after the users:write gate of update_user_web
 pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
-    use crate::models::session::ProxySession;
+    use crate::models::session::{ProxySession, SessionStatus};
 
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
@@ -2823,13 +2823,7 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
     //    lacked.
     let active_sessions: Vec<ProxySession> = proxy_sessions::table
         .filter(proxy_sessions::user_id.eq(user_id))
-        .filter(proxy_sessions::status.eq_any([
-            "connecting",
-            "active",
-            "waiting_client",
-            "ews_connected",
-            "tunnel_active",
-        ]))
+        .filter(proxy_sessions::status.eq_any(SessionStatus::LIVE_AS_STR))
         .load(&mut conn)
         .await
         .unwrap_or_default();

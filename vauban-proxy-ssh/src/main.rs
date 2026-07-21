@@ -34,7 +34,7 @@ use anyhow::{Context, Result};
 use error::SessionError;
 use ipc::AsyncIpcChannel;
 use session::{SessionConfig, SshCredential, fetch_host_key};
-use session_manager::SessionManager;
+use session_manager::{RecordingDropHook, SessionManager};
 use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_SSH};
 use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{ControlMessage, Message, ServiceStats};
@@ -65,6 +65,9 @@ struct ServiceState {
     /// Flag set by ControlMessage::Shutdown to break the main loop
     /// and allow destructors to run (SecretString credentials).
     shutdown_requested: AtomicBool,
+    /// SSH recording channel try_send full drops (audit backpressure).
+    recording_try_send_full: AtomicU64,
+    recording_try_send_last_warn: std::sync::Mutex<Instant>,
 }
 
 /// Pending TCP connections received from supervisor via FD passing.
@@ -145,6 +148,10 @@ impl Default for ServiceState {
             rbac_recheck_timeouts: AtomicU64::new(0),
             draining: AtomicBool::new(false),
             shutdown_requested: AtomicBool::new(false),
+            recording_try_send_full: AtomicU64::new(0),
+            recording_try_send_last_warn: std::sync::Mutex::new(
+                Instant::now() - std::time::Duration::from_secs(60),
+            ),
         }
     }
 }
@@ -174,6 +181,23 @@ impl ServiceState {
             requests_failed: self.requests_failed.load(Ordering::SeqCst),
             active_connections: active_sessions,
             pending_requests: 0,
+            recording_ack_timeouts: 0,
+            recording_ack_dropped: 0,
+            recording_try_send_full: self.recording_try_send_full.load(Ordering::SeqCst),
+            recording_ack_wait_ms_max: 0,
+        }
+    }
+
+    fn record_recording_try_send_full(&self, session_id: &str) {
+        self.recording_try_send_full.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut last) = self.recording_try_send_last_warn.lock()
+            && last.elapsed() >= std::time::Duration::from_secs(10)
+        {
+            warn!(
+                session_id = %session_id,
+                "SSH recording channel full; dropping frame"
+            );
+            *last = Instant::now();
         }
     }
 }
@@ -842,6 +866,14 @@ async fn handle_web_message(
             let vault_clone = vault_client.clone();
             let rbac_user = user_id.clone();
             let rbac_asset = asset_id.clone();
+            let recording_on_full: Option<RecordingDropHook> = if audit_tx.is_some() {
+                let state_for_hook = Arc::clone(&state);
+                Some(Arc::new(move |session_id: &str| {
+                    state_for_hook.record_recording_try_send_full(session_id);
+                }))
+            } else {
+                None
+            };
 
             tokio::spawn(async move {
                 // SECURITY: Defense-in-depth RBAC re-check via the shared
@@ -927,7 +959,7 @@ async fn handle_web_message(
                 };
 
                 match sessions_clone
-                    .create_session(config, web_tx, audit_tx)
+                    .create_session(config, web_tx, audit_tx, recording_on_full)
                     .await
                 {
                     Ok(_) => {

@@ -22,7 +22,7 @@ pub mod revocation;
 pub mod ws_vocab;
 
 pub use boot_reconcile::{
-    BootAction, BootReconcileStats, DbLiveRow, apply_boot_reconcile_plan, is_live_status,
+    BootAction, BootReconcileStats, DbLiveRow, apply_boot_reconcile_plan, is_iacs_open,
     load_iacs_rows_for_reconcile, phase_to_status, reconcile_iacs_boot,
     reconcile_iacs_from_proxy_snapshot,
 };

@@ -3309,10 +3309,9 @@ fn handle_recording_file_unlink_request(
             });
     };
 
-    if let Err(e) = shared::recording_paths::validate_recording_unlink_relative_path(
-        relative_path,
-        session_id,
-    ) {
+    if let Err(e) =
+        shared::recording_paths::validate_recording_unlink_relative_path(relative_path, session_id)
+    {
         fail(e);
         return;
     }
@@ -4302,6 +4301,10 @@ mod tests {
                 requests_failed: 0,
                 active_connections: 0, // No active connections
                 pending_requests: 0,   // No pending requests
+                recording_ack_timeouts: 0,
+                recording_ack_dropped: 0,
+                recording_try_send_full: 0,
+                recording_ack_wait_ms_max: 0,
             }),
             is_draining: false,
             drain_started: None,
@@ -4329,6 +4332,10 @@ mod tests {
                 requests_failed: 0,
                 active_connections: 10, // Has active connections
                 pending_requests: 0,
+                recording_ack_timeouts: 0,
+                recording_ack_dropped: 0,
+                recording_try_send_full: 0,
+                recording_ack_wait_ms_max: 0,
             }),
             is_draining: false,
             drain_started: None,
@@ -4362,6 +4369,10 @@ mod tests {
                 requests_failed: 0,
                 active_connections: 0,
                 pending_requests: 5, // Has pending requests
+                recording_ack_timeouts: 0,
+                recording_ack_dropped: 0,
+                recording_try_send_full: 0,
+                recording_ack_wait_ms_max: 0,
             }),
             is_draining: false,
             drain_started: None,
@@ -4476,6 +4487,10 @@ mod tests {
                     requests_failed: 3,
                     active_connections: 5,
                     pending_requests: 2,
+                    recording_ack_timeouts: 0,
+                    recording_ack_dropped: 0,
+                    recording_try_send_full: 0,
+                    recording_ack_wait_ms_max: 0,
                 };
                 let pong = Message::Control(ControlMessage::Pong { seq, stats });
                 service_channel.send(&pong).unwrap();
@@ -4671,6 +4686,10 @@ mod tests {
             requests_failed: 5,
             active_connections: 10,
             pending_requests: 3,
+            recording_ack_timeouts: 0,
+            recording_ack_dropped: 0,
+            recording_try_send_full: 0,
+            recording_ack_wait_ms_max: 0,
         };
         let expected_stats_clone = expected_stats.clone();
 

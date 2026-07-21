@@ -830,11 +830,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 vauban_web::services::broker_latency::BrokerLatencyTracker::default(),
             )
         });
+    let iacs_recording_telemetry =
+        vauban_web::services::system_health::IacsRecordingTelemetry::default();
     let system_health_cache =
         std::sync::Arc::new(vauban_web::services::system_health::SystemHealthCache::new(
             db_pool.clone(),
             broker_latency_tracker,
             http_rate.clone(),
+            Some(iacs_recording_telemetry.clone()),
         ));
 
     // Create application state
@@ -859,6 +862,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_rate,
         live_session_history,
         system_health_cache,
+        iacs_recording_telemetry,
         pending_mfa: vauban_web::services::pending_mfa::PendingMfaStore::new(),
         client_acl,
         login_timing_sacrifice_hash,
@@ -911,7 +915,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config.industrial.enabled {
         if let Some(ref client) = app_state.proxy_iacs {
             match vauban_web::services::iacs_tunnel::reconcile_iacs_from_proxy_snapshot(
-                &db_pool, client.as_ref(),
+                &db_pool,
+                client.as_ref(),
             )
             .await
             {
@@ -927,9 +932,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ),
             }
         } else {
-            tracing::error!(
-                "industrial.enabled but proxy_iacs absent — IACS boot resync skipped"
-            );
+            tracing::error!("industrial.enabled but proxy_iacs absent — IACS boot resync skipped");
         }
     }
 
@@ -2655,6 +2658,10 @@ mod tests {
                 requests_failed: 5,
                 active_connections: 0,
                 pending_requests: 0,
+                recording_ack_timeouts: 0,
+                recording_ack_dropped: 0,
+                recording_try_send_full: 0,
+                recording_ack_wait_ms_max: 0,
             };
             let pong = Message::Control(ControlMessage::Pong { seq, stats });
             service_channel.send(&pong).unwrap();

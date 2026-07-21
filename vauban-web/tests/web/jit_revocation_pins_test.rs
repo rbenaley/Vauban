@@ -113,7 +113,7 @@ fn proxy_session_probe_covers_the_liveness_invariants() {
         SESSION_ACTIVITY_RS.contains("pub async fn is_proxy_session_live"),
         "session_activity.rs must export is_proxy_session_live"
     );
-    for filter in [r#"eq_any(["connecting", "active"])"#, "expires_at"] {
+    for filter in ["SessionStatus::SSH_RDP_INFLIGHT_AS_STR", "expires_at"] {
         assert!(
             SESSION_ACTIVITY_RS.contains(filter),
             "is_proxy_session_live must filter on `{filter}`"
@@ -220,10 +220,9 @@ fn cascade_covers_iacs_live_statuses() {
     // literal cannot break the pin.
     let collapsed: String = WEB_SESSIONS_RS.split_whitespace().collect();
     assert!(
-        collapsed
-            .contains(r#"["connecting","active","waiting_client","ews_connected","tunnel_active"#),
-        "LIVE_SESSION_STATUSES must include the IACS statuses \
-         (ews_connected included)"
+        collapsed.contains("SessionStatus::LIVE_AS_STR"),
+        "revocation cascade must terminate via SessionStatus::LIVE_AS_STR \
+         (includes IACS open lifecycle statuses)"
     );
 }
 

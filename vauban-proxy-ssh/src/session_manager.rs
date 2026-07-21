@@ -11,6 +11,9 @@ use std::time::Instant;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
+/// Hook invoked when the audit recording channel rejects a `try_send`.
+pub type RecordingDropHook = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Commands that can be sent to a session task.
 #[derive(Debug)]
 pub enum SessionCommand {
@@ -63,6 +66,7 @@ impl SessionManager {
         config: SessionConfig,
         web_tx: mpsc::Sender<Message>,
         audit_tx: Option<mpsc::Sender<Message>>,
+        recording_on_full: Option<RecordingDropHook>,
     ) -> SessionResult<String> {
         let session_id = config.session_id.clone();
 
@@ -111,6 +115,7 @@ impl SessionManager {
                 cmd_rx,
                 web_tx,
                 audit_tx,
+                recording_on_full,
             )
             .await;
             // Cleanup when task ends
@@ -233,6 +238,19 @@ impl SessionManagerCleanup {
     }
 }
 
+fn try_send_recording(
+    tx: &mpsc::Sender<Message>,
+    msg: Message,
+    session_id: &str,
+    on_full: &Option<RecordingDropHook>,
+) {
+    if tx.try_send(msg).is_err()
+        && let Some(hook) = on_full
+    {
+        hook(session_id);
+    }
+}
+
 /// Task that handles a single SSH session.
 async fn session_task(
     session_id: String,
@@ -240,6 +258,7 @@ async fn session_task(
     mut commands: mpsc::Receiver<SessionCommand>,
     web_tx: mpsc::Sender<Message>,
     audit_tx: Option<mpsc::Sender<Message>>,
+    recording_on_full: Option<RecordingDropHook>,
 ) {
     debug!(session_id = %session_id, "Session task started");
 
@@ -268,12 +287,17 @@ async fn session_task(
                         redactor.on_server_output(&data);
 
                         if let Some(ref tx) = audit_tx {
-                            let _ = tx.try_send(Message::SshRecordingData {
-                                session_id: session_id.clone(),
-                                timestamp_us: start_time.elapsed().as_micros() as u64,
-                                event_type: SshRecordingEvent::Output,
-                                data: data.clone(),
-                            });
+                            try_send_recording(
+                                tx,
+                                Message::SshRecordingData {
+                                    session_id: session_id.clone(),
+                                    timestamp_us: start_time.elapsed().as_micros() as u64,
+                                    event_type: SshRecordingEvent::Output,
+                                    data: data.clone(),
+                                },
+                                &session_id,
+                                &recording_on_full,
+                            );
                         }
 
                         let msg = Message::SshData {
@@ -305,12 +329,17 @@ async fn session_task(
                         if let Some(ref tx) = audit_tx
                             && let Some(redacted) = redactor.process_input_for_recording(&data)
                         {
-                            let _ = tx.try_send(Message::SshRecordingData {
-                                session_id: session_id.clone(),
-                                timestamp_us: start_time.elapsed().as_micros() as u64,
-                                event_type: SshRecordingEvent::Input,
-                                data: redacted,
-                            });
+                            try_send_recording(
+                                tx,
+                                Message::SshRecordingData {
+                                    session_id: session_id.clone(),
+                                    timestamp_us: start_time.elapsed().as_micros() as u64,
+                                    event_type: SshRecordingEvent::Input,
+                                    data: redacted,
+                                },
+                                &session_id,
+                                &recording_on_full,
+                            );
                         }
                     }
                     Some(SessionCommand::Resize { cols, rows }) => {
@@ -319,12 +348,17 @@ async fn session_task(
                         }
 
                         if let Some(ref tx) = audit_tx {
-                            let _ = tx.try_send(Message::SshRecordingData {
-                                session_id: session_id.clone(),
-                                timestamp_us: start_time.elapsed().as_micros() as u64,
-                                event_type: SshRecordingEvent::Resize,
-                                data: format!("{cols}x{rows}").into_bytes(),
-                            });
+                            try_send_recording(
+                                tx,
+                                Message::SshRecordingData {
+                                    session_id: session_id.clone(),
+                                    timestamp_us: start_time.elapsed().as_micros() as u64,
+                                    event_type: SshRecordingEvent::Resize,
+                                    data: format!("{cols}x{rows}").into_bytes(),
+                                },
+                                &session_id,
+                                &recording_on_full,
+                            );
                         }
                     }
                     Some(SessionCommand::Close) => {

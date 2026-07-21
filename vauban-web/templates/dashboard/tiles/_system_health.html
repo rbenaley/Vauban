@@ -59,6 +59,20 @@
       </p>
     </div>
   </div>
+  <div class="rounded ring-1 ring-gray-100 dark:ring-gray-700 p-3 flex items-center gap-3">
+    <span class="inline-flex h-2 w-2 rounded-full
+      {% if h.iacs_ack_timeouts == 0 %}bg-emerald-500{% else %}bg-amber-500{% endif %}"></span>
+    <div class="flex-1">
+      <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">IACS recording</p>
+      <p class="font-mono text-sm text-gray-700 dark:text-gray-300">
+        {{ h.iacs_ack_timeouts }} timeouts
+        {% if h.iacs_ack_wait_ms_max > 0 %}
+        <span class="text-gray-400 dark:text-gray-500">&middot;</span>
+        {{ h.iacs_ack_wait_ms_max }}ms max wait
+        {% endif %}
+      </p>
+    </div>
+  </div>
 </div>
 {% when None %}
 <p class="text-sm text-gray-500 dark:text-gray-400 py-6 text-center">No telemetry available.</p>

@@ -720,6 +720,10 @@ mod tests {
             requests_failed: 2,
             active_connections: 5,
             pending_requests: 1,
+            recording_ack_timeouts: 0,
+            recording_ack_dropped: 0,
+            recording_try_send_full: 0,
+            recording_ack_wait_ms_max: 0,
         };
         let pong = Message::Control(ControlMessage::Pong { seq: 42, stats });
         child.send(&pong).unwrap();
@@ -944,6 +948,10 @@ mod tests {
                 requests_failed: 0,
                 active_connections: 1,
                 pending_requests: 0,
+                recording_ack_timeouts: 0,
+                recording_ack_dropped: 0,
+                recording_try_send_full: 0,
+                recording_ack_wait_ms_max: 0,
             };
             let pong = Message::Control(ControlMessage::Pong { seq, stats });
             service.send(&pong).unwrap();

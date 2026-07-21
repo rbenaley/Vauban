@@ -193,16 +193,27 @@ async fn open_tunnel_and_fetch_status(
         )
         .form(&[("csrf_token", csrf.as_str())])
         .await;
+    let status = response.status_code().as_u16();
+    let body_excerpt = {
+        let t = response.text();
+        t[..t.len().min(300)].to_string()
+    };
     let location = response
         .headers()
         .get("location")
         .map(|v| v.to_str().unwrap_or("").to_string())
-        .expect("connect-iacs must set Location");
+        .unwrap_or_default();
+    assert!(
+        !location.is_empty(),
+        "connect-iacs must set Location (asset {asset_uuid}, got {status}, body '{body_excerpt}')"
+    );
     let session_uuid_str = location
         .strip_prefix("/sessions/")
         .and_then(|tail| tail.split('/').next())
         .map(|s| s.to_string())
-        .expect("Location format /sessions/{uuid}/iacs/status");
+        .unwrap_or_else(|| {
+            panic!("Location format /sessions/{{uuid}}/iacs/status (got '{location}')")
+        });
 
     let resp = app
         .server
@@ -566,32 +577,39 @@ async fn lot_a_handler_uses_helper_for_every_iacs_asset_type() {
         let expected_local = derive_local_forward_port(asset_port as u16);
 
         let app = TestApp::spawn().await;
-        let mut conn = app.get_conn().await;
-        let admin_id = create_simple_admin_user(
-            &mut conn,
-            &unique_name(&format!("a_{}_admin", asset_type.as_str())),
-        )
-        .await;
-        let username = unique_name(&format!("a_{}_user", asset_type.as_str()));
-        let user_id = create_simple_user(&mut conn, &username).await;
-        let user_uuid = get_user_uuid(&mut conn, user_id).await.to_string();
+        // Drop the pool connection BEFORE connect-iacs: the shared
+        // TestApp pool is tiny, and holding a checkout across the
+        // HTTP round-trip starves the handler (then later iterations
+        // see `connection closed`).
+        let (asset_uuid, asset_hostname, user_uuid, username) = {
+            let mut conn = app.get_conn().await;
+            let admin_id = create_simple_admin_user(
+                &mut conn,
+                &unique_name(&format!("a_{}_admin", asset_type.as_str())),
+            )
+            .await;
+            let username = unique_name(&format!("a_{}_user", asset_type.as_str()));
+            let user_id = create_simple_user(&mut conn, &username).await;
+            let user_uuid = get_user_uuid(&mut conn, user_id).await.to_string();
 
-        let (asset_uuid, asset_hostname) = seed_iacs_asset_with_explicit_target(
-            &mut conn,
-            admin_id,
-            user_id,
-            &format!("a_helper_{}", asset_type.as_str()),
-            asset_type,
-            "host-{u}.factory.example",
-            asset_port,
-        )
-        .await;
-        let _ews = seed_active_ews(
-            &mut conn,
-            user_id,
-            &format!("a_helper_{}", asset_type.as_str()),
-        )
-        .await;
+            let (asset_uuid, asset_hostname) = seed_iacs_asset_with_explicit_target(
+                &mut conn,
+                admin_id,
+                user_id,
+                &format!("a_helper_{}", asset_type.as_str()),
+                asset_type,
+                "host-{u}.factory.example",
+                asset_port,
+            )
+            .await;
+            let _ews = seed_active_ews(
+                &mut conn,
+                user_id,
+                &format!("a_helper_{}", asset_type.as_str()),
+            )
+            .await;
+            (asset_uuid, asset_hostname, user_uuid, username)
+        };
 
         let (_session_uuid, body) =
             open_tunnel_and_fetch_status(app, asset_uuid, &user_uuid, &username).await;

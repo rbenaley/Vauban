@@ -14,6 +14,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::models::session::SessionStatus;
+
 use chrono::Utc;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
@@ -48,7 +50,7 @@ pub enum BootAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DbLiveRow {
     pub session_id: Uuid,
-    /// Any status; live detection uses [`is_live_status`].
+    /// Any status; open detection uses [`is_iacs_open`].
     pub status: String,
 }
 
@@ -72,8 +74,11 @@ pub fn phase_to_status(phase: u8) -> &'static str {
     }
 }
 
-pub fn is_live_status(status: &str) -> bool {
-    matches!(status, "waiting_client" | "ews_connected" | "tunnel_active")
+pub fn is_iacs_open(status: &str) -> bool {
+    if SessionStatus::IACS_OPEN_AS_STR.contains(&status) {
+        return true;
+    }
+    SessionStatus::parse_strict(status).is_some_and(|s| s.is_iacs_open())
 }
 
 /// Pure: proxy is authority for "alive".
@@ -103,7 +108,7 @@ pub fn reconcile_iacs_boot(
             None => actions.push(BootAction::TerminateProxy { session_id }),
             Some(row) => {
                 let target = phase_to_status(entry.phase);
-                let needs_rehydrate = !is_live_status(&row.status) || row.status != target;
+                let needs_rehydrate = !is_iacs_open(&row.status) || row.status != target;
                 if needs_rehydrate {
                     actions.push(BootAction::Rehydrate {
                         session_id,
@@ -118,7 +123,7 @@ pub fn reconcile_iacs_boot(
     }
 
     for row in db_rows {
-        if is_live_status(&row.status) && !proxy_ids.contains(&row.session_id) {
+        if is_iacs_open(&row.status) && !proxy_ids.contains(&row.session_id) {
             actions.push(BootAction::TerminateDb {
                 session_id: row.session_id,
             });
@@ -141,11 +146,7 @@ pub async fn load_iacs_rows_for_reconcile(
 
     let live: Vec<(Uuid, String)> = proxy_sessions::table
         .filter(proxy_sessions::session_type.eq("iacs_tunnel"))
-        .filter(proxy_sessions::status.eq_any([
-            "waiting_client",
-            "ews_connected",
-            "tunnel_active",
-        ]))
+        .filter(proxy_sessions::status.eq_any(SessionStatus::IACS_OPEN_AS_STR))
         .select((proxy_sessions::uuid, proxy_sessions::status))
         .load::<(Uuid, String)>(&mut conn)
         .await
@@ -215,8 +216,7 @@ pub async fn apply_boot_reconcile_plan(
                     )
                     .set((
                         proxy_sessions::status.eq(status),
-                        proxy_sessions::disconnected_at
-                            .eq(None::<chrono::DateTime<chrono::Utc>>),
+                        proxy_sessions::disconnected_at.eq(None::<chrono::DateTime<chrono::Utc>>),
                         proxy_sessions::client_ip.eq(ipnetwork::IpNetwork::from(ip)),
                         proxy_sessions::bytes_received.eq(*bytes_in as i64),
                         proxy_sessions::bytes_sent.eq(*bytes_out as i64),
@@ -230,8 +230,7 @@ pub async fn apply_boot_reconcile_plan(
                     )
                     .set((
                         proxy_sessions::status.eq(status),
-                        proxy_sessions::disconnected_at
-                            .eq(None::<chrono::DateTime<chrono::Utc>>),
+                        proxy_sessions::disconnected_at.eq(None::<chrono::DateTime<chrono::Utc>>),
                         proxy_sessions::bytes_received.eq(*bytes_in as i64),
                         proxy_sessions::bytes_sent.eq(*bytes_out as i64),
                         proxy_sessions::updated_at.eq(now),

@@ -12,9 +12,10 @@
 use shared::messages::{IacsRecordingDirection, Message};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use std::time::{Duration, Instant, SystemTime};
+use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 use tracing::warn;
 
 /// Wall-clock ceiling on the wait for an `IacsRecordingDataAck`.
@@ -25,7 +26,7 @@ pub const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Routes `IacsRecordingDataAck` messages to waiting relay tasks.
 #[derive(Default)]
 pub struct AckRouter {
-    pending: Mutex<HashMap<(String, u32, u64), oneshot::Sender<()>>>,
+    pending: AsyncMutex<HashMap<(String, u32, u64), oneshot::Sender<()>>>,
 }
 
 impl AckRouter {
@@ -89,9 +90,60 @@ pub struct ChannelEndpoints {
 
 /// Counters published to `ServiceState` so the supervisor / metrics
 /// surface can observe recording health.
-#[derive(Debug, Default)]
 pub struct RecordingMetrics {
     pub ack_timeouts: AtomicU64,
+    pub ack_dropped: AtomicU64,
+    /// Max ack wait (ms) observed in the current 60 s window.
+    pub ack_wait_ms_max: AtomicU64,
+    wait_max_window_start: Mutex<Instant>,
+}
+
+impl Default for RecordingMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RecordingMetrics {
+    pub fn new() -> Self {
+        Self {
+            ack_timeouts: AtomicU64::new(0),
+            ack_dropped: AtomicU64::new(0),
+            ack_wait_ms_max: AtomicU64::new(0),
+            wait_max_window_start: Mutex::new(Instant::now()),
+        }
+    }
+
+    pub fn record_success_wait_ms(&self, ms: u64) {
+        self.ack_wait_ms_max.fetch_max(ms, Ordering::SeqCst);
+    }
+
+    /// Snapshot the max ack wait for the current 60 s window. Resets the
+    /// window when elapsed >= 60 s (called from `ServiceState::stats`).
+    pub fn snapshot_ack_wait_ms_max(&self) -> u64 {
+        if let Ok(mut start) = self.wait_max_window_start.lock()
+            && start.elapsed() >= Duration::from_secs(60)
+        {
+            self.ack_wait_ms_max.store(0, Ordering::SeqCst);
+            *start = Instant::now();
+        }
+        self.ack_wait_ms_max.load(Ordering::SeqCst)
+    }
+
+    pub fn snapshot(&self) -> (u64, u64, u64) {
+        (
+            self.ack_timeouts.load(Ordering::SeqCst),
+            self.ack_dropped.load(Ordering::SeqCst),
+            self.snapshot_ack_wait_ms_max(),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn rewind_wait_window_for_test(&self, ago: Duration) {
+        if let Ok(mut start) = self.wait_max_window_start.lock() {
+            *start = Instant::now().checked_sub(ago).unwrap_or(Instant::now());
+        }
+    }
 }
 
 /// Shared handle wired into every authenticated SSH login handler.
@@ -222,9 +274,15 @@ impl ChannelRecorder {
                 data: data.to_vec(),
             })
             .map_err(|e| std::io::Error::other(format!("audit channel closed: {e}")))?;
+        let wait_start = Instant::now();
         match tokio::time::timeout(ACK_TIMEOUT, rx).await {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => {
+                let ms = wait_start.elapsed().as_millis() as u64;
+                self.metrics.record_success_wait_ms(ms);
+                Ok(())
+            }
             Ok(Err(_)) => {
+                self.metrics.ack_dropped.fetch_add(1, Ordering::SeqCst);
                 warn!(
                     session_id = %self.session_id,
                     channel_id = self.channel_id,
@@ -345,6 +403,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(metrics.ack_timeouts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn write_batch_bumps_ack_dropped_when_sender_dropped() {
+        let metrics = Arc::new(RecordingMetrics::default());
+        let ack_router = Arc::new(AckRouter::new());
+        let (audit_tx, _audit_rx) = mpsc::unbounded_channel();
+        let hub = IacsRecordingHub {
+            audit_tx,
+            ack_router: Arc::clone(&ack_router),
+            metrics: Arc::clone(&metrics),
+        };
+        let recorder = hub.channel_recorder("s1".into(), 1);
+
+        let task = tokio::spawn(async move {
+            recorder
+                .write_batch(IacsRecordingDirection::EwsToAsset, b"x")
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        ack_router.cancel("s1", 1, 0).await;
+        let result = task.await.unwrap();
+        assert!(result.is_err());
+        assert_eq!(metrics.ack_dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(metrics.ack_timeouts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn record_success_wait_ms_tracks_max_in_window() {
+        let metrics = RecordingMetrics::new();
+        metrics.record_success_wait_ms(12);
+        metrics.record_success_wait_ms(48);
+        metrics.record_success_wait_ms(30);
+        assert_eq!(metrics.snapshot_ack_wait_ms_max(), 48);
+    }
+
+    #[test]
+    fn snapshot_ack_wait_ms_max_resets_after_60s_window() {
+        let metrics = RecordingMetrics::new();
+        metrics.record_success_wait_ms(100);
+        assert_eq!(metrics.snapshot_ack_wait_ms_max(), 100);
+        metrics.rewind_wait_window_for_test(Duration::from_secs(61));
+        assert_eq!(metrics.snapshot_ack_wait_ms_max(), 0);
+        metrics.record_success_wait_ms(5);
+        assert_eq!(metrics.snapshot_ack_wait_ms_max(), 5);
     }
 
     #[tokio::test]

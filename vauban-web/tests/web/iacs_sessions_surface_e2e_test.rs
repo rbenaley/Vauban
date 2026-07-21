@@ -28,7 +28,7 @@ use crate::fixtures::{
 };
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::RunQueryDsl;
-use vauban_web::models::session::SessionType;
+use vauban_web::models::session::{SessionStatus, SessionType};
 use vauban_web::schema::{assets as schema_assets, proxy_sessions};
 
 // ===================================================================
@@ -96,7 +96,7 @@ async fn db_filter_drops_iacs_sessions_when_industrial_disabled() {
     let active_killed: Vec<i32> = proxy_sessions::table
         .inner_join(schema_assets::table)
         .filter(proxy_sessions::user_id.eq(admin))
-        .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
+        .filter(proxy_sessions::status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
         .filter(proxy_sessions::connected_at.is_not_null())
         .filter(proxy_sessions::session_type.ne(SessionType::IacsTunnel))
         .select(proxy_sessions::id)
@@ -116,7 +116,7 @@ async fn db_filter_drops_iacs_sessions_when_industrial_disabled() {
     let active_baseline: Vec<i32> = proxy_sessions::table
         .inner_join(schema_assets::table)
         .filter(proxy_sessions::user_id.eq(admin))
-        .filter(proxy_sessions::status.eq_any(["active", "ews_connected", "tunnel_active"]))
+        .filter(proxy_sessions::status.eq_any(SessionStatus::OPERATOR_ACTIVE_AS_STR))
         .filter(proxy_sessions::connected_at.is_not_null())
         .select(proxy_sessions::id)
         .load(&mut conn)

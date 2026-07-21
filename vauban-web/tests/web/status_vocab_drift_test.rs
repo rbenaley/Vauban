@@ -373,3 +373,123 @@ fn handlers_derive_status_filters_from_status_vocab() {
         "/assets/manage must derive its status options from AssetStatus::filter_options"
     );
 }
+
+// ===================================================================
+// 5. SessionStatus family consts stay in lock-step (Lot D)
+// ===================================================================
+
+#[test]
+fn session_status_family_consts_are_subset_of_all() {
+    for s in SessionStatus::LIVE_AS_STR {
+        assert!(
+            SessionStatus::ALL.iter().any(|v| v.as_str() == s),
+            "LIVE_AS_STR value '{s}' is not in SessionStatus::ALL"
+        );
+    }
+    for s in SessionStatus::OPERATOR_ACTIVE_AS_STR {
+        assert!(
+            SessionStatus::ALL.iter().any(|v| v.as_str() == s),
+            "OPERATOR_ACTIVE_AS_STR value '{s}' is not in SessionStatus::ALL"
+        );
+    }
+    for s in SessionStatus::IACS_OPEN_AS_STR {
+        assert!(
+            SessionStatus::ALL.iter().any(|v| v.as_str() == s),
+            "IACS_OPEN_AS_STR value '{s}' is not in SessionStatus::ALL"
+        );
+    }
+    for s in SessionStatus::WAITING_TTL_AS_STR {
+        assert!(
+            SessionStatus::ALL.iter().any(|v| v.as_str() == s),
+            "WAITING_TTL_AS_STR value '{s}' is not in SessionStatus::ALL"
+        );
+    }
+    for s in SessionStatus::IACS_AUTH_AS_STR {
+        assert!(
+            SessionStatus::ALL.iter().any(|v| v.as_str() == s),
+            "IACS_AUTH_AS_STR value '{s}' is not in SessionStatus::ALL"
+        );
+    }
+    for s in SessionStatus::SSH_RDP_INFLIGHT_AS_STR {
+        assert!(
+            SessionStatus::ALL.iter().any(|v| v.as_str() == s),
+            "SSH_RDP_INFLIGHT_AS_STR value '{s}' is not in SessionStatus::ALL"
+        );
+    }
+}
+
+#[test]
+fn live_as_str_matches_is_live_for_every_variant() {
+    for status in SessionStatus::ALL {
+        let s = status.as_str();
+        assert_eq!(
+            status.is_live(),
+            SessionStatus::LIVE_AS_STR.contains(&s),
+            "LIVE_AS_STR disagrees with is_live for '{s}'"
+        );
+    }
+}
+
+#[test]
+fn operator_active_is_subset_of_live() {
+    for s in SessionStatus::OPERATOR_ACTIVE_AS_STR {
+        assert!(
+            SessionStatus::LIVE_AS_STR.contains(&s),
+            "OPERATOR_ACTIVE_AS_STR value '{s}' is not in LIVE_AS_STR"
+        );
+    }
+}
+
+#[test]
+fn iacs_open_family_matches_is_iacs_open() {
+    for status in SessionStatus::ALL {
+        let s = status.as_str();
+        assert_eq!(
+            status.is_iacs_open(),
+            SessionStatus::IACS_OPEN_AS_STR.contains(&s),
+            "IACS_OPEN_AS_STR disagrees with is_iacs_open for '{s}'"
+        );
+    }
+}
+
+#[test]
+fn production_sources_do_not_use_bare_operator_active_literal() {
+    let manifest = manifest_dir();
+    let forbidden = r#"eq_any(["active", "ews_connected", "tunnel_active"])"#;
+    let scan_roots = ["src/handlers", "src/tasks", "src/services", "src/ipc"];
+
+    fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rs_files(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    for root in scan_roots {
+        let dir = manifest.join(root);
+        let mut files = Vec::new();
+        collect_rs_files(&dir, &mut files);
+        for path in files {
+            let rel = path.strip_prefix(&manifest).unwrap_or(&path);
+            if rel == std::path::Path::new("src/models/session.rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            assert!(
+                !src.contains(forbidden),
+                "{} must not carry the bare operator-active literal `{}`; \
+                 use SessionStatus::OPERATOR_ACTIVE_AS_STR",
+                rel.display(),
+                forbidden
+            );
+        }
+    }
+}

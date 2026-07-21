@@ -366,14 +366,8 @@ pub async fn build_tunnel_snapshot(
             peer_ip: acc.peer_ip,
             bytes_in: acc.bytes_in,
             bytes_out: acc.bytes_out,
-            user_uuid: acc
-                .user_uuid
-                .map(|u| u.to_string())
-                .unwrap_or_default(),
-            asset_uuid: acc
-                .asset_uuid
-                .map(|u| u.to_string())
-                .unwrap_or_default(),
+            user_uuid: acc.user_uuid.map(|u| u.to_string()).unwrap_or_default(),
+            asset_uuid: acc.asset_uuid.map(|u| u.to_string()).unwrap_or_default(),
             ews_uuid: acc.ews_uuid.map(|u| u.to_string()).unwrap_or_default(),
         })
         .collect();
@@ -592,8 +586,7 @@ mod tests {
             .unwrap_or(body.len());
         let fn_body = &body[..end];
         assert!(
-            !fn_body.contains("session_token:")
-                && !fn_body.contains("ews_pubkey_fp:"),
+            !fn_body.contains("session_token:") && !fn_body.contains("ews_pubkey_fp:"),
             "build_tunnel_snapshot must not assign session_token / \
              ews_pubkey_fp onto snapshot entries"
         );

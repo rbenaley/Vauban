@@ -5,6 +5,7 @@
 //! Display updates are encoded as PNG regions and sent via IPC.
 
 use crate::error::{SessionError, SessionResult};
+use crate::session_manager::RecordingDropHook;
 use crate::video_encoder::VideoEncoder;
 use base64::Engine as _;
 use image::codecs::png::PngEncoder;
@@ -118,6 +119,7 @@ impl RdpSession {
         web_tx: mpsc::Sender<Message>,
         cmd_rx: mpsc::Receiver<SessionCommand>,
         audit_tx: Option<mpsc::Sender<Message>>,
+        recording_on_full: Option<RecordingDropHook>,
     ) -> SessionResult<Self> {
         info!(
             session_id = %config.session_id,
@@ -318,6 +320,7 @@ impl RdpSession {
                 web_tx,
                 cmd_rx,
                 audit_tx,
+                recording_on_full,
             )
             .await
             {
@@ -501,6 +504,7 @@ async fn active_session_loop(
     web_tx: mpsc::Sender<Message>,
     mut cmd_rx: mpsc::Receiver<SessionCommand>,
     audit_tx: Option<mpsc::Sender<Message>>,
+    recording_on_full: Option<RecordingDropHook>,
 ) -> SessionResult<()> {
     let desktop_w = connection_result.desktop_size.width;
     let desktop_h = connection_result.desktop_size.height;
@@ -862,7 +866,9 @@ async fn active_session_loop(
                         height: frame.height,
                         data: frame.data.clone(),
                     };
-                    let _ = tx.try_send(audit_msg);
+                    if tx.try_send(audit_msg).is_err() && let Some(ref hook) = recording_on_full {
+                        hook(&session_id);
+                    }
                 }
 
                 let msg = Message::RdpVideoFrame {

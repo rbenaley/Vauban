@@ -1,13 +1,13 @@
 //! Source-grep pin tests for the IACS active sessions integration.
 //!
-//! The active-sessions surface depends on three independent SQL
+//! The active-sessions surface depends on four independent SQL
 //! sites and a small terminate dispatch invariant. This file is a
 //! purely structural (file-content) safety net that catches accidental
 //! drift in CI before the integration suite even runs.
 //!
 //! Pinned invariants:
-//! 1. The three active-list SQL filters all use
-//!    `status.eq_any([... , "tunnel_active"])` -- not just
+//! 1. The four active-list SQL filters all use
+//!    `SessionStatus::OPERATOR_ACTIVE_AS_STR` -- not just
 //!    `status.eq("active")`. Otherwise IACS rows go missing.
 //! 2. The terminate handler dispatches IACS termination via
 //!    `state.proxy_iacs` exclusively (IPC-only). Otherwise production
@@ -35,7 +35,7 @@ fn read_production_only(rel: &str) -> String {
 }
 
 // ===================================================================
-// 1. Three SQL sites must include `tunnel_active` in the filter.
+// 1. Four SQL sites must use OPERATOR_ACTIVE_AS_STR in the filter.
 // ===================================================================
 
 const ACTIVE_LIST_SITES: &[(&str, &str)] = &[
@@ -53,20 +53,32 @@ const ACTIVE_LIST_SITES: &[(&str, &str)] = &[
     ),
 ];
 
+const OPERATOR_ACTIVE_SITES: &[(&str, &str)] = &[(
+    "src/services/dashboard/snapshot.rs",
+    "load_hero / load_live_sessions (Bastion Watch first paint)",
+)];
+
 #[test]
-fn every_active_list_query_site_includes_tunnel_active_status() {
-    for (rel, what) in ACTIVE_LIST_SITES {
+fn every_active_list_query_site_uses_operator_active_as_str() {
+    for (rel, what) in ACTIVE_LIST_SITES.iter().chain(OPERATOR_ACTIVE_SITES.iter()) {
         let src = read_production_only(rel);
         assert!(
-            src.contains(r#"status.eq_any(["active", "ews_connected", "tunnel_active"])"#),
+            src.contains("SessionStatus::OPERATOR_ACTIVE_AS_STR"),
             "{} ({}) MUST filter the active list with \
-             `status.eq_any([\"active\", \"ews_connected\", \"tunnel_active\"])` \
-             so IACS tunnels (channel-less authenticated logins included) \
-             surface alongside SSH/RDP. Pinned at \
+             `SessionStatus::OPERATOR_ACTIVE_AS_STR` so IACS tunnels \
+             (channel-less authenticated logins included) surface \
+             alongside SSH/RDP. Pinned at \
              tests/web/iacs_active_sessions_pin_test.rs",
             rel,
             what
         );
+    }
+}
+
+#[test]
+fn every_active_list_query_site_includes_tunnel_active_status() {
+    for (rel, what) in ACTIVE_LIST_SITES {
+        let src = read_production_only(rel);
         // Each active-list query is identified by its
         // `connected_at.is_not_null()` neighbour. We require that the
         // 200 chars BEFORE it contain the IACS-aware filter -- a
@@ -80,11 +92,10 @@ fn every_active_list_query_site_includes_tunnel_active_status() {
             let win_start = abs.saturating_sub(200);
             let window = &src[win_start..abs];
             assert!(
-                window.contains(r#"eq_any(["active", "ews_connected", "tunnel_active"])"#),
+                window.contains("OPERATOR_ACTIVE_AS_STR"),
                 "{} ({}): a `connected_at.is_not_null()` filter is not \
-                 paired with the IACS-aware `status.eq_any([\"active\", \
-                 \"ews_connected\", \"tunnel_active\"])` within the \
-                 preceding 200 chars. Window:\n---\n{}\n---",
+                 paired with `SessionStatus::OPERATOR_ACTIVE_AS_STR` \
+                 within the preceding 200 chars. Window:\n---\n{}\n---",
                 rel,
                 what,
                 window
@@ -122,7 +133,7 @@ fn every_active_list_query_site_keeps_connected_at_not_null_guard() {
 //       kill-switch branch (issue: IACS sessions leaking onto the
 //       operational `/sessions/active` surface when
 //       `industrial.enabled = false`). The base
-//       `status.eq_any(["active", "tunnel_active"])` clause stays
+//       `SessionStatus::OPERATOR_ACTIVE_AS_STR` clause stays
 //       (pinned above); under the kill-switch each site adds an
 //       `session_type.ne(... ::IacsTunnel)` exclusion gated on the
 //       flag. Scoped to the function body so an unrelated occurrence
