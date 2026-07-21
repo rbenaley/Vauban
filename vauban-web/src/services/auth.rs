@@ -35,16 +35,9 @@ use crate::error::{AppError, AppResult};
 /// so the step-up flow and the login flow can share the exact same
 /// classification.
 pub fn is_encrypted_mfa_secret(value: &str) -> bool {
-    if value.len() < 4 || !value.starts_with('v') {
-        return false;
-    }
-    let Some(colon_pos) = value.find(':') else {
-        return false;
-    };
-    if colon_pos < 2 {
-        return false;
-    }
-    value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
+    // Semantic MFA alias (I7): same shape grammar as every other consumer,
+    // single definition in shared::vault_envelope (I2).
+    shared::vault_envelope::is_vault_envelope(value)
 }
 
 /// Equalize the wall-clock cost of a login failure that would otherwise

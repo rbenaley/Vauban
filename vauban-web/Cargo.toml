@@ -16,9 +16,6 @@ shared = { workspace = true, features = ["tasks", "session-token", "access-guard
 # Shared Diesel schema
 vauban-db.workspace = true
 
-# Vault crypto library (keyring reuse for migrate_secrets binary)
-vauban-vault = { path = "../vauban-vault" }
-
 # Web framework
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }

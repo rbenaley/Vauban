@@ -759,13 +759,9 @@ fn load_key_version(default_path: &str) -> Result<u32> {
 }
 
 fn is_encrypted(value: &str) -> bool {
-    if value.len() < 4 || !value.starts_with('v') {
-        return false;
-    }
-    let Some(colon_pos) = value.find(':') else {
-        return false;
-    };
-    colon_pos >= 2 && value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
+    // Thin alias: shape grammar lives in shared (I2). migrate_secrets still
+    // encrypts via vauban_vault::keyring::Keyring.
+    shared::vault_envelope::is_vault_envelope(value)
 }
 
 #[derive(Queryable, Selectable)]

@@ -25,6 +25,9 @@ pub mod sandbox;
 pub mod totp;
 pub mod username;
 pub mod validation;
+/// Vault ciphertext envelope shape detection (parse-only, no crypto).
+/// Shared by web / supervisor / vault so the `v{N}:…` predicate cannot drift.
+pub mod vault_envelope;
 
 // Defense-in-depth RBAC re-check helper. Pulled in by every protocol
 // proxy (vauban-proxy-ssh, vauban-proxy-rdp, ...) that opens upstream

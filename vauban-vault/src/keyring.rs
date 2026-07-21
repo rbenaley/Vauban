@@ -233,24 +233,11 @@ pub enum KeyError {
 
 /// Check whether a value looks like an encrypted ciphertext from vauban-vault.
 ///
-/// Encrypted values have the format `"v{digit(s)}:{base64}"`.
-/// This function does NOT validate the base64 payload or attempt decryption.
-/// Also duplicated in `vauban-web/src/handlers/web.rs` for use at the web layer.
-#[allow(dead_code)] // Used in tests; web layer has its own copy
+/// Thin alias of [`shared::vault_envelope::is_vault_envelope`] so vault tests
+/// and call sites keep the historical name. The shape grammar lives in
+/// `shared` (single definition); this crate owns encrypt/decrypt only.
 pub fn is_encrypted(value: &str) -> bool {
-    if value.len() < 4 {
-        return false;
-    }
-    if !value.starts_with('v') {
-        return false;
-    }
-    let Some(colon_pos) = value.find(':') else {
-        return false;
-    };
-    if colon_pos < 2 {
-        return false;
-    }
-    value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
+    shared::vault_envelope::is_vault_envelope(value)
 }
 
 #[cfg(test)]

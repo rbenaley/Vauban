@@ -38,3 +38,6 @@ getrandom.workspace = true
 
 # TOTP / MFA
 totp-rs.workspace = true
+
+[dev-dependencies]
+proptest = "1"

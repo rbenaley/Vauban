@@ -107,6 +107,7 @@ seccompiler = "0.5"
 
 [dev-dependencies]
 tempfile = "3"
+proptest = "1"
 # AccessGuard tests need real tokio + nix pipes. Keep this in dev-deps
 # so a default-feature build of the consumer doesn't pay for it.
 tokio = { workspace = true, features = ["test-util", "macros", "rt"] }

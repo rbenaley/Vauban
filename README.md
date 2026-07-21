@@ -60,7 +60,7 @@ Detailed technical architecture documents are available in [`docs/technical/`](d
 | Document | Description |
 |----------|-------------|
 | [Privilege Separation Architecture](docs/technical/Vauban_Privsep_Architecture_EN(1.2).md) | Process model, IPC protocol, Capsicum sandboxing, supervisor design |
-| [Vault Architecture](docs/technical/Vauban_Vault_Architecture_EN(1.1).md) | Cryptographic design, key management, threat model, Vault Secrets (org secrets manager, M2M API, asset provenance) |
+| [Vault Architecture](docs/technical/Vauban_Vault_Architecture_EN(1.2).md) | Cryptographic design, key management, threat model, Vault Secrets (org secrets manager, M2M API, asset provenance) |
 | [RDP Session Architecture](docs/technical/Vauban_RDP_Architecture_EN(1.0).md) | H.264 encoding, WebCodecs decoding, dynamic resolution, input pipeline |
 | [OpenH264 AVX2 Optimizations](docs/technical/Vauban_OpenH264_AVX2_Optimizations_EN(1.0).md) | Custom AVX2 assembly for SAD and intra prediction (~50% CPU reduction) |
 | [ACME TLS Certificate Architecture](docs/technical/Vauban_ACME_TLS_Architecture_EN(1.0).md) | Automatic certificate renewal, TLS-ALPN-01, zero-downtime rotation |
@@ -412,7 +412,7 @@ Beyond the API key, every call must pass **asset provenance**: the caller's
 source IP must match a registered SSH/RDP asset that actively proves its
 pinned host identity, and a `(user group, secret group, asset group)` access
 rule must allow the triple. See the
-[Vault Architecture](docs/technical/Vauban_Vault_Architecture_EN(1.1).md)
+[Vault Architecture](docs/technical/Vauban_Vault_Architecture_EN(1.2).md)
 document, Section 11.
 
 ## Testing

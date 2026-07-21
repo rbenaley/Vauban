@@ -944,21 +944,11 @@ pub(crate) async fn encrypt_connection_config(
 
 /// Check whether a value looks like an encrypted ciphertext from vauban-vault.
 ///
-/// Encrypted values have the format `"v{digit(s)}:{base64}"`.
+/// Thin alias of [`shared::vault_envelope::is_vault_envelope`] (single
+/// definition). Kept as `fn is_encrypted` so security source pins and
+/// call sites in this module tree stay stable.
 pub(crate) fn is_encrypted(value: &str) -> bool {
-    if value.len() < 4 {
-        return false;
-    }
-    if !value.starts_with('v') {
-        return false;
-    }
-    let Some(colon_pos) = value.find(':') else {
-        return false;
-    };
-    if colon_pos < 2 {
-        return false;
-    }
-    value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
+    shared::vault_envelope::is_vault_envelope(value)
 }
 
 // ============================================================================

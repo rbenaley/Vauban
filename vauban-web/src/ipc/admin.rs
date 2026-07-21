@@ -536,19 +536,7 @@ async fn handle_seed_sessions(pool: &DbPool, seed_sessions: &[SeedSession]) -> A
 }
 
 fn is_encrypted(value: &str) -> bool {
-    if value.len() < 4 {
-        return false;
-    }
-    if !value.starts_with('v') {
-        return false;
-    }
-    let Some(colon_pos) = value.find(':') else {
-        return false;
-    };
-    if colon_pos < 2 {
-        return false;
-    }
-    value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
+    shared::vault_envelope::is_vault_envelope(value)
 }
 
 #[cfg(test)]

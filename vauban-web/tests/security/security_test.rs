@@ -5314,6 +5314,27 @@ fn test_is_encrypted_helper_exists() {
         source.contains("fn is_encrypted("),
         "is_encrypted() helper must exist for backward compatibility"
     );
+    assert!(
+        source.contains("shared::vault_envelope::is_vault_envelope"),
+        "web is_encrypted must delegate to shared::vault_envelope (I2)"
+    );
+}
+
+/// Shape grammar lives once in shared; web must not link vauban-vault for it (I6).
+#[test]
+fn test_vault_envelope_lives_in_shared_and_web_has_no_vault_dep() {
+    let shared = include_str!("../../../shared/src/vault_envelope.rs");
+    assert!(
+        shared.contains("pub fn is_vault_envelope"),
+        "shared must expose is_vault_envelope"
+    );
+    let cargo = include_str!("../../Cargo.toml");
+    assert!(
+        !cargo
+            .lines()
+            .any(|l| l.trim_start().starts_with("vauban-vault")),
+        "vauban-web must NOT depend on vauban-vault (envelope via shared only)"
+    );
 }
 
 // =============================================================================
@@ -5327,6 +5348,32 @@ fn test_auth_has_is_encrypted() {
     assert!(
         source.contains("fn is_encrypted("),
         "auth.rs must have is_encrypted() for backward compatibility"
+    );
+    let mfa = include_str!("../../src/services/auth.rs");
+    assert!(
+        mfa.contains("shared::vault_envelope::is_vault_envelope"),
+        "is_encrypted_mfa_secret must delegate to shared::vault_envelope (I7/I2)"
+    );
+}
+
+/// Lint script must exist and pass (I2 / I6 structural fence).
+#[test]
+fn test_check_vault_envelope_single_def_script_passes() {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts/check_vault_envelope_single_def.sh");
+    assert!(
+        script.exists(),
+        "check_vault_envelope_single_def.sh must exist"
+    );
+    let out = std::process::Command::new("bash")
+        .arg(&script)
+        .output()
+        .expect("run lint");
+    assert!(
+        out.status.success(),
+        "check_vault_envelope_single_def.sh failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 
@@ -5442,6 +5489,10 @@ fn test_migrate_has_is_encrypted() {
     assert!(
         source.contains("fn is_encrypted("),
         "migrate_secrets must have is_encrypted() for idempotent migration"
+    );
+    assert!(
+        source.contains("shared::vault_envelope::is_vault_envelope"),
+        "migrate is_encrypted must delegate to shared::vault_envelope (I2)"
     );
 }
 
