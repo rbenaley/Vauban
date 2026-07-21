@@ -2,19 +2,23 @@
 //!
 //! Provides async methods to open SSH sessions, send terminal data,
 //! and receive output from SSH sessions.
+//!
+//! Transport/correlation is owned by [`CorrelatedIpcCore`] (30 s timeout on
+//! open / host-key / push / test — INV-CORR-5).
 
 use crate::error::{AppError, AppResult};
-use shared::ipc::IpcChannel;
+use crate::ipc::correlated::{CorrelatedIpcCore, deliver_or_warn};
 use shared::messages::Message;
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::Interest;
-use tokio::io::unix::AsyncFd;
+use std::sync::Mutex as StdMutex;
+use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, oneshot};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, warn};
+
+const SSH_IPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Request to open an SSH session.
 ///
@@ -119,14 +123,9 @@ type SimpleResultSender = oneshot::Sender<(bool, Option<String>)>;
 
 /// Async client for communicating with vauban-proxy-ssh.
 pub struct ProxySshClient {
-    /// Underlying IPC channel.
-    channel: IpcChannel,
-    /// Async file descriptor for reading.
-    read_async_fd: AsyncFd<RawFd>,
-    /// Next request ID.
-    next_request_id: AtomicU64,
+    core: CorrelatedIpcCore,
     /// Pending requests waiting for responses.
-    pending_requests: Mutex<HashMap<u64, oneshot::Sender<SshSessionOpened>>>,
+    pending_requests: StdMutex<HashMap<u64, oneshot::Sender<SshSessionOpened>>>,
     /// Per-session data senders: session_id -> Sender.
     /// Each WebSocket subscribes to its session's channel.
     session_data_senders: Mutex<HashMap<String, mpsc::Sender<Vec<u8>>>>,
@@ -134,11 +133,11 @@ pub struct ProxySshClient {
     /// Created during open_session, taken by subscribe_session.
     session_data_receivers: Mutex<HashMap<String, mpsc::Receiver<Vec<u8>>>>,
     /// Pending host key fetch requests waiting for responses.
-    pending_host_key_requests: Mutex<HashMap<u64, HostKeyResponseSender>>,
+    pending_host_key_requests: StdMutex<HashMap<u64, HostKeyResponseSender>>,
     /// Pending push-public-key requests. Carries `(success, error)`.
-    pending_push_requests: Mutex<HashMap<u64, SimpleResultSender>>,
+    pending_push_requests: StdMutex<HashMap<u64, SimpleResultSender>>,
     /// Pending test-key-auth requests. Carries `(success, error)`.
-    pending_test_requests: Mutex<HashMap<u64, SimpleResultSender>>,
+    pending_test_requests: StdMutex<HashMap<u64, SimpleResultSender>>,
 }
 
 impl ProxySshClient {
@@ -146,24 +145,14 @@ impl ProxySshClient {
     ///
     /// The file descriptors should be passed by the supervisor.
     pub fn new(read_fd: RawFd, write_fd: RawFd) -> io::Result<Arc<Self>> {
-        // Create IPC channel
-        let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
-
-        // Set read fd to non-blocking
-        set_nonblocking(read_fd)?;
-
-        let read_async_fd = AsyncFd::new(read_fd)?;
-
         Ok(Arc::new(Self {
-            channel,
-            read_async_fd,
-            next_request_id: AtomicU64::new(1),
-            pending_requests: Mutex::new(HashMap::new()),
+            core: CorrelatedIpcCore::from_fds(read_fd, write_fd)?,
+            pending_requests: StdMutex::new(HashMap::new()),
             session_data_senders: Mutex::new(HashMap::new()),
             session_data_receivers: Mutex::new(HashMap::new()),
-            pending_host_key_requests: Mutex::new(HashMap::new()),
-            pending_push_requests: Mutex::new(HashMap::new()),
-            pending_test_requests: Mutex::new(HashMap::new()),
+            pending_host_key_requests: StdMutex::new(HashMap::new()),
+            pending_push_requests: StdMutex::new(HashMap::new()),
+            pending_test_requests: StdMutex::new(HashMap::new()),
         }))
     }
 
@@ -205,7 +194,7 @@ impl ProxySshClient {
         &self,
         request: SshSessionOpenRequest,
     ) -> AppResult<SshSessionOpened> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = self.core.alloc_id();
         let session_id = request.session_id.clone();
 
         debug!(
@@ -225,13 +214,6 @@ impl ProxySshClient {
         {
             let mut receivers = self.session_data_receivers.lock().await;
             receivers.insert(session_id.clone(), data_rx);
-        }
-
-        // Create response channel
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut pending = self.pending_requests.lock().await;
-            pending.insert(request_id, tx);
         }
 
         // Send request -- ship vault CIPHERTEXTS verbatim (no decryption
@@ -254,24 +236,15 @@ impl ProxySshClient {
             session_token: request.session_token,
         };
 
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))?;
-
-        // Wait for response with timeout
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => {
-                // Channel was dropped (shouldn't happen)
-                Err(AppError::Ipc("Response channel dropped".to_string()))
-            }
-            Err(_) => {
-                // Timeout
-                let mut pending = self.pending_requests.lock().await;
-                pending.remove(&request_id);
-                Err(AppError::Ipc("SSH session open timeout".to_string()))
-            }
-        }
+        self.core
+            .request(
+                &self.pending_requests,
+                request_id,
+                &msg,
+                Some(SSH_IPC_TIMEOUT),
+            )
+            .await
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Send terminal input data to a session.
@@ -281,9 +254,9 @@ impl ProxySshClient {
             data: data.to_vec(),
         };
 
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
+        self.core
+            .send_fire_and_forget(&msg)
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Send terminal resize event.
@@ -294,9 +267,9 @@ impl ProxySshClient {
             rows,
         };
 
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
+        self.core
+            .send_fire_and_forget(&msg)
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Close an SSH session.
@@ -305,9 +278,9 @@ impl ProxySshClient {
             session_id: session_id.to_string(),
         };
 
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
+        self.core
+            .send_fire_and_forget(&msg)
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Fetch the SSH host key from a remote server.
@@ -330,7 +303,7 @@ impl ProxySshClient {
         supervisor: Option<&super::SupervisorClient>,
         identity: Option<HostKeyFetchIdentity<'_>>,
     ) -> AppResult<(String, String)> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = self.core.alloc_id();
 
         debug!(
             request_id = request_id,
@@ -435,43 +408,30 @@ impl ProxySshClient {
             }
         }
 
-        // Create a oneshot channel for the response
-        let (tx, rx) = oneshot::channel::<(bool, Option<String>, Option<String>, Option<String>)>();
-
-        // Store the pending request
-        {
-            let mut pending = self.pending_host_key_requests.lock().await;
-            pending.insert(request_id, tx);
-        }
-
-        // Send the fetch request
         let msg = Message::SshFetchHostKey {
             request_id,
             asset_host: host.to_string(),
             asset_port: port,
         };
 
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))?;
-
-        // Wait for response with timeout
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
-            Ok(Ok((true, Some(key), Some(fp), _))) => Ok((key, fp)),
-            Ok(Ok((false, _, _, Some(err)))) => {
+        match self
+            .core
+            .request(
+                &self.pending_host_key_requests,
+                request_id,
+                &msg,
+                Some(SSH_IPC_TIMEOUT),
+            )
+            .await
+        {
+            Ok((true, Some(key), Some(fp), _)) => Ok((key, fp)),
+            Ok((false, _, _, Some(err))) => {
                 Err(AppError::Ipc(format!("Host key fetch failed: {}", err)))
             }
-            Ok(Ok(_)) => Err(AppError::Ipc(
+            Ok(_) => Err(AppError::Ipc(
                 "Host key fetch returned unexpected response".to_string(),
             )),
-            Ok(Err(_)) => Err(AppError::Ipc(
-                "Host key response channel dropped".to_string(),
-            )),
-            Err(_) => {
-                let mut pending = self.pending_host_key_requests.lock().await;
-                pending.remove(&request_id);
-                Err(AppError::Ipc("Host key fetch timeout".to_string()))
-            }
+            Err(e) => Err(e.into_app_ipc()),
         }
     }
 
@@ -568,17 +528,11 @@ impl ProxySshClient {
         supervisor: Option<&super::SupervisorClient>,
         identity: Option<HostKeyFetchIdentity<'_>>,
     ) -> AppResult<()> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = self.core.alloc_id();
         // Proxy reconstructs the same synthetic id from request_id.
         let session_id = format!("push-pubkey-{}", request_id);
         self.broker_connect(&session_id, host, port, supervisor, identity)
             .await?;
-
-        let (tx, rx) = oneshot::channel();
-        self.pending_push_requests
-            .lock()
-            .await
-            .insert(request_id, tx);
 
         let msg = Message::SshPushPublicKey {
             request_id,
@@ -589,21 +543,23 @@ impl ProxySshClient {
             password_ciphertext: password_ciphertext.to_string(),
             expected_host_key,
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))?;
 
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
-            Ok(Ok((true, _))) => Ok(()),
-            Ok(Ok((false, err))) => Err(AppError::Ipc(format!(
+        match self
+            .core
+            .request(
+                &self.pending_push_requests,
+                request_id,
+                &msg,
+                Some(SSH_IPC_TIMEOUT),
+            )
+            .await
+        {
+            Ok((true, _)) => Ok(()),
+            Ok((false, err)) => Err(AppError::Ipc(format!(
                 "Push public key failed: {}",
                 err.unwrap_or_else(|| "unknown error".to_string())
             ))),
-            Ok(Err(_)) => Err(AppError::Ipc("Push response channel dropped".to_string())),
-            Err(_) => {
-                self.pending_push_requests.lock().await.remove(&request_id);
-                Err(AppError::Ipc("Push public key timeout".to_string()))
-            }
+            Err(e) => Err(e.into_app_ipc()),
         }
     }
 
@@ -624,16 +580,10 @@ impl ProxySshClient {
         supervisor: Option<&super::SupervisorClient>,
         identity: Option<HostKeyFetchIdentity<'_>>,
     ) -> AppResult<()> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = self.core.alloc_id();
         let session_id = format!("test-keyauth-{}", request_id);
         self.broker_connect(&session_id, host, port, supervisor, identity)
             .await?;
-
-        let (tx, rx) = oneshot::channel();
-        self.pending_test_requests
-            .lock()
-            .await
-            .insert(request_id, tx);
 
         let msg = Message::SshTestKeyAuth {
             request_id,
@@ -644,21 +594,23 @@ impl ProxySshClient {
             passphrase_ciphertext,
             expected_host_key,
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))?;
 
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
-            Ok(Ok((true, _))) => Ok(()),
-            Ok(Ok((false, err))) => Err(AppError::Ipc(format!(
+        match self
+            .core
+            .request(
+                &self.pending_test_requests,
+                request_id,
+                &msg,
+                Some(SSH_IPC_TIMEOUT),
+            )
+            .await
+        {
+            Ok((true, _)) => Ok(()),
+            Ok((false, err)) => Err(AppError::Ipc(format!(
                 "Key-based authentication failed: {}",
                 err.unwrap_or_else(|| "unknown error".to_string())
             ))),
-            Ok(Err(_)) => Err(AppError::Ipc("Test response channel dropped".to_string())),
-            Err(_) => {
-                self.pending_test_requests.lock().await.remove(&request_id);
-                Err(AppError::Ipc("Test key auth timeout".to_string()))
-            }
+            Err(e) => Err(e.into_app_ipc()),
         }
     }
 
@@ -666,39 +618,12 @@ impl ProxySshClient {
     ///
     /// This should be called in a loop from a dedicated task.
     pub async fn process_incoming(&self) -> AppResult<()> {
-        loop {
-            // Wait for the fd to be readable
-            let mut guard = self
-                .read_async_fd
-                .ready(Interest::READABLE)
-                .await
-                .map_err(|e| AppError::Ipc(format!("AsyncFd ready failed: {}", e)))?;
-
-            // Try to receive messages
-            loop {
-                match self.channel.try_recv() {
-                    Ok(msg) => {
-                        self.handle_message(msg).await;
-                    }
-                    Err(shared::ipc::IpcError::Io(ref e))
-                        if e.kind() == io::ErrorKind::WouldBlock =>
-                    {
-                        // No more messages available
-                        guard.clear_ready();
-                        break;
-                    }
-                    Err(shared::ipc::IpcError::ConnectionClosed) => {
-                        info!("SSH proxy IPC connection closed");
-                        return Err(AppError::Ipc("IPC connection closed".to_string()));
-                    }
-                    Err(e) => {
-                        error!(error = %e, "IPC receive error");
-                        guard.clear_ready();
-                        break;
-                    }
-                }
-            }
-        }
+        self.core
+            .process_loop(|msg| async {
+                self.handle_message(msg).await;
+            })
+            .await
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Handle an incoming message from the proxy.
@@ -724,11 +649,7 @@ impl ProxySshClient {
                     error,
                 };
 
-                // Find and notify the waiting request
-                let mut pending = self.pending_requests.lock().await;
-                if let Some(tx) = pending.remove(&request_id) {
-                    let _ = tx.send(response);
-                }
+                deliver_or_warn(&self.pending_requests, request_id, response, "proxy_ssh");
             }
 
             Message::SshHostKeyResult {
@@ -744,10 +665,12 @@ impl ProxySshClient {
                     "SSH host key result received"
                 );
 
-                let mut pending = self.pending_host_key_requests.lock().await;
-                if let Some(tx) = pending.remove(&request_id) {
-                    let _ = tx.send((success, host_key, key_fingerprint, error));
-                }
+                deliver_or_warn(
+                    &self.pending_host_key_requests,
+                    request_id,
+                    (success, host_key, key_fingerprint, error),
+                    "proxy_ssh",
+                );
             }
 
             Message::SshPushPublicKeyResult {
@@ -756,9 +679,12 @@ impl ProxySshClient {
                 error,
             } => {
                 debug!(request_id, success, "SSH push public key result received");
-                if let Some(tx) = self.pending_push_requests.lock().await.remove(&request_id) {
-                    let _ = tx.send((success, error));
-                }
+                deliver_or_warn(
+                    &self.pending_push_requests,
+                    request_id,
+                    (success, error),
+                    "proxy_ssh",
+                );
             }
 
             Message::SshTestKeyAuthResult {
@@ -767,9 +693,12 @@ impl ProxySshClient {
                 error,
             } => {
                 debug!(request_id, success, "SSH test key auth result received");
-                if let Some(tx) = self.pending_test_requests.lock().await.remove(&request_id) {
-                    let _ = tx.send((success, error));
-                }
+                deliver_or_warn(
+                    &self.pending_test_requests,
+                    request_id,
+                    (success, error),
+                    "proxy_ssh",
+                );
             }
 
             Message::SshData { session_id, data } => {
@@ -791,27 +720,12 @@ impl ProxySshClient {
     }
 }
 
-/// Set a file descriptor to non-blocking mode.
-fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
-
-    // SAFETY: We're calling fcntl with valid arguments on a valid fd.
-    unsafe {
-        let flags = fcntl(fd, F_GETFL);
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::correlated::set_nonblocking;
     use std::os::unix::io::AsRawFd;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Create a test SSH session open request with default auth fields.
     fn make_test_request(session_id: &str, host: &str, port: u16) -> SshSessionOpenRequest {

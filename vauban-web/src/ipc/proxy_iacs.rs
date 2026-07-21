@@ -20,21 +20,23 @@
 
 use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
+use crate::ipc::correlated::{CorrelatedIpcCore, deliver_or_warn};
 use crate::models::session::SessionStatus;
 use crate::services::broadcast::{BroadcastService, WsChannel};
 use serde_json::json;
-use shared::ipc::IpcChannel;
 use shared::messages::{IacsTunnelSnapshotEntry, Message};
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
-use tokio::io::Interest;
-use tokio::io::unix::AsyncFd;
 use tokio::sync::{Mutex, oneshot};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
+
+const IACS_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+const IACS_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Request to open an IACS tunnel pending session.
 ///
@@ -88,12 +90,14 @@ pub struct IacsTunnelOpened {
 }
 
 /// Async client for communicating with vauban-proxy-iacs.
+///
+/// Transport/correlation is owned by [`CorrelatedIpcCore`] (30 s open /
+/// 10 s snapshot timeout — INV-CORR-5).
 pub struct ProxyIacsClient {
-    channel: IpcChannel,
-    read_async_fd: AsyncFd<RawFd>,
-    next_request_id: AtomicU64,
-    pending_open_requests: Mutex<HashMap<u64, oneshot::Sender<IacsTunnelOpened>>>,
-    pending_snapshot_requests: Mutex<HashMap<u64, oneshot::Sender<Vec<IacsTunnelSnapshotEntry>>>>,
+    core: CorrelatedIpcCore,
+    pending_open_requests: StdMutex<HashMap<u64, oneshot::Sender<IacsTunnelOpened>>>,
+    pending_snapshot_requests:
+        StdMutex<HashMap<u64, oneshot::Sender<Vec<IacsTunnelSnapshotEntry>>>>,
     /// Optional broadcast handle, set by
     /// [`ProxyIacsClient::process_incoming_with_state`] before
     /// the loop starts. When present, every incoming
@@ -126,18 +130,10 @@ impl ProxyIacsClient {
     ///
     /// File descriptors are passed by the supervisor.
     pub fn new(read_fd: RawFd, write_fd: RawFd) -> io::Result<Arc<Self>> {
-        let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
-
-        set_nonblocking(read_fd)?;
-
-        let read_async_fd = AsyncFd::new(read_fd)?;
-
         Ok(Arc::new(Self {
-            channel,
-            read_async_fd,
-            next_request_id: AtomicU64::new(1),
-            pending_open_requests: Mutex::new(HashMap::new()),
-            pending_snapshot_requests: Mutex::new(HashMap::new()),
+            core: CorrelatedIpcCore::from_fds(read_fd, write_fd)?,
+            pending_open_requests: StdMutex::new(HashMap::new()),
+            pending_snapshot_requests: StdMutex::new(HashMap::new()),
             broadcast: Mutex::new(None),
             db_pool: Mutex::new(None),
             app_state: Mutex::new(None),
@@ -206,7 +202,7 @@ impl ProxyIacsClient {
     /// Sends an `IacsTunnelOpen` IPC, waits for `IacsTunnelOpened`,
     /// times out after 30 s.
     pub async fn open_tunnel(&self, request: IacsTunnelOpenRequest) -> AppResult<IacsTunnelOpened> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = self.core.alloc_id();
         let session_id = request.session_id.clone();
 
         debug!(
@@ -216,12 +212,6 @@ impl ProxyIacsClient {
             asset_port = request.asset_port,
             "Opening IACS tunnel pending session"
         );
-
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut pending = self.pending_open_requests.lock().await;
-            pending.insert(request_id, tx);
-        }
 
         let msg = Message::IacsTunnelOpen {
             request_id,
@@ -237,19 +227,15 @@ impl ProxyIacsClient {
             session_token: request.session_token,
         };
 
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))?;
-
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => Err(AppError::Ipc("Response channel dropped".to_string())),
-            Err(_) => {
-                let mut pending = self.pending_open_requests.lock().await;
-                pending.remove(&request_id);
-                Err(AppError::Ipc("IACS tunnel open timeout".to_string()))
-            }
-        }
+        self.core
+            .request(
+                &self.pending_open_requests,
+                request_id,
+                &msg,
+                Some(IACS_OPEN_TIMEOUT),
+            )
+            .await
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Force-terminate a live IACS tunnel from the revocation watchdog.
@@ -258,15 +244,15 @@ impl ProxyIacsClient {
     /// proxy-iacs will emit a `IacsTunnelClosed` notification when the
     /// session loop ends.
     pub fn terminate_tunnel(&self, session_id: &str, reason: &str) -> AppResult<()> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = self.core.alloc_id();
         let msg = Message::IacsTunnelTerminate {
             request_id,
             session_id: session_id.to_string(),
             reason: reason.to_string(),
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
+        self.core
+            .send_fire_and_forget(&msg)
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Ask proxy-iacs for all live IACS tunnel state (boot resync).
@@ -277,33 +263,19 @@ impl ProxyIacsClient {
     /// 10 s; callers treat timeout/error as fail-closed (empty
     /// snapshot => terminate every live DB row).
     pub async fn snapshot_tunnels(&self) -> AppResult<Vec<IacsTunnelSnapshotEntry>> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = self.core.alloc_id();
         debug!(request_id, "Requesting IACS tunnel snapshot from proxy");
 
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut pending = self.pending_snapshot_requests.lock().await;
-            pending.insert(request_id, tx);
-        }
-
         let msg = Message::IacsTunnelSnapshotRequest { request_id };
-        if let Err(e) = self.channel.send(&msg) {
-            let mut pending = self.pending_snapshot_requests.lock().await;
-            pending.remove(&request_id);
-            return Err(AppError::Ipc(format!("IPC send failed: {}", e)));
-        }
-
-        match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
-            Ok(Ok(entries)) => Ok(entries),
-            Ok(Err(_)) => Err(AppError::Ipc(
-                "IACS snapshot response channel dropped".to_string(),
-            )),
-            Err(_) => {
-                let mut pending = self.pending_snapshot_requests.lock().await;
-                pending.remove(&request_id);
-                Err(AppError::Ipc("IACS tunnel snapshot timeout".to_string()))
-            }
-        }
+        self.core
+            .request(
+                &self.pending_snapshot_requests,
+                request_id,
+                &msg,
+                Some(IACS_SNAPSHOT_TIMEOUT),
+            )
+            .await
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Drain incoming messages from the proxy.
@@ -311,50 +283,13 @@ impl ProxyIacsClient {
     /// Run forever in a dedicated task. Closes the loop on a
     /// `ConnectionClosed` IPC error (proxy-iacs respawn).
     ///
-    /// Uses [`AsyncFdReadyGuard::try_io`] so the WouldBlock /
-    /// `clear_ready` race cannot strand a response in the pipe
-    /// (classic edge-triggered lost-wakeup). Without that, dense
-    /// E2E connect-iacs suites flake on `open_tunnel` 30 s timeouts.
     pub async fn process_incoming(&self) -> AppResult<()> {
-        loop {
-            let mut guard = self
-                .read_async_fd
-                .ready(Interest::READABLE)
-                .await
-                .map_err(|e| AppError::Ipc(format!("AsyncFd ready failed: {}", e)))?;
-
-            loop {
-                let try_result = guard.try_io(|_| match self.channel.try_recv() {
-                    Ok(msg) => Ok(msg),
-                    Err(shared::ipc::IpcError::Io(ref e))
-                        if e.kind() == io::ErrorKind::WouldBlock =>
-                    {
-                        Err(io::Error::new(io::ErrorKind::WouldBlock, "would block"))
-                    }
-                    Err(shared::ipc::IpcError::ConnectionClosed) => Err(io::Error::new(
-                        io::ErrorKind::ConnectionReset,
-                        "IPC connection closed",
-                    )),
-                    Err(e) => Err(io::Error::other(e.to_string())),
-                });
-
-                match try_result {
-                    Ok(Ok(msg)) => {
-                        self.handle_message(msg).await;
-                    }
-                    Ok(Err(e)) if e.kind() == io::ErrorKind::ConnectionReset => {
-                        info!("IACS proxy IPC connection closed");
-                        return Err(AppError::Ipc("IPC connection closed".to_string()));
-                    }
-                    Ok(Err(e)) => {
-                        error!(error = %e, "IPC receive error");
-                        break;
-                    }
-                    // `try_io` already cleared readiness on WouldBlock.
-                    Err(_would_block) => break,
-                }
-            }
-        }
+        self.core
+            .process_loop(|msg| async {
+                self.handle_message(msg).await;
+            })
+            .await
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Blocking IPC drain for integration-test mocks.
@@ -366,21 +301,9 @@ impl ProxyIacsClient {
     /// runtime (must be invoked from that runtime's owning thread,
     /// outside any nested `block_on`).
     pub fn process_incoming_blocking_on(&self, rt: &tokio::runtime::Runtime) -> AppResult<()> {
-        loop {
-            match self.channel.recv() {
-                Ok(msg) => {
-                    rt.block_on(self.handle_message(msg));
-                }
-                Err(shared::ipc::IpcError::ConnectionClosed) => {
-                    info!("IACS proxy IPC connection closed");
-                    return Err(AppError::Ipc("IPC connection closed".to_string()));
-                }
-                Err(e) => {
-                    error!(error = %e, "IPC receive error");
-                    return Err(AppError::Ipc(format!("IPC receive error: {e}")));
-                }
-            }
-        }
+        self.core
+            .process_blocking_on(rt, |msg| self.handle_message(msg))
+            .map_err(|e| e.into_app_ipc())
     }
 
     async fn handle_message(&self, msg: Message) {
@@ -405,10 +328,12 @@ impl ProxyIacsClient {
                     error,
                 };
 
-                let mut pending = self.pending_open_requests.lock().await;
-                if let Some(tx) = pending.remove(&request_id) {
-                    let _ = tx.send(response);
-                }
+                deliver_or_warn(
+                    &self.pending_open_requests,
+                    request_id,
+                    response,
+                    "proxy_iacs",
+                );
             }
 
             Message::IacsTunnelSnapshotResponse {
@@ -420,10 +345,12 @@ impl ProxyIacsClient {
                     entries = entries.len(),
                     "IACS tunnel snapshot response"
                 );
-                let mut pending = self.pending_snapshot_requests.lock().await;
-                if let Some(tx) = pending.remove(&request_id) {
-                    let _ = tx.send(entries);
-                }
+                deliver_or_warn(
+                    &self.pending_snapshot_requests,
+                    request_id,
+                    entries,
+                    "proxy_iacs",
+                );
             }
 
             // Status updates from proxy-iacs (Lot 5). Fanned out on
@@ -992,21 +919,6 @@ pub async fn persist_tunnel_closed(
             .map_err(AppError::Database)?
     };
     Ok(updated > 0)
-}
-
-fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
-
-    unsafe {
-        let flags = fcntl(fd, F_GETFL);
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

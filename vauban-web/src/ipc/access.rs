@@ -3,10 +3,11 @@
 //! Provides async methods to check access permissions via IPC pipes
 //! to the Access service (Casbin enforcer).
 //!
-//! Follows the same pattern as `VaultCryptoClient`.
+//! Transport/correlation is owned by [`CorrelatedIpcCore`] (no timeout —
+//! INV-CORR-5).
 
 use crate::error::{AppError, AppResult};
-use shared::ipc::IpcChannel;
+use crate::ipc::correlated::{CorrelatedIpcCore, deliver_or_warn};
 use shared::messages::{
     AccessCheckResult, AccessCheckResultEntry, AccessRequest as AccessReq,
     AccessResponse as AccessResp, AccessRuleData, AccessRuleInfo, AccessibleGroupEntry,
@@ -19,19 +20,15 @@ use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::Interest;
-use tokio::io::unix::AsyncFd;
-use tokio::sync::{Mutex, oneshot};
-use tracing::{debug, error, info, warn};
+use std::sync::Mutex as StdMutex;
+use tokio::sync::oneshot;
+use tracing::{debug, warn};
 
 /// Async IPC client for vauban-access authorization checks.
 pub struct AccessIpcClient {
-    channel: IpcChannel,
-    read_async_fd: AsyncFd<RawFd>,
-    next_request_id: AtomicU64,
-    pending_requests: Mutex<HashMap<u64, oneshot::Sender<RbacResult>>>,
-    pending_access_requests: Mutex<HashMap<u64, oneshot::Sender<AccessResp>>>,
+    core: CorrelatedIpcCore,
+    pending_requests: StdMutex<HashMap<u64, oneshot::Sender<RbacResult>>>,
+    pending_access_requests: StdMutex<HashMap<u64, oneshot::Sender<AccessResp>>>,
 }
 
 impl AccessIpcClient {
@@ -39,19 +36,25 @@ impl AccessIpcClient {
     ///
     /// The file descriptors are passed by the supervisor via topology pipes.
     pub fn new(read_fd: RawFd, write_fd: RawFd) -> io::Result<Arc<Self>> {
-        let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
-
-        set_nonblocking(read_fd)?;
-
-        let read_async_fd = AsyncFd::new(read_fd)?;
-
         Ok(Arc::new(Self {
-            channel,
-            read_async_fd,
-            next_request_id: AtomicU64::new(1),
-            pending_requests: Mutex::new(HashMap::new()),
-            pending_access_requests: Mutex::new(HashMap::new()),
+            core: CorrelatedIpcCore::from_fds(read_fd, write_fd)?,
+            pending_requests: StdMutex::new(HashMap::new()),
+            pending_access_requests: StdMutex::new(HashMap::new()),
         }))
+    }
+
+    async fn call_rbac(&self, msg: Message, request_id: u64) -> AppResult<RbacResult> {
+        self.core
+            .request(&self.pending_requests, request_id, &msg, None)
+            .await
+            .map_err(|e| e.into_app_ipc())
+    }
+
+    async fn call_access(&self, msg: Message, request_id: u64) -> AppResult<AccessResp> {
+        self.core
+            .request(&self.pending_access_requests, request_id, &msg, None)
+            .await
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Check if a subject has permission to perform an action on a resource.
@@ -63,52 +66,30 @@ impl AccessIpcClient {
         resource: &str,
         action: &str,
     ) -> AppResult<bool> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = oneshot::channel();
-
-        self.pending_requests.lock().await.insert(request_id, tx);
-
+        let request_id = self.core.alloc_id();
         let msg = Message::RbacCheck {
             request_id,
             subject: subject.to_string(),
             object: resource.to_string(),
             action: action.to_string(),
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("rbac send error: {}", e)))?;
 
         debug!(
             request_id,
             subject, resource, action, "RbacCheck request sent"
         );
 
-        let result = rx
-            .await
-            .map_err(|_| AppError::Ipc("rbac response channel dropped".to_string()))?;
-
+        let result = self.call_rbac(msg, request_id).await?;
         Ok(result.allowed)
     }
 
     async fn send_access_request(&self, request: AccessReq) -> AppResult<AccessResp> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = oneshot::channel();
-
-        self.pending_access_requests
-            .lock()
-            .await
-            .insert(request_id, tx);
-
+        let request_id = self.core.alloc_id();
         let msg = Message::AccessRequest {
             request_id,
             request,
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("access send error: {}", e)))?;
-
-        rx.await
-            .map_err(|_| AppError::Ipc("access response channel dropped".to_string()))
+        self.call_access(msg, request_id).await
     }
 
     /// Drain all pages from a paginated IPC list endpoint into a single Vec.
@@ -1312,58 +1293,30 @@ impl AccessIpcClient {
     ///
     /// Should be spawned as a background task via `tokio::spawn`.
     pub async fn process_incoming(&self) -> AppResult<()> {
-        loop {
-            let mut guard = self
-                .read_async_fd
-                .ready(Interest::READABLE)
-                .await
-                .map_err(|e| AppError::Ipc(format!("AsyncFd ready failed: {}", e)))?;
-
-            loop {
-                match self.channel.try_recv() {
-                    Ok(msg) => {
-                        self.handle_message(msg).await;
-                    }
-                    Err(shared::ipc::IpcError::Io(ref e))
-                        if e.kind() == io::ErrorKind::WouldBlock =>
-                    {
-                        guard.clear_ready();
-                        break;
-                    }
-                    Err(shared::ipc::IpcError::ConnectionClosed) => {
-                        info!("Access IPC connection closed");
-                        return Err(AppError::Ipc("Access IPC connection closed".to_string()));
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Access IPC receive error");
-                        guard.clear_ready();
-                        break;
-                    }
-                }
-            }
-        }
+        self.core
+            .process_loop(|msg| {
+                self.handle_message(msg);
+                async {}
+            })
+            .await
+            .map_err(|e| e.into_app_ipc())
     }
 
-    async fn handle_message(&self, msg: Message) {
+    fn handle_message(&self, msg: Message) {
         match msg {
             Message::RbacResponse { request_id, result } => {
-                let mut pending = self.pending_requests.lock().await;
-                if let Some(tx) = pending.remove(&request_id) {
-                    let _ = tx.send(result);
-                } else {
-                    warn!(request_id, "No pending request for RBAC response");
-                }
+                deliver_or_warn(&self.pending_requests, request_id, result, "access");
             }
             Message::AccessResponse {
                 request_id,
                 response,
             } => {
-                let mut pending = self.pending_access_requests.lock().await;
-                if let Some(tx) = pending.remove(&request_id) {
-                    let _ = tx.send(response);
-                } else {
-                    warn!(request_id, "No pending request for Access response");
-                }
+                deliver_or_warn(
+                    &self.pending_access_requests,
+                    request_id,
+                    response,
+                    "access",
+                );
             }
             other => {
                 warn!("Unexpected message from Access service: {:?}", other);
@@ -1377,31 +1330,15 @@ fn ipc_page(offset: u32) -> IpcPageParams {
     IpcPageParams { limit: 0, offset }
 }
 
-fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
-
-    unsafe {
-        let flags = fcntl(fd, F_GETFL);
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::os::fd::AsRawFd;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn test_set_nonblocking() {
         let (read_fd, _write_fd) = nix::unistd::pipe().unwrap();
-        let result = set_nonblocking(read_fd.as_raw_fd());
+        let result = crate::ipc::correlated::set_nonblocking(read_fd.as_raw_fd());
         assert!(result.is_ok());
 
         use libc::{F_GETFL, O_NONBLOCK, fcntl};

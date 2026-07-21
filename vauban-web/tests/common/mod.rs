@@ -393,8 +393,8 @@ impl TestApp {
             user_connections: user_connections.clone(),
             ws_counter: ws_counter.clone(),
             rate_limiter,
-            ssh_proxy: None,    // No SSH proxy in tests
-            rdp_proxy: None,    // No RDP proxy in tests
+            ssh_proxy: None, // No SSH proxy in tests
+            rdp_proxy: None, // No RDP proxy in tests
             proxy_iacs,
             supervisor: None,   // No supervisor in tests
             vault_client: None, // No vault in tests (dev mode fallback)
@@ -1591,15 +1591,16 @@ pub mod ipc_test_service {
             match channel.recv() {
                 Ok(Message::AccessRequest {
                     request_id,
-                    request: AccessRequest::IssueSessionToken {
-                        user_uuid,
-                        asset_uuid,
-                        protocol,
-                        host,
-                        port,
-                        target_service,
-                        session_id,
-                    },
+                    request:
+                        AccessRequest::IssueSessionToken {
+                            user_uuid,
+                            asset_uuid,
+                            protocol,
+                            host,
+                            port,
+                            target_service,
+                            session_id,
+                        },
                 }) => {
                     // Mirror vauban-access main.rs: mint needs the key and
                     // must NOT fall through to handle_access_request
@@ -1613,11 +1614,12 @@ pub mod ipc_test_service {
                         port,
                         target_service,
                     };
-                    let response = rt.block_on(vauban_access::handlers::handle_issue_session_token(
-                        &pool,
-                        &session_token_key,
-                        params,
-                    ));
+                    let response =
+                        rt.block_on(vauban_access::handlers::handle_issue_session_token(
+                            &pool,
+                            &session_token_key,
+                            params,
+                        ));
                     let msg = Message::AccessResponse {
                         request_id,
                         response,

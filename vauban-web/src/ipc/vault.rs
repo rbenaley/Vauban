@@ -3,21 +3,19 @@
 //! Provides async methods to encrypt/decrypt secrets and manage TOTP MFA
 //! via IPC pipes to the vault service.
 //!
-//! This client follows the same pattern as `ProxySshClient` but is simpler
-//! since all vault operations are request/response (no streaming).
+//! Transport/correlation is owned by [`CorrelatedIpcCore`] (no timeout —
+//! INV-CORR-5).
 
 use crate::error::{AppError, AppResult};
-use shared::ipc::IpcChannel;
+use crate::ipc::correlated::{CorrelatedIpcCore, deliver_or_warn};
 use shared::messages::{Message, SensitiveString};
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::Interest;
-use tokio::io::unix::AsyncFd;
-use tokio::sync::{Mutex, oneshot};
-use tracing::{debug, error, info, warn};
+use std::sync::Mutex as StdMutex;
+use tokio::sync::oneshot;
+use tracing::{debug, warn};
 
 /// Vault response variants, unified for the pending_requests map.
 #[derive(Debug)]
@@ -47,14 +45,8 @@ enum VaultResponse {
 
 /// Async IPC client for vauban-vault cryptographic operations.
 pub struct VaultCryptoClient {
-    /// Underlying IPC channel.
-    channel: IpcChannel,
-    /// Async file descriptor for reading.
-    read_async_fd: AsyncFd<RawFd>,
-    /// Next request ID.
-    next_request_id: AtomicU64,
-    /// Pending requests waiting for responses.
-    pending_requests: Mutex<HashMap<u64, oneshot::Sender<VaultResponse>>>,
+    core: CorrelatedIpcCore,
+    pending_requests: StdMutex<HashMap<u64, oneshot::Sender<VaultResponse>>>,
 }
 
 impl VaultCryptoClient {
@@ -62,45 +54,31 @@ impl VaultCryptoClient {
     ///
     /// The file descriptors should be passed by the supervisor via topology pipes.
     pub fn new(read_fd: RawFd, write_fd: RawFd) -> io::Result<Arc<Self>> {
-        let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
-
-        set_nonblocking(read_fd)?;
-
-        let read_async_fd = AsyncFd::new(read_fd)?;
-
         Ok(Arc::new(Self {
-            channel,
-            read_async_fd,
-            next_request_id: AtomicU64::new(1),
-            pending_requests: Mutex::new(HashMap::new()),
+            core: CorrelatedIpcCore::from_fds(read_fd, write_fd)?,
+            pending_requests: StdMutex::new(HashMap::new()),
         }))
+    }
+
+    async fn call(&self, msg: Message, request_id: u64) -> AppResult<VaultResponse> {
+        self.core
+            .request(&self.pending_requests, request_id, &msg, None)
+            .await
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Encrypt plaintext with the specified domain keyring.
     ///
     /// Returns the versioned ciphertext string (e.g. "v1:BASE64...").
     pub async fn encrypt(&self, domain: &str, plaintext: &str) -> AppResult<String> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = oneshot::channel();
-
-        self.pending_requests.lock().await.insert(request_id, tx);
-
+        let request_id = self.core.alloc_id();
         let msg = Message::VaultEncrypt {
             request_id,
             domain: domain.to_string(),
             plaintext: SensitiveString::new(plaintext.to_string()),
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("vault send error: {}", e)))?;
-
         debug!(request_id, domain, "VaultEncrypt request sent");
-
-        let resp = rx
-            .await
-            .map_err(|_| AppError::Ipc("vault response channel dropped".to_string()))?;
-
-        match resp {
+        match self.call(msg, request_id).await? {
             VaultResponse::Encrypt {
                 ciphertext: Some(ct),
                 error: None,
@@ -118,27 +96,14 @@ impl VaultCryptoClient {
     ///
     /// Returns the decrypted plaintext as a `SensitiveString`.
     pub async fn decrypt(&self, domain: &str, ciphertext: &str) -> AppResult<SensitiveString> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = oneshot::channel();
-
-        self.pending_requests.lock().await.insert(request_id, tx);
-
+        let request_id = self.core.alloc_id();
         let msg = Message::VaultDecrypt {
             request_id,
             domain: domain.to_string(),
             ciphertext: ciphertext.to_string(),
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("vault send error: {}", e)))?;
-
         debug!(request_id, domain, "VaultDecrypt request sent");
-
-        let resp = rx
-            .await
-            .map_err(|_| AppError::Ipc("vault response channel dropped".to_string()))?;
-
-        match resp {
+        match self.call(msg, request_id).await? {
             VaultResponse::Decrypt {
                 plaintext: Some(pt),
                 error: None,
@@ -163,27 +128,14 @@ impl VaultCryptoClient {
         username: &str,
         issuer: &str,
     ) -> AppResult<(String, SensitiveString)> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = oneshot::channel();
-
-        self.pending_requests.lock().await.insert(request_id, tx);
-
+        let request_id = self.core.alloc_id();
         let msg = Message::VaultMfaGenerate {
             request_id,
             username: username.to_string(),
             issuer: issuer.to_string(),
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("vault send error: {}", e)))?;
-
         debug!(request_id, username, "VaultMfaGenerate request sent");
-
-        let resp = rx
-            .await
-            .map_err(|_| AppError::Ipc("vault response channel dropped".to_string()))?;
-
-        match resp {
+        match self.call(msg, request_id).await? {
             VaultResponse::MfaGenerate {
                 encrypted_secret: Some(enc),
                 plaintext_secret: Some(pt),
@@ -200,27 +152,14 @@ impl VaultCryptoClient {
 
     /// Verify a TOTP code against an encrypted secret.
     pub async fn mfa_verify(&self, encrypted_secret: &str, code: &str) -> AppResult<bool> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = oneshot::channel();
-
-        self.pending_requests.lock().await.insert(request_id, tx);
-
+        let request_id = self.core.alloc_id();
         let msg = Message::VaultMfaVerify {
             request_id,
             encrypted_secret: encrypted_secret.to_string(),
             code: code.to_string(),
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("vault send error: {}", e)))?;
-
         debug!(request_id, "VaultMfaVerify request sent");
-
-        let resp = rx
-            .await
-            .map_err(|_| AppError::Ipc("vault response channel dropped".to_string()))?;
-
-        match resp {
+        match self.call(msg, request_id).await? {
             VaultResponse::MfaVerify { valid, error: None } => Ok(valid),
             VaultResponse::MfaVerify { error: Some(e), .. } => {
                 Err(AppError::Ipc(format!("vault mfa_verify error: {}", e)))
@@ -236,26 +175,13 @@ impl VaultCryptoClient {
     /// Used to re-generate QR codes from existing encrypted secrets.
     /// Returns a `SensitiveString` (zeroize-on-drop).
     pub async fn mfa_get_secret(&self, encrypted_secret: &str) -> AppResult<SensitiveString> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = oneshot::channel();
-
-        self.pending_requests.lock().await.insert(request_id, tx);
-
+        let request_id = self.core.alloc_id();
         let msg = Message::VaultMfaGetSecret {
             request_id,
             encrypted_secret: encrypted_secret.to_string(),
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("vault send error: {}", e)))?;
-
         debug!(request_id, "VaultMfaGetSecret request sent");
-
-        let resp = rx
-            .await
-            .map_err(|_| AppError::Ipc("vault response channel dropped".to_string()))?;
-
-        match resp {
+        match self.call(msg, request_id).await? {
             VaultResponse::MfaGetSecret {
                 plaintext_secret: Some(pt),
                 error: None,
@@ -274,43 +200,17 @@ impl VaultCryptoClient {
     /// This should be called in a loop from a dedicated background task
     /// (via `tokio::spawn`).
     pub async fn process_incoming(&self) -> AppResult<()> {
-        loop {
-            // Wait for the fd to be readable
-            let mut guard = self
-                .read_async_fd
-                .ready(Interest::READABLE)
-                .await
-                .map_err(|e| AppError::Ipc(format!("AsyncFd ready failed: {}", e)))?;
-
-            // Try to receive all available messages
-            loop {
-                match self.channel.try_recv() {
-                    Ok(msg) => {
-                        self.handle_message(msg).await;
-                    }
-                    Err(shared::ipc::IpcError::Io(ref e))
-                        if e.kind() == io::ErrorKind::WouldBlock =>
-                    {
-                        // No more messages available
-                        guard.clear_ready();
-                        break;
-                    }
-                    Err(shared::ipc::IpcError::ConnectionClosed) => {
-                        info!("Vault IPC connection closed");
-                        return Err(AppError::Ipc("Vault IPC connection closed".to_string()));
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Vault IPC receive error");
-                        guard.clear_ready();
-                        break;
-                    }
-                }
-            }
-        }
+        self.core
+            .process_loop(|msg| {
+                self.handle_message(msg);
+                async {}
+            })
+            .await
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Handle an incoming message from the vault.
-    async fn handle_message(&self, msg: Message) {
+    fn handle_message(&self, msg: Message) {
         let request_id = msg.request_id();
 
         let response = match msg {
@@ -353,43 +253,21 @@ impl VaultCryptoClient {
         };
 
         if let Some(rid) = request_id {
-            let mut pending = self.pending_requests.lock().await;
-            if let Some(tx) = pending.remove(&rid) {
-                let _ = tx.send(response);
-            } else {
-                warn!(request_id = rid, "No pending request for vault response");
-            }
+            deliver_or_warn(&self.pending_requests, rid, response, "vault");
         }
     }
-}
-
-/// Set a file descriptor to non-blocking mode.
-fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
-
-    // SAFETY: We're calling fcntl with valid arguments on a valid fd.
-    unsafe {
-        let flags = fcntl(fd, F_GETFL);
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::fd::AsRawFd;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn test_set_nonblocking() {
         let (read_fd, _write_fd) = nix::unistd::pipe().unwrap();
-        let result = set_nonblocking(read_fd.as_raw_fd());
+        let result = crate::ipc::correlated::set_nonblocking(read_fd.as_raw_fd());
         assert!(result.is_ok());
 
         use libc::{F_GETFL, O_NONBLOCK, fcntl};
@@ -436,7 +314,6 @@ mod tests {
         };
         let debug = format!("{:?}", resp);
         assert!(debug.contains("MfaGenerate"));
-        // SensitiveString should be redacted in debug output
         assert!(debug.contains("REDACTED"));
     }
 

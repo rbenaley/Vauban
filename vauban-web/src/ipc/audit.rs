@@ -21,20 +21,24 @@
 //! Correlation: `AuditEvent`/`AuditAck`/`AuditNack` carry no `request_id`; they
 //! correlate on `timestamp`. The client stamps each emission with a strictly
 //! increasing Unix-millisecond value so concurrent criticals never collide.
+//!
+//! Transport drain uses [`CorrelatedIpcCore`] (INV-CORR-2). Critical acks use
+//! [`PendingGuard`] / `request_with_key` semantics with a 5 s timeout
+//! (INV-CORR-5); the actual write still goes through the mpsc writer so
+//! frames never interleave.
 
-use shared::ipc::IpcChannel;
+use crate::ipc::correlated::CorrelatedIpcCore;
 use shared::messages::{AuditEventType, Message};
 use std::collections::HashMap;
 use std::io;
 use std::net::IpAddr;
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::Interest;
-use tokio::io::unix::AsyncFd;
-use tokio::sync::{Mutex, mpsc, oneshot};
-use tracing::{debug, error, info, warn};
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, error, warn};
 
 /// Bounded fire-and-forget queue depth. Beyond this, non-critical events are
 /// dropped (with an `error!`) to protect the request path.
@@ -90,12 +94,10 @@ impl AuditEvent {
 pub struct AuditClient {
     /// Bounded sender feeding the background writer task.
     tx: mpsc::Sender<Message>,
-    /// Read side for ack/nack correlation.
-    channel: Arc<IpcChannel>,
-    read_async_fd: AsyncFd<RawFd>,
+    core: CorrelatedIpcCore,
     /// Pending critical emissions, keyed by event timestamp. The bool is
     /// `true` on `AuditAck` (durably persisted), `false` on `AuditNack`.
-    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<bool>>>>,
+    pending: StdMutex<HashMap<u64, oneshot::Sender<bool>>>,
     /// Strictly-increasing millisecond clock for unique correlation stamps.
     last_ts: AtomicU64,
 }
@@ -104,15 +106,12 @@ impl AuditClient {
     /// Create a client over the supervisor-provided `Web -> Audit` pipe and
     /// spawn the background writer task.
     pub fn new(read_fd: RawFd, write_fd: RawFd) -> io::Result<Arc<Self>> {
-        let channel = Arc::new(unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) });
-        set_nonblocking(read_fd)?;
-        let read_async_fd = AsyncFd::new(read_fd)?;
-
+        let core = CorrelatedIpcCore::from_fds(read_fd, write_fd)?;
         let (tx, mut rx) = mpsc::channel::<Message>(EMIT_QUEUE_DEPTH);
 
         // Background writer: the ONLY task that writes to the pipe, so frames
         // never interleave regardless of how many handlers emit concurrently.
-        let writer_channel = Arc::clone(&channel);
+        let writer_channel = core.channel_arc();
         tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
                 if let Err(e) = writer_channel.send(&msg) {
@@ -124,9 +123,8 @@ impl AuditClient {
 
         Ok(Arc::new(Self {
             tx,
-            channel,
-            read_async_fd,
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            core,
+            pending: StdMutex::new(HashMap::new()),
             last_ts: AtomicU64::new(0),
         }))
     }
@@ -183,15 +181,18 @@ impl AuditClient {
     /// Returns `Ok(())` only once the audit service has hash-chained the event
     /// to disk. An `AuditNack`, a 5 s timeout, or a transport failure is an
     /// error (the caller decides whether to fail the operation closed).
+    ///
+    /// Uses INV-CORR-1 PendingGuard + timestamp key (request_with_key
+    /// semantics). The write still goes through the mpsc writer so it does
+    /// not race other emits on the pipe.
     pub async fn emit_critical(&self, event: AuditEvent) -> Result<(), String> {
         let ts = self.next_timestamp();
         let msg = self.build_message(ts, &event);
 
         let (ack_tx, ack_rx) = oneshot::channel();
-        self.pending.lock().await.insert(ts, ack_tx);
+        let _guard = CorrelatedIpcCore::insert_pending(&self.pending, ts, ack_tx);
 
         if let Err(e) = self.tx.send(msg).await {
-            self.pending.lock().await.remove(&ts);
             return Err(format!("audit emit channel closed: {e}"));
         }
 
@@ -199,83 +200,40 @@ impl AuditClient {
             Ok(Ok(true)) => Ok(()),
             Ok(Ok(false)) => Err("audit service NACKed the event".to_string()),
             Ok(Err(_)) => Err("audit ack channel dropped".to_string()),
-            Err(_) => {
-                self.pending.lock().await.remove(&ts);
-                Err("audit ack timed out".to_string())
-            }
+            Err(_) => Err("audit ack timed out".to_string()),
         }
     }
 
     /// Drain ack/nack replies from the audit service. Run in a background task.
     pub async fn process_incoming(&self) -> Result<(), String> {
-        loop {
-            let mut guard = self
-                .read_async_fd
-                .ready(Interest::READABLE)
-                .await
-                .map_err(|e| format!("audit AsyncFd ready failed: {e}"))?;
-
-            loop {
-                match self.channel.try_recv() {
-                    Ok(msg) => self.handle_message(msg).await,
-                    Err(shared::ipc::IpcError::Io(ref e))
-                        if e.kind() == io::ErrorKind::WouldBlock =>
-                    {
-                        guard.clear_ready();
-                        break;
-                    }
-                    Err(shared::ipc::IpcError::ConnectionClosed) => {
-                        info!("Audit IPC connection closed");
-                        return Err("Audit IPC connection closed".to_string());
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Audit IPC receive error");
-                        guard.clear_ready();
-                        break;
-                    }
-                }
-            }
-        }
+        self.core
+            .process_loop(|msg| {
+                self.handle_message(msg);
+                async {}
+            })
+            .await
+            .map_err(|e| e.to_string())
     }
 
-    async fn handle_message(&self, msg: Message) {
+    fn handle_message(&self, msg: Message) {
         match msg {
-            Message::AuditAck { timestamp } => self.resolve(timestamp, true).await,
+            Message::AuditAck { timestamp } => {
+                // No pending entry => fire-and-forget emit; nothing to do.
+                let _ = CorrelatedIpcCore::deliver(&self.pending, timestamp, true);
+            }
             Message::AuditNack { timestamp, error } => {
                 warn!(timestamp, %error, "audit: event NACKed by audit service");
-                self.resolve(timestamp, false).await;
+                let _ = CorrelatedIpcCore::deliver(&self.pending, timestamp, false);
             }
             other => debug!(msg = ?other, "audit: ignoring unexpected reply"),
         }
     }
-
-    async fn resolve(&self, timestamp: u64, persisted: bool) {
-        if let Some(tx) = self.pending.lock().await.remove(&timestamp) {
-            let _ = tx.send(persisted);
-        }
-        // No pending entry => the event was fire-and-forget; nothing to do.
-    }
-}
-
-/// Set a file descriptor to non-blocking mode.
-fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
-    // SAFETY: valid fd, standard fcntl usage.
-    unsafe {
-        let flags = fcntl(fd, F_GETFL);
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shared::ipc::IpcChannel;
 
     /// Build a client over one end of a pipe pair, returning the audit-side
     /// channel (the "mock audit service") for the test to drive. The web-side

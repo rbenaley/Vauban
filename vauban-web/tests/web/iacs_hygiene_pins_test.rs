@@ -30,7 +30,9 @@ fn industrial_protocol_comment_mentions_wire_gate_not_forensic_only() {
          forensic-only; it also gates wire protocol"
     );
     assert!(
-        window.contains("wire-protocol") || window.contains("wire protocol") || window.contains("ExpectedProfile"),
+        window.contains("wire-protocol")
+            || window.contains("wire protocol")
+            || window.contains("ExpectedProfile"),
         "comment must mention the wire-protocol / ExpectedProfile gate"
     );
 }
@@ -38,11 +40,7 @@ fn industrial_protocol_comment_mentions_wire_gate_not_forensic_only() {
 #[test]
 fn adr_001_recording_durability_exists() {
     let adr = repo_root().join("docs/adr/001-recording-durability-per-protocol.md");
-    assert!(
-        adr.is_file(),
-        "missing ADR: {}",
-        adr.display()
-    );
+    assert!(adr.is_file(), "missing ADR: {}", adr.display());
     let body = std::fs::read_to_string(&adr).expect("read ADR");
     assert!(
         body.contains("IACS") && body.contains("ack-block"),
@@ -60,8 +58,7 @@ fn recording_architecture_1_7_links_adr_001() {
     assert!(doc.is_file(), "Recording 1.7 missing: {}", doc.display());
     let body = std::fs::read_to_string(&doc).expect("read Recording 1.7");
     assert!(
-        body.contains("001-recording-durability-per-protocol")
-            || body.contains("docs/adr/001"),
+        body.contains("001-recording-durability-per-protocol") || body.contains("docs/adr/001"),
         "Recording 1.7 must link ADR 001"
     );
 }

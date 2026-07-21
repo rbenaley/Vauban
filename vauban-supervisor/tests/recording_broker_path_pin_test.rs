@@ -75,7 +75,9 @@ fn broker_validates_before_fs_calls() {
     }
 
     assert!(
-        body.contains(".create(true)") && body.contains(".read(true)") && body.contains(".write(true)"),
+        body.contains(".create(true)")
+            && body.contains(".read(true)")
+            && body.contains(".write(true)"),
         "write path MUST open O_RDWR via OpenOptions (audit gzip on same FD)."
     );
     assert!(

@@ -2,20 +2,24 @@
 //!
 //! Provides async methods to open RDP sessions, send input events,
 //! and receive display updates from RDP sessions.
+//!
+//! Transport/correlation is owned by [`CorrelatedIpcCore`] (30 s timeout on
+//! open / cert fetch — INV-CORR-5).
 
 use crate::error::{AppError, AppResult};
+use crate::ipc::correlated::{CorrelatedIpcCore, deliver_or_warn};
 use secrecy::{ExposeSecret, SecretString};
-use shared::ipc::IpcChannel;
 use shared::messages::{Message, RdpInputEvent, SensitiveString};
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::Interest;
-use tokio::io::unix::AsyncFd;
+use std::sync::Mutex as StdMutex;
+use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, oneshot};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, trace, warn};
+
+const RDP_IPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Request to open an RDP session.
 #[derive(Clone)]
@@ -127,32 +131,24 @@ pub enum RdpSessionEvent {
 
 /// Async client for communicating with vauban-proxy-rdp.
 pub struct ProxyRdpClient {
-    channel: IpcChannel,
-    read_async_fd: AsyncFd<RawFd>,
-    next_request_id: AtomicU64,
-    pending_requests: Mutex<HashMap<u64, oneshot::Sender<RdpSessionOpened>>>,
+    core: CorrelatedIpcCore,
+    pending_requests: StdMutex<HashMap<u64, oneshot::Sender<RdpSessionOpened>>>,
     /// Per-session event senders: session_id -> Sender.
     session_display_senders: Mutex<HashMap<String, mpsc::Sender<RdpSessionEvent>>>,
     /// Pre-created receivers waiting to be claimed by WebSocket.
     session_display_receivers: Mutex<HashMap<String, mpsc::Receiver<RdpSessionEvent>>>,
     /// Pending RDP server-certificate fetch requests waiting for responses.
-    pending_cert_requests: Mutex<HashMap<u64, ServerCertResponseSender>>,
+    pending_cert_requests: StdMutex<HashMap<u64, ServerCertResponseSender>>,
 }
 
 impl ProxyRdpClient {
     pub fn new(read_fd: RawFd, write_fd: RawFd) -> io::Result<Arc<Self>> {
-        let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
-        set_nonblocking(read_fd)?;
-        let read_async_fd = AsyncFd::new(read_fd)?;
-
         Ok(Arc::new(Self {
-            channel,
-            read_async_fd,
-            next_request_id: AtomicU64::new(1),
-            pending_requests: Mutex::new(HashMap::new()),
+            core: CorrelatedIpcCore::from_fds(read_fd, write_fd)?,
+            pending_requests: StdMutex::new(HashMap::new()),
             session_display_senders: Mutex::new(HashMap::new()),
             session_display_receivers: Mutex::new(HashMap::new()),
-            pending_cert_requests: Mutex::new(HashMap::new()),
+            pending_cert_requests: StdMutex::new(HashMap::new()),
         }))
     }
 
@@ -189,7 +185,7 @@ impl ProxyRdpClient {
         &self,
         request: RdpSessionOpenRequest,
     ) -> AppResult<RdpSessionOpened> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = self.core.alloc_id();
         let session_id = request.session_id.clone();
 
         debug!(
@@ -208,12 +204,6 @@ impl ProxyRdpClient {
         {
             let mut receivers = self.session_display_receivers.lock().await;
             receivers.insert(session_id.clone(), display_rx);
-        }
-
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut pending = self.pending_requests.lock().await;
-            pending.insert(request_id, tx);
         }
 
         let msg = Message::RdpSessionOpen {
@@ -235,19 +225,15 @@ impl ProxyRdpClient {
             rdp_auth_mode: request.rdp_auth_mode,
         };
 
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))?;
-
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => Err(AppError::Ipc("Response channel dropped".to_string())),
-            Err(_) => {
-                let mut pending = self.pending_requests.lock().await;
-                pending.remove(&request_id);
-                Err(AppError::Ipc("RDP session open timeout".to_string()))
-            }
-        }
+        self.core
+            .request(
+                &self.pending_requests,
+                request_id,
+                &msg,
+                Some(RDP_IPC_TIMEOUT),
+            )
+            .await
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Send an input event to an RDP session.
@@ -256,9 +242,9 @@ impl ProxyRdpClient {
             session_id: session_id.to_string(),
             input,
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
+        self.core
+            .send_fire_and_forget(&msg)
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Send a resize event to an RDP session.
@@ -268,9 +254,9 @@ impl ProxyRdpClient {
             width,
             height,
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
+        self.core
+            .send_fire_and_forget(&msg)
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Enable or disable H.264 video mode for a session.
@@ -279,9 +265,9 @@ impl ProxyRdpClient {
             session_id: session_id.to_string(),
             enabled,
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
+        self.core
+            .send_fire_and_forget(&msg)
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// Close an RDP session.
@@ -289,9 +275,9 @@ impl ProxyRdpClient {
         let msg = Message::RdpSessionClose {
             session_id: session_id.to_string(),
         };
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
+        self.core
+            .send_fire_and_forget(&msg)
+            .map_err(|e| e.into_app_ipc())
     }
 
     /// VAU-001: fetch the target RDP server's TLS certificate SPKI (TOFU
@@ -316,7 +302,7 @@ impl ProxyRdpClient {
         supervisor: Option<&super::SupervisorClient>,
         identity: Option<CertFetchIdentity<'_>>,
     ) -> AppResult<(String, String)> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = self.core.alloc_id();
 
         debug!(
             request_id = request_id,
@@ -408,73 +394,41 @@ impl ProxyRdpClient {
             }
         }
 
-        let (tx, rx) = oneshot::channel::<(bool, Option<String>, Option<String>, Option<String>)>();
-        {
-            let mut pending = self.pending_cert_requests.lock().await;
-            pending.insert(request_id, tx);
-        }
-
         let msg = Message::RdpFetchServerCert {
             request_id,
             asset_host: host.to_string(),
             asset_port: port,
         };
 
-        self.channel
-            .send(&msg)
-            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))?;
-
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
-            Ok(Ok((true, Some(spki), Some(fp), _))) => Ok((spki, fp)),
-            Ok(Ok((false, _, _, Some(err)))) => {
+        match self
+            .core
+            .request(
+                &self.pending_cert_requests,
+                request_id,
+                &msg,
+                Some(RDP_IPC_TIMEOUT),
+            )
+            .await
+        {
+            Ok((true, Some(spki), Some(fp), _)) => Ok((spki, fp)),
+            Ok((false, _, _, Some(err))) => {
                 Err(AppError::Ipc(format!("RDP cert fetch failed: {}", err)))
             }
-            Ok(Ok(_)) => Err(AppError::Ipc(
+            Ok(_) => Err(AppError::Ipc(
                 "RDP cert fetch returned unexpected response".to_string(),
             )),
-            Ok(Err(_)) => Err(AppError::Ipc(
-                "RDP cert response channel dropped".to_string(),
-            )),
-            Err(_) => {
-                let mut pending = self.pending_cert_requests.lock().await;
-                pending.remove(&request_id);
-                Err(AppError::Ipc("RDP cert fetch timeout".to_string()))
-            }
+            Err(e) => Err(e.into_app_ipc()),
         }
     }
 
     /// Process incoming messages from the proxy.
     pub async fn process_incoming(&self) -> AppResult<()> {
-        loop {
-            let mut guard = self
-                .read_async_fd
-                .ready(Interest::READABLE)
-                .await
-                .map_err(|e| AppError::Ipc(format!("AsyncFd ready failed: {}", e)))?;
-
-            loop {
-                match self.channel.try_recv() {
-                    Ok(msg) => {
-                        self.handle_message(msg).await;
-                    }
-                    Err(shared::ipc::IpcError::Io(ref e))
-                        if e.kind() == io::ErrorKind::WouldBlock =>
-                    {
-                        guard.clear_ready();
-                        break;
-                    }
-                    Err(shared::ipc::IpcError::ConnectionClosed) => {
-                        info!("RDP proxy IPC connection closed");
-                        return Err(AppError::Ipc("IPC connection closed".to_string()));
-                    }
-                    Err(e) => {
-                        error!(error = %e, "IPC receive error");
-                        guard.clear_ready();
-                        break;
-                    }
-                }
-            }
-        }
+        self.core
+            .process_loop(|msg| async {
+                self.handle_message(msg).await;
+            })
+            .await
+            .map_err(|e| e.into_app_ipc())
     }
 
     async fn handle_message(&self, msg: Message) {
@@ -503,10 +457,7 @@ impl ProxyRdpClient {
                     error,
                 };
 
-                let mut pending = self.pending_requests.lock().await;
-                if let Some(tx) = pending.remove(&request_id) {
-                    let _ = tx.send(response);
-                }
+                deliver_or_warn(&self.pending_requests, request_id, response, "proxy_rdp");
             }
 
             Message::RdpServerCertResult {
@@ -522,10 +473,12 @@ impl ProxyRdpClient {
                     "RDP server certificate result received"
                 );
 
-                let mut pending = self.pending_cert_requests.lock().await;
-                if let Some(tx) = pending.remove(&request_id) {
-                    let _ = tx.send((success, server_spki, cert_fingerprint, error));
-                }
+                deliver_or_warn(
+                    &self.pending_cert_requests,
+                    request_id,
+                    (success, server_spki, cert_fingerprint, error),
+                    "proxy_rdp",
+                );
             }
 
             Message::RdpDisplayUpdate {
@@ -617,26 +570,13 @@ impl ProxyRdpClient {
     }
 }
 
-fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
-    // SAFETY: fcntl with valid arguments on a valid fd.
-    unsafe {
-        let flags = fcntl(fd, F_GETFL);
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::correlated::set_nonblocking;
     use secrecy::SecretString;
     use std::os::unix::io::AsRawFd;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn make_test_request(session_id: &str, host: &str, port: u16) -> RdpSessionOpenRequest {
         RdpSessionOpenRequest {
