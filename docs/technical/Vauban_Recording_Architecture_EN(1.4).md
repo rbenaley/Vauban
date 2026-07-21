@@ -1,5 +1,10 @@
 # Vauban Session Recording Architecture
 
+
+> **Superseded.** This document is retained for archaeology. The current
+> revision is
+> [Vauban_Recording_Architecture_EN(1.8).md](Vauban_Recording_Architecture_EN(1.8).md).
+
 **Version:** 1.4  
 **Date:** 10 May 2026  
 **Author:** Richard Ben Aleya

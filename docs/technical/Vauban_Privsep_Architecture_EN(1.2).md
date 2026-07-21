@@ -4,6 +4,9 @@
 **Date:** 21 February 2026 (revised 17 May 2026 -- IACS proxy Capsicum fixes: pre-fork listener `O_NONBLOCK`, host key FD rewind on respawn, `AsyncIpcChannel` built pre-`cap_enter`, `CapRights::listening_socket` documents inheritance into accepted children; see §5.3 + §5.6.3c)  
 **Author:** Richard Ben Aleya
 
+> Supersedes
+> [Vauban_Privsep_Architecture_EN(1.1).md](Vauban_Privsep_Architecture_EN(1.1).md).
+
 ---
 
 ## Table of Contents

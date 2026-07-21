@@ -5,7 +5,7 @@
 **Author:** Richard Ben Aleya
 
 > **Superseded by
-> [Vauban_Recording_Architecture_EN(1.7).md](Vauban_Recording_Architecture_EN(1.7).md).**
+> [Vauban_Recording_Architecture_EN(1.8).md](Vauban_Recording_Architecture_EN(1.8).md).**
 >
 > Supersedes
 > [Vauban_Recording_Architecture_EN(1.5).md](Vauban_Recording_Architecture_EN(1.5).md).

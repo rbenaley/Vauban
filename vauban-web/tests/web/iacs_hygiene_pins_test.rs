@@ -53,12 +53,12 @@ fn adr_001_recording_durability_exists() {
 }
 
 #[test]
-fn recording_architecture_1_7_links_adr_001() {
-    let doc = repo_root().join("docs/technical/Vauban_Recording_Architecture_EN(1.7).md");
-    assert!(doc.is_file(), "Recording 1.7 missing: {}", doc.display());
-    let body = std::fs::read_to_string(&doc).expect("read Recording 1.7");
+fn recording_architecture_current_links_adr_001() {
+    let doc = repo_root().join("docs/technical/Vauban_Recording_Architecture_EN(1.8).md");
+    assert!(doc.is_file(), "Recording 1.8 missing: {}", doc.display());
+    let body = std::fs::read_to_string(&doc).expect("read Recording 1.8");
     assert!(
         body.contains("001-recording-durability-per-protocol") || body.contains("docs/adr/001"),
-        "Recording 1.7 must link ADR 001"
+        "Recording 1.8 must link ADR 001"
     );
 }

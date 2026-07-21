@@ -5539,6 +5539,25 @@ fn test_migrate_handles_credential_secrets() {
 
 /// OptionalSecret must import zeroize.
 #[test]
+/// I-WEB-1: deprecated Config::from_env shim (0.2.0) must stay gone.
+#[test]
+fn test_config_has_no_deprecated_from_env_shim() {
+    let source = include_str!("../../src/config.rs");
+    let prod = if let Some(idx) = source.find("pub mod test_fixtures") {
+        &source[..idx]
+    } else {
+        source
+    };
+    assert!(
+        !prod.contains("fn from_env"),
+        "Config must not expose deprecated from_env(); use Config::load() (I-WEB-1)"
+    );
+    assert!(
+        !prod.contains("#[deprecated"),
+        "Config must not carry #[deprecated] shims"
+    );
+}
+
 fn test_config_imports_zeroize() {
     let source = include_str!("../../src/config.rs");
     assert!(

@@ -387,6 +387,7 @@ mod recording_visibility {
             } else {
                 String::new()
             },
+            recording_lossy: false,
         }
     }
 
@@ -465,6 +466,7 @@ mod recording_visibility {
             status: "ready".into(),
             show_play_recording: session_type != "iacs_tunnel",
             show_inspect_capture: show_inspect,
+            recording_lossy: false,
         }
     }
 

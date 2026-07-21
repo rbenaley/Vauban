@@ -72,12 +72,6 @@ impl AsyncIpcChannel {
             }
         }
     }
-
-    /// Get the underlying IPC channel for low-level access.
-    #[allow(dead_code)] // Will be used for advanced IPC operations
-    pub fn inner(&self) -> &IpcChannel {
-        &self.inner
-    }
 }
 
 /// Set a file descriptor to non-blocking mode.
@@ -101,81 +95,11 @@ fn set_nonblocking(fd: RawFd) -> io::Result<()> {
 // by id" IPC verb and silently mapped the resulting `Ok(None)` to "no
 // credential available". That verb has been removed from `shared::messages`
 // because it could be (mis)interpreted as "no credential needed -> allow the
-// connection". Credential retrieval will be reintroduced via the
-// encrypted-transit verbs (`VaultEncrypt` / `VaultDecrypt`) once the Vault
-// integration is wired through the supervisor.
-
-/// Client for sending audit events.
-/// Will be used when Audit integration is implemented.
-#[allow(dead_code)]
-pub struct AuditClient {
-    channel: AsyncIpcChannel,
-}
-
-#[allow(dead_code)]
-impl AuditClient {
-    /// Create a new Audit client.
-    pub fn new(channel: IpcChannel) -> io::Result<Self> {
-        Ok(Self {
-            channel: AsyncIpcChannel::new(channel)?,
-        })
-    }
-
-    /// Send an audit event (fire and forget, no response expected).
-    pub fn send_event(&self, event: Message) -> IpcResult<()> {
-        self.channel.send(&event)
-    }
-
-    /// Send a session start event.
-    pub fn session_start(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        asset_id: &str,
-        source_ip: Option<std::net::IpAddr>,
-    ) -> IpcResult<()> {
-        use shared::messages::AuditEventType;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        let event = Message::AuditEvent {
-            timestamp,
-            event_type: AuditEventType::SessionStart,
-            user_id: Some(user_id.to_string()),
-            session_id: Some(session_id.to_string()),
-            source_ip,
-            details: format!("SSH session started for asset {}", asset_id),
-        };
-
-        self.channel.send(&event)
-    }
-
-    /// Send a session end event.
-    pub fn session_end(&self, user_id: &str, session_id: &str, asset_id: &str) -> IpcResult<()> {
-        use shared::messages::AuditEventType;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        let event = Message::AuditEvent {
-            timestamp,
-            event_type: AuditEventType::SessionEnd,
-            user_id: Some(user_id.to_string()),
-            session_id: Some(session_id.to_string()),
-            source_ip: None,
-            details: format!("SSH session ended for asset {}", asset_id),
-        };
-
-        self.channel.send(&event)
-    }
-}
+// connection". Credential retrieval uses encrypted-transit verbs
+// (`VaultEncrypt` / `VaultDecrypt`) via `VaultDecryptClient`.
+//
+// Recording events go through `audit_tx` (`Message::SshRecording*`) — there
+// is no separate AuditClient stub in this crate (I-SSH-1).
 
 #[cfg(test)]
 mod tests {

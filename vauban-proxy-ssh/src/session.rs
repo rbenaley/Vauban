@@ -3,12 +3,11 @@
 use crate::error::{SessionError, SessionResult};
 use russh::client::{self, Handle};
 use russh::keys::decode_secret_key;
-use russh::{Channel, ChannelId, ChannelMsg, Disconnect, Preferred};
+use russh::{Channel, ChannelMsg, Disconnect, Preferred};
 use secrecy::{ExposeSecret, SecretString};
 use std::borrow::Cow;
 use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
@@ -101,8 +100,12 @@ pub struct SessionConfig {
     /// Unique session identifier (UUID).
     pub session_id: String,
     /// Vauban user ID who initiated the session.
+    /// Consumed by AccessGuard before `connect`; not re-read inside russh.
+    #[allow(dead_code)]
     pub user_id: String,
     /// Asset ID from database.
+    /// Consumed by AccessGuard before `connect`; not re-read inside russh.
+    #[allow(dead_code)]
     pub asset_id: String,
     /// Target hostname or IP.
     pub host: String,
@@ -130,12 +133,6 @@ pub struct SessionConfig {
 pub struct SshSession {
     /// Unique session identifier.
     pub session_id: String,
-    /// Vauban user ID (for session tracking and audit).
-    #[allow(dead_code)]
-    pub user_id: String,
-    /// Asset ID (for session tracking and audit).
-    #[allow(dead_code)]
-    pub asset_id: String,
     /// SSH username on the target (for recording metadata).
     username: String,
     /// Target host (used as asset_name in recordings).
@@ -145,14 +142,8 @@ pub struct SshSession {
     terminal_rows: u16,
     /// SSH client handle.
     handle: Handle<SshHandler>,
-    /// Channel ID for the PTY session (for channel operations).
-    #[allow(dead_code)]
-    channel_id: ChannelId,
     /// Channel for sending data to SSH.
     channel: Channel<client::Msg>,
-    /// When the session was created (for metrics and session info).
-    #[allow(dead_code)]
-    pub created_at: Instant,
 }
 
 impl SshSession {
@@ -254,8 +245,11 @@ impl SshSession {
             .await
             .map_err(|e| SessionError::ChannelOpenFailed(e.to_string()))?;
 
-        let channel_id = channel.id();
-        debug!(session_id = %config.session_id, channel_id = ?channel_id, "Channel opened");
+        debug!(
+            session_id = %config.session_id,
+            channel_id = ?channel.id(),
+            "Channel opened"
+        );
 
         // Request PTY
         channel
@@ -288,16 +282,12 @@ impl SshSession {
 
         Ok(Self {
             session_id: config.session_id,
-            user_id: config.user_id,
-            asset_id: config.asset_id,
             username: config.username,
             asset_name: config.host,
             terminal_cols: config.terminal_cols,
             terminal_rows: config.terminal_rows,
             handle: session,
-            channel_id,
             channel,
-            created_at: Instant::now(),
         })
     }
 
@@ -391,12 +381,6 @@ impl SshSession {
         }
 
         Ok(())
-    }
-
-    /// Get session uptime in seconds.
-    #[allow(dead_code)] // Will be used for session metrics
-    pub fn uptime_secs(&self) -> u64 {
-        self.created_at.elapsed().as_secs()
     }
 
     /// Terminal dimensions at session start (cols, rows).

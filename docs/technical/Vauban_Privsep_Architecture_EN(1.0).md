@@ -1,5 +1,10 @@
 # Vauban Privilege Separation Architecture
 
+
+> **Superseded.** This document is retained for archaeology. The current
+> revision is
+> [Vauban_Privsep_Architecture_EN(1.2).md](Vauban_Privsep_Architecture_EN(1.2).md).
+
 **Version:** 1.0  
 **Date:** 25 January 2026  
 **Author:** Richard Ben Aleya

@@ -68,6 +68,8 @@ struct ServiceState {
     /// SSH recording channel try_send full drops (audit backpressure).
     recording_try_send_full: AtomicU64,
     recording_try_send_last_warn: std::sync::Mutex<Instant>,
+    /// Sessions that already emitted `RecordingLossObserved` (sticky latch).
+    recording_loss_latched: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 /// Pending TCP connections received from supervisor via FD passing.
@@ -152,6 +154,7 @@ impl Default for ServiceState {
             recording_try_send_last_warn: std::sync::Mutex::new(
                 Instant::now() - std::time::Duration::from_secs(60),
             ),
+            recording_loss_latched: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 }
@@ -166,10 +169,9 @@ impl ServiceState {
     }
 
     /// Read the cumulative count of RBAC re-check timeouts since boot.
-    /// Surfaced via Pong logs and on the Prometheus exporter once we wire
-    /// it up; kept on ServiceState rather than hidden inside AccessGuard
-    /// so SREs can grab it without an extra IPC round-trip.
-    #[allow(dead_code)] // observability hook; reachable from supervisor diagnostics
+    /// Surfaced in the Ping handler log (I-SSH-2); kept on ServiceState
+    /// rather than hidden inside AccessGuard so SREs can grab it without
+    /// an extra IPC round-trip. Not folded into `ServiceStats` (wire layout).
     fn rbac_timeout_count(&self) -> u64 {
         self.rbac_recheck_timeouts.load(Ordering::SeqCst)
     }
@@ -188,7 +190,9 @@ impl ServiceState {
         }
     }
 
-    fn record_recording_try_send_full(&self, session_id: &str) {
+    /// Increment process counter; return `true` on the first drop for this
+    /// session (I-LOSS-1 sticky latch) so the caller can emit IPC once.
+    fn record_recording_try_send_full(&self, session_id: &str) -> bool {
         self.recording_try_send_full.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut last) = self.recording_try_send_last_warn.lock()
             && last.elapsed() >= std::time::Duration::from_secs(10)
@@ -198,6 +202,10 @@ impl ServiceState {
                 "SSH recording channel full; dropping frame"
             );
             *last = Instant::now();
+        }
+        match self.recording_loss_latched.lock() {
+            Ok(mut set) => set.insert(session_id.to_string()),
+            Err(_) => false,
         }
     }
 }
@@ -673,9 +681,14 @@ async fn handle_control_message(
     match ctrl {
         ControlMessage::Ping { seq } => {
             let stats = state.stats(sessions.active_count());
+            let rbac_timeouts = state.rbac_timeout_count();
             let pong = Message::Control(ControlMessage::Pong { seq, stats });
             channel.send(&pong)?;
-            debug!(seq = seq, "Responded to ping");
+            debug!(
+                seq = seq,
+                rbac_timeouts = rbac_timeouts,
+                "Responded to ping"
+            );
         }
         ControlMessage::Drain => {
             let active = sessions.active_count();
@@ -868,8 +881,19 @@ async fn handle_web_message(
             let rbac_asset = asset_id.clone();
             let recording_on_full: Option<RecordingDropHook> = if audit_tx.is_some() {
                 let state_for_hook = Arc::clone(&state);
+                let web_tx_for_hook = web_tx.clone();
                 Some(Arc::new(move |session_id: &str| {
-                    state_for_hook.record_recording_try_send_full(session_id);
+                    if state_for_hook.record_recording_try_send_full(session_id) {
+                        let msg = Message::RecordingLossObserved {
+                            session_id: session_id.to_string(),
+                        };
+                        if web_tx_for_hook.try_send(msg).is_err() {
+                            warn!(
+                                session_id = %session_id,
+                                "Failed to enqueue RecordingLossObserved to web"
+                            );
+                        }
+                    }
                 }))
             } else {
                 None
@@ -1590,6 +1614,30 @@ mod tests {
             "ServiceState::record_timeout MUST increment rbac_recheck_timeouts \
              (the dedicated atomic) so SREs can distinguish 'access wedged' \
              from 'policy denied' from the Pong stats alone."
+        );
+        // I-SSH-2: Ping must surface rbac_timeout_count in the structured log.
+        let ping_idx = source
+            .find("ControlMessage::Ping")
+            .expect("Ping handler must exist");
+        let ping_body = &source[ping_idx..ping_idx + 400];
+        assert!(
+            ping_body.contains("rbac_timeout_count()"),
+            "Ping handler MUST call rbac_timeout_count() (I-SSH-2)"
+        );
+    }
+
+    /// I-SSH-1: no leftover AuditClient stub — recording uses audit_tx.
+    #[test]
+    fn test_proxy_ssh_has_no_audit_client_stub() {
+        let ipc = include_str!("ipc.rs");
+        let prod = if let Some(idx) = ipc.find("#[cfg(test)]") {
+            &ipc[..idx]
+        } else {
+            ipc
+        };
+        assert!(
+            !prod.contains("struct AuditClient"),
+            "proxy-ssh must not carry a dead AuditClient stub (I-SSH-1)"
         );
     }
 

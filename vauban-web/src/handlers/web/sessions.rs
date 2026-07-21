@@ -621,6 +621,7 @@ pub async fn recording_list(
         Option<String>,
         Option<i64>,
         Option<i32>,
+        bool,
     )> = query
         .select((
             proxy_sessions::id,
@@ -634,6 +635,7 @@ pub async fn recording_list(
             proxy_sessions::recording_path,
             proxy_sessions::recording_size_bytes,
             proxy_sessions::recording_segment_count,
+            proxy_sessions::recording_lossy,
         ))
         .order(proxy_sessions::created_at.desc())
         .limit(window.limit_i64())
@@ -656,6 +658,7 @@ pub async fn recording_list(
                 recording_path,
                 recording_size_bytes,
                 recording_segment_count,
+                recording_lossy,
             )| {
                 let duration_seconds = match (connected_at, disconnected_at) {
                     (Some(start), Some(end)) => {
@@ -685,6 +688,7 @@ pub async fn recording_list(
                     // allow-status-vocab: recording view-model state, not a proxy_sessions status
                     status: "ready".to_string(),
                     show_play_recording: session_type != SessionType::IacsTunnel,
+                    recording_lossy,
                     // Same gate as recording_detail: an IACS bundle is
                     // inspectable only once hydrated with >= 1 channel;
                     // a zero-channel (auth-only) or pending row would
@@ -3373,6 +3377,7 @@ pub async fn recording_detail(
         Option<i32>,
         Option<String>,
         Option<chrono::DateTime<chrono::Utc>>,
+        bool,
         Option<i32>,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<i32>,
@@ -3407,6 +3412,7 @@ pub async fn recording_detail(
             proxy_sessions::recording_segment_count,
             proxy_sessions::recording_codec,
             proxy_sessions::recording_finalized_at,
+            proxy_sessions::recording_lossy,
             proxy_sessions::approved_by_id,
             proxy_sessions::approved_at,
             proxy_sessions::rejected_by_id,
@@ -3445,6 +3451,7 @@ pub async fn recording_detail(
         s_segment_count,
         s_codec,
         s_finalized_at,
+        s_recording_lossy,
         s_approved_by_id,
         s_approved_at,
         s_rejected_by_id,
@@ -3619,6 +3626,7 @@ pub async fn recording_detail(
         } else {
             String::new()
         },
+        recording_lossy: s_recording_lossy,
     };
 
     let base = BaseTemplate::new(

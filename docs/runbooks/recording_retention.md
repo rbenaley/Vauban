@@ -121,5 +121,5 @@ Recording list/detail/download endpoints filter on `is_recorded AND recording_pa
 
 ## Related documents
 
-- [Recording Architecture v1.3](../technical/Vauban_Recording_Architecture_EN(1.3).md) Appendix A.2
+- [Recording Architecture v1.7 -- Retention (§11) + Appendix B](../technical/Vauban_Recording_Architecture_EN(1.8).md#11-retention)
 - [Recording hydrator runbook](recording_hydrator.md) (runs one hour earlier by default)

@@ -1728,13 +1728,6 @@ impl Config {
     fn config_error(e: ConfigError) -> crate::error::AppError {
         crate::error::AppError::Config(format!("Configuration error: {}", e))
     }
-
-    /// Legacy method for backward compatibility.
-    /// Prefer `Config::load()` for new uses.
-    #[deprecated(since = "0.2.0", note = "Use Config::load() instead")]
-    pub fn from_env() -> Result<Self, crate::error::AppError> {
-        Self::load()
-    }
 }
 
 /// Test configuration module.

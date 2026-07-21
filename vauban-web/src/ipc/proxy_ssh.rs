@@ -6,8 +6,10 @@
 //! Transport/correlation is owned by [`CorrelatedIpcCore`] (30 s timeout on
 //! open / host-key / push / test — INV-CORR-5).
 
+use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
 use crate::ipc::correlated::{CorrelatedIpcCore, deliver_or_warn};
+use crate::services::recording_loss::mark_session_recording_lossy;
 use shared::messages::Message;
 use std::collections::HashMap;
 use std::io;
@@ -138,6 +140,8 @@ pub struct ProxySshClient {
     pending_push_requests: StdMutex<HashMap<u64, SimpleResultSender>>,
     /// Pending test-key-auth requests. Carries `(success, error)`.
     pending_test_requests: StdMutex<HashMap<u64, SimpleResultSender>>,
+    /// Late-bound DB pool for `RecordingLossObserved` (I-LOSS-3).
+    db_pool: Mutex<Option<DbPool>>,
 }
 
 impl ProxySshClient {
@@ -153,7 +157,14 @@ impl ProxySshClient {
             pending_host_key_requests: StdMutex::new(HashMap::new()),
             pending_push_requests: StdMutex::new(HashMap::new()),
             pending_test_requests: StdMutex::new(HashMap::new()),
+            db_pool: Mutex::new(None),
         }))
+    }
+
+    /// Bind the DB pool after `AppState` is built (process_incoming may
+    /// already be running).
+    pub async fn set_db_pool(&self, pool: DbPool) {
+        *self.db_pool.lock().await = Some(pool);
     }
 
     /// Subscribe to SSH data for a specific session.
@@ -710,6 +721,17 @@ impl ProxySshClient {
                     }
                 } else {
                     debug!(session_id = %session_id, "SSH data received but no WebSocket subscribed");
+                }
+            }
+
+            Message::RecordingLossObserved { session_id } => {
+                if let Some(pool) = self.db_pool.lock().await.as_ref() {
+                    mark_session_recording_lossy(pool, &session_id).await;
+                } else {
+                    warn!(
+                        session_id = %session_id,
+                        "RecordingLossObserved before db_pool bound; drop ignored"
+                    );
                 }
             }
 

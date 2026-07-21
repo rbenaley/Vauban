@@ -346,6 +346,10 @@ pub struct ProxySession {
     pub recording_segment_count: Option<i32>,
     pub recording_codec: Option<String>,
     pub recording_finalized_at: Option<DateTime<Utc>>,
+    /// Sticky latch: SSH/RDP audit `try_send` dropped >=1 frame.
+    /// Always false for IACS (ack-block). Set by web on
+    /// `Message::RecordingLossObserved`.
+    pub recording_lossy: bool,
     /// IACS-specific. NULL for SSH / RDP rows; pinned by the SQL CHECK
     /// constraint `proxy_sessions_iacs_consistency`.
     pub industrial_protocol: Option<String>,
@@ -473,6 +477,7 @@ mod tests {
             recording_segment_count: None,
             recording_codec: None,
             recording_finalized_at: None,
+            recording_lossy: false,
             industrial_protocol: None,
             ews_uuid: None,
             tunnel_target_addr: None,

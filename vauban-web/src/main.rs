@@ -850,8 +850,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         user_connections,
         ws_counter,
         rate_limiter,
-        ssh_proxy,
-        rdp_proxy,
+        ssh_proxy: ssh_proxy.clone(),
+        rdp_proxy: rdp_proxy.clone(),
         proxy_iacs,
         supervisor: supervisor_client.clone(),
         vault_client,
@@ -871,6 +871,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         vault_provenance: vauban_web::services::vault_provenance::ProvenanceCache::new(),
     };
+
+    // Bind DB pool for SSH/RDP RecordingLossObserved (process_incoming already running).
+    if let Some(ref client) = app_state.ssh_proxy {
+        client.set_db_pool(db_pool.clone()).await;
+    }
+    if let Some(ref client) = app_state.rdp_proxy {
+        client.set_db_pool(db_pool.clone()).await;
+    }
 
     // VAU-008: periodically evict abandoned MFA enrolment candidates so the
     // in-memory store cannot grow unbounded. Lazy eviction on read already

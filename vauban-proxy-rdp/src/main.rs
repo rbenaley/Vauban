@@ -42,7 +42,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::{Mutex, mpsc};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 struct ServiceState {
     start_time: Instant,
@@ -59,6 +59,8 @@ struct ServiceState {
     shutdown_requested: AtomicBool,
     recording_try_send_full: AtomicU64,
     recording_try_send_last_warn: std::sync::Mutex<Instant>,
+    /// Sessions that already emitted `RecordingLossObserved` (sticky latch).
+    recording_loss_latched: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 type PendingConnections = Arc<Mutex<HashMap<String, OwnedFd>>>;
@@ -134,6 +136,7 @@ impl Default for ServiceState {
             recording_try_send_last_warn: std::sync::Mutex::new(
                 Instant::now() - std::time::Duration::from_secs(60),
             ),
+            recording_loss_latched: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 }
@@ -151,7 +154,7 @@ impl ServiceState {
     /// Surfaced via Pong logs / Prometheus once we wire the exporter;
     /// kept on ServiceState (not hidden inside AccessGuard) so SREs can
     /// grab it without an extra IPC round-trip. Mirrors the SSH proxy.
-    #[allow(dead_code)] // observability hook; reachable from supervisor diagnostics
+    /// Surfaced in the Ping handler log (I-SSH-2 mirror); not on ServiceStats wire.
     fn rbac_timeout_count(&self) -> u64 {
         self.rbac_recheck_timeouts.load(Ordering::SeqCst)
     }
@@ -170,7 +173,8 @@ impl ServiceState {
         }
     }
 
-    fn record_recording_try_send_full(&self, session_id: &str) {
+    /// Increment process counter; return `true` on first drop for session.
+    fn record_recording_try_send_full(&self, session_id: &str) -> bool {
         self.recording_try_send_full.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut last) = self.recording_try_send_last_warn.lock()
             && last.elapsed() >= std::time::Duration::from_secs(10)
@@ -180,6 +184,10 @@ impl ServiceState {
                 "RDP recording channel full; dropping frame"
             );
             *last = Instant::now();
+        }
+        match self.recording_loss_latched.lock() {
+            Ok(mut set) => set.insert(session_id.to_string()),
+            Err(_) => false,
         }
     }
 }
@@ -617,9 +625,14 @@ async fn handle_control_message(
     match ctrl {
         ControlMessage::Ping { seq } => {
             let stats = state.stats(sessions.active_count());
+            let rbac_timeouts = state.rbac_timeout_count();
             let pong = Message::Control(ControlMessage::Pong { seq, stats });
             channel.send(&pong)?;
-            trace!(seq = seq, "Responded to ping");
+            debug!(
+                seq = seq,
+                rbac_timeouts = rbac_timeouts,
+                "Responded to ping"
+            );
         }
         ControlMessage::Drain => {
             let active = sessions.active_count();
@@ -784,8 +797,19 @@ async fn handle_web_message(
             let recording_on_full: Option<RecordingDropHook> =
                 if audit_tx.is_some() {
                     let state_for_hook = Arc::clone(&state);
+                    let web_tx_for_hook = web_tx.clone();
                     Some(Arc::new(move |session_id: &str| {
-                        state_for_hook.record_recording_try_send_full(session_id);
+                        if state_for_hook.record_recording_try_send_full(session_id) {
+                            let msg = Message::RecordingLossObserved {
+                                session_id: session_id.to_string(),
+                            };
+                            if web_tx_for_hook.try_send(msg).is_err() {
+                                warn!(
+                                    session_id = %session_id,
+                                    "Failed to enqueue RecordingLossObserved to web"
+                                );
+                            }
+                        }
                     }))
                 } else {
                     None

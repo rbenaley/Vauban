@@ -112,6 +112,8 @@ pub struct RecordingDetailViewModel {
     /// `/sessions/recordings/{uuid}/inspect`. Empty when
     /// `show_inspect_capture` is false.
     pub inspect_url: String,
+    /// Sticky SSH/RDP audit drop latch.
+    pub recording_lossy: bool,
 }
 
 impl RecordingDetailViewModel {
@@ -290,6 +292,7 @@ mod tests {
             show_play_recording: true,
             show_inspect_capture: false,
             inspect_url: String::new(),
+            recording_lossy: false,
         }
     }
 

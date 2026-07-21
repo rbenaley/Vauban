@@ -1,5 +1,10 @@
 # Vauban Vault Architecture
 
+
+> **Superseded.** This document is retained for archaeology. The current
+> revision is
+> [Vauban_Vault_Architecture_EN(1.2).md](Vauban_Vault_Architecture_EN(1.2).md).
+
 **Version:** 1.1  
 **Date:** 13 July 2026  
 **Author:** Richard Ben Aleya

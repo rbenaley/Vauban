@@ -2,7 +2,7 @@
 
 **Status:** Accepted  
 **Date:** 2026-07-21  
-**Related:** [Recording Architecture 1.7](../technical/Vauban_Recording_Architecture_EN(1.7).md)
+**Related:** [Recording Architecture 1.7](../technical/Vauban_Recording_Architecture_EN(1.8).md)
 
 ## Context
 
@@ -34,3 +34,5 @@ decision. Operators need a clear evidence guarantee per protocol.
   without changing the data-plane latency model.
 - Capacity work (shards / async fsync pools) is gated on these metrics,
   not on speculation.
+- Follow-up (0.9.22): sticky `proxy_sessions.recording_lossy` persists
+  per-session loss for SSH/RDP UI/forensics; process counter remains.

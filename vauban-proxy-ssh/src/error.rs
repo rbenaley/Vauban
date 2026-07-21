@@ -41,11 +41,6 @@ pub enum SessionError {
     #[error("Session closed")]
     SessionClosed,
 
-    /// Invalid credential format.
-    #[error("Invalid credential: {0}")]
-    #[allow(dead_code)] // Will be used when credential validation is implemented
-    InvalidCredential(String),
-
     /// Failed to parse SSH key.
     #[error("Invalid SSH key: {0}")]
     InvalidKey(String),
@@ -54,11 +49,6 @@ pub enum SessionError {
 /// Errors that can occur during IPC operations.
 #[derive(Debug, Error)]
 pub enum IpcError {
-    /// Failed to send message.
-    #[error("IPC send failed: {0}")]
-    #[allow(dead_code)] // Will be used when IPC send error handling is implemented
-    SendFailed(String),
-
     /// Failed to receive message.
     #[error("IPC receive failed: {0}")]
     ReceiveFailed(String),
@@ -66,11 +56,6 @@ pub enum IpcError {
     /// Connection closed.
     #[error("IPC connection closed")]
     ConnectionClosed,
-
-    /// Timeout waiting for response.
-    #[error("IPC timeout")]
-    #[allow(dead_code)] // Will be used when IPC timeout handling is implemented
-    Timeout,
 
     /// Underlying shared IPC error.
     #[error("IPC error: {0}")]
@@ -166,21 +151,9 @@ mod tests {
     // ==================== IpcError Tests ====================
 
     #[test]
-    fn test_ipc_error_display() {
-        let err = IpcError::SendFailed("pipe broken".to_string());
-        assert_eq!(err.to_string(), "IPC send failed: pipe broken");
-    }
-
-    #[test]
     fn test_ipc_error_receive_failed() {
         let err = IpcError::ReceiveFailed("read error".to_string());
         assert_eq!(err.to_string(), "IPC receive failed: read error");
-    }
-
-    #[test]
-    fn test_ipc_error_timeout() {
-        let err = IpcError::Timeout;
-        assert_eq!(err.to_string(), "IPC timeout");
     }
 
     #[test]
@@ -191,9 +164,9 @@ mod tests {
 
     #[test]
     fn test_ipc_error_debug() {
-        let err = IpcError::Timeout;
+        let err = IpcError::ReceiveFailed("x".to_string());
         let debug = format!("{:?}", err);
-        assert!(debug.contains("Timeout"));
+        assert!(debug.contains("ReceiveFailed"));
     }
 
     // ==================== Result Type Tests ====================

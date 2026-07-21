@@ -118,6 +118,11 @@
                                 <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300">
                                     Ready
                                 </span>
+                                {% if recording.recording_lossy %}
+                                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300" title="SSH/RDP audit channel dropped one or more frames (best-effort recording)">
+                                    Incomplete capture
+                                </span>
+                                {% endif %}
                             </div>
                             <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
                                 <span>{{ recording.format_display() }}</span>

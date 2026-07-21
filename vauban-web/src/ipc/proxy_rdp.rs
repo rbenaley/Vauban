@@ -6,8 +6,10 @@
 //! Transport/correlation is owned by [`CorrelatedIpcCore`] (30 s timeout on
 //! open / cert fetch — INV-CORR-5).
 
+use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
 use crate::ipc::correlated::{CorrelatedIpcCore, deliver_or_warn};
+use crate::services::recording_loss::mark_session_recording_lossy;
 use secrecy::{ExposeSecret, SecretString};
 use shared::messages::{Message, RdpInputEvent, SensitiveString};
 use std::collections::HashMap;
@@ -139,6 +141,8 @@ pub struct ProxyRdpClient {
     session_display_receivers: Mutex<HashMap<String, mpsc::Receiver<RdpSessionEvent>>>,
     /// Pending RDP server-certificate fetch requests waiting for responses.
     pending_cert_requests: StdMutex<HashMap<u64, ServerCertResponseSender>>,
+    /// Late-bound DB pool for `RecordingLossObserved` (I-LOSS-3).
+    db_pool: Mutex<Option<DbPool>>,
 }
 
 impl ProxyRdpClient {
@@ -149,7 +153,13 @@ impl ProxyRdpClient {
             session_display_senders: Mutex::new(HashMap::new()),
             session_display_receivers: Mutex::new(HashMap::new()),
             pending_cert_requests: StdMutex::new(HashMap::new()),
+            db_pool: Mutex::new(None),
         }))
+    }
+
+    /// Bind the DB pool after `AppState` is built.
+    pub async fn set_db_pool(&self, pool: DbPool) {
+        *self.db_pool.lock().await = Some(pool);
     }
 
     /// Subscribe to session events (display updates, resize notifications).
@@ -560,6 +570,17 @@ impl ProxyRdpClient {
                     if tx.send(event).await.is_err() {
                         warn!(session_id = %session_id, "Failed to forward video frame, WebSocket dropped");
                     }
+                }
+            }
+
+            Message::RecordingLossObserved { session_id } => {
+                if let Some(pool) = self.db_pool.lock().await.as_ref() {
+                    mark_session_recording_lossy(pool, &session_id).await;
+                } else {
+                    warn!(
+                        session_id = %session_id,
+                        "RecordingLossObserved before db_pool bound; drop ignored"
+                    );
                 }
             }
 

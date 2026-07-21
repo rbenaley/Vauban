@@ -2991,6 +2991,16 @@ pub enum Message {
         ack_dropped: u64,
         ack_wait_ms_max: u64,
     },
+
+    // ========== SSH/RDP recording loss latch (Proxy -> Web) ==========
+    //
+    // Appended at the END to preserve bincode discriminants. Fired once
+    // per session on the first audit `try_send` full drop; web sets
+    // `proxy_sessions.recording_lossy = TRUE` (monotone).
+    /// Proxy observed at least one dropped recording frame for this session.
+    RecordingLossObserved {
+        session_id: String,
+    },
 }
 
 impl Message {

@@ -29,15 +29,6 @@ pub enum SessionCommand {
 pub struct SessionHandle {
     /// Channel to send commands to the session task.
     tx: mpsc::Sender<SessionCommand>,
-    /// Vauban user ID who owns this session (for access control).
-    #[allow(dead_code)]
-    pub user_id: String,
-    /// Asset ID being accessed (for session info and audit).
-    #[allow(dead_code)]
-    pub asset_id: String,
-    /// When the session was created (for session info and metrics).
-    #[allow(dead_code)]
-    pub created_at: Instant,
 }
 
 /// Thread-safe manager for multiple SSH sessions.
@@ -80,10 +71,6 @@ impl SessionManager {
 
         debug!(session_id = %session_id, "Creating new SSH session");
 
-        // Extract user_id and asset_id before moving config to SshSession::connect
-        let user_id = config.user_id.clone();
-        let asset_id = config.asset_id.clone();
-
         // Connect to SSH server (consumes config because of OwnedFd)
         let ssh_session = SshSession::connect(config).await?;
 
@@ -91,12 +78,7 @@ impl SessionManager {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
 
         // Create session handle
-        let handle = SessionHandle {
-            tx: cmd_tx,
-            user_id,
-            asset_id,
-            created_at: Instant::now(),
-        };
+        let handle = SessionHandle { tx: cmd_tx };
 
         // Add to sessions map
         {
@@ -170,35 +152,6 @@ impl SessionManager {
     /// Get the number of active sessions.
     pub fn active_count(&self) -> u32 {
         self.active_count.load(Ordering::SeqCst)
-    }
-
-    /// Check if a session exists and belongs to a user.
-    #[allow(dead_code)] // Will be used for session access control
-    pub async fn session_belongs_to_user(&self, session_id: &str, user_id: &str) -> bool {
-        let sessions = self.sessions.read().await;
-        sessions
-            .get(session_id)
-            .is_some_and(|h| h.user_id == user_id)
-    }
-
-    /// Get session info (user_id, asset_id) if it exists.
-    #[allow(dead_code)] // Will be used for session tracking
-    pub async fn get_session_info(&self, session_id: &str) -> Option<(String, String)> {
-        let sessions = self.sessions.read().await;
-        sessions
-            .get(session_id)
-            .map(|h| (h.user_id.clone(), h.asset_id.clone()))
-    }
-
-    /// Remove a session from the map (internal use).
-    /// Note: Cleanup from session tasks uses SessionManagerCleanup.
-    #[allow(dead_code)]
-    async fn remove_session_internal(&self, session_id: &str) {
-        let mut sessions = self.sessions.write().await;
-        if sessions.remove(session_id).is_some() {
-            self.active_count.fetch_sub(1, Ordering::SeqCst);
-            info!(session_id = %session_id, "Session removed from manager");
-        }
     }
 
     /// Create a lightweight handle for cleanup operations.
@@ -428,22 +381,6 @@ mod tests {
         assert!(matches!(result, Err(SessionError::SessionNotFound(_))));
     }
 
-    #[tokio::test]
-    async fn test_session_belongs_to_user_not_found() {
-        let manager = SessionManager::new();
-        let result = manager
-            .session_belongs_to_user("nonexistent", "user1")
-            .await;
-        assert!(!result);
-    }
-
-    #[tokio::test]
-    async fn test_get_session_info_not_found() {
-        let manager = SessionManager::new();
-        let result = manager.get_session_info("nonexistent").await;
-        assert!(result.is_none());
-    }
-
     // ==================== Structural Regression Tests ====================
 
     /// Helper: Extract production code (before #[cfg(test)]).
@@ -542,9 +479,6 @@ mod tests {
         {
             let handle = SessionHandle {
                 tx: mpsc::channel(1).0,
-                user_id: "user1".to_string(),
-                asset_id: "asset1".to_string(),
-                created_at: Instant::now(),
             };
             let mut sessions = manager.sessions.write().await;
             sessions.insert("test-session".to_string(), handle);

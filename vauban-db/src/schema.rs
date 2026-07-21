@@ -293,6 +293,8 @@ diesel::table! {
         #[max_length = 64]
         recording_codec -> Nullable<Varchar>,
         recording_finalized_at -> Nullable<Timestamptz>,
+        /// Sticky: SSH/RDP audit channel dropped >=1 frame (best-effort).
+        recording_lossy -> Bool,
         #[max_length = 20]
         industrial_protocol -> Nullable<Varchar>,
         ews_uuid -> Nullable<Uuid>,

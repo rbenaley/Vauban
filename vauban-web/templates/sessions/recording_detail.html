@@ -244,6 +244,13 @@
             <div class="bg-white dark:bg-gray-800 shadow rounded-xl border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
                 <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Integrity &amp; Audit</h2>
 
+                {% if recording.recording_lossy %}
+                <div class="mb-4 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/30 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
+                    Incomplete capture: the SSH/RDP audit channel dropped one or more frames
+                    (best-effort recording). BLAKE3 still covers the bytes that were written.
+                </div>
+                {% endif %}
+
                 {% if let Some(intg) = recording.integrity.as_ref() %}
                 <ul class="space-y-3">
                     <li class="flex items-start gap-2">

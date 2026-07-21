@@ -265,7 +265,7 @@ All under the `recording.*` prefix:
 
 ## Related references
 
-- [Recording Architecture v1.3 -- "Hydration model"](../technical/Vauban_Recording_Architecture_EN(1.3).md)
+- [Recording Architecture v1.7 -- Hydration & persistence (§8)](../technical/Vauban_Recording_Architecture_EN(1.8).md#8-hydration--persistence)
 - Migration: `vauban-db/migrations/20260430000000_recording_integrity_metadata`
 - Source (pipeline): `vauban-web/src/services/recording_hydrator.rs`
 - Source (scheduler): `vauban-web/src/tasks/recording_hydrator.rs`

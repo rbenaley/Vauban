@@ -907,20 +907,37 @@ async fn test_mark_finalized_corrupt_is_idempotent() {
 // code change. We pin the key strings here so a doc edit that erases
 // them fails CI, NOT silently lands.
 //
-// Versioning policy: the recording architecture stays at v1.3 -- the
-// event-driven hydrator is an iteration *within* v1.3, not a new
-// document version. The pins therefore target the v1.3 file.
+// Archaeology pin: the event-driven hydrator changelog landed in v1.3.
+// Current normative doc is v1.7+; v1.3 is retained with a Superseded
+// banner. These pins keep the v1.3 framing from being silently erased.
 // ===========================================================================
 
 const RECORDING_ARCHITECTURE_DOC: &str = "docs/technical/Vauban_Recording_Architecture_EN(1.3).md";
+const RECORDING_ARCHITECTURE_CURRENT: &str =
+    "docs/technical/Vauban_Recording_Architecture_EN(1.8).md";
 
 #[test]
 fn test_recording_architecture_doc_present() {
-    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("workspace root")
-        .join(RECORDING_ARCHITECTURE_DOC);
-    assert!(p.exists(), "architecture doc must exist at {}", p.display());
+        .expect("workspace root");
+    let archaeology = root.join(RECORDING_ARCHITECTURE_DOC);
+    let current = root.join(RECORDING_ARCHITECTURE_CURRENT);
+    assert!(
+        archaeology.exists(),
+        "archaeology doc must exist at {}",
+        archaeology.display()
+    );
+    assert!(
+        current.exists(),
+        "current recording architecture must exist at {}",
+        current.display()
+    );
+    let archaeology_src = std::fs::read_to_string(&archaeology).expect("read 1.3");
+    assert!(
+        archaeology_src.contains("**Superseded.**"),
+        "Recording 1.3 must carry a Superseded banner (I-DOC-2)"
+    );
 }
 
 #[test]

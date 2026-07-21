@@ -32,6 +32,8 @@ pub struct RecordingListItem {
     /// True for IACS PCAP bundles. Surfaces the per-row "Inspect"
     /// link in `recording_list.html`.
     pub show_inspect_capture: bool,
+    /// Sticky SSH/RDP audit drop latch (`proxy_sessions.recording_lossy`).
+    pub recording_lossy: bool,
 }
 
 impl RecordingListItem {
@@ -157,6 +159,7 @@ mod tests {
             status: "ready".to_string(),
             show_play_recording: session_type != "iacs_tunnel",
             show_inspect_capture: session_type == "iacs_tunnel",
+            recording_lossy: false,
         }
     }
 

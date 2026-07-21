@@ -27,6 +27,7 @@ pub mod pending_mfa;
 pub mod rate_limit;
 pub mod rbac;
 pub mod recording_hydrator;
+pub mod recording_loss;
 pub mod recording_reaper;
 pub mod role_invariants;
 pub mod secret_access;
