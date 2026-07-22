@@ -3140,7 +3140,8 @@ fn validate_audit_segment_name(name: &str) -> Result<(), String> {
 /// forward the sealed ciphertext to the audit child.
 ///
 /// A failure (e.g. the vault master key has not been provisioned yet) is logged
-/// and boot continues: the audit service then runs in BestEffort mode
+/// and boot continues: without a sealed key, audit will refuse to start
+/// (fail-closed). Historically this path was described as BestEffort mode
 /// (hash-chained but unsigned) rather than failing the whole platform closed.
 fn ensure_audit_signing_key(config: &crate::config::SupervisorConfig) {
     let sealed_path = config.audit.signing_key_path();

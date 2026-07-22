@@ -68,15 +68,13 @@ struct ServiceState {
     shutdown_requested: bool,
 
     // ===== WORM audit log (tamper-evident, append-only) =====
-    /// The current append-only WORM segment. Opened lazily on the first
-    /// `AuditEvent` (the segment FD is brokered by the supervisor).
+    /// Current append-only WORM segment (FD brokered by the supervisor).
+    /// Opened at boot (mandatory). Lazy open in `handle_audit_event` remains
+    /// as defense-in-depth if `worm` is somehow still `None`.
     worm: Option<WormLog>,
-    /// Ed25519 signing key (seed unsealed from the vault at boot). When `None`
-    /// the log is hash-chained but NOT sealed (`BestEffort`); when
-    /// `audit_required` is set, a missing key is a hard boot failure.
+    /// Ed25519 signing key (seed unsealed from the vault at boot).
+    /// Mandatory: boot fails if unseal does not succeed.
     signing_key: Option<SigningKey>,
-    /// Fail-closed switch: refuse to run without a signing key.
-    audit_required: bool,
     /// Events durably persisted to the WORM log (hash-chained).
     events_persisted: u64,
     /// Events that could NOT be persisted (broker/write failure) -> `AuditNack`.
@@ -97,7 +95,6 @@ impl Default for ServiceState {
             shutdown_requested: false,
             worm: None,
             signing_key: None,
-            audit_required: false,
             events_persisted: 0,
             events_failed: 0,
             segment_counter: 0,
@@ -334,13 +331,9 @@ fn run_service() -> Result<()> {
         }
     };
 
-    // Sealed Ed25519 signing-key seed (ciphertext `v1:...`) and fail-closed
-    // switch. Both provisioned by the supervisor.
+    // Sealed Ed25519 signing-key seed (ciphertext `v1:...`), provisioned by
+    // the supervisor. Unseal is mandatory at boot (PAM bastion posture).
     let sealed_signing_key: Option<String> = std::env::var("VAUBAN_AUDIT_SIGNING_KEY_SEALED").ok();
-    let audit_required: bool = std::env::var("VAUBAN_AUDIT_REQUIRED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(false);
 
     // SAFETY: We are the only thread at this point, no concurrent access.
     unsafe {
@@ -360,7 +353,6 @@ fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_VAULT_IPC_READ");
         std::env::remove_var("VAUBAN_VAULT_IPC_WRITE");
         std::env::remove_var("VAUBAN_AUDIT_SIGNING_KEY_SEALED");
-        std::env::remove_var("VAUBAN_AUDIT_REQUIRED");
     }
 
     let channel = unsafe { IpcChannel::from_raw_fds(ipc_read_fd, ipc_write_fd) };
@@ -418,30 +410,26 @@ fn run_service() -> Result<()> {
 
     let mut state = ServiceState {
         segment_counter: now_secs(),
-        audit_required,
         ..ServiceState::default()
     };
 
-    // Unseal the Ed25519 signing-key seed from the vault (best-effort retry).
-    // BestEffort: continue hash-chained-but-unsealed when unavailable, unless
-    // `audit_required` makes a missing key a hard boot failure (fail-closed).
-    match unseal_signing_key(vault_channel.as_ref(), sealed_signing_key.as_deref()) {
-        Some(key) => {
-            info!("Audit signing key unsealed; WORM segments will be Ed25519-sealed");
-            state.signing_key = Some(key);
-        }
-        None => {
-            if state.audit_required {
-                return Err(anyhow::anyhow!(
-                    "VAUBAN_AUDIT_REQUIRED is set but the signing key could not be unsealed"
-                ));
-            }
-            warn!(
-                "Audit signing key unavailable; WORM log is hash-chained but NOT \
-                 Ed25519-sealed (BestEffort mode)"
-            );
-        }
-    }
+    // Unseal the Ed25519 signing-key seed from the vault. Fail-closed: a
+    // bastion/PAM must not run without a sealed, verifiable WORM chain.
+    let Some(key) = unseal_signing_key(vault_channel.as_ref(), sealed_signing_key.as_deref())
+    else {
+        return Err(anyhow::anyhow!(
+            "audit signing key could not be unsealed; refusing to start without Ed25519 WORM seals"
+        ));
+    };
+    info!("Audit signing key unsealed; WORM segments will be Ed25519-sealed");
+    state.signing_key = Some(key);
+
+    // Eager WORM open: first fail-closed MFA critical must not pay the
+    // supervisor broker wait on the Ack path. Fail-closed if open fails.
+    open_initial_worm_segment(&channel, fd_passing_socket, &mut state).context(
+        "initial WORM segment could not be opened; refusing to start without durable audit log",
+    )?;
+    info!("WORM segment opened at boot");
 
     let mut recording_mgr = if recording_enabled {
         Some(RecordingManager::new())
@@ -999,28 +987,18 @@ fn handle_audit_event(
         "Audit event received"
     );
 
-    // Lazily open the first segment (FD brokered by the supervisor).
-    if state.worm.is_none() {
-        let segment_name = segment_name_for(state, 0);
-        match request_audit_log_file_from_supervisor(
-            supervisor_channel,
-            fd_passing_socket,
-            &segment_name,
-        ) {
-            Ok(file) => {
-                state.worm = Some(WormLog::new(file, segment_name, GENESIS_HASH, 0));
-            }
-            Err(e) => {
-                state.events_failed += 1;
-                state.requests_failed += 1;
-                warn!(error = %e, "audit: failed to open WORM segment; event NOT persisted");
-                reply_channel.send(&Message::AuditNack {
-                    timestamp,
-                    error: format!("worm segment open failed: {e}"),
-                })?;
-                return Ok(());
-            }
-        }
+    // Defense-in-depth: boot must have opened the segment; retry if None.
+    if state.worm.is_none()
+        && let Err(e) = open_initial_worm_segment(supervisor_channel, fd_passing_socket, state)
+    {
+        state.events_failed += 1;
+        state.requests_failed += 1;
+        warn!(error = %e, "audit: failed to open WORM segment; event NOT persisted");
+        reply_channel.send(&Message::AuditNack {
+            timestamp,
+            error: format!("worm segment open failed: {e}"),
+        })?;
+        return Ok(());
     }
 
     let record = AuditRecord {
@@ -1205,6 +1183,25 @@ fn recv_fd_timed(socket_fd: RawFd, deadline: Instant) -> Result<std::os::fd::Own
     }
 }
 
+/// Broker-open segment 0 and install it on `state.worm`.
+///
+/// Called at boot (eager, mandatory) and as defense-in-depth lazy open if
+/// `worm` is still `None`. Idempotent if `state.worm` is already `Some`.
+fn open_initial_worm_segment(
+    channel: &IpcChannel,
+    fd_passing_socket: Option<RawFd>,
+    state: &mut ServiceState,
+) -> Result<()> {
+    if state.worm.is_some() {
+        return Ok(());
+    }
+    let segment_name = segment_name_for(state, 0);
+    let file =
+        request_audit_log_file_from_supervisor(channel, fd_passing_socket, &segment_name)?;
+    state.worm = Some(WormLog::new(file, segment_name, GENESIS_HASH, 0));
+    Ok(())
+}
+
 /// Request an APPEND-ONLY WORM segment FD from the supervisor broker.
 ///
 /// Unlike `request_file_from_supervisor`, the path is a confined `segment_name`
@@ -1251,7 +1248,7 @@ fn request_audit_log_file_from_supervisor(
 ///
 /// Bounded retry over the vault channel. Returns `None` when the vault is
 /// unavailable, the env ciphertext is absent, or the decrypted seed is not 32
-/// bytes (the caller decides BestEffort vs. fail-closed).
+/// bytes (boot treats `None` as a hard failure).
 fn unseal_signing_key(
     vault_channel: Option<&IpcChannel>,
     sealed_ciphertext: Option<&str>,
@@ -2129,8 +2126,10 @@ mod tests {
         WormLog::new(f, "test/seg.jsonl".to_string(), GENESIS_HASH, 0)
     }
 
-    /// Fail-closed: with no open segment AND no fd_passing socket, the broker
-    /// open fails -> the event is NACKed, never ACKed, and counted as failed.
+    /// Defense-in-depth: no open segment AND no fd_passing socket -> broker
+    /// open fails -> event is NACKed (never ACKed) and counted failed.
+    /// Production boot refuses to start without a worm; this covers the
+    /// in-process handler path used by unit tests.
     #[test]
     fn test_audit_event_fail_closed_without_broker() {
         let (client, service) = IpcChannel::pair().unwrap();
@@ -2200,6 +2199,89 @@ mod tests {
                 }
             ),
             "expected AuditAck, got {response:?}"
+        );
+    }
+
+    /// Eager open succeeds when the supervisor brokers a segment FD.
+    #[test]
+    fn test_boot_opens_worm_before_first_event() {
+        use shared::ipc::{send_fd, socketpair_for_fd_passing};
+        use std::os::unix::io::AsRawFd;
+
+        let (sup_ch, audit_ch) = IpcChannel::pair().unwrap();
+        let (sup_fd, audit_fd) = socketpair_for_fd_passing().unwrap();
+        let audit_fd_raw = audit_fd.as_raw_fd();
+
+        let handle = std::thread::spawn(move || {
+            let msg = sup_ch.recv().unwrap();
+            assert!(matches!(msg, Message::AuditLogFileRequest { .. }));
+            let file = tempfile::tempfile().unwrap();
+            send_fd(sup_fd.as_raw_fd(), file.as_raw_fd()).unwrap();
+            sup_ch
+                .send(&Message::AuditLogFileResponse {
+                    request_id: 0,
+                    success: true,
+                    error: None,
+                })
+                .unwrap();
+        });
+
+        let mut state = ServiceState {
+            segment_counter: now_secs(),
+            ..ServiceState::default()
+        };
+        open_initial_worm_segment(&audit_ch, Some(audit_fd_raw), &mut state).unwrap();
+        assert!(state.worm.is_some(), "eager boot must install worm");
+
+        // First event must Ack without needing another broker round-trip.
+        let (client, service) = IpcChannel::pair().unwrap();
+        handle_audit_event(
+            &service,
+            &audit_ch,
+            Some(audit_fd_raw),
+            &mut state,
+            1706140800,
+            AuditEventType::MfaChallengePassed,
+            Some("alice".into()),
+            None,
+            None,
+            "mfa ok".into(),
+        )
+        .unwrap();
+        assert_eq!(state.events_persisted, 1);
+        assert!(matches!(
+            client.recv().unwrap(),
+            Message::AuditAck {
+                timestamp: 1706140800
+            }
+        ));
+        handle.join().unwrap();
+    }
+
+    /// Silent supervisor: eager open times out inside the broker budget
+    /// (boot maps this Err to process exit).
+    #[test]
+    fn test_boot_open_fails_when_broker_silent() {
+        use std::os::unix::io::AsRawFd;
+        let (audit_ch, _sup_ch) = IpcChannel::pair().unwrap();
+        let (fd_sock, _peer) = shared::ipc::socketpair_for_fd_passing().unwrap();
+        let mut state = ServiceState {
+            segment_counter: now_secs(),
+            ..ServiceState::default()
+        };
+        let start = Instant::now();
+        let err =
+            open_initial_worm_segment(&audit_ch, Some(fd_sock.as_raw_fd()), &mut state)
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("timed out"),
+            "expected timeout, got: {err}"
+        );
+        assert!(state.worm.is_none());
+        let elapsed = start.elapsed();
+        assert!(elapsed >= SUPERVISOR_BROKER_TIMEOUT);
+        assert!(
+            elapsed < Duration::from_secs(vauban_audit::WEB_CRITICAL_ACK_TIMEOUT_SECS)
         );
     }
 

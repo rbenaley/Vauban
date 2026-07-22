@@ -1185,10 +1185,11 @@ impl SupervisorConfig {
                 // WORM signing: if the operator has provisioned a sealed audit
                 // signing key (`vauban-vault seal-audit-key`), hand its
                 // ciphertext to audit so it can unseal via VaultDecrypt{audit}
-                // and Ed25519-seal the WORM log. Absent -> BestEffort (hash
-                // chain only). The path honours the optional
-                // `[audit] signing_key_path` override and otherwise derives
-                // from `[audit] log_path` -- never a hard-coded absolute.
+                // and Ed25519-seal the WORM log. Absent ciphertext means
+                // audit will refuse to start (fail-closed PAM posture).
+                // The path honours the optional `[audit] signing_key_path`
+                // override and otherwise derives from `[audit] log_path` --
+                // never a hard-coded absolute.
                 let sealed_path = self.audit.signing_key_path();
                 if let Ok(ciphertext) = std::fs::read_to_string(&sealed_path) {
                     let ciphertext = ciphertext.trim().to_string();
