@@ -534,22 +534,22 @@ This is the durability backbone: a slow audit produces backpressure
 on the relay, never silent frame drops; a dead audit closes the
 tunnel within five seconds with a visible signal.
 
-### 5.4 Supervisor Gzip Broker
+### 5.4 IACS ChannelEnd gzip (audit CPU, supervisor broker)
 
-`vauban-audit` cannot `gzip` or `unlink` files itself (Capsicum has
-no file-system rights). On `IacsRecordingChannelEnd` the audit emits
-a `RecordingFileGzipRequest{src,dst,session_id,channel_id}`; the
-supervisor:
+`vauban-audit` has no Capsicum rights to `open()` / `unlink()` under
+`recording.storage_path`. On `IacsRecordingChannelEnd` the split is:
 
-1. Opens the raw `.pcap` (root, under `recording.storage_path`).
-2. Streams it through `flate2::GzEncoder` into the `.pcap.gz`.
-3. Computes BLAKE3 and stats the resulting file.
-4. Unlinks the raw `.pcap`.
-5. Returns `RecordingFileGzipResponse{blake3_hex, file_size}`.
+1. **Main poll loop (broker only):** `end_channel` → short timed
+   `RecordingFileRequest` for the `.pcap.gz` FD → enqueue
+   `GzipCpuJob` → return to `poll`.
+2. **Worker thread (CPU only):** `gzip_channel_pcap_on_fds` +
+   `dst.sync_data` + drop raw FD; wakeup pipe notifies main.
+3. **Main again:** `RecordingFileUnlinkRequest` for the raw `.pcap`,
+   then `finalize_channel_gzip`. `IacsRecordingSessionEnd` is
+   deferred while gzip jobs for that session are still pending.
 
-The audit attaches the digest and size to the in-memory channel
-metadata. `IacsRecordingSessionEnd` then triggers the `meta.json`
-serialisation and a final write-side `RecordingFileRequest`.
+Supervisor never runs flate2 for PCAPs (Lot C); mid-enum
+`RecordingFileGzip*` stubs remain for bincode compat only.
 
 ### 5.5 `meta.json`
 
@@ -589,8 +589,8 @@ drift apart.
 | Service | Recording I/O |
 |---------|--------------|
 | `vauban-proxy-iacs` | IPC tee only; `AsyncIpcChannel` to audit constructed **before** `cap_enter`; `peer_addr()` of upstream read **before** `into_split()` |
-| `vauban-audit` | Writes only on FDs received via SCM_RIGHTS; no DNS; gzip / unlink delegated to supervisor |
-| `vauban-supervisor` | Owns `create_dir_all`, gzip and unlink under `recording.storage_path` |
+| `vauban-audit` | Writes only on FDs received via SCM_RIGHTS; no DNS; gzip CPU off-thread on those FDs; unlink via supervisor broker |
+| `vauban-supervisor` | Owns `create_dir_all` and unlink under `recording.storage_path` (no PCAP gzip) |
 | `vauban-web` | Read-only SCM_RIGHTS for ZIP assembly |
 
 Two source-grep CI scripts pin these invariants:
@@ -613,7 +613,7 @@ the protocol:
 |----------|---------------|-----------------------------------------|
 | RDP | One BLAKE3 per fMP4 segment (over raw Annex-B NAL data, before AVCC conversion) | `BLAKE3(concat(ASCII hex bytes of every segment hash, in segment order))` |
 | SSH | One BLAKE3 over the full `.cast` (header + every event line) | Same single digest |
-| IACS | One BLAKE3 per `.pcap.gz` (computed by the supervisor after gzip) | `BLAKE3(concat(ASCII hex bytes of every channel hash, in channel order))` |
+| IACS | One BLAKE3 per `.pcap.gz` (computed in `vauban-audit` after gzip) | `BLAKE3(concat(ASCII hex bytes of every channel hash, in channel order))` |
 
 The aggregate rule is intentionally identical for RDP and IACS. A
 verifier with only `meta.json` and the artefacts can recompute and

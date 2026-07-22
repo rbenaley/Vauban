@@ -17,10 +17,16 @@
     )
 )]
 
+pub mod iacs_gzip_worker;
 pub mod iacs_pcap_synth;
 pub mod iacs_recording_manager;
 pub mod mfa_hol_budget;
 pub mod worm;
+
+pub use iacs_gzip_worker::{
+    GzipCpuJob, GzipCpuOutcome, PendingGzipTracker, drain_wakeup, run_gzip_cpu, spawn_gzip_worker,
+    wakeup_pipe,
+};
 
 pub use mfa_hol_budget::{
     SUPERVISOR_BROKER_TIMEOUT_SECS, WEB_CRITICAL_ACK_TIMEOUT_SECS,

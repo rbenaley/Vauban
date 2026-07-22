@@ -9,16 +9,17 @@
 //! when it dispatches `IacsRecordingChannelStart` / `Data` /
 //! `ChannelEnd` / `SessionEnd` messages. The supervisor's role
 //! (broker write FDs + unlink the raw PCAP) is simulated with
-//! `tempfile`-backed FDs; gzip + BLAKE3 run locally via
-//! [`gzip_channel_pcap_on_fds`] as in production.
+//! `tempfile`-backed FDs; gzip + BLAKE3 run via [`run_gzip_cpu`]
+//! (same CPU kernel as the off-thread worker).
 
 use flate2::read::GzDecoder;
 use shared::messages::IacsRecordingDirection;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use vauban_audit::iacs_recording_manager::{
-    IacsChannelEndpoints, IacsRecordingConfig, IacsRecordingManager, gzip_channel_pcap_on_fds,
+    IacsChannelEndpoints, IacsRecordingConfig, IacsRecordingManager,
 };
+use vauban_audit::{GzipCpuJob, PendingGzipTracker, run_gzip_cpu};
 
 fn endpoints() -> IacsChannelEndpoints {
     IacsChannelEndpoints {
@@ -180,14 +181,12 @@ fn multi_channel_session_produces_independent_pcap_files() {
 
 #[test]
 fn gzip_roundtrip_simulates_audit_local_gzip_and_unlink() {
-    // Production ChannelEnd flow (Lot C):
+    // Production ChannelEnd flow (split prepare / CPU / complete):
     //   1. end_channel returns the raw O_RDWR FD
-    //   2. audit: gzip_channel_pcap_on_fds(src, dst) + blake3
-    //   3. dst.sync_data()
-    //   4. RecordingFileUnlinkRequest -> supervisor removes raw
+    //   2. main: broker-open dst (simulated File::create)
+    //   3. worker: run_gzip_cpu (gzip + blake3 + sync + drop src)
+    //   4. main: RecordingFileUnlinkRequest -> supervisor removes raw
     //   5. finalize_channel_gzip(blake3, size)
-    //
-    // We simulate (1)-(4) against a tempdir (unlink = remove_file).
     let dir = tempfile::tempdir().unwrap();
     let raw_path = dir.path().join("001.pcap");
     let gz_path = dir.path().join("001.pcap.gz");
@@ -218,16 +217,19 @@ fn gzip_roundtrip_simulates_audit_local_gzip_and_unlink() {
     }
     let paths = mgr.end_channel("s", 1, 999_999).expect("end_channel");
 
-    let mut src = paths.raw_file;
-    src.sync_data().unwrap();
-    src.seek(SeekFrom::Start(0)).unwrap();
-    let mut dst = File::create(&gz_path).unwrap();
-    let (dst_size, blake3_hex) = gzip_channel_pcap_on_fds(&mut src, &mut dst).unwrap();
-    dst.sync_data().unwrap();
-    drop(src);
-    drop(dst);
+    // Prepare (main): dst FD
+    let dst = File::create(&gz_path).unwrap();
+    let outcome = run_gzip_cpu(GzipCpuJob {
+        session_id: "s".into(),
+        channel_id: 1,
+        src: paths.raw_file,
+        dst,
+        src_relative: paths.src_relative,
+        dst_relative: paths.dst_relative,
+    });
+    let (dst_size, blake3_hex) = outcome.result.expect("cpu ok");
 
-    // Simulate supervisor unlink broker.
+    // Complete (main): unlink then finalize
     std::fs::remove_file(&raw_path).unwrap();
     assert!(!raw_path.exists(), "raw pcap unlinked");
 
@@ -251,6 +253,82 @@ fn gzip_roundtrip_simulates_audit_local_gzip_and_unlink() {
         decompressed[3],
     ]);
     assert_eq!(magic, 0xa1b2_c3d4);
+}
+
+#[test]
+fn e2e_session_end_waits_for_inflight_gzip() {
+    // Mirrors main_loop SessionEnd barrier: end_session / meta only
+    // after pending gzip for the session hits 0.
+    let dir = tempfile::tempdir().unwrap();
+    let mut mgr = IacsRecordingManager::new();
+    let mut pending = PendingGzipTracker::new();
+    let mut jobs = Vec::new();
+
+    for channel_id in [1u32, 2] {
+        let raw_path = dir.path().join(format!("{channel_id:03}.pcap"));
+        let gz_path = dir.path().join(format!("{channel_id:03}.pcap.gz"));
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&raw_path)
+            .unwrap();
+        mgr.start_channel(
+            "s-wait",
+            channel_id,
+            f,
+            "h".into(),
+            502,
+            0,
+            0,
+            endpoints(),
+        );
+        mgr.handle_data(
+            "s-wait",
+            channel_id,
+            0,
+            IacsRecordingDirection::EwsToAsset,
+            100,
+            b"batch",
+        )
+        .unwrap();
+        let paths = mgr
+            .end_channel("s-wait", channel_id, 200)
+            .expect("end_channel");
+        pending.enqueue("s-wait");
+        jobs.push((
+            channel_id,
+            raw_path,
+            GzipCpuJob {
+                session_id: "s-wait".into(),
+                channel_id,
+                src: paths.raw_file,
+                dst: File::create(&gz_path).unwrap(),
+                src_relative: paths.src_relative,
+                dst_relative: paths.dst_relative,
+            },
+        ));
+    }
+
+    // SessionEnd arrives while both jobs are still pending.
+    assert!(!pending.session_end_unblocked("s-wait"));
+    let deferred_reason = Some("client_close");
+
+    let mut session_ended = false;
+    for (channel_id, raw_path, job) in jobs {
+        let outcome = run_gzip_cpu(job);
+        let (dst_size, blake3_hex) = outcome.result.unwrap();
+        std::fs::remove_file(&raw_path).unwrap();
+        mgr.finalize_channel_gzip("s-wait", channel_id, blake3_hex, dst_size);
+        if pending.complete("s-wait") == 0 && deferred_reason.is_some() {
+            let result = mgr.end_session("s-wait").expect("deferred SessionEnd");
+            assert_eq!(result.channels.len(), 2);
+            session_ended = true;
+        }
+    }
+    assert!(session_ended, "SessionEnd must run only after both gzips");
+    assert!(pending.session_end_unblocked("s-wait"));
 }
 
 #[test]

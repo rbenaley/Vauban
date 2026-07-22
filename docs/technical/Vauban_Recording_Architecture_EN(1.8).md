@@ -549,23 +549,24 @@ tunnel within five seconds with a visible signal.
 
 `vauban-audit` cannot `open()` / `unlink()` under Capsicum, but it
 **can** gzip and hash on FDs already received via SCM_RIGHTS. On
-`IacsRecordingChannelEnd`:
+`IacsRecordingChannelEnd` the work is split so CPU does not occupy
+the main poll loop (MFA / WORM HOL):
 
-1. Audit flushes + `fdatasync`s the raw `.pcap` FD (opened O_RDWR
-   by the supervisor write broker) and seeks to start.
-2. Audit requests a write FD for `channels/NNN.pcap.gz` via
-   `RecordingFileRequest`.
-3. Audit streams `flate2::GzEncoder` from the raw FD to the dst FD
-   while hashing BLAKE3 of the compressed bytes, then
-   `dst.sync_data()`.
-4. Audit emits `RecordingFileUnlinkRequest{relative_path=.pcap}`;
-   the supervisor validates the path and `unlink`s the raw file.
-5. Only when unlink succeeds does audit call
+1. **Main loop (broker):** `end_channel` → timed
+   `RecordingFileRequest` for `channels/NNN.pcap.gz` → enqueue
+   `GzipCpuJob` → return to `poll`. Web AuditEvents stay
+   priority-drained.
+2. **Worker thread (CPU only):** flush/seek raw FD,
+   `gzip_channel_pcap_on_fds` + BLAKE3, `dst.sync_data()`, drop
+   raw FD; wakeup pipe notifies main. No `IpcChannel`.
+3. **Main loop (complete):** `RecordingFileUnlinkRequest` for the
+   raw `.pcap`; only on unlink OK call
    `finalize_channel_gzip(blake3_hex, file_size)`.
+4. **`IacsRecordingSessionEnd`:** deferred while pending gzip jobs
+   for that `session_id` are non-zero (meta.json after barrier).
 
-Fail-closed order: success requires `sync_data(dst)` OK **then**
-unlink OK. If unlink fails after the gz is written, the channel is
-**not** finalized. Gzip CPU work never runs in the supervisor root
+Fail-closed order unchanged: success requires `sync_data(dst)` OK
+**then** unlink OK. Gzip CPU never runs in the supervisor root
 process.
 
 ### 5.5 `meta.json`
@@ -1020,6 +1021,13 @@ retention_batch_size = 50
 This appendix is informational; the current sections describe the
 *current* architecture. Each prior version of this document remains
 available alongside this one for archaeological purposes.
+
+### 1.8 note (23 July 2026) -- crate 0.9.25
+
+- **IACS gzip off-thread:** ChannelEnd CPU (`gzip_channel_pcap_on_fds`)
+  runs on a dedicated worker; audit main poll keeps exclusive
+  supervisor IPC (dst open + unlink). SessionEnd waits for per-session
+  pending gzip. See §5.4.
 
 ### 1.7 (21 July 2026)
 

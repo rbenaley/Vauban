@@ -25,7 +25,9 @@ fn inv_production_broker_budget_fits_under_web_critical_ack() {
     assert!(production_broker_budget_is_safe());
     assert_eq!(SUPERVISOR_BROKER_TIMEOUT_SECS, 2);
     assert_eq!(WEB_CRITICAL_ACK_TIMEOUT_SECS, 5);
-    assert!(SUPERVISOR_BROKER_TIMEOUT_SECS < WEB_CRITICAL_ACK_TIMEOUT_SECS);
+    const {
+        assert!(SUPERVISOR_BROKER_TIMEOUT_SECS < WEB_CRITICAL_ACK_TIMEOUT_SECS);
+    }
 }
 
 #[test]
@@ -103,20 +105,24 @@ fn inv_main_loop_priority_drains_web_channel() {
         loop_body.contains("drain_web_audit_channel("),
         "main_loop must priority-drain web AuditEvents"
     );
-    // ChannelEnd gzip path must also drain before CPU work.
+    // ChannelEnd: drain WORM before broker-open + enqueue (CPU off-thread).
     let iacs = main
         .find("fn handle_iacs_recording_message")
         .expect("handle_iacs");
     let iacs_body = &main[iacs..iacs.saturating_add(6000).min(main.len())];
-    let gzip = iacs_body
-        .find("gzip_channel_and_unlink")
-        .expect("gzip call");
-    let drain_before = iacs_body[..gzip]
-        .rfind("drain_web_audit_channel")
-        .expect("drain before gzip");
     assert!(
-        drain_before < gzip,
-        "IACS ChannelEnd must drain web AuditEvents before gzip"
+        !iacs_body.contains("gzip_channel_pcap_on_fds"),
+        "handle_iacs_recording_message must not run gzip CPU inline"
+    );
+    let enqueue = iacs_body
+        .find("enqueue_iacs_gzip_job")
+        .expect("enqueue_iacs_gzip_job");
+    let drain_before = iacs_body[..enqueue]
+        .rfind("drain_web_audit_channel")
+        .expect("drain before enqueue");
+    assert!(
+        drain_before < enqueue,
+        "IACS ChannelEnd must drain web AuditEvents before gzip enqueue"
     );
 }
 

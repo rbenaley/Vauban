@@ -32,13 +32,17 @@ use shared::messages::{AuditEventType, ControlMessage, Message, ServiceStats};
 use shared::sandbox as capsicum;
 use ssh_recording_manager::SshRecordingManager;
 use std::net::IpAddr;
+use std::collections::HashMap;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::process::ExitCode;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
-use vauban_audit::iacs_recording_manager::{
-    self, IacsChannelEndPaths, IacsRecordingManager, gzip_channel_pcap_on_fds,
+use vauban_audit::iacs_gzip_worker::{
+    GzipCpuJob, GzipCpuOutcome, PendingGzipTracker, drain_wakeup, spawn_gzip_worker, wakeup_pipe,
 };
+use vauban_audit::iacs_recording_manager::{self, IacsRecordingManager};
 use vauban_audit::mfa_hol_budget::SUPERVISOR_BROKER_TIMEOUT_SECS;
 use vauban_audit::worm::{AuditRecord, GENESIS_HASH, WormLog};
 
@@ -490,6 +494,41 @@ struct MainLoopContext<'a> {
     recording_fsync_interval_ms: u64,
 }
 
+/// Off-thread IACS gzip orchestration (main owns supervisor IPC).
+struct IacsGzipRuntime {
+    job_tx: Sender<GzipCpuJob>,
+    outcome_rx: Receiver<GzipCpuOutcome>,
+    /// Read end of the wakeup pipe (polled by main_loop).
+    wake_read: OwnedFd,
+    pending: PendingGzipTracker,
+    /// SessionEnd deferred until pending gzip for that session hits 0.
+    deferred_session_ends: HashMap<String, String>,
+}
+
+impl IacsGzipRuntime {
+    fn try_start() -> Result<Self> {
+        let (wake_read, wake_write) =
+            wakeup_pipe().context("IACS gzip wakeup pipe")?;
+        let (job_tx, job_rx) = mpsc::channel();
+        let (outcome_tx, outcome_rx) = mpsc::channel();
+        let _handle = spawn_gzip_worker(job_rx, outcome_tx, wake_write)
+            .context("spawn IACS gzip worker")?;
+        // Detach: worker outlives main_loop only until process exit.
+        std::mem::forget(_handle);
+        Ok(Self {
+            job_tx,
+            outcome_rx,
+            wake_read,
+            pending: PendingGzipTracker::new(),
+            deferred_session_ends: HashMap::new(),
+        })
+    }
+
+    fn wake_read_fd(&self) -> RawFd {
+        self.wake_read.as_raw_fd()
+    }
+}
+
 fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()> {
     let MainLoopContext {
         channel,
@@ -543,6 +582,29 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
         None
     };
 
+    // Off-thread IACS gzip: only when the IACS recording path is live.
+    let mut gzip_runtime = if proxy_iacs_channel.is_some() && iacs_recording_mgr.is_some() {
+        match IacsGzipRuntime::try_start() {
+            Ok(rt) => {
+                info!("IACS gzip worker started (CPU off main poll loop)");
+                Some(rt)
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to start IACS gzip worker; IACS ChannelEnd will fail");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let gzip_wake_idx = if let Some(rt) = gzip_runtime.as_ref() {
+        poll_fds.push(rt.wake_read_fd());
+        Some(poll_fds.len() - 1)
+    } else {
+        None
+    };
+
     loop {
         // Check shutdown flag before blocking on poll.
         if state.shutdown_requested {
@@ -571,6 +633,21 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
         // Runs even when `ready` is empty so a web event that arrived during
         // the previous handler still gets a chance before the next poll.
         drain_web_audit_channel(web_channel, channel, fd_passing_socket, state);
+
+        // Apply off-thread gzip completions (unlink + finalize + deferred SessionEnd).
+        if let Some(idx) = gzip_wake_idx
+            && (ready.contains(&idx) || gzip_runtime.as_ref().is_some_and(|r| r.pending.total_pending() > 0))
+            && let Some(rt) = gzip_runtime.as_mut()
+        {
+            drain_gzip_completions(
+                rt,
+                channel,
+                fd_passing_socket,
+                iacs_recording_mgr,
+                web_channel,
+                state,
+            );
+        }
 
         if ready.is_empty() {
             continue;
@@ -683,12 +760,15 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
                         route_audit_event(iacs_ch, channel, fd_passing_socket, state, msg)
                     } else {
                         handle_iacs_recording_message(
-                            state,
-                            iacs_recording_mgr,
-                            channel,
-                            iacs_ch,
-                            fd_passing_socket,
-                            web_channel,
+                            IacsRecordingHandlerCtx {
+                                state,
+                                iacs_recording_mgr,
+                                supervisor_channel: channel,
+                                proxy_iacs_channel: iacs_ch,
+                                fd_passing_socket,
+                                web_channel,
+                                gzip_runtime: gzip_runtime.as_mut(),
+                            },
                             msg,
                         )
                     };
@@ -1414,15 +1494,31 @@ fn handle_ssh_recording_message(
     Ok(())
 }
 
-fn handle_iacs_recording_message(
-    state: &mut ServiceState,
-    iacs_recording_mgr: &mut Option<IacsRecordingManager>,
-    supervisor_channel: &IpcChannel,
-    proxy_iacs_channel: &IpcChannel,
+/// Bundled deps for the IACS recording IPC handler (keeps the fn under
+/// clippy's `too_many_arguments` threshold after gzip-runtime wiring).
+struct IacsRecordingHandlerCtx<'a> {
+    state: &'a mut ServiceState,
+    iacs_recording_mgr: &'a mut Option<IacsRecordingManager>,
+    supervisor_channel: &'a IpcChannel,
+    proxy_iacs_channel: &'a IpcChannel,
     fd_passing_socket: Option<RawFd>,
-    web_channel: Option<&IpcChannel>,
+    web_channel: Option<&'a IpcChannel>,
+    gzip_runtime: Option<&'a mut IacsGzipRuntime>,
+}
+
+fn handle_iacs_recording_message(
+    ctx: IacsRecordingHandlerCtx<'_>,
     msg: Message,
 ) -> Result<()> {
+    let IacsRecordingHandlerCtx {
+        state,
+        iacs_recording_mgr,
+        supervisor_channel,
+        proxy_iacs_channel,
+        fd_passing_socket,
+        web_channel,
+        mut gzip_runtime,
+    } = ctx;
     let Some(mgr) = iacs_recording_mgr.as_mut() else {
         debug!("IACS recording not enabled, ignoring IACS recording message");
         return Ok(());
@@ -1570,109 +1666,43 @@ fn handle_iacs_recording_message(
             closed_at_us,
         } => {
             if let Some(paths) = mgr.end_channel(&session_id, channel_id, closed_at_us) {
-                // Drain fail-closed WORM events before CPU-bound gzip so an
-                // MFA `emit_critical` that arrived mid-session is not stranded
-                // for the full compress window (> CRITICAL_ACK_TIMEOUT).
+                // Drain fail-closed WORM events before the short broker wait
+                // that opens the `.pcap.gz` FD (CPU gzip runs off-thread).
                 drain_web_audit_channel(
                     web_channel,
                     supervisor_channel,
                     fd_passing_socket,
                     state,
                 );
-                match gzip_channel_and_unlink(
+                enqueue_iacs_gzip_job(
+                    gzip_runtime,
                     supervisor_channel,
                     fd_passing_socket,
-                    &session_id,
+                    session_id,
+                    channel_id,
                     paths,
-                ) {
-                    Ok((dst_size, blake3_hex)) => {
-                        mgr.finalize_channel_gzip(&session_id, channel_id, blake3_hex, dst_size);
-                    }
-                    Err(e) => {
-                        error!(
-                            session_id,
-                            channel_id,
-                            error = %e,
-                            "Failed to gzip/unlink IACS PCAP"
-                        );
-                    }
-                }
+                );
             }
             state.requests_processed += 1;
         }
         Message::IacsRecordingSessionEnd { session_id, reason } => {
-            if let Some(result) = mgr.end_session(&session_id) {
-                // `meta.json` is written even with `channels: []`:
-                // a zero-channel authenticated login still leaves a
-                // complete, hydratable audit bundle.
-                let meta_json = IacsRecordingManager::serialize_meta_json(&result);
-                match request_file_from_supervisor(
+            if let Some(rt) = gzip_runtime.as_mut()
+                && !rt.pending.session_end_unblocked(&session_id)
+            {
+                info!(
+                    session_id,
+                    pending = rt.pending.pending_for(&session_id),
+                    "Deferring IACS SessionEnd until inflight gzip completes"
+                );
+                rt.deferred_session_ends.insert(session_id, reason);
+            } else {
+                finish_iacs_session_end(
+                    mgr,
                     supervisor_channel,
                     fd_passing_socket,
                     &session_id,
-                    &result.meta_json_relative_path,
-                ) {
-                    Ok(meta_file) => {
-                        use std::io::Write;
-                        let mut meta_file = meta_file;
-                        if let Err(e) = meta_file
-                            .write_all(meta_json.as_bytes())
-                            .and_then(|_| meta_file.flush())
-                        {
-                            error!(session_id, error = %e, "Failed to write IACS meta.json");
-                        } else {
-                            info!(session_id, "IACS meta.json written successfully");
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            session_id,
-                            error = %e,
-                            "Failed to obtain IACS meta.json file from supervisor"
-                        );
-                    }
-                }
-
-                // Rewrite `session.json` with the close cause when
-                // the session carried auth-time identity.
-                if let (Some(rel), Some(info)) =
-                    (&result.session_json_relative_path, &result.start_info)
-                {
-                    let ended_at_us = std::time::SystemTime::now()
-                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_micros() as u64;
-                    let session_json = IacsRecordingManager::serialize_session_json(
-                        &session_id,
-                        info,
-                        Some((ended_at_us, &reason)),
-                    );
-                    match request_file_from_supervisor(
-                        supervisor_channel,
-                        fd_passing_socket,
-                        &session_id,
-                        rel,
-                    ) {
-                        Ok(mut file) => {
-                            use std::io::Write;
-                            if let Err(e) = file
-                                .write_all(session_json.as_bytes())
-                                .and_then(|_| file.flush())
-                            {
-                                error!(session_id, error = %e, "Failed to rewrite IACS session.json");
-                            } else {
-                                info!(session_id, reason, "IACS session.json finalized");
-                            }
-                        }
-                        Err(e) => {
-                            error!(
-                                session_id,
-                                error = %e,
-                                "Failed to obtain IACS session.json file from supervisor"
-                            );
-                        }
-                    }
-                }
+                    &reason,
+                );
             }
             state.requests_processed += 1;
         }
@@ -1684,42 +1714,208 @@ fn handle_iacs_recording_message(
     Ok(())
 }
 
-/// Gzip the raw channel PCAP on SCM_RIGHTS FDs, fdatasync the
-/// `.pcap.gz`, then ask the supervisor to unlink the raw `.pcap`.
+/// Broker-open the `.pcap.gz` FD and enqueue CPU gzip on the worker.
 ///
-/// Fail-closed: success requires `dst.sync_data()` OK **then** unlink
-/// OK. If unlink fails after the gz is written, returns `Err` so the
-/// caller does **not** call `finalize_channel_gzip`.
-fn gzip_channel_and_unlink(
-    channel: &IpcChannel,
+/// Main keeps exclusive supervisor IPC; the worker never sees pipes.
+fn enqueue_iacs_gzip_job(
+    gzip_runtime: Option<&mut IacsGzipRuntime>,
+    supervisor_channel: &IpcChannel,
+    fd_passing_socket: Option<RawFd>,
+    session_id: String,
+    channel_id: u32,
+    paths: vauban_audit::iacs_recording_manager::IacsChannelEndPaths,
+) {
+    let Some(rt) = gzip_runtime else {
+        error!(
+            session_id,
+            channel_id, "IACS gzip worker unavailable; ChannelEnd dropped"
+        );
+        return;
+    };
+
+    let dst = match request_file_from_supervisor(
+        supervisor_channel,
+        fd_passing_socket,
+        &session_id,
+        &paths.dst_relative,
+    ) {
+        Ok(f) => f,
+        Err(e) => {
+            error!(
+                session_id,
+                channel_id,
+                error = %e,
+                "Failed to obtain IACS pcap.gz FD from supervisor"
+            );
+            return;
+        }
+    };
+
+    let job = GzipCpuJob {
+        session_id: session_id.clone(),
+        channel_id,
+        src: paths.raw_file,
+        dst,
+        src_relative: paths.src_relative,
+        dst_relative: paths.dst_relative,
+    };
+    rt.pending.enqueue(&session_id);
+    if let Err(e) = rt.job_tx.send(job) {
+        error!(
+            session_id,
+            channel_id,
+            error = %e,
+            "Failed to enqueue IACS gzip CPU job"
+        );
+        let _ = rt.pending.complete(&session_id);
+    }
+}
+
+/// Drain wakeup + apply all ready gzip outcomes (unlink + finalize).
+fn drain_gzip_completions(
+    rt: &mut IacsGzipRuntime,
+    supervisor_channel: &IpcChannel,
+    fd_passing_socket: Option<RawFd>,
+    iacs_recording_mgr: &mut Option<IacsRecordingManager>,
+    web_channel: Option<&IpcChannel>,
+    state: &mut ServiceState,
+) {
+    drain_wakeup(rt.wake_read_fd());
+    while let Ok(outcome) = rt.outcome_rx.try_recv() {
+        let session_id = outcome.session_id.clone();
+        let channel_id = outcome.channel_id;
+        match outcome.result {
+            Ok((dst_size, blake3_hex)) => {
+                match request_unlink_from_supervisor(
+                    supervisor_channel,
+                    &session_id,
+                    &outcome.src_relative,
+                ) {
+                    Ok(()) => {
+                        if let Some(mgr) = iacs_recording_mgr.as_mut() {
+                            mgr.finalize_channel_gzip(
+                                &session_id,
+                                channel_id,
+                                blake3_hex,
+                                dst_size,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            session_id,
+                            channel_id,
+                            error = %e,
+                            "Failed to unlink raw IACS PCAP after gzip; not finalizing"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                error!(
+                    session_id,
+                    channel_id,
+                    error = %e,
+                    "IACS gzip CPU failed; leaving raw PCAP, not finalizing"
+                );
+            }
+        }
+        let left = rt.pending.complete(&session_id);
+        if left == 0
+            && let Some(reason) = rt.deferred_session_ends.remove(&session_id)
+        {
+            drain_web_audit_channel(web_channel, supervisor_channel, fd_passing_socket, state);
+            if let Some(mgr) = iacs_recording_mgr.as_mut() {
+                finish_iacs_session_end(
+                    mgr,
+                    supervisor_channel,
+                    fd_passing_socket,
+                    &session_id,
+                    &reason,
+                );
+            }
+        }
+    }
+}
+
+/// Write meta.json / finalize session.json after SessionEnd (or deferred).
+fn finish_iacs_session_end(
+    mgr: &mut IacsRecordingManager,
+    supervisor_channel: &IpcChannel,
     fd_passing_socket: Option<RawFd>,
     session_id: &str,
-    paths: IacsChannelEndPaths,
-) -> Result<(u64, String)> {
-    use std::io::{Seek, SeekFrom};
+    reason: &str,
+) {
+    let Some(result) = mgr.end_session(session_id) else {
+        return;
+    };
+    // `meta.json` is written even with `channels: []`:
+    // a zero-channel authenticated login still leaves a
+    // complete, hydratable audit bundle.
+    let meta_json = IacsRecordingManager::serialize_meta_json(&result);
+    match request_file_from_supervisor(
+        supervisor_channel,
+        fd_passing_socket,
+        session_id,
+        &result.meta_json_relative_path,
+    ) {
+        Ok(meta_file) => {
+            use std::io::Write;
+            let mut meta_file = meta_file;
+            if let Err(e) = meta_file
+                .write_all(meta_json.as_bytes())
+                .and_then(|_| meta_file.flush())
+            {
+                error!(session_id, error = %e, "Failed to write IACS meta.json");
+            } else {
+                info!(session_id, "IACS meta.json written successfully");
+            }
+        }
+        Err(e) => {
+            error!(
+                session_id,
+                error = %e,
+                "Failed to obtain IACS meta.json file from supervisor"
+            );
+        }
+    }
 
-    let mut src = paths.raw_file;
-    src.sync_data()
-        .map_err(|e| anyhow::anyhow!("sync_data raw pcap: {e}"))?;
-    src.seek(SeekFrom::Start(0))
-        .map_err(|e| anyhow::anyhow!("seek raw pcap: {e}"))?;
-
-    let mut dst =
-        request_file_from_supervisor(channel, fd_passing_socket, session_id, &paths.dst_relative)?;
-
-    let (dst_size, blake3_hex) = gzip_channel_pcap_on_fds(&mut src, &mut dst)
-        .map_err(|e| anyhow::anyhow!("gzip on FDs: {e}"))?;
-
-    dst.sync_data()
-        .map_err(|e| anyhow::anyhow!("sync_data pcap.gz: {e}"))?;
-
-    // Drop the raw FD before unlink (Unix allows open+unlink, but
-    // releasing first keeps the Capsicum story simple).
-    drop(src);
-
-    request_unlink_from_supervisor(channel, session_id, &paths.src_relative)?;
-
-    Ok((dst_size, blake3_hex))
+    if let (Some(rel), Some(info)) = (&result.session_json_relative_path, &result.start_info) {
+        let ended_at_us = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+        let session_json = IacsRecordingManager::serialize_session_json(
+            session_id,
+            info,
+            Some((ended_at_us, reason)),
+        );
+        match request_file_from_supervisor(
+            supervisor_channel,
+            fd_passing_socket,
+            session_id,
+            rel,
+        ) {
+            Ok(mut file) => {
+                use std::io::Write;
+                if let Err(e) = file
+                    .write_all(session_json.as_bytes())
+                    .and_then(|_| file.flush())
+                {
+                    error!(session_id, error = %e, "Failed to rewrite IACS session.json");
+                } else {
+                    info!(session_id, reason, "IACS session.json finalized");
+                }
+            }
+            Err(e) => {
+                error!(
+                    session_id,
+                    error = %e,
+                    "Failed to obtain IACS session.json file from supervisor"
+                );
+            }
+        }
+    }
 }
 
 /// Request unlink of a raw `.pcap` from the supervisor via IPC.

@@ -65,9 +65,15 @@ fn audit_gzips_iacs_pcap_on_channel_end() {
     assert!(mgr.contains("fn gzip_channel_pcap_on_fds"));
     assert!(mgr.contains("GzEncoder"));
     let main = include_str!("../../vauban-audit/src/main.rs");
-    assert!(main.contains("gzip_channel_and_unlink"));
+    assert!(main.contains("enqueue_iacs_gzip_job"));
+    assert!(main.contains("drain_gzip_completions"));
     assert!(main.contains("request_unlink_from_supervisor"));
     assert!(!main.contains("request_gzip_from_supervisor"));
+    assert!(!main.contains("gzip_channel_and_unlink"));
+    let worker = include_str!("../../vauban-audit/src/iacs_gzip_worker.rs");
+    assert!(worker.contains("fn run_gzip_cpu"));
+    assert!(!worker.contains("use shared::ipc"));
+    assert!(!worker.contains("IpcChannel::"));
 }
 
 #[test]

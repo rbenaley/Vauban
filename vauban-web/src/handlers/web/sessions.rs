@@ -3898,13 +3898,22 @@ async fn stream_rdp_zip(
 }
 
 /// Stream a ZIP of `meta.json` + every `channels/NNN.pcap.gz` for an IACS session.
+/// ZIP entry for IACS recording downloads: `Stored` + Unix mode `0o600`
+/// so extractors do not materialize `----------` (external attrs were 0).
+fn iacs_zip_entry_owner_rw(filename: impl Into<async_zip::ZipString>) -> async_zip::ZipEntry {
+    use async_zip::{AttributeCompatibility, Compression, ZipEntryBuilder};
+    ZipEntryBuilder::new(filename.into(), Compression::Stored)
+        .attribute_compatibility(AttributeCompatibility::Unix)
+        .unix_permissions(0o600)
+        .build()
+}
+
 async fn stream_iacs_pcap_zip(
     state: &AppState,
     session_uuid: &::uuid::Uuid,
     base_dir: &str,
 ) -> Result<axum::response::Response, AppError> {
     use async_zip::base::write::ZipFileWriter;
-    use async_zip::{Compression, ZipEntryBuilder};
     use axum::body::Body;
     use axum::http::header;
     use futures_util::io::AsyncWriteExt as FuturesAsyncWriteExt;
@@ -3968,13 +3977,13 @@ async fn stream_iacs_pcap_zip(
     let session_uuid_owned = *session_uuid;
     tokio::spawn(async move {
         let mut zip = ZipFileWriter::with_tokio(writer);
-        let entry = ZipEntryBuilder::new("meta.json".into(), Compression::Stored).build();
+        let entry = iacs_zip_entry_owner_rw("meta.json");
         if let Ok(mut e) = zip.write_entry_stream(entry).await {
             let _ = e.write_all(&meta_buf).await;
             let _ = e.close().await;
         }
         for (name, file) in channel_files {
-            let entry = ZipEntryBuilder::new(name.into(), Compression::Stored).build();
+            let entry = iacs_zip_entry_owner_rw(name);
             let mut tokio_file = tokio::fs::File::from_std(file);
             let mut buf = vec![0u8; 64 * 1024];
             if let Ok(mut e) = zip.write_entry_stream(entry).await {

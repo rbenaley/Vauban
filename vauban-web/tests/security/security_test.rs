@@ -5539,6 +5539,14 @@ fn test_migrate_handles_credential_secrets() {
 
 /// OptionalSecret must import zeroize.
 #[test]
+fn test_config_imports_zeroize() {
+    let source = include_str!("../../src/config.rs");
+    assert!(
+        source.contains("use zeroize::Zeroize"),
+        "config.rs must import zeroize::Zeroize"
+    );
+}
+
 /// I-WEB-1: deprecated Config::from_env shim (0.2.0) must stay gone.
 #[test]
 fn test_config_has_no_deprecated_from_env_shim() {
@@ -5555,14 +5563,6 @@ fn test_config_has_no_deprecated_from_env_shim() {
     assert!(
         !prod.contains("#[deprecated"),
         "Config must not carry #[deprecated] shims"
-    );
-}
-
-fn test_config_imports_zeroize() {
-    let source = include_str!("../../src/config.rs");
-    assert!(
-        source.contains("use zeroize::Zeroize"),
-        "config.rs must import zeroize::Zeroize"
     );
 }
 

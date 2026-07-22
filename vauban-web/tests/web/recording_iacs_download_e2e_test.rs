@@ -19,8 +19,16 @@
 //!    fixture set (offline test).
 
 use async_zip::base::write::ZipFileWriter;
-use async_zip::{Compression, ZipEntryBuilder};
+use async_zip::{AttributeCompatibility, Compression, ZipEntryBuilder};
 use futures_util::io::AsyncWriteExt as FuturesAsyncWriteExt;
+
+/// Mirror of `iacs_zip_entry_owner_rw` in sessions.rs (offline E2E).
+fn iacs_zip_entry_owner_rw(filename: impl Into<async_zip::ZipString>) -> async_zip::ZipEntry {
+    ZipEntryBuilder::new(filename.into(), Compression::Stored)
+        .attribute_compatibility(AttributeCompatibility::Unix)
+        .unix_permissions(0o600)
+        .build()
+}
 
 const SESSIONS_RS: &str = include_str!("../../src/handlers/web/sessions.rs");
 const HYDRATOR_RS: &str = include_str!("../../src/services/recording_hydrator.rs");
@@ -43,6 +51,30 @@ fn pcap_gz_entries_are_stored_not_deflated() {
     assert!(
         !SESSIONS_RS.contains("Compression::Deflate"),
         "stream_iacs_pcap_zip must not Deflate already-compressed entries"
+    );
+}
+
+#[test]
+fn iacs_zip_entries_pin_unix_mode_0600() {
+    assert!(
+        SESSIONS_RS.contains("fn iacs_zip_entry_owner_rw"),
+        "IACS ZIP helper must exist"
+    );
+    assert!(
+        SESSIONS_RS.contains("unix_permissions(0o600)"),
+        "IACS ZIP entries must set Unix mode 0o600"
+    );
+    assert!(
+        SESSIONS_RS.contains("AttributeCompatibility::Unix"),
+        "unix_permissions requires AttributeCompatibility::Unix"
+    );
+    assert!(
+        SESSIONS_RS.contains("iacs_zip_entry_owner_rw(\"meta.json\")"),
+        "meta.json entry must go through the 0o600 helper"
+    );
+    assert!(
+        SESSIONS_RS.contains("iacs_zip_entry_owner_rw(name)"),
+        "channel .pcap.gz entries must go through the 0o600 helper"
     );
 }
 
@@ -107,19 +139,17 @@ async fn synthetic_zip_round_trips_meta_plus_two_pcap_gz_entries() {
         let cursor = FuturesCursor::new(&mut buf);
         let mut zip = ZipFileWriter::new(cursor);
 
-        let entry = ZipEntryBuilder::new("meta.json".into(), Compression::Stored).build();
+        let entry = iacs_zip_entry_owner_rw("meta.json");
         let mut e = zip.write_entry_stream(entry).await.unwrap();
         e.write_all(&meta_json).await.unwrap();
         e.close().await.unwrap();
 
-        let entry =
-            ZipEntryBuilder::new("channels/001.pcap.gz".into(), Compression::Stored).build();
+        let entry = iacs_zip_entry_owner_rw("channels/001.pcap.gz");
         let mut e = zip.write_entry_stream(entry).await.unwrap();
         e.write_all(&pcap1).await.unwrap();
         e.close().await.unwrap();
 
-        let entry =
-            ZipEntryBuilder::new("channels/002.pcap.gz".into(), Compression::Stored).build();
+        let entry = iacs_zip_entry_owner_rw("channels/002.pcap.gz");
         let mut e = zip.write_entry_stream(entry).await.unwrap();
         e.write_all(&pcap2).await.unwrap();
         e.close().await.unwrap();
@@ -149,6 +179,19 @@ async fn synthetic_zip_round_trips_meta_plus_two_pcap_gz_entries() {
             "channels/002.pcap.gz".to_string()
         ]
     );
+
+    for (i, entry) in entries.iter().enumerate() {
+        assert_eq!(
+            entry.attribute_compatibility(),
+            AttributeCompatibility::Unix,
+            "entry {i} must advertise Unix attrs"
+        );
+        assert_eq!(
+            entry.unix_permissions(),
+            Some(0o600),
+            "entry {i} must extract as owner rw ------- (0o600)"
+        );
+    }
 
     // Re-extract the first PCAP entry to make sure Stored
     // compression preserved the bytes (gzip magic must be intact).

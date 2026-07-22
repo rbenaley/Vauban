@@ -204,6 +204,8 @@ async fn battle_concurrent_criticals_bijection_on_timestamp() {
 async fn battle_ack_budget_exceeds_audit_broker_timeout() {
     // Cross-crate numeric invariant used by staging MFA: audit broker
     // waits (2s) must finish with slack before web gives up (5s).
-    assert!(CRITICAL_ACK_TIMEOUT_SECS > 2);
+    const {
+        assert!(CRITICAL_ACK_TIMEOUT_SECS > 2);
+    }
     assert_eq!(CRITICAL_ACK_TIMEOUT_SECS, 5);
 }
