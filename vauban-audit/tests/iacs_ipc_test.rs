@@ -274,16 +274,7 @@ fn e2e_session_end_waits_for_inflight_gzip() {
             .truncate(true)
             .open(&raw_path)
             .unwrap();
-        mgr.start_channel(
-            "s-wait",
-            channel_id,
-            f,
-            "h".into(),
-            502,
-            0,
-            0,
-            endpoints(),
-        );
+        mgr.start_channel("s-wait", channel_id, f, "h".into(), 502, 0, 0, endpoints());
         mgr.handle_data(
             "s-wait",
             channel_id,

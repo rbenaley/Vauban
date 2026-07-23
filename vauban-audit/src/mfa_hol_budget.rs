@@ -27,10 +27,7 @@ pub const WEB_CRITICAL_ACK_TIMEOUT_SECS: u64 = 5;
 /// second of slack remains for WORM append + IPC round-trip after the
 /// broker returns.
 #[must_use]
-pub fn broker_timeout_fits_under_critical_ack(
-    broker_secs: u64,
-    critical_ack_secs: u64,
-) -> bool {
+pub fn broker_timeout_fits_under_critical_ack(broker_secs: u64, critical_ack_secs: u64) -> bool {
     broker_secs >= 1 && broker_secs < critical_ack_secs
 }
 

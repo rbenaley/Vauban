@@ -47,12 +47,19 @@ flowchart LR
     Sup["vauban-supervisor<br/>(TCP broker)"]
     Proxy["vauban-proxy<br/>(SSH / RDP / VNC / ...)"]
 
-    Web -->|"1. UI gate<br/>CheckAccess"| Access
-    Web -->|"2. Token mint<br/>IssueSessionToken"| Access
-    Web -->|"3. TCP brokering<br/>(token-bound)"| Sup
-    Web -->|"4. SessionOpen<br/>(token-bound)"| Proxy
-    Proxy -->|"5. Re-check<br/>CheckAccessByUuid"| Access
+    Web -->|"1. Token mint + constraints<br/>IssueSessionToken"| Access
+    Web -->|"2. TCP brokering<br/>(token-bound)"| Sup
+    Web -->|"3. SessionOpen<br/>(token-bound)"| Proxy
+    Proxy -->|"4. Re-check<br/>CheckAccessByUuid"| Access
 ```
+
+SSH/RDP connect performs **two** policy evaluations against
+`vauban-access` on the happy path (policy eval 3→2): one inside
+`IssueSessionToken` (which also returns MFA/JIT/duration constraints
+on `SessionTokenIssued`), and one proxy-side `AccessGuard` re-check.
+A preceding `CheckAccessMulti` / `can_access_asset` trip is no longer
+used on connect. Deploy web and access together when upgrading past
+this wire shape.
 
 A successful response from `vauban-web -> vauban-access` is **not**
 sufficient: the proxy must independently re-confirm the same verdict
@@ -111,13 +118,11 @@ sequenceDiagram
     participant T as Target Server
 
     U->>W: Click "Connect SSH/RDP"
-    Note over W,AC: Layer 1 — UI-side authorization gate
-    W->>AC: AccessRequest::CheckAccess(user_id, group_id, protocol)
-    AC-->>W: AccessChecked(allowed: true, ...)
-
-    Note over W,AC: Layer 1bis — Cryptographic token mint (see §6)
+    Note over W,AC: Layer 1 — policy check + token mint + constraints (see §6)
     W->>AC: AccessRequest::IssueSessionToken(...)
-    AC-->>W: SessionTokenIssued(token_bytes)
+    AC->>AC: CheckAccessByUuid
+    AC-->>W: SessionTokenIssued(token_bytes, require_mfa, require_approval, max_session_duration)
+    Note over W: JIT / MFA branch, then INSERT proxy_sessions
 
     Note over W,S: TCP brokering (Capsicum, FD passing)
     W->>S: TcpConnectRequest(host, port, ..., token_bytes)
@@ -595,14 +600,11 @@ sequenceDiagram
     participant P as vauban-proxy-* (SSH or RDP)
 
     U->>W: Click "Connect"
-    W->>AC: AccessRequest::CheckAccess(user, asset, protocol)
-    AC-->>W: AccessChecked(allowed: true)
-
     rect rgb(220, 235, 255)
-    Note over W,AC: Layer 0 — token mint
+    Note over W,AC: Layer 0 — policy check + token mint + constraints
     W->>AC: AccessRequest::IssueSessionToken(user, asset,<br/>protocol, host, port, target_service, session_id)
-    AC->>AC: re-run policy check
-    AC-->>W: AccessResponse::SessionTokenIssued(token_bytes)
+    AC->>AC: CheckAccessByUuid
+    AC-->>W: AccessResponse::SessionTokenIssued(token_bytes,<br/>require_mfa, require_approval, max_session_duration)
     end
 
     rect rgb(255, 240, 220)
@@ -627,8 +629,9 @@ sequenceDiagram
 ```
 
 Layer 0 (mint) is gated by the same Casbin policy as `AccessGuard`'s
-re-check, but it is performed *once per session opening*, by the only
-service that holds the MAC key in addition to the policy: `vauban-access`.
+re-check. It is the **only** web→access policy trip on SSH/RDP connect
+(policy eval 3→2): constraints for MFA/JIT/duration travel on
+`SessionTokenIssued` so a preceding `CheckAccessMulti` is unnecessary.
 Layers 1 and 2 each re-anchor a different boundary on that single mint
 decision; Layer 3 (`AccessGuard`) remains in place as the
 authoritative re-check on the policy itself.

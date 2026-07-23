@@ -702,7 +702,9 @@ pub async fn handle_issue_session_token(
 
     // Re-run the same authorization the proxy will demand. We intentionally
     // call the existing checker so a future policy refinement automatically
-    // tightens the issuer too.
+    // tightens the issuer too. Constraint bits are returned with the token
+    // so vauban-web can drop the preceding CheckAccessMulti on connect
+    // (policy eval 3→2) while still branching on MFA / JIT / duration.
     let check = handle_check_access_by_uuid(
         &mut conn,
         &params.user_uuid,
@@ -710,11 +712,13 @@ pub async fn handle_issue_session_token(
         &params.protocol,
     )
     .await;
-    let allowed = matches!(
-        check,
-        AccessResponse::AccessChecked(AccessCheckResult { allowed: true, .. })
-    );
-    if !allowed {
+    let AccessResponse::AccessChecked(AccessCheckResult {
+        allowed: true,
+        require_mfa,
+        require_approval,
+        max_session_duration,
+    }) = check
+    else {
         info!(
             user_uuid = %params.user_uuid,
             asset_uuid = %params.asset_uuid,
@@ -723,7 +727,7 @@ pub async fn handle_issue_session_token(
             "IssueSessionToken denied: policy check failed"
         );
         return AccessResponse::SessionTokenDenied;
-    }
+    };
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -731,7 +735,12 @@ pub async fn handle_issue_session_token(
         .unwrap_or(0);
     let token = SessionToken::mint(key, now, params);
     match token.to_bytes() {
-        Ok(bytes) => AccessResponse::SessionTokenIssued { token: bytes },
+        Ok(bytes) => AccessResponse::SessionTokenIssued {
+            token: bytes,
+            require_mfa,
+            require_approval,
+            max_session_duration,
+        },
         Err(e) => {
             warn!(error = ?e, "IssueSessionToken: serialization failure, deny");
             AccessResponse::SessionTokenDenied
@@ -783,7 +792,15 @@ pub async fn handle_issue_diagnostic_token(
         .unwrap_or(0);
     let token = SessionToken::mint(key, now, params);
     match token.to_bytes() {
-        Ok(bytes) => AccessResponse::SessionTokenIssued { token: bytes },
+        Ok(bytes) => AccessResponse::SessionTokenIssued {
+            token: bytes,
+            // Diagnostic path skips access-rule evaluation; constraints
+            // are intentionally inert so callers never treat a host-key
+            // fetch as a session-open policy decision.
+            require_mfa: false,
+            require_approval: false,
+            max_session_duration: None,
+        },
         Err(e) => {
             warn!(error = ?e, "IssueDiagnosticToken: serialization failure, deny");
             AccessResponse::SessionTokenDenied
@@ -3382,7 +3399,7 @@ mod escape_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::handle_access_request;
+    use super::{handle_access_request, handle_issue_diagnostic_token, handle_issue_session_token};
     use crate::db::DbPool;
     use crate::schema::{access_rules, asset_groups, users};
     use diesel::prelude::*;
@@ -3394,6 +3411,8 @@ mod tests {
         AssetGroupInfo, DEFAULT_IPC_PAGE_LIMIT, IpcPage, IpcPageParams, MAX_IPC_PAGE_LIMIT,
         VaubanGroupInfo,
     };
+    use shared::session_token::{SessionTokenParams, TokenKey};
+    use std::sync::Arc;
     use uuid::Uuid;
 
     fn page0() -> IpcPageParams {
@@ -6689,6 +6708,296 @@ mod tests {
                  access; both must be rebuilt together",
                 other
             ),
+        }
+
+        cleanup_asset(&pool, asset_id).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::RemoveGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    // ==================== Policy eval 3→2 (IssueSessionToken constraints) ==================
+
+    struct RuleConstraints<'a> {
+        name: &'a str,
+        ug_id: i32,
+        ag_id: i32,
+        protocols: Vec<&'a str>,
+        require_mfa: bool,
+        require_approval: bool,
+        max_session_duration: Option<i32>,
+    }
+
+    async fn create_test_rule_with_constraints(
+        pool: &DbPool,
+        c: RuleConstraints<'_>,
+    ) -> AccessRuleInfo {
+        let data = AccessRuleData {
+            name: c.name.to_string(),
+            description: None,
+            user_group_id: c.ug_id,
+            asset_group_id: c.ag_id,
+            allowed_protocols: c.protocols.into_iter().map(|s| s.to_string()).collect(),
+            valid_from: None,
+            valid_until: None,
+            require_mfa: c.require_mfa,
+            require_approval: c.require_approval,
+            max_session_duration: c.max_session_duration,
+            is_active: true,
+            priority: 0,
+        };
+        match handle_access_request(
+            pool,
+            AccessRequest::CreateAccessRule {
+                data,
+                actor_uuid: None,
+            },
+        )
+        .await
+        {
+            AccessResponse::AccessRule(Ok(info)) => info,
+            other => panic!("Expected AccessRule(Ok), got {:?}", other),
+        }
+    }
+
+    fn mint_params(
+        user_uuid: &str,
+        asset_uuid: &str,
+        protocol: &str,
+        session_id: &str,
+    ) -> SessionTokenParams {
+        SessionTokenParams {
+            session_id: session_id.to_string(),
+            user_uuid: user_uuid.to_string(),
+            asset_uuid: asset_uuid.to_string(),
+            protocol: protocol.to_string(),
+            host: "10.0.0.1".to_string(),
+            port: 22,
+            target_service: shared::messages::Service::ProxySsh,
+        }
+    }
+
+    /// Mint success must echo the same MFA/JIT/duration bits as
+    /// CheckAccessByUuid for the same (user, asset, protocol).
+    #[tokio::test]
+    async fn test_issue_session_token_propagates_access_constraints() {
+        let pool = test_pool().await;
+        let key = TokenKey::generate();
+        let user_id = insert_test_user(&pool, &unique_name("mint_c_usr")).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+
+        let ug = create_test_vauban_group(&pool, &unique_name("ug_mint_c")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ag_mint_c")).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        let rule_name = unique_name("mint_c_rule");
+        let rule = create_test_rule_with_constraints(
+            &pool,
+            RuleConstraints {
+                name: &rule_name,
+                ug_id: ug.id,
+                ag_id: ag.id,
+                protocols: vec!["ssh"],
+                require_mfa: true,
+                require_approval: true,
+                max_session_duration: Some(1800),
+            },
+        )
+        .await;
+        let (asset_id, asset_uuid_str) =
+            insert_test_asset(&pool, &unique_name("asset_mint_c")).await;
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+
+        let check = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: user_uuid_str.clone(),
+                asset_uuid: asset_uuid_str.clone(),
+                protocol: "ssh".to_string(),
+            },
+        )
+        .await;
+        let AccessResponse::AccessChecked(expected) = check else {
+            panic!("expected AccessChecked, got {check:?}");
+        };
+        assert!(expected.allowed);
+        assert!(expected.require_mfa);
+        assert!(expected.require_approval);
+        assert_eq!(expected.max_session_duration, Some(1800));
+
+        let issued = handle_issue_session_token(
+            &pool,
+            &key,
+            mint_params(&user_uuid_str, &asset_uuid_str, "ssh", "sess-mint-c"),
+        )
+        .await;
+        match issued {
+            AccessResponse::SessionTokenIssued {
+                token,
+                require_mfa,
+                require_approval,
+                max_session_duration,
+            } => {
+                assert!(!token.is_empty());
+                assert_eq!(require_mfa, expected.require_mfa);
+                assert_eq!(require_approval, expected.require_approval);
+                assert_eq!(max_session_duration, expected.max_session_duration);
+            }
+            other => panic!("expected SessionTokenIssued, got {other:?}"),
+        }
+
+        cleanup_asset(&pool, asset_id).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::RemoveGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    #[tokio::test]
+    async fn test_issue_session_token_denied_without_rule() {
+        let pool = test_pool().await;
+        let key = TokenKey::generate();
+        let user_id = insert_test_user(&pool, &unique_name("mint_deny_usr")).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+        let (_asset_id, asset_uuid_str) =
+            insert_test_asset(&pool, &unique_name("asset_mint_deny")).await;
+
+        let issued = handle_issue_session_token(
+            &pool,
+            &key,
+            mint_params(&user_uuid_str, &asset_uuid_str, "ssh", "sess-deny"),
+        )
+        .await;
+        assert!(
+            matches!(issued, AccessResponse::SessionTokenDenied),
+            "expected SessionTokenDenied, got {issued:?}"
+        );
+
+        cleanup_asset(&pool, _asset_id).await;
+    }
+
+    #[tokio::test]
+    async fn test_issue_diagnostic_token_constraints_are_inert() {
+        let key = TokenKey::generate();
+        let issued = handle_issue_diagnostic_token(
+            &key,
+            mint_params(
+                &Uuid::new_v4().to_string(),
+                &Uuid::new_v4().to_string(),
+                "ssh",
+                "sess-diag",
+            ),
+            true,
+        )
+        .await;
+        match issued {
+            AccessResponse::SessionTokenIssued {
+                token,
+                require_mfa,
+                require_approval,
+                max_session_duration,
+            } => {
+                assert!(!token.is_empty());
+                assert!(!require_mfa);
+                assert!(!require_approval);
+                assert!(max_session_duration.is_none());
+            }
+            other => panic!("expected SessionTokenIssued, got {other:?}"),
+        }
+    }
+
+    /// Battle: concurrent mints for distinct session_ids all succeed
+    /// with identical constraint bits under a stable rule.
+    #[tokio::test]
+    async fn test_issue_session_token_concurrent_mints_stable_constraints() {
+        let pool = test_pool().await;
+        let key = Arc::new(TokenKey::generate());
+        let user_id = insert_test_user(&pool, &unique_name("mint_bat_usr")).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+
+        let ug = create_test_vauban_group(&pool, &unique_name("ug_mint_bat")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ag_mint_bat")).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        let rule_name = unique_name("mint_bat_rule");
+        let rule = create_test_rule_with_constraints(
+            &pool,
+            RuleConstraints {
+                name: &rule_name,
+                ug_id: ug.id,
+                ag_id: ag.id,
+                protocols: vec!["ssh"],
+                require_mfa: true,
+                require_approval: false,
+                max_session_duration: Some(900),
+            },
+        )
+        .await;
+        let (asset_id, asset_uuid_str) =
+            insert_test_asset(&pool, &unique_name("asset_mint_bat")).await;
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            let pool = pool.clone();
+            let key = Arc::clone(&key);
+            let user_uuid_str = user_uuid_str.clone();
+            let asset_uuid_str = asset_uuid_str.clone();
+            handles.push(tokio::spawn(async move {
+                handle_issue_session_token(
+                    &pool,
+                    key.as_ref(),
+                    mint_params(
+                        &user_uuid_str,
+                        &asset_uuid_str,
+                        "ssh",
+                        &format!("sess-bat-{i}"),
+                    ),
+                )
+                .await
+            }));
+        }
+        for h in handles {
+            match h.await.expect("join") {
+                AccessResponse::SessionTokenIssued {
+                    require_mfa,
+                    require_approval,
+                    max_session_duration,
+                    ..
+                } => {
+                    assert!(require_mfa);
+                    assert!(!require_approval);
+                    assert_eq!(max_session_duration, Some(900));
+                }
+                other => panic!("expected SessionTokenIssued, got {other:?}"),
+            }
         }
 
         cleanup_asset(&pool, asset_id).await;

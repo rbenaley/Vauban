@@ -31,8 +31,8 @@ use shared::ipc::{IpcChannel, poll_readable, recv_fd};
 use shared::messages::{AuditEventType, ControlMessage, Message, ServiceStats};
 use shared::sandbox as capsicum;
 use ssh_recording_manager::SshRecordingManager;
-use std::net::IpAddr;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::process::ExitCode;
@@ -495,12 +495,11 @@ struct IacsGzipRuntime {
 
 impl IacsGzipRuntime {
     fn try_start() -> Result<Self> {
-        let (wake_read, wake_write) =
-            wakeup_pipe().context("IACS gzip wakeup pipe")?;
+        let (wake_read, wake_write) = wakeup_pipe().context("IACS gzip wakeup pipe")?;
         let (job_tx, job_rx) = mpsc::channel();
         let (outcome_tx, outcome_rx) = mpsc::channel();
-        let _handle = spawn_gzip_worker(job_rx, outcome_tx, wake_write)
-            .context("spawn IACS gzip worker")?;
+        let _handle =
+            spawn_gzip_worker(job_rx, outcome_tx, wake_write).context("spawn IACS gzip worker")?;
         // Detach: worker outlives main_loop only until process exit.
         std::mem::forget(_handle);
         Ok(Self {
@@ -624,7 +623,10 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
 
         // Apply off-thread gzip completions (unlink + finalize + deferred SessionEnd).
         if let Some(idx) = gzip_wake_idx
-            && (ready.contains(&idx) || gzip_runtime.as_ref().is_some_and(|r| r.pending.total_pending() > 0))
+            && (ready.contains(&idx)
+                || gzip_runtime
+                    .as_ref()
+                    .is_some_and(|r| r.pending.total_pending() > 0))
             && let Some(rt) = gzip_runtime.as_mut()
         {
             drain_gzip_completions(
@@ -1196,8 +1198,7 @@ fn open_initial_worm_segment(
         return Ok(());
     }
     let segment_name = segment_name_for(state, 0);
-    let file =
-        request_audit_log_file_from_supervisor(channel, fd_passing_socket, &segment_name)?;
+    let file = request_audit_log_file_from_supervisor(channel, fd_passing_socket, &segment_name)?;
     state.worm = Some(WormLog::new(file, segment_name, GENESIS_HASH, 0));
     Ok(())
 }
@@ -1226,9 +1227,7 @@ fn request_audit_log_file_from_supervisor(
     })?;
 
     match msg {
-        Message::AuditLogFileResponse {
-            success, error, ..
-        } => {
+        Message::AuditLogFileResponse { success, error, .. } => {
             if !success {
                 return Err(anyhow::anyhow!(
                     "supervisor refused audit segment: {}",
@@ -1503,10 +1502,7 @@ struct IacsRecordingHandlerCtx<'a> {
     gzip_runtime: Option<&'a mut IacsGzipRuntime>,
 }
 
-fn handle_iacs_recording_message(
-    ctx: IacsRecordingHandlerCtx<'_>,
-    msg: Message,
-) -> Result<()> {
+fn handle_iacs_recording_message(ctx: IacsRecordingHandlerCtx<'_>, msg: Message) -> Result<()> {
     let IacsRecordingHandlerCtx {
         state,
         iacs_recording_mgr,
@@ -1665,12 +1661,7 @@ fn handle_iacs_recording_message(
             if let Some(paths) = mgr.end_channel(&session_id, channel_id, closed_at_us) {
                 // Drain fail-closed WORM events before the short broker wait
                 // that opens the `.pcap.gz` FD (CPU gzip runs off-thread).
-                drain_web_audit_channel(
-                    web_channel,
-                    supervisor_channel,
-                    fd_passing_socket,
-                    state,
-                );
+                drain_web_audit_channel(web_channel, supervisor_channel, fd_passing_socket, state);
                 enqueue_iacs_gzip_job(
                     gzip_runtime,
                     supervisor_channel,
@@ -1887,12 +1878,7 @@ fn finish_iacs_session_end(
             info,
             Some((ended_at_us, reason)),
         );
-        match request_file_from_supervisor(
-            supervisor_channel,
-            fd_passing_socket,
-            session_id,
-            rel,
-        ) {
+        match request_file_from_supervisor(supervisor_channel, fd_passing_socket, session_id, rel) {
             Ok(mut file) => {
                 use std::io::Write;
                 if let Err(e) = file
@@ -2270,9 +2256,8 @@ mod tests {
             ..ServiceState::default()
         };
         let start = Instant::now();
-        let err =
-            open_initial_worm_segment(&audit_ch, Some(fd_sock.as_raw_fd()), &mut state)
-                .unwrap_err();
+        let err = open_initial_worm_segment(&audit_ch, Some(fd_sock.as_raw_fd()), &mut state)
+            .unwrap_err();
         assert!(
             err.to_string().contains("timed out"),
             "expected timeout, got: {err}"
@@ -2280,9 +2265,7 @@ mod tests {
         assert!(state.worm.is_none());
         let elapsed = start.elapsed();
         assert!(elapsed >= SUPERVISOR_BROKER_TIMEOUT);
-        assert!(
-            elapsed < Duration::from_secs(vauban_audit::WEB_CRITICAL_ACK_TIMEOUT_SECS)
-        );
+        assert!(elapsed < Duration::from_secs(vauban_audit::WEB_CRITICAL_ACK_TIMEOUT_SECS));
     }
 
     /// A silent supervisor must not wedge the audit main loop forever.
@@ -2786,8 +2769,7 @@ mod tests {
             "lib budget pair must stay safe"
         );
         assert!(
-            SUPERVISOR_BROKER_TIMEOUT.as_secs()
-                < vauban_audit::WEB_CRITICAL_ACK_TIMEOUT_SECS,
+            SUPERVISOR_BROKER_TIMEOUT.as_secs() < vauban_audit::WEB_CRITICAL_ACK_TIMEOUT_SECS,
             "SUPERVISOR_BROKER_TIMEOUT must be < web CRITICAL_ACK_TIMEOUT"
         );
         let source = prod_source();

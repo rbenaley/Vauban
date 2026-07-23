@@ -22,7 +22,11 @@ proptest! {
     ) {
         let s = format!("v{digits}:{payload}");
         prop_assert!(is_vault_envelope(&s), "rejected well-formed {s:?}");
-        let v: u32 = digits.parse().unwrap();
+        let Ok(v) = digits.parse::<u32>() else {
+            return Err(TestCaseError::fail(format!(
+                "digits strategy produced non-u32: {digits:?}"
+            )));
+        };
         prop_assert_eq!(vault_envelope_version(&s), Some(v));
     }
 

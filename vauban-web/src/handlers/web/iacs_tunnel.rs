@@ -467,7 +467,7 @@ pub async fn connect_iacs(
     };
 
     let session_token = match state.access_client.issue_session_token(token_params).await {
-        Ok(t) => t,
+        Ok(issued) => issued.token,
         Err(e) => {
             tracing::warn!(
                 user = %auth_user.username,

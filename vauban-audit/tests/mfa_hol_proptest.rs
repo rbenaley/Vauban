@@ -61,8 +61,8 @@ fn production_constants_locked_and_safe() {
 /// cannot silently diverge (integration test has no link-time dep on the
 /// constant until web is built; grepping keeps the pin hermetic).
 fn vauban_web_critical_ack_secs_from_source() -> u64 {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../vauban-web/src/ipc/audit.rs");
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../vauban-web/src/ipc/audit.rs");
     let body = std::fs::read_to_string(&path).expect("read web audit.rs");
     for line in body.lines() {
         let line = line.trim();

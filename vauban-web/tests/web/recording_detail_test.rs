@@ -292,10 +292,7 @@ async fn e2e_pending_detail_page_embeds_hydrate_ws_safety_net() {
     );
     // The hx-get must target the same UUID route the operator is on.
     assert!(
-        body.contains(&format!(
-            r#"hx-get="/sessions/recordings/{}""#,
-            uuid
-        )),
+        body.contains(&format!(r#"hx-get="/sessions/recordings/{}""#, uuid)),
         "E2E: hx-get must refetch this recording detail URL"
     );
 }

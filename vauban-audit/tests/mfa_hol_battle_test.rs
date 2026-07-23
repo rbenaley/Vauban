@@ -127,10 +127,7 @@ fn battle_unexpected_messages_then_matching_reply_still_delivers() {
     .expect("matching reply");
     assert!(matches!(
         msg,
-        Message::AuditLogFileResponse {
-            success: true,
-            ..
-        }
+        Message::AuditLogFileResponse { success: true, .. }
     ));
 }
 

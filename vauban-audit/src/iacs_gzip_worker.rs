@@ -162,12 +162,7 @@ pub fn wakeup_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
         return Err(std::io::Error::last_os_error());
     }
     // SAFETY: unique ownership of each end.
-    Ok(unsafe {
-        (
-            OwnedFd::from_raw_fd(fds[0]),
-            OwnedFd::from_raw_fd(fds[1]),
-        )
-    })
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
 /// Drain all pending bytes from the wakeup read end (edge coalesce).

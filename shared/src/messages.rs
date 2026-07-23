@@ -952,9 +952,10 @@ pub enum AccessRequest {
     /// the proxy will verify it before invoking
     /// `shared::access_guard::AccessGuard::authorize`.
     ///
-    /// Issued by vauban-web on the session-open path, after Layer 1
-    /// (`CheckAccess`) succeeds. The handler in vauban-access re-runs
-    /// the same policy as `CheckAccessByUuid` then mints a
+    /// Issued by vauban-web on the SSH/RDP session-open path as the
+    /// sole web→access policy trip (policy eval 3→2). The handler in
+    /// vauban-access runs `CheckAccessByUuid`, returns MFA/JIT/duration
+    /// constraints on `SessionTokenIssued`, and mints a
     /// `shared::session_token::SessionToken` (BLAKE3 keyed MAC). The
     /// caller MUST treat any non-`SessionTokenIssued` response as a
     /// fail-closed denial.
@@ -1324,8 +1325,21 @@ pub enum AccessResponse {
     /// (kept as `Vec<u8>` so the wire-format module sits cleanly behind
     /// its own feature flag and `messages.rs` does not need to depend on
     /// the crypto stack).
+    ///
+    /// Constraint fields mirror [`AccessCheckResult`] so the web session-open
+    /// path can mint once (policy eval + token) and branch on MFA / JIT /
+    /// max duration without a preceding `CheckAccessMulti` trip (policy
+    /// eval 3→2). Diagnostic mints (`IssueDiagnosticToken`) set all three
+    /// to false / `None`.
+    ///
+    /// Wire note: appending these fields after `token` is a coordinated
+    /// appliance deploy (web + access rebuilt together); mixed versions
+    /// will fail to decode `SessionTokenIssued`.
     SessionTokenIssued {
         token: Vec<u8>,
+        require_mfa: bool,
+        require_approval: bool,
+        max_session_duration: Option<i32>,
     },
 
     /// Fail-closed reply to `AccessRequest::IssueSessionToken`. Returned
@@ -7009,6 +7023,41 @@ mod tests {
             assert_eq!(result.max_session_duration, Some(1800));
         } else {
             panic!("Wrong variant");
+        }
+    }
+
+    /// Policy eval 3→2: SessionTokenIssued carries MFA/JIT/duration
+    /// constraint bits alongside the token payload.
+    #[test]
+    fn test_session_token_issued_wire_roundtrip_with_constraints() {
+        let msg = Message::AccessResponse {
+            request_id: 3002,
+            response: AccessResponse::SessionTokenIssued {
+                token: vec![0xde, 0xad, 0xbe, 0xef],
+                require_mfa: true,
+                require_approval: true,
+                max_session_duration: Some(3600),
+            },
+        };
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        match deserialized {
+            Message::AccessResponse {
+                request_id: 3002,
+                response:
+                    AccessResponse::SessionTokenIssued {
+                        token,
+                        require_mfa,
+                        require_approval,
+                        max_session_duration,
+                    },
+            } => {
+                assert_eq!(token, vec![0xde, 0xad, 0xbe, 0xef]);
+                assert!(require_mfa);
+                assert!(require_approval);
+                assert_eq!(max_session_duration, Some(3600));
+            }
+            other => panic!("unexpected: {other:?}"),
         }
     }
 

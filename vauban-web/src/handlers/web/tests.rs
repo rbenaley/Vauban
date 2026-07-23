@@ -1508,9 +1508,15 @@ fn test_connect_ssh_no_longer_bypasses_access_rules_for_privileged_users() {
         );
     }
     assert!(
-        body.contains("can_access_asset"),
-        "connect_ssh must still call services::access::can_access_asset for \
-         every user (the policy lookup itself stays; only the bypass is gone)"
+        !body.contains("can_access_asset("),
+        "connect_ssh must NOT call can_access_asset; policy eval 3→2 mints \
+         via issue_session_token (constraints on SessionTokenIssued). See \
+         docs/runbooks/policy_eval_session_open_smoke_test.md."
+    );
+    assert!(
+        body.contains(".issue_session_token("),
+        "connect_ssh must call issue_session_token for every user \
+         (policy + constraints + mint in one access trip)"
     );
 }
 
@@ -1534,9 +1540,15 @@ fn test_connect_rdp_no_longer_bypasses_access_rules_for_privileged_users() {
         );
     }
     assert!(
-        body.contains("can_access_asset"),
-        "connect_rdp must still call services::access::can_access_asset for \
-         every user (the policy lookup itself stays; only the bypass is gone)"
+        !body.contains("can_access_asset("),
+        "connect_rdp must NOT call can_access_asset; policy eval 3→2 mints \
+         via issue_session_token (constraints on SessionTokenIssued). See \
+         docs/runbooks/policy_eval_session_open_smoke_test.md."
+    );
+    assert!(
+        body.contains(".issue_session_token("),
+        "connect_rdp must call issue_session_token for every user \
+         (policy + constraints + mint in one access trip)"
     );
 }
 

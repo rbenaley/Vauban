@@ -369,6 +369,7 @@ impl ProxySshClient {
                     .access_client
                     .issue_session_token(token_params)
                     .await?
+                    .token
             };
             debug!(
                 request_id = request_id,
@@ -495,6 +496,7 @@ impl ProxySshClient {
                 .access_client
                 .issue_session_token(token_params)
                 .await?
+                .token
         };
         match sv
             .request_tcp_connect(

@@ -50,9 +50,7 @@ async fn e2e_emit_critical_resolves_when_audit_acks() {
     });
 
     let res = client
-        .emit_critical(
-            AuditEvent::new(AuditEventType::MfaChallengePassed, "{}").user("alice"),
-        )
+        .emit_critical(AuditEvent::new(AuditEventType::MfaChallengePassed, "{}").user("alice"))
         .await;
     mock_task.await.unwrap();
     assert!(res.is_ok(), "{res:?}");
@@ -143,9 +141,15 @@ async fn battle_late_ack_after_timeout_does_not_poison_next_critical() {
     assert!(err.contains("timed out"), "{err}");
 
     let res = client
-        .emit_critical(AuditEvent::new(AuditEventType::AuthSuccess, r#"{"flow":"retry"}"#))
+        .emit_critical(AuditEvent::new(
+            AuditEventType::AuthSuccess,
+            r#"{"flow":"retry"}"#,
+        ))
         .await;
-    assert!(res.is_ok(), "second critical must succeed after late ack: {res:?}");
+    assert!(
+        res.is_ok(),
+        "second critical must succeed after late ack: {res:?}"
+    );
     mock_task.join().unwrap();
     pump.abort();
 }
@@ -168,9 +172,7 @@ async fn battle_concurrent_criticals_bijection_on_timestamp() {
         let mut order = stamps;
         let mut state = 0xC0FFEE_u64;
         for i in (1..order.len()).rev() {
-            state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1);
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
             let j = (state as usize) % (i + 1);
             order.swap(i, j);
         }
@@ -185,8 +187,11 @@ async fn battle_concurrent_criticals_bijection_on_timestamp() {
         handles.push(tokio::spawn(async move {
             client
                 .emit_critical(
-                    AuditEvent::new(AuditEventType::MfaChallengePassed, format!(r#"{{"i":{i}}}"#))
-                        .user(format!("u{i}")),
+                    AuditEvent::new(
+                        AuditEventType::MfaChallengePassed,
+                        format!(r#"{{"i":{i}}}"#),
+                    )
+                    .user(format!("u{i}")),
                 )
                 .await
         }));

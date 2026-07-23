@@ -277,35 +277,56 @@ pub async fn connect_ssh(
     // the SshSessionOpen and the user would see "Access denied" with no
     // recourse. Both layers now apply the exact same policy.
     //
+    // Policy eval 3→2: mint the session token here (IssueSessionToken
+    // re-runs CheckAccessByUuid and returns MFA/JIT/duration constraints)
+    // instead of a preceding CheckAccessMulti trip.
+    // session_uuid is already known; AccessGuard remains the proxy-side
+    // re-check. See docs/runbooks/policy_eval_session_open_smoke_test.md.
+    //
     // Operational consequence: the bootstrap superuser MUST create at least
     // one access_rule for itself before opening any SSH session. See
     // docs/runbooks/ipc_topology_debugging.md for the rationale and the
     // recommended bootstrap rule.
     let jit_justification: Option<String>;
     let jit_max_duration: Option<i32>;
+    let session_token_bytes: Vec<u8>;
     {
-        let access_result = crate::services::access::can_access_asset(
-            &state.access_client,
-            &mut conn,
-            user_id,
-            asset.id,
-            "ssh",
-        )
-        .await
-        .unwrap_or_else(|_| crate::services::access::AccessCheckResult::denied());
-        if !access_result.allowed {
-            let msg = "No access rule grants you access to this asset";
-            if is_htmx {
-                return htmx_error_response(msg);
-            }
-            return Json(ConnectSshResponse {
-                success: false,
-                session_id: None,
-                redirect_url: None,
-                error: Some(msg.to_string()),
+        let issued = match state
+            .access_client
+            .issue_session_token(shared::session_token::SessionTokenParams {
+                session_id: session_id.clone(),
+                user_uuid: auth_user.uuid.clone(),
+                asset_uuid: asset.uuid.to_string(),
+                protocol: "ssh".to_string(),
+                host: asset.hostname.clone(),
+                port: asset.port as u16,
+                target_service: shared::messages::Service::ProxySsh,
             })
-            .into_response();
-        }
+            .await
+        {
+            Ok(issued) => issued,
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    user = %auth_user.username,
+                    asset = %asset.name,
+                    error = %e,
+                    "Session-token mint denied; refusing to open SSH session"
+                );
+                let msg = "No access rule grants you access to this asset";
+                if is_htmx {
+                    return htmx_error_response(msg);
+                }
+                return Json(ConnectSshResponse {
+                    success: false,
+                    session_id: None,
+                    redirect_url: None,
+                    error: Some(msg.to_string()),
+                })
+                .into_response();
+            }
+        };
+        session_token_bytes = issued.token;
 
         // SECURITY (issue #34) -- mandatory host-key pin pre-flight.
         //
@@ -396,7 +417,7 @@ pub async fn connect_ssh(
             .into_response();
         }
 
-        if access_result.require_approval {
+        if issued.require_approval {
             // Find an approved session that has not expired.
             // Only consider approvals whose expires_at is still in the future
             // (or has no expiry set, for legacy rows).
@@ -423,7 +444,7 @@ pub async fn connect_ssh(
             match approved_session {
                 Some((_approved_uuid, justification, max_dur)) => {
                     jit_justification = justification;
-                    jit_max_duration = max_dur.or(access_result.max_session_duration);
+                    jit_max_duration = max_dur.or(issued.max_session_duration);
                 }
                 None => {
                     // Issue #34: the user-zone /assets/{uuid} detail page is
@@ -440,12 +461,14 @@ pub async fn connect_ssh(
                     // For non-HTMX clients (CLI / API) we point them at the
                     // catalogue with a plain message; opening the request
                     // is now a UI-only flow.
+                    //
+                    // Token was minted above and is discarded here (no INSERT).
                     if is_htmx {
                         let payload = serde_json::json!({
                             "show-access-request-modal": {
                                 "asset_uuid": asset_uuid_str,
                                 "asset_type": "ssh",
-                                "require_mfa": access_result.require_mfa,
+                                "require_mfa": issued.require_mfa,
                             }
                         })
                         .to_string();
@@ -476,7 +499,7 @@ pub async fn connect_ssh(
             }
         } else {
             jit_justification = None;
-            jit_max_duration = access_result.max_session_duration;
+            jit_max_duration = issued.max_session_duration;
         }
     }
 
@@ -549,9 +572,10 @@ pub async fn connect_ssh(
         .map(String::from);
 
     // VAU-012: enforce session-creation rate limits and concurrency quotas
-    // BEFORE allocating any backend resource (INSERT + token + TCP + IPC).
-    // Placed AFTER authorization so a denial cannot be used to enumerate
-    // assets (anti-enumeration).
+    // BEFORE allocating any backend resource (INSERT + TCP + IPC).
+    // Token was already minted above (policy eval 3→2). Placed AFTER
+    // authorization so a denial cannot be used to enumerate assets
+    // (anti-enumeration).
     match crate::services::session_limits::enforce_session_creation(
         &state,
         &mut conn,
@@ -635,50 +659,7 @@ pub async fn connect_ssh(
         }
     }
 
-    // SECURITY: ask vauban-access to mint a cryptographic session
-    // token. The token binds (user, asset, "ssh", session_id) and is
-    // signed with the supervisor-held BLAKE3 key. Both
-    // vauban-supervisor (TCP broker) and vauban-proxy-ssh
-    // (SshSessionOpen handler) will re-verify it without trusting any
-    // state vauban-web holds in memory. Fail-closed on any error: a
-    // generic "Access denied" reply is returned regardless of cause.
-    // See docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md §3.
-    let session_token_bytes = match state
-        .access_client
-        .issue_session_token(shared::session_token::SessionTokenParams {
-            session_id: session_id.clone(),
-            user_uuid: auth_user.uuid.clone(),
-            asset_uuid: asset.uuid.to_string(),
-            protocol: "ssh".to_string(),
-            host: asset.hostname.clone(),
-            port: asset.port as u16,
-            target_service: shared::messages::Service::ProxySsh,
-        })
-        .await
-    {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            tracing::warn!(
-                session_id = %session_id,
-                user = %auth_user.username,
-                asset = %asset.name,
-                error = %e,
-                "Session-token mint denied; refusing to open SSH session"
-            );
-            let msg = "Access denied";
-            if is_htmx {
-                return htmx_error_response(msg);
-            }
-            return Json(ConnectSshResponse {
-                success: false,
-                session_id: None,
-                redirect_url: None,
-                error: Some(msg.to_string()),
-            })
-            .into_response();
-        }
-    };
-
+    // Session token was minted before JIT/INSERT (policy eval 3→2).
     // Build SSH session open request
     let request = crate::ipc::SshSessionOpenRequest {
         session_id: session_id.clone(),

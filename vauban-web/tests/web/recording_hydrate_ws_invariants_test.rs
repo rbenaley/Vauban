@@ -127,9 +127,7 @@ fn i_hydrate_ws_5_notifications_handler_treats_lagged_as_non_fatal() {
         "I-HYDRATE-WS-5: must match Lagged explicitly"
     );
     // Lagged arm must NOT set should_close = true (would drop the tab).
-    let lagged_idx = body
-        .find("RecvError::Lagged")
-        .expect("Lagged arm");
+    let lagged_idx = body.find("RecvError::Lagged").expect("Lagged arm");
     let lagged_window = &body[lagged_idx..lagged_idx.saturating_add(400)];
     assert!(
         !lagged_window.contains("should_close = true"),

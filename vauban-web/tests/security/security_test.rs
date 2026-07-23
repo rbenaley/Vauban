@@ -8231,7 +8231,13 @@ fn test_access_client_exposes_issue_session_token() {
     assert!(
         source.contains("AccessResp::SessionTokenIssued"),
         "issue_session_token MUST recognize the SessionTokenIssued \
-         success variant and return the token bytes."
+         success variant and return IssuedSessionToken (token + constraints)."
+    );
+    assert!(
+        source.contains("struct IssuedSessionToken"),
+        "AccessIpcClient MUST expose IssuedSessionToken so connect handlers \
+         can read require_mfa / require_approval / max_session_duration \
+         without a preceding CheckAccessMulti trip."
     );
     assert!(
         source.contains("AccessResp::SessionTokenDenied"),
@@ -8248,9 +8254,19 @@ fn test_ssh_handler_mints_token_before_session_open() {
         "vauban-web SSH handler MUST mint a session token via \
          AccessIpcClient::issue_session_token before opening a session.",
     );
+    let insert_idx = source.find("insert_into(proxy_sessions").expect(
+        "vauban-web SSH handler MUST insert into proxy_sessions on the \
+         connect path",
+    );
     let request_idx = source
         .find("SshSessionOpenRequest {")
         .expect("vauban-web SSH handler MUST construct a SshSessionOpenRequest");
+    assert!(
+        mint_idx < insert_idx,
+        "policy eval 3→2: issue_session_token MUST run BEFORE \
+         insert_into(proxy_sessions) so JIT can discard the token \
+         without creating a connecting row"
+    );
     assert!(
         mint_idx < request_idx,
         "issue_session_token MUST be called BEFORE SshSessionOpenRequest \
@@ -8262,6 +8278,11 @@ fn test_ssh_handler_mints_token_before_session_open() {
         "vauban-web SSH handler MUST set SshSessionOpenRequest.\
          session_token to the freshly minted token bytes."
     );
+    assert!(
+        !source.contains("can_access_asset("),
+        "connect_ssh must not call can_access_asset (constraints come \
+         from SessionTokenIssued)"
+    );
 }
 
 #[test]
@@ -8271,9 +8292,18 @@ fn test_rdp_handler_mints_token_before_session_open() {
         "vauban-web RDP handler MUST mint a session token via \
          AccessIpcClient::issue_session_token before opening a session.",
     );
+    let insert_idx = source.find("insert_into(proxy_sessions").expect(
+        "vauban-web RDP handler MUST insert into proxy_sessions on the \
+         connect path",
+    );
     let request_idx = source
         .find("RdpSessionOpenRequest {")
         .expect("vauban-web RDP handler MUST construct a RdpSessionOpenRequest");
+    assert!(
+        mint_idx < insert_idx,
+        "policy eval 3→2: issue_session_token MUST run BEFORE \
+         insert_into(proxy_sessions)"
+    );
     assert!(
         mint_idx < request_idx,
         "issue_session_token MUST be called BEFORE RdpSessionOpenRequest \
@@ -8283,6 +8313,11 @@ fn test_rdp_handler_mints_token_before_session_open() {
         source.contains("session_token: session_token_bytes"),
         "vauban-web RDP handler MUST set RdpSessionOpenRequest.\
          session_token to the freshly minted token bytes."
+    );
+    assert!(
+        !source.contains("can_access_asset("),
+        "connect_rdp must not call can_access_asset (constraints come \
+         from SessionTokenIssued)"
     );
 }
 

@@ -24,6 +24,18 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 
+/// Successful session-token mint from vauban-access, including the
+/// access-rule constraint bits that previously required a separate
+/// `CheckAccessMulti` round-trip on the SSH/RDP connect path
+/// (policy eval 3→2).
+#[derive(Debug, Clone)]
+pub struct IssuedSessionToken {
+    pub token: Vec<u8>,
+    pub require_mfa: bool,
+    pub require_approval: bool,
+    pub max_session_duration: Option<i32>,
+}
+
 /// Async IPC client for vauban-access authorization checks.
 pub struct AccessIpcClient {
     core: CorrelatedIpcCore,
@@ -186,7 +198,11 @@ impl AccessIpcClient {
     /// authorization decision without having to trust vauban-web's
     /// in-memory state. See `docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md` §3.
     ///
-    /// Fail-closed: returns `Err(AppError::Forbidden)` for any
+    /// On success the reply also carries MFA / JIT / max-duration
+    /// constraints from the mint-time `CheckAccessByUuid`, so connect
+    /// handlers can branch without a preceding `can_access_asset` IPC.
+    ///
+    /// Fail-closed: returns `Err(AppError::Authorization)` for any
     /// non-`SessionTokenIssued` reply (denied, IPC error, malformed
     /// response). Callers MUST surface the same generic
     /// "Access denied" message to the user regardless of the cause --
@@ -195,7 +211,7 @@ impl AccessIpcClient {
     pub async fn issue_session_token(
         &self,
         params: shared::session_token::SessionTokenParams,
-    ) -> AppResult<Vec<u8>> {
+    ) -> AppResult<IssuedSessionToken> {
         let resp = self
             .send_access_request(AccessReq::IssueSessionToken {
                 user_uuid: params.user_uuid,
@@ -208,7 +224,17 @@ impl AccessIpcClient {
             })
             .await?;
         match resp {
-            AccessResp::SessionTokenIssued { token } => Ok(token),
+            AccessResp::SessionTokenIssued {
+                token,
+                require_mfa,
+                require_approval,
+                max_session_duration,
+            } => Ok(IssuedSessionToken {
+                token,
+                require_mfa,
+                require_approval,
+                max_session_duration,
+            }),
             AccessResp::SessionTokenDenied => {
                 Err(AppError::Authorization("Access denied".to_string()))
             }
@@ -258,7 +284,7 @@ impl AccessIpcClient {
             })
             .await?;
         match resp {
-            AccessResp::SessionTokenIssued { token } => Ok(token),
+            AccessResp::SessionTokenIssued { token, .. } => Ok(token),
             AccessResp::SessionTokenDenied => {
                 Err(AppError::Authorization("Access denied".to_string()))
             }
