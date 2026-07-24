@@ -2964,36 +2964,40 @@ pub enum Message {
         error: Option<String>,
     },
 
-    // ========== Kerberos KDC broker (ProxyRdp <-> Supervisor) ==========
+    // ========== Kerberos KDC FD broker (ProxyRdp <-> Supervisor) ==========
     //
     // The sandboxed RDP proxy cannot `connect()` to the KDC (TCP 88).
     // During the CredSSP/NLA Kerberos leg, each sspi `NetworkRequest`
-    // (AS-REQ, TGS-REQ) is relayed to the supervisor, which is the only
-    // process allowed to open the outbound socket. The supervisor gate
-    // is its own `[auth.kerberos]` whitelist (realm + KDC endpoint):
-    // like the LDAPS broker it is token-less and connects ONLY to its
-    // configured KDC, ignoring any host embedded in the request URL, so
-    // a compromised proxy cannot use it as an SSRF oracle.
+    // (AS-REQ, TGS-REQ) asks the supervisor to open a socket to its
+    // configured `[auth.kerberos]` KDC and hand the connected FD via
+    // SCM_RIGHTS. The proxy then performs framed Kerberos TCP I/O on
+    // that FD -- the root TCB never sees AS-REQ / TGS-REQ / tickets.
     //
-    // The `data` payload is the raw Kerberos TCP message (4-byte
-    // big-endian length prefix included, per sspi's `send_tcp`
-    // contract). Appended at the END of the enum to preserve the bincode
-    // discriminant indices of every variant above (wire compat).
-    /// Relay a Kerberos KDC request (raw TCP message) to the supervisor.
+    // Security (mirrors LDAPS Auth whitelist): token-less; SSRF-safe by
+    // construction (request carries no destination; supervisor ignores
+    // any host in the sspi sentinel URL); fail-closed; caller =
+    // proxy_rdp only. `data` on the request is unused (kept for bincode
+    // field layout) and MUST be empty from current proxies; response
+    // `data` is empty on success (payload lives on the FD).
+    //
+    // Appended historically; discriminants remain frozen (do not reorder).
+    /// Lease a connected KDC TCP FD from the supervisor (SCM_RIGHTS).
     KerberosKdcRequest {
         request_id: u64,
         /// RDP session id the KDC exchange belongs to (correlation only).
         session_id: String,
-        /// Raw Kerberos message with its 4-byte length prefix.
+        /// Unused on the FD-lease path (always empty from current proxies).
+        /// Retained for bincode wire compatibility.
         data: SensitiveBytes,
     },
 
-    /// Response to [`Message::KerberosKdcRequest`] carrying the KDC reply.
+    /// Response to [`Message::KerberosKdcRequest`]: on success the KDC
+    /// socket FD was already sent via SCM_RIGHTS (before this message).
     KerberosKdcResponse {
         request_id: u64,
         session_id: String,
         success: bool,
-        /// Raw KDC reply with its 4-byte length prefix (empty on failure).
+        /// Unused on success (empty). Retained for bincode wire compatibility.
         data: SensitiveBytes,
         /// Error message when `success` is false (KDC unreachable,
         /// Kerberos disabled in supervisor config, timeout, ...).
@@ -4178,11 +4182,12 @@ mod tests {
 
     #[test]
     fn test_kerberos_kdc_response_roundtrip() {
+        // FD-lease success path: response `data` is empty (payload on FD).
         let msg = Message::KerberosKdcResponse {
             request_id: 4242,
             session_id: "rdp-krb-1".to_string(),
             success: true,
-            data: SensitiveBytes::new(vec![0x00, 0x00, 0x00, 0x02, 0xca, 0xfe]),
+            data: SensitiveBytes::default(),
             error: None,
         };
         assert_eq!(msg.request_id(), Some(4242));
@@ -4199,8 +4204,27 @@ mod tests {
         {
             assert_eq!(request_id, 4242);
             assert!(success);
-            assert_eq!(data.as_slice(), &[0x00, 0x00, 0x00, 0x02, 0xca, 0xfe]);
+            assert!(data.as_slice().is_empty());
             assert!(error.is_none());
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_kerberos_kdc_request_fd_lease_data_is_empty() {
+        let msg = Message::KerberosKdcRequest {
+            request_id: 1,
+            session_id: "s".to_string(),
+            data: SensitiveBytes::default(),
+        };
+        let bytes = serialize(&msg);
+        let decoded: Message = deserialize(&bytes);
+        if let Message::KerberosKdcRequest { data, .. } = decoded {
+            assert!(
+                data.as_slice().is_empty(),
+                "current proxies MUST send empty KerberosKdcRequest.data (FD lease)"
+            );
         } else {
             panic!("Wrong variant");
         }

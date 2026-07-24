@@ -496,11 +496,11 @@ async fn main_loop(
         HashMap::<String, tokio::sync::oneshot::Sender<Result<std::fs::File, String>>>::new();
     let mut recording_request_id = 0_u64;
 
-    // Kerberos KDC relay (payload relay, no FD): sessions in
-    // KerberosRestrictedAdmin mode push KerberosKdcRequest messages into
-    // this channel; the loop below drains it into the supervisor pipe and
-    // routes the matching KerberosKdcResponse back through the relay's
-    // pending map (same correlation pattern as pending_connections).
+    // Kerberos KDC FD lease: sessions in KerberosRestrictedAdmin mode push
+    // KerberosKdcRequest (empty data) into this channel; the loop drains it
+    // to the supervisor, then on KerberosKdcResponse success recv_fd_timed
+    // and completes the relay's request_id pending map (distinct from
+    // asset pending_connections and recording leases).
     let (supervisor_out_tx, mut supervisor_out_rx) = mpsc::unbounded_channel::<Message>();
     let supervisor_relay = Arc::new(session::SupervisorRelay::new(supervisor_out_tx));
 
@@ -538,11 +538,17 @@ async fn main_loop(
                             warn!(session_id = %session_id, error = ?error, "TCP connection failed");
                         }
                     }
-                    Ok(Message::KerberosKdcResponse { request_id, success, data, error, .. }) => {
+                    Ok(Message::KerberosKdcResponse { request_id, success, error, .. }) => {
                         let result = if success {
-                            Ok(data.into_inner())
+                            if let Some(ref passing) = fd_passing {
+                                let deadline = Instant::now() + DEFAULT_BROKER_TIMEOUT;
+                                recv_fd_timed(passing.socket_fd, deadline)
+                                    .map_err(|e| e.to_string())
+                            } else {
+                                Err("FD passing is not configured".to_string())
+                            }
                         } else {
-                            Err(error.unwrap_or_else(|| "KDC relay failed".to_string()))
+                            Err(error.unwrap_or_else(|| "KDC FD lease failed".to_string()))
                         };
                         supervisor_relay.complete(request_id, result).await;
                     }

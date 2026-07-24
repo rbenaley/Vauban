@@ -2889,41 +2889,41 @@ fn handle_tcp_connect_request(
     drop(tcp_stream);
 }
 
-/// Handle a Kerberos KDC relay request from the sandboxed RDP proxy.
+/// Handle a Kerberos KDC FD-lease request from the sandboxed RDP proxy.
 ///
-/// The proxy cannot open a socket to the KDC (TCP 88) once sealed, so during
-/// the CredSSP Kerberos leg it relays each sspi `NetworkRequest` here. Unlike
-/// the FD-passing `TcpConnectRequest` broker, this is a payload RELAY: the
-/// supervisor performs the full KDC round-trip itself and returns the reply
-/// bytes in a `KerberosKdcResponse`.
+/// The proxy cannot `connect()` to the KDC (TCP 88) once sealed, so during
+/// the CredSSP Kerberos leg each sspi `NetworkRequest` asks the supervisor
+/// to open a socket to the configured KDC and hand the connected FD via
+/// SCM_RIGHTS. The proxy then performs the framed Kerberos TCP I/O itself
+/// — the root TCB never sees AS-REQ / TGS-REQ / ticket bytes.
 ///
 /// Security posture (mirrors the LDAPS `Service::Auth` whitelist branch):
 /// - **token-less** (the RDP proxy does not mint a `SessionToken` for this),
 /// - **SSRF-safe by construction**: the supervisor connects ONLY to its own
-///   `[auth.kerberos]` configured KDC, ignoring any host the proxy might try
-///   to inject (the relay carries no destination),
-/// - **fail-closed**: any error (Kerberos disabled, no endpoint, connect /
-///   I/O failure, timeout) yields `success: false` with no partial data.
+///   `[auth.kerberos]` configured KDC (request carries no destination;
+///   `data` is ignored),
+/// - **fail-closed**: any error (Kerberos disabled, wrong caller, no
+///   endpoint, connect / `send_fd` failure, timeout) yields
+///   `success: false` with no FD,
+/// - **caller restricted** to `proxy_rdp` (only service that speaks CredSSP
+///   Kerberos).
 ///
-/// The `data` payload is a raw Kerberos TCP message with its 4-byte
-/// big-endian length prefix (per sspi's `send_tcp` contract): we write it
-/// verbatim, then read a 4-byte length prefix + that many bytes back, and
-/// return the whole framed reply so sspi can parse it directly.
+/// Ordering: `send_fd` **before** `KerberosKdcResponse` (same convention as
+/// `TcpConnect` / recording) so the proxy can `recv_fd_timed` without race.
 fn handle_kerberos_kdc_request(
     request_id: u64,
     session_id: String,
-    data: shared::messages::SensitiveBytes,
+    _data: shared::messages::SensitiveBytes,
     requesting_channel: &IpcChannel,
     requesting_service_key: &str,
+    children: &HashMap<String, ChildState>,
     kerberos: &crate::config::KerberosConfig,
 ) {
-    use std::io::{Read, Write};
-
     let fail = |error: String| {
         warn!(
             session_id = %session_id,
             requesting_service = %requesting_service_key,
-            "Kerberos KDC relay failed: {error}"
+            "Kerberos KDC FD lease failed: {error}"
         );
         let response = Message::KerberosKdcResponse {
             request_id,
@@ -2935,6 +2935,14 @@ fn handle_kerberos_kdc_request(
         let _ = requesting_channel.send(&response);
     };
 
+    // Only proxy-rdp may lease KDC sockets (CredSSP Kerberos path).
+    if requesting_service_key != "proxy_rdp" {
+        fail(format!(
+            "Kerberos KDC FD lease refused for service {requesting_service_key}"
+        ));
+        return;
+    }
+
     // Gate: Kerberos must be enabled AND a KDC endpoint configured.
     let (kdc_host, kdc_port) = match (kerberos.allows(), kerberos.endpoint()) {
         (true, Some(endpoint)) => endpoint,
@@ -2944,9 +2952,26 @@ fn handle_kerberos_kdc_request(
         }
     };
 
+    let requester_state = match children.get(requesting_service_key) {
+        Some(s) => s,
+        None => {
+            fail(format!(
+                "unknown requesting service {requesting_service_key}"
+            ));
+            return;
+        }
+    };
+    let fd_socket = match &requester_state.fd_passing_socket {
+        Some(sock) => sock.as_raw_fd(),
+        None => {
+            fail("no fd_passing socket for proxy_rdp".to_string());
+            return;
+        }
+    };
+
     let timeout = Duration::from_secs(kerberos.timeout_secs.max(1));
 
-    // Resolve + connect to the SUPERVISOR-OWNED KDC endpoint. The relayed
+    // Resolve + connect to the SUPERVISOR-OWNED KDC endpoint. The lease
     // request carries no destination, so there is no attacker-chosen host.
     let socket_addr = match (kdc_host.as_str(), kdc_port).to_socket_addrs() {
         Ok(mut addrs) => match addrs.next() {
@@ -2966,61 +2991,37 @@ fn handle_kerberos_kdc_request(
         }
     };
 
-    let mut stream = match std::net::TcpStream::connect_timeout(&socket_addr, timeout) {
+    let stream = match std::net::TcpStream::connect_timeout(&socket_addr, timeout) {
         Ok(s) => s,
         Err(e) => {
             fail(format!("KDC connect to {socket_addr} failed: {e}"));
             return;
         }
     };
-    let _ = stream.set_read_timeout(Some(timeout));
-    let _ = stream.set_write_timeout(Some(timeout));
+    let tcp_fd = stream.as_raw_fd();
 
-    // Write the framed request verbatim (4-byte length prefix included).
-    if let Err(e) = stream.write_all(data.as_slice()) {
-        fail(format!("KDC write failed: {e}"));
-        return;
-    }
-
-    // Read the 4-byte big-endian length prefix, then that many bytes.
-    let mut len_buf = [0u8; 4];
-    if let Err(e) = stream.read_exact(&mut len_buf) {
-        fail(format!("KDC reply length read failed: {e}"));
-        return;
-    }
-    let reply_len = u32::from_be_bytes(len_buf) as usize;
-
-    // Bound the reply to the IPC frame budget (256 KB); a KDC reply is a few
-    // KB at most. This also fences a hostile/spoofed KDC from forcing a huge
-    // allocation.
-    const MAX_KDC_REPLY: usize = 256 * 1024;
-    if reply_len > MAX_KDC_REPLY {
-        fail(format!("KDC reply too large: {reply_len} bytes"));
-        return;
-    }
-
-    let mut reply = vec![0u8; reply_len + 4];
-    reply[0..4].copy_from_slice(&len_buf);
-    if let Err(e) = stream.read_exact(&mut reply[4..]) {
-        fail(format!("KDC reply body read failed: {e}"));
+    // FD first, then IPC notify (TcpConnect / recording convention).
+    if let Err(e) = send_fd(fd_socket, tcp_fd) {
+        fail(format!("send_fd: {e}"));
         return;
     }
 
     debug!(
         session_id = %session_id,
         kdc = %socket_addr,
-        reply_bytes = reply_len,
-        "Kerberos KDC relay round-trip complete"
+        "Kerberos KDC FD leased to proxy_rdp"
     );
 
     let response = Message::KerberosKdcResponse {
         request_id,
         session_id,
         success: true,
-        data: shared::messages::SensitiveBytes::new(reply),
+        data: shared::messages::SensitiveBytes::default(),
         error: None,
     };
     let _ = requesting_channel.send(&response);
+    // Keep the TcpStream alive until after send_fd (child owns a copy).
+    drop(stream);
 }
 
 /// Handle a RecordingFileRequest from a sandboxed service.
@@ -3440,10 +3441,12 @@ fn handle_recording_file_unlink_request(
 /// Poll all service channels and process incoming messages.
 ///
 /// Handles TcpConnectRequest (proxies, web/mailer and auth/ldap),
-/// RecordingFileRequest (audit), and ACME renewal requests (web). The `mailer`
-/// config is consulted by [`handle_tcp_connect_request`] when
-/// `target_service = Web` (SSRF whitelist, Issue #10); the `ldap` config is
-/// consulted when `target_service = Auth` (LDAPS directory whitelist).
+/// KerberosKdcRequest (proxy-rdp KDC FD lease), RecordingFileRequest
+/// (audit/proxies), and ACME renewal requests (web). The `mailer` config is
+/// consulted by [`handle_tcp_connect_request`] when `target_service = Web`
+/// (SSRF whitelist, Issue #10); the `ldap` config is consulted when
+/// `target_service = Auth` (LDAPS directory whitelist); `kerberos` gates
+/// the KDC FD broker.
 fn process_service_messages(
     children: &HashMap<String, ChildState>,
     recording_storage_path: &str,
@@ -3521,6 +3524,7 @@ fn process_service_messages(
                             data,
                             &state.channel,
                             service_key,
+                            children,
                             kerberos,
                         );
                     }
@@ -6136,33 +6140,47 @@ mod tests {
         );
     }
 
-    /// The Kerberos KDC relay must stay SSRF-safe and fail-closed: it
+    /// The Kerberos KDC FD broker must stay SSRF-safe and fail-closed: it
     /// connects to the SUPERVISOR-OWNED endpoint (`kerberos.endpoint()`),
-    /// gates on `kerberos.allows()`, and never derives the destination from
-    /// the relayed request (which carries no host at all).
+    /// gates on `kerberos.allows()`, passes the socket via SCM_RIGHTS, and
+    /// never derives the destination from the request (no host; `data`
+    /// unused). Root must not perform Kerberos payload I/O.
     #[test]
-    fn test_kerberos_kdc_relay_is_ssrf_safe_and_fail_closed() {
+    fn test_kerberos_kdc_fd_broker_is_ssrf_safe_and_fail_closed() {
         let source = supervisor_prod_source();
         let handler = source
             .split("fn handle_kerberos_kdc_request(")
             .nth(1)
             .expect("handle_kerberos_kdc_request must exist");
-        // Gate on the supervisor-owned config, not on any request field.
+        let handler_end = handler
+            .find("\n/// Handle a RecordingFileRequest")
+            .or_else(|| handler.find("\nfn handle_recording_file_request"))
+            .unwrap_or(handler.len().min(4000));
+        let handler = &handler[..handler_end];
         assert!(
             handler.contains("kerberos.allows()") && handler.contains("kerberos.endpoint()"),
-            "the KDC relay MUST gate on kerberos.allows()/endpoint() (supervisor-owned)"
+            "the KDC FD broker MUST gate on kerberos.allows()/endpoint() (supervisor-owned)"
         );
-        // The relay carries no destination: the payload is written verbatim
-        // to the configured KDC. There must be no SessionToken verification
-        // (token-less, like the LDAPS Auth branch).
         assert!(
             !handler.contains("SessionToken::verify_bytes"),
-            "the KDC relay is token-less; it MUST NOT verify a SessionToken"
+            "the KDC FD broker is token-less; it MUST NOT verify a SessionToken"
         );
-        // Bounded reply to fence a hostile KDC from forcing a huge alloc.
         assert!(
-            handler.contains("MAX_KDC_REPLY"),
-            "the KDC relay MUST bound the reply size"
+            handler.contains("send_fd("),
+            "the KDC FD broker MUST hand the connected socket via send_fd / SCM_RIGHTS"
+        );
+        assert!(
+            handler.contains("proxy_rdp"),
+            "the KDC FD broker MUST restrict callers to proxy_rdp"
+        );
+        // Payload I/O must live in the proxy, not the root TCB.
+        assert!(
+            !handler.contains("write_all(") && !handler.contains("read_exact("),
+            "the KDC FD broker MUST NOT perform Kerberos payload I/O (write_all/read_exact)"
+        );
+        assert!(
+            !handler.contains("MAX_KDC_REPLY"),
+            "MAX_KDC_REPLY belongs on the proxy I/O path, not the supervisor broker"
         );
     }
 

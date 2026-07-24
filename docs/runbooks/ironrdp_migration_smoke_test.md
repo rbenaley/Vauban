@@ -57,13 +57,14 @@ user holding an active RDP access rule.
 
 > Applies whenever the Kerberos CredSSP leg changes (the local
 > `connect_begin` / `CredsspSequence` mirrors in
-> `vauban-proxy-rdp/src/session.rs`, the supervisor KDC relay, or an
+> `vauban-proxy-rdp/src/session.rs`, the supervisor KDC **FD broker**, or an
 > `sspi` bump). Requires a REAL Active Directory lab: a domain
 > controller (KDC) and a domain-joined Windows target with
 > `DisableRestrictedAdmin = 0`. No AD is available in CI -- the
 > in-repo coverage stops at `kerberos_posture_pin_test.rs` (TSCredentials
-> stay identity-free in `CredentialLess`), the relay proptests
-> (non-TCP refused) and the `web::rdp_kerberos_mode_test` E2E suite.
+> stay identity-free in `CredentialLess`), KDC FD lint/proptest/battle
+> (`check_kerberos_kdc_fd.sh`), and the `web::rdp_kerberos_mode_test` E2E suite.
+> Coordinated deploy: supervisor + proxy-rdp **0.9.30+**.
 
 Prerequisites:
 
@@ -80,21 +81,22 @@ Checklist:
 1. **FQDN enforcement** -- editing the asset to an IP-literal hostname
    while in Kerberos mode is refused with the SPN explanation; the row
    is unchanged.
-2. **Kerberos login** -- connect via the web viewer. Expected proxy
-   logs: KDC relay round-trips (AS-REQ then TGS-REQ for
-   `TERMSRV/<fqdn>`) through the supervisor, session opens WITHOUT any
-   NTLM exchange. On the DC: events 4768 (TGT) + 4769 (service ticket
-   for TERMSRV). On the target: logon event 4624 with
-   `Restricted Admin Mode: Yes`.
+2. **Kerberos login** -- connect via the web viewer. Expected logs:
+   supervisor `Kerberos KDC FD leased to proxy_rdp` (twice for AS then
+   TGS); proxy performs local framed I/O (no KDC payload bytes on the
+   supervisor IPC). Session opens WITHOUT any NTLM exchange. On the
+   DC: events 4768 (TGT) + 4769 (service ticket for TERMSRV). On the
+   target: logon event 4624 with `Restricted Admin Mode: Yes`.
 3. **No password delegation** -- on the target, `mimikatz
    sekurlsa::logonpasswords` (lab only!) must NOT surface the proxy's
    account password for the RDP logon session; a `dir
    \\otherserver\share` from inside the session must FAIL (no
    delegable credentials -- the defining Restricted Admin property).
 4. **Fail-closed: KDC unreachable** -- stop the KDC (or set a wrong
-   `kdc_host`), reconnect. The session MUST fail with a KDC relay
-   error; the proxy MUST NOT silently fall back to NTLM (grep: no
-   NTLMSSP in the proxy debug logs).
+   `kdc_host`), reconnect. The session MUST fail with a KDC FD lease /
+   I/O error; the proxy MUST NOT silently fall back to NTLM (grep: no
+   NTLMSSP in the proxy debug logs). Supervisor must NOT log a
+   payload-relay success line.
 5. **Fail-closed: NTLM downgrade** -- point the asset (still in
    Kerberos mode) at a NON-domain-joined RDP host. CredSSP must abort
    (`kerberos` package cannot negotiate), not complete via NTLM.

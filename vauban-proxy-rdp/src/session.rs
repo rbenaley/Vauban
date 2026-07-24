@@ -83,7 +83,7 @@ pub struct SessionConfig {
     /// `RESTRICTED_ADMIN_MODE_REQUIRED` nego flag and drives CredSSP in
     /// credential-less mode (fail-closed: no NTLM fallback).
     pub auth_mode: RdpAuthMode,
-    /// Supervisor KDC relay handle (Kerberos mode only). `None` in NTLM
+    /// Supervisor KDC FD-lease handle (Kerberos mode only). `None` in NTLM
     /// mode or in non-sandboxed dev mode; Kerberos mode fails closed
     /// without it.
     pub supervisor_relay: Option<Arc<SupervisorRelay>>,
@@ -1750,29 +1750,30 @@ impl NetworkClient for NtlmOnlyNetworkClient {
     }
 }
 
-/// Per-exchange budget for a relayed KDC round-trip. Slightly above the
-/// supervisor's own `[auth.kerberos].timeout_secs` default (5 s for connect
-/// + I/O) so the supervisor's error message wins over a bare local timeout.
-const KDC_RELAY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Per-exchange budget for a KDC FD lease + local framed I/O. Slightly
+/// above the supervisor's `[auth.kerberos].timeout_secs` default (5 s for
+/// connect) so the supervisor's error message wins over a bare local timeout.
+const KDC_LEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Handle for relaying Kerberos KDC exchanges to the supervisor over the
-/// existing IPC pipe (payload relay -- the sealed proxy never opens a
-/// socket).
+/// Bound on a KDC TCP reply body (excludes the 4-byte length prefix).
+/// Fences a hostile/spoofed KDC from forcing a huge allocation in the proxy.
+pub const MAX_KDC_REPLY: usize = 256 * 1024;
+
+/// Handle for leasing Kerberos KDC sockets from the supervisor (SCM_RIGHTS)
+/// then performing framed TCP I/O locally. The sealed proxy never
+/// `connect()`s; the root TCB never sees Kerberos payload bytes.
 ///
-/// Mirrors the `pending_connections` correlation pattern used for
-/// SCM_RIGHTS TCP FDs: `kdc_round_trip` allocates a unique `request_id`,
-/// parks a oneshot in `pending`, and sends a
-/// [`Message::KerberosKdcRequest`] through `tx` (drained by `main_loop`
-/// into the supervisor channel). `main_loop` routes the matching
-/// [`Message::KerberosKdcResponse`] back via [`SupervisorRelay::complete`].
-/// Result of a relayed KDC round-trip: the raw framed KDC reply on
-/// success, or a human-readable relay/supervisor error on failure.
-type KdcRelayResult = Result<Vec<u8>, String>;
+/// Correlation uses `request_id` (distinct from asset `pending_connections`
+/// keyed by `session_id` and from recording leases). `kdc_round_trip`
+/// parks a oneshot, sends [`Message::KerberosKdcRequest`] (empty `data`),
+/// and `main_loop` completes with the leased [`OwnedFd`] after
+/// `recv_fd_timed`.
+type KdcLeaseResult = Result<OwnedFd, String>;
 
 pub struct SupervisorRelay {
     tx: mpsc::UnboundedSender<Message>,
     pending: tokio::sync::Mutex<
-        std::collections::HashMap<u64, tokio::sync::oneshot::Sender<KdcRelayResult>>,
+        std::collections::HashMap<u64, tokio::sync::oneshot::Sender<KdcLeaseResult>>,
     >,
     next_request_id: std::sync::atomic::AtomicU64,
 }
@@ -1792,10 +1793,9 @@ impl SupervisorRelay {
         }
     }
 
-    /// Relay one framed Kerberos TCP message (AS-REQ / TGS-REQ, 4-byte
-    /// length prefix included) to the supervisor and await the KDC reply.
-    /// Fail-closed: relay unavailability, supervisor-side refusal and
-    /// timeout all surface as `Err` (never an empty reply).
+    /// Lease a connected KDC FD, write one framed Kerberos TCP message
+    /// (AS-REQ / TGS-REQ, 4-byte length prefix included), read the framed
+    /// reply, and return it to sspi. Fail-closed on lease / I/O / timeout.
     pub async fn kdc_round_trip(&self, session_id: &str, data: Vec<u8>) -> Result<Vec<u8>, String> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
@@ -1804,57 +1804,92 @@ impl SupervisorRelay {
         let request = Message::KerberosKdcRequest {
             request_id,
             session_id: session_id.to_string(),
-            data: shared::messages::SensitiveBytes::new(data),
+            // Wire field retained for bincode; supervisor ignores payload.
+            data: shared::messages::SensitiveBytes::default(),
         };
         if self.tx.send(request).is_err() {
             self.pending.lock().await.remove(&request_id);
-            return Err("supervisor relay channel closed".to_string());
+            return Err("supervisor KDC lease channel closed".to_string());
         }
 
-        match tokio::time::timeout(KDC_RELAY_TIMEOUT, resp_rx).await {
-            Ok(Ok(result)) => result,
+        let owned_fd = match tokio::time::timeout(KDC_LEASE_TIMEOUT, resp_rx).await {
+            Ok(Ok(result)) => result?,
             Ok(Err(_)) => {
-                // The oneshot sender was dropped without a response.
-                Err("KDC relay response channel dropped".to_string())
+                return Err("KDC FD lease response channel dropped".to_string());
             }
             Err(_) => {
                 self.pending.lock().await.remove(&request_id);
-                Err(format!(
-                    "KDC relay timed out after {}s",
-                    KDC_RELAY_TIMEOUT.as_secs()
-                ))
+                return Err(format!(
+                    "KDC FD lease timed out after {}s",
+                    KDC_LEASE_TIMEOUT.as_secs()
+                ));
             }
-        }
+        };
+
+        // Blocking framed I/O off the tokio worker (same posture as
+        // recording FD lease helpers).
+        let io_data = data;
+        tokio::task::spawn_blocking(move || kdc_framed_round_trip(owned_fd, &io_data))
+            .await
+            .map_err(|e| format!("KDC I/O task join failed: {e}"))?
     }
 
-    /// Route a supervisor `KerberosKdcResponse` to the parked requester.
+    /// Route a leased KDC FD (or lease error) to the parked requester.
     /// Unknown `request_id`s (late replies after a timeout) are dropped.
-    pub async fn complete(&self, request_id: u64, result: Result<Vec<u8>, String>) {
+    pub async fn complete(&self, request_id: u64, result: KdcLeaseResult) {
         if let Some(tx) = self.pending.lock().await.remove(&request_id) {
             let _ = tx.send(result);
         } else {
             debug!(
                 request_id,
-                "Dropping KDC relay response with no pending requester"
+                "Dropping KDC FD lease with no pending requester"
             );
         }
     }
 }
 
-/// NetworkClient for the Kerberos / Restricted Admin mode: every sspi
-/// `NetworkRequest` is relayed to the supervisor as an IPC payload
-/// ([`Message::KerberosKdcRequest`]), because the sealed proxy cannot
-/// `connect()` anywhere.
+/// Write a framed Kerberos request and read a framed reply on a leased FD.
 ///
-/// Posture (audit §5 / plan phase A):
-/// - Only `NetworkProtocol::Tcp` is accepted. `Udp` (unauthenticated
-///   datagram path), `Http`/`Https` (KDC proxy, KKDCP) are all refused
-///   fail-closed -- the supervisor relay only implements the framed
-///   Kerberos TCP contract, and refusing here keeps the proxy's reachable
-///   surface at zero even if sspi's internals change.
-/// - The request URL host (our sentinel, [`KERBEROS_KDC_SENTINEL_URL`]) is
-///   NOT forwarded: the supervisor always connects to its own configured
-///   KDC, so a compromised proxy cannot steer the exchange elsewhere.
+/// Input/`out` include the 4-byte big-endian length prefix (sspi `send_tcp`).
+pub fn kdc_framed_round_trip(owned_fd: OwnedFd, request: &[u8]) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Write};
+
+    // SAFETY: OwnedFd is exclusively ours; convert to TcpStream for I/O.
+    let mut stream = unsafe { std::net::TcpStream::from_raw_fd(owned_fd.into_raw_fd()) };
+    let timeout = std::time::Duration::from_secs(10);
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+
+    stream
+        .write_all(request)
+        .map_err(|e| format!("KDC write failed: {e}"))?;
+
+    let mut len_buf = [0u8; 4];
+    stream
+        .read_exact(&mut len_buf)
+        .map_err(|e| format!("KDC reply length read failed: {e}"))?;
+    let reply_len = u32::from_be_bytes(len_buf) as usize;
+    if reply_len > MAX_KDC_REPLY {
+        return Err(format!("KDC reply too large: {reply_len} bytes"));
+    }
+
+    let mut reply = vec![0u8; reply_len + 4];
+    reply[0..4].copy_from_slice(&len_buf);
+    stream
+        .read_exact(&mut reply[4..])
+        .map_err(|e| format!("KDC reply body read failed: {e}"))?;
+    Ok(reply)
+}
+
+/// NetworkClient for the Kerberos / Restricted Admin mode: every sspi
+/// `NetworkRequest` leases a KDC FD from the supervisor
+/// ([`Message::KerberosKdcRequest`]) and performs framed TCP I/O locally.
+///
+/// Posture:
+/// - Only `NetworkProtocol::Tcp` is accepted. `Udp` / `Http` / `Https`
+///   are refused fail-closed.
+/// - The request URL host ([`KERBEROS_KDC_SENTINEL_URL`]) is NOT forwarded:
+///   the supervisor always connects to its own configured KDC.
 struct KerberosRelayNetworkClient {
     relay: Arc<SupervisorRelay>,
     session_id: String,
@@ -1873,12 +1908,12 @@ impl NetworkClient for KerberosRelayNetworkClient {
                 .kdc_round_trip(&self.session_id, request.data.clone())
                 .await
                 .map_err(|e| {
-                    warn!(session_id = %self.session_id, error = %e, "KDC relay round-trip failed");
-                    ironrdp::connector::custom_err!("KDC relay", std::io::Error::other(e))
+                    warn!(session_id = %self.session_id, error = %e, "KDC FD round-trip failed");
+                    ironrdp::connector::custom_err!("KDC FD", std::io::Error::other(e))
                 }),
             NetworkProtocol::Udp | NetworkProtocol::Http | NetworkProtocol::Https => {
                 Err(ironrdp::connector::general_err!(
-                    "KDC relay refuses non-TCP transports (fail-closed)"
+                    "KDC path refuses non-TCP transports (fail-closed)"
                 ))
             }
         }
@@ -1911,7 +1946,7 @@ impl SessionNetworkClient {
                     session_id: session_id.to_string(),
                 })),
                 None => Err(SessionError::AuthenticationFailed(
-                    "Kerberos mode requires the supervisor KDC relay (no NTLM fallback)"
+                    "Kerberos mode requires the supervisor KDC FD broker (no NTLM fallback)"
                         .to_string(),
                 )),
             },
@@ -5279,6 +5314,8 @@ mod tests {
     /// Invariant-based tests for the Kerberos / Restricted Admin auth mode
     /// (phase A). These pin the fail-closed behaviors on the wire path.
     mod kerberos_auth_mode {
+        #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
         use super::*;
         use ironrdp::connector::sspi::NetworkProtocol;
         use ironrdp::connector::sspi::generator::NetworkRequest;
@@ -5354,7 +5391,7 @@ mod tests {
             );
             assert!(
                 kerb_no_relay.is_err(),
-                "Kerberos mode must fail closed without a supervisor relay"
+                "Kerberos mode must fail closed without a supervisor KDC FD broker"
             );
 
             let (tx, _rx) = mpsc::unbounded_channel::<Message>();
@@ -5365,6 +5402,59 @@ mod tests {
                 "s",
             );
             assert!(matches!(kerb, Ok(SessionNetworkClient::KerberosRelay(_))));
+        }
+
+        /// Framed Kerberos TCP I/O on a leased FD (UnixStream stand-in).
+        #[test]
+        fn kdc_framed_round_trip_over_socketpair() {
+            use std::io::{Read, Write};
+            use std::os::unix::net::UnixStream;
+
+            let (client, mut server) = UnixStream::pair().expect("socketpair");
+            let body = b"AS-REQ-bytes";
+            let mut request = Vec::new();
+            request.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            request.extend_from_slice(body);
+
+            let reply_body = b"AS-REP-bytes";
+            let mut expected = Vec::new();
+            expected.extend_from_slice(&(reply_body.len() as u32).to_be_bytes());
+            expected.extend_from_slice(reply_body);
+            let expected_clone = expected.clone();
+
+            let server_thread = std::thread::spawn(move || {
+                let mut len_buf = [0u8; 4];
+                server.read_exact(&mut len_buf).expect("len");
+                let n = u32::from_be_bytes(len_buf) as usize;
+                let mut req = vec![0u8; n];
+                server.read_exact(&mut req).expect("body");
+                assert_eq!(req, body);
+                server.write_all(&expected_clone).expect("reply");
+            });
+
+            let owned = unsafe { OwnedFd::from_raw_fd(client.into_raw_fd()) };
+            let got = kdc_framed_round_trip(owned, &request).expect("round-trip");
+            assert_eq!(got, expected);
+            server_thread.join().expect("join");
+        }
+
+        #[test]
+        fn kdc_framed_round_trip_rejects_oversized_reply() {
+            use std::io::{Read, Write};
+            use std::os::unix::net::UnixStream;
+
+            let (client, mut server) = UnixStream::pair().expect("socketpair");
+            let over = (MAX_KDC_REPLY as u32) + 1;
+            let server_thread = std::thread::spawn(move || {
+                let mut sink = [0u8; 8];
+                let _ = server.read(&mut sink);
+                server.write_all(&over.to_be_bytes()).expect("len");
+            });
+
+            let owned = unsafe { OwnedFd::from_raw_fd(client.into_raw_fd()) };
+            let err = kdc_framed_round_trip(owned, &[0, 0, 0, 1, 0x41]).expect_err("oversized");
+            assert!(err.contains("too large"), "got {err}");
+            let _ = server_thread.join();
         }
     }
 }

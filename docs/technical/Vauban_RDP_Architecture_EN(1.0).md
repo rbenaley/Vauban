@@ -2,7 +2,8 @@
 
 **Version:** 1.0  
 **Date:** 21 February 2026  
-**Author:** Richard Ben Aleya
+**Author:** Richard Ben Aleya  
+**Amended:** 24 July 2026 — Kerberos KDC FD-pass (§11.3.1); crate **0.9.30**
 
 ---
 
@@ -750,6 +751,27 @@ seals, then enrolled via `AccessGuardWiring::fds` into
 `setup_service_sandbox_extended(...)`. After `cap_enter()` the proxy
 can read/write the access pipe but cannot acquire any new resource —
 the dispatcher and `authorize()` calls run entirely on pre-opened FDs.
+
+#### 11.3.1 Kerberos KDC FD-pass (Restricted Admin)
+
+In `KerberosRestrictedAdmin` CredSSP mode, sspi issues `NetworkRequest`
+TCP exchanges (typically AS-REQ then TGS-REQ for `TERMSRV/<fqdn>`). The
+sealed proxy cannot `connect()` to the KDC, so each request leases a
+connected socket from the supervisor:
+
+1. Proxy sends `KerberosKdcRequest` (`data` empty; correlation via
+   `request_id`) — **not** a payload relay.
+2. Supervisor gates on `[auth.kerberos]` (`allows()` + `endpoint()`),
+   connects **only** to its configured KDC (SSRF-safe; token-less;
+   caller must be `proxy_rdp`), `send_fd` via SCM_RIGHTS, then
+   `KerberosKdcResponse { success, data: empty }`.
+3. Proxy `recv_fd_timed`, performs framed Kerberos TCP I/O locally
+   (`kdc_framed_round_trip`, `MAX_KDC_REPLY = 256 KiB`), closes the FD.
+
+Root never sees AS-REQ / TGS-REQ / ticket bytes. Demux is keyed by
+`request_id` and is distinct from asset `pending_connections[session_id]`
+and recording leases. Lint: `vauban-proxy-rdp/scripts/check_kerberos_kdc_fd.sh`.
+Manual AD smoke: [`ironrdp_migration_smoke_test.md`](../runbooks/ironrdp_migration_smoke_test.md).
 
 ### 11.4 Environment Variable Hygiene
 
