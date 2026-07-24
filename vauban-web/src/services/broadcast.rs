@@ -1694,4 +1694,82 @@ mod tests {
              slow tier). Found only {good}."
         );
     }
+
+    // ==================== WsChannel property tests ====================
+
+    mod ws_channel_proptests {
+        use proptest::prelude::*;
+
+        use super::super::WsChannel;
+
+        fn singleton_channels() -> impl Strategy<Value = WsChannel> {
+            prop_oneof![
+                Just(WsChannel::DashboardStats),
+                Just(WsChannel::ActiveSessions),
+                Just(WsChannel::ActiveSessionsList),
+                Just(WsChannel::RecentActivity),
+                Just(WsChannel::Notifications),
+                Just(WsChannel::SessionsList),
+                Just(WsChannel::AdminAuthSessions),
+                Just(WsChannel::IacsRequests),
+            ]
+        }
+
+        /// Parametric ids without `:` so user-channel wire forms stay unambiguous.
+        fn safe_id() -> impl Strategy<Value = String> {
+            "[A-Za-z0-9_-]{1,36}".prop_map(|s| s)
+        }
+
+        fn any_channel() -> impl Strategy<Value = WsChannel> {
+            prop_oneof![
+                singleton_channels(),
+                safe_id().prop_map(WsChannel::SessionLive),
+                safe_id().prop_map(WsChannel::UserAuthSessions),
+                safe_id().prop_map(WsChannel::UserApiKeys),
+                safe_id().prop_map(WsChannel::DashboardStatsUser),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+
+            #[test]
+            fn parse_as_str_roundtrip(channel in any_channel()) {
+                let wire = channel.as_str();
+                let parsed = WsChannel::parse(&wire);
+                prop_assert_eq!(parsed, Some(channel));
+            }
+
+            #[test]
+            fn is_low_cardinality_str_agrees_with_parse(channel in any_channel()) {
+                let wire = channel.as_str();
+                prop_assert_eq!(
+                    WsChannel::is_low_cardinality_str(&wire),
+                    channel.is_low_cardinality()
+                );
+            }
+
+            #[test]
+            fn unknown_strings_parse_none(
+                s in "[A-Za-z]{1,24}"
+            ) {
+                prop_assume!(!matches!(
+                    s.as_str(),
+                    "notifications"
+                        | "dashboard:stats"
+                        | "dashboard:active-sessions"
+                        | "sessions:active-list"
+                        | "sessions:list"
+                        | "admin:auth-sessions"
+                        | "dashboard:recent-activity"
+                        | "iacs:requests"
+                ));
+                prop_assume!(!s.starts_with("session:"));
+                prop_assume!(!s.starts_with("user:"));
+                prop_assume!(!s.starts_with("dashboard:user:"));
+                prop_assert_eq!(WsChannel::parse(&s), None);
+                prop_assert!(!WsChannel::is_low_cardinality_str(&s));
+            }
+        }
+    }
 }

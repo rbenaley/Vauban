@@ -1759,6 +1759,29 @@ const KDC_LEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15
 /// Fences a hostile/spoofed KDC from forcing a huge allocation in the proxy.
 pub const MAX_KDC_REPLY: usize = 256 * 1024;
 
+/// Build a Kerberos TCP frame: 4-byte big-endian length + body.
+///
+/// Pure helper (dual of [`decode_kdc_reply_len`]). Production I/O writes
+/// frames already assembled by sspi; unit / property tests build frames
+/// through this helper so encode/decode stay in lock-step.
+#[must_use]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn encode_kdc_request_frame(body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + body.len());
+    out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    out.extend_from_slice(body);
+    out
+}
+
+/// Decode a Kerberos TCP reply length prefix, fencing [`MAX_KDC_REPLY`].
+pub fn decode_kdc_reply_len(be: [u8; 4]) -> Result<usize, String> {
+    let reply_len = u32::from_be_bytes(be) as usize;
+    if reply_len > MAX_KDC_REPLY {
+        return Err(format!("KDC reply too large: {reply_len} bytes"));
+    }
+    Ok(reply_len)
+}
+
 /// Handle for leasing Kerberos KDC sockets from the supervisor (SCM_RIGHTS)
 /// then performing framed TCP I/O locally. The sealed proxy never
 /// `connect()`s; the root TCB never sees Kerberos payload bytes.
@@ -1868,10 +1891,7 @@ pub fn kdc_framed_round_trip(owned_fd: OwnedFd, request: &[u8]) -> Result<Vec<u8
     stream
         .read_exact(&mut len_buf)
         .map_err(|e| format!("KDC reply length read failed: {e}"))?;
-    let reply_len = u32::from_be_bytes(len_buf) as usize;
-    if reply_len > MAX_KDC_REPLY {
-        return Err(format!("KDC reply too large: {reply_len} bytes"));
-    }
+    let reply_len = decode_kdc_reply_len(len_buf)?;
 
     let mut reply = vec![0u8; reply_len + 4];
     reply[0..4].copy_from_slice(&len_buf);
@@ -5412,9 +5432,7 @@ mod tests {
 
             let (client, mut server) = UnixStream::pair().expect("socketpair");
             let body = b"AS-REQ-bytes";
-            let mut request = Vec::new();
-            request.extend_from_slice(&(body.len() as u32).to_be_bytes());
-            request.extend_from_slice(body);
+            let request = encode_kdc_request_frame(body);
 
             let reply_body = b"AS-REP-bytes";
             let mut expected = Vec::new();
@@ -5455,6 +5473,61 @@ mod tests {
             let err = kdc_framed_round_trip(owned, &[0, 0, 0, 1, 0x41]).expect_err("oversized");
             assert!(err.contains("too large"), "got {err}");
             let _ = server_thread.join();
+        }
+
+        /// Pure KDC framing helpers (no I/O).
+        mod kdc_framing_proptests {
+            use proptest::prelude::*;
+
+            use super::{MAX_KDC_REPLY, decode_kdc_reply_len, encode_kdc_request_frame};
+
+            proptest! {
+                #![proptest_config(ProptestConfig::with_cases(128))]
+
+                /// encode → length prefix matches body length.
+                #[test]
+                fn encode_prefix_roundtrips_body(
+                    body in prop::collection::vec(any::<u8>(), 0..1024)
+                ) {
+                    let frame = encode_kdc_request_frame(&body);
+                    prop_assert_eq!(frame.len(), 4 + body.len());
+                    let len = u32::from_be_bytes([
+                        frame[0], frame[1], frame[2], frame[3],
+                    ]) as usize;
+                    prop_assert_eq!(len, body.len());
+                    prop_assert_eq!(&frame[4..], body.as_slice());
+                    let decoded = decode_kdc_reply_len([
+                        frame[0], frame[1], frame[2], frame[3],
+                    ])
+                    .expect("body under MAX_KDC_REPLY");
+                    prop_assert_eq!(decoded, body.len());
+                }
+
+                /// Lengths above MAX_KDC_REPLY are rejected.
+                #[test]
+                fn oversized_u32_rejected(
+                    overshoot in 1u32..=1024u32,
+                ) {
+                    let len = (MAX_KDC_REPLY as u32).saturating_add(overshoot);
+                    // saturating_add can clamp at u32::MAX; still >= fence+1
+                    // when overshoot >= 1 and MAX fits in u32.
+                    prop_assume!(len as usize > MAX_KDC_REPLY);
+                    let err = decode_kdc_reply_len(len.to_be_bytes()).unwrap_err();
+                    prop_assert!(
+                        err.contains("too large"),
+                        "unexpected err: {err}"
+                    );
+                }
+
+                /// Lengths at or below the fence are accepted.
+                #[test]
+                fn fence_accepts_upto_max(
+                    len in 0usize..=MAX_KDC_REPLY,
+                ) {
+                    let be = (len as u32).to_be_bytes();
+                    prop_assert_eq!(decode_kdc_reply_len(be).unwrap(), len);
+                }
+            }
         }
     }
 }

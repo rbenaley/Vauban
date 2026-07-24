@@ -118,3 +118,26 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod outcome_proptests {
+    use proptest::prelude::*;
+    use shared::messages::LdapBindOutcome;
+
+    use super::outcome_from_result_code;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// Only LDAP resultCode 0 maps to Success.
+        #[test]
+        fn only_zero_is_success(code in any::<i64>()) {
+            let outcome = outcome_from_result_code(code);
+            if code == 0 {
+                prop_assert_eq!(outcome, LdapBindOutcome::Success);
+            } else {
+                prop_assert_eq!(outcome, LdapBindOutcome::InvalidCredentials);
+            }
+        }
+    }
+}

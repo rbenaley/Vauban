@@ -22,10 +22,24 @@ fn framed_round_trip_helper_bounds_reply() {
         .find("fn kdc_framed_round_trip")
         .expect("kdc_framed_round_trip");
     let body = &session[idx..idx + 1_200];
-    assert!(body.contains("MAX_KDC_REPLY"));
-    assert!(body.contains("to_be_bytes") || body.contains("from_be_bytes"));
+    assert!(
+        body.contains("decode_kdc_reply_len"),
+        "I/O path must fence reply length via decode_kdc_reply_len"
+    );
     assert!(body.contains("read_exact"));
     assert!(body.contains("write_all"));
+    assert!(
+        session.contains("fn encode_kdc_request_frame"),
+        "pure encode helper must exist for framing proptest"
+    );
+    assert!(
+        session.contains("fn decode_kdc_reply_len"),
+        "pure decode helper must exist for framing proptest"
+    );
+    assert!(
+        session.contains("MAX_KDC_REPLY"),
+        "decode fence must reference MAX_KDC_REPLY"
+    );
 }
 
 #[test]

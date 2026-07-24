@@ -41,3 +41,4 @@ totp-rs.workspace = true
 
 [dev-dependencies]
 proptest = "1"
+aes-gcm.workspace = true

@@ -382,3 +382,89 @@ mod tests {
         assert!(bytes.windows(4).any(|window| window == b"mdat"));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// Parser never panics; every NAL range stays in bounds.
+        #[test]
+        fn parse_annex_b_nals_bounds_and_type(
+            data in prop::collection::vec(any::<u8>(), 0..512)
+        ) {
+            let nals = parse_annex_b_nals(&data);
+            for &(nal_type, start, end) in &nals {
+                prop_assert!(start < end);
+                prop_assert!(end <= data.len());
+                prop_assert_eq!(nal_type, data[start] & 0x1f);
+            }
+        }
+
+        /// AVCC output is a sequence of (u32 BE len || payload) units.
+        #[test]
+        fn annex_b_to_avcc_length_prefixes_consistent(
+            data in prop::collection::vec(any::<u8>(), 0..512)
+        ) {
+            let avcc = annex_b_to_avcc(&data);
+            let mut i = 0;
+            while i < avcc.len() {
+                prop_assert!(
+                    i + 4 <= avcc.len(),
+                    "truncated length prefix at {i}"
+                );
+                let len = u32::from_be_bytes([
+                    avcc[i],
+                    avcc[i + 1],
+                    avcc[i + 2],
+                    avcc[i + 3],
+                ]) as usize;
+                i += 4;
+                prop_assert!(
+                    i + len <= avcc.len(),
+                    "AVCC unit overruns buffer: len={len} at {i}"
+                );
+                i += len;
+            }
+            prop_assert_eq!(i, avcc.len());
+        }
+
+        /// SPS/PPS extraction returns exact NAL slices when present.
+        #[test]
+        fn extract_sps_pps_matches_nal_slices(
+            payload in prop::collection::vec(1u8..=255u8, 1..32),
+            use_4byte in any::<bool>(),
+        ) {
+            // Avoid embedded Annex-B start codes inside NAL bodies.
+            prop_assume!(!payload.windows(3).any(|w| w == [0, 0, 1]));
+            prop_assume!(!payload.windows(4).any(|w| w == [0, 0, 0, 1]));
+            // Build Annex-B: start + SPS (type 7) + start + PPS (type 8)
+            // + start + slice (type 5).
+            let mut data = Vec::new();
+            let start: &[u8] = if use_4byte {
+                &[0, 0, 0, 1]
+            } else {
+                &[0, 0, 1]
+            };
+            let mut sps = vec![0x67u8]; // type 7
+            sps.extend_from_slice(&payload);
+            let mut pps = vec![0x68u8]; // type 8
+            pps.extend_from_slice(&payload);
+            let slice = vec![0x65u8, 0x88]; // type 5 IDR-ish
+            for nal in [&sps[..], &pps[..], &slice[..]] {
+                data.extend_from_slice(start);
+                data.extend_from_slice(nal);
+            }
+            let (got_sps, got_pps) = extract_sps_pps(&data);
+            prop_assert_eq!(got_sps.as_deref(), Some(sps.as_slice()));
+            prop_assert_eq!(got_pps.as_deref(), Some(pps.as_slice()));
+            // AVCC must skip SPS/PPS and keep only the slice unit.
+            let avcc = annex_b_to_avcc(&data);
+            prop_assert_eq!(&avcc[0..4], &(slice.len() as u32).to_be_bytes());
+            prop_assert_eq!(&avcc[4..], slice.as_slice());
+        }
+    }
+}

@@ -548,3 +548,71 @@ mod tests {
         assert!(parsed.is_empty());
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// Arbitrary / truncated buffers never panic.
+        #[test]
+        fn parse_pcap_bytes_never_panics(
+            buf in prop::collection::vec(any::<u8>(), 0..4096)
+        ) {
+            let _ = parse_pcap_bytes(&buf);
+        }
+
+        /// Below the global header length → TooShort.
+        #[test]
+        fn too_short_is_err(len in 0usize..PCAP_GLOBAL_HEADER_LEN) {
+            let buf = vec![0u8; len];
+            let err = parse_pcap_bytes(&buf).unwrap_err();
+            prop_assert!(matches!(err, ParserError::TooShort(_)));
+        }
+
+        /// Wrong magic → BadGlobalHeader (when long enough).
+        #[test]
+        fn bad_magic_is_err(
+            magic in any::<u32>().prop_filter("not pcap magic", |m| *m != PCAP_GLOBAL_MAGIC_LE),
+            rest in prop::collection::vec(any::<u8>(), 20..64),
+        ) {
+            let mut buf = magic.to_le_bytes().to_vec();
+            buf.extend_from_slice(&rest);
+            let err = parse_pcap_bytes(&buf).unwrap_err();
+            prop_assert!(matches!(err, ParserError::BadGlobalHeader(_, _)));
+        }
+
+        /// incl_len == 0 or > MAX_RECORD_LEN stops without panic (empty ok).
+        #[test]
+        fn bogus_incl_len_stops_safely(
+            incl_len in prop_oneof![Just(0u32), (MAX_RECORD_LEN + 1)..=u32::MAX],
+        ) {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&PCAP_GLOBAL_MAGIC_LE.to_le_bytes());
+            buf.extend_from_slice(&[0u8; PCAP_GLOBAL_HEADER_LEN - 4]);
+            buf.extend_from_slice(&0u32.to_le_bytes()); // ts_sec
+            buf.extend_from_slice(&0u32.to_le_bytes()); // ts_usec
+            buf.extend_from_slice(&incl_len.to_le_bytes());
+            buf.extend_from_slice(&incl_len.to_le_bytes()); // orig_len
+            let parsed = parse_pcap_bytes(&buf).expect("structural ok");
+            prop_assert!(parsed.is_empty());
+        }
+
+        /// Non-gzip bytes into parse_pcap_gz yield Gzip (or TooShort after empty).
+        #[test]
+        fn gzip_garbage_is_err(
+            buf in prop::collection::vec(any::<u8>(), 1..256)
+        ) {
+            // Valid gzip magic is 1f 8b; skip accidental well-formed streams.
+            prop_assume!(!(buf.len() >= 2 && buf[0] == 0x1f && buf[1] == 0x8b));
+            let err = parse_pcap_gz(&buf[..]).unwrap_err();
+            prop_assert!(matches!(
+                err,
+                ParserError::Gzip(_) | ParserError::TooShort(_) | ParserError::BadGlobalHeader(_, _)
+            ));
+        }
+    }
+}

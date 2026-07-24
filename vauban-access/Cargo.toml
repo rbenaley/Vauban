@@ -41,3 +41,4 @@ ipnetwork = "0.21"
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
 serde_json = { workspace = true }
+proptest = "1"

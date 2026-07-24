@@ -380,3 +380,57 @@ mod tests {
         assert!(r.suppressing);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// Arbitrary octets never panic the redactor.
+        #[test]
+        fn never_panics_on_arbitrary_octets(
+            server in prop::collection::vec(any::<u8>(), 0..128),
+            input in prop::collection::vec(any::<u8>(), 0..64),
+        ) {
+            let mut r = InputRedactor::new();
+            r.on_server_output(&server);
+            r.on_user_input(&input);
+            let _ = r.process_input_for_recording(&input);
+        }
+
+        /// After a password pattern + newline during suppression → redacted marker.
+        #[test]
+        fn pattern_then_newline_emits_redacted(
+            secret in prop::collection::vec(33u8..=126u8, 1..32),
+        ) {
+            let mut r = InputRedactor::new();
+            r.on_server_output(b"Password: ");
+            prop_assert!(r.suppressing);
+            // Accumulate without newline.
+            prop_assert_eq!(r.process_input_for_recording(&secret), None);
+            // Secret must not appear in the redacted marker.
+            let out = r
+                .process_input_for_recording(b"\r")
+                .expect("newline must flush");
+            prop_assert_eq!(&out[..], b"[REDACTED]\r\n");
+            prop_assert!(!out.windows(secret.len()).any(|w| w == secret.as_slice()));
+            // Reset: subsequent input passes through.
+            let again = r.process_input_for_recording(b"ls\r");
+            prop_assert_eq!(again, Some(b"ls\r".to_vec()));
+        }
+
+        /// Without suppression, input is passthrough.
+        #[test]
+        fn passthrough_when_not_suppressing(
+            data in prop::collection::vec(any::<u8>(), 1..64),
+        ) {
+            let mut r = InputRedactor::new();
+            r.on_server_output(b"$ ");
+            let out = r.process_input_for_recording(&data);
+            prop_assert_eq!(out, Some(data));
+        }
+    }
+}

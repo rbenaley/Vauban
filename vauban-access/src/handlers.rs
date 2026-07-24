@@ -3398,6 +3398,34 @@ mod escape_tests {
 }
 
 #[cfg(test)]
+mod normalize_ipc_page_proptests {
+    use proptest::prelude::*;
+    use shared::messages::{DEFAULT_IPC_PAGE_LIMIT, IpcPageParams, MAX_IPC_PAGE_LIMIT};
+
+    use super::normalize_ipc_page;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// limit==0 → DEFAULT; else min(limit, MAX); offset unchanged.
+        #[test]
+        fn normalize_ipc_page_contract(
+            limit in any::<u32>(),
+            offset in any::<u32>(),
+        ) {
+            let (got_limit, got_offset) = normalize_ipc_page(IpcPageParams { limit, offset });
+            let expected_limit = if limit == 0 {
+                i64::from(DEFAULT_IPC_PAGE_LIMIT)
+            } else {
+                i64::from(limit.min(MAX_IPC_PAGE_LIMIT))
+            };
+            prop_assert_eq!(got_limit, expected_limit);
+            prop_assert_eq!(got_offset, i64::from(offset));
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{handle_access_request, handle_issue_diagnostic_token, handle_issue_session_token};
     use crate::db::DbPool;

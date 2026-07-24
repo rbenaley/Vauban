@@ -30,3 +30,4 @@ rustls-pki-types = "1"
 [dev-dependencies]
 # In-process LDAPS test server (rcgen CA + server cert) for the E2E bind tests.
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+proptest = "1"
