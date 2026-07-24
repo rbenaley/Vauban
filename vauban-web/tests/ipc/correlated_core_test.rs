@@ -1,6 +1,6 @@
 //! Integration + battle tests for [`vauban_web::ipc::CorrelatedIpcCore`].
 //!
-//! Complements the unit tests in `src/ipc/correlated.rs`. Covers
+//! Complements the unit tests in `shared/src/correlated_ipc.rs`. Covers
 //! concurrent correlation, late replies after timeout, and the
 //! structural lint script.
 

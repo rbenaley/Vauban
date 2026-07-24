@@ -15,7 +15,9 @@ pub mod proxy_ssh;
 pub mod supervisor;
 pub mod vault;
 
-pub use correlated::{CorrelatedIpcCore, CorrelatedIpcError, PendingGuard};
+pub use correlated::{
+    CorrelatedIpcCore, CorrelatedIpcError, CorrelatedIpcErrorExt, PendingGuard, deliver_or_warn,
+};
 
 pub use access::{AccessIpcClient, IssuedSessionToken};
 pub use audit::{AuditClient, AuditEvent, CRITICAL_ACK_TIMEOUT_SECS};

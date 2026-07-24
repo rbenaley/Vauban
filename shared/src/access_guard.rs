@@ -28,17 +28,14 @@
 //! returns [`AccessDecision`] (NEVER `Result`), and every variant other
 //! than `Granted` MUST be treated as a denial by the caller.
 
-use crate::ipc::IpcChannel;
+use crate::correlated_ipc::{CorrelatedIpcCore, CorrelatedIpcError};
 use crate::messages::{AccessRequest, AccessResponse, Message};
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::io::Interest;
-use tokio::io::unix::AsyncFd;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 
@@ -399,55 +396,13 @@ fn read_fd_from_env(name: &'static str) -> Result<RawFd, AccessGuardError> {
 
 /// Demultiplexes concurrent CheckAccessByUuid responses by `request_id`.
 ///
-/// The `pending` map uses `std::sync::Mutex` (not `tokio::sync::Mutex`)
-/// because:
-///
-/// 1. Critical sections are O(1) HashMap ops with no `.await` held
-///    inside, so blocking the executor for ~µs is acceptable.
-/// 2. Synchronous locking is REQUIRED by [`PendingEntry::drop`], which
-///    runs from inside `Drop` and cannot `await`. Without that synchronous
-///    cleanup, a cancelled [`AccessGuard::authorize`] (timeout or caller
-///    drop) would leak its `pending[request_id]` entry forever -- a real
-///    DoS vector if vauban-access is wedged for any duration.
+/// Built on [`CorrelatedIpcCore`] (INV-CORR-1/2/3): AsyncFd `try_io`
+/// drain + RAII [`crate::correlated_ipc::PendingGuard`] GC. The outer
+/// [`AccessGuard::authorize`] timeout remains the only wall-clock bound
+/// (INV-CORR-5 style); `core.request` uses `timeout = None`.
 struct RbacClient {
-    channel: IpcChannel,
-    read_async_fd: AsyncFd<RawFd>,
-    next_request_id: AtomicU64,
+    core: CorrelatedIpcCore,
     pending: StdMutex<HashMap<u64, oneshot::Sender<AccessResponse>>>,
-}
-
-/// RAII handle that removes its `pending[id]` slot on drop.
-///
-/// SECURITY/RESOURCE: this is the GC for the `pending` map. Without it,
-/// every cancelled `authorize` (via `tokio::time::timeout` firing OR
-/// the surrounding `tokio::spawn` being dropped) would leave a tombstone
-/// `oneshot::Sender` in `pending` -- under sustained vauban-access
-/// outage, that map grows unboundedly. With this guard, exactly one of
-/// two things removes the entry:
-///
-/// - the dispatcher, when it sees the matching response, OR
-/// - this `Drop`, on every other exit path (timeout, caller cancel,
-///   `channel.send` error, etc.).
-///
-/// Drop is idempotent: removing a missing key is a no-op.
-struct PendingEntry<'a> {
-    pending: &'a StdMutex<HashMap<u64, oneshot::Sender<AccessResponse>>>,
-    id: u64,
-}
-
-impl Drop for PendingEntry<'_> {
-    fn drop(&mut self) {
-        // Lock is acquired synchronously: critical section is one
-        // HashMap removal, no await. We use `if let Ok` rather than
-        // `expect` because a poisoned mutex on this path would mean
-        // some other thread panicked while holding the lock; unwinding
-        // through a Drop on top of that would abort the whole process.
-        // Logging-and-skip is strictly safer (the worst case is a
-        // single leaked entry, not a process abort).
-        if let Ok(mut map) = self.pending.lock() {
-            map.remove(&self.id);
-        }
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -460,19 +415,23 @@ enum RbacClientError {
     ConnectionClosed,
 }
 
+impl From<CorrelatedIpcError> for RbacClientError {
+    fn from(e: CorrelatedIpcError) -> Self {
+        match e {
+            CorrelatedIpcError::SendFailed(s) => Self::SendFailed(s),
+            CorrelatedIpcError::ConnectionClosed => Self::ConnectionClosed,
+            other => Self::ReceiveFailed(other.to_string()),
+        }
+    }
+}
+
 impl RbacClient {
     /// SAFETY: `read_fd` and `write_fd` MUST be fresh pipe ends owned by
     /// this process and NOT duplicated elsewhere. The supervisor
     /// guarantees this.
     fn new(read_fd: RawFd, write_fd: RawFd) -> io::Result<Self> {
-        // SAFETY: see method-level safety contract.
-        let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
-        set_nonblocking(read_fd)?;
-        let read_async_fd = AsyncFd::new(read_fd)?;
         Ok(Self {
-            channel,
-            read_async_fd,
-            next_request_id: AtomicU64::new(1),
+            core: CorrelatedIpcCore::from_fds(read_fd, write_fd)?,
             pending: StdMutex::new(HashMap::new()),
         })
     }
@@ -492,30 +451,7 @@ impl RbacClient {
         asset_uuid: &str,
         protocol: &str,
     ) -> Result<bool, RbacClientError> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = oneshot::channel();
-        // SECURITY/RESOURCE: insert FIRST, then bind the RAII guard.
-        // The guard removes the entry on every exit path (success,
-        // backend Err, timeout cancel, caller drop) so the pending map
-        // cannot leak. Without it, a wedged vauban-access combined with
-        // sustained traffic produced unbounded HashMap growth (real
-        // DoS surface; the timeout protected the caller but not the
-        // proxy's RAM).
-        self.pending
-            .lock()
-            // Recover from poisoning: a poisoned Mutex still holds a
-            // valid HashMap (poisoning only signals that some other
-            // thread panicked while holding the lock). Aborting here
-            // would force a fail-closed denial on every subsequent
-            // authorize() until supervisor restart, even though our
-            // local state is fine. Recover and keep serving.
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(request_id, tx);
-        let _entry = PendingEntry {
-            pending: &self.pending,
-            id: request_id,
-        };
-
+        let request_id = self.core.alloc_id();
         let msg = Message::AccessRequest {
             request_id,
             request: AccessRequest::CheckAccessByUuid {
@@ -525,19 +461,16 @@ impl RbacClient {
             },
         };
 
-        if let Err(e) = self.channel.send(&msg) {
-            // _entry will clean pending on return; nothing to do here.
-            return Err(RbacClientError::SendFailed(e.to_string()));
-        }
-
         debug!(
             request_id,
             user_uuid, asset_uuid, protocol, "AccessGuard: CheckAccessByUuid sent"
         );
 
-        let response = rx.await.map_err(|_| {
-            RbacClientError::ReceiveFailed("access response channel dropped".to_string())
-        })?;
+        // PendingGuard GC is owned by CorrelatedIpcCore::request (INV-CORR-1/3).
+        let response = self
+            .core
+            .request(&self.pending, request_id, &msg, None)
+            .await?;
 
         match response {
             AccessResponse::AccessChecked(result) => {
@@ -575,90 +508,43 @@ impl RbacClient {
     }
 
     async fn run_dispatcher(&self) -> Result<(), RbacClientError> {
-        loop {
-            let mut guard = self
-                .read_async_fd
-                .ready(Interest::READABLE)
-                .await
-                .map_err(|e| RbacClientError::ReceiveFailed(e.to_string()))?;
-
-            match self.channel.try_recv() {
-                Ok(Message::AccessResponse {
-                    request_id,
-                    response,
-                }) => {
-                    let maybe_tx = self
-                        .pending
-                        .lock()
-                        // See `check_access_by_uuid` for the poisoning
-                        // recovery rationale: dispatcher must keep
-                        // routing responses even if some unrelated
-                        // thread panicked while holding the lock.
-                        .unwrap_or_else(|p| p.into_inner())
-                        .remove(&request_id);
-                    if let Some(tx) = maybe_tx {
-                        if tx.send(response).is_err() {
-                            debug!(
-                                request_id,
-                                "AccessGuard: caller dropped before response delivery"
+        self.core
+            .process_loop(|msg| {
+                let pending = &self.pending;
+                async move {
+                    match msg {
+                        Message::AccessResponse {
+                            request_id,
+                            response,
+                        } => {
+                            if CorrelatedIpcCore::deliver(pending, request_id, response) {
+                                // delivered to waiter
+                            } else {
+                                // SECURITY: response without a matching pending
+                                // request. Possible causes: (1) a stale reply
+                                // arrived AFTER the caller hit RBAC_RECHECK_TIMEOUT
+                                // and PendingGuard already cleared the slot, (2)
+                                // vauban-access forged a request_id. Drop; never
+                                // escalate to panic / Granted.
+                                warn!(
+                                    request_id,
+                                    "AccessGuard: response without pending request, dropping \
+                                     (likely a stale post-timeout reply, or a forged request_id)"
+                                );
+                            }
+                        }
+                        other => {
+                            warn!(
+                                message = ?std::mem::discriminant(&other),
+                                "AccessGuard: ignoring non-AccessResponse message on access pipe"
                             );
                         }
-                    } else {
-                        // SECURITY: response without a matching pending
-                        // request. Possible causes: (1) a stale reply
-                        // arrived AFTER the caller hit RBAC_RECHECK_TIMEOUT
-                        // and the RAII PendingEntry already cleared the
-                        // slot, (2) vauban-access is buggy / malicious
-                        // and forged a request_id we never sent. Either
-                        // way: drop the message; do NOT escalate to a
-                        // panic and do NOT let it surface as a Granted
-                        // verdict (request_id is the ONLY thing that
-                        // demuxes responses to callers).
-                        warn!(
-                            request_id,
-                            "AccessGuard: response without pending request, dropping \
-                             (likely a stale post-timeout reply, or a forged request_id)"
-                        );
                     }
                 }
-                Ok(other) => {
-                    warn!(
-                        message = ?std::mem::discriminant(&other),
-                        "AccessGuard: ignoring non-AccessResponse message on access pipe"
-                    );
-                }
-                Err(crate::ipc::IpcError::Io(ref e)) if e.kind() == io::ErrorKind::WouldBlock => {
-                    guard.clear_ready();
-                    continue;
-                }
-                Err(crate::ipc::IpcError::ConnectionClosed) => {
-                    error!("AccessGuard: access pipe closed, dispatcher exiting");
-                    return Err(RbacClientError::ConnectionClosed);
-                }
-                Err(e) => {
-                    error!(error = %e, "AccessGuard: fatal recv error, dispatcher exiting");
-                    return Err(RbacClientError::ReceiveFailed(e.to_string()));
-                }
-            }
-        }
+            })
+            .await
+            .map_err(RbacClientError::from)
     }
-}
-
-/// Set a file descriptor to non-blocking mode.
-fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
-
-    // SAFETY: We're calling fcntl with valid arguments on a valid fd.
-    unsafe {
-        let flags = fcntl(fd, F_GETFL);
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(())
 }
 
 // ============================================================================
@@ -668,9 +554,11 @@ fn set_nonblocking(fd: RawFd) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::correlated_ipc::set_nonblocking;
+    use crate::ipc::IpcChannel;
     use crate::messages::AccessCheckResult;
     use std::os::unix::io::IntoRawFd;
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Test sink that just counts each metric callback. We use this in
     /// every test that constructs an `AccessGuard` so we can prove the
@@ -1196,7 +1084,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pending_cleared_after_real_timeout() {
-        // POST-BUG REGRESSION GUARD: if RAII PendingEntry is removed,
+        // POST-BUG REGRESSION GUARD: if RAII PendingGuard is removed,
         // this test is the first to fail. The pending map MUST shrink
         // back to zero after a timeout fires, otherwise a wedged
         // vauban-access combined with sustained traffic produces
@@ -1216,7 +1104,7 @@ mod tests {
         assert_eq!(
             guard.client.pending_count(),
             0,
-            "timeout must trigger PendingEntry::drop synchronously"
+            "timeout must trigger PendingGuard::drop synchronously"
         );
         assert_eq!(metrics.timeout.load(Ordering::SeqCst), 1);
     }
@@ -1247,7 +1135,7 @@ mod tests {
         assert_eq!(
             guard.client.pending_count(),
             0,
-            "caller cancellation must trigger PendingEntry::drop"
+            "caller cancellation must trigger PendingGuard::drop"
         );
     }
 
@@ -1333,7 +1221,7 @@ mod tests {
     async fn test_stale_response_after_timeout_does_not_grant_anything() {
         // SECURITY: if vauban-access replies AFTER we already fired
         // RBAC_RECHECK_TIMEOUT, the late reply must be silently
-        // dropped. The PendingEntry has already cleared the slot, so
+        // dropped. The PendingGuard has already cleared the slot, so
         // the dispatcher will see "response without pending request"
         // and drop it. The next real authorize must then work.
         let (read_fd, write_fd, stub) = pipe_pair();

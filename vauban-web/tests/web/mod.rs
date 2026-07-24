@@ -43,6 +43,7 @@ pub mod evidence_mailer_extract_battle_test;
 pub mod evidence_mailer_extract_e2e_test;
 pub mod evidence_mailer_extract_invariants_test;
 pub mod evidence_mailer_extract_proptest;
+pub mod favicon_static_test;
 pub mod group_ghost_members_e2e_test;
 pub mod group_member_search_test;
 pub mod group_membership_invariants_proptest;

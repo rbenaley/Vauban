@@ -56,11 +56,16 @@ ipnetwork = { version = "0.21", optional = true }
 
 [features]
 default = []
+# AsyncFd correlated IPC core (`shared::correlated_ipc`). Pulled by
+# vauban-web peers and by `access-guard` (RbacClient). Tokio-free
+# crates (vault, audit, auth) MUST NOT enable this.
+correlated-ipc = ["dep:tokio"]
 # Enables the shared::access_guard module (defense-in-depth RBAC re-check
 # against vauban-access). Requires a tokio runtime in the consuming
 # binary. Activate this feature in every protocol proxy that opens
-# upstream sessions on behalf of a user.
-access-guard = ["dep:tokio"]
+# upstream sessions on behalf of a user. Also enables `correlated-ipc`
+# so RbacClient and web peers share one AsyncFd pump.
+access-guard = ["dep:tokio", "correlated-ipc"]
 # Tiny `shared::tasks::spawn_periodic` helper (Handle-based, no
 # thread-local footgun). Activate in any crate that runs ticker-driven
 # background work. tokio-free crates (vault, audit, auth) MUST NOT

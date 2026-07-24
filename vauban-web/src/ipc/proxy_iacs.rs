@@ -20,7 +20,7 @@
 
 use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
-use crate::ipc::correlated::{CorrelatedIpcCore, deliver_or_warn};
+use crate::ipc::correlated::{CorrelatedIpcCore, CorrelatedIpcErrorExt, deliver_or_warn};
 use crate::models::session::SessionStatus;
 use crate::services::broadcast::{BroadcastService, WsChannel};
 use serde_json::json;

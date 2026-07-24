@@ -8,7 +8,7 @@
 
 use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
-use crate::ipc::correlated::{CorrelatedIpcCore, deliver_or_warn};
+use crate::ipc::correlated::{CorrelatedIpcCore, CorrelatedIpcErrorExt, deliver_or_warn};
 use crate::services::recording_loss::mark_session_recording_lossy;
 use shared::messages::Message;
 use std::collections::HashMap;

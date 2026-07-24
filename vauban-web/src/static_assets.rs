@@ -179,6 +179,17 @@ pub static STATIC_FILES: &[StaticAsset] = &[
         content: include_bytes!("../static/fonts/text-security-disc.woff2"),
         content_type: "font/woff2",
     },
+    // ── Images ────────────────────────────────────────────────────────────
+    // Favicon referenced from templates/base.html. STATIC_FILES is an
+    // exhaustive Capsicum whitelist: a template link without a registry
+    // entry returns 404 and spams the audit middleware (regression that
+    // lingered until 0.9.31). Pinned by
+    // `tests/web/favicon_static_test.rs`.
+    StaticAsset {
+        path: "img/favicon.svg",
+        content: include_bytes!("../static/img/favicon.svg"),
+        content_type: "image/svg+xml",
+    },
 ];
 
 /// Look up an embedded static asset by its relative path.

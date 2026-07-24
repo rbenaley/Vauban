@@ -3,8 +3,18 @@
 //! Provides async methods to request TCP connections on behalf of
 //! sandboxed services (Capsicum). The supervisor performs DNS resolution
 //! and TCP connect, then passes the FD to the target service via SCM_RIGHTS.
+//!
+//! # Correlation hygiene (0.9.31)
+//!
+//! Aligned on [`shared::correlated_ipc::PendingGuard`] /
+//! [`CorrelatedIpcCore::insert_pending`] for the three pending maps
+//! (TCP connect, recording file, recording delete). **Not** migrated to
+//! AsyncFd `process_loop`: this client keeps a dedicated sync
+//! `supervisor-ipc` thread with `poll` + SCM_RIGHTS demux (Ping, ACME,
+//! Admin, TLS, FD passing).
 
 use crate::services::broker_latency::BrokerLatencyTracker;
+use shared::correlated_ipc::CorrelatedIpcCore;
 use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{ControlMessage, Message, SensitiveString, Service, ServiceStats};
 use std::collections::HashMap;
@@ -22,12 +32,6 @@ pub struct TlsCertData {
     pub key_pem: SensitiveString,
 }
 
-/// Pending TCP connect request waiting for response from supervisor.
-struct PendingTcpConnect {
-    /// Channel to send the response back to the caller.
-    response_tx: oneshot::Sender<TcpConnectResult>,
-}
-
 /// Result of a TCP connect request.
 #[derive(Debug)]
 pub struct TcpConnectResult {
@@ -35,11 +39,6 @@ pub struct TcpConnectResult {
     pub success: bool,
     /// Error message if connection failed.
     pub error: Option<String>,
-}
-
-/// Pending recording file request waiting for response from supervisor.
-struct PendingRecordingFile {
-    response_tx: oneshot::Sender<RecordingFileResult>,
 }
 
 /// Result of a recording file request.
@@ -51,11 +50,6 @@ pub struct RecordingFileResult {
     pub file: Option<std::fs::File>,
 }
 
-/// Pending recording delete request waiting for response from supervisor.
-struct PendingRecordingDelete {
-    response_tx: oneshot::Sender<RecordingDeleteResult>,
-}
-
 /// Result of a recording delete request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordingDeleteResult {
@@ -64,20 +58,21 @@ pub struct RecordingDeleteResult {
     pub error: Option<String>,
 }
 
-/// Pending recording delete request waiting for response from supervisor.
+/// Sync/`poll` supervisor IPC bridge (PendingGuard hygiene; not AsyncFd).
 pub struct SupervisorClientInner {
     /// IPC channel to supervisor.
     pub channel: IpcChannel,
     /// FD passing socket for SCM_RIGHTS (recording files, etc.).
     fd_passing_socket: Option<RawFd>,
     /// Next request ID for TCP connect and recording file requests.
+    /// Same monotonic allocator contract as [`CorrelatedIpcCore::alloc_id`].
     next_request_id: AtomicU64,
-    /// Pending TCP connect requests.
-    pending_tcp_connects: Mutex<HashMap<u64, PendingTcpConnect>>,
+    /// Pending TCP connect requests (oneshot + PendingGuard GC).
+    pending_tcp_connects: Mutex<HashMap<u64, oneshot::Sender<TcpConnectResult>>>,
     /// Pending recording file requests.
-    pending_recording_files: Mutex<HashMap<u64, PendingRecordingFile>>,
+    pending_recording_files: Mutex<HashMap<u64, oneshot::Sender<RecordingFileResult>>>,
     /// Pending recording delete requests (retention reaper).
-    pending_recording_deletes: Mutex<HashMap<u64, PendingRecordingDelete>>,
+    pending_recording_deletes: Mutex<HashMap<u64, oneshot::Sender<RecordingDeleteResult>>>,
     /// Service statistics for heartbeat responses.
     pub start_time: Instant,
     pub requests_processed: AtomicU64,
@@ -209,18 +204,10 @@ impl SupervisorClient {
         // (closed port, DNS failure) does not skew the dashboard p95.
         let started_at = Instant::now();
 
-        // Create response channel
         let (tx, rx) = oneshot::channel();
-        {
-            let mut pending = self
-                .inner
-                .pending_tcp_connects
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            pending.insert(request_id, PendingTcpConnect { response_tx: tx });
-        }
+        let _guard =
+            CorrelatedIpcCore::insert_pending(&self.inner.pending_tcp_connects, request_id, tx);
 
-        // Send request to supervisor
         let msg = Message::TcpConnectRequest {
             request_id,
             session_id: session_id.to_string(),
@@ -231,16 +218,10 @@ impl SupervisorClient {
         };
 
         if let Err(e) = self.inner.channel.send(&msg) {
-            // Remove pending request on send error
-            self.inner
-                .pending_tcp_connects
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&request_id);
+            // PendingGuard Drop GC on return
             return Err(format!("Failed to send TcpConnectRequest: {}", e));
         }
 
-        // Wait for response with timeout
         match tokio::time::timeout(Duration::from_secs(30), rx).await {
             Ok(Ok(result)) => {
                 if result.success {
@@ -248,19 +229,8 @@ impl SupervisorClient {
                 }
                 Ok(result)
             }
-            Ok(Err(_)) => {
-                // Channel dropped (shouldn't happen)
-                Err("Response channel dropped".to_string())
-            }
-            Err(_) => {
-                // Timeout
-                self.inner
-                    .pending_tcp_connects
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&request_id);
-                Err("TCP connect request timeout".to_string())
-            }
+            Ok(Err(_)) => Err("Response channel dropped".to_string()),
+            Err(_) => Err("TCP connect request timeout".to_string()),
         }
     }
 
@@ -281,14 +251,8 @@ impl SupervisorClient {
         );
 
         let (tx, rx) = oneshot::channel();
-        {
-            let mut pending = self
-                .inner
-                .pending_recording_files
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            pending.insert(request_id, PendingRecordingFile { response_tx: tx });
-        }
+        let _guard =
+            CorrelatedIpcCore::insert_pending(&self.inner.pending_recording_files, request_id, tx);
 
         let msg = Message::RecordingFileRequest {
             request_id,
@@ -298,25 +262,13 @@ impl SupervisorClient {
         };
 
         if let Err(e) = self.inner.channel.send(&msg) {
-            self.inner
-                .pending_recording_files
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&request_id);
             return Err(format!("Failed to send RecordingFileRequest: {}", e));
         }
 
         match tokio::time::timeout(Duration::from_secs(10), rx).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err("Response channel dropped".to_string()),
-            Err(_) => {
-                self.inner
-                    .pending_recording_files
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&request_id);
-                Err("Recording file request timeout".to_string())
-            }
+            Err(_) => Err("Recording file request timeout".to_string()),
         }
     }
 
@@ -336,14 +288,11 @@ impl SupervisorClient {
         );
 
         let (tx, rx) = oneshot::channel();
-        {
-            let mut pending = self
-                .inner
-                .pending_recording_deletes
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            pending.insert(request_id, PendingRecordingDelete { response_tx: tx });
-        }
+        let _guard = CorrelatedIpcCore::insert_pending(
+            &self.inner.pending_recording_deletes,
+            request_id,
+            tx,
+        );
 
         let msg = Message::RecordingDeleteRequest {
             request_id,
@@ -352,25 +301,13 @@ impl SupervisorClient {
         };
 
         if let Err(e) = self.inner.channel.send(&msg) {
-            self.inner
-                .pending_recording_deletes
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&request_id);
             return Err(format!("Failed to send RecordingDeleteRequest: {}", e));
         }
 
         match tokio::time::timeout(Duration::from_secs(30), rx).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err("Response channel dropped".to_string()),
-            Err(_) => {
-                self.inner
-                    .pending_recording_deletes
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&request_id);
-                Err("Recording delete request timeout".to_string())
-            }
+            Err(_) => Err("Recording delete request timeout".to_string()),
         }
     }
 
@@ -503,15 +440,8 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     "TCP connect response from supervisor"
                 );
 
-                let pending = inner
-                    .pending_tcp_connects
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&request_id);
-                if let Some(pending) = pending {
-                    let result = TcpConnectResult { success, error };
-                    let _ = pending.response_tx.send(result);
-                } else {
+                let result = TcpConnectResult { success, error };
+                if !CorrelatedIpcCore::deliver(&inner.pending_tcp_connects, request_id, result) {
                     warn!(
                         request_id = request_id,
                         "No pending request for TCP connect response"
@@ -551,23 +481,16 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     None
                 };
 
-                let pending = inner
-                    .pending_recording_files
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&request_id);
-                if let Some(pending) = pending {
-                    let result = RecordingFileResult {
-                        success: success && file.is_some(),
-                        error: if file.is_none() && success {
-                            Some("recv_fd failed".to_string())
-                        } else {
-                            error
-                        },
-                        file,
-                    };
-                    let _ = pending.response_tx.send(result);
-                } else {
+                let result = RecordingFileResult {
+                    success: success && file.is_some(),
+                    error: if file.is_none() && success {
+                        Some("recv_fd failed".to_string())
+                    } else {
+                        error
+                    },
+                    file,
+                };
+                if !CorrelatedIpcCore::deliver(&inner.pending_recording_files, request_id, result) {
                     warn!(request_id, "No pending request for recording file response");
                 }
             }
@@ -586,19 +509,13 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     "Recording delete response from supervisor"
                 );
 
-                let pending = inner
-                    .pending_recording_deletes
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&request_id);
-                if let Some(pending) = pending {
-                    let result = RecordingDeleteResult {
-                        success,
-                        bytes_freed,
-                        error,
-                    };
-                    let _ = pending.response_tx.send(result);
-                } else {
+                let result = RecordingDeleteResult {
+                    success,
+                    bytes_freed,
+                    error,
+                };
+                if !CorrelatedIpcCore::deliver(&inner.pending_recording_deletes, request_id, result)
+                {
                     warn!(
                         request_id,
                         "No pending request for recording delete response"
@@ -748,6 +665,36 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
 }
 
 #[cfg(test)]
+impl SupervisorClient {
+    /// Test-only pending-map sizes (must not be used for production control).
+    ///
+    /// Kept in a dedicated `#[cfg(test)] impl` block so source-grep helpers
+    /// that truncate at the first `#[cfg(test)]` still see the production
+    /// `supervisor_ipc_loop` (graceful_shutdown, etc.).
+    fn pending_counts_for_test(&self) -> (usize, usize, usize) {
+        let tcp = self
+            .inner
+            .pending_tcp_connects
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        let files = self
+            .inner
+            .pending_recording_files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        let deletes = self
+            .inner
+            .pending_recording_deletes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        (tcp, files, deletes)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -794,5 +741,70 @@ mod tests {
         };
         assert!(!result.success);
         assert_eq!(result.error.unwrap(), "Connection refused");
+    }
+
+    #[test]
+    fn request_paths_install_insert_pending() {
+        let source = include_str!("supervisor.rs");
+        let prod = source.split("#[cfg(test)]").next().expect("prod");
+        let count = prod.matches("CorrelatedIpcCore::insert_pending").count();
+        assert!(
+            count >= 3,
+            "each of the 3 request_* paths must call insert_pending, found {count}"
+        );
+        assert!(
+            !prod.contains("AsyncFd::"),
+            "SupervisorClient must not use AsyncFd"
+        );
+        // Split literal so this pin file does not itself match the lint needle.
+        let forbidden = format!(".{}(", "process_loop");
+        assert!(
+            !prod.contains(&forbidden),
+            "SupervisorClient must not use process_loop"
+        );
+    }
+
+    /// Closed peer ends: `channel.send` fails; PendingGuard Drop must
+    /// leave all three maps empty (no manual remove required).
+    fn closed_peer_client() -> SupervisorClient {
+        use std::os::unix::io::IntoRawFd;
+        let (c_read, c_write) = nix::unistd::pipe().expect("pipe");
+        let (d_read, d_write) = nix::unistd::pipe().expect("pipe");
+        let read_fd = c_read.into_raw_fd();
+        let write_fd = d_write.into_raw_fd();
+        drop(c_write);
+        drop(d_read);
+        let (client, _tls_rx) = SupervisorClient::new(read_fd, write_fd, None, None);
+        client
+    }
+
+    #[tokio::test]
+    async fn battle_tcp_connect_send_fail_clears_pending() {
+        let client = closed_peer_client();
+        let _ = client
+            .request_tcp_connect("sess", "127.0.0.1", 22, Service::ProxySsh, vec![1])
+            .await
+            .expect_err("send fail");
+        assert_eq!(client.pending_counts_for_test(), (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn battle_recording_file_send_fail_clears_pending() {
+        let client = closed_peer_client();
+        let _ = client
+            .request_recording_file("sess", "rec/x.cast")
+            .await
+            .expect_err("send fail");
+        assert_eq!(client.pending_counts_for_test(), (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn battle_recording_delete_send_fail_clears_pending() {
+        let client = closed_peer_client();
+        let _ = client
+            .request_recording_delete("sess", "rec/x")
+            .await
+            .expect_err("send fail");
+        assert_eq!(client.pending_counts_for_test(), (0, 0, 0));
     }
 }

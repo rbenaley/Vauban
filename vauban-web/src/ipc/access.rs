@@ -7,7 +7,7 @@
 //! INV-CORR-5).
 
 use crate::error::{AppError, AppResult};
-use crate::ipc::correlated::{CorrelatedIpcCore, deliver_or_warn};
+use crate::ipc::correlated::{CorrelatedIpcCore, CorrelatedIpcErrorExt, deliver_or_warn};
 use shared::messages::{
     AccessCheckResult, AccessCheckResultEntry, AccessRequest as AccessReq,
     AccessResponse as AccessResp, AccessRuleData, AccessRuleInfo, AccessibleGroupEntry,

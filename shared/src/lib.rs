@@ -35,6 +35,9 @@ pub mod vault_envelope;
 // proxy (vauban-proxy-ssh, vauban-proxy-rdp, ...) that opens upstream
 // sessions on behalf of a user. Behind a feature flag because it brings
 // in a tokio dependency that vault/audit/auth must not pay for.
+#[cfg(feature = "correlated-ipc")]
+pub mod correlated_ipc;
+
 #[cfg(feature = "access-guard")]
 pub mod access_guard;
 

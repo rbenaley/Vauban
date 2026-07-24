@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 150" role="img" aria-label="VAUBAN">
+  <!-- Traced from the provided brand favicon asset (bastioned fort + parade diamond). -->
+  <rect width="150" height="150" rx="33" fill="#0369a1"/>
+  <path fill="#ffffff" fill-rule="evenodd"
+        d="M48 15H50L51 33H98L99 15H101L134 48V50L116 51V98L134 99V101L101 134H99L98 116H51L50 134H48L15 101V99L33 98V51L15 50V48L48 15
+           M75 56L93 75L75 93L56 75Z"/>
+</svg>
