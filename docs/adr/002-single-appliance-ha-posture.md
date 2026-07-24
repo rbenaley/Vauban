@@ -6,6 +6,7 @@
 [Privilege Separation Architecture 1.3](../technical/Vauban_Privsep_Architecture_EN(1.3).md),
 [Recording Architecture 1.9](../technical/Vauban_Recording_Architecture_EN(1.9).md),
 [Vault Architecture 1.2](../technical/Vauban_Vault_Architecture_EN(1.2).md),
+[ADR 005 -- Capacity envelope](005-capacity-envelope.md),
 [ADR 003 -- Local-first recording storage](003-local-first-recording-storage.md)
 
 ## Context
@@ -48,9 +49,9 @@ work and standby ops stay honest.
 
 4. **Capacity envelope is separate.** Scaling limits of the sync
    control plane (audit, access, auth, supervisor) are sizing
-   constants for a single appliance. Publishing numeric envelopes
-   after a load-test campaign does not change this ADR and is not a
-   prerequisite for accepting it.
+   constants for a single appliance. Estimated guidance lives in
+   [ADR 005](005-capacity-envelope.md); a measured amend of 005 after
+   load-test does not change this ADR.
 
 ## Consequences
 

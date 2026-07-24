@@ -95,6 +95,7 @@ via pre-seal IPC.
 - [Vauban_Recording_Architecture_EN(1.9).md](Vauban_Recording_Architecture_EN(1.9).md) -- proxy-owned SSH/RDP FD recording + IACS PCAP durability (ADR 001)
 - [ADR 001 -- Recording durability](../adr/001-recording-durability-per-protocol.md) -- per-protocol durability contract
 - [ADR 002 -- Single-appliance HA](../adr/002-single-appliance-ha-posture.md) -- appliance scope and cold/warm standby
+- [ADR 005 -- Capacity envelope](../adr/005-capacity-envelope.md) -- single-appliance sizing (estimated; measured path in runbook)
 - [ADR 003 -- Local-first storage](../adr/003-local-first-recording-storage.md) -- local write path; remote async only
 - [ADR 004 -- Flat Message enum](../adr/004-flat-message-enum.md) -- retain shared flat IPC `Message`
 - [docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md) -- Operational runbook for the IPC topology / RBAC re-check failure mode
