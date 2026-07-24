@@ -93,7 +93,10 @@ via pre-seal IPC.
 - [Vauban_IAM_Architecture_EN(1.1).md](Vauban_IAM_Architecture_EN(1.1).md) -- Identity & access management (`vauban-auth`, `vauban-access`, Casbin RBAC, instance-level access rules, JIT)
 - [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) -- Defense-in-depth RBAC re-check module (`shared::access_guard`) consumed by every proxy on the `proxy-* <-> access` pipes
 - [Vauban_Recording_Architecture_EN(1.9).md](Vauban_Recording_Architecture_EN(1.9).md) -- proxy-owned SSH/RDP FD recording + IACS PCAP durability (ADR 001)
-- [docs/adr/001-per-protocol-recording-durability.md](../adr/001-per-protocol-recording-durability.md) -- recording durability contract
+- [ADR 001 -- Recording durability](../adr/001-recording-durability-per-protocol.md) -- per-protocol durability contract
+- [ADR 002 -- Single-appliance HA](../adr/002-single-appliance-ha-posture.md) -- appliance scope and cold/warm standby
+- [ADR 003 -- Local-first storage](../adr/003-local-first-recording-storage.md) -- local write path; remote async only
+- [ADR 004 -- Flat Message enum](../adr/004-flat-message-enum.md) -- retain shared flat IPC `Message`
 - [docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md) -- Operational runbook for the IPC topology / RBAC re-check failure mode
 
 ### 2.2 Architecture Diagram

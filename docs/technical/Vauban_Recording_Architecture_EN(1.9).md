@@ -1025,6 +1025,8 @@ retention_batch_size = 50
 | [IAM Architecture](Vauban_IAM_Architecture_EN(1.1).md) | Casbin / `PermissionContext`, role invariants |
 | [recording_retention runbook](../runbooks/recording_retention.md) | Operational reference for the reaper |
 | [ADR 001 -- Recording durability per protocol](../adr/001-recording-durability-per-protocol.md) | IACS ack-block vs SSH/RDP best-effort + detectable loss |
+| [ADR 003 -- Local-first recording storage](../adr/003-local-first-recording-storage.md) | Local write path is the integrity plane; object store = async mirror only |
+| [ADR 002 -- Single-appliance HA posture](../adr/002-single-appliance-ha-posture.md) | Appliance scope; cold/warm standby replicates local artefact tree |
 
 ---
 
