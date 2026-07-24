@@ -21,7 +21,7 @@ use crate::smtp_client::{MailEnvelope, SmtpError, default_client_config, open_se
 use shared::ipc::IpcChannel;
 use shared::messages::{ControlMessage, Message};
 
-const BACKOFF_CAP: Duration = Duration::from_secs(60 * 60);
+const BACKOFF_CAP: Duration = Duration::from_hours(1);
 const BACKOFF_BASE: Duration = Duration::from_secs(30);
 
 diesel::table! {
@@ -433,5 +433,11 @@ mod tests {
     #[test]
     fn compute_backoff_caps_at_one_hour() {
         assert_eq!(compute_backoff(7), BACKOFF_CAP);
+    }
+
+    #[test]
+    fn backoff_cap_is_one_hour() {
+        assert_eq!(BACKOFF_CAP, Duration::from_hours(1));
+        assert_eq!(Duration::from_hours(1), Duration::from_secs(3600));
     }
 }

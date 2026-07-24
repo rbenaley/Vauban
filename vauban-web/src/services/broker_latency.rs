@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn capacity_cap_bounds_memory_under_burst() {
-        let t = BrokerLatencyTracker::new(Duration::from_secs(3600), 8);
+        let t = BrokerLatencyTracker::new(Duration::from_hours(1), 8);
         for us in 1..=50u64 {
             t.record(Duration::from_micros(us));
         }

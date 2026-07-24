@@ -1758,7 +1758,7 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
 
 fn should_respawn(state: &mut ChildState, max_respawns_per_hour: u32) -> bool {
     // Reset counter if more than an hour since last respawn
-    if state.last_respawn.elapsed() > Duration::from_secs(3600) {
+    if state.last_respawn.elapsed() > Duration::from_hours(1) {
         state.respawn_count = 0;
         return true;
     }

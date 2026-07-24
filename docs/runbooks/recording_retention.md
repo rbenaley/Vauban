@@ -123,3 +123,4 @@ Recording list/detail/download endpoints filter on `is_recorded AND recording_pa
 
 - [Recording Architecture v1.7 -- Retention (§11) + Appendix B](../technical/Vauban_Recording_Architecture_EN(1.8).md#11-retention)
 - [Recording hydrator runbook](recording_hydrator.md) (runs one hour earlier by default)
+- [Rust 1.93 hygiene smoke test](rust_193_hygiene_smoke_test.md) (legacy `.mp4.blake3` sidecar delete)

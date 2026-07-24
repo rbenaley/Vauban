@@ -132,15 +132,30 @@ impl RateLimiter {
     /// Clean up expired entries from in-memory store.
     ///
     /// Should be called periodically to prevent memory leaks.
+    ///
+    /// DashMap has no `HashMap::extract_if`; we collect stale keys then
+    /// remove (same ownership transfer + count as extract_if).
     pub fn cleanup_expired(&self) {
         if let Self::InMemory { store, .. } = self {
             let now = Instant::now();
             let window_duration = Duration::from_secs(60);
+            let keep_horizon = window_duration * 2;
 
-            let before_count = store.len();
-            store.retain(|_, entry| now.duration_since(entry.window_start) < window_duration * 2);
+            let stale_keys: Vec<String> = store
+                .iter()
+                .filter_map(|entry| {
+                    if now.duration_since(entry.window_start) >= keep_horizon {
+                        Some(entry.key().clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let expired_count = stale_keys.len();
+            for key in stale_keys {
+                store.remove(&key);
+            }
 
-            let expired_count = before_count.saturating_sub(store.len());
             if expired_count > 0 {
                 debug!("Cleaned up {} expired rate limit entries", expired_count);
             }
@@ -287,7 +302,7 @@ mod tests {
                 "very_old_ip".to_string(),
                 RateLimitEntry {
                     count: 100,
-                    window_start: Instant::now() - Duration::from_secs(3600),
+                    window_start: Instant::now() - Duration::from_hours(1),
                 },
             );
             let result = unwrap_ok!(limiter.check("very_old_ip", 5).await);
@@ -333,6 +348,115 @@ mod tests {
         let result = unwrap_ok!(limiter.check("regression_ip", 3).await);
         assert!(!result.allowed);
         assert_eq!(result.remaining, 0);
+    }
+
+    // ==================== extract_if-equivalent GC invariants ====================
+
+    #[test]
+    fn cleanup_expired_uses_collect_then_remove_not_retain() {
+        let full = include_str!("rate_limit.rs");
+        let prod = full.split("#[cfg(test)]").next().unwrap_or(full);
+        let fn_start = prod
+            .find("pub fn cleanup_expired")
+            .expect("cleanup_expired must exist");
+        // Bound the scan to the impl block that ends before `mod tests`.
+        let body = &prod[fn_start..fn_start + 900.min(prod.len() - fn_start)];
+        assert!(
+            body.contains("stale_keys") && body.contains("store.remove"),
+            "cleanup_expired must collect stale keys then remove (DashMap extract_if equivalent)"
+        );
+        assert!(
+            !body.contains(".retain("),
+            "cleanup_expired must not use DashMap::retain"
+        );
+    }
+
+    /// Proptest-style corpus: mix of fresh and stale Instant windows.
+    #[test]
+    fn cleanup_expired_keeps_only_entries_within_keep_horizon() {
+        let limiter = RateLimiter::in_memory();
+        let RateLimiter::InMemory { store, .. } = &limiter else {
+            panic!("expected in-memory");
+        };
+        let now = Instant::now();
+        let cases = [
+            ("fresh_0", Duration::from_secs(0), true),
+            ("fresh_30", Duration::from_secs(30), true),
+            ("fresh_119", Duration::from_secs(119), true),
+            ("stale_120", Duration::from_secs(120), false),
+            ("stale_180", Duration::from_secs(180), false),
+            ("stale_3600", Duration::from_hours(1), false),
+        ];
+        for (key, age, _) in cases {
+            store.insert(
+                key.to_string(),
+                RateLimitEntry {
+                    count: 1,
+                    window_start: now - age,
+                },
+            );
+        }
+        limiter.cleanup_expired();
+        for (key, _, keep) in cases {
+            assert_eq!(
+                store.contains_key(key),
+                keep,
+                "key {key} keep={keep} after cleanup"
+            );
+        }
+    }
+
+    /// Battle: concurrent store inserts + cleanup_expired under contention.
+    #[test]
+    fn battle_concurrent_insert_and_cleanup() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let limiter = Arc::new(RateLimiter::in_memory());
+        let n = 6usize;
+        let barrier = Arc::new(Barrier::new(n));
+        let mut handles = Vec::with_capacity(n);
+        for t in 0..n {
+            let limiter = Arc::clone(&limiter);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                let RateLimiter::InMemory { store, .. } = limiter.as_ref() else {
+                    return;
+                };
+                for i in 0..48 {
+                    let age = if i % 4 == 0 {
+                        Duration::from_secs(180)
+                    } else {
+                        Duration::from_secs(10)
+                    };
+                    store.insert(
+                        format!("battle-{t}-{i}"),
+                        RateLimitEntry {
+                            count: 1,
+                            window_start: Instant::now() - age,
+                        },
+                    );
+                    if i % 6 == 0 {
+                        limiter.cleanup_expired();
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread");
+        }
+        limiter.cleanup_expired();
+        if let RateLimiter::InMemory { store, .. } = limiter.as_ref() {
+            assert!(store.len() <= n * 48);
+            for entry in store.iter() {
+                assert!(
+                    Instant::now().duration_since(entry.window_start) < Duration::from_secs(120),
+                    "stale entry survived cleanup: {}",
+                    entry.key()
+                );
+            }
+        }
     }
 
     // ==================== No-network guarantee ====================

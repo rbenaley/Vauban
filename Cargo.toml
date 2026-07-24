@@ -25,9 +25,9 @@ exclude = ["vauban-proxy-rdp"]
 default-members = ["vauban-supervisor"]
 
 [workspace.package]
-version = "0.9.31"
+version = "0.9.32"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.93"
 authors = ["Richard Ben Aleya"]
 license = "BSD-2-Clause"
 

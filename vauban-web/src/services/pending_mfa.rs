@@ -93,9 +93,24 @@ impl PendingMfaStore {
 
     /// Drop every entry older than [`Self::TTL`]. Called periodically to bound
     /// memory from abandoned enrolments.
+    ///
+    /// DashMap has no `HashMap::extract_if`; we collect stale keys then
+    /// remove (same semantics as extract_if on a plain HashMap).
     pub fn sweep(&self) {
-        self.inner
-            .retain(|_, entry| entry.created_at.elapsed() <= Self::TTL);
+        let stale_keys: Vec<String> = self
+            .inner
+            .iter()
+            .filter_map(|entry| {
+                if entry.created_at.elapsed() > Self::TTL {
+                    Some(entry.key().clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for key in stale_keys {
+            self.inner.remove(&key);
+        }
     }
 
     /// Number of live entries (test/diagnostic helper).
@@ -188,5 +203,91 @@ mod tests {
         store.sweep();
         assert_eq!(store.get("fresh", "s").as_deref(), Some("FRESH"));
         assert!(store.get("stale", "s").is_none());
+    }
+
+    #[test]
+    fn sweep_uses_collect_then_remove_not_retain() {
+        let full = include_str!("pending_mfa.rs");
+        let prod = full.split("#[cfg(test)]").next().unwrap_or(full);
+        let fn_start = prod.find("pub fn sweep").expect("sweep must exist");
+        let body = &prod[fn_start..];
+        let fn_end = body
+            .find("\n    /// Number of live")
+            .unwrap_or(body.len().min(600));
+        let body = &body[..fn_end];
+        assert!(
+            body.contains("stale_keys") && body.contains("self.inner.remove"),
+            "sweep must collect stale keys then remove (DashMap extract_if equivalent)"
+        );
+        assert!(
+            !body.contains(".retain("),
+            "sweep must not use DashMap::retain"
+        );
+    }
+
+    /// Proptest-style: mixed fresh/stale corpus survives sweep correctly.
+    #[test]
+    fn sweep_proptest_mixed_fresh_and_stale() {
+        let store = PendingMfaStore::new();
+        for i in 0..16 {
+            let user = format!("u{i}");
+            if i % 3 == 0 {
+                store.inner.insert(
+                    PendingMfaStore::key(&user, "s"),
+                    PendingEntry {
+                        secret: format!("STALE{i}"),
+                        created_at: Instant::now()
+                            - (PendingMfaStore::TTL + Duration::from_secs(1 + i as u64)),
+                    },
+                );
+            } else {
+                store.put(&user, "s", format!("FRESH{i}"));
+            }
+        }
+        store.sweep();
+        for i in 0..16 {
+            let user = format!("u{i}");
+            if i % 3 == 0 {
+                assert!(store.get(&user, "s").is_none(), "stale u{i}");
+            } else {
+                assert_eq!(
+                    store.get(&user, "s").as_deref(),
+                    Some(format!("FRESH{i}").as_str())
+                );
+            }
+        }
+    }
+
+    /// Battle: concurrent put/get + sweep.
+    #[test]
+    fn battle_concurrent_put_get_and_sweep() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let store = Arc::new(PendingMfaStore::new());
+        let n = 6usize;
+        let barrier = Arc::new(Barrier::new(n));
+        let mut handles = Vec::with_capacity(n);
+        for t in 0..n {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                for i in 0..40 {
+                    let u = format!("battle-{t}");
+                    let s = format!("sess-{i}");
+                    store.put(&u, &s, format!("sec-{t}-{i}"));
+                    let _ = store.get(&u, &s);
+                    if i % 5 == 0 {
+                        store.sweep();
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread");
+        }
+        store.sweep();
+        assert!(store.len() <= n * 40);
     }
 }

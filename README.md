@@ -86,7 +86,7 @@ Vauban's security is built on defense in depth:
 
 ### Prerequisites
 
-- Rust 1.89+ (edition 2024)
+- Rust 1.93+ (edition 2024)
 - [just](https://github.com/casey/just) command runner
 - NASM (for OpenH264 assembly compilation)
 - PostgreSQL 18+

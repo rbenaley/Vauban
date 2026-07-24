@@ -25,7 +25,7 @@ See [Vauban_Vault_Architecture_EN(1.2).md](../docs/technical/Vauban_Vault_Archit
 
 ## Prerequisites
 
-- Rust 1.89+ (edition 2024)
+- Rust 1.93+ (edition 2024)
 - FreeBSD (for Capsicum sandbox in production) or Linux/macOS (development)
 
 ## Setup

@@ -1,5 +1,7 @@
 //! Property + battle tests: Keyring::encrypt always yields a vault envelope (I5).
 
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use proptest::prelude::*;
 use std::sync::{Arc, Barrier};
 use std::thread;

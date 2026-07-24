@@ -66,6 +66,16 @@ impl ReplayCache {
         }
     }
 
+    /// Test-only constructor with a custom TTL (avoids sleeping for
+    /// [`TOKEN_TTL_SECONDS`] in eviction tests).
+    #[cfg(test)]
+    pub fn with_ttl(ttl: Duration) -> Self {
+        Self {
+            entries: VecDeque::with_capacity(MAX_ENTRIES),
+            ttl,
+        }
+    }
+
     /// Try to record `(session_id, nonce)`. Returns `false` if the same
     /// pair has been recorded within the TTL window (replay detected).
     pub fn record(&mut self, session_id: &str, nonce: &[u8; NONCE_LENGTH]) -> bool {
@@ -90,12 +100,21 @@ impl ReplayCache {
 
     fn evict_expired(&mut self) {
         let now = Instant::now();
-        while let Some(front) = self.entries.front() {
-            if now.duration_since(front.inserted_at) > self.ttl {
-                self.entries.pop_front();
-            } else {
-                break;
-            }
+        let ttl = self.ttl;
+        while self
+            .entries
+            .pop_front_if(|e| now.duration_since(e.inserted_at) > ttl)
+            .is_some()
+        {}
+    }
+
+    /// Backdate every entry so the next [`Self::record`] / eviction pass
+    /// treats them as older than `age` (test harness only).
+    #[cfg(test)]
+    pub fn backdate_all_for_test(&mut self, age: Duration) {
+        let now = Instant::now();
+        for e in &mut self.entries {
+            e.inserted_at = now.checked_sub(age).unwrap_or(e.inserted_at);
         }
     }
 
@@ -111,8 +130,11 @@ impl ReplayCache {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier, Mutex};
+    use std::thread;
 
     fn nonce(b: u8) -> [u8; NONCE_LENGTH] {
         [b; NONCE_LENGTH]
@@ -152,5 +174,100 @@ mod tests {
             assert!(cache.record(&format!("s{i}"), &nonce((i % 256) as u8)));
         }
         assert_eq!(cache.len(), MAX_ENTRIES);
+    }
+
+    #[test]
+    fn expired_entries_evicted_before_replay_check() {
+        let mut cache = ReplayCache::with_ttl(Duration::from_secs(1));
+        assert!(cache.record("sess-1", &nonce(1)));
+        assert!(!cache.record("sess-1", &nonce(1)));
+        cache.backdate_all_for_test(Duration::from_secs(2));
+        // Expired: same pair must be accepted again.
+        assert!(cache.record("sess-1", &nonce(1)));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn evict_expired_uses_pop_front_if() {
+        let src = include_str!("replay_cache.rs");
+        let fn_start = src
+            .find("fn evict_expired")
+            .expect("evict_expired must exist");
+        let body = &src[fn_start..];
+        let fn_end = body
+            .find("\n    #[cfg(test)]")
+            .unwrap_or(body.len().min(400));
+        let body = &body[..fn_end];
+        assert!(
+            body.contains("pop_front_if"),
+            "evict_expired must use VecDeque::pop_front_if"
+        );
+        assert!(
+            !body.contains("while let Some(front) = self.entries.front()"),
+            "evict_expired must not use the legacy front()/pop_front loop"
+        );
+    }
+
+    /// Battle: concurrent record under a shared Mutex -- no panic, bound
+    /// honored, same-pair replays rejected while within TTL.
+    #[test]
+    fn battle_concurrent_record_under_mutex() {
+        let cache = Arc::new(Mutex::new(ReplayCache::new()));
+        let n = 8usize;
+        let barrier = Arc::new(Barrier::new(n));
+        let mut handles = Vec::with_capacity(n);
+        for t in 0..n {
+            let cache = Arc::clone(&cache);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                for i in 0..64 {
+                    let sid = format!("s{t}-{i}");
+                    let n = nonce(((t * 64 + i) % 256) as u8);
+                    let mut guard = cache.lock().expect("lock");
+                    assert!(guard.record(&sid, &n));
+                    assert!(!guard.record(&sid, &n), "replay must be rejected");
+                    assert!(guard.len() <= MAX_ENTRIES);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread");
+        }
+        let guard = cache.lock().expect("lock");
+        assert!(guard.len() <= MAX_ENTRIES);
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// After backdating past TTL, previously recorded pairs can be
+        /// recorded again.
+        #[test]
+        fn expired_entries_allow_rerecord(n in 1usize..32) {
+            let mut cache = ReplayCache::with_ttl(Duration::from_millis(50));
+            let mut pairs = Vec::with_capacity(n);
+            for i in 0..n {
+                let sid = format!("sess-{i}");
+                let nonce = [(i % 256) as u8; NONCE_LENGTH];
+                prop_assert!(cache.record(&sid, &nonce));
+                pairs.push((sid, nonce));
+            }
+            prop_assert_eq!(cache.len(), n);
+            cache.backdate_all_for_test(Duration::from_millis(100));
+            for (sid, nonce) in &pairs {
+                prop_assert!(
+                    cache.record(sid, nonce),
+                    "expired pair must be accepted again: {sid}"
+                );
+            }
+            prop_assert_eq!(cache.len(), n);
+        }
     }
 }

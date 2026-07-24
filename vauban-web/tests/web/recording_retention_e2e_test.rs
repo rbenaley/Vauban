@@ -156,3 +156,28 @@ async fn recent_recording_still_listed_when_only_old_session_reaped() {
     assert_eq!(list.status_code().as_u16(), 200);
     assert!(list.text().contains(&recent_uuid.to_string()));
 }
+
+/// E2E seam: retention delete path removes legacy flat RDP media + BLAKE3
+/// sidecar (the same helper supervisor invokes for `RecordingDeleteRequest`).
+#[tokio::test]
+async fn legacy_flat_rdp_delete_removes_mp4_blake3_sidecar() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let session_uuid = Uuid::new_v4();
+    let rel = format!("2024/01/{session_uuid}.mp4");
+    let media = base.path().join(&rel);
+    std::fs::create_dir_all(media.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&media, b"e2e-mp4").expect("write mp4");
+    let sidecar = media.with_added_extension("blake3");
+    std::fs::write(&sidecar, b"e2e-blake3").expect("write blake3");
+
+    let freed = shared::recording_paths::delete_recording_storage_path(
+        base.path(),
+        &rel,
+        &session_uuid.to_string(),
+    )
+    .expect("delete via recording_paths seam");
+
+    assert!(!media.exists(), "media must be gone after delete seam");
+    assert!(!sidecar.exists(), "sidecar must be gone after delete seam");
+    assert_eq!(freed, b"e2e-mp4".len() as u64 + b"e2e-blake3".len() as u64);
+}

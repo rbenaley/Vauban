@@ -1574,7 +1574,7 @@ mod tests {
 
         // 1-hour window so nothing flushes during the test; we read
         // the buffered count at the end.
-        let c = Arc::new(PeriodicLogCoalescer::new(Duration::from_secs(3600)));
+        let c = Arc::new(PeriodicLogCoalescer::new(Duration::from_hours(1)));
         let mut handles = Vec::new();
         for _ in 0..4 {
             let c = Arc::clone(&c);

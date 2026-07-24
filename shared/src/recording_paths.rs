@@ -197,16 +197,15 @@ pub fn delete_recording_storage_path(
     } else {
         std::fs::remove_file(&full).map_err(|e| format!("remove_file: {e}"))?;
         let mut freed = bytes;
-        let sidecar = full.with_extension("mp4.blake3");
-        // Legacy sidecar: `{uuid}.mp4.blake3` — with_extension replaces `.mp4`.
-        let blake3_path = PathBuf::from(format!("{}.blake3", full.display()));
-        for extra in [sidecar, blake3_path] {
-            if extra.exists() {
-                if let Ok(meta) = extra.metadata() {
-                    freed = freed.saturating_add(meta.len());
-                }
-                let _ = std::fs::remove_file(&extra);
+        // Legacy RDP flat layout: `{uuid}.mp4` + integrity sidecar
+        // `{uuid}.mp4.blake3`. `with_added_extension` appends without
+        // replacing `.mp4` (unlike `with_extension`).
+        let blake3_path = full.with_added_extension("blake3");
+        if blake3_path.exists() {
+            if let Ok(meta) = blake3_path.metadata() {
+                freed = freed.saturating_add(meta.len());
             }
+            let _ = std::fs::remove_file(&blake3_path);
         }
         Ok(freed)
     }
@@ -232,6 +231,7 @@ fn dir_size_bytes(path: &Path) -> Result<u64, std::io::Error> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -367,5 +367,96 @@ mod tests {
         assert!(
             validate_recording_unlink_relative_path(&format!("/abs/{UUID}/x.pcap"), UUID).is_err()
         );
+    }
+
+    // ==================== Legacy RDP BLAKE3 sidecar delete ====================
+
+    #[test]
+    fn delete_legacy_flat_mp4_removes_blake3_sidecar_and_counts_bytes() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let rel = format!("2026/02/{UUID}.mp4");
+        let media = base.path().join(&rel);
+        std::fs::create_dir_all(media.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&media, b"fake-mp4-bytes").expect("write mp4");
+        let sidecar = media.with_added_extension("blake3");
+        std::fs::write(&sidecar, b"deadbeef").expect("write blake3");
+
+        let freed = delete_recording_storage_path(base.path(), &rel, UUID).expect("delete");
+        assert!(!media.exists(), "media must be removed");
+        assert!(!sidecar.exists(), "sidecar must be removed");
+        assert_eq!(
+            freed,
+            b"fake-mp4-bytes".len() as u64 + b"deadbeef".len() as u64
+        );
+    }
+
+    #[test]
+    fn delete_legacy_flat_mp4_without_sidecar_succeeds() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let rel = format!("2026/02/{UUID}.mp4");
+        let media = base.path().join(&rel);
+        std::fs::create_dir_all(media.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&media, b"solo").expect("write mp4");
+
+        let freed = delete_recording_storage_path(base.path(), &rel, UUID).expect("delete");
+        assert!(!media.exists());
+        assert_eq!(freed, b"solo".len() as u64);
+    }
+
+    #[test]
+    fn delete_recording_storage_path_uses_with_added_extension_for_blake3() {
+        let src = include_str!("recording_paths.rs");
+        let fn_start = src
+            .find("pub fn delete_recording_storage_path")
+            .expect("delete_recording_storage_path must exist");
+        let body = &src[fn_start..];
+        let fn_end = body
+            .find("\nfn dir_size_bytes")
+            .unwrap_or(body.len().min(2500));
+        let body = &body[..fn_end];
+        assert!(
+            body.contains("with_added_extension(\"blake3\")"),
+            "delete must resolve sidecar via with_added_extension(\"blake3\")"
+        );
+        assert!(
+            !body.contains("with_extension(\"mp4.blake3\")"),
+            "must not use with_extension(\"mp4.blake3\") workaround"
+        );
+        assert!(
+            !body.contains("format!(\"{}.blake3\""),
+            "must not build sidecar via format!(\"{{}}.blake3\")"
+        );
+    }
+
+    /// Battle: concurrent deletes of distinct legacy flat pairs under one base.
+    #[test]
+    fn battle_concurrent_delete_legacy_flat_mp4_and_sidecar() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let base = Arc::new(tempfile::tempdir().expect("tempdir"));
+        let n = 8usize;
+        let barrier = Arc::new(Barrier::new(n));
+        let mut handles = Vec::with_capacity(n);
+        for i in 0..n {
+            let base = Arc::clone(&base);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                let uuid = format!("11111111-2222-3333-4444-{:012}", i);
+                let rel = format!("2026/02/{uuid}.mp4");
+                let media = base.path().join(&rel);
+                std::fs::create_dir_all(media.parent().expect("parent")).expect("mkdir");
+                std::fs::write(&media, format!("media-{i}")).expect("write mp4");
+                let sidecar = media.with_added_extension("blake3");
+                std::fs::write(&sidecar, format!("hash-{i}")).expect("write blake3");
+                barrier.wait();
+                delete_recording_storage_path(base.path(), &rel, &uuid).expect("delete");
+                assert!(!media.exists());
+                assert!(!sidecar.exists());
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread");
+        }
     }
 }

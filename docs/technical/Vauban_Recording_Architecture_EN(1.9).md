@@ -18,6 +18,10 @@ remains ack-block IPC with audit-held FDs (unchanged). Shared broker
 client: `shared::recording_fd`. Crate version **0.9.29**. See ADR 001
 amendment.
 
+**Amended:** 24 July 2026 -- legacy flat RDP retention delete resolves
+`{uuid}.mp4.blake3` via `Path::with_added_extension("blake3")`
+(`shared::recording_paths::delete_recording_storage_path`).
+
 ---
 
 ## Table of Contents
@@ -974,6 +978,11 @@ recordings/
             <legacy-rdp-uuid>.mp4    # Pre-segmentation; backward-compatible
             <legacy-rdp-uuid>.mp4.blake3
 ```
+
+Retention delete resolves the integrity sidecar with
+`Path::with_added_extension("blake3")` on the media path (so
+`uuid.mp4` becomes `uuid.mp4.blake3` without replacing the `.mp4`
+extension). See `shared::recording_paths::delete_recording_storage_path`.
 
 The `YYYY/MM` partition is anchored on session start; for IACS this
 anchor is the proxy-supplied `connected_at_us` so a long-lived
