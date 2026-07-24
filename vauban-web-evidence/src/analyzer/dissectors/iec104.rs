@@ -21,7 +21,7 @@
 //! `M_*` (monitoring direction) is Read; cause `0x2D-0x2F` (negative
 //! acks / unknown / unknown common addr) is Exception.
 
-use crate::services::iacs_packet_analyzer::types::{Direction, FieldNode, PacketKind};
+use crate::analyzer::types::{Direction, FieldNode, PacketKind};
 
 use super::Dissection;
 

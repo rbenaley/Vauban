@@ -246,8 +246,9 @@
 
                 {% if recording.recording_lossy %}
                 <div class="mb-4 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/30 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
-                    Incomplete capture: the SSH/RDP audit channel dropped one or more frames
-                    (best-effort recording). BLAKE3 still covers the bytes that were written.
+                    Incomplete capture: a local recording write or FD lease failed
+                    (disk full, I/O error, or broker refusal). BLAKE3 still covers
+                    the bytes that were successfully written.
                 </div>
                 {% endif %}
 

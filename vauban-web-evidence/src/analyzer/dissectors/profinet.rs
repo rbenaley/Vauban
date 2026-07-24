@@ -20,7 +20,7 @@
 //! Payloads that do not start with `05 00` or are shorter than 16
 //! bytes fall back to [`super::passthrough`] (never `Cmd`).
 
-use crate::services::iacs_packet_analyzer::types::{Direction, FieldNode, PacketKind};
+use crate::analyzer::types::{Direction, FieldNode, PacketKind};
 
 use super::Dissection;
 

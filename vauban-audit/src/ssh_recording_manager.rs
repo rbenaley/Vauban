@@ -4,10 +4,15 @@
 //! BLAKE3 integrity hashing and meta.json metadata for each session.
 
 use crate::recording_manager::SyncStats;
+#[cfg(test)]
 use shared::messages::SshRecordingEvent;
+#[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::fs::File;
+#[cfg(test)]
 use std::io::{BufWriter, Write};
+#[cfg(test)]
 use tracing::{debug, warn};
 
 /// Metadata returned when an SSH recording session ends.
@@ -23,6 +28,7 @@ pub struct SshEndSessionResult {
     pub height: u16,
 }
 
+#[cfg(test)]
 struct SshRecordingSession {
     writer: BufWriter<File>,
     hasher: blake3::Hasher,
@@ -42,6 +48,7 @@ struct SshRecordingSession {
     dirty: bool,
 }
 
+#[cfg(test)]
 /// Parameters for starting a new SSH recording session.
 pub struct SshSessionStartParams {
     pub file: File,
@@ -54,16 +61,19 @@ pub struct SshSessionStartParams {
 
 /// Manages multiple concurrent SSH recording sessions.
 pub struct SshRecordingManager {
+    #[cfg(test)]
     sessions: HashMap<String, SshRecordingSession>,
 }
 
 impl SshRecordingManager {
     pub fn new() -> Self {
         Self {
+            #[cfg(test)]
             sessions: HashMap::new(),
         }
     }
 
+    #[cfg(test)]
     /// Compute the base directory for a session's recording files.
     pub fn compute_base_dir(session_id: &str) -> String {
         let now = std::time::SystemTime::now()
@@ -74,11 +84,13 @@ impl SshRecordingManager {
         format!("{year}/{month:02}/{session_id}")
     }
 
+    #[cfg(test)]
     /// Compute the relative path for the asciicast file.
     pub fn compute_relative_path(session_id: &str) -> String {
         format!("{}/session.cast", Self::compute_base_dir(session_id))
     }
 
+    #[cfg(test)]
     /// Start recording an SSH session. Writes the asciicast v2 header.
     pub fn start_session(&mut self, session_id: &str, params: SshSessionStartParams) {
         if self.sessions.contains_key(session_id) {
@@ -141,6 +153,7 @@ impl SshRecordingManager {
         debug!(session_id = %session_id, "SSH recording started");
     }
 
+    #[cfg(test)]
     /// Record a single event (output, input, or resize).
     pub fn handle_data(
         &mut self,
@@ -194,6 +207,7 @@ impl SshRecordingManager {
     ///
     /// Durability only: the hasher and the byte stream are never touched, so
     /// the per-session BLAKE3 digest stays equal to the on-disk bytes.
+    #[cfg(test)]
     pub fn sync_dirty(&mut self) -> SyncStats {
         let mut stats = SyncStats::default();
         for (session_id, session) in self.sessions.iter_mut() {
@@ -219,6 +233,12 @@ impl SshRecordingManager {
         stats
     }
 
+    #[cfg(not(test))]
+    pub fn sync_dirty(&mut self) -> SyncStats {
+        SyncStats::default()
+    }
+
+    #[cfg(test)]
     /// End a recording session, flush the file, and return metadata.
     pub fn end_session(&mut self, session_id: &str) -> Option<SshEndSessionResult> {
         let mut session = self.sessions.remove(session_id)?;
@@ -297,6 +317,7 @@ impl SshRecordingManager {
     }
 }
 
+#[cfg(test)]
 /// Convert Unix days (since 1970-01-01) to (year, month).
 fn unix_days_to_year_month(days: u64) -> (u32, u32) {
     // Civil calendar algorithm (Howard Hinnant)

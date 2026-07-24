@@ -4,6 +4,19 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use zeroize::Zeroize;
 
+/// Integrity and playback metadata for one sealed RDP fMP4 segment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RdpRecordingSegment {
+    pub index: u32,
+    pub width: u16,
+    pub height: u16,
+    pub duration_ticks: u64,
+    pub init_size: u64,
+    pub file_size: u64,
+    pub blake3_hex: String,
+    pub codec_string: String,
+}
+
 /// A string wrapper for sensitive data transported via IPC.
 ///
 /// `SensitiveString` provides three security properties:
@@ -185,6 +198,18 @@ impl RdpAuthMode {
     }
 }
 
+/// SMTP transport encryption mode (Issue #10 / sealed mailer provision).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpEncryption {
+    /// Connect on the plain port (e.g. 587), then upgrade with STARTTLS.
+    Starttls,
+    /// Connect with TLS from byte 0 (e.g. port 465).
+    Tls,
+    /// No transport encryption (development only).
+    Plaintext,
+}
+
 /// Service identifier for routing messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Service {
@@ -202,6 +227,10 @@ pub enum Service {
     /// supervisor's SCM_RIGHTS broker. See
     /// `docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.1).md`.
     ProxyIacs,
+    /// Sealed SMTP outbox drainer (Issue #10 Lot B). Receives brokered
+    /// TCP sockets for the configured relay via SCM_RIGHTS; zero peer
+    /// TOPOLOGY edges (supervisor control channel + fd socketpair only).
+    Mailer,
 }
 
 impl Service {
@@ -221,6 +250,7 @@ impl Service {
             Service::ProxySsh => 6,
             Service::ProxyRdp => 7,
             Service::ProxyIacs => 8,
+            Service::Mailer => 9,
         }
     }
 }
@@ -2470,9 +2500,13 @@ pub enum Message {
         height: u16,
     },
 
-    /// Signal vauban-audit to finalize the fMP4 recording file.
+    /// Signal vauban-audit that proxy-owned fMP4 segments are sealed.
     RdpRecordingEnd {
         session_id: String,
+        segments: Vec<RdpRecordingSegment>,
+        meta_json_relative_path: String,
+        total_frames: u64,
+        total_bytes: u64,
     },
 
     // ========== SSH Recording (ProxySsh -> Audit) ==========
@@ -2493,9 +2527,19 @@ pub enum Message {
         data: Vec<u8>,
     },
 
-    /// Signal vauban-audit to finalize the asciicast recording file.
+    /// Signal vauban-audit that the proxy-owned asciicast file is sealed.
+    ///
+    /// The proxy owns and writes `session.cast`; audit only persists the
+    /// supplied integrity metadata into `meta.json`.
     SshRecordingEnd {
         session_id: String,
+        blake3_hex: String,
+        total_bytes: u64,
+        total_events: u64,
+        duration_secs: f64,
+        width: u16,
+        height: u16,
+        meta_json_relative_path: String,
     },
 
     // ========== IACS Recording (ProxyIacs <-> Audit) ==========
@@ -3015,6 +3059,27 @@ pub enum Message {
     RecordingLossObserved {
         session_id: String,
     },
+
+    /// Supervisor provisions SMTP relay configuration + credentials to
+    /// vauban-mailer at startup, BEFORE the mailer seals its sandbox
+    /// (mirrors [`Message::AuthLdapProvision`] / [`Message::TlsCertProvision`]).
+    /// Appended at the END of the enum to preserve bincode discriminants.
+    MailerSmtpProvision {
+        smtp_host: String,
+        smtp_port: u16,
+        smtp_encryption: SmtpEncryption,
+        smtp_username: String,
+        smtp_password: SensitiveString,
+        helo_name: String,
+        from_address: String,
+        from_name: String,
+        reply_to: String,
+        poll_interval_secs: u64,
+        batch_size: i64,
+        max_attempts: i32,
+        smtp_timeout_secs: u64,
+        broker_timeout_secs: u64,
+    },
 }
 
 impl Message {
@@ -3113,8 +3178,9 @@ mod tests {
             Service::ProxySsh,
             Service::ProxyRdp,
             Service::ProxyIacs,
+            Service::Mailer,
         ];
-        assert_eq!(services.len(), 9);
+        assert_eq!(services.len(), 10);
     }
 
     /// Drift pin: the wire discriminants are an immutable contract
@@ -3134,6 +3200,7 @@ mod tests {
         assert_eq!(Service::ProxySsh.as_token_discriminant(), 6);
         assert_eq!(Service::ProxyRdp.as_token_discriminant(), 7);
         assert_eq!(Service::ProxyIacs.as_token_discriminant(), 8);
+        assert_eq!(Service::Mailer.as_token_discriminant(), 9);
     }
 
     /// Pinned variant count -- adding a new Service MUST update this
@@ -3151,10 +3218,11 @@ mod tests {
             Service::ProxySsh,
             Service::ProxyRdp,
             Service::ProxyIacs,
+            Service::Mailer,
         ];
         assert_eq!(
             all.len(),
-            9,
+            10,
             "Service enum has changed -- update topology, mailer whitelist, broker gate, and proxy_*::env_suffix"
         );
     }
@@ -4006,7 +4074,31 @@ mod tests {
     }
 
     #[test]
-    fn test_message_auth_ldap_provision_roundtrip() {
+    fn test_message_mailer_smtp_provision_roundtrip() {
+        let msg = Message::MailerSmtpProvision {
+            smtp_host: "smtp.example.com".to_string(),
+            smtp_port: 587,
+            smtp_encryption: SmtpEncryption::Starttls,
+            smtp_username: "relay".to_string(),
+            smtp_password: SensitiveString::new("secret".to_string()),
+            helo_name: "vauban".to_string(),
+            from_address: "vauban@example.com".to_string(),
+            from_name: "Vauban".to_string(),
+            reply_to: String::new(),
+            poll_interval_secs: 10,
+            batch_size: 16,
+            max_attempts: 5,
+            smtp_timeout_secs: 30,
+            broker_timeout_secs: 30,
+        };
+        assert_eq!(msg.request_id(), None);
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        assert!(matches!(deserialized, Message::MailerSmtpProvision { .. }));
+    }
+
+    #[test]
+    fn test_auth_ldap_provision_roundtrip() {
         let msg = Message::AuthLdapProvision {
             url: "ldaps://dc1.example.com:636".to_string(),
             dn_template: "{username}@example.com".to_string(),
@@ -5240,15 +5332,40 @@ mod tests {
 
     #[test]
     fn test_message_rdp_recording_end() {
+        let segment = RdpRecordingSegment {
+            index: 1,
+            width: 1920,
+            height: 1080,
+            duration_ticks: 90_000,
+            init_size: 800,
+            file_size: 42_000,
+            blake3_hex: "ab".repeat(32),
+            codec_string: "avc1.42c01e".to_string(),
+        };
         let msg = Message::RdpRecordingEnd {
             session_id: "rdp-rec-123".to_string(),
+            segments: vec![segment.clone()],
+            meta_json_relative_path: "2026/07/rdp-rec-123/meta.json".to_string(),
+            total_frames: 60,
+            total_bytes: 42_000,
         };
         assert!(msg.request_id().is_none());
 
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::RdpRecordingEnd { session_id } = deserialized {
+        if let Message::RdpRecordingEnd {
+            session_id,
+            segments,
+            meta_json_relative_path,
+            total_frames,
+            total_bytes,
+        } = deserialized
+        {
             assert_eq!(session_id, "rdp-rec-123");
+            assert_eq!(segments, vec![segment]);
+            assert_eq!(meta_json_relative_path, "2026/07/rdp-rec-123/meta.json");
+            assert_eq!(total_frames, 60);
+            assert_eq!(total_bytes, 42_000);
         } else {
             panic!("Wrong variant");
         }
@@ -5374,13 +5491,37 @@ mod tests {
     fn test_message_ssh_recording_end_roundtrip() {
         let msg = Message::SshRecordingEnd {
             session_id: "ssh-rec-456".to_string(),
+            blake3_hex: "ab".repeat(32),
+            total_bytes: 4096,
+            total_events: 42,
+            duration_secs: 12.5,
+            width: 120,
+            height: 40,
+            meta_json_relative_path: "2026/07/ssh-rec-456/meta.json".to_string(),
         };
         assert!(msg.request_id().is_none());
 
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::SshRecordingEnd { session_id } = deserialized {
+        if let Message::SshRecordingEnd {
+            session_id,
+            blake3_hex,
+            total_bytes,
+            total_events,
+            duration_secs,
+            width,
+            height,
+            meta_json_relative_path,
+        } = deserialized
+        {
             assert_eq!(session_id, "ssh-rec-456");
+            assert_eq!(blake3_hex, "ab".repeat(32));
+            assert_eq!(total_bytes, 4096);
+            assert_eq!(total_events, 42);
+            assert_eq!(duration_secs, 12.5);
+            assert_eq!(width, 120);
+            assert_eq!(height, 40);
+            assert_eq!(meta_json_relative_path, "2026/07/ssh-rec-456/meta.json");
         } else {
             panic!("Wrong variant");
         }

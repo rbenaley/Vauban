@@ -7,7 +7,6 @@ pub mod cleanup;
 pub mod daily_cron;
 pub mod dashboard;
 pub mod dashboard_pusher;
-pub mod mailer;
 pub mod recording_hydrator;
 pub mod recording_reaper;
 

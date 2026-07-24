@@ -58,6 +58,10 @@ binary = "vauban-proxy-iacs"
 name = "vauban-web"
 binary = "vauban-web"
 
+[services.mailer]
+name = "vauban-mailer"
+binary = "vauban-mailer"
+
 # ==============================================================================
 # WEB OVERRIDES (vauban-web)
 # ==============================================================================

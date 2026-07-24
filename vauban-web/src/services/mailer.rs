@@ -5,15 +5,14 @@
 //!   knows how to send. Each variant carries the data needed to render
 //!   the email body and the recipient address.
 //! * [`Mailer::queue`] -- helper that INSERTs one row in the
-//!   `email_outbox` table (transactional outbox pattern) and wakes the
-//!   dispatcher task via [`tokio::sync::Notify`]. MUST be called
+//!   `email_outbox` table (transactional outbox pattern). MUST be called
 //!   inside the same DB transaction as the business mutation that
 //!   triggers it: a rollback of the transaction cancels the email.
 //!
-//! The actual SMTP exchange is performed by
-//! [`crate::tasks::mailer`] (the dispatcher), not here. This service
-//! is the write-side of the outbox: cheap, synchronous w.r.t. the HTTP
-//! handler that calls it, and never touches the network.
+//! The actual SMTP exchange is performed by the sealed `vauban-mailer`
+//! leaf process (Capsicum, supervisor-brokered FD), which polls the
+//! outbox. This service is the write-side only: cheap, synchronous
+//! w.r.t. the HTTP handler that calls it, and never touches the network.
 //!
 //! Threat model:
 //! * Anti-CRLF injection: every caller-controlled string that lands
@@ -38,7 +37,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::models::email_outbox::NewOutboxEntry;
-use crate::services::smtp_client::validate_no_crlf;
+use shared::smtp::validate_no_crlf;
 
 // Re-exported for convenience: callers building events outside this
 // module can mint event_ids without importing uuid directly.
@@ -109,8 +108,8 @@ pub enum MailerError {
 /// Cheap to clone (just an `Arc<Notify>` and a `bool`).
 #[derive(Clone)]
 pub struct Mailer {
-    /// Wakes the dispatcher task in [`crate::tasks::mailer`] after a
-    /// successful INSERT.
+    /// Wakes the sealed mailer via DB poll (notify is best-effort for
+    /// future wake pipes; the mailer leaf polls `email_outbox`).
     notify: Arc<Notify>,
     /// Mirror of [`crate::config::MailerConfig::enabled`]. When false,
     /// `queue` is a no-op (the row is NOT inserted) so disabling the

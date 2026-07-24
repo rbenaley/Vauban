@@ -216,6 +216,7 @@ fn service_key_to_service(key: &str) -> Option<Service> {
         "proxy_ssh" => Some(Service::ProxySsh),
         "proxy_rdp" => Some(Service::ProxyRdp),
         "proxy_iacs" => Some(Service::ProxyIacs),
+        "mailer" => Some(Service::Mailer),
         _ => None,
     }
 }
@@ -231,6 +232,7 @@ fn service_to_env_suffix(service: Service) -> &'static str {
         Service::ProxySsh => "PROXY_SSH",
         Service::ProxyRdp => "PROXY_RDP",
         Service::ProxyIacs => "PROXY_IACS",
+        Service::Mailer => "MAILER",
         Service::Supervisor => "SUPERVISOR",
     }
 }
@@ -554,6 +556,8 @@ fn run_supervisor() -> Result<()> {
         // connected FD to auth, which terminates TLS + binds. Always created
         // (cheap); the broker arm is fail-closed when ldaps is disabled.
         Service::Auth,
+        // vauban-mailer receives brokered SMTP TCP sockets (Issue #10 Lot B).
+        Service::Mailer,
     ] {
         match socketpair_for_fd_passing() {
             Ok((supervisor_socket, child_socket)) => {
@@ -716,6 +720,10 @@ fn run_supervisor() -> Result<()> {
         // post-Capsicum file opens).
         if service_key == "proxy_iacs" && !config.industrial.enabled {
             info!("Skipping proxy_iacs spawn: industrial.enabled = false");
+            continue;
+        }
+        if service_key == "mailer" && !config.mailer.enabled {
+            info!("Skipping mailer spawn: mailer.enabled = false");
             continue;
         }
 
@@ -886,6 +894,17 @@ fn run_supervisor() -> Result<()> {
             warn!("vauban-auth not started, skipping LDAP provisioning");
         }
     }
+
+    if config.mailer.enabled {
+        if let Some(mailer_state) = children.get("mailer") {
+            match send_mailer_provision(&mailer_state.channel, &config.mailer) {
+                Ok(()) => info!("Sent SMTP provisioning to vauban-mailer via IPC"),
+                Err(e) => error!("Failed to provision SMTP to vauban-mailer: {e}"),
+            }
+        } else {
+            warn!("vauban-mailer not started, skipping SMTP provisioning");
+        }
+    }
     // Keep listener_fd alive for the lifetime of the supervisor.
     // The socket must remain open so vauban-web can accept() on its
     // SCM_RIGHTS copy, and so respawns can re-send the same FD
@@ -1032,6 +1051,45 @@ fn send_ldap_provision(channel: &IpcChannel, ldap: &config::LdapConfig) -> Resul
     channel
         .send(&msg)
         .context("Failed to send AuthLdapProvision to vauban-auth")
+}
+
+/// Provision SMTP relay configuration to vauban-mailer BEFORE it seals
+/// its sandbox (mirrors [`send_ldap_provision`]).
+fn send_mailer_provision(channel: &IpcChannel, mailer: &config::MailerConfig) -> Result<()> {
+    let mut username = mailer.smtp_username.clone();
+    let mut password = mailer.smtp_password.clone();
+    if let Ok(u) = std::env::var("VAUBAN_SMTP_USERNAME") {
+        unsafe {
+            std::env::remove_var("VAUBAN_SMTP_USERNAME");
+        }
+        username = u;
+    }
+    if let Ok(p) = std::env::var("VAUBAN_SMTP_PASSWORD") {
+        unsafe {
+            std::env::remove_var("VAUBAN_SMTP_PASSWORD");
+        }
+        password = SensitiveString::new(p);
+    }
+
+    let msg = Message::MailerSmtpProvision {
+        smtp_host: mailer.smtp_host.clone(),
+        smtp_port: mailer.smtp_port,
+        smtp_encryption: mailer.smtp_encryption,
+        smtp_username: username,
+        smtp_password: password,
+        helo_name: mailer.helo_name.clone(),
+        from_address: mailer.from_address.clone(),
+        from_name: mailer.from_name.clone(),
+        reply_to: mailer.reply_to.clone(),
+        poll_interval_secs: mailer.poll_interval_secs,
+        batch_size: mailer.batch_size,
+        max_attempts: mailer.max_attempts,
+        smtp_timeout_secs: mailer.smtp_timeout_secs,
+        broker_timeout_secs: mailer.broker_timeout_secs,
+    };
+    channel
+        .send(&msg)
+        .context("Failed to send MailerSmtpProvision to vauban-mailer")
 }
 
 fn setup_signal_handlers() -> Result<()> {
@@ -1811,7 +1869,7 @@ fn respawn_service(
 
     let needs_fd_passing = matches!(
         state.service_key.as_str(),
-        "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "audit" | "web" | "auth"
+        "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "audit" | "web" | "auth" | "mailer"
     );
     let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
         match socketpair_for_fd_passing() {
@@ -1914,6 +1972,12 @@ fn respawn_service(
                     Err(e) => {
                         error!("Failed to provision LDAP to respawned vauban-auth: {e}")
                     }
+                }
+            }
+            if state.service_key == "mailer" && config.mailer.enabled {
+                match send_mailer_provision(&state.channel, &config.mailer) {
+                    Ok(()) => info!("Sent SMTP provisioning to respawned vauban-mailer"),
+                    Err(e) => error!("Failed to provision SMTP to respawned vauban-mailer: {e}"),
                 }
             }
         }
@@ -2080,7 +2144,7 @@ fn respawn_linked_group(
 
             let needs_fd_passing = matches!(
                 service_key,
-                "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "audit" | "web" | "auth"
+                "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "audit" | "web" | "auth" | "mailer"
             );
             let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
                 match socketpair_for_fd_passing() {
@@ -2192,6 +2256,16 @@ fn respawn_linked_group(
                             ),
                         }
                     }
+                    if service_key == "mailer" && config.mailer.enabled {
+                        match send_mailer_provision(&state.channel, &config.mailer) {
+                            Ok(()) => {
+                                info!("Sent SMTP provisioning to respawned vauban-mailer (linked)")
+                            }
+                            Err(e) => error!(
+                                "Failed to provision SMTP to respawned vauban-mailer (linked): {e}"
+                            ),
+                        }
+                    }
                 }
                 Err(e) => {
                     error!("Failed to respawn {} in linked group: {}", service_key, e);
@@ -2221,6 +2295,7 @@ fn service_to_key(service: Service) -> &'static str {
         Service::ProxySsh => "proxy_ssh",
         Service::ProxyRdp => "proxy_rdp",
         Service::ProxyIacs => "proxy_iacs",
+        Service::Mailer => "mailer",
         Service::Supervisor => "supervisor",
     }
 }
@@ -2303,7 +2378,7 @@ impl IacsTunnelGuards {
 /// `TcpConnectRequest` (e.g. `"web"`, `"proxy_iacs"`). When the
 /// requester *is* the target -- as is the case for `Service::ProxyIacs`
 /// (the proxy itself sends the broker request from its russh handler)
-/// and `Service::Web` (the mailer flow in vauban-web) -- the success
+/// and `Service::Mailer` (the sealed outbox drainer) -- the success
 /// response in step 5 is REDUNDANT with the fd_info notification in
 /// step 4 (both carry `success: true` and travel on the same pipe).
 /// In that case, sending step 5 would deliver a duplicate
@@ -2352,22 +2427,15 @@ fn handle_tcp_connect_request(
     //     to a 30 s TTL, ensuring the supervisor only DNS-resolves and
     //     connects to a couple that vauban-access just approved.
     //
-    //   * Service::Web (mailer, Issue #10) -- gated by the
-    //     supervisor-owned `[mailer]` whitelist (`mailer.allows`). The
-    //     token gate is intentionally NOT applied here: vauban-web
-    //     would otherwise have to mint its own tokens, which means
-    //     holding the BLAKE3 key, which means a compromised web could
-    //     mint tokens for any (host, port) and fully defeat the proxy
-    //     paths' crypto gate. Keeping vauban-web key-less, plus a
-    //     stricter-than-token whitelist (a single (host, port) couple,
-    //     not a per-asset one), is a security-positive trade.
+    //   * Service::Mailer (Issue #10 Lot B) -- gated by the
+    //     supervisor-owned `[mailer]` whitelist (`mailer.allows`).
     //
     // Anything outside this set fail-closes immediately.
     let target_key = match target_service {
         Service::ProxySsh => "proxy_ssh",
         Service::ProxyRdp => "proxy_rdp",
         Service::ProxyIacs => "proxy_iacs",
-        Service::Web => "web",
+        Service::Mailer => "mailer",
         Service::Auth => "auth",
         _ => {
             warn!(
@@ -2385,11 +2453,11 @@ fn handle_tcp_connect_request(
         }
     };
 
-    if matches!(target_service, Service::Web) {
+    if matches!(target_service, Service::Mailer) {
         // === Step 1a: Mailer SSRF whitelist (Issue #10).
         //
         // Fail-closed before any DNS / connect / FD-passing work. Even
-        // if vauban-web is wholly compromised, the only outbound socket
+        // if vauban-mailer is wholly compromised, the only outbound socket
         // the supervisor will hand back is the configured SMTP relay.
         if !mailer.allows(&host, port) {
             warn!(
@@ -2397,7 +2465,7 @@ fn handle_tcp_connect_request(
                 requested_host = %host,
                 requested_port = port,
                 mailer_enabled = mailer.enabled,
-                "TcpConnectRequest target=Web rejected by mailer whitelist; \
+                "TcpConnectRequest target=Mailer rejected by mailer whitelist; \
                  fail-closed deny"
             );
             let response = Message::TcpConnectResponse {
@@ -2409,10 +2477,6 @@ fn handle_tcp_connect_request(
             let _ = requesting_channel.send(&response);
             return;
         }
-        // The session_token bytes are still received on the wire (for
-        // protocol uniformity), but vauban-web does NOT hold the
-        // BLAKE3 key, so they are inert. We deliberately do not feed
-        // them to verify_bytes.
         debug!(
             session_id = %session_id,
             host = %host,
@@ -3730,7 +3794,7 @@ const FRONTEND_SERVICES: &[&str] = &["web", "proxy_rdp", "proxy_ssh", "proxy_iac
 /// Backend services: drained sequentially after frontend completes
 /// Order matters: audit must be last to capture all events
 #[allow(dead_code)] // Will be used when graceful shutdown is fully implemented
-const BACKEND_SERVICES: &[&str] = &["auth", "access", "vault", "audit"];
+const BACKEND_SERVICES: &[&str] = &["auth", "access", "vault", "mailer", "audit"];
 
 /// Gracefully shutdown all services respecting dependencies.
 ///
@@ -3851,6 +3915,7 @@ fn service_key_to_enum(key: &str) -> Option<Service> {
         "proxy_ssh" => Some(Service::ProxySsh),
         "proxy_rdp" => Some(Service::ProxyRdp),
         "proxy_iacs" => Some(Service::ProxyIacs),
+        "mailer" => Some(Service::Mailer),
         _ => None,
     }
 }
@@ -4439,6 +4504,7 @@ mod tests {
                 Service::Access => "access",
                 Service::Vault => "vault",
                 Service::Audit => "audit",
+                Service::Mailer => "mailer",
                 Service::ProxySsh => "proxy_ssh",
                 Service::ProxyRdp => "proxy_rdp",
                 Service::ProxyIacs => "proxy_iacs",
@@ -4806,11 +4872,12 @@ mod tests {
     #[test]
     fn test_drain_order_backend_services() {
         // Verify backend services list for drain order
-        assert_eq!(BACKEND_SERVICES.len(), 4);
+        assert_eq!(BACKEND_SERVICES.len(), 5);
         assert_eq!(BACKEND_SERVICES[0], "auth");
         assert_eq!(BACKEND_SERVICES[1], "access");
         assert_eq!(BACKEND_SERVICES[2], "vault");
-        assert_eq!(BACKEND_SERVICES[3], "audit"); // Must be last
+        assert_eq!(BACKEND_SERVICES[3], "mailer");
+        assert_eq!(BACKEND_SERVICES[4], "audit"); // Must be last
     }
 
     #[test]
@@ -4829,18 +4896,29 @@ mod tests {
         let config = test_config();
         let startup_order = config.startup_order();
 
-        // Drain order should be reverse of startup order
-        // Startup: audit, vault, access, auth, proxy_ssh, proxy_rdp, web
-        // Drain frontend: web, proxy_rdp, proxy_ssh (parallel)
-        // Drain backend: auth, access, vault, audit (sequential)
+        // Startup: audit … web, mailer (sealed leaf last).
+        // Drain frontend first (web + proxies), then backend
+        // (auth, access, vault, mailer, audit) so audit stays last.
 
         // First service to start should be last to drain
         assert_eq!(startup_order[0], "audit");
         assert_eq!(BACKEND_SERVICES.last(), Some(&"audit"));
 
-        // Last service to start should be first to drain
-        assert_eq!(startup_order.last(), Some(&"web"));
+        // Web is the last frontend to start and drains with FRONTEND_SERVICES
+        assert_eq!(startup_order[7], "web");
         assert!(FRONTEND_SERVICES.contains(&"web"));
+
+        // Mailer starts after web; drains as a backend leaf before audit
+        assert_eq!(startup_order.last(), Some(&"mailer"));
+        assert!(BACKEND_SERVICES.contains(&"mailer"));
+        assert!(
+            BACKEND_SERVICES
+                .iter()
+                .position(|&s| s == "mailer")
+                .expect("mailer")
+                < BACKEND_SERVICES.len() - 1,
+            "mailer must drain before audit"
+        );
     }
 
     // ==================== Drain State Tests ====================
@@ -5525,23 +5603,10 @@ mod tests {
         );
     }
 
-    /// Issue #10: pin that the mailer (Service::Web) path skips the
-    /// SessionToken crypto gate AND that this is a deliberate, audited
-    /// exception (not a refactor accident).
-    ///
-    /// Background: vauban-web does not hold the BLAKE3 key (only
-    /// vauban-access mints, only the supervisor + proxies verify). For
-    /// the mailer to pass through verify_bytes, vauban-web would have
-    /// to receive the key, which would let a compromised web mint
-    /// tokens for any (host, port) and fully defeat the proxy paths'
-    /// crypto gate. The supervisor whitelist
-    /// (`mailer.allows(host, port)`) is BOTH narrower (a single fixed
-    /// couple instead of "any access-rule-allowed couple") AND
-    /// independent of vauban-web (the supervisor owns the `[mailer]`
-    /// config, not vauban-web). So skipping the token there is a
-    /// security-positive trade, not a regression.
+    /// Issue #10 Lot B: pin that the mailer (Service::Mailer) path skips the
+    /// SessionToken crypto gate AND uses the supervisor whitelist.
     #[test]
-    fn test_supervisor_tcp_broker_skips_token_for_web_target_intentionally() {
+    fn test_supervisor_tcp_broker_skips_token_for_mailer_target_intentionally() {
         let source = supervisor_prod_source();
         let handler_start = source
             .find("fn handle_tcp_connect_request(")
@@ -5553,36 +5618,24 @@ mod tests {
             .unwrap_or(handler.len());
         let handler = &handler[..handler_end];
 
-        // The branching MUST be present and distinguish proxy vs web
-        // paths so that one cannot accidentally take the same
-        // verify-then-connect path as the other.
         assert!(
-            handler.contains("matches!(target_service, Service::Web)"),
-            "Service::Web requires its own dedicated branch in \
-             handle_tcp_connect_request: it must NOT fall through the \
-             SessionToken::verify_bytes path because vauban-web has no \
-             access to the BLAKE3 key."
+            handler.contains("matches!(target_service, Service::Mailer)"),
+            "Service::Mailer requires its own dedicated branch in \
+             handle_tcp_connect_request"
         );
-        // The Web branch MUST use the whitelist as its sole gate.
         assert!(
             handler.contains("mailer.allows("),
-            "Service::Web branch MUST call mailer.allows(host, port) \
-             as its authorization gate (Issue #10 SSRF guard)."
+            "Service::Mailer branch MUST call mailer.allows(host, port)"
         );
-        // The Web branch MUST sit before the token verification (the
-        // ELSE branch holds verify_bytes).
-        let web_branch_idx = handler
-            .find("matches!(target_service, Service::Web)")
-            .expect("Service::Web branch must exist");
+        let mailer_branch_idx = handler
+            .find("matches!(target_service, Service::Mailer)")
+            .expect("Service::Mailer branch must exist");
         let verify_idx = handler
             .find("SessionToken::verify_bytes(")
             .expect("verify_bytes call must exist in the proxy (else) branch");
         assert!(
-            web_branch_idx < verify_idx,
-            "Service::Web branch MUST evaluate (and short-circuit) \
-             before the token verification, so a Web-target request \
-             never falls into the verify_bytes path that would always \
-             reject it (vauban-web has no key)."
+            mailer_branch_idx < verify_idx,
+            "Service::Mailer branch MUST short-circuit before token verification"
         );
     }
 
@@ -5657,16 +5710,16 @@ mod tests {
         for forbidden in [
             "matches!(target_service, Service::ProxySsh)",
             "matches!(target_service, Service::ProxyRdp)",
-            "matches!(target_service, Service::Web)",
+            "matches!(target_service, Service::Mailer)",
             "matches!(target_service, Service::Auth)",
             "matches!(target_service, Service::Access)",
             "matches!(target_service, Service::Vault)",
             "matches!(target_service, Service::Audit)",
             "matches!(target_service, Service::Supervisor)",
         ] {
-            // The Web arm legitimately uses `Service::Web` matching for
+            // The Mailer arm legitimately uses `Service::Mailer` matching for
             // the mailer-whitelist branch above this gate (pinned by
-            // test_supervisor_tcp_broker_skips_token_for_web_target_intentionally),
+            // test_supervisor_tcp_broker_skips_token_for_mailer_target_intentionally),
             // but it must not appear inside the replay-bypass `if`
             // condition. Approximate by scoping to lines that also
             // mention the cache.
@@ -5682,15 +5735,10 @@ mod tests {
         }
     }
 
-    /// Issue #10: structural pin that the mailer SSRF whitelist is
-    /// consulted whenever `target_service = Web`. Without this gate, a
-    /// compromised vauban-web could mint its own SessionToken and ask
-    /// the supervisor to connect anywhere -- vauban-web is the only
-    /// service that holds the session-token key for its own
-    /// `Verifier::Web` role, so the BLAKE3 check above is necessary
-    /// but not sufficient when the requester == the issuer.
+    /// Issue #10 Lot B: structural pin that the mailer SSRF whitelist is
+    /// consulted whenever `target_service = Mailer`.
     #[test]
-    fn test_supervisor_tcp_broker_enforces_mailer_whitelist_for_web() {
+    fn test_supervisor_tcp_broker_enforces_mailer_whitelist_for_mailer() {
         let source = supervisor_prod_source();
         let handler_start = source
             .find("fn handle_tcp_connect_request(")
@@ -5702,31 +5750,17 @@ mod tests {
             .unwrap_or(handler.len());
         let handler = &handler[..handler_end];
 
-        // The Web branch must exist.
-        let web_idx = handler.find("Service::Web =>").expect(
-            "handle_tcp_connect_request MUST have a Service::Web arm \
-             that opens the mailer broker path (Issue #10).",
-        );
-        // The whitelist call must exist BEFORE we proceed to send the FD.
-        let allows_idx = handler[web_idx..]
+        let mailer_idx = handler
+            .find("Service::Mailer =>")
+            .expect("handle_tcp_connect_request MUST map Service::Mailer to mailer");
+        let allows_idx = handler[mailer_idx..]
             .find("mailer.allows(")
-            .map(|i| web_idx + i)
-            .expect(
-                "handle_tcp_connect_request MUST call mailer.allows(host, port) \
-             on the Service::Web arm before connecting. SSRF guard, Issue #10.",
-            );
-        // The fail-closed branch must call requesting_channel.send with a
-        // failed TcpConnectResponse. We grep for the most distinctive
-        // marker: the rejection log + the Access denied response that
-        // mirrors the cryptographic-gate error.
+            .map(|i| mailer_idx + i)
+            .expect("handle_tcp_connect_request MUST call mailer.allows on Mailer arm");
         let _reject_idx = handler[allows_idx..]
             .find("rejected by mailer whitelist")
             .map(|i| allows_idx + i)
-            .expect(
-                "handle_tcp_connect_request MUST log a rejection when \
-                 mailer.allows() returns false; this is the audit trail \
-                 a SOC will look for after an SSRF attempt.",
-            );
+            .expect("handle_tcp_connect_request MUST log mailer whitelist rejection");
     }
 
     // ==================== LDAPS broker arm ====================
@@ -6219,11 +6253,12 @@ mod tests {
     /// Validated through `MailerConfig::allows` directly so the test is
     /// fast and does not require child processes.
     #[test]
-    fn test_mailer_disabled_denies_web_broker() {
+    fn test_mailer_disabled_denies_mailer_broker() {
         let m = crate::config::MailerConfig {
             enabled: false,
             smtp_host: "smtp.example.com".to_string(),
             smtp_port: 587,
+            ..crate::config::MailerConfig::default()
         };
         assert!(
             !m.allows("smtp.example.com", 587),

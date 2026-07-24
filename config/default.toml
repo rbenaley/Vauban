@@ -71,6 +71,12 @@ binary = "vauban-proxy-iacs"
 name = "vauban-web"
 binary = "vauban-web"
 
+# Sealed SMTP outbox drainer. Production assigns uid/gid 909 (vb-mailer)
+# in vauban.conf; development leaves uid unset (privsep off).
+[services.mailer]
+name = "vauban-mailer"
+binary = "vauban-mailer"
+
 # ==============================================================================
 # WEB CONFIGURATION (vauban-web)
 # ==============================================================================
@@ -201,11 +207,9 @@ video_bitrate_bps = 5_000_000
 # EMAIL NOTIFICATIONS (Issue #10)
 # ==============================================================================
 #
-# vauban-web embeds an SMTP dispatcher that drains the email_outbox table
-# and sends mails through the supervisor-brokered TCP socket (Capsicum
-# sandbox-compatible). The supervisor enforces an exact (host, port)
-# whitelist before performing connect() -- see [mailer] in the
-# supervisor's own configuration.
+# vauban-mailer (sealed leaf) drains email_outbox and sends mail through the
+# supervisor-brokered TCP socket. vauban-web only INSERTs rows + renders bodies.
+# The supervisor enforces an exact (host, port) whitelist before connect().
 #
 # Disabled by default. Enable in production via vauban.conf or a
 # secrets-injecting mechanism. SMTP password MUST come from the

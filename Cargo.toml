@@ -5,6 +5,8 @@ members = [
     "vauban-db",
     "vauban-supervisor",
     "vauban-web",
+    "vauban-web-evidence",
+    "vauban-mailer",
     "vauban-auth",
     "vauban-access",
     "vauban-proxy-ssh",
@@ -23,7 +25,7 @@ exclude = ["vauban-proxy-rdp"]
 default-members = ["vauban-supervisor"]
 
 [workspace.package]
-version = "0.9.27"
+version = "0.9.29"
 edition = "2024"
 rust-version = "1.89"
 authors = ["Richard Ben Aleya"]
@@ -33,6 +35,8 @@ license = "BSD-2-Clause"
 # Shared dependencies (minimalist, no async runtime)
 shared = { path = "shared" }
 vauban-db = { path = "vauban-db" }
+vauban-web-evidence = { path = "vauban-web-evidence" }
+vauban-mailer = { path = "vauban-mailer" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"

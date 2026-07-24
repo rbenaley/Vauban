@@ -565,7 +565,7 @@ backend services.
 | `protocol` | length-prefixed `&str` | One of `PROTOCOL_*`. |
 | `host` | length-prefixed `&str` | The exact destination the supervisor is asked to dial. |
 | `port` | 2 bytes | The exact destination port. |
-| `target_service` | 1 byte discriminant | The service the supervisor must hand the FD to. |
+| `target_service` | 1 byte discriminant | The service the supervisor must hand the FD to. Same `Service` enum as IPC topology; `Service::Mailer` is discriminant **9** (sealed SMTP leaf -- not an AccessGuard consumer; listed so operators do not reuse Web for SMTP broker gates). |
 | `issued_at` | 8 bytes | Mint timestamp (Unix seconds). |
 | `expires_at` | 8 bytes | `issued_at + TOKEN_TTL_SECONDS` (short, single-digit minutes). |
 | `nonce` | `NONCE_LENGTH` bytes | `OsRng`-generated; (`session_id`, `nonce`) is the anti-replay key. |

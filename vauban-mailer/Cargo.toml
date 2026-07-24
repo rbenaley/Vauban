@@ -1,0 +1,38 @@
+[package]
+name = "vauban-mailer"
+description = "Vauban - Sealed SMTP outbox drainer (Capsicum leaf)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+shared.workspace = true
+vauban-db.workspace = true
+libc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+secrecy.workspace = true
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+blake3.workspace = true
+hex = "0.4"
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
+diesel = { version = "2.3", features = ["postgres", "uuid", "chrono", "64-column-tables"] }
+diesel-async = { version = "0.7", features = ["postgres", "deadpool"] }
+rustls = "0.23"
+rustls-pki-types = "1"
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+base64.workspace = true
+rand = "0.8"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt", "net", "io-util"] }

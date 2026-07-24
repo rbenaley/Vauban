@@ -46,7 +46,7 @@ set_user_gecos() {
 
 echo "==> Creating Vauban service accounts..."
 
-# Rename legacy account names (pre-hyphen) so UID/GID 901-908 stay stable on upgrade.
+# Rename legacy account names (pre-hyphen) so UID/GID 901-909 stay stable on upgrade.
 rename_legacy_account() {
     _old=$1
     _new=$2
@@ -73,6 +73,7 @@ create_group_if_missing vb-ssh 905
 create_group_if_missing vb-rdp 906
 create_group_if_missing vb-web 907
 create_group_if_missing vb-iacs 908
+create_group_if_missing vb-mailer 909
 
 create_user_if_missing vb-audit 901 901 vauban-audit
 create_user_if_missing vb-vault 902 902 vauban-vault
@@ -82,6 +83,7 @@ create_user_if_missing vb-ssh 905 905 vauban-proxy-ssh
 create_user_if_missing vb-rdp 906 906 vauban-proxy-rdp
 create_user_if_missing vb-web 907 907 vauban-web
 create_user_if_missing vb-iacs 908 908 vauban-proxy-iacs
+create_user_if_missing vb-mailer 909 909 vauban-mailer
 
 echo "==> Setting service account descriptions (GECOS)..."
 set_user_gecos vb-audit vauban-audit
@@ -92,3 +94,4 @@ set_user_gecos vb-ssh vauban-proxy-ssh
 set_user_gecos vb-rdp vauban-proxy-rdp
 set_user_gecos vb-web vauban-web
 set_user_gecos vb-iacs vauban-proxy-iacs
+set_user_gecos vb-mailer vauban-mailer

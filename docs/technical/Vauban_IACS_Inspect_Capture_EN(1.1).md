@@ -90,24 +90,29 @@ flowchart LR
     subgraph Web ["vauban-web (Capsicum)"]
         direction TB
         Handlers["Inspect handlers<br/>(admin gate, anti-enum)"]
-        Service["iacs_packet_analyzer<br/>(parser, flow, dissectors)"]
         Tpl["Askama templates<br/>(HTMX + Tailwind)"]
-        Handlers --> Service
         Handlers --> Tpl
     end
 
+    subgraph Evidence ["vauban-web-evidence (library)"]
+        Service["analyzer<br/>(parser, flow, dissectors)"]
+    end
+
     Browser(["Operator browser"]) -->|"GET /inspect*"| Handlers
+    Handlers --> Service
     Handlers -->|"file request"| Sup["vauban-supervisor"]
     Sup -.->|"read-only FD<br/>(SCM_RIGHTS)"| FS
-    Sup -->|"FD"| Service
+    Sup -->|"FD"| Handlers
 ```
 
-The analyzer lives entirely inside `vauban-web` at the same trust
-boundary as the rest of the audit-replay surface. It never opens
-files directly: each request fetches `meta.json` and the targeted
-channel PCAP through the supervisor's existing FD broker, exactly
-like the SSH / RDP replay viewers (cf. *Privilege Separation
-Architecture* § FD broker).
+The analyzer lives in the workspace crate `vauban-web-evidence` and is
+re-exported from web as `services::iacs_packet_analyzer`. Handlers and
+templates stay in `vauban-web` at the same Capsicum trust boundary as
+the rest of the audit-replay surface. The analyzer never opens files
+directly: each request fetches `meta.json` and the targeted channel
+PCAP through the supervisor's existing FD broker, exactly like the
+SSH / RDP replay viewers (cf. *Privilege Separation Architecture*
+§ FD broker).
 
 ### 2.2 Stateless by Design
 
@@ -390,7 +395,7 @@ upstream-network code in the analyzer module. Inspect Capture
 ## Appendix A -- Module Layout
 
 ```
-vauban-web/src/services/iacs_packet_analyzer/
+vauban-web-evidence/src/analyzer/
     parser.rs               libpcap + etherparse decode (inverse of audit's synthesiser)
     flow.rs                 canonical client/server endpoint inference
     reassembly.rs           bounded per-direction TCP PDU reassembly
@@ -403,6 +408,9 @@ vauban-web/src/services/iacs_packet_analyzer/
         passthrough.rs      conservative fallback (never `Cmd`)
     types.rs                PacketSummary, FieldNode, filters, paging
     mod.rs                  analyze_channel, page_summaries, analyze_packet
+
+vauban-web/src/services/mod.rs
+    pub use vauban_web_evidence::analyzer as iacs_packet_analyzer
 
 vauban-web/src/handlers/web/sessions.rs
     resolve_inspect_target  shared admin gate + DB lookup + anti-enumeration

@@ -527,18 +527,19 @@ async fn test_hydrator_business_logic_is_decoupled_from_scheduling() {
     let svc = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join("services")
-        .join("recording_hydrator.rs");
-    let svc_src = std::fs::read_to_string(&svc).expect("read services/recording_hydrator.rs");
+        .join("recording_hydrator")
+        .join("mod.rs");
+    let svc_src = std::fs::read_to_string(&svc).expect("read services/recording_hydrator/mod.rs");
     // Only match an actual call site, not doc-comment mentions that
     // explain the delegation.
     assert!(
         !svc_src.contains("shared::tasks::spawn_periodic("),
-        "services/recording_hydrator.rs must NOT call shared::tasks::spawn_periodic; \
+        "services/recording_hydrator/mod.rs must NOT call shared::tasks::spawn_periodic; \
          the daily cron lives in tasks/recording_hydrator.rs"
     );
     assert!(
         !svc_src.contains("pub fn spawn("),
-        "services/recording_hydrator.rs must NOT expose a `pub fn spawn(...)` (v1.3 ticker)"
+        "services/recording_hydrator/mod.rs must NOT expose a `pub fn spawn(...)` (v1.3 ticker)"
     );
     // `tokio::spawn` IS allowed in services/ for the per-call-site
     // PRIMARY enqueue (`enqueue_hydration`, `enqueue_hydration_by_uuid`),

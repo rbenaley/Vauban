@@ -15,6 +15,7 @@ shared = { workspace = true, features = ["tasks", "session-token", "access-guard
 
 # Shared Diesel schema
 vauban-db.workspace = true
+vauban-web-evidence.workspace = true
 
 # Web framework
 axum = { version = "0.8", features = ["ws"] }
@@ -81,6 +82,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # (see middleware/browser_tz.rs and utils/datetime_format.rs). DB /
 # logs / IPC remain UTC; only the rendered UI uses chrono-tz.
 chrono-tz = "0.10"
+async-trait = "0.1"
 time = "0.3"
 bcrypt = "0.18"
 rand = "0.8"
@@ -125,16 +127,13 @@ webpki-roots = "1"
 # streams in fMP4.
 async_zip = { version = "0.0.17", default-features = false, features = ["tokio"] }
 
-# IACS Inspect Capture (services/iacs_packet_analyzer): inverse of the
-# synthetic L3/L4 layer written by vauban-audit. `etherparse` parses the
-# IPv4/IPv6 + TCP headers built by `iacs_pcap_synth`; `flate2` decompresses
-# the per-channel `.pcap.gz` files received via SCM_RIGHTS.
-etherparse = "0.18"
+# IACS Inspect Capture decompression for handler SCM_RIGHTS fetch.
+# Packet parse/dissection lives in `vauban-web-evidence` (etherparse).
 flate2 = "1"
 
 [dev-dependencies]
 vauban-access = { path = "../vauban-access" }
-# Round-trip tests for the IACS Inspect Capture parser (services/iacs_packet_analyzer)
+# Round-trip tests for Inspect Capture (vauban-web-evidence analyzer)
 # synthesise real PCAP fixtures via the audit-side `iacs_pcap_synth` builders so the
 # parser is exercised against the exact byte layout vauban-audit writes on disk.
 vauban-audit = { path = "../vauban-audit" }

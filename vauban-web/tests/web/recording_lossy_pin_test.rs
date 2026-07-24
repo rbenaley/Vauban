@@ -36,24 +36,36 @@ fn message_recording_loss_observed_exists() {
 }
 
 #[test]
-fn proxies_emit_recording_loss_observed_on_first_drop() {
-    for crate_main in [
-        include_str!("../../../vauban-proxy-ssh/src/main.rs"),
-        include_str!("../../../vauban-proxy-rdp/src/main.rs"),
-    ] {
-        assert!(
-            crate_main.contains("RecordingLossObserved"),
-            "proxy must emit RecordingLossObserved"
-        );
-        assert!(
-            crate_main.contains("recording_loss_latched"),
-            "proxy must keep a sticky latch set"
-        );
-        assert!(
-            crate_main.contains("fn record_recording_try_send_full"),
-            "drop hook must still bump try_send_full (I-LOSS-4)"
-        );
-    }
+fn proxies_emit_recording_loss_observed_on_io_or_drop() {
+    // SSH (FD recording): loss is write/lease I/O, latched per session_task.
+    let ssh_session = include_str!("../../../vauban-proxy-ssh/src/session_manager.rs");
+    let ssh_main = include_str!("../../../vauban-proxy-ssh/src/main.rs");
+    assert!(
+        ssh_session.contains("RecordingLossObserved"),
+        "SSH session_manager must emit RecordingLossObserved on write/lease errors"
+    );
+    assert!(
+        ssh_session.contains("observe_recording_error"),
+        "SSH must latch loss via observe_recording_error"
+    );
+    assert!(
+        ssh_main.contains("fn record_recording_write_error"),
+        "SSH must bump recording_write_errors on I/O loss"
+    );
+
+    // RDP Lot 2: local FD writer observes lease/write failures in session.rs,
+    // while main.rs owns the aggregate write-error counter.
+    let rdp_main = include_str!("../../../vauban-proxy-rdp/src/main.rs");
+    let rdp_session = include_str!("../../../vauban-proxy-rdp/src/session.rs");
+    assert!(
+        rdp_session.contains("RecordingLossObserved")
+            && rdp_session.contains("observe_recording_error"),
+        "RDP session must emit and latch RecordingLossObserved on local I/O errors"
+    );
+    assert!(
+        rdp_main.contains("fn record_recording_write_error"),
+        "RDP must aggregate proxy-owned recording write errors"
+    );
 }
 
 #[test]
@@ -63,7 +75,7 @@ fn web_is_sole_db_writer_of_recording_lossy() {
         loss.contains("recording_lossy.eq(true)"),
         "recording_loss service must SET recording_lossy"
     );
-    let hydrator = include_str!("../../src/services/recording_hydrator.rs");
+    let hydrator = include_str!("../../../vauban-web-evidence/src/hydrator/pipeline.rs");
     assert!(
         !hydrator.contains("recording_lossy"),
         "hydrator must not touch recording_lossy (I-LOSS-3)"

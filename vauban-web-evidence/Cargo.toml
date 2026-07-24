@@ -1,0 +1,30 @@
+[package]
+name = "vauban-web-evidence"
+description = "VAUBAN - Evidence plane (Inspect Capture analyzer + recording hydrator)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+shared = { workspace = true, features = ["iacs-protocol"] }
+serde.workspace = true
+serde_json = "1.0"
+thiserror.workspace = true
+tracing.workspace = true
+chrono = { version = "0.4", features = ["serde"] }
+blake3.workspace = true
+etherparse = "0.18"
+flate2 = "1"
+tokio = { version = "1", features = ["rt", "time", "macros", "sync", "fs", "io-util"] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+async-trait = "0.1"
+
+[dev-dependencies]
+vauban-audit = { path = "../vauban-audit" }
+proptest = "1"
+tempfile = "3"

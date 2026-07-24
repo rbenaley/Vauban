@@ -64,7 +64,7 @@ impl ChannelEndpoints {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::iacs_packet_analyzer::parser::parse_pcap_bytes;
+    use crate::analyzer::parser::parse_pcap_bytes;
     use vauban_audit::iacs_pcap_synth as synth;
 
     fn build_handshake_pcap() -> Vec<u8> {

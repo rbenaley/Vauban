@@ -208,10 +208,15 @@ vauban-proxy-iacs/src/
     server.rs                    direct-tcpip channel open, endpoint capture
     iacs_recording.rs            ChannelRecorder, AckRouter, RecordingMetrics
 
+vauban-web-evidence/src/hydrator/
+    deps.rs                      HydratorDb / MetaFd / Notify traits
+    pipeline.rs                  RecordingHydrator + parse_meta + WS helpers
+
 vauban-web/src/
     handlers/web/sessions.rs     manifest, segment, ssh stream, recordings list
     handlers/web/recordings.rs   Recording Details + download
-    services/recording_hydrator.rs  meta.json -> proxy_sessions columns
+    services/recording_hydrator/ adapters (Diesel / SupervisorMetaFd / Broadcast)
+                                 + enqueue_hydration facades
     tasks/recording_hydrator.rs  bootstrap + daily reconciliation cron
     services/recording_reaper.rs daily retention reaper
     ipc/supervisor.rs            request_recording_file (read-only FD)

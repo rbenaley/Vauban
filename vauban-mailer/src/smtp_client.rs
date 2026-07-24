@@ -1,17 +1,4 @@
-//! Minimal SMTP client (Issue #10).
-//!
-//! Why hand-rolled rather than using `lettre`?
-//!
-//! `lettre`'s `AsyncSmtpTransport` wants to own the connection lifecycle
-//! (DNS + connect + STARTTLS + AUTH), and there is no public API to feed
-//! it a pre-established `tokio::net::TcpStream` (see
-//! <https://docs.rs/lettre/latest/lettre/transport/smtp/struct.AsyncSmtpTransport.html>).
-//! In our privsep model the TCP socket is connected by `vauban-supervisor`
-//! and brokered to `vauban-web` via SCM_RIGHTS, so we need a transport
-//! that consumes a ready-made stream. Instead of vendoring or forking
-//! `lettre`, we ship ~300 lines of well-audited SMTP plus
-//! `tokio-rustls`. This file is the only network-code authority for
-//! outbound SMTP in `vauban-web`.
+//! Minimal SMTP client (Issue #10) -- sealed vauban-mailer authority.
 //!
 //! Threat model for this module:
 //!
@@ -54,7 +41,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::{TlsConnector, client::TlsStream};
 use tracing::debug;
 
-use crate::config::SmtpEncryption;
+use shared::messages::SmtpEncryption;
 
 /// SMTP error.
 ///
@@ -116,7 +103,7 @@ pub struct MailEnvelope {
     pub to: String,
     /// Pre-rendered DATA body, including the headers (`From:`, `To:`,
     /// `Subject:`, `MIME-Version:`, `Content-Type:`, ...). Built by
-    /// [`crate::services::mailer`].
+    /// [`crate::outbox::build_envelope`].
     pub data: String,
 }
 
@@ -488,8 +475,7 @@ pub fn default_client_config() -> std::sync::Arc<ClientConfig> {
 }
 
 /// Connection-level timeout used by callers that don't want to roll
-/// their own. The dispatcher uses [`crate::config::MailerConfig`]
-/// instead so this is only a fallback for ad-hoc callers.
+/// their own.
 pub const DEFAULT_SMTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Helper used by callers that want to choose between Plain / Starttls
@@ -521,6 +507,7 @@ pub async fn open_session(
 // ============================================================================
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

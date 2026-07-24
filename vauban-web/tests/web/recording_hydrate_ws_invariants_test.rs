@@ -9,7 +9,9 @@
 //! | **I-HYDRATE-WS-5** | Notifications handler treats `Lagged` as non-fatal |
 //! | **I-HYDRATE-WS-6** | Pure payload helper is the sole body builder |
 
-const HYDRATOR_SRC: &str = include_str!("../../src/services/recording_hydrator.rs");
+const HYDRATOR_PIPELINE_SRC: &str =
+    include_str!("../../../vauban-web-evidence/src/hydrator/pipeline.rs");
+const HYDRATOR_NOTIFY_SRC: &str = include_str!("../../src/services/recording_hydrator/adapters.rs");
 const DETAIL_HTML: &str = include_str!("../../templates/sessions/recording_detail.html");
 const LIST_HTML: &str = include_str!("../../templates/sessions/recording_list.html");
 const WS_SRC: &str = include_str!("../../src/handlers/websocket.rs");
@@ -43,14 +45,17 @@ fn fn_body(source: &str, signature: &str) -> String {
 #[test]
 fn i_hydrate_ws_1_payload_helper_embeds_stable_literals() {
     assert!(
-        HYDRATOR_SRC.contains("pub const RECORDING_HYDRATED_EVENT"),
+        HYDRATOR_PIPELINE_SRC.contains("pub const RECORDING_HYDRATED_EVENT"),
         "I-HYDRATE-WS-1: event kind must be a named constant"
     );
     assert!(
-        HYDRATOR_SRC.contains("pub fn recording_hydrated_json_payload"),
+        HYDRATOR_PIPELINE_SRC.contains("pub fn recording_hydrated_json_payload"),
         "I-HYDRATE-WS-1/6: pure payload helper must be public for proptest"
     );
-    let body = fn_body(HYDRATOR_SRC, "pub fn recording_hydrated_json_payload(");
+    let body = fn_body(
+        HYDRATOR_PIPELINE_SRC,
+        "pub fn recording_hydrated_json_payload(",
+    );
     assert!(
         body.contains("RECORDING_HYDRATED_EVENT"),
         "payload helper must use the named event constant"
@@ -63,7 +68,10 @@ fn i_hydrate_ws_1_payload_helper_embeds_stable_literals() {
 
 #[test]
 fn i_hydrate_ws_2_broadcast_always_schedules_retry() {
-    let body = fn_body(HYDRATOR_SRC, "async fn broadcast_recording_hydrated(");
+    let body = fn_body(
+        HYDRATOR_NOTIFY_SRC,
+        "async fn recording_hydrated(&self, session_uuid: &Uuid)",
+    );
     assert!(
         body.contains("RECORDING_HYDRATED_RETRY_SECS"),
         "I-HYDRATE-WS-2: must sleep RECORDING_HYDRATED_RETRY_SECS before retry"
@@ -142,7 +150,10 @@ fn i_hydrate_ws_5_notifications_handler_treats_lagged_as_non_fatal() {
 
 #[test]
 fn i_hydrate_ws_6_broadcast_uses_pure_payload_helper() {
-    let body = fn_body(HYDRATOR_SRC, "async fn broadcast_recording_hydrated(");
+    let body = fn_body(
+        HYDRATOR_NOTIFY_SRC,
+        "async fn recording_hydrated(&self, session_uuid: &Uuid)",
+    );
     assert!(
         body.contains("recording_hydrated_json_payload"),
         "I-HYDRATE-WS-6: broadcast must not inline a second JSON format!"

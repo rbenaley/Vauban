@@ -63,7 +63,6 @@ fn inv_all_broker_request_helpers_use_timed_recv() {
     let main = main_rs();
     for fn_name in [
         "fn request_audit_log_file_from_supervisor",
-        "fn request_file_from_supervisor",
         "fn request_unlink_from_supervisor",
     ] {
         let start = main
@@ -79,6 +78,19 @@ fn inv_all_broker_request_helpers_use_timed_recv() {
             "{fn_name} must bound the wait with SUPERVISOR_BROKER_TIMEOUT"
         );
     }
+
+    let start = main
+        .find("fn request_file_from_supervisor")
+        .expect("request_file_from_supervisor missing");
+    let window = &main[start..start.saturating_add(1200).min(main.len())];
+    assert!(
+        window.contains("lease_write_fd("),
+        "recording file requests must use the shared FD lease helper"
+    );
+    assert!(
+        window.contains("DEFAULT_BROKER_TIMEOUT"),
+        "shared recording FD leases must retain the bounded broker wait"
+    );
 }
 
 #[test]

@@ -1027,20 +1027,8 @@ pub struct MailerConfig {
     pub broker_timeout_secs: u64,
 }
 
-/// SMTP transport encryption mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SmtpEncryption {
-    /// Connect on the plain port (e.g. 587), then upgrade with
-    /// `STARTTLS` before AUTH and DATA. Mandatory in production.
-    Starttls,
-    /// Connect with TLS from byte 0 (e.g. port 465).
-    Tls,
-    /// No transport encryption. ONLY allowed in development against a
-    /// localhost test MTA. The dispatcher will refuse to send AUTH
-    /// credentials in this mode.
-    Plaintext,
-}
+/// SMTP transport encryption mode (wire + config; canonical definition in `shared`).
+pub use shared::messages::SmtpEncryption;
 
 impl MailerConfig {
     fn default_smtp_port() -> u16 {

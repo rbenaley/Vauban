@@ -28,16 +28,21 @@ mod input_redactor;
 mod ipc;
 mod session;
 mod session_manager;
+mod ssh_cast_writer;
 mod vault;
 
 use anyhow::{Context, Result};
 use error::SessionError;
 use ipc::AsyncIpcChannel;
 use session::{SessionConfig, SshCredential, fetch_host_key};
-use session_manager::{RecordingDropHook, SessionManager};
+use session_manager::{
+    RecordingLeaseClient, RecordingLeaseReq, RecordingSetup, RecordingWriteErrorHook,
+    SessionManager,
+};
 use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_SSH};
 use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{ControlMessage, Message, ServiceStats};
+use shared::recording_fd::{DEFAULT_BROKER_TIMEOUT, recv_fd_timed};
 use shared::sandbox as capsicum;
 use shared::session_token::proxy_gate as session_token_gate;
 use std::collections::HashMap;
@@ -65,11 +70,8 @@ struct ServiceState {
     /// Flag set by ControlMessage::Shutdown to break the main loop
     /// and allow destructors to run (SecretString credentials).
     shutdown_requested: AtomicBool,
-    /// SSH recording channel try_send full drops (audit backpressure).
-    recording_try_send_full: AtomicU64,
-    recording_try_send_last_warn: std::sync::Mutex<Instant>,
-    /// Sessions that already emitted `RecordingLossObserved` (sticky latch).
-    recording_loss_latched: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Proxy-owned SSH recording write failures.
+    recording_write_errors: AtomicU64,
 }
 
 /// Pending TCP connections received from supervisor via FD passing.
@@ -150,11 +152,7 @@ impl Default for ServiceState {
             rbac_recheck_timeouts: AtomicU64::new(0),
             draining: AtomicBool::new(false),
             shutdown_requested: AtomicBool::new(false),
-            recording_try_send_full: AtomicU64::new(0),
-            recording_try_send_last_warn: std::sync::Mutex::new(
-                Instant::now() - std::time::Duration::from_secs(60),
-            ),
-            recording_loss_latched: std::sync::Mutex::new(std::collections::HashSet::new()),
+            recording_write_errors: AtomicU64::new(0),
         }
     }
 }
@@ -185,28 +183,13 @@ impl ServiceState {
             pending_requests: 0,
             recording_ack_timeouts: 0,
             recording_ack_dropped: 0,
-            recording_try_send_full: self.recording_try_send_full.load(Ordering::SeqCst),
+            recording_try_send_full: 0,
             recording_ack_wait_ms_max: 0,
         }
     }
 
-    /// Increment process counter; return `true` on the first drop for this
-    /// session (I-LOSS-1 sticky latch) so the caller can emit IPC once.
-    fn record_recording_try_send_full(&self, session_id: &str) -> bool {
-        self.recording_try_send_full.fetch_add(1, Ordering::SeqCst);
-        if let Ok(mut last) = self.recording_try_send_last_warn.lock()
-            && last.elapsed() >= std::time::Duration::from_secs(10)
-        {
-            warn!(
-                session_id = %session_id,
-                "SSH recording channel full; dropping frame"
-            );
-            *last = Instant::now();
-        }
-        match self.recording_loss_latched.lock() {
-            Ok(mut set) => set.insert(session_id.to_string()),
-            Err(_) => false,
-        }
+    fn record_recording_write_error(&self) {
+        self.recording_write_errors.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -528,6 +511,7 @@ async fn run_service() -> Result<()> {
 
     // Create channel for sending SSH data back to web
     let (web_tx, web_rx) = mpsc::channel::<Message>(256);
+    let (recording_lease_tx, recording_lease_rx) = mpsc::channel::<RecordingLeaseReq>(64);
 
     // Run the main event loop
     main_loop(
@@ -539,6 +523,7 @@ async fn run_service() -> Result<()> {
         (web_tx, web_rx),
         fd_passing,
         audit_tx,
+        (recording_lease_tx, recording_lease_rx),
         access_guard,
         vault_client,
     )
@@ -555,10 +540,15 @@ async fn main_loop(
     web_mpsc: (mpsc::Sender<Message>, mpsc::Receiver<Message>),
     fd_passing: Option<Arc<FdPassingState>>,
     audit_tx: Option<mpsc::Sender<Message>>,
+    recording_lease_mpsc: (
+        mpsc::Sender<RecordingLeaseReq>,
+        mpsc::Receiver<RecordingLeaseReq>,
+    ),
     access_guard: Arc<AccessGuard>,
     vault_client: Option<Arc<VaultDecryptClient>>,
 ) -> Result<()> {
     let (web_tx, mut web_rx) = web_mpsc;
+    let (recording_lease_tx, mut recording_lease_rx) = recording_lease_mpsc;
     info!("Main event loop started");
 
     // Create a channel for spawned tasks to send IPC responses back to the main loop.
@@ -567,6 +557,9 @@ async fn main_loop(
 
     // Get pending connections reference for passing to handlers
     let pending_connections = fd_passing.as_ref().map(|fp| Arc::clone(&fp.pending));
+    let mut pending_recording_leases =
+        HashMap::<String, tokio::sync::oneshot::Sender<Result<std::fs::File, String>>>::new();
+    let mut recording_request_id = 0_u64;
 
     loop {
         // Check shutdown flag before blocking on select.
@@ -574,6 +567,16 @@ async fn main_loop(
             info!("Shutdown flag set, exiting main loop to run destructors");
             break;
         }
+        pending_recording_leases.retain(|session_id, reply| {
+            let keep = !reply.is_closed();
+            if !keep {
+                debug!(
+                    session_id = %session_id,
+                    "Discarding cancelled recording lease"
+                );
+            }
+            keep
+        });
 
         tokio::select! {
             // Handle supervisor messages (ping/pong, drain, shutdown, TcpConnectResponse)
@@ -609,6 +612,42 @@ async fn main_loop(
                             warn!(session_id = %session_id, error = ?error, "TCP connection failed");
                         }
                     }
+                    Ok(Message::RecordingFileResponse {
+                        session_id,
+                        success,
+                        error,
+                        ..
+                    }) => {
+                        let reply = pending_recording_leases.remove(&session_id);
+                        if success {
+                            let file_result = if let Some(ref fp) = fd_passing {
+                                let deadline = Instant::now() + DEFAULT_BROKER_TIMEOUT;
+                                recv_fd_timed(fp.socket_fd, deadline)
+                                    .map(std::fs::File::from)
+                                    .map_err(|e| e.to_string())
+                            } else {
+                                Err("FD passing is not configured".to_string())
+                            };
+                            if let Some(reply) = reply {
+                                let _ = reply.send(file_result);
+                            } else {
+                                warn!(
+                                    session_id = %session_id,
+                                    "RecordingFileResponse has no pending lease"
+                                );
+                            }
+                        } else if let Some(reply) = reply {
+                            let _ = reply.send(Err(error.unwrap_or_else(|| {
+                                "supervisor refused recording file lease".to_string()
+                            })));
+                        } else {
+                            warn!(
+                                session_id = %session_id,
+                                error = ?error,
+                                "Rejected recording lease has no pending requester"
+                            );
+                        }
+                    }
                     Ok(msg) => {
                         debug!(?msg, "Received non-control message from supervisor");
                     }
@@ -635,6 +674,9 @@ async fn main_loop(
                             msg,
                             pending_connections.clone(),
                             audit_tx.clone(),
+                            RecordingLeaseClient {
+                                tx: recording_lease_tx.clone(),
+                            },
                             Arc::clone(&access_guard),
                             vault_client.clone(),
                         ).await {
@@ -664,6 +706,36 @@ async fn main_loop(
             Some(response) = response_rx.recv() => {
                 if let Err(e) = web_channel.send(&response) {
                     warn!(error = %e, "Failed to send response to web");
+                }
+            }
+
+            Some(request) = recording_lease_rx.recv() => {
+                let RecordingLeaseReq {
+                    session_id,
+                    relative_path,
+                    reply,
+                } = request;
+                if fd_passing.is_none() {
+                    let _ = reply.send(Err("FD passing is not configured".to_string()));
+                    continue;
+                }
+                if pending_recording_leases.contains_key(&session_id) {
+                    let _ = reply.send(Err("recording lease already pending".to_string()));
+                    continue;
+                }
+
+                recording_request_id = recording_request_id.wrapping_add(1);
+                pending_recording_leases.insert(session_id.clone(), reply);
+                let request = Message::RecordingFileRequest {
+                    request_id: recording_request_id,
+                    session_id: session_id.clone(),
+                    relative_path,
+                    read_only: false,
+                };
+                if let Err(error) = supervisor_channel.send(&request)
+                    && let Some(reply) = pending_recording_leases.remove(&session_id)
+                {
+                    let _ = reply.send(Err(error.to_string()));
                 }
             }
         }
@@ -762,6 +834,7 @@ async fn handle_web_message(
     msg: Message,
     pending_connections: Option<PendingConnections>,
     audit_tx: Option<mpsc::Sender<Message>>,
+    recording_lease_client: RecordingLeaseClient,
     access_guard: Arc<AccessGuard>,
     vault_client: Option<Arc<VaultDecryptClient>>,
 ) -> Result<()> {
@@ -879,21 +952,13 @@ async fn handle_web_message(
             let vault_clone = vault_client.clone();
             let rbac_user = user_id.clone();
             let rbac_asset = asset_id.clone();
-            let recording_on_full: Option<RecordingDropHook> = if audit_tx.is_some() {
+            let recording = audit_tx
+                .as_ref()
+                .map(|_| RecordingSetup::Lease(recording_lease_client));
+            let recording_write_error: Option<RecordingWriteErrorHook> = if recording.is_some() {
                 let state_for_hook = Arc::clone(&state);
-                let web_tx_for_hook = web_tx.clone();
-                Some(Arc::new(move |session_id: &str| {
-                    if state_for_hook.record_recording_try_send_full(session_id) {
-                        let msg = Message::RecordingLossObserved {
-                            session_id: session_id.to_string(),
-                        };
-                        if web_tx_for_hook.try_send(msg).is_err() {
-                            warn!(
-                                session_id = %session_id,
-                                "Failed to enqueue RecordingLossObserved to web"
-                            );
-                        }
-                    }
+                Some(Arc::new(move |_session_id: &str| {
+                    state_for_hook.record_recording_write_error();
                 }))
             } else {
                 None
@@ -983,7 +1048,7 @@ async fn handle_web_message(
                 };
 
                 match sessions_clone
-                    .create_session(config, web_tx, audit_tx, recording_on_full)
+                    .create_session(config, web_tx, audit_tx, recording, recording_write_error)
                     .await
                 {
                     Ok(_) => {

@@ -85,7 +85,7 @@ fn audit_iacs_manager_module_exists() {
 
 #[test]
 fn web_hydrator_supports_pcap_bundle() {
-    let src = include_str!("../../vauban-web/src/services/recording_hydrator.rs");
+    let src = include_str!("../../vauban-web-evidence/src/hydrator/pipeline.rs");
     assert!(src.contains("FORMAT_PCAP_BUNDLE"));
 }
 

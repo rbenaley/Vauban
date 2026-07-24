@@ -39,7 +39,7 @@
 //! Payloads shorter than 8 bytes or with an unknown message type fall
 //! back to [`super::passthrough`] (never `Cmd`).
 
-use crate::services::iacs_packet_analyzer::types::{Direction, FieldNode, PacketKind};
+use crate::analyzer::types::{Direction, FieldNode, PacketKind};
 
 use super::Dissection;
 

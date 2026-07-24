@@ -6,7 +6,7 @@
 //! absolute byte offsets relative to the captured **frame**.
 //!
 //! TCP cross-segment reassembly is handled upstream in
-//! [`crate::services::iacs_packet_analyzer::reassembly`]; dissectors
+//! [`crate::analyzer::reassembly`]; dissectors
 //! always receive a complete application PDU when `complete == true`.
 //! Incomplete fragments are routed through [`dissect_fragment`] so
 //! they never classify as `Cmd`.
@@ -17,7 +17,7 @@ pub mod opcua;
 pub mod passthrough;
 pub mod profinet;
 
-use crate::services::iacs_packet_analyzer::types::{Direction, FieldNode, PacketKind};
+use crate::analyzer::types::{Direction, FieldNode, PacketKind};
 
 use shared::iacs_protocol::ExpectedProfile;
 

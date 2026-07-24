@@ -23,6 +23,8 @@ tracing-subscriber.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
 
 # Async runtime (exception to minimalist philosophy for proxy services)
 tokio.workspace = true
@@ -47,3 +49,5 @@ nix.workspace = true
 # rand_core guarantees the exact same major as the call site.
 getrandom = { workspace = true }
 async-trait.workspace = true
+proptest = "1"
+blake3.workspace = true

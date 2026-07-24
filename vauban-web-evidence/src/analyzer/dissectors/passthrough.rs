@@ -6,7 +6,7 @@
 //! is `PacketKind::Read` so an operator visually distinguishes raw
 //! data flow from positively-classified commands.
 
-use crate::services::iacs_packet_analyzer::types::{Direction, FieldNode, PacketKind};
+use crate::analyzer::types::{Direction, FieldNode, PacketKind};
 
 use super::Dissection;
 

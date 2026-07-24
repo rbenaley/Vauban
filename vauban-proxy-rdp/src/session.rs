@@ -5,7 +5,8 @@
 //! Display updates are encoded as PNG regions and sent via IPC.
 
 use crate::error::{SessionError, SessionResult};
-use crate::session_manager::RecordingDropHook;
+use crate::rdp_recording_writer::RdpRecordingWriter;
+use crate::session_manager::{RecordingLeaseClient, RecordingLeaseReq, RecordingWriteErrorHook};
 use crate::video_encoder::VideoEncoder;
 use base64::Engine as _;
 use image::codecs::png::PngEncoder;
@@ -119,7 +120,8 @@ impl RdpSession {
         web_tx: mpsc::Sender<Message>,
         cmd_rx: mpsc::Receiver<SessionCommand>,
         audit_tx: Option<mpsc::Sender<Message>>,
-        recording_on_full: Option<RecordingDropHook>,
+        recording_lease: Option<RecordingLeaseClient>,
+        recording_write_error: Option<RecordingWriteErrorHook>,
     ) -> SessionResult<Self> {
         info!(
             session_id = %config.session_id,
@@ -319,8 +321,11 @@ impl RdpSession {
                 tls_framed,
                 web_tx,
                 cmd_rx,
-                audit_tx,
-                recording_on_full,
+                SessionRecording {
+                    audit_tx,
+                    lease: recording_lease,
+                    write_error: recording_write_error,
+                },
             )
             .await
             {
@@ -496,6 +501,12 @@ fn spawn_encoder_thread(
     });
 }
 
+struct SessionRecording {
+    audit_tx: Option<mpsc::Sender<Message>>,
+    lease: Option<RecordingLeaseClient>,
+    write_error: Option<RecordingWriteErrorHook>,
+}
+
 /// Main processing loop for an active RDP session.
 async fn active_session_loop(
     session_id: String,
@@ -503,9 +514,13 @@ async fn active_session_loop(
     mut framed: ironrdp_tokio::TokioFramed<tokio_rustls::client::TlsStream<TcpStream>>,
     web_tx: mpsc::Sender<Message>,
     mut cmd_rx: mpsc::Receiver<SessionCommand>,
-    audit_tx: Option<mpsc::Sender<Message>>,
-    recording_on_full: Option<RecordingDropHook>,
+    recording: SessionRecording,
 ) -> SessionResult<()> {
+    let SessionRecording {
+        audit_tx,
+        lease: recording_lease,
+        write_error: recording_write_error,
+    } = recording;
     let desktop_w = connection_result.desktop_size.width;
     let desktop_h = connection_result.desktop_size.height;
     let mut image = DecodedImage::new(PixelFormat::RgbA32, desktop_w, desktop_h);
@@ -542,6 +557,8 @@ async fn active_session_loop(
 
     // Performance metrics: log every 5 seconds
     let mut perf_interval = interval(std::time::Duration::from_secs(5));
+    let mut recording_sync_interval = interval(std::time::Duration::from_secs(1));
+    recording_sync_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut perf_gfx_updates: u64 = 0;
     let mut perf_encoded_frames: u64 = 0;
     let mut perf_dirty_skips: u64 = 0;
@@ -549,7 +566,29 @@ async fn active_session_loop(
 
     trace!(session_id = %session_id, "Active session loop started");
 
-    if let Some(ref tx) = audit_tx {
+    let mut recording_loss_observed = false;
+    let mut recording_writer = if let Some(ref lease) = recording_lease {
+        let relative_path = RdpRecordingWriter::first_segment_path(&session_id);
+        match lease_recording_file(lease, &session_id, &relative_path).await {
+            Ok(file) => Some(RdpRecordingWriter::new(file, relative_path)),
+            Err(error) => {
+                observe_recording_error(
+                    &session_id,
+                    &error,
+                    &recording_write_error,
+                    &web_tx,
+                    &mut recording_loss_observed,
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if recording_writer.is_some()
+        && let Some(ref tx) = audit_tx
+    {
         let _ = tx
             .send(Message::RdpRecordingStart {
                 session_id: session_id.clone(),
@@ -563,6 +602,22 @@ async fn active_session_loop(
     let recording_result: SessionResult<()> = async {
     loop {
         tokio::select! {
+            _ = recording_sync_interval.tick(), if recording_writer.is_some() => {
+                let sync_error = recording_writer
+                    .as_mut()
+                    .and_then(|writer| writer.sync_if_dirty().err());
+                if let Some(error) = sync_error {
+                    observe_recording_error(
+                        &session_id,
+                        &error,
+                        &recording_write_error,
+                        &web_tx,
+                        &mut recording_loss_observed,
+                    );
+                    recording_writer = None;
+                }
+            }
+
             // Read and process PDU from RDP server
             frame_result = framed.read_pdu() => {
                 let (action, payload) = frame_result.map_err(|e| {
@@ -857,17 +912,57 @@ async fn active_session_loop(
                 perf_encoded_frames += 1;
                 perf_encode_time_us += encode_elapsed_us;
 
-                if let Some(ref tx) = audit_tx {
-                    let audit_msg = Message::RdpVideoFrame {
-                        session_id: session_id.clone(),
-                        timestamp_us: frame.timestamp_us,
-                        is_keyframe: frame.is_keyframe,
-                        width: frame.width,
-                        height: frame.height,
-                        data: frame.data.clone(),
-                    };
-                    if tx.try_send(audit_msg).is_err() && let Some(ref hook) = recording_on_full {
-                        hook(&session_id);
+                let segment_needed = match recording_writer.as_mut() {
+                    Some(writer) => writer.handle_frame(
+                        frame.timestamp_us,
+                        frame.is_keyframe,
+                        frame.width,
+                        frame.height,
+                        &frame.data,
+                    ),
+                    None => Ok(None),
+                };
+                match segment_needed {
+                    Ok(Some(segment)) => {
+                        if let Some(ref lease) = recording_lease {
+                            match lease_recording_file(lease, &session_id, &segment.relative_path).await {
+                                Ok(file) => {
+                                    if let Some(writer) = recording_writer.as_mut()
+                                        && let Err(error) = writer.provide_segment_file(file)
+                                    {
+                                        observe_recording_error(
+                                            &session_id,
+                                            &error,
+                                            &recording_write_error,
+                                            &web_tx,
+                                            &mut recording_loss_observed,
+                                        );
+                                        recording_writer = None;
+                                    }
+                                }
+                                Err(error) => {
+                                    observe_recording_error(
+                                        &session_id,
+                                        &error,
+                                        &recording_write_error,
+                                        &web_tx,
+                                        &mut recording_loss_observed,
+                                    );
+                                    recording_writer = None;
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        observe_recording_error(
+                            &session_id,
+                            &error,
+                            &recording_write_error,
+                            &web_tx,
+                            &mut recording_loss_observed,
+                        );
+                        recording_writer = None;
                     }
                 }
 
@@ -888,16 +983,81 @@ async fn active_session_loop(
     }
     }.await;
 
-    if let Some(ref tx) = audit_tx {
-        let _ = tx
-            .send(Message::RdpRecordingEnd {
-                session_id: session_id.clone(),
-            })
-            .await;
-        debug!(session_id = %session_id, "Sent RdpRecordingEnd to audit");
+    if let Some(writer) = recording_writer {
+        match writer.finish() {
+            Ok(Some(seal)) => {
+                if let Some(ref tx) = audit_tx {
+                    let _ = tx
+                        .send(Message::RdpRecordingEnd {
+                            session_id: session_id.clone(),
+                            segments: seal.segments,
+                            meta_json_relative_path: seal.meta_json_relative_path,
+                            total_frames: seal.total_frames,
+                            total_bytes: seal.total_bytes,
+                        })
+                        .await;
+                    debug!(session_id = %session_id, "Sent sealed RdpRecordingEnd to audit");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => observe_recording_error(
+                &session_id,
+                &error,
+                &recording_write_error,
+                &web_tx,
+                &mut recording_loss_observed,
+            ),
+        }
     }
 
     recording_result
+}
+
+async fn lease_recording_file(
+    client: &RecordingLeaseClient,
+    session_id: &str,
+    relative_path: &str,
+) -> Result<std::fs::File, String> {
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    client
+        .tx
+        .send(RecordingLeaseReq {
+            session_id: session_id.to_string(),
+            relative_path: relative_path.to_string(),
+            reply,
+        })
+        .await
+        .map_err(|_| "recording lease channel closed".to_string())?;
+    match tokio::time::timeout(shared::recording_fd::DEFAULT_BROKER_TIMEOUT, receive).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("recording lease reply channel closed".to_string()),
+        Err(_) => Err("recording lease timed out".to_string()),
+    }
+}
+
+fn observe_recording_error(
+    session_id: &str,
+    error: &dyn std::fmt::Display,
+    hook: &Option<RecordingWriteErrorHook>,
+    web_tx: &mpsc::Sender<Message>,
+    loss_observed: &mut bool,
+) {
+    if *loss_observed {
+        return;
+    }
+    *loss_observed = true;
+    error!(session_id = %session_id, error = %error, "RDP recording write failed");
+    if let Some(hook) = hook {
+        hook(session_id);
+    }
+    if web_tx
+        .try_send(Message::RecordingLossObserved {
+            session_id: session_id.to_string(),
+        })
+        .is_err()
+    {
+        warn!(session_id = %session_id, "Failed to enqueue RecordingLossObserved to web");
+    }
 }
 
 /// Last lock-key state synchronized to the RDP server.

@@ -38,6 +38,16 @@ release:
     cargo build --workspace --release
     cargo build {{rdp_manifest}} --release
 
+# Examples: just run | just run --release | just run -- -- create-superuser
+# Run the supervisor (workspace default-members → vauban-supervisor)
+run *ARGS:
+    cargo run {{ARGS}}
+
+# Prerequisite: just release (or just build --release). FreeBSD + pkg(8) required.
+# Build the FreeBSD package (runs pkg/build-pkg.sh)
+package:
+    cd pkg && ./build-pkg.sh
+
 # Uses {{rdp_path}} (no --target-dir): `cargo update` only rewrites
 # Cargo.lock and rejects --target-dir.
 # Update dependencies in both lockfiles (workspace + vauban-proxy-rdp)
@@ -60,3 +70,17 @@ audit *ARGS:
 # Clean all build artifacts
 clean:
     cargo clean
+
+# Build sealed mailer leaf (Capsicum SMTP outbox drainer)
+build-mailer *ARGS:
+    cargo build -p vauban-mailer {{ARGS}}
+
+# Run sealed mailer in foreground (requires supervisor-brokered env:
+# VAUBAN_IPC_READ/WRITE, VAUBAN_FD_PASSING_SOCKET, VAUBAN_DATABASE_URL).
+# Prefer supervisor spawn in normal deploys; this recipe is for lab debug.
+run-mailer *ARGS:
+    cargo run -p vauban-mailer {{ARGS}}
+
+# Build evidence sub-crate (Inspect analyzer + hydrator pipeline)
+build-evidence *ARGS:
+    cargo build -p vauban-web-evidence {{ARGS}}

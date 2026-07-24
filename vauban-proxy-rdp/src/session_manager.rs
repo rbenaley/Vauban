@@ -4,14 +4,26 @@ use crate::error::{SessionError, SessionResult};
 use crate::session::{RdpSession, SessionCommand, SessionConfig};
 use shared::messages::{Message, RdpInputEvent};
 use std::collections::HashMap;
+use std::fs::File;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, info};
 
-/// Hook invoked when the audit recording channel rejects a `try_send`.
-pub type RecordingDropHook = Arc<dyn Fn(&str) + Send + Sync>;
+/// Hook invoked once when local RDP recording can no longer continue.
+pub type RecordingWriteErrorHook = Arc<dyn Fn(&str) + Send + Sync>;
+
+#[derive(Clone)]
+pub struct RecordingLeaseClient {
+    pub tx: mpsc::Sender<RecordingLeaseReq>,
+}
+
+pub struct RecordingLeaseReq {
+    pub session_id: String,
+    pub relative_path: String,
+    pub reply: oneshot::Sender<Result<File, String>>,
+}
 
 /// Handle for communicating with a session task.
 pub struct SessionHandle {
@@ -54,7 +66,8 @@ impl SessionManager {
         config: SessionConfig,
         web_tx: mpsc::Sender<Message>,
         audit_tx: Option<mpsc::Sender<Message>>,
-        recording_on_full: Option<RecordingDropHook>,
+        recording_lease: Option<RecordingLeaseClient>,
+        recording_write_error: Option<RecordingWriteErrorHook>,
     ) -> SessionResult<(String, u16, u16)> {
         let session_id = config.session_id.clone();
 
@@ -72,8 +85,15 @@ impl SessionManager {
 
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
 
-        let rdp_session =
-            RdpSession::connect(config, web_tx, cmd_rx, audit_tx, recording_on_full).await?;
+        let rdp_session = RdpSession::connect(
+            config,
+            web_tx,
+            cmd_rx,
+            audit_tx,
+            recording_lease,
+            recording_write_error,
+        )
+        .await?;
 
         let desktop_width = rdp_session.desktop_width;
         let desktop_height = rdp_session.desktop_height;

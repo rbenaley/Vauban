@@ -596,43 +596,100 @@ impl Default for AuditConfig {
 
 /// Email notification configuration (Issue #10), supervisor view.
 ///
-/// The supervisor only needs to know:
-///   1. Whether the mailer is enabled. When `enabled = false`, every
-///      `TcpConnectRequest { target_service: Web }` is fail-closed.
-///   2. The exact `(smtp_host, smtp_port)` couple that vauban-web is
-///      allowed to brokered-connect to. Anything else is fail-closed.
-///
-/// All other knobs (credentials, retry policy, ...) live in vauban-web.
-//
-// `dead_code` is allowed temporarily on the fields and `allows()` because
-// the supervisor hookup that consumes them lives in
-// `handle_tcp_connect_request` and is wired in the next commit. Removing
-// the allows once the wiring is in place is enforced by a regression test
-// (`mailer_loaded_from_default_toml_is_disabled` already touches the
-// fields and would break if they are ever removed).
-#[allow(dead_code)]
-#[derive(Debug, Default, Clone, Deserialize)]
+/// The supervisor uses `[mailer]` for:
+///   1. SSRF whitelist gate on `TcpConnectRequest { target_service: Mailer }`.
+///   2. Pre-seal `MailerSmtpProvision` IPC to the sealed vauban-mailer leaf.
+#[derive(Debug, Clone, Deserialize)]
 pub struct MailerConfig {
-    /// Master switch. When false, the supervisor refuses to broker any
-    /// TCP connection on behalf of vauban-web.
     #[serde(default)]
     pub enabled: bool,
-    /// Allowed SMTP host (DNS name, exact match required).
+    #[serde(default)]
+    pub from_address: String,
+    #[serde(default)]
+    pub from_name: String,
+    #[serde(default)]
+    pub reply_to: String,
     #[serde(default)]
     pub smtp_host: String,
-    /// Allowed SMTP port (exact match required).
-    #[serde(default)]
+    #[serde(default = "default_smtp_port")]
     pub smtp_port: u16,
+    #[serde(default = "default_smtp_encryption")]
+    pub smtp_encryption: shared::messages::SmtpEncryption,
+    #[serde(default)]
+    pub smtp_username: String,
+    #[serde(default = "default_sensitive_string")]
+    pub smtp_password: shared::messages::SensitiveString,
+    #[serde(default)]
+    pub helo_name: String,
+    #[serde(default = "default_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    #[serde(default = "default_batch_size")]
+    pub batch_size: i64,
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: i32,
+    #[serde(default = "default_smtp_timeout_secs")]
+    pub smtp_timeout_secs: u64,
+    #[serde(default = "default_broker_timeout_secs")]
+    pub broker_timeout_secs: u64,
+}
+
+fn default_smtp_port() -> u16 {
+    587
+}
+
+fn default_smtp_encryption() -> shared::messages::SmtpEncryption {
+    shared::messages::SmtpEncryption::Starttls
+}
+
+fn default_sensitive_string() -> shared::messages::SensitiveString {
+    shared::messages::SensitiveString::new(String::new())
+}
+
+fn default_poll_interval_secs() -> u64 {
+    10
+}
+
+fn default_batch_size() -> i64 {
+    16
+}
+
+fn default_max_attempts() -> i32 {
+    5
+}
+
+fn default_smtp_timeout_secs() -> u64 {
+    30
+}
+
+fn default_broker_timeout_secs() -> u64 {
+    30
+}
+
+impl Default for MailerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            from_address: String::new(),
+            from_name: String::new(),
+            reply_to: String::new(),
+            smtp_host: String::new(),
+            smtp_port: default_smtp_port(),
+            smtp_encryption: default_smtp_encryption(),
+            smtp_username: String::new(),
+            smtp_password: default_sensitive_string(),
+            helo_name: String::new(),
+            poll_interval_secs: default_poll_interval_secs(),
+            batch_size: default_batch_size(),
+            max_attempts: default_max_attempts(),
+            smtp_timeout_secs: default_smtp_timeout_secs(),
+            broker_timeout_secs: default_broker_timeout_secs(),
+        }
+    }
 }
 
 impl MailerConfig {
     /// Returns `true` iff the mailer is enabled and `(host, port)`
-    /// matches the configured whitelist (case-insensitive on host as
-    /// per RFC 1035 §2.3.3).
-    ///
-    /// This is the SSRF guard: vauban-web cannot trick the supervisor
-    /// into opening a socket to anywhere else just by forging a
-    /// `TcpConnectRequest`.
+    /// matches the configured whitelist (case-insensitive on host).
     pub fn allows(&self, host: &str, port: u16) -> bool {
         self.enabled
             && port == self.smtp_port
@@ -1219,6 +1276,12 @@ impl SupervisorConfig {
                     self.security.client_acl_env_value(),
                 ));
             }
+            "mailer" => {
+                vars.push((
+                    "VAUBAN_DATABASE_URL".to_string(),
+                    self.database.url.to_string(),
+                ));
+            }
             _ => {}
         }
         vars
@@ -1238,6 +1301,7 @@ impl SupervisorConfig {
             "proxy_rdp",  // Depends on access, vault, audit
             "proxy_iacs", // Depends on access, audit (no vault: no target credentials)
             "web",        // Depends on auth, access, audit
+            "mailer",     // Sealed leaf: outbox drain + SMTP (no TOPOLOGY peers)
         ]
     }
 }
@@ -1272,7 +1336,7 @@ mod tests {
 
         assert!(config.environment.is_development());
         assert!(!config.supervisor.privsep);
-        assert_eq!(config.services.len(), 8);
+        assert_eq!(config.services.len(), 9);
     }
 
     #[test]
@@ -1309,6 +1373,7 @@ mod tests {
         assert!(config.services.contains_key("proxy_rdp"));
         assert!(config.services.contains_key("proxy_iacs"));
         assert!(config.services.contains_key("web"));
+        assert!(config.services.contains_key("mailer"));
     }
 
     // ==================== Effective UID/GID Tests ====================
@@ -1470,9 +1535,10 @@ mod tests {
         let config = test_config();
         let order = config.startup_order();
 
-        assert_eq!(order.len(), 8);
+        assert_eq!(order.len(), 9);
         assert_eq!(order[0], "audit");
         assert_eq!(order[7], "web");
+        assert_eq!(order[8], "mailer");
     }
 
     #[test]
@@ -1495,6 +1561,10 @@ mod tests {
         assert!(web_pos > auth_pos);
         assert!(web_pos > access_pos);
         assert!(web_pos > audit_pos);
+
+        // Mailer is a sealed leaf: start after web (outbox writers ready)
+        let mailer_pos = order.iter().position(|&s| s == "mailer").unwrap();
+        assert!(mailer_pos > web_pos);
     }
 
     // ==================== Environment Tests ====================
@@ -1800,6 +1870,7 @@ mod tests {
             enabled,
             smtp_host: host.to_string(),
             smtp_port: port,
+            ..MailerConfig::default()
         }
     }
 

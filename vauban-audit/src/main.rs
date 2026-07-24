@@ -18,7 +18,11 @@
 //! - Real-time alerts
 //! - Audit log queries
 
+// Retained temporarily for on-disk format regression tests while RDP media
+// ownership moves to vauban-proxy-rdp. Production handlers no longer call it.
+#[allow(dead_code)]
 mod fmp4_writer;
+#[allow(dead_code)]
 mod recording_manager;
 mod ssh_recording_manager;
 
@@ -27,15 +31,17 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use ed25519_dalek::SigningKey;
 use recording_manager::RecordingManager;
-use shared::ipc::{IpcChannel, poll_readable, recv_fd};
+use shared::ipc::{IpcChannel, poll_readable};
 use shared::messages::{AuditEventType, ControlMessage, Message, ServiceStats};
+use shared::recording_fd::{DEFAULT_BROKER_TIMEOUT, lease_write_fd};
 use shared::sandbox as capsicum;
-use ssh_recording_manager::SshRecordingManager;
+use ssh_recording_manager::{SshEndSessionResult, SshRecordingManager};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
@@ -1168,21 +1174,7 @@ fn recv_from_supervisor_until(
 
 /// Timed `recv_fd` so a missing SCM_RIGHTS payload cannot wedge the main loop.
 fn recv_fd_timed(socket_fd: RawFd, deadline: Instant) -> Result<std::os::fd::OwnedFd> {
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(anyhow::anyhow!("recv_fd timed out waiting for SCM_RIGHTS"));
-        }
-        let remaining_ms = (deadline - now).as_millis().min(i32::MAX as u128) as i32;
-        let ready = poll_readable(&[socket_fd], remaining_ms.max(1))?;
-        if ready.is_empty() {
-            if Instant::now() >= deadline {
-                return Err(anyhow::anyhow!("recv_fd timed out waiting for SCM_RIGHTS"));
-            }
-            continue;
-        }
-        return recv_fd(socket_fd).map_err(|e| anyhow::anyhow!("recv_fd failed: {e}"));
-    }
+    shared::recording_fd::recv_fd_timed(socket_fd, deadline).map_err(Into::into)
 }
 
 /// Broker-open segment 0 and install it on `state.worm`.
@@ -1310,10 +1302,10 @@ fn handle_recording_message(
     fd_passing_socket: Option<RawFd>,
     msg: Message,
 ) -> Result<()> {
-    let Some(mgr) = recording_mgr.as_mut() else {
+    if recording_mgr.is_none() {
         debug!("Recording not enabled, ignoring recording message");
         return Ok(());
-    };
+    }
 
     match msg {
         Message::RdpRecordingStart {
@@ -1321,72 +1313,59 @@ fn handle_recording_message(
             width: _,
             height: _,
         } => {
-            let relative_path = RecordingManager::compute_relative_path(&session_id);
+            debug!(
+                session_id,
+                "RDP proxy owns media files; start is metadata-only"
+            );
+            state.requests_processed += 1;
+        }
+        Message::RdpVideoFrame { session_id, .. } => {
+            warn!(
+                session_id,
+                "Ignoring legacy RdpVideoFrame on audit recording channel"
+            );
+            state.requests_processed += 1;
+        }
+        Message::RdpRecordingEnd {
+            session_id,
+            segments,
+            meta_json_relative_path,
+            total_frames,
+            total_bytes,
+        } => {
+            #[derive(serde::Serialize)]
+            struct RdpMeta<'a> {
+                segments: &'a [shared::messages::RdpRecordingSegment],
+            }
+            let meta_json = serde_json::to_string_pretty(&RdpMeta {
+                segments: &segments,
+            })?;
             match request_file_from_supervisor(
                 supervisor_channel,
                 fd_passing_socket,
                 &session_id,
-                &relative_path,
+                &meta_json_relative_path,
             ) {
-                Ok(file) => {
-                    mgr.start_session(&session_id, file, relative_path);
+                Ok(meta_file) => {
+                    use std::io::Write;
+                    let mut meta_file = meta_file;
+                    if let Err(e) = meta_file
+                        .write_all(meta_json.as_bytes())
+                        .and_then(|_| meta_file.flush())
+                    {
+                        error!(session_id, error = %e, "Failed to write meta.json");
+                    } else {
+                        info!(
+                            session_id,
+                            segments = segments.len(),
+                            total_frames,
+                            total_bytes,
+                            "RDP meta.json written from proxy seal"
+                        );
+                    }
                 }
                 Err(e) => {
-                    error!(session_id, error = %e, "Failed to obtain recording file from supervisor");
-                }
-            }
-            state.requests_processed += 1;
-        }
-        Message::RdpVideoFrame {
-            session_id,
-            timestamp_us,
-            is_keyframe,
-            width,
-            height,
-            data,
-        } => {
-            match mgr.handle_frame(&session_id, timestamp_us, is_keyframe, width, height, &data) {
-                recording_manager::FrameResult::Processed => {}
-                recording_manager::FrameResult::NewSegmentNeeded { relative_path } => {
-                    match request_file_from_supervisor(
-                        supervisor_channel,
-                        fd_passing_socket,
-                        &session_id,
-                        &relative_path,
-                    ) {
-                        Ok(file) => mgr.provide_segment_file(&session_id, file),
-                        Err(e) => {
-                            error!(session_id, error = %e, "Failed to obtain new segment file");
-                        }
-                    }
-                }
-            }
-            state.requests_processed += 1;
-        }
-        Message::RdpRecordingEnd { session_id } => {
-            if let Some(result) = mgr.end_session(&session_id) {
-                let meta_json = RecordingManager::serialize_meta_json(&result.segments);
-                match request_file_from_supervisor(
-                    supervisor_channel,
-                    fd_passing_socket,
-                    &session_id,
-                    &result.meta_json_relative_path,
-                ) {
-                    Ok(meta_file) => {
-                        use std::io::Write;
-                        let mut meta_file = meta_file;
-                        if let Err(e) = meta_file
-                            .write_all(meta_json.as_bytes())
-                            .and_then(|_| meta_file.flush())
-                        {
-                            error!(session_id, error = %e, "Failed to write meta.json");
-                        } else {
-                            info!(session_id, "meta.json written successfully");
-                        }
-                    }
-                    Err(e) => {
-                        error!(session_id, error = %e, "Failed to obtain meta.json file from supervisor");
-                    }
+                    error!(session_id, error = %e, "Failed to obtain meta.json file from supervisor");
                 }
             }
             state.requests_processed += 1;
@@ -1406,78 +1385,78 @@ fn handle_ssh_recording_message(
     fd_passing_socket: Option<RawFd>,
     msg: Message,
 ) -> Result<()> {
-    let Some(mgr) = ssh_recording_mgr.as_mut() else {
+    if ssh_recording_mgr.is_none() {
         debug!("SSH recording not enabled, ignoring SSH recording message");
         return Ok(());
-    };
+    }
 
     match msg {
         Message::SshRecordingStart {
             session_id,
+            width: _,
+            height: _,
+            asset_name: _,
+            username: _,
+        } => {
+            info!(
+                session_id,
+                "SSH recording media is proxy-owned; audit awaits sealed metadata"
+            );
+            state.requests_processed += 1;
+        }
+        Message::SshRecordingData { session_id, .. } => {
+            static LEGACY_DATA_MESSAGES: AtomicU64 = AtomicU64::new(0);
+            let count = LEGACY_DATA_MESSAGES.fetch_add(1, Ordering::Relaxed) + 1;
+            if count % 1024 == 1 {
+                warn!(
+                    session_id,
+                    legacy_messages_seen = count,
+                    "Ignoring legacy SSH recording data; media is proxy-owned"
+                );
+            }
+            state.requests_processed += 1;
+        }
+        Message::SshRecordingEnd {
+            session_id,
+            blake3_hex,
+            total_bytes,
+            total_events,
+            duration_secs,
             width,
             height,
-            asset_name,
-            username,
+            meta_json_relative_path,
         } => {
-            let relative_path = SshRecordingManager::compute_relative_path(&session_id);
+            let result = SshEndSessionResult {
+                relative_path: String::new(),
+                meta_json_relative_path,
+                blake3_hex,
+                total_bytes,
+                total_events,
+                duration_secs,
+                width,
+                height,
+            };
+            let meta_json = SshRecordingManager::serialize_meta_json(&result);
             match request_file_from_supervisor(
                 supervisor_channel,
                 fd_passing_socket,
                 &session_id,
-                &relative_path,
+                &result.meta_json_relative_path,
             ) {
-                Ok(file) => {
-                    mgr.start_session(
-                        &session_id,
-                        ssh_recording_manager::SshSessionStartParams {
-                            file,
-                            relative_path,
-                            width,
-                            height,
-                            asset_name,
-                            username,
-                        },
-                    );
+                Ok(meta_file) => {
+                    use std::io::Write;
+                    let mut meta_file = meta_file;
+                    if let Err(e) = meta_file
+                        .write_all(meta_json.as_bytes())
+                        .and_then(|_| meta_file.flush())
+                    {
+                        error!(session_id, error = %e, "Failed to write SSH meta.json");
+                    } else {
+                        info!(session_id, "SSH meta.json written successfully");
+                    }
                 }
                 Err(e) => {
-                    error!(session_id, error = %e, "Failed to obtain SSH recording file from supervisor");
-                }
-            }
-            state.requests_processed += 1;
-        }
-        Message::SshRecordingData {
-            session_id,
-            timestamp_us,
-            event_type,
-            data,
-        } => {
-            mgr.handle_data(&session_id, timestamp_us, event_type, &data);
-            state.requests_processed += 1;
-        }
-        Message::SshRecordingEnd { session_id } => {
-            if let Some(result) = mgr.end_session(&session_id) {
-                let meta_json = SshRecordingManager::serialize_meta_json(&result);
-                match request_file_from_supervisor(
-                    supervisor_channel,
-                    fd_passing_socket,
-                    &session_id,
-                    &result.meta_json_relative_path,
-                ) {
-                    Ok(meta_file) => {
-                        use std::io::Write;
-                        let mut meta_file = meta_file;
-                        if let Err(e) = meta_file
-                            .write_all(meta_json.as_bytes())
-                            .and_then(|_| meta_file.flush())
-                        {
-                            error!(session_id, error = %e, "Failed to write SSH meta.json");
-                        } else {
-                            info!(session_id, "SSH meta.json written successfully");
-                        }
-                    }
-                    Err(e) => {
-                        error!(session_id, error = %e, "Failed to obtain SSH meta.json file from supervisor");
-                    }
+                    error!(session_id, error = %e, "Failed to obtain SSH meta.json file from supervisor");
                 }
             }
             state.requests_processed += 1;
@@ -1962,50 +1941,14 @@ fn request_file_from_supervisor(
 ) -> Result<std::fs::File> {
     let fd_socket =
         fd_passing_socket.ok_or_else(|| anyhow::anyhow!("no fd_passing socket available"))?;
-    let deadline = Instant::now() + SUPERVISOR_BROKER_TIMEOUT;
-
-    channel.send(&Message::RecordingFileRequest {
-        request_id: 0,
-        session_id: session_id.to_string(),
-        relative_path: relative_path.to_string(),
-        read_only: false,
-    })?;
-
-    loop {
-        let msg = recv_from_supervisor_until(channel, deadline, |m| {
-            matches!(m, Message::RecordingFileResponse { .. })
-        })?;
-        match msg {
-            Message::RecordingFileResponse {
-                session_id: sid,
-                success,
-                error,
-                ..
-            } => {
-                if sid != session_id {
-                    warn!(
-                        expected = session_id,
-                        got = %sid,
-                        "Mismatched RecordingFileResponse session_id"
-                    );
-                    continue;
-                }
-                if !success {
-                    return Err(anyhow::anyhow!(
-                        "supervisor refused file creation: {}",
-                        error.unwrap_or_default()
-                    ));
-                }
-                let owned_fd = recv_fd_timed(fd_socket, deadline)?;
-                return Ok(unsafe { std::fs::File::from_raw_fd(owned_fd.into_raw_fd()) });
-            }
-            other => {
-                return Err(anyhow::anyhow!(
-                    "internal: expected RecordingFileResponse, got {other:?}"
-                ));
-            }
-        }
-    }
+    lease_write_fd(
+        channel,
+        fd_socket,
+        session_id,
+        relative_path,
+        DEFAULT_BROKER_TIMEOUT,
+    )
+    .map_err(Into::into)
 }
 
 fn handle_control(
@@ -2393,65 +2336,25 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_recording_message_with_manager_via_fd_passing() {
-        use shared::ipc::{send_fd, socketpair_for_fd_passing};
-        use std::os::unix::io::AsRawFd;
-
-        let dir = tempfile::tempdir().unwrap();
+    fn test_rdp_recording_start_does_not_lease_media_fd() {
         let (supervisor_channel, audit_channel) = IpcChannel::pair().unwrap();
-        let (supervisor_fd_sock, audit_fd_sock) = socketpair_for_fd_passing().unwrap();
-
-        let audit_fd_sock_raw = audit_fd_sock.as_raw_fd();
-
         let mut state = ServiceState::default();
         let mut recording_mgr = Some(RecordingManager::new());
-
-        // Simulate supervisor in a background thread
-        let dir_path = dir.path().to_path_buf();
-        let handle = std::thread::spawn(move || {
-            let msg = supervisor_channel.recv().unwrap();
-            if let Message::RecordingFileRequest {
-                request_id,
-                session_id,
-                relative_path,
-                ..
-            } = msg
-            {
-                let full_path = dir_path.join(&relative_path);
-                if let Some(parent) = full_path.parent() {
-                    std::fs::create_dir_all(parent).unwrap();
-                }
-                let file = std::fs::File::create(&full_path).unwrap();
-                send_fd(supervisor_fd_sock.as_raw_fd(), file.as_raw_fd()).unwrap();
-                supervisor_channel
-                    .send(&Message::RecordingFileResponse {
-                        request_id,
-                        session_id,
-                        success: true,
-                        error: None,
-                    })
-                    .unwrap();
-            } else {
-                panic!("Expected RecordingFileRequest");
-            }
-        });
 
         let msg = Message::RdpRecordingStart {
             session_id: "rec-test".to_string(),
             width: 1920,
             height: 1080,
         };
-        handle_recording_message(
-            &mut state,
-            &mut recording_mgr,
-            &audit_channel,
-            Some(audit_fd_sock_raw),
-            msg,
-        )
-        .unwrap();
+        handle_recording_message(&mut state, &mut recording_mgr, &audit_channel, None, msg)
+            .unwrap();
         assert_eq!(state.requests_processed, 1);
-
-        handle.join().unwrap();
+        assert!(
+            shared::ipc::poll_readable(&[supervisor_channel.read_fd()], 0)
+                .unwrap()
+                .is_empty(),
+            "RdpRecordingStart must not request a media file"
+        );
     }
 
     // ==================== Structural Regression Tests ====================
@@ -2544,38 +2447,37 @@ mod tests {
 
         let dir_path = dir.path().to_path_buf();
 
-        // Supervisor thread: handles 2 file requests (session.cast + meta.json)
+        // Audit only leases meta.json; session.cast is proxy-owned.
         let handle = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let msg = supervisor_channel.recv().unwrap();
-                if let Message::RecordingFileRequest {
-                    request_id,
-                    session_id,
-                    relative_path,
-                    ..
-                } = msg
-                {
-                    let full_path = dir_path.join(&relative_path);
-                    if let Some(parent) = full_path.parent() {
-                        std::fs::create_dir_all(parent).unwrap();
-                    }
-                    let file = std::fs::File::create(&full_path).unwrap();
-                    send_fd(supervisor_fd_sock.as_raw_fd(), file.as_raw_fd()).unwrap();
-                    supervisor_channel
-                        .send(&Message::RecordingFileResponse {
-                            request_id,
-                            session_id,
-                            success: true,
-                            error: None,
-                        })
-                        .unwrap();
-                } else {
-                    panic!("Expected RecordingFileRequest, got {:?}", msg);
+            let msg = supervisor_channel.recv().unwrap();
+            if let Message::RecordingFileRequest {
+                request_id,
+                session_id,
+                relative_path,
+                ..
+            } = msg
+            {
+                assert!(relative_path.ends_with("/meta.json"));
+                let full_path = dir_path.join(&relative_path);
+                if let Some(parent) = full_path.parent() {
+                    std::fs::create_dir_all(parent).unwrap();
                 }
+                let file = std::fs::File::create(&full_path).unwrap();
+                send_fd(supervisor_fd_sock.as_raw_fd(), file.as_raw_fd()).unwrap();
+                supervisor_channel
+                    .send(&Message::RecordingFileResponse {
+                        request_id,
+                        session_id,
+                        success: true,
+                        error: None,
+                    })
+                    .unwrap();
+            } else {
+                panic!("Expected RecordingFileRequest, got {:?}", msg);
             }
         });
 
-        // Start SSH recording
+        // Start is informational and must not lease session.cast.
         handle_ssh_recording_message(
             &mut state,
             &mut ssh_mgr,
@@ -2592,7 +2494,7 @@ mod tests {
         .unwrap();
         assert_eq!(state.requests_processed, 1);
 
-        // Send data events
+        // Legacy data is ignored during mixed-version deployments.
         handle_ssh_recording_message(
             &mut state,
             &mut ssh_mgr,
@@ -2607,35 +2509,7 @@ mod tests {
         )
         .unwrap();
 
-        handle_ssh_recording_message(
-            &mut state,
-            &mut ssh_mgr,
-            &audit_channel,
-            Some(audit_fd_sock_raw),
-            Message::SshRecordingData {
-                session_id: "ssh-ipc-test".to_string(),
-                timestamp_us: 500_000,
-                event_type: SshRecordingEvent::Input,
-                data: b"ls\r".to_vec(),
-            },
-        )
-        .unwrap();
-
-        handle_ssh_recording_message(
-            &mut state,
-            &mut ssh_mgr,
-            &audit_channel,
-            Some(audit_fd_sock_raw),
-            Message::SshRecordingData {
-                session_id: "ssh-ipc-test".to_string(),
-                timestamp_us: 1_000_000,
-                event_type: SshRecordingEvent::Output,
-                data: b"file1  file2\r\n".to_vec(),
-            },
-        )
-        .unwrap();
-
-        // End recording (triggers meta.json write)
+        // End carries the proxy-computed seal and triggers only meta.json.
         handle_ssh_recording_message(
             &mut state,
             &mut ssh_mgr,
@@ -2643,45 +2517,32 @@ mod tests {
             Some(audit_fd_sock_raw),
             Message::SshRecordingEnd {
                 session_id: "ssh-ipc-test".to_string(),
+                blake3_hex: "ab".repeat(32),
+                total_bytes: 4096,
+                total_events: 3,
+                duration_secs: 1.0,
+                width: 120,
+                height: 40,
+                meta_json_relative_path: "2026/07/ssh-ipc-test/meta.json".to_string(),
             },
         )
         .unwrap();
 
         handle.join().unwrap();
 
-        // Verify .cast file is valid asciicast v2
+        // Audit must never create or write the proxy-owned media file.
         let cast_files: Vec<_> = walkdir(dir.path(), "session.cast");
-        assert_eq!(cast_files.len(), 1, "Exactly one session.cast file");
+        assert!(cast_files.is_empty(), "audit must not create session.cast");
 
-        let cast_content = std::fs::read_to_string(&cast_files[0]).unwrap();
-        let lines: Vec<&str> = cast_content.lines().collect();
-        assert!(lines.len() >= 4, "Header + 3 events minimum");
-
-        // Verify header
-        let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(header["version"], 2);
-        assert_eq!(header["width"], 120);
-        assert_eq!(header["height"], 40);
-
-        // Verify events are valid JSON arrays
-        for line in &lines[1..] {
-            let event: serde_json::Value = serde_json::from_str(line).unwrap();
-            assert!(event.is_array(), "Event must be a JSON array");
-            assert_eq!(
-                event.as_array().unwrap().len(),
-                3,
-                "Event must have 3 elements"
-            );
-        }
-
-        // Verify meta.json exists and is valid
+        // Verify meta.json faithfully contains the proxy-provided seal.
         let meta_files: Vec<_> = walkdir(dir.path(), "meta.json");
         assert_eq!(meta_files.len(), 1, "Exactly one meta.json file");
 
         let meta_content = std::fs::read_to_string(&meta_files[0]).unwrap();
         let meta: serde_json::Value = serde_json::from_str(&meta_content).unwrap();
         assert_eq!(meta["format"], "asciicast-v2");
-        assert!(meta["blake3_hex"].as_str().unwrap().len() == 64);
+        assert_eq!(meta["blake3_hex"], "ab".repeat(32));
+        assert_eq!(meta["total_bytes"], 4096);
         assert_eq!(meta["total_events"], 3);
         assert_eq!(meta["width"], 120);
         assert_eq!(meta["height"], 40);

@@ -20,8 +20,10 @@
 pub mod ipc;
 pub mod messages;
 pub mod privdrop;
+pub mod recording_fd;
 pub mod recording_paths;
 pub mod sandbox;
+pub mod smtp;
 pub mod totp;
 pub mod username;
 pub mod validation;

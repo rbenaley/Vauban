@@ -31,7 +31,7 @@ fn iacs_zip_entry_owner_rw(filename: impl Into<async_zip::ZipString>) -> async_z
 }
 
 const SESSIONS_RS: &str = include_str!("../../src/handlers/web/sessions.rs");
-const HYDRATOR_RS: &str = include_str!("../../src/services/recording_hydrator.rs");
+const HYDRATOR_RS: &str = include_str!("../../../vauban-web-evidence/src/hydrator/pipeline.rs");
 
 #[test]
 fn iacs_download_handler_is_wired_for_pcap_bundle() {
@@ -219,7 +219,7 @@ fn meta_json_format_field_is_exactly_pcap_bundle() {
         audit_src.contains("\"pcap-bundle\""),
         "audit meta.json must contain literal \"pcap-bundle\""
     );
-    let hydrator_src = include_str!("../../src/services/recording_hydrator.rs");
+    let hydrator_src = include_str!("../../../vauban-web-evidence/src/hydrator/pipeline.rs");
     assert!(
         hydrator_src.contains("pcap-bundle") || hydrator_src.contains("FORMAT_PCAP_BUNDLE"),
         "hydrator must recognise the pcap-bundle format"

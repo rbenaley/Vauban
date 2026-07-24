@@ -31,7 +31,7 @@
 //! qty), and we surface the byte-count + first-byte preview to keep
 //! the tree useful for both legs.
 
-use crate::services::iacs_packet_analyzer::types::{Direction, FieldNode, PacketKind};
+use crate::analyzer::types::{Direction, FieldNode, PacketKind};
 
 use super::Dissection;
 

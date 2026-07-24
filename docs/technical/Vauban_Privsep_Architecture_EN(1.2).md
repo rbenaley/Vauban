@@ -50,7 +50,7 @@ This architecture is inspired by **OpenSSH's privilege separation model**, which
 
 ### 2.1 Component Overview
 
-Vauban consists of 8 processes:
+Vauban consists of 10 processes (9 leaves + supervisor):
 
 | Process | Description | Privileges |
 |---------|-------------|------------|
@@ -63,6 +63,22 @@ Vauban consists of 8 processes:
 | `vauban-proxy-ssh` | SSH proxy (russh) | Unprivileged (uid 905) |
 | `vauban-proxy-rdp` | RDP proxy (IronRDP) | Unprivileged (uid 906) |
 | `vauban-proxy-iacs` | IACS / EWS tunnel proxy (russh, per-asset target resolution) | Unprivileged (uid 908) |
+| `vauban-mailer` | Sealed SMTP outbox drainer (Capsicum leaf; no peer `TOPOLOGY` edges) | Unprivileged (uid/gid **909**, login `vb-mailer`) |
+
+`Service::Mailer` wire discriminant is **9** (frozen in
+`shared::messages::service_token_discriminants_are_frozen`). The
+supervisor spawns mailer in `BACKEND_SERVICES` (before `audit`),
+provisions SMTP credentials via `Message::MailerSmtpProvision` before
+seal, and brokers outbound SMTP only when
+`TcpConnectRequest.target_service == Service::Mailer` passes the
+`[mailer]` host/port whitelist. Web retains transactional
+`Mailer::queue` / render only.
+
+Production accounts are created by `pkg/+PRE_INSTALL` (`vb-mailer`
+909/909). ACLs: read on `/usr/local/etc/vauban` + `vauban.conf` (same
+as other leaves); **no** ACL on `recordings/`, `audit/`, `vault/`, or
+`certs/`. SMTP secrets never land on disk for the mailer -- they arrive
+via pre-seal IPC.
 
 **Related documents:**
 
@@ -1126,34 +1142,48 @@ name = "vauban-web"
 binary = "vauban-web"
 uid = 907
 gid = 907
+
+[services.proxy_iacs]
+name = "vauban-proxy-iacs"
+binary = "vauban-proxy-iacs"
+uid = 908
+gid = 908
+
+[services.mailer]
+name = "vauban-mailer"
+binary = "vauban-mailer"
+uid = 909
+gid = 909
 ```
 
 ### 8.4 FreeBSD User/Group Setup
 
-On FreeBSD production systems, create dedicated users:
+Prefer the package scripts (`pkg/+PRE_INSTALL`): they create the
+canonical `vb-*` logins with fixed UIDs **901–909**. Manual creation
+(lab only) mirrors that map:
 
 ```sh
-# Create users and groups for each service
-for svc in audit vault access auth proxy-ssh proxy-rdp web; do
-    case $svc in
-        audit)     id=901 ;;
-        vault)     id=902 ;;
-        access)    id=903 ;;
-        auth)      id=904 ;;
-        proxy-ssh) id=905 ;;
-        proxy-rdp) id=906 ;;
-        web)       id=907 ;;
-    esac
-    pw groupadd -n vauban_${svc//-/_} -g $id
-    pw useradd -n vauban_${svc//-/_} -u $id -g $id \
+# Canonical package account names (hyphenated vb-* logins)
+#   vb-audit 901  vb-vault 902  vb-access 903  vb-auth 904
+#   vb-ssh 905    vb-rdp 906    vb-web 907     vb-iacs 908
+#   vb-mailer 909
+for pair in \
+    "vb-audit:901:vauban-audit" \
+    "vb-vault:902:vauban-vault" \
+    "vb-access:903:vauban-access" \
+    "vb-auth:904:vauban-auth" \
+    "vb-ssh:905:vauban-proxy-ssh" \
+    "vb-rdp:906:vauban-proxy-rdp" \
+    "vb-web:907:vauban-web" \
+    "vb-iacs:908:vauban-proxy-iacs" \
+    "vb-mailer:909:vauban-mailer"
+do
+    name=${pair%%:*}; rest=${pair#*:}; id=${rest%%:*}; svc=${rest#*:}
+    pw groupadd -n "$name" -g "$id" 2>/dev/null || true
+    pw useradd -n "$name" -u "$id" -g "$id" \
         -d /nonexistent -s /usr/sbin/nologin \
-        -c "Vauban $svc service"
+        -c "Vauban ${svc} service" 2>/dev/null || true
 done
-
-# Create working directories
-mkdir -p /var/vauban/{audit,vault,access,auth,proxy-ssh,proxy-rdp,web}
-chown -R vauban_audit:vauban_audit /var/vauban/audit
-# ... repeat for each service
 ```
 
 ---

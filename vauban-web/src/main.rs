@@ -981,12 +981,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the `app_state.clone()` instead of just `db_pool`.
     start_cleanup_tasks(app_state.clone(), config.security.session_idle_timeout_secs).await;
 
-    // Email dispatcher (Issue #10). Drains email_outbox via the
-    // supervisor-brokered SMTP socket. No-op when the [mailer] block
-    // is disabled.
-    vauban_web::tasks::mailer::start_mailer_dispatcher(app_state.clone());
-
-    // Bastion Watch dashboard pusher: a single Tokio task that
+    // Recording integrity hydrator (issue #29 / UX-28 v1.4):
     // recomputes the dashboard snapshot every second and broadcasts
     // per-tile HTML fragments via `WsChannel::DashboardStats`. It
     // self-throttles when no subscriber is connected, so the cost is

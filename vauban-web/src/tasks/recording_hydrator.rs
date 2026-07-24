@@ -50,7 +50,7 @@ use tracing::{error, info};
 use crate::db::DbPool;
 use crate::ipc::SupervisorClient;
 use crate::services::broadcast::BroadcastService;
-use crate::services::recording_hydrator::{RecordingHydrator, TASK_NAME};
+use crate::services::recording_hydrator::{TASK_NAME, build_recording_hydrator};
 use crate::tasks::daily_cron::next_cron_instant;
 
 /// One-shot bootstrap hydration. Scans `proxy_sessions` for any
@@ -81,7 +81,7 @@ pub fn run_bootstrap_hydration(
 ) -> JoinHandle<()> {
     handle.spawn(async move {
         let started = std::time::Instant::now();
-        let hydrator = RecordingHydrator::new(
+        let hydrator = build_recording_hydrator(
             db_pool,
             supervisor,
             batch_size,
