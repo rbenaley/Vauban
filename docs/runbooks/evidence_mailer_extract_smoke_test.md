@@ -15,7 +15,7 @@
 
 Related architecture:
 
-- [Privsep Architecture 1.2](../technical/Vauban_Privsep_Architecture_EN(1.2).md) -- leaf Mailer, FD broker, discriminant 9
+- [Privsep Architecture 1.3](../technical/Vauban_Privsep_Architecture_EN(1.3).md) -- leaf Mailer, FD broker, discriminant 9
 - [IACS Inspect Capture 1.1](../technical/Vauban_IACS_Inspect_Capture_EN(1.1).md) -- analyzer in `vauban-web-evidence`
 - [Recording Architecture 1.8](../technical/Vauban_Recording_Architecture_EN(1.8).md) -- hydrator traits + web adapters
 - Architecture analysis §10.13 / §16.6

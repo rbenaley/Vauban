@@ -234,7 +234,7 @@ fn d71_iam_md_has_virtual_group_subsection() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("workspace root")
-        .join("docs/technical/Vauban_IAM_Architecture_EN(1.0).md");
+        .join("docs/technical/Vauban_IAM_Architecture_EN(1.1).md");
     assert!(path.exists(), "IAM MD MUST exist at {}", path.display());
     let body = std::fs::read_to_string(&path).expect("read IAM MD");
     let lower = body.to_lowercase();

@@ -657,7 +657,7 @@ for the speed (>1 GB/s on a single core) and the streaming API
 `vauban-audit` and `vauban-web` run inside Capsicum sandboxes; after
 `cap_enter()` they cannot `open()`, `mkdir()`, or `stat()`. The same
 SCM_RIGHTS broker pattern used for TCP brokering (see
-[Privsep Architecture](Vauban_Privsep_Architecture_EN(1.2).md) §5.5)
+[Privsep Architecture](Vauban_Privsep_Architecture_EN(1.3).md) §5.5)
 serves recording files:
 
 ```mermaid
@@ -1019,10 +1019,10 @@ retention_batch_size = 50
 
 | Document | Relevance |
 |----------|-----------|
-| [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.2).md) | SCM_RIGHTS broker, Capsicum sandboxing, IPC envelope |
+| [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.3).md) | SCM_RIGHTS broker, Capsicum sandboxing, IPC envelope |
 | [RDP Session Architecture](Vauban_RDP_Architecture_EN(1.0).md) | H.264 encoding pipeline, encoder thread, frame flow |
 | [IACS Proxy Architecture](Vauban_IACS_Proxy_Architecture_EN(1.1).md) | EWS-to-asset SSH tunnel, `direct-tcpip` brokering, protocol gates |
-| [IAM Architecture](Vauban_IAM_Architecture_EN(1.0).md) | Casbin / `PermissionContext`, role invariants |
+| [IAM Architecture](Vauban_IAM_Architecture_EN(1.1).md) | Casbin / `PermissionContext`, role invariants |
 | [recording_retention runbook](../runbooks/recording_retention.md) | Operational reference for the reaper |
 | [ADR 001 -- Recording durability per protocol](../adr/001-recording-durability-per-protocol.md) | IACS ack-block vs SSH/RDP best-effort + detectable loss |
 

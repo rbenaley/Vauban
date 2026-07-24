@@ -60,7 +60,7 @@ journalctl -u vauban-supervisor -n 100 --no-pager | grep -E 'unresponsive|Restar
 
 # 2. Look at the access tier's boot line to confirm peer wiring
 journalctl -u vauban-supervisor -n 200 --no-pager | grep -E 'vauban-access.*peers='
-# Expected:  peers=["web", "auth", "proxy_ssh", "proxy_rdp"]  peer_count=4
+# Expected:  peers=["web", "auth", "proxy_ssh", "proxy_rdp", "proxy_iacs"]  peer_count=5
 
 # 3. Look at the proxy_ssh AND proxy_rdp RBAC timeout counters.
 # Both proxies share the same shared::access_guard module, so the
@@ -69,9 +69,9 @@ journalctl -u vauban-supervisor -n 200 --no-pager \
     | grep -E 'rbac_recheck_timeouts|RBAC re-check'
 ```
 
-If `peers=` is missing one of the 4 entries OR `peer_count != 4`,
+If `peers=` is missing one of the 5 entries OR `peer_count != 5`,
 **that is the bug**. `vauban-access` should now refuse to start in
-this state and emit `TOPOLOGY mismatch: expected 4 incoming peers ...`
+this state and emit `TOPOLOGY mismatch: expected 5 incoming peers ...`
 -- if you see it actually running with fewer peers, you are on a
 build older than the post-incident hardening; re-deploy.
 

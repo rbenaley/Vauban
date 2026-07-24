@@ -14,6 +14,11 @@ inline snippet was slightly more permissive than the production grammar;
 consumers no longer re-implement the check. Wire format and crypto remain
 unchanged (vauban-vault keyring only). Shipped with crate version 0.9.21.
 
+**Amended:** 24 July 2026 — Appendix A IPC size budget **16 KB → 256 KiB**
+(`MAX_MESSAGE_SIZE`, aligned with §10.3); §6.4.3 `build_keyrings` domain
+loop documents all four keyrings (`mfa`, `credentials`, `audit`, `secrets`).
+Factual repayment for architecture scorecard §9.2 / §10.15 (no 1.3 bump).
+
 ---
 
 ## Table of Contents
@@ -60,7 +65,7 @@ The vault follows Vauban's core philosophy (see Privsep Architecture, Section 2.
 
 ### 1.3 Scope
 
-This document covers the internal architecture of `vauban-vault`. It is a companion to the [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.2).md) which describes the overall system design.
+This document covers the internal architecture of `vauban-vault`. It is a companion to the [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.3).md) which describes the overall system design.
 
 ### 1.4 Threat Model
 
@@ -309,7 +314,7 @@ flowchart LR
     RDP ---|pipe| Vault
 ```
 
-**Updated total: 14 pipe pairs (28 file descriptors)** (was 13).
+**Current total: 18 pipe pairs** in supervisor `TOPOLOGY` (see Privsep Architecture 1.3). Historical note: an earlier draft counted 13–14 before IACS / audit↔vault edges landed.
 
 The supervisor topology constant must include:
 
@@ -787,7 +792,7 @@ echo 3 > /var/vauban/vault/key_version
 fn build_keyrings(master_key: &[u8; 32], max_version: u32) -> HashMap<String, Keyring> {
     let mut keyrings = HashMap::new();
 
-    for domain in ["mfa", "credentials"] {
+    for domain in ["mfa", "credentials", "audit", "secrets"] {
         let mut keyring = Keyring::new(domain);
         for v in 1..=max_version {
             let key = derive_key(master_key, domain, v);
@@ -1531,7 +1536,7 @@ audit event types covering the admin CRUD, rule changes, and M2M reads.
 | LDAP bind password | 128 chars | 12 B | 160 B | 214 chars | 3 chars | ~217 chars | `VARCHAR(255)` |
 | Third-party app secret | < 10 KB | 12 B | ~10 KB | ~13.4 KB | 3 chars | ~13.4 KB | `TEXT` |
 
-All credential-type values fit within `VARCHAR(255)`. Larger secrets (SSH private keys, third-party config files) are stored in `JSONB` or `TEXT` columns with no practical size limit. The IPC message limit of 16 KB accommodates all current use cases.
+All credential-type values fit within `VARCHAR(255)`. Larger secrets (SSH private keys, third-party config files) are stored in `JSONB` or `TEXT` columns with no practical size limit. The IPC message limit of **256 KiB** (`MAX_MESSAGE_SIZE` in `shared/src/ipc.rs`) accommodates all current use cases (see also §10.3).
 
 ---
 

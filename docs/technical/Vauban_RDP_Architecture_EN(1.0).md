@@ -46,8 +46,8 @@ Vauban provides secure access to both SSH and RDP targets. While SSH sessions st
 
 This document covers the internal architecture of the RDP session subsystem spanning three crates: `vauban-proxy-rdp` (RDP protocol and encoding), `vauban-web` (WebSocket relay and IPC client), and the frontend Alpine.js component (canvas rendering and input capture). It is a companion to:
 
-- [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.2).md) — overall system design (pipe topology, Capsicum sandboxing, supervisor)
-- [IAM Architecture](Vauban_IAM_Architecture_EN(1.0).md) — Casbin RBAC, instance-level access rules, JIT approval workflow
+- [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.3).md) — overall system design (pipe topology, Capsicum sandboxing, supervisor)
+- [IAM Architecture](Vauban_IAM_Architecture_EN(1.1).md) — Casbin RBAC, instance-level access rules, JIT approval workflow
 - [AccessGuard Architecture](Vauban_AccessGuard_Architecture_EN(1.0).md) — defense-in-depth RBAC re-check module (`shared::access_guard`) consumed by `vauban-proxy-rdp` on every `RdpSessionOpen` (see §4.1 and §11.5)
 - [Runbook: Debugging the IPC Pipe Topology](../runbooks/ipc_topology_debugging.md) — operational triage for `rbac_recheck_timeouts` and `proxy-rdp <-> access` failures
 
@@ -501,7 +501,7 @@ sequenceDiagram
 
 ### 8.1 RDP Message Types
 
-All messages are serialized using **bincode** and sent over Unix pipes (see [Privsep Architecture, Section 4](Vauban_Privsep_Architecture_EN(1.2).md#4-ipc-protocol)):
+All messages are serialized using **bincode** and sent over Unix pipes (see [Privsep Architecture, Section 4](Vauban_Privsep_Architecture_EN(1.3).md#4-ipc-protocol)):
 
 ```mermaid
 flowchart LR

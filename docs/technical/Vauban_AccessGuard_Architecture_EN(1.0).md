@@ -95,9 +95,9 @@ This document describes:
 It does NOT describe:
 
 - Casbin policy authoring or the `access_rules` schema
-  (see [IAM Architecture](Vauban_IAM_Architecture_EN(1.0).md)),
+  (see [IAM Architecture](Vauban_IAM_Architecture_EN(1.1).md)),
 - The supervisor's pipe-creation logic
-  (see [Privsep Architecture](Vauban_Privsep_Architecture_EN(1.2).md)),
+  (see [Privsep Architecture](Vauban_Privsep_Architecture_EN(1.3).md)),
 - Operational triage and tuning
   (see [`docs/runbooks/ipc_topology_debugging.md`](../runbooks/ipc_topology_debugging.md)).
 
@@ -218,7 +218,7 @@ through two environment variables (`VAUBAN_ACCESS_IPC_READ` and
 - Returns an `AccessGuardWiring { guard, fds }` whose `fds` are then
   enrolled in the Capsicum sandbox before the proxy seals itself in.
 
-See [Privsep Architecture §3](Vauban_Privsep_Architecture_EN(1.2).md)
+See [Privsep Architecture §3](Vauban_Privsep_Architecture_EN(1.3).md)
 for the supervisor side.
 
 ---
@@ -953,17 +953,17 @@ runbook.
 
 ### 10.1 Internal
 
-- [`Vauban_IAM_Architecture_EN(1.0).md`](Vauban_IAM_Architecture_EN(1.0).md)
+- [`Vauban_IAM_Architecture_EN(1.1).md`](Vauban_IAM_Architecture_EN(1.1).md)
   — IAM model (Casbin RBAC + instance-level access rules) enforced by
   `vauban-access`.
-- [`Vauban_Privsep_Architecture_EN(1.2).md`](Vauban_Privsep_Architecture_EN(1.2).md)
+- [`Vauban_Privsep_Architecture_EN(1.3).md`](Vauban_Privsep_Architecture_EN(1.3).md)
   — supervisor topology, pipe creation, Capsicum sandboxing, IPC
   protocol.
 - [`Vauban_RDP_Architecture_EN(1.0).md`](Vauban_RDP_Architecture_EN(1.0).md)
   — RDP session lifecycle, including the AccessGuard re-check.
 - [`docs/runbooks/ipc_topology_debugging.md`](../runbooks/ipc_topology_debugging.md)
   — operational runbook for the topology / RBAC re-check failure mode.
-- [`Vauban_IAM_Architecture_EN(1.0).md` §15.9](Vauban_IAM_Architecture_EN(1.0).md#159-approval-audit--separation-of-duties)
+- [`Vauban_IAM_Architecture_EN(1.1).md` §15.9](Vauban_IAM_Architecture_EN(1.1).md#159-approval-audit--separation-of-duties)
   — JIT approval audit and separation-of-duties model (T1–T9 threat
   catalog, append-only log, mono-admin handling).
 - [`docs/runbooks/approval_audit.md`](../runbooks/approval_audit.md)

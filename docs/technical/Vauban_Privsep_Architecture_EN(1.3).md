@@ -1,15 +1,17 @@
 # Vauban Privilege Separation Architecture
 
-> **Superseded.** This document is retained for archaeology. The current
-> revision is
-> [Vauban_Privsep_Architecture_EN(1.3).md](Vauban_Privsep_Architecture_EN(1.3).md).
-
-**Version:** 1.2  
-**Date:** 21 February 2026 (revised 17 May 2026 -- IACS proxy Capsicum fixes: pre-fork listener `O_NONBLOCK`, host key FD rewind on respawn, `AsyncIpcChannel` built pre-`cap_enter`, `CapRights::listening_socket` documents inheritance into accepted children; see §5.3 + §5.6.3c)  
+**Version:** 1.3  
+**Date:** 24 July 2026  
 **Author:** Richard Ben Aleya
 
 > Supersedes
-> [Vauban_Privsep_Architecture_EN(1.1).md](Vauban_Privsep_Architecture_EN(1.1).md).
+> [Vauban_Privsep_Architecture_EN(1.2).md](Vauban_Privsep_Architecture_EN(1.2).md).
+>
+> **1.3 factual repayment (architecture scorecard §9.2 / §10.15):** `TOPOLOGY`
+> is **18** pipe pairs (not 14); mailer leaf uid 909 stays **outside** the
+> peer mesh; SSH/RDP media write on proxy-owned FDs (`shared::recording_fd`);
+> Kerberos KDC is supervisor FD-pass only; web/AccessGuard IPC uses
+> `shared::correlated_ipc` (0.9.31).
 
 ---
 
@@ -63,7 +65,7 @@ Vauban consists of 10 processes (9 leaves + supervisor):
 | `vauban-auth` | Authentication, MFA, SSO, LDAP | Unprivileged (uid 904) |
 | `vauban-access` | Role-Based Access Control (Casbin) | Unprivileged (uid 903) |
 | `vauban-vault` | Secrets management, HSM integration | Unprivileged (uid 902) |
-| `vauban-audit` | Audit logging, session recording | Unprivileged (uid 901) |
+| `vauban-audit` | Audit logging, WORM meta, IACS PCAP media | Unprivileged (uid 901) |
 | `vauban-proxy-ssh` | SSH proxy (russh) | Unprivileged (uid 905) |
 | `vauban-proxy-rdp` | RDP proxy (IronRDP) | Unprivileged (uid 906) |
 | `vauban-proxy-iacs` | IACS / EWS tunnel proxy (russh, per-asset target resolution) | Unprivileged (uid 908) |
@@ -87,9 +89,11 @@ via pre-seal IPC.
 **Related documents:**
 
 - [Vauban_RDP_Architecture_EN(1.0).md](Vauban_RDP_Architecture_EN(1.0).md) -- RDP implementation details (H.264 encoding, WebCodecs, dynamic resolution, security design)
-- [Vauban_Vault_Architecture_EN(1.0).md](Vauban_Vault_Architecture_EN(1.0).md) -- Vault secrets management and HSM integration
-- [Vauban_IAM_Architecture_EN(1.0).md](Vauban_IAM_Architecture_EN(1.0).md) -- Identity & access management (`vauban-auth`, `vauban-access`, Casbin RBAC, instance-level access rules, JIT)
+- [Vauban_Vault_Architecture_EN(1.2).md](Vauban_Vault_Architecture_EN(1.2).md) -- Vault secrets management and HSM integration
+- [Vauban_IAM_Architecture_EN(1.1).md](Vauban_IAM_Architecture_EN(1.1).md) -- Identity & access management (`vauban-auth`, `vauban-access`, Casbin RBAC, instance-level access rules, JIT)
 - [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) -- Defense-in-depth RBAC re-check module (`shared::access_guard`) consumed by every proxy on the `proxy-* <-> access` pipes
+- [Vauban_Recording_Architecture_EN(1.9).md](Vauban_Recording_Architecture_EN(1.9).md) -- proxy-owned SSH/RDP FD recording + IACS PCAP durability (ADR 001)
+- [docs/adr/001-per-protocol-recording-durability.md](../adr/001-per-protocol-recording-durability.md) -- recording durability contract
 - [docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md) -- Operational runbook for the IPC topology / RBAC re-check failure mode
 
 ### 2.2 Architecture Diagram
@@ -117,6 +121,10 @@ flowchart TB
         IACS["vauban-proxy-iacs<br/>russh (EWS tunnel)"]
     end
 
+    subgraph sealed_leaf [Sealed leaf - no peer TOPOLOGY edges]
+        Mailer["vauban-mailer<br/>SMTP outbox (uid 909)"]
+    end
+
     subgraph external [External Resources]
         DB[(PostgreSQL)]
         S3[(MinIO/S3)]
@@ -131,6 +139,7 @@ flowchart TB
     S --> SSH
     S --> RDP
     S --> IACS
+    S --> Mailer
 
     Web --> DB
     Auth --> DB
@@ -185,21 +194,29 @@ Services communicate directly via Unix pipes in a partial mesh topology. This av
 | Source | Destination | Purpose |
 |--------|-------------|---------|
 | `web` | `auth` | User authentication, MFA |
-| `web` | `access` | UI permission checks |
-| `web` | `audit` | Audit log queries |
+| `web` | `access` | UI permission checks / session mint |
+| `web` | `audit` | Audit log queries, critical Ack |
+| `web` | `vault` | Encrypt/decrypt secrets |
 | `web` | `proxy-ssh` | SSH terminal data (bidirectional) |
 | `web` | `proxy-rdp` | RDP session data (bidirectional) |
+| `web` | `proxy-iacs` | IACS tunnel open / snapshot / terminate |
 | `auth` | `access` | Role verification during auth |
 | `auth` | `vault` | LDAP/OIDC credentials |
 | `proxy-ssh` | `access` | Defense-in-depth RBAC re-check (`shared::access_guard`, see §3.5) |
-| `proxy-ssh` | `vault` | SSH key injection |
-| `proxy-ssh` | `audit` | Session recording |
+| `proxy-ssh` | `vault` | SSH key / password credentials |
+| `proxy-ssh` | `audit` | Session meta (`*RecordingStart` / `*RecordingEnd`); **not** media bytes |
 | `proxy-rdp` | `access` | Defense-in-depth RBAC re-check (`shared::access_guard`, see §3.5) |
 | `proxy-rdp` | `vault` | Windows credentials |
-| `proxy-rdp` | `audit` | Video capture |
-| `web` | `vault` | Encrypt/decrypt secrets |
+| `proxy-rdp` | `audit` | Session meta (`RdpRecordingStart` / `RdpRecordingEnd`); **not** H.264 bytes |
+| `proxy-iacs` | `access` | Defense-in-depth RBAC re-check (`shared::access_guard`, see §3.5) |
+| `proxy-iacs` | `audit` | IACS PCAP / ChannelEnd media + session meta |
+| `audit` | `vault` | Unseal Ed25519 WORM signing-key seed (`audit` key domain) |
 
-**Total: 14 pipe pairs (28 file descriptors)**
+**Total: 18 pipe pairs (36 file descriptors)** — pinned by
+`vauban-supervisor` `assert_eq!(TOPOLOGY.len(), 18)`.
+
+`vauban-mailer` (uid **909**) is **not** in `TOPOLOGY`. It only has a
+supervisor control channel plus SMTP connect FD-passing (whitelist).
 
 ### 3.3 Topology Diagram
 
@@ -212,13 +229,15 @@ flowchart LR
     Audit[vauban-audit]
     SSH[vauban-proxy-ssh]
     RDP[vauban-proxy-rdp]
+    IACS[vauban-proxy-iacs]
 
     Web ---|pipe| Auth
     Web ---|pipe| Access
     Web ---|pipe| Audit
+    Web ---|pipe| Vault
     Web ---|pipe| SSH
     Web ---|pipe| RDP
-    Web ---|pipe| Vault
+    Web ---|pipe| IACS
 
     Auth ---|pipe| Access
     Auth ---|pipe| Vault
@@ -230,6 +249,11 @@ flowchart LR
     RDP ---|pipe| Access
     RDP ---|pipe| Vault
     RDP ---|pipe| Audit
+
+    IACS ---|pipe| Access
+    IACS ---|pipe| Audit
+
+    Audit ---|pipe| Vault
 ```
 
 ### 3.4 Pipe Creation
@@ -245,8 +269,9 @@ for conn in TOPOLOGY {
 
 ### 3.5 Shared Defense-in-Depth Gate (`shared::access_guard`)
 
-The `proxy-ssh -> access` and `proxy-rdp -> access` edges in the
-matrix above are **not** consumed ad-hoc by each proxy. They are
+The `proxy-ssh -> access`, `proxy-rdp -> access`, and
+`proxy-iacs -> access` edges in the matrix above are **not** consumed
+ad-hoc by each proxy. They are
 funneled through a single shared, feature-gated module —
 `shared::access_guard` — that every current and future proxy (VNC,
 industrial protocols) MUST use to re-check authorization against
@@ -258,15 +283,18 @@ flowchart LR
     Sup[vauban-supervisor]
     SSH["vauban-proxy-ssh<br/>(uses shared::access_guard)"]
     RDP["vauban-proxy-rdp<br/>(uses shared::access_guard)"]
-    Future["future proxies (VNC, Modbus, ...)<br/>(uses shared::access_guard)"]
+    IACS["vauban-proxy-iacs<br/>(uses shared::access_guard)"]
+    Future["future proxies (VNC, ...)<br/>(uses shared::access_guard)"]
     Acc[vauban-access]
 
     Sup -->|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"| SSH
     Sup -->|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"| RDP
+    Sup -->|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"| IACS
     Sup -->|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"| Future
-    SSH -->|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard, 10s timeout, fail-closed)"| Acc
-    RDP -->|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard, 10s timeout, fail-closed)"| Acc
-    Future -->|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard, 10s timeout, fail-closed)"| Acc
+    SSH -->|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard / CorrelatedIpcCore)"| Acc
+    RDP -->|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard / CorrelatedIpcCore)"| Acc
+    IACS -->|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard / CorrelatedIpcCore)"| Acc
+    Future -->|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard / CorrelatedIpcCore)"| Acc
 ```
 
 Key contracts owned by the module:
@@ -278,9 +306,9 @@ Key contracts owned by the module:
   enrol in Capsicum and the `Arc<AccessGuard>` to share across
   per-session spawns.
 - **`AccessGuard::spawn_dispatcher()`** — single background task that
-  demultiplexes responses by `request_id` (with RAII cleanup of the
-  pending map on every exit path: success, timeout, caller-cancel,
-  send-error).
+  demultiplexes responses by `request_id` via
+  `shared::correlated_ipc::CorrelatedIpcCore` (`try_io` + RAII
+  `PendingGuard` GC on success, timeout, cancel, send-error).
 - **`AccessGuard::authorize(user_uuid, asset_uuid) -> AccessDecision`**
   — single hot-path entry point. NEVER returns `Result` (no `?`-fail-
   open). Hard 10 s timeout (`RBAC_RECHECK_TIMEOUT`). Increments
@@ -295,6 +323,23 @@ documented in
 [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
 Operational triage of the `proxy-* <-> access` failure mode is in
 [docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md).
+
+### 3.6 Correlated IPC client core (`shared::correlated_ipc`)
+
+vauban-web AsyncFd peers (access, auth, vault, audit, proxy-ssh,
+proxy-rdp, proxy-iacs) and `shared::access_guard::RbacClient` share
+`CorrelatedIpcCore`: AsyncFd `try_io` drain, monotonic request ids, and
+RAII `PendingGuard` pending-map GC (INV-CORR-1..5). `SupervisorClient`
+keeps its sync `poll` + SCM_RIGHTS thread and only reuses `PendingGuard`
+/ `insert_pending` hygiene (0.9.31). Structural lint:
+`vauban-web/scripts/check_ipc_correlated_core.sh`.
+
+### 3.7 Kerberos KDC FD-pass (RDP)
+
+When an RDP session needs a KDC TCP socket, the proxy asks the
+supervisor via `KerberosKdcRequest`; the supervisor connects and
+`send_fd`s the socket. Framed AS/TGS I/O stays in `vauban-proxy-rdp`
+(root never sees Kerberos payloads). See RDP Architecture §11.3.1.
 
 ---
 
@@ -354,10 +399,11 @@ pub enum Message {
     VaultMfaGetSecret { request_id, encrypted_secret },
     VaultMfaGetSecretResponse { request_id, plaintext_secret: Option<SensitiveString>, error },
 
-    // Audit (Web/Proxy -> Audit)
+    // Audit (Web/Proxy -> Audit) -- meta / IACS media only on this pipe.
+    // SSH/RDP cast/fMP4 bytes are written by the proxy on a supervisor-
+    // brokered FD (`shared::recording_fd`); they do NOT ride this pipe.
     AuditEvent { timestamp, event_type, user_id, session_id, source_ip, details },
     AuditAck { timestamp },
-    SessionRecordingChunk { session_id, sequence, data },
 
     // SSH Session (Web <-> ProxySsh)
     SshSessionOpen { request_id, session_id, user_id, asset_id, asset_host, ... },
@@ -381,14 +427,15 @@ pub enum Message {
     RdpSetVideoMode { session_id, enabled },
     RdpSessionClose { session_id },
 
-    // RDP Recording (ProxyRdp -> Audit)
-    RdpRecordingStart { session_id, width, height },
-    RdpRecordingEnd { session_id },
+    // RDP / SSH recording meta (Proxy* -> Audit). Media on FD, not here.
+    RdpRecordingStart { session_id, width, height, ... },
+    RdpRecordingEnd { session_id, ... },  // enriched integrity / lossy fields
+    SshRecordingStart { session_id, width, height, asset_name, username, ... },
+    SshRecordingEnd { session_id, ... },
 
-    // SSH Recording (ProxySsh -> Audit)
-    SshRecordingStart { session_id, width, height, asset_name, username },
-    SshRecordingData { session_id, timestamp_us, event_type: SshRecordingEvent, data },
-    SshRecordingEnd { session_id },
+    // Kerberos KDC FD-pass (ProxyRdp -> Supervisor): empty-data wire + send_fd
+    KerberosKdcRequest { request_id, session_id, kdc_host, kdc_port },
+    KerberosKdcResponse { request_id, session_id, success, error },
 
     // Recording File Brokering (Service -> Supervisor)
     RecordingFileRequest { request_id, session_id, relative_path, read_only },
@@ -935,7 +982,7 @@ pub fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
 
 The `vauban-supervisor` is responsible for:
 
-1. **Pipe Creation**: Creates all 14 pipe pairs before forking
+1. **Pipe Creation**: Creates all 18 pipe pairs (`TOPOLOGY`) before forking
 2. **Process Spawning**: Forks and execs child processes with proper privileges
 3. **Privilege Dropping**: Children drop to unprivileged users
 4. **Watchdog**: Monitors children with bidirectional heartbeat
@@ -1456,7 +1503,7 @@ sequenceDiagram
         T->>P: SSH Response
         P->>W: SshData (via IPC pipe)
         W->>U: Terminal output (WebSocket)
-        P->>Au: SessionRecordingChunk
+        P->>P: Append asciinema event on recording FD (shared::recording_fd)
     end
     
     U->>W: Disconnect

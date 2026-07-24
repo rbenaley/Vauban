@@ -1,12 +1,18 @@
 # Vauban IAM Architecture
 
-> **Superseded.** This document is retained for archaeology. The current
-> revision is
-> [Vauban_IAM_Architecture_EN(1.1).md](Vauban_IAM_Architecture_EN(1.1).md).
-
-**Version:** 1.0  
-**Date:** 1 April 2026  
+**Version:** 1.1  
+**Date:** 24 July 2026  
 **Author:** Richard Ben Aleya
+
+> Supersedes
+> [Vauban_IAM_Architecture_EN(1.0).md](Vauban_IAM_Architecture_EN(1.0).md).
+>
+> **1.1 factual repayment (architecture scorecard §9.2 / §10.15):** Casbin
+> enforcer absent is **fail-closed** in all builds (no debug allow-all stub);
+> RBAC catalogue matches `PermissionContext` / BAC nests (`assets:manage`,
+> user-groups vs asset-groups); `vauban-access` has **5** TOPOLOGY peers
+> (incl. `proxy_iacs`); web / AccessGuard IPC via `CorrelatedIpcCore`;
+> session-open policy eval **3→2** (0.9.27).
 
 ---
 
@@ -45,7 +51,7 @@ Prior to version 0.3.0, Vauban handled authentication and authorization inline w
 
 The migration was driven by three goals:
 
-1. **Privilege Separation**: Move security-critical operations (password hashing, authorization decisions) into dedicated sandboxed processes, following the OpenSSH privsep model documented in [Vauban_Privsep_Architecture_EN(1.2).md](Vauban_Privsep_Architecture_EN(1.2).md).
+1. **Privilege Separation**: Move security-critical operations (password hashing, authorization decisions) into dedicated sandboxed processes, following the OpenSSH privsep model documented in [Vauban_Privsep_Architecture_EN(1.3).md](Vauban_Privsep_Architecture_EN(1.3).md).
 
 2. **Centralized Policy Engine**: Replace inline role guards with a Casbin-based RBAC engine that enforces a single policy file, making authorization auditable and configurable without code changes.
 
@@ -60,11 +66,13 @@ The migration was driven by three goals:
 | 0.4.0 | Rename `vauban-rbac` to `vauban-access`, add instance-level rules, DB isolation | Full IAM architecture |
 | 0.6.0 | Just-In-Time access approval, session duration enforcement | JIT workflow with `expires_at` |
 | 0.7.0 | Mandatory TOTP step-up on sensitive operations (issue #11) | Password rotation and user deletion gated by single-use operator TOTP, vault-aware dispatch |
+| 0.9.27 | Session-open policy eval 3→2 | Early `IssueSessionToken` carries MFA/JIT/duration; drop redundant `can_access_asset` before connect; AccessGuard kept |
+| July 2026 | BAC hardening (admin nests) | `require_users_read` / `require_groups_read` / `require_access_rules_read` / `require_assets_manage` route layers + handler re-checks |
 
 ### 1.4 Related Documents
 
-- [Vauban_Privsep_Architecture_EN(1.2).md](Vauban_Privsep_Architecture_EN(1.2).md) -- Pipe topology, Capsicum sandboxing, supervisor architecture
-- [Vauban_Vault_Architecture_EN(1.0).md](Vauban_Vault_Architecture_EN(1.0).md) -- Secrets management (MFA secrets, credential encryption)
+- [Vauban_Privsep_Architecture_EN(1.3).md](Vauban_Privsep_Architecture_EN(1.3).md) -- Pipe topology, Capsicum sandboxing, supervisor architecture
+- [Vauban_Vault_Architecture_EN(1.2).md](Vauban_Vault_Architecture_EN(1.2).md) -- Secrets management (MFA secrets, credential encryption)
 - [Vauban_RDP_Architecture_EN(1.0).md](Vauban_RDP_Architecture_EN(1.0).md) -- RDP proxy implementation
 - [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) -- Defense-in-depth RBAC re-check (`shared::access_guard`) shared by every proxy
 - [docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md) -- Operational runbook for the proxy <-> access pipe / RBAC re-check failure mode
@@ -143,8 +151,23 @@ Both services participate in the supervisor's pipe topology:
 | `auth` <-> `access` | Bidirectional | Future | Role verification during authentication |
 | `proxy-ssh` <-> `access` | Bidirectional | **Implemented** (defense-in-depth re-check) | Session authorization re-check before SSH connect — see [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) |
 | `proxy-rdp` <-> `access` | Bidirectional | **Implemented** (defense-in-depth re-check) | Session authorization re-check before RDP connect — see [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) |
+| `proxy-iacs` <-> `access` | Bidirectional | **Implemented** (defense-in-depth re-check) | Session authorization re-check before IACS tunnel open — same AccessGuard path |
 
-> **Defense-in-depth model.** Both proxies (`vauban-proxy-ssh` and `vauban-proxy-rdp`) independently re-check authorization against `vauban-access` (via `AccessRequest::CheckAccessByUuid`) before opening any upstream session, regardless of any verdict already produced by `vauban-web`. The shared module `shared::access_guard` factorizes this gate so every current and future proxy (VNC, industrial protocols) consumes the same fail-closed code path. A compromised or buggy `vauban-web` therefore cannot grant sessions that the authoritative `vauban-access` would deny. The complete API, threat model, RAII pending-map fix, type-system invariants, and 30+ test inventory are documented in [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
+`vauban-access` boot-pins **five** incoming TOPOLOGY peers
+(`web`, `auth`, `proxy_ssh`, `proxy_rdp`, `proxy_iacs`;
+`EXPECTED_PEER_COUNT = 5`). Missing peers → `bail!` at startup.
+
+> **Defense-in-depth model.** Proxies (`vauban-proxy-ssh`, `vauban-proxy-rdp`,
+> and `vauban-proxy-iacs`) independently re-check authorization against
+> `vauban-access` (via `AccessRequest::CheckAccessByUuid`) before opening any
+> upstream session, regardless of any verdict already produced by
+> `vauban-web`. The shared module `shared::access_guard` (backed by
+> `CorrelatedIpcCore`) factorizes this gate so every current and future proxy
+> consumes the same fail-closed code path. A compromised or buggy
+> `vauban-web` therefore cannot grant sessions that the authoritative
+> `vauban-access` would deny. The complete API, threat model, RAII
+> pending-map fix, type-system invariants, and 30+ test inventory are
+> documented in [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
 >
 > **Cryptographic session-token gate.** A complementary cryptographic layer closes the residual gaps that pure RBAC re-checks cannot close on their own (UUID swap from a compromised web tier, supervisor TCP broker used as an unauthenticated network probe). `vauban-access` is the sole minter of short-lived, BLAKE3-keyed session tokens (`AccessRequest::IssueSessionToken`); `vauban-supervisor` verifies them before any DNS / `connect(2)`; both proxies verify them before `AccessGuard.authorize()`. Format, mint / verify flow, key dissemination, anti-replay, and a detailed threat-model argumentation live in [Vauban_AccessGuard_Architecture_EN(1.0).md §6](Vauban_AccessGuard_Architecture_EN(1.0).md#6-cryptographic-session-token-gate).
 
@@ -444,16 +467,23 @@ p, role:superuser, *, *
 p, role:staff, users, read
 p, role:staff, users, write
 p, role:staff, assets, read
-p, role:staff, assets, write
+p, role:staff, assets, read_all
+p, role:staff, assets, manage
 p, role:staff, sessions, read
 p, role:staff, sessions, write
+p, role:staff, sessions, supervise
 p, role:staff, groups, read
 p, role:staff, groups, write
+p, role:staff, groups, manage_members
 p, role:staff, access_rules, read
 p, role:staff, access_rules, write
+p, role:staff, auth_sessions, read
+p, role:staff, auth_sessions, write
 p, role:staff, admin, view
 p, role:user, assets, read
 p, role:user, sessions, read
+p, role:user, profile, read
+p, role:user, profile, write
 p, role:user, sessions, create
 p, role:user, profile, read
 p, role:user, profile, write
@@ -482,39 +512,55 @@ sequenceDiagram
 
 ### 5.5 Fallback Behavior
 
-When no Casbin enforcer is loaded (dev mode without supervisor):
+When no Casbin enforcer is loaded, **every** build fails closed. The former
+`#[cfg(debug_assertions)]` allow-all stub was removed; a non-regression pin
+in `vauban-access` greps against its return (`allowed: true` without an
+enforcer). Operators and CI always exercise the real policy file under
+supervisor (see §9.3).
 
 | Build Mode | Behavior | Rationale |
 |------------|----------|-----------|
-| `debug_assertions` (dev) | Allow all requests | Developer convenience |
-| Release | Deny all requests | Fail-closed security |
+| Debug or release | Deny all requests | Fail-closed security |
 
 ```rust
-#[cfg(debug_assertions)]
-{
-    // Allow all in dev mode
-    RbacResult { allowed: true, reason: None }
-}
-#[cfg(not(debug_assertions))]
-{
-    // Deny-by-default in production
-    RbacResult { allowed: false, reason: Some("RBAC policy engine not configured") }
+// No enforcer → deny (all builds)
+RbacResult {
+    allowed: false,
+    reason: Some("RBAC policy engine not configured"),
 }
 ```
 
 ### 5.6 RBAC Integration Points
 
-RBAC checks gate access to UI features and API endpoints:
+RBAC checks gate access to UI features and API endpoints. The catalogue
+below matches `PermissionContext` (§9.6) and `default_policy.csv`
+(`TRACKED_PERMS` in tests). Historical note: pre-v1.0 `assets:write` was
+renamed to `assets:manage`; Casbin resource `groups` is **user groups**
+only (`/accounts/groups/*`) — asset groups live under `assets:manage`.
 
 | Resource | Actions | Used By |
 |----------|---------|---------|
-| `users` | `read`, `write` | User management (list, create, edit, delete) |
-| `assets` | `read`, `write` | Asset management |
-| `sessions` | `read`, `write`, `create` | Session listing, connection initiation |
-| `groups` | `read`, `write` | Group management (vauban_groups, asset_groups) |
-| `access_rules` | `read`, `write` | Access rule CRUD |
+| `users` | `read`, `write`, `manage_admins` | Account admin (`/accounts/users/*`); `manage_admins` = superuser only |
+| `assets` | `read`, `read_all`, `manage` | User zone `/assets/*` (`read`); admin CRUD + asset groups `/assets/manage/*` (`manage`) |
+| `groups` | `read`, `write`, `manage_members` | **User** groups only (`/accounts/groups/*`) |
+| `access_rules` | `read`, `write` | Access rule CRUD (`/assets/access/*`) |
+| `auth_sessions` | `read`, `write` | Admin auth-session list / revoke |
+| `sessions` | `read`, `write`, `supervise`, `bypass_access_rules` | Session catalogue / terminate / Bastion Watch; bypass = superuser only |
 | `admin` | `view` | Admin sidebar visibility, dashboard |
 | `profile` | `read`, `write` | User's own profile management |
+
+**BAC July 2026 — fail-closed admin nests.** Each admin web sub-tree is
+fenced by a route-layer minimum permission *and* handler re-checks:
+
+| Nest | `route_layer` | Handler re-check |
+|------|---------------|------------------|
+| `/accounts/users/*` | `require_users_read` | `users_read` / `users_write` |
+| `/accounts/groups/*` | `require_groups_read` | `groups_read` / `groups_write` / `groups_manage_members` |
+| `/assets/access/*` | `require_access_rules_read` | `access_rules_read` / `access_rules_write` |
+| `/assets/manage/*` (incl. asset groups) | `require_assets_manage` | `assets_manage` |
+
+See `middleware/require_permission.rs` and
+`scripts/check_bac_handler_gates.sh`.
 
 ---
 
@@ -831,7 +877,7 @@ The `assets` table (owned by `vauban-web`) holds the privileged
 targets that operators connect to via SSH or RDP. Each row carries a
 `connection_config` JSONB blob with the encrypted credential envelope
 (`password`, `private_key`, `passphrase` — see
-[Vauban_Vault_Architecture_EN(1.0).md](Vauban_Vault_Architecture_EN(1.0).md)
+[Vauban_Vault_Architecture_EN(1.2).md](Vauban_Vault_Architecture_EN(1.2).md)
 §3 for the cryptographic format).
 
 The product's security policy (RG-ASS-04) states that **asset deletion
@@ -1240,8 +1286,15 @@ flowchart LR
 Key design elements:
 - **Request/response correlation** via monotonically increasing `request_id`
 - **Async bridging** via `tokio::sync::oneshot` channels
-- **Non-blocking pipe I/O** via `tokio::io::unix::AsyncFd`
-- **Background task** (`process_incoming()`) continuously reads the pipe and dispatches responses
+- **Non-blocking pipe I/O** via `tokio::io::unix::AsyncFd` and
+  `shared::correlated_ipc::CorrelatedIpcCore` (`try_io` drain + RAII
+  `PendingGuard` GC — 0.9.31; also powers `shared::access_guard::RbacClient`)
+- **Background / pump task** continuously reads the pipe and dispatches responses
+
+**Session-open policy eval (0.9.27):** web performs **two** access trips per
+SSH/RDP open (early `IssueSessionToken` with MFA/JIT/duration on
+`SessionTokenIssued`, then proxy AccessGuard) — not three. Structural lint:
+`vauban-web/scripts/check_policy_eval_session_open.sh`.
 
 ### 9.3 No SQL Fallback — vauban-web is IPC-only
 
@@ -1466,6 +1519,14 @@ legacy admin route literal reappears in `main.rs`. If a future
 v1.x release ever needs migration redirects, reintroduce them
 together with a fresh boot-smoke test rather than by undoing the
 guard.
+
+##### BAC hardening -- fail-closed admin nests (July 2026)
+
+Beyond the asset zone split, every admin HTML nest is fail-closed at the
+routing layer (see the nest table in §5.6). Asset groups
+(`/assets/manage/groups/*`) gate on `assets:manage`, not `groups:*`.
+Pinned by `tests/web/bac_gate_matrix_test.rs` and
+`scripts/check_bac_handler_gates.sh`.
 
 All checks for one user happen **once per request**, in parallel via
 `tokio::join!`, regardless of how many handlers / template branches read them.
@@ -2057,7 +2118,7 @@ unsafe {
 | Web process compromise | Password hashing isolated in `vauban-auth`; authorization logic isolated in `vauban-access` |
 | Password hash exposure | Plaintext passwords use `SensitiveString` (zeroize on drop, redacted Debug) |
 | Credential remnants in memory | Argon2 params and IPC FDs cleared from env immediately; `SensitiveString` zeroizes on drop |
-| Authorization bypass | RBAC deny-by-default in release builds; instance-level access fail-closed on IPC error |
+| Authorization bypass | RBAC deny-by-default in all builds; instance-level access fail-closed on IPC error |
 | Policy tampering | Casbin model/policy loaded from files before sandbox; no file access after `cap_enter()` |
 | Database injection | All queries use Diesel ORM with parameterized queries |
 | Privilege escalation | Services run as separate UIDs (903, 904); Capsicum prevents new resource acquisition |
@@ -2074,7 +2135,7 @@ Authorization is enforced at multiple layers:
 
 1. **Web middleware**: RBAC check via `AccessIpcClient::check_permission()` before handler execution
 2. **Web handler**: Instance-level access check via `AccessIpcClient::check_access()` before session creation
-3. **Proxy service**: Independent re-check via the shared `shared::access_guard` module — `AccessGuard::authorize()` issues `AccessRequest::CheckAccessByUuid` directly to `vauban-access` from inside a `tokio::spawn` body with a 10-second hard timeout, fails closed on every non-Granted variant (Denied / Timeout / BackendError), and runs in **every** proxy (`vauban-proxy-ssh`, `vauban-proxy-rdp`, future VNC / industrial). A compromised `vauban-web` therefore cannot grant sessions that the authoritative `vauban-access` would deny. Full module documentation: [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
+3. **Proxy service**: Independent re-check via the shared `shared::access_guard` module — `AccessGuard::authorize()` issues `AccessRequest::CheckAccessByUuid` directly to `vauban-access` from inside a `tokio::spawn` body with a 10-second hard timeout, fails closed on every non-Granted variant (Denied / Timeout / BackendError), and runs in **every** proxy (`vauban-proxy-ssh`, `vauban-proxy-rdp`, `vauban-proxy-iacs`, future VNC). A compromised `vauban-web` therefore cannot grant sessions that the authoritative `vauban-access` would deny. Full module documentation: [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
 4. **Database**: Row-level constraints (UNIQUE, FK, NOT NULL) prevent invalid data, plus issue-specific structural invariants such as `auth_sessions` per-device uniqueness (§7.6) and the asset irreversible-delete contract — partial unique index, CHECK constraint, BEFORE UPDATE trigger (§7.7)
 
 ### 12.3 Fail-Closed Behavior
@@ -2082,7 +2143,7 @@ Authorization is enforced at multiple layers:
 | Scenario | Behavior |
 |----------|----------|
 | `vauban-auth` unreachable | Login fails (password cannot be verified) |
-| `vauban-access` unreachable (RBAC) | Release: all actions denied; Debug: all actions allowed |
+| `vauban-access` unreachable (RBAC) | All actions denied (fail-closed; all builds) |
 | `vauban-access` unreachable (access rules) | Connection denied (fail-closed) |
 | `vauban-access` silent / wedged at proxy re-check | `AccessGuard` raises `AccessDecision::Timeout` after 10 s, proxy returns `"Access denied"` to the client, `rbac_recheck_timeouts` counter increments — see [runbook](../runbooks/ipc_topology_debugging.md) |
 | `vauban-access` ships an unknown `AccessResponse` variant on the re-check pipe | `AccessGuard` collapses to `AccessDecision::Denied` (fail-closed); structurally tested |

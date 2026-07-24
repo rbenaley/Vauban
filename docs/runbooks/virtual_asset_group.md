@@ -130,7 +130,7 @@ INFO Virtual 'All assets' group resolved at boot virtual_group_id=N uuid=0000000
 
 - [`docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md`](../technical/Vauban_AccessGuard_Architecture_EN(1.0).md)
   — RBAC re-check semantics and the OR-aggregation rule.
-- [`docs/technical/Vauban_IAM_Architecture_EN(1.0).md`](../technical/Vauban_IAM_Architecture_EN(1.0).md)
+- [`docs/technical/Vauban_IAM_Architecture_EN(1.1).md`](../technical/Vauban_IAM_Architecture_EN(1.1).md)
   — IAM model, asset groups, and the virtual-group sub-section.
 - Migration source:
   [`vauban-db/migrations/20260424000000_virtual_asset_group_all/`](../../vauban-db/migrations/20260424000000_virtual_asset_group_all/).

@@ -25,7 +25,7 @@ Separation of Duties (SoD) is enforced at three layers:
   (`approval_separation_of_duties`, `rejection_separation_of_duties`)
   catch any path that bypasses the IPC layer.
 
-See [IAM Architecture §15.9](../technical/Vauban_IAM_Architecture_EN(1.0).md#159-approval-audit--separation-of-duties)
+See [IAM Architecture §15.9](../technical/Vauban_IAM_Architecture_EN(1.1).md#159-approval-audit--separation-of-duties)
 for the threat model (T1–T9) and schema.
 
 ## Operator surface
@@ -180,7 +180,7 @@ treated as a security incident:
 
 ## Related
 
-- [IAM Architecture §15.9](../technical/Vauban_IAM_Architecture_EN(1.0).md#159-approval-audit--separation-of-duties)
+- [IAM Architecture §15.9](../technical/Vauban_IAM_Architecture_EN(1.1).md#159-approval-audit--separation-of-duties)
 - [AccessGuard Architecture](../technical/Vauban_AccessGuard_Architecture_EN(1.0).md)
 - [Virtual asset group runbook](virtual_asset_group.md)
 - [IPC topology debugging](ipc_topology_debugging.md)

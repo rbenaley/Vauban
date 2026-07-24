@@ -53,7 +53,7 @@ None of these fit Vauban's architecture: a single-binary Rust bastion with Capsi
 
 ### 1.3 Scope
 
-This document covers the ACME TLS certificate management subsystem spanning three crates: `vauban-supervisor` (ACME protocol execution), `vauban-web` (TLS resolver and renewal scheduler), and `shared` (IPC message definitions). It is a companion to the [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.2).md) which describes the overall system design.
+This document covers the ACME TLS certificate management subsystem spanning three crates: `vauban-supervisor` (ACME protocol execution), `vauban-web` (TLS resolver and renewal scheduler), and `shared` (IPC message definitions). It is a companion to the [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.3).md) which describes the overall system design.
 
 ### 1.4 Threat Model
 

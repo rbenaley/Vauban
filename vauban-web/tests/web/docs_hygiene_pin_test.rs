@@ -48,11 +48,19 @@ fn superseded_banners_on_archaeology_docs() {
         ),
         (
             "docs/technical/Vauban_Privsep_Architecture_EN(1.0).md",
-            "1.2",
+            "1.3",
         ),
         (
             "docs/technical/Vauban_Privsep_Architecture_EN(1.1).md",
-            "1.2",
+            "1.3",
+        ),
+        (
+            "docs/technical/Vauban_Privsep_Architecture_EN(1.2).md",
+            "1.3",
+        ),
+        (
+            "docs/technical/Vauban_IAM_Architecture_EN(1.0).md",
+            "1.1",
         ),
         ("docs/technical/Vauban_Vault_Architecture_EN(1.0).md", "1.2"),
         ("docs/technical/Vauban_Vault_Architecture_EN(1.1).md", "1.2"),
