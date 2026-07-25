@@ -1,9 +1,15 @@
 <p align="center">
-  <img
-    src="docs/logos/Vauban-cybersec.svg"
-    alt="Vauban"
-    width="420"
-  />
+  <picture>
+    <source
+      media="(prefers-color-scheme: dark)"
+      srcset="docs/logos/Vauban-cybersec-dark.svg"
+    />
+    <img
+      src="docs/logos/Vauban-cybersec.svg"
+      alt="Vauban"
+      width="420"
+    />
+  </picture>
 </p>
 
 # Vauban
