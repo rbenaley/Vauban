@@ -1,18 +1,28 @@
+<p align="center">
+  <img
+    src="docs/logos/Logo%20-%20VAUBAN%20--25x50_ratio%20-%20Dark.jpeg"
+    alt="Vauban"
+    width="420"
+  />
+</p>
+
 # Vauban
 
 **A fortified bastion for privileged access management, built in Rust.**
 
-Vauban is an open-source security bastion, developed in Rust, designed to protect and control access to critical infrastructure across enterprise, industrial, and defense environments. Its architecture leverages proven, cutting-edge technologies: privilege separation inspired by OpenSSH and Capsicum sandboxing, a confinement mechanism developed with funding from DARPA (U.S. Department of Defense). The solution includes multi-factor authentication (MFA), role-based access control (RBAC), full session recording, and real-time monitoring of SSH and RDP connections. Free and sovereignty-friendly, Vauban meets the traceability and audit requirements of sensitive environments while offering an open-source alternative to proprietary solutions.
+Vauban is an open-source security bastion, developed in Rust, designed to protect and control access to critical infrastructure across enterprise, industrial, and defense environments. Its architecture leverages proven, cutting-edge technologies: privilege separation inspired by OpenSSH and Capsicum sandboxing, a confinement mechanism developed with funding from DARPA (U.S. Department of Defense). The solution includes multi-factor authentication (MFA), role-based access control (RBAC), full session recording, sealed SMTP notifications, and real-time monitoring of SSH, RDP, and IACS (industrial tunnel) connections. Free and sovereignty-friendly, Vauban meets the traceability and audit requirements of sensitive environments while offering an open-source alternative to proprietary solutions.
 
 ## Project Structure
 
 ```
 vauban-supervisor/    # Process orchestrator, watchdog, signal handling
 vauban-web/           # HTTPS server, REST API, WebSocket handlers, frontend
+vauban-web-evidence/  # Inspect Capture analyzer + recording integrity hydrator
 vauban-auth/          # Authentication, MFA, SSO, LDAP integration
 vauban-access/        # Access control, groups, and instance-level authorization (Casbin)
 vauban-vault/         # Secrets management, encryption/decryption service
 vauban-audit/         # Audit logging, session recording
+vauban-mailer/        # Sealed SMTP outbox drainer (Capsicum leaf)
 vauban-proxy-ssh/     # SSH protocol proxy (russh)
 vauban-proxy-rdp/     # RDP protocol proxy (IronRDP, H.264 encoding)
 vauban-proxy-iacs/    # Industrial Automation and Control Systems (IACS) protocols proxy
@@ -25,10 +35,19 @@ docs/                 # Technical architecture documentation
 ## Features
 
 - **Secure Authentication**: Session cookies (JWT) with mandatory MFA (TOTP) for
-  the web UI; scoped API keys (`vbn_…`) for machine-to-machine `/api/v1/*` access
-- **RBAC Integration**: Role-based access control via IPC (Casbin)
+  the web UI; optional LDAPS directory bind; scoped API keys (`vbn_…`) for
+  machine-to-machine `/api/v1/*` access
+- **RBAC Integration**: Role-based access control via IPC (Casbin), composed with
+  role invariants and per-session access checks
 - **Asset Management**: SSH, RDP, and IACS assets with admin/user URL zones
-- **Session Management**: Track, record, and monitor proxy sessions
+- **Session Management**: Track, record, and monitor proxy sessions (SSH asciicast,
+  RDP fMP4, IACS PCAP bundles)
+- **IACS Tunnel**: EWS-facing SSH local-forward proxy with protocol-aware Inspect
+  Capture for industrial recordings
+- **Vault Secrets**: Organizational secrets manager (web admin + M2M API with
+  asset provenance)
+- **Notifications**: Sealed Capsicum mailer leaf drains the SMTP outbox via
+  supervisor-brokered TCP
 - **Post-Quantum Cryptography**: Hybrid classical + PQ crypto in the SSH stack
   (russh / ml-kem)
 - **Type Safety**: Compile-time verified SQL queries (Diesel) and templates (Askama)
@@ -39,8 +58,10 @@ docs/                 # Technical architecture documentation
 - **Database**: PostgreSQL with Diesel ORM
 - **Cache**: in-process no-op (no external cache server)
 - **Templates**: Askama (compile-time verified)
-- **IPC**: Unix pipes for inter-service communication
-- **Authentication**: Session JWT (web), scoped API keys (M2M), Argon2id, TOTP
+- **IPC**: Unix pipes between services; `SCM_RIGHTS` FD brokering for TCP /
+  recording / LDAPS / SMTP
+- **Authentication**: Session JWT (web), scoped API keys (M2M), Argon2id, TOTP,
+  optional LDAPS
 
 ## Security
 
@@ -65,7 +86,7 @@ Detailed technical architecture documents are available in [`docs/technical/`](d
 | [OpenH264 AVX2 Optimizations](docs/technical/Vauban_OpenH264_AVX2_Optimizations_EN(1.0).md) | Custom AVX2 assembly for SAD and intra prediction (~50% CPU reduction) |
 | [ACME TLS Certificate Architecture](docs/technical/Vauban_ACME_TLS_Architecture_EN(1.0).md) | Automatic certificate renewal, TLS-ALPN-01, zero-downtime rotation |
 | [Session Recording Architecture](docs/technical/Vauban_Recording_Architecture_EN(1.9).md) | RDP segmented fMP4 + SSH asciicast v2 + IACS PCAP bundle (`pcap-bundle`) with synthetic L3/L4 (Wireshark-compatible); IACS gzip+BLAKE3 in audit; input redaction, DASH/asciinema playback, ZIP download |
-| [IAM Architecture](docs/technical/Vauban_IAM_Architecture_EN(1.1).md) | Two-layer authorization (Casbin RBAC + instance-level access rules), Argon2id auth service, JIT approval audit & separation of duties |
+| [IAM Architecture](docs/technical/Vauban_IAM_Architecture_EN(1.1).md) | Three-layer authorization (Casbin / `PermissionContext`, role invariants, session access), Argon2id auth service, JIT approval audit & separation of duties |
 | [LDAPS Auth Architecture](docs/technical/Vauban_LDAPS_Auth_Architecture_EN(1.0).md) | Directory-backed login, LDAPS bind via vauban-auth, JIT provisioning, anti-downgrade |
 | [AccessGuard Architecture](docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md) | Shared `shared::access_guard` defense-in-depth RBAC re-check gate (fail-closed, 10s timeout, RAII pending-map) |
 | [IACS Proxy Architecture](docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.1).md) | EWS-facing russh sshd, per-asset target resolution, Capsicum-aware FD passing (listener + Ed25519 host key), anti-SSRF supervisor broker, BLAKE3 session-token gate, boot Snapshot resync |
@@ -99,7 +120,7 @@ Vauban's security is built on defense in depth:
 just build
 
 # Build release binaries (optimized, LTO, stripped)
-just build --release
+just release
 
 # Run all tests
 just test
@@ -112,12 +133,14 @@ just clippy
 
 ```bash
 # Start all services via the supervisor
-cargo run
+just run
 ```
 
-The supervisor reads `config/default.toml`, forks 7 child processes (8 when
-`[industrial]` IACS is enabled), sets up IPC pipes, drops privileges, and enters
-the watchdog loop.
+The supervisor reads `config/default.toml`, forks child processes, sets up IPC
+pipes, drops privileges, and enters the watchdog loop. By default that is
+**7** always-on services (web, auth, access, vault, audit, proxy-ssh,
+proxy-rdp). Optionally **+1** when `[mailer].enabled`, and **+1** when
+`[industrial].enabled` (IACS proxy) -- up to **9** children.
 
 ## Configuration
 
@@ -127,7 +150,7 @@ is compiled. The build profile (`--release` or not) determines the behavior
 
 ### Build Profiles
 
-| | Debug (`just build`) | Release (`just build --release`) |
+| | Debug (`just build`) | Release (`just release`) |
 |---|---|---|
 | **Environment** | Configurable via `VAUBAN_ENVIRONMENT` | Always **Production** |
 | **Default env** | `development` | `production` |
@@ -245,7 +268,7 @@ Create the initial superuser account:
 vauban-supervisor create-superuser
 
 # Development (supervisor is default-members)
-cargo run -- create-superuser
+just run -- create-superuser
 ```
 
 ### Reset Password
@@ -257,7 +280,7 @@ Reset a user's password:
 vauban-supervisor reset-password <username>
 
 # Development
-cargo run -- reset-password <username>
+just run -- reset-password <username>
 ```
 
 ### Reset 2FA
@@ -266,10 +289,10 @@ Disable two-factor authentication for a user (the only way to disable MFA):
 
 ```bash
 # Production
-vauban-supervisor reset-2fa <username>
+vauban-supervisor reset2fa <username>
 
 # Development
-cargo run -- reset-2fa <username>
+just run -- reset2fa <username>
 ```
 
 ### Seed Data
@@ -281,7 +304,7 @@ Populate the database with sample data for development:
 vauban-supervisor seed-data
 
 # Development
-cargo run -- seed-data
+just run -- seed-data
 ```
 
 ### Migrate Secrets
@@ -293,12 +316,12 @@ This tool encrypts TOTP secrets and SSH credentials that would otherwise be stor
 # Preview what would be migrated (no changes made)
 vauban-supervisor migrate-secrets --dry-run
 # or in development:
-cargo run -- migrate-secrets --dry-run
+just run -- migrate-secrets --dry-run
 
 # Run the migration
 vauban-supervisor migrate-secrets
 # or in development:
-cargo run -- migrate-secrets
+just run -- migrate-secrets
 ```
 
 **Prerequisites**:
@@ -326,6 +349,44 @@ The `--dry-run` flag is recommended before any production migration.
 > **Note**: Encrypt-on-read is also built into the application itself. When a user logs in
 > with a plaintext MFA secret, it is automatically encrypted and updated in the database.
 > The `migrate-secrets` subcommand is useful for bulk migration of all secrets at once.
+
+### Migrate (schema)
+
+Apply pending embedded database schema migrations through the baseline-aware
+runner. The supervisor **never** auto-migrates at boot; DDL is an explicit
+admin / package post-install step.
+
+```bash
+# Apply pending migrations
+vauban-supervisor migrate
+# or in development:
+just run -- migrate
+
+# Report pending migrations only (exit non-zero if any; no writes)
+vauban-supervisor migrate --check
+
+# Override the database URL (e.g. pkg post-install as the postgres OS user,
+# which cannot read vauban.conf)
+vauban-supervisor migrate --database-url postgresql:///vauban
+```
+
+URL resolution order: `--database-url`, then `DATABASE_URL`, then the
+configured database URL from `vauban.conf` / `config/*.toml`.
+
+### Asset Pubkeys
+
+List SSH public keys of non-deleted assets with `auth_type = ssh_key`
+(OpenSSH public key text from `connection_config`; no vault decryption).
+
+```bash
+# psql-like table (default)
+vauban-supervisor asset-pubkeys
+# or in development:
+just run -- asset-pubkeys
+
+# One `user@host key` line per asset (rows without a public key skipped)
+vauban-supervisor asset-pubkeys --format plain
+```
 
 ## API Endpoints
 
@@ -443,8 +504,8 @@ The workspace and `vauban-proxy-rdp` are tested separately (`just test` runs bot
 
 1. Run the setup script:
 ```bash
-chmod +x scripts/setup_test_db.sh
-./scripts/setup_test_db.sh
+chmod +x vauban-web/scripts/setup_test_db.sh
+./vauban-web/scripts/setup_test_db.sh
 ```
 
 Or manually:
@@ -453,7 +514,8 @@ createdb vauban_test
 psql -c "CREATE USER vauban_test WITH PASSWORD 'vauban_test';"
 psql -c "GRANT ALL PRIVILEGES ON DATABASE vauban_test TO vauban_test;"
 psql -U postgres -d vauban_test -c "GRANT ALL ON SCHEMA public TO vauban_test; ALTER SCHEMA public OWNER TO vauban_test;"
-diesel migration run --database-url postgresql://vauban_test:vauban_test@localhost/vauban_test
+# Baseline-aware schema migrate (preferred over raw diesel migration run)
+just run -- migrate --database-url postgresql://vauban_test:vauban_test@localhost/vauban_test
 ```
 
 **Note**: Test configuration is in `config/testing.toml`. No environment variables needed.
@@ -461,18 +523,18 @@ diesel migration run --database-url postgresql://vauban_test:vauban_test@localho
 ### Running Tests
 
 ```bash
-# Run all tests
+# Full gate (workspace + vauban-proxy-rdp, --test-threads=1)
 just test
 
-# Run unit tests only
+# Workspace unit/lib tests only
 just test --lib
 
-# Run integration tests only (vauban-web)
-just test --test integration_tests
+# vauban-web integration binary (pin -p; --test is not workspace-wide)
+cargo test -p vauban-web --test integration_tests -- --test-threads=1
 
-# Run a subset by module name (examples)
-just test --test integration_tests -- web::login_post_expiry_test
-just test --test integration_tests -- api::api_key_auth_test
+# Subset by module name (examples)
+cargo test -p vauban-web --test integration_tests -- web::login_post_expiry_test -- --test-threads=1
+cargo test -p vauban-web --test integration_tests -- api::api_key_auth_test -- --test-threads=1
 
 # Run tests with output
 just test -- --nocapture
