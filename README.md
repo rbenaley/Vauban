@@ -1,6 +1,6 @@
 <p align="center">
   <img
-    src="docs/logos/Logo%20-%20VAUBAN%20--25x50_ratio%20-%20Dark.jpeg"
+    src="docs/logos/Vauban-cybersec.svg"
     alt="Vauban"
     width="420"
   />
