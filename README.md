@@ -23,13 +23,6 @@ just db-create        # local app DB `vcp`
 just db-create-test   # automated tests DB `vcp_test` (or: bash scripts/setup_test_db.sh)
 ```
 
-Automated tests load `VCP_ENVIRONMENT=testing` → `config/testing.toml`
-(`postgresql://vcp_test:vcp_test@localhost/vcp_test`). Run them with
-`--test-threads=1` (default in `just test` / `just validate`).
-See `docs/runbooks/auth_tenant_smoke_test.md` for the auth/tenant smoke
-checklist, `docs/runbooks/http_edge_smoke_test.md` for HTTPS access log +
-security headers, and `docs/runbooks/portal_shell_smoke_test.md` for
-layout / rail / topbar chrome.
 ## Configuration
 
 Application settings live in TOML files under `config/`. There is **no** `.env`
