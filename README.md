@@ -51,10 +51,6 @@ Config directory lookup:
 
 Production install path: `/usr/local/etc/vcp/vcp.conf` (plus `access/` policies and TLS material).
 
-Apache CLF access log path: `server.access_log_path` (`/var/log/vcp-access.log` in
-production; `logs/vcp-access.log` under the crate root in development/testing;
-the `logs/` directory is gitignored).
-
 ### TLS
 
 - Cleartext HTTP is **forbidden**. The process binds HTTPS only.
