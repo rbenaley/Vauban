@@ -1,0 +1,25 @@
+# Rust
+**/target/
+**/*.rs.bk
+
+# Environment
+.env
+.env.local
+
+# Local configuration (secrets)
+**/config/local.toml
+
+# IDE (track `.cursor/` — private repo agent rules/skills/plans)
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database (local / accidental sqlite files)
+*.db
+*.sqlite

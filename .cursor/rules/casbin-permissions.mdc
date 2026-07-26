@@ -1,0 +1,132 @@
+---
+description: Authorization gates must use a Casbin-backed PermissionContext, never raw role flags
+alwaysApply: true
+---
+
+# Casbin / PermissionContext - gating rule (VCP)
+
+Every authorization decision — in pages, components, shards, procedures,
+**and** in `view!` markup — must go exclusively through Casbin via a
+request-scoped `PermissionContext` (name may vary; the principle does not).
+
+This portal is **not** the bastion. Do **not** copy
+`../Vauban` policy CSV files, resource names, or BAC nests. Define a VCP
+catalogue for org / license / billing / support surfaces, and keep
+tenant isolation as a separate hard gate (see `portal-security.mdc`).
+
+## In Topcoat pages and components
+
+Topcoat prefers **functions over middlewares** for request-scoped concerns.
+Load permissions once per request from `Cx` (memoized helper), then pass
+or re-read that context — do not scatter ad-hoc Casbin `enforce` calls.
+
+```rust
+// Preferred shape (illustrative — wire to the real crate paths once scaffolded)
+async fn require_perms(cx: &Cx) -> Result<PermissionContext> {
+    // load role(s) + Casbin enforce for the VCP catalogue; fail closed
+}
+
+#[page("/org/members")]
+async fn members(cx: &Cx) -> Result {
+    let perms = require_perms(cx).await?;
+    if !perms.members_read {
+        return Err(/* 403 / redirect — fail closed */);
+    }
+    view! { /* ... */ }
+}
+```
+
+- **Never** gate logic on `is_staff` / `is_superuser` / `is_admin` / raw
+  role string compares.
+- **Never** treat “logged in” as authorization for org-scoped data:
+  always check the Casbin capability **and** the active organization /
+  tenant boundary.
+- Prefer a structural nest gate (layout or route helper that fails closed
+  before any DB lookup) **plus** a handler / page body re-check for
+  defence in depth — same pattern as the bastion BAC nests, applied to
+  VCP admin / billing sub-trees when they exist.
+
+## Permission catalogue (draft — refine at scaffold)
+
+Map `PermissionContext` fields 1:1 to `(resource, action)` couples. A
+starting catalogue for the customer portal (adjust names when product
+IA is fixed):
+
+| Resource       | Actions (examples)                                      |
+|----------------|---------------------------------------------------------|
+| `profile`      | `read`, `write`                                         |
+| `org`          | `read`, `write`, `manage`                               |
+| `members`      | `read`, `invite`, `write`                               |
+| `licenses`     | `read`, `download`, `manage`                            |
+| `billing`      | `read`, `write`                                         |
+| `support`      | `read`, `write`                                         |
+| `admin`        | `view` (operator / internal surfaces, if any)           |
+
+Adding a new field MUST come with:
+
+1. A matching `p, role:..., r, a` line in the VCP policy source of truth
+   (CSV / TOML / DB — pick one and keep it the only writer).
+2. A tracked-permission registry used by tests (drift pin: every tracked
+   permission is granted to at least one role).
+3. Denial-path tests for the new gate (wrong role, wrong org, anonymous).
+
+Until the policy file and loader exist, keep this rule as the target
+shape; do not invent a second authorization style “temporarily”.
+
+## In `view!` templates
+
+Any conditional that shows an **actionable** control (edit, invite,
+download license, manage billing) must read Casbin flags, not role
+booleans:
+
+```rust
+// FORBIDDEN — short-circuits custom policies
+if user.is_admin {
+    button("Invite member")
+}
+
+// OK — delegates to Casbin via PermissionContext
+if perms.members_invite {
+    button("Invite member")
+}
+```
+
+Role badges for display may still show a human-readable role label.
+Display is not a gate.
+
+## Forbidden patterns
+
+| Forbidden | Required instead |
+|-----------|------------------|
+| `if user.is_admin` / `is_staff` / `is_superuser` as a gate | `if perms.<resource>_<action>` |
+| Trusting a client-supplied org id without server check | Resolve active org from session + membership |
+| Casbin check alone for object access | Casbin capability **and** tenant / ownership check |
+| Copying bastion `assets:*` / `sessions:*` resources | VCP catalogue only |
+| Silent success when `PermissionContext` is missing | Fail closed (403 / login redirect) |
+
+## Two-layer authorization (Casbin + tenant / entitlement)
+
+`PermissionContext` is **necessary but not sufficient**.
+
+1. **Casbin / `PermissionContext`** — functional capability (“may this
+   principal invite members / download licenses at all?”). Customizable
+   via policy.
+2. **Tenant + entitlement** — instance-level (“may they act on *this*
+   organization / license / invoice?”). Enforce on every object id;
+   anti-enumeration: prefer 404 over 403 when existence would leak
+   across tenants.
+
+Do not collapse these into a single flag. A handler that needs
+“may caller X act on license Y?” checks **both**.
+
+Hard product invariants that Casbin must not override (e.g. “org always
+keeps at least one owner”, “cannot remove own last billing admin”)
+belong in dedicated invariant helpers — same idea as bastion
+`role_invariants`, different domain.
+
+## Why
+
+Hardcoding role booleans short-circuits custom policies and drifts from
+server enforcement. A single `PermissionContext` keeps HTML, shards, and
+procedures consistent with Casbin. Tenant checks prevent IDOR even when
+a capability is broadly granted.

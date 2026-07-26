@@ -1,0 +1,64 @@
+---
+description: Mobile-first responsive UI for Topcoat view! screens — no horizontal overflow
+globs: ["**/*.{html,rs,css,scss}"]
+alwaysApply: false
+---
+
+# Responsive UI — mobile-first (VCP / Topcoat)
+
+Every interactive Topcoat screen (`view!` pages / components) must
+render without horizontal overflow on a 375 px-wide phone and adapt
+cleanly up to desktop. Patterns adapted from the bastion responsive
+lessons (issue-driven), without Askama / HTMX assumptions.
+
+## Tables
+
+- Wrap `<table>` in a horizontal scroll container (`overflow-x-auto`).
+- Hide non-essential columns at small breakpoints
+  (`hidden sm:table-cell`, `hidden md:table-cell`, …).
+- For each column hidden on mobile, surface its data inside the
+  primary visible column (`sm:hidden` / `md:hidden` block) so nothing
+  is silently lost.
+- Prefer `break-words` / `break-all` (emails, hostnames, IDs, license
+  keys display forms) over forced `whitespace-nowrap` on long tokens.
+
+## List rows
+
+- Row containers: stack on phone, row on larger breakpoints
+  (`flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between`).
+- Metadata lines: `flex flex-wrap … gap-x-2 gap-y-1`.
+- Bullet separators that crowd phones: hide at base
+  (`hidden sm:inline`).
+
+## Headers and toolbars
+
+- Titles scale by breakpoint (`text-xl … sm:text-2xl lg:text-3xl`);
+  avoid a single large fixed title size on `<h1>` / `<h2>`.
+- Action bars wrap (`flex flex-wrap gap-2`); do not force a single
+  non-wrapping row of buttons on phones.
+- Fixed-width helpers (IDs, status chips): `truncate min-w-0` or
+  `hidden sm:inline`.
+
+## Floating containers
+
+- Toasts / dropdowns must not pin a fixed `w-96` at the base
+  breakpoint; prefer `w-full max-w-md` (optionally `sm:w-96`).
+
+## Padding and breadcrumbs
+
+- Dense card padding: `px-4 sm:px-6` rather than bare `px-6` at base.
+- Breadcrumbs: allow horizontal scroll (`overflow-x-auto` +
+  `whitespace-nowrap` on the list) instead of pushing the layout.
+
+## Layout
+
+- Prefer stacked (`flex-col`) layouts that become rows from `sm` / `md`.
+- Avoid fixed widths like `w-96` at the base breakpoint; use
+  `w-full max-w-*` instead.
+- Test critical paths at 375 / 768 / 1280 before hand-off.
+
+## Why
+
+Hard-coded desktop widths and unscoped `whitespace-nowrap` are the
+usual sources of horizontal scroll on phones. When a structural lint
+exists for `view!` / Tailwind classes, run it locally before hand-off.

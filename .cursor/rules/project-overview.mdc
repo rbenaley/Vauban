@@ -1,0 +1,68 @@
+---
+description: VCP — product context, scope, and agent working agreements
+alwaysApply: true
+---
+
+# VCP (Vauban Customer Portal)
+
+Customer-facing web portal for **Vauban Cybersec** (sibling of the
+bastion product in `../Vauban`). This repository is **not** the bastion
+admin UI (`vauban-web`); do not import bastion IPC, proxy, privsep, or
+bastion Casbin policy files unless the user explicitly asks.
+
+Project short name: **VCP**. Use that name in paths, crates, package
+scopes, and commit/PR titles unless a longer form is clearer.
+
+## Purpose (current intent)
+
+Internet-facing **CRUD customer portal** (HTTPS request/response — no
+WebSocket product surface) for customers and operators of Vauban
+deployments, for example:
+
+- Account / organization onboarding and profile
+- License, entitlement, and download access
+- Support / ticket entry points
+- Billing or subscription status (when wired)
+
+Security bar on the wire matches the bastion for **TLS 1.3** and
+**post-quantum hybrid readiness** (`tls-post-quantum.mdc`), without
+importing bastion IPC / privsep.
+
+Refine this list as product scope is confirmed; prefer thin vertical
+slices over speculative features.
+
+## Relationship to other repos
+
+| Path | Role |
+|------|------|
+| `../Vauban` | Bastion product (Rust, Axum, Askama, …) |
+| `../vauban.sh` | Public marketing site |
+| **this repo** | Authenticated customer portal |
+
+Share brand signals with `vauban.sh` / Vauban docs when designing UI;
+do not copy bastion-internal dashboard patterns blindly.
+
+## Working agreements
+
+- Chat with the user in **French**; code, commits, and Markdown docs in
+  **U.S. English** (see `markdown-us-english.mdc`, `git-workflow.mdc`).
+- Never commit or push without explicit user authorization.
+- Prefix diagnostic Shell commands with `rtk` (`rtk-proxy.mdc`).
+- Keep `.cursor/plans/` for implementation plans; `.cursor/audits/` for
+  reviews; `.cursor/mockups/` for design artifacts.
+- Stack conventions: `web-stack` skill; Topcoat framework knowledge:
+  `topcoat` skill; authZ: `casbin-permissions.mdc`; dates:
+  `timezone-localization.mdc`; tests: `vcp-test-pyramid.mdc`; TLS/PQ:
+  `tls-post-quantum.mdc`.
+
+## Stack status
+
+**Topcoat** ([tokio-rs/topcoat](https://github.com/tokio-rs/topcoat)) —
+Rust full-stack, server-rendered `view!`, optional signals / shards /
+procedures, Tailwind + Topcoat UI. Early-stage: expect upstream breaking
+changes; pin versions and prefer thin vertical slices.
+
+**ORM / DB:** [Toasty](https://github.com/tokio-rs/toasty) +
+**PostgreSQL** (pinned 0.x; see `web-stack` skill). Until the app tree
+exists, prefer IA, mockups, and `.cursor` hygiene over speculative crate
+sprawl.

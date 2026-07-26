@@ -1,0 +1,120 @@
+---
+description: All Markdown documentation in this repo MUST be written in U.S. English (American) — never British / Commonwealth spelling
+globs: ["**/*.md", "**/*.mdx"]
+alwaysApply: false
+---
+
+# Markdown documentation — U.S. English only
+
+Every Markdown file under this repository (technical architecture
+documents, runbooks, READMEs, functional specs, ADRs, release notes,
+…) MUST be written in **American English**.
+
+This rule applies whether you are creating a new document or editing
+an existing one (including editing in place a section authored by
+someone else). The only exception is verbatim third-party content
+that we redistribute unchanged (e.g. `docs/THIRD_PARTY_LICENSES.md`).
+
+## Spelling — use the U.S. form
+
+Do **not** use British / Commonwealth spellings. The most common
+traps in this repo:
+
+| Wrong (UK)              | Right (US)              |
+|-------------------------|--------------------------|
+| authorise / authorisation | authorize / authorization |
+| behaviour                 | behavior                  |
+| defence, defence-in-depth | defense, defense-in-depth |
+| factorise / factorised    | factorize / factorized    |
+| centralise / centralised  | centralize / centralized  |
+| organise / organisation   | organize / organization   |
+| optimise / optimisation   | optimize / optimization   |
+| recognise                 | recognize                 |
+| realise                   | realize                   |
+| analyse (verb)            | analyze                   |
+| summarise                 | summarize                 |
+| categorise                | categorize                |
+| prioritise                | prioritize                |
+| serialise / deserialise   | serialize / deserialize   |
+| customise                 | customize                 |
+| harmonise                 | harmonize                 |
+| standardise               | standardize               |
+| enrol / enrolment         | enroll / enrollment       |
+| fulfil / fulfilment       | fulfill / fulfillment     |
+| instalment                | installment               |
+| skilful / wilful          | skillful / willful        |
+| labelled / labelling      | labeled / labeling        |
+| modelling                 | modeling                  |
+| cancelled / cancelling    | canceled / canceling      |
+| signalled / signalling    | signaled / signaling      |
+| travelled / travelling    | traveled / traveling      |
+| focussed                  | focused                   |
+| colour, favour, honour    | color, favor, honor       |
+| neighbour, labour, vapour | neighbor, labor, vapor    |
+| catalogue, dialogue       | catalog, dialog           |
+| programme (computing N/A) | program                   |
+| analogue (signal)         | analog                    |
+| centre, metre, litre      | center, meter, liter      |
+| theatre, fibre            | theater, fiber            |
+| grey                      | gray                      |
+| storey                    | story                     |
+| tyre                      | tire                      |
+| aluminium                 | aluminum                  |
+| licence (noun)            | license                   |
+| practise (verb)           | practice                  |
+| judgement                 | judgment                  |
+| acknowledgement           | acknowledgment            |
+| ageing                    | aging                     |
+| sceptic                   | skeptic                   |
+| paralyse                  | paralyze                  |
+| sympathise                | sympathize                |
+
+## Vocabulary and idioms
+
+Prefer U.S. forms wherever a difference exists:
+
+- `whilst`   → `while`
+- `amongst`  → `among`
+- `amidst`   → `amid`
+- `towards`  → `toward`  (drop the trailing `s`; same for `backwards`,
+   `forwards`, `onwards`, `sideways` when used as adverbs)
+- `learnt`, `burnt`, `spelt`, `leapt`, `dreamt`, `spilt`, `smelt`,
+  `spoilt` → `learned`, `burned`, `spelled`, `leaped`, `dreamed`,
+  `spilled`, `smelled`, `spoiled` (use the regular `-ed` past tense)
+
+Punctuation: U.S. style. Use straight ASCII quotes (`"..."` and
+`'...'`). Periods/commas go inside quotation marks
+(`"this is U.S. style."`).
+
+Dates: prefer ISO 8601 (`YYYY-MM-DD`) for log lines and changelogs,
+and the long form `21 April 2026` (or `April 21, 2026`) in prose.
+
+## Compound terms
+
+Some compounds are spelled differently:
+
+- `defense-in-depth`        (not `defence-in-depth`)
+- `fail-closed` / `fail-open`  (already neutral)
+- `catch-all`               (already neutral)
+
+When in doubt, default to the spelling Merriam-Webster lists first.
+
+## Identifiers, code, and protocol strings
+
+Code identifiers, file names, crate names, function names, env var
+names, protocol strings, and quoted error messages MUST be reproduced
+verbatim. Do **not** "Americanize" them. Examples that stay as-is:
+
+- crate / module names (e.g. `vauban-access`),
+- env vars (e.g. `VAUBAN_ACCESS_IPC_READ`),
+- log message strings copied from source (`"Access denied"`, etc.),
+- third-party API names that themselves use British spelling.
+
+Only natural-language prose written *by us* in the document is in
+scope for this rule.
+
+## Verification
+
+Before saving a Markdown file, scan the prose for the table above.
+A quick `rg -in 'authoris|behaviour|defence|enrolment|colour|favour|labour|honour|optimis|organis|recognis|realis|centralis|specialis|programme|catalogue|whilst|amongst|towards' <file>`
+should return nothing in the prose sections.

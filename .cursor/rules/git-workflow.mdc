@@ -1,0 +1,42 @@
+---
+description: Git rules — never commit/push without explicit authorization
+alwaysApply: true
+---
+
+# Git workflow
+
+## Fundamental rule
+
+**NEVER run `git commit` or `git push` without explicit authorization
+from the user.**
+
+### Expected behavior
+
+1. Make the requested code changes.
+2. Inform the user that the changes are ready.
+3. **Wait** for the user to explicitly request a commit or a push.
+4. Prepare the commit message and submit it for approval.
+5. Run the commit / push only after confirmation.
+
+### Examples of explicit authorization
+
+- "commit the changes"
+- "make the commit"
+- "push"
+- "commit + push"
+- "yes, commit"
+
+### What is NOT an authorization
+
+- The user says the code works.
+- The user is happy with the changes.
+- The tests pass.
+- The code compiles.
+
+## Commit messages
+
+**Use ASCII characters only in commit messages.**
+
+- No accented characters: write "modifies" instead of "modifie".
+- No Unicode special characters: write "->" instead of "→".
+- English is the preferred language for commit messages.

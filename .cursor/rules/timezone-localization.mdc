@@ -1,0 +1,119 @@
+---
+description: Server-rendered dates honor the browser timezone cookie; UTC stays on DB / API / logs
+alwaysApply: true
+---
+
+# Timezone localization (VCP)
+
+Server-side date rendering MUST honor the visitor’s browser timezone via
+a first-party cookie pipeline (target name: `vcp_tz`). UTC is reserved
+for DB / logs / audit / machine JSON APIs.
+
+Topcoat renders HTML in Rust (`view!`). Localization stays **server-side**
+so CSP can stay strict and we do not depend on a Node date library in
+the browser for primary display.
+
+## Server-rendered HTML
+
+- Every `DateTime<Utc>` shown to a human in HTML MUST go through a
+  shared helper keyed on the request timezone, for example:
+  - `format_local(dt, tz)` — minute precision (`YYYY-MM-DD HH:MM ZZZ`)
+  - `format_local_with_seconds(dt, tz)` — second precision
+- Prefer calling the helper in the page / component (or a small view
+  helper) and interpolating the resulting string in `view!`. Do not
+  call `.format("%H...")` on UTC values for display.
+- Cookie absent → treat as `UTC` (preserves a safe round-trip).
+
+Illustrative shape once the crate exists:
+
+```rust
+let tz = browser_tz(cx); // chrono_tz::Tz from vcp_tz cookie
+let created = format_local(license.created_at, tz);
+
+view! {
+    <time datetime=(license.created_at.to_rfc3339()) title=(created.clone())>
+        (created)
+    </time>
+}
+```
+
+The `datetime="..."` attribute stays UTC / RFC 3339 (HTML5 / a11y
+contract). Visible text is localized.
+
+## Request context
+
+Every HTML page or shard that renders wall-clock times MUST resolve the
+browser timezone from the request (`Cx` + cookie jar) and thread `Tz`
+into format helpers. JSON / webhook / M2M handlers do **not** localize:
+wire format stays UTC RFC 3339.
+
+Topcoat shards re-render per request: always re-read `vcp_tz` for that
+request. Never cache a pre-formatted local string in app-global state
+and serve it to another user.
+
+## No WebSocket fan-out
+
+VCP does not ship a WebSocket product surface. Render dates per HTTP
+request (or shard re-render) using that request’s `vcp_tz`. Do not
+introduce shared pre-formatted local strings in global caches.
+
+## `datetime-local` form inputs
+
+`<input type="datetime-local">` has no timezone by HTML5 spec. The
+server owns both ends:
+
+1. Prefill: UTC instant → wall clock in `BrowserTz` (`YYYY-MM-DDTHH:MM`).
+2. Submit: same `BrowserTz` wall clock → UTC.
+
+Cookie absent → `UTC`. Document the helpers next to the form handlers
+so prefills and parsers cannot drift.
+
+## Forbidden patterns
+
+```rust
+// FORBIDDEN: naked UTC clock formatting for HTML display
+let s = dt.format("%Y-%m-%d %H:%M").to_string();
+
+// OK
+let s = format_local(dt, browser_tz(cx));
+```
+
+```rust
+// FORBIDDEN: stash a localized string in App context / global cache
+// and reuse across requests
+```
+
+Escape hatches (annotate when the lint exists):
+
+- Formats that already include `%Z` / `%z` for intentional tz-aware logs
+- `datetime-local` prefills (tz-less by spec)
+- UTC round-trip tests
+
+Tracing macros and date-only storage formats remain UTC-oriented and
+are not “display localization”.
+
+## UTC remains the wire format
+
+These planes MUST stay UTC:
+
+- Postgres `TIMESTAMPTZ` (or equivalent)
+- `tracing::*` logs
+- Audit / billing ledger events
+- Public JSON APIs and webhooks (RFC 3339)
+
+Do not push localized strings into logs or API payloads.
+
+## Adding a new HTML surface with dates
+
+1. Resolve `BrowserTz` / `vcp_tz` from `Cx`.
+2. Format with `format_local*` (or successor helpers).
+3. Keep machine-readable UTC on `<time datetime>` when used.
+4. Add a focused test that a non-UTC cookie changes the visible string
+   without changing the stored instant.
+
+## Why
+
+Showing UTC in a customer portal causes support noise (“wrong time on
+my invoice / license”). Client-only localization fights CSP and
+duplicates logic. Cookie + server formatting keeps one source of truth
+and leaves audit planes in UTC.

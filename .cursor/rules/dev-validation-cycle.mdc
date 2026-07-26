@@ -1,0 +1,66 @@
+---
+description: Mandatory fmt → clippy (-D warnings) → tests after every significant change; compile-only is never enough
+alwaysApply: true
+---
+
+# Dev validation cycle
+
+Full detail lives in the `quality-assurance` skill. Behavioral surfaces
+also need `vcp-test-pyramid.mdc`. This rule is the hard gate agents
+must not skip.
+
+## Order (blocking)
+
+After every **significant** code change, and again before declaring a
+task done or proposing a commit:
+
+1. **Format** — `rtk cargo fmt` (and `topcoat fmt` when `view!` macros
+   changed)
+2. **Clippy** — `rtk cargo clippy … --all-targets -- -D warnings` on
+   touched crate(s); widen to `--workspace` when blast radius is unclear
+3. **Structural lints** — any `scripts/check_*.sh` that guards the
+   edited surface (skip unrelated ones)
+4. **Tests** — focused filter covering the change **and** every new
+   pyramid layer, with `-- --test-threads=1`; widen before hand-off
+
+`cargo check` / `cargo build` / "tests green" **never** replace step 2.
+Clippy-clean **never** replaces step 4. Both gates are required.
+
+## Clippy is mandatory
+
+- Run clippy in the **same turn** as the change, before claiming done.
+- Warnings are **blocking**. Fix them; do not leave
+  `too_many_arguments` / dead code for "later".
+- Prefer a context / `Ctx` struct over bare
+  `#[allow(clippy::too_many_arguments)]` unless an existing allow
+  documents a hard invariant on the same line.
+- `cargo test` does **not** surface Clippy warnings.
+
+## What counts as significant
+
+Treat as significant any change that alters:
+
+- Application source (pages, components, shards, procedures, services)
+- Auth, session, CSRF, Casbin / `PermissionContext`, tenancy
+- License, entitlement, billing, webhook logic
+- Public API contracts or shared types
+- Migrations, env/config that affects runtime behavior
+- CI or structural lint scripts
+
+Trivial-only edits may skip the full cycle: comment-only, typo in a
+non-executable doc sentence, or pure formatting with no semantic diff.
+When in doubt, run clippy and tests.
+
+## Anti-patterns
+
+| Forbidden | Required instead |
+|-----------|------------------|
+| Stop after build / typecheck OK | Run clippy + tests |
+| Stop after tests green, skip clippy | Run clippy with `-D warnings` |
+| Stop after clippy / lints green | Run focused tests |
+| Fix a failure and skip re-run | Re-run until green |
+| Clippy + happy-path unit only on auth/tenant/billing | Full `vcp-test-pyramid.mdc` |
+| Invent a parallel bastion harness | Portal / Topcoat seams only |
+
+Prefix diagnostic commands with `rtk` (`rtk-proxy.mdc`).
+Stack: Topcoat — see the `web-stack` skill.

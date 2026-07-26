@@ -1,0 +1,84 @@
+---
+description: RTK (Rust Token Killer) — prefix diagnostic shell commands with rtk to compress outputs
+alwaysApply: true
+---
+
+# RTK - Rust Token Killer
+
+RTK compresses command outputs (typically 60–90% fewer tokens).
+Installed at `/Users/mnemonic/.local/bin/rtk`.
+
+## Mandatory rule
+
+**When using the Shell tool, prefix the following diagnostic commands
+with `rtk`.**
+
+Do **not** use `rtk` for state-changing commands (write, create, install,
+commit, push) — only for read / diagnostic commands.
+
+## Commands to rewrite
+
+### Git
+| Instead of | Use |
+|---|---|
+| `git status` | `rtk git status` |
+| `git diff ...` | `rtk git diff ...` |
+| `git log ...` | `rtk git log ...` |
+| `git show ...` | `rtk git show ...` |
+| `git branch ...` | `rtk git branch ...` |
+
+### Files and search
+| Instead of | Use |
+|---|---|
+| `cat <file>` | `rtk read <file>` |
+| `grep` / `rg <pattern>` | `rtk grep <pattern>` |
+| `find <path> ...` | `rtk find <path> ...` |
+| `ls ...` | `rtk ls ...` |
+| `tree ...` | `rtk tree ...` |
+| `diff <a> <b>` | `rtk diff <a> <b>` |
+| `head -N <file>` | `rtk read <file> --max-lines N` |
+
+### GitHub CLI
+| Instead of | Use |
+|---|---|
+| `gh pr ...` | `rtk gh pr ...` |
+| `gh issue ...` | `rtk gh issue ...` |
+| `gh run ...` | `rtk gh run ...` |
+| `gh api ...` | `rtk gh api ...` |
+
+### Containers / network
+| Instead of | Use |
+|---|---|
+| `docker ps/images/logs/build` | `rtk docker …` |
+| `docker compose ps/logs/build` | `rtk docker compose …` |
+| `curl ...` / `wget ...` | `rtk curl …` / `rtk wget …` |
+
+### Rust / Topcoat (when present)
+
+Use the host `cargo` / `rustc`. Do **not** force `rustup run` or
+`cargo +<toolchain>` unless the user asks.
+
+| Instead of | Use |
+|---|---|
+| `cargo test …` | `rtk cargo test … -- --test-threads=1` |
+| `cargo clippy …` | `rtk cargo clippy … --all-targets -- -D warnings` |
+| `cargo fmt …` | `rtk cargo fmt …` |
+| `cargo check\|build …` | `rtk cargo check\|build …` |
+| `topcoat fmt …` | run as needed (state-changing format: no `rtk` required) |
+
+Hand-off validation is **clippy + tests**, not `cargo check` alone.
+See `dev-validation-cycle.mdc` and the `quality-assurance` skill.
+
+### Other diagnostics
+
+- `rtk npm test|run …` / `rtk pnpm …` / `rtk yarn …` if ever present
+- `rtk kubectl get|logs|describe …` when debugging deployed envs
+
+## Exceptions — do NOT prefix with rtk
+
+- Commands already prefixed with `rtk`
+- Commands with heredocs (`<<`)
+- `git commit`, `git push`, `git add`
+- Actual installs (`npm install`, `cargo install`, …)
+- Complex pipes (`cmd1 | cmd2`) unless the first command is simple
+- Interactive commands

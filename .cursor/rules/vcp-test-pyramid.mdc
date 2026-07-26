@@ -1,0 +1,83 @@
+---
+description: Mandatory VCP behavioral test pyramid — unit, invariants, proptest, battle, E2E, smoke runbook — never ship with unit+clippy only
+alwaysApply: true
+---
+
+# VCP behavioral test pyramid (mandatory)
+
+Agents MUST deliver this pyramid **by default** for every significant
+behavioral change. Do **not** wait for the user to ask for invariants /
+proptest / battle / E2E / a smoke runbook. Skipping layers is a process
+failure unless the change is explicitly cosmetic (see exceptions).
+
+Full detail and command placeholders live in the `quality-assurance`
+skill. Stack: Topcoat (Rust full-stack) — see the `web-stack` skill.
+
+## Layers (every behavioral surface)
+
+| Layer | Role | Typical artifact |
+|-------|------|------------------|
+| **Unit** | Local happy / sad paths | `#[test]` / `#[tokio::test]` in module |
+| **Invariants** | Source shape is the contract | `include_str` / grep pins / `check_*.sh` |
+| **Proptest** | Property over a space of inputs | `proptest!` / table of random corpora |
+| **Battle** | Contention / multi-thread / flood | `battle_*` with `Barrier` / parallel load |
+| **E2E** | Real product seam already in tree | `*_e2e_test.rs`, page+DB+session path |
+| **Smoke runbook** | Staging ops checklist CI cannot replace | `docs/runbooks/*_smoke_test.md` |
+
+One-liner mnemonic:
+
+> unit = *what*, invariants = *how the code must look*, proptest = *for
+> all*, battle = *under contention*, E2E = *in the system*, runbook =
+> *on staging*.
+
+## When the full pyramid is REQUIRED
+
+Treat as behavioral (full pyramid) any change that alters:
+
+- Auth / session / CSRF / login-logout lifecycle
+- Casbin / `PermissionContext` / role or policy files
+- Tenant / organization membership and isolation (IDOR surfaces)
+- License, entitlement, download, or billing / webhook paths
+- Cookie / timezone localization that affects legal or billing display
+- New Topcoat pages, layouts, shards, or procedures on those seams
+- Rate limiting, audit events, or secret handling
+
+Even a “small” refactor on these seams needs the pyramid.
+
+## Exceptions (pyramid may be thinned)
+
+Only these may skip proptest / battle / E2E / new runbook:
+
+- Comment-only or non-executable doc typos
+- Pure formatting (`cargo fmt` / `topcoat fmt`) with no semantic diff
+- Pure literal readability renames with identical semantics
+  (e.g. `Duration::from_secs(3600)` → `Duration::from_hours(1)`)
+  — still keep a trivial unit equality assert when touching a const
+
+When in doubt, deliver the **full** pyramid.
+
+## Planning and definition of done
+
+- Plans and implementation todos MUST list pyramid deliverables per
+  surface (not a vague “add tests”).
+- A task is **not done** after clippy + a few unit tests alone.
+- Prefer extending an existing `*_e2e_test.rs` / pin suite / runbook
+  over inventing a parallel harness.
+- Denial paths are mandatory on auth / tenancy / entitlement changes
+  (wrong org, expired session, missing permission, missing entitlement).
+- New smoke runbooks: audience, severity, automated prerequisites,
+  Pass / Fail criteria, related links. Link from the nearest operator
+  doc when one exists.
+
+## Forbidden agent behavior
+
+| Forbidden | Required instead |
+|-----------|------------------|
+| “Cosmetic refactor, unit tests enough” on auth/tenant/billing | Full pyramid |
+| Plan that omits invariants / proptest / battle / E2E / runbook | Explicit per-layer todos |
+| Stop after clippy + one happy-path unit test | Execute filters covering every new layer |
+| Invent a second auth/tenant path “just for tests” | Exercise the production seam |
+| Copy bastion IPC / proxy / recording test harnesses blindly | Portal-appropriate seams only |
+
+Use the host toolchain as installed; do not force `rustup run` /
+toolchain overrides unless the user asks.

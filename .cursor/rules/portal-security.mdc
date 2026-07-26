@@ -1,0 +1,60 @@
+---
+description: Baseline security expectations for the customer portal (auth, secrets, tenancy)
+alwaysApply: true
+---
+
+# Portal security baseline
+
+This is a customer-facing authenticated surface. Prefer boring, proven
+patterns over clever shortcuts.
+
+## Non-negotiables
+
+- **No secrets in the repo** (API keys, private keys, `.env` with real
+  credentials, session signing keys). Use env / secret manager only.
+- **Validate all untrusted input** at trust boundaries (forms, query
+  params, webhooks, uploaded files).
+- **CSRF protection** on cookie-based session mutations. With Topcoat
+  sessions, keep the built-in `OriginLayer` enabled and put mutations
+  on non-GET methods; do not call
+  `dangerous_disable_origin_verification` without a replacement.
+- **Tenant isolation**: never leak another organization’s data via IDOR,
+  search, export, or error messages. Authorize on every object access.
+- **Safe defaults for cookies**: `HttpOnly`, `Secure`, `SameSite` as
+  appropriate; short session lifetimes with refresh where needed.
+- **No sensitive data in logs** (passwords, tokens, full card numbers,
+  raw license keys). Redact or hash.
+- **Dependency caution**: prefer well-maintained libs; avoid `eval`,
+  dynamic code execution, and unchecked redirects (`open redirect`).
+- **Security headers**: set a strict baseline once the HTTP layer is
+  wired (`base-uri`, `frame-ancestors`, `form-action`, CSP). Prefer
+  external / hashed assets over `script-src 'unsafe-inline'`. Follow
+  Topcoat’s asset pipeline rather than inventing a second static tree.
+- **TLS 1.3 + post-quantum readiness**: Internet edge is HTTPS-only,
+  TLS 1.3 minimum, rustls-preferred; hybrid PQ for TLS groups and any
+  app-level KEM/signatures — see `tls-post-quantum.mdc`.
+
+## When touching auth / billing / licenses
+
+Ship tests that cover denial paths (wrong tenant, expired session,
+missing entitlement), not only the happy path. See
+`quality-assurance` skill.
+
+## Authorization
+
+Use a Casbin-backed `PermissionContext` for capability gates (see
+`casbin-permissions.mdc`). Keep tenant / entitlement checks as a second
+layer — Casbin alone is not enough for object access.
+
+## Product shape
+
+CRUD portal over ordinary HTTPS request/response (Topcoat pages,
+forms, shards/procedures as needed). **No WebSocket product surface.**
+
+## Out of scope (unless asked)
+
+Do not pull bastion privsep, Capsicum, mTLS IPC, proxy session viewers,
+WebSocket dashboards, or bastion Casbin policy / resource catalogues
+from `../Vauban`. VCP defines its own policy catalogue for org /
+license / billing / support. TLS 1.3 + PQ **are** in scope (shared
+security bar, different product).
