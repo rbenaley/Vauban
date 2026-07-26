@@ -66,15 +66,15 @@ Rules:
 
 ## Checklist (scaffold and deploy)
 
-- [ ] Public HTTPS listener; no app traffic on cleartext
+- [x] Public HTTPS listener; no app traffic on cleartext (`src/tls/`)
 - [ ] TLS 1.3-only config verified (sslscan / testssl / equivalent)
-- [ ] rustls (or proxy-enforced equivalent) documented
+- [x] rustls (or proxy-enforced equivalent) documented
 - [ ] `cargo deny` (or CI) prefers rustls / bans OpenSSL by default
 - [ ] Outbound TLS clients verify certificates
 - [ ] TLS config module ready to flip on hybrid PQ groups
 - [ ] Any app-level KEM/sign uses hybrid NIST PQ algorithms
-- [ ] HSTS considered for production (add `preload` only after validation)
-- [ ] Secrets redacted in logs; no private keys in the repo
+- [x] HSTS on production responses (`security_headers` layer; no `preload` yet)
+- [x] Secrets redacted in logs; no private keys in the repo (`certs/` gitignored)
 
 ## Out of scope (bastion-only)
 

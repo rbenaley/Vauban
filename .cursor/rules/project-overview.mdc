@@ -5,7 +5,7 @@ alwaysApply: true
 
 # VCP (Vauban Customer Portal)
 
-Customer-facing web portal for **Vauban Cybersec** (sibling of the
+Customer-facing web portal for **Vauban** (sibling of the
 bastion product in `../Vauban`). This repository is **not** the bastion
 admin UI (`vauban-web`); do not import bastion IPC, proxy, privsep, or
 bastion Casbin policy files unless the user explicitly asks.
@@ -13,23 +13,32 @@ bastion Casbin policy files unless the user explicitly asks.
 Project short name: **VCP**. Use that name in paths, crates, package
 scopes, and commit/PR titles unless a longer form is clearer.
 
-## Purpose (current intent)
+## Purpose
 
 Internet-facing **CRUD customer portal** (HTTPS request/response — no
-WebSocket product surface) for customers and operators of Vauban
-deployments, for example:
+WebSocket product surface). Product IA is defined by
+`.cursor/mockups/Concept/` and the `vcp` app route tree.
 
-- Account / organization onboarding and profile
-- License, entitlement, and download access
-- Support / ticket entry points
-- Billing or subscription status (when wired)
+### Client zone (org-scoped)
+
+- **Dashboard** — build / issues summary and recent activity
+- **Documentation** — searchable knowledge base
+- **Builds** — certified LTS/Stable/EOL binaries, signed download
+- **Issues** — support tracker (SLA: initial analysis 2–5 business days)
+- **Account & subscription** — plan, LTS counters, technical contact
+
+### Admin zone (org-scoped, Casbin-gated)
+
+- **Documentation editor** — write / publish / unpublish articles
+- **Release manager** — publish binaries that appear in Builds
+- **Client companies** — onboard orgs (max 5 user accounts per company)
 
 Security bar on the wire matches the bastion for **TLS 1.3** and
 **post-quantum hybrid readiness** (`tls-post-quantum.mdc`), without
 importing bastion IPC / privsep.
 
-Refine this list as product scope is confirmed; prefer thin vertical
-slices over speculative features.
+Prefer thin vertical slices over speculative features (no PSP checkout
+until explicitly planned).
 
 ## Relationship to other repos
 
@@ -39,7 +48,7 @@ slices over speculative features.
 | `../vauban.sh` | Public marketing site |
 | **this repo** | Authenticated customer portal |
 
-Share brand signals with `vauban.sh` / Vauban docs when designing UI;
+Share brand signals with `vauban.sh` / Concept mockups when designing UI;
 do not copy bastion-internal dashboard patterns blindly.
 
 ## Working agreements
@@ -63,6 +72,8 @@ procedures, Tailwind + Topcoat UI. Early-stage: expect upstream breaking
 changes; pin versions and prefer thin vertical slices.
 
 **ORM / DB:** [Toasty](https://github.com/tokio-rs/toasty) +
-**PostgreSQL** (pinned 0.x; see `web-stack` skill). Until the app tree
-exists, prefer IA, mockups, and `.cursor` hygiene over speculative crate
-sprawl.
+**PostgreSQL** (pinned 0.x; see `web-stack` skill). Binary crate: `vcp`.
+
+**Config:** TOML under `config/` (Vauban-style layering). No application
+`.env`. Production is self-contained `config/vcp.conf` (deployed as
+`/usr/local/etc/vcp/vcp.conf`). Local: `VCP_ENVIRONMENT=development`.

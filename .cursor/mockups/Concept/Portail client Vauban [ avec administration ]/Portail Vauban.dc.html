@@ -1,0 +1,1438 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<template id="__bundler_thumbnail" data-bg-color="#14171c">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1200" height="800" fill="#14171c"/>
+    <polygon points="600,210 660,290 760,302 720,390 760,478 660,490 600,570 540,490 440,478 480,390 440,302 540,290" fill="none" stroke="#3ec2ad" stroke-width="14" stroke-linejoin="round"/>
+    <circle cx="600" cy="390" r="36" fill="none" stroke="#3ec2ad" stroke-width="14"/>
+    <text x="600" y="660" fill="#d6e3df" font-family="monospace" font-size="56" font-weight="bold" text-anchor="middle" letter-spacing="8">VAUBAN</text>
+    <text x="600" y="710" fill="#6b7280" font-family="monospace" font-size="26" text-anchor="middle" letter-spacing="6">CUSTOMER PORTAL</text>
+  </svg>
+</template>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  ::placeholder { color: #9aa0a6; }
+  input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent, #117a6b) !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, #117a6b) 14%, transparent); }
+  .vb-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+  .vb-scroll::-webkit-scrollbar-thumb { background: #d6d9d4; border-radius: 6px; border: 3px solid transparent; background-clip: padding-box; }
+  @keyframes vbIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .vb-screen { animation: vbIn .22s ease both; }
+  .vb-row:hover { background: #fafbfa !important; }
+  .vb-card:hover { border-color: var(--accent, #117a6b) !important; transform: translateY(-2px); }
+  .vb-card { transition: transform .14s ease, border-color .14s ease; }
+  .vb-rail:hover { color: #cfd3d8 !important; }
+</style>
+</helmet>
+
+<div style="--accent: {{ accent }}; font-family: 'Hanken Grotesk', sans-serif; display: flex; height: 100vh; overflow: hidden; background: #f5f6f4; color: #14171c;">
+
+  <!-- ============ DARK RAIL ============ -->
+  <aside style="width: 76px; flex: none; background: #14171c; display: flex; flex-direction: column; align-items: center; padding: 16px 0 14px; gap: 4px;">
+    <svg width="28" height="28" viewBox="0 0 100 100" fill="none" style="margin-bottom: 14px;"><polygon points="50,4 65,24.02 89.84,27 80,50 89.84,73 65,75.98 50,96 35,75.98 10.16,73 20,50 10.16,27 35,24.02" stroke="color-mix(in srgb, var(--accent,#117a6b) 60%, #fff)" stroke-width="4" stroke-linejoin="round"></polygon><circle cx="50" cy="50" r="9" stroke="color-mix(in srgb, var(--accent,#117a6b) 60%, #fff)" stroke-width="4"></circle></svg>
+    <sc-for list="{{ railItems }}" as="item" hint-placeholder-count="4">
+      <div onClick="{{ item.onClick }}" class="vb-rail" style="width: 56px; padding: 9px 0; border-radius: 6px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; color: {{ item.color }}; background: {{ item.bg }};">
+        <span style="font-size: 17px; line-height: 1;">{{ item.icon }}</span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.04em;">{{ item.label }}</span>
+      </div>
+    </sc-for>
+    <div style="width: 34px; height: 1px; background: #2a2f36; margin: 10px 0 6px;"></div>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 8px; letter-spacing: 0.14em; color: #565c64; margin-bottom: 4px;">ADMIN</span>
+    <sc-for list="{{ adminRailItems }}" as="item" hint-placeholder-count="3">
+      <div onClick="{{ item.onClick }}" class="vb-rail" style="width: 56px; padding: 9px 0; border-radius: 6px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; color: {{ item.color }}; background: {{ item.bg }};">
+        <span style="font-size: 17px; line-height: 1;">{{ item.icon }}</span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.04em;">{{ item.label }}</span>
+      </div>
+    </sc-for>
+    <div onClick="{{ goAccount }}" style="margin-top: auto; width: 38px; height: 38px; border-radius: 6px; background: color-mix(in srgb, var(--accent,#117a6b) 80%, #fff); color: #0c2520; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; cursor: pointer;">{{ orgInitials }}</div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+
+    <!-- topbar -->
+    <header style="flex: none; display: flex; align-items: center; justify-content: space-between; padding: 12px 26px; border-bottom: 1px solid #e0e2de; background: #fff;">
+      <div style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #8a8f96; display: flex; gap: 7px; align-items: center;">
+        <span style="color: #14171c; font-weight: 600;">vauban://portal</span>
+        <span>/</span><span>{{ orgSlug }}</span>
+        <span>/</span><span style="color: var(--accent,#117a6b);">{{ crumb }}</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 18px;">
+        <div style="font-size: 13px; color: #5a5f66;">{{ org }}</div>
+      </div>
+    </header>
+
+    <!-- content -->
+    <div class="vb-scroll" style="flex: 1; overflow-y: auto;">
+
+      <!-- ========== HOME ========== -->
+      <sc-if value="{{ isHome }}" hint-placeholder-val="{{ true }}">
+        <div class="vb-screen" style="padding: 26px 30px;">
+          <div style="margin-bottom: 22px;">
+            <h1 style="font-size: 25px; font-weight: 800; margin: 0; letter-spacing: -0.01em;">Dashboard</h1>
+          </div>
+
+          <!-- stat row -->
+          <div style="display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid #e0e2de; border-radius: 4px; overflow: hidden; background: #fff; margin-bottom: 26px;">
+            <div style="padding: 16px 18px; border-right: 1px solid #e0e2de;"><div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.1em; color: #8a8f96;">CURRENT BUILD</div><div style="font-family: 'JetBrains Mono', monospace; font-size: 21px; font-weight: 700; margin-top: 5px;">{{ homeBuildVersion }}</div></div>
+            <div style="padding: 16px 18px; border-right: 1px solid #e0e2de;"><div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.1em; color: #8a8f96;">OPEN ISSUES</div><div style="font-family: 'JetBrains Mono', monospace; font-size: 21px; font-weight: 700; margin-top: 5px;">{{ openCount }}</div></div>
+            <div style="padding: 16px 18px;"><div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.1em; color: #8a8f96;">IN ANALYSIS</div><div style="font-family: 'JetBrains Mono', monospace; font-size: 21px; font-weight: 700; margin-top: 5px; color: #b3801f;">{{ analysisCount }}</div></div>
+          </div>
+
+          <!-- resource cards -->
+          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 26px;">
+            <div onClick="{{ goDocs }}" class="vb-card" style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; padding: 20px; cursor: pointer; display: flex; flex-direction: column; min-height: 168px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"><span style="font-size: 20px;">❏</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #8a8f96;">142 articles</span></div>
+              <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">Documentation</div>
+              <div style="font-size: 13px; color: #6b6f76; line-height: 1.45; flex: 1;">Guides, API reference, and deployment runbooks.</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--accent,#117a6b); margin-top: 12px;">Open →</div>
+            </div>
+            <div onClick="{{ goBuilds }}" class="vb-card" style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; padding: 20px; cursor: pointer; display: flex; flex-direction: column; min-height: 168px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"><span style="font-size: 20px;">⬡</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #1f9d86;">{{ homeBuildVersion }} · signed ✓</span></div>
+              <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">LTS builds &amp; changelogs</div>
+              <div style="font-size: 13px; color: #6b6f76; line-height: 1.45; flex: 1;">Signed, verified binaries with long-term support.</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--accent,#117a6b); margin-top: 12px;">Open →</div>
+            </div>
+            <div onClick="{{ goBugs }}" class="vb-card" style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; padding: 20px; cursor: pointer; display: flex; flex-direction: column; min-height: 168px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"><span style="font-size: 20px;">⚑</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #b3801f;">{{ openCount }} open</span></div>
+              <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">Issue tracker</div>
+              <div style="font-size: 13px; color: #6b6f76; line-height: 1.45; flex: 1;">Report an issue. Initial analysis within 2–5 business days.</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--accent,#117a6b); margin-top: 12px;">Open →</div>
+            </div>
+          </div>
+
+          <!-- activity + latest build -->
+          <div style="display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px;">
+            <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; padding: 18px 20px;">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.08em; color: #8a8f96; margin-bottom: 14px;">RECENT ACTIVITY</div>
+              <sc-for list="{{ activity }}" as="item" hint-placeholder-count="4">
+                <div style="display: flex; gap: 11px; padding: 9px 0; border-bottom: 1px solid #f0f1ee;">
+                  <span style="width: 7px; height: 7px; border-radius: 50%; margin-top: 6px; flex: none; background: {{ item.dot }};"></span>
+                  <div style="flex: 1; font-size: 13.5px; color: #3a3f46;"><span style="font-family: 'JetBrains Mono', monospace; color: var(--accent,#117a6b); font-size: 12.5px;">{{ item.ref }}</span>{{ item.rest }}</div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #9aa0a6;">{{ item.time }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; padding: 18px 20px;">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.08em; color: #8a8f96; margin-bottom: 14px;">LATEST CERTIFIED BUILD</div>
+              <div style="display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px;"><span style="font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 700;">{{ homeBuildVersion }}</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 2px 7px; border-radius: 3px; {{ homeBuildBadge }}">{{ homeBuildChannel }}</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #1f9d86;">signed ✓</span></div>
+              <div style="display: flex; flex-direction: column; gap: 7px;">
+                <sc-for list="{{ homeBuildNotes }}" as="note" hint-placeholder-count="1">
+                  <div style="display: flex; gap: 8px; align-items: baseline;">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 600; letter-spacing: 0.04em; color: {{ note.color }}; flex: none; margin-top: 1px;">{{ note.tag }}</span>
+                    <span style="font-size: 13px; color: #5a5f66; line-height: 1.5;">{{ note.text }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div onClick="{{ goBuilds }}" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--accent,#117a6b); margin-top: 14px; cursor: pointer;">All builds →</div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ========== DOCS ========== -->
+      <sc-if value="{{ isDocs }}" hint-placeholder-val="{{ true }}">
+        <div class="vb-screen" style="padding: 26px 30px;">
+          <h1 style="font-size: 22px; font-weight: 800; margin: 0 0 4px;">Documentation &amp; knowledge base</h1>
+          <p style="margin: 0 0 18px; color: #6b6f76; font-size: 14px;">Operations, security, API, and deployment runbooks.</p>
+          <input value="{{ docsQuery }}" onInput="{{ onDocsQuery }}" placeholder="Search the documentation…" style="width: 100%; max-width: 560px; font-family: 'JetBrains Mono', monospace; font-size: 13px; padding: 11px 14px; border: 1px solid #d8dbd6; border-radius: 4px; background: #fff; margin-bottom: 14px;">
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px;">
+            <sc-for list="{{ docsCats }}" as="item" hint-placeholder-count="6">
+              <div onClick="{{ item.onClick }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 6px 12px; border-radius: 4px; cursor: pointer; border: 1px solid {{ item.bd }}; color: {{ item.color }}; background: {{ item.bg }};">{{ item.label }}</div>
+            </sc-for>
+          </div>
+
+          <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; overflow: hidden;">
+            <sc-for list="{{ filteredArticles }}" as="item" hint-placeholder-count="6">
+              <div onClick="{{ item.onClick }}" class="vb-row" style="padding: 15px 18px; border-bottom: 1px solid #f0f1ee; cursor: pointer; display: flex; gap: 14px; align-items: center;">
+                <div style="flex: 1;">
+                  <div style="font-size: 14.5px; font-weight: 600; margin-bottom: 3px;">{{ item.title }}</div>
+                  <div style="font-size: 12.5px; color: #6b6f76;">{{ item.excerpt }}</div>
+                </div>
+                <div style="text-align: right; flex: none;"><div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--accent,#117a6b);">{{ item.cat }}</div><div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #9aa0a6; margin-top: 3px;">Updated {{ item.updated }}</div></div>
+                <span style="font-size: 16px; color: #c2c6cb; flex: none;">→</span>
+              </div>
+            </sc-for>
+            <sc-if value="{{ noArticles }}" hint-placeholder-val="{{ false }}">
+              <div style="padding: 40px; text-align: center; color: #9aa0a6; font-family: 'JetBrains Mono', monospace; font-size: 13px;">No matching articles.</div>
+            </sc-if>
+          </div>
+        </div>
+
+        <!-- article modal -->
+        <sc-if value="{{ hasArticle }}" hint-placeholder-val="{{ false }}">
+          <div onClick="{{ closeArticle }}" style="position: fixed; top: 0; right: 0; bottom: 0; left: 76px; background: rgba(20,23,28,.55); display: flex; align-items: center; justify-content: center; padding: 38px; z-index: 50;">
+            <div onClick="{{ stopProp }}" class="vb-scroll" style="background: #fff; border-radius: 6px; width: 100%; max-width: none; max-height: 100%; overflow-y: auto; box-shadow: 0 24px 60px rgba(0,0,0,.32); animation: vbIn .18s ease both;">
+              <div style="position: sticky; top: 0; background: #fff; border-bottom: 1px solid #f0f1ee; padding: 22px 28px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;">
+                <div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--accent,#117a6b); letter-spacing: 0.06em; margin-bottom: 8px;">{{ selectedArticle.cat }} · Updated {{ selectedArticle.updated }}</div>
+                  <h2 style="font-size: 23px; font-weight: 800; margin: 0; line-height: 1.25;">{{ selectedArticle.title }}</h2>
+                </div>
+                <div onClick="{{ closeArticle }}" style="flex: none; width: 34px; height: 34px; border-radius: 4px; border: 1px solid #e0e2de; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 16px; color: #5a5f66;">✕</div>
+              </div>
+              <div style="padding: 26px 30px 30px; max-width: 820px; margin: 0 auto;">
+                <sc-for list="{{ selectedArticle.blocks }}" as="b" hint-placeholder-count="4">
+                  <sc-if value="{{ b.isH }}" hint-placeholder-val="{{ false }}">
+                    <h3 style="font-size: 17px; font-weight: 800; color: #14171c; margin: 26px 0 10px; letter-spacing: -0.01em;">{{ b.text }}</h3>
+                  </sc-if>
+                  <sc-if value="{{ b.isP }}" hint-placeholder-val="{{ true }}">
+                    <p style="font-size: 15px; line-height: 1.7; color: #3a3f46; margin: 0 0 14px;">{{ b.text }}</p>
+                  </sc-if>
+                  <sc-if value="{{ b.isCode }}" hint-placeholder-val="{{ false }}">
+                    <pre style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.6; color: #d6e3df; background: #14171c; border-radius: 6px; padding: 16px 18px; margin: 0 0 16px; overflow-x: auto; white-space: pre;">{{ b.text }}</pre>
+                  </sc-if>
+                  <sc-if value="{{ b.isList }}" hint-placeholder-val="{{ false }}">
+                    <ul style="margin: 0 0 16px; padding-left: 0; list-style: none;">
+                      <sc-for list="{{ b.items }}" as="li" hint-placeholder-count="3">
+                        <li style="font-size: 15px; line-height: 1.6; color: #3a3f46; margin-bottom: 8px; padding-left: 22px; position: relative;"><span style="position: absolute; left: 4px; color: var(--accent,#117a6b);">▪</span>{{ li }}</li>
+                      </sc-for>
+                    </ul>
+                  </sc-if>
+                  <sc-if value="{{ b.isNote }}" hint-placeholder-val="{{ false }}">
+                    <div style="display: flex; gap: 11px; background: #f7f1e3; border: 1px solid #ecddbb; border-radius: 6px; padding: 13px 16px; margin: 0 0 16px; font-size: 14px; line-height: 1.6; color: #8a6a1e;"><span style="flex: none; font-size: 14px;">⚑</span><span>{{ b.text }}</span></div>
+                  </sc-if>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+      </sc-if>
+
+      <!-- ========== BUILDS ========== -->
+      <sc-if value="{{ isBuilds }}" hint-placeholder-val="{{ true }}">
+        <div class="vb-screen" style="padding: 26px 30px;">
+          <h1 style="font-size: 22px; font-weight: 800; margin: 0 0 4px;">Certified LTS builds</h1>
+          <p style="margin: 0 0 18px; color: #6b6f76; font-size: 14px;">Signed and verified binaries. Click a version for its changelog.</p>
+          <div style="display: flex; gap: 8px; margin-bottom: 18px;">
+            <sc-for list="{{ buildChannels }}" as="item" hint-placeholder-count="4">
+              <div onClick="{{ item.onClick }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 6px 13px; border-radius: 4px; cursor: pointer; border: 1px solid {{ item.bd }}; color: {{ item.color }}; background: {{ item.bg }};">{{ item.label }}</div>
+            </sc-for>
+          </div>
+
+          <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; overflow: hidden;">
+            <div style="display: grid; grid-template-columns: 150px 90px 130px 1fr 70px 40px; gap: 12px; padding: 11px 18px; border-bottom: 1px solid #e0e2de; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8a8f96; background: #fbfcfb;">
+              <div>VERSION</div><div>CHANNEL</div><div>DATE</div><div>SIGNATURE (SHA-256)</div><div>SIZE</div><div></div>
+            </div>
+            <sc-for list="{{ filteredBuilds }}" as="item" hint-placeholder-count="5">
+              <div>
+                <div onClick="{{ item.onClick }}" class="vb-row" style="display: grid; grid-template-columns: 150px 90px 130px 1fr 70px 40px; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #f0f1ee; cursor: pointer; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;">
+                  <div style="font-weight: 700; color: #14171c;">{{ item.version }}</div>
+                  <div><span style="font-size: 10px; padding: 2px 8px; border-radius: 3px; {{ item.badge }}">{{ item.channel }}</span></div>
+                  <div style="color: #5a5f66;">{{ item.date }}</div>
+                  <div style="color: #1f9d86; font-size: 11.5px; display: flex; align-items: center; gap: 6px;"><span style="color:#1f9d86;">✓</span><span style="color:#8a8f96;">{{ item.sha }}</span></div>
+                  <div style="color: #5a5f66;">{{ item.size }}</div>
+                  <div style="color: var(--accent,#117a6b); text-align: right;">{{ item.caret }}</div>
+                </div>
+                <sc-if value="{{ item.isOpen }}" hint-placeholder-val="{{ false }}">
+                  <div style="padding: 18px 22px 22px; background: #fbfcfb; border-bottom: 1px solid #f0f1ee;">
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8a8f96; margin-bottom: 12px;">RELEASE NOTES · {{ item.version }}</div>
+                    <sc-for list="{{ item.changelog }}" as="line" hint-placeholder-count="3">
+                      <div style="display: flex; gap: 10px; margin-bottom: 8px; font-size: 13.5px; color: #3a3f46;"><span style="color: {{ line.color }}; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600; flex: none; width: 76px; padding-top: 1px;">{{ line.tag }}</span><span>{{ line.text }}</span></div>
+                    </sc-for>
+                    <div style="display: flex; gap: 10px; margin-top: 16px;">
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #fff; background: var(--accent,#117a6b); border-radius: 4px; padding: 9px 16px; cursor: pointer;">↓ Download ({{ item.size }})</div>
+                      <div onClick="{{ item.onGenLink }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent,#117a6b); border: 1px solid color-mix(in srgb, var(--accent,#117a6b) 32%, #fff); border-radius: 4px; padding: 9px 16px; cursor: pointer; display: flex; align-items: center; gap: 7px;"><span>⧖</span>{{ item.genLinkLabel }}</div>
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #5a5f66; border: 1px solid #e0e2de; border-radius: 4px; padding: 9px 16px; cursor: pointer;">Verify signature</div>
+                    </div>
+                    <sc-if value="{{ item.hasLink }}" hint-placeholder-val="{{ false }}">
+                      <div style="margin-top: 16px; border: 1px solid #d7e3df; border-radius: 6px; background: #fff; overflow: hidden;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: #f1f7f5; border-bottom: 1px solid #e2ece9;">
+                          <div style="display: flex; align-items: center; gap: 9px; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: var(--accent,#117a6b);"><span style="width: 7px; height: 7px; border-radius: 50%; background: {{ item.linkDotColor }};"></span>EPHEMERAL DOWNLOAD LINK</div>
+                          <div style="display: flex; align-items: center; gap: 14px;">
+                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: {{ item.countdownColor }};">{{ item.countdownLabel }}</span>
+                            <span onClick="{{ item.onRevoke }}" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8a8f96; cursor: pointer;">Revoke</span>
+                          </div>
+                        </div>
+                        <sc-if value="{{ item.linkLive }}" hint-placeholder-val="{{ true }}">
+                          <div style="padding: 14px 16px;">
+                            <div style="display: flex; gap: 8px; align-items: stretch; margin-bottom: 12px;">
+                              <div style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #14171c; background: #f7f8f6; border: 1px solid #e8eae6; border-radius: 4px; padding: 10px 12px; overflow-x: auto; white-space: nowrap;">{{ item.linkUrl }}</div>
+                              <div onClick="{{ item.onCopyLink }}" style="flex: none; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #fff; background: var(--accent,#117a6b); border-radius: 4px; padding: 10px 16px; cursor: pointer; display: flex; align-items: center;">{{ item.copyLabel }}</div>
+                            </div>
+                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8a8f96;">RUN ON YOUR SERVER · NO AUTH NEEDED</div>
+                              <div style="display: flex; gap: 2px; background: #eef0ed; border-radius: 5px; padding: 2px;">
+                                <div onClick="{{ setFetch }}" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 5px 13px; border-radius: 4px; cursor: pointer; {{ fetchTabStyle }}">fetch</div>
+                                <div onClick="{{ setCurl }}" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 5px 13px; border-radius: 4px; cursor: pointer; {{ curlTabStyle }}">cURL</div>
+                              </div>
+                            </div>
+                            <div style="position: relative; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #cdd6f4; background: #14171c; border-radius: 4px; padding: 12px 44px 12px 14px; overflow-x: auto; white-space: nowrap; line-height: 1.6;"><span style="color:#7f8696;">$</span> <span style="color:#7aa2f7;">{{ item.dlBin }}</span> <span style="color:#9ece6a;">{{ item.linkUrl }}</span><div onClick="{{ item.onCopyCmd }}" title="Copy command" style="position: absolute; top: 6px; right: 7px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 5px; cursor: pointer; color: {{ item.cmdCopyColor }}; background: {{ item.cmdCopyBg }}; font-size: 20px; font-weight: 700;">{{ item.cmdCopyIcon }}</div></div>
+                            <div style="font-size: 12px; color: #8a8f96; margin-top: 10px; line-height: 1.5;">Valid for 5 minutes, single binary, no authentication. After expiry the token is rejected — generate a new link.</div>
+                          </div>
+                        </sc-if>
+                        <sc-if value="{{ item.linkExpired }}" hint-placeholder-val="{{ false }}">
+                          <div style="padding: 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
+                            <div style="font-size: 13px; color: #8a8f96;">This link has expired. Tokens are valid for 5 minutes only.</div>
+                            <div onClick="{{ item.onGenLink }}" style="flex: none; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent,#117a6b); border: 1px solid color-mix(in srgb, var(--accent,#117a6b) 32%, #fff); border-radius: 4px; padding: 9px 16px; cursor: pointer;">Generate new link</div>
+                          </div>
+                        </sc-if>
+                      </div>
+                    </sc-if>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ========== BUGS: LIST ========== -->
+      <sc-if value="{{ bugsList }}" hint-placeholder-val="{{ true }}">
+        <div class="vb-screen" style="padding: 26px 30px;">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
+            <h1 style="font-size: 22px; font-weight: 800; margin: 0;">Issue tracker</h1>
+            <div onClick="{{ startNew }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #fff; background: var(--accent,#117a6b); border-radius: 4px; padding: 10px 16px; cursor: pointer; font-weight: 500;">＋ Report an issue</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 18px; font-size: 13px; color: #6b6f76;"><span style="width: 6px; height: 6px; border-radius: 50%; background: #b3801f;"></span>SLA: initial analysis within <strong style="color:#14171c; font-weight:700;">2–5 business days</strong>.</div>
+
+          <div style="display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+            <input value="{{ bugQuery }}" onInput="{{ onBugQuery }}" placeholder="Search (ID, title)…" style="flex: 1; min-width: 240px; font-family: 'JetBrains Mono', monospace; font-size: 13px; padding: 10px 13px; border: 1px solid #d8dbd6; border-radius: 4px; background: #fff;">
+            <div style="display: flex; gap: 7px;">
+              <sc-for list="{{ bugStatuses }}" as="item" hint-placeholder-count="5">
+                <div onClick="{{ item.onClick }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 9px 12px; border-radius: 4px; cursor: pointer; border: 1px solid {{ item.bd }}; color: {{ item.color }}; background: {{ item.bg }};">{{ item.label }}</div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; overflow: hidden;">
+            <sc-for list="{{ filteredTickets }}" as="item" hint-placeholder-count="5">
+              <div onClick="{{ item.onClick }}" class="vb-row" style="padding: 15px 18px; border-bottom: 1px solid #f0f1ee; cursor: pointer; display: flex; align-items: center; gap: 16px;">
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; color: var(--accent,#117a6b); width: 76px; flex: none;">{{ item.id }}</div>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 14.5px; font-weight: 600; margin-bottom: 4px;">{{ item.title }}</div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8a8f96;">{{ item.component }} · opened by {{ item.opener }} · updated {{ item.updated }}</div>
+                </div>
+                <span style="font-size: 11px; padding: 3px 9px; border-radius: 3px; flex: none; {{ item.sevBadge }}">{{ item.severity }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 4px 10px; border-radius: 3px; flex: none; {{ item.statusBadge }}">{{ item.status }}</span>
+              </div>
+            </sc-for>
+            <sc-if value="{{ noTickets }}" hint-placeholder-val="{{ false }}">
+              <div style="padding: 40px; text-align: center; color: #9aa0a6; font-family: 'JetBrains Mono', monospace; font-size: 13px;">No matching issues.</div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ========== BUGS: NEW ========== -->
+      <sc-if value="{{ bugsNew }}" hint-placeholder-val="{{ false }}">
+        <div class="vb-screen" style="padding: 26px 30px; max-width: 720px;">
+          <div onClick="{{ cancelNew }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent,#117a6b); cursor: pointer; margin-bottom: 16px;">← Back to list</div>
+          <h1 style="font-size: 22px; font-weight: 800; margin: 0 0 6px;">Report an issue</h1>
+          <p style="margin: 0 0 22px; color: #6b6f76; font-size: 14px;">Describe the issue. Our team acknowledges receipt and begins analysis within 2–5 business days.</p>
+
+          <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; padding: 24px;">
+            <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">TITLE *</label>
+            <input value="{{ newTitle }}" onInput="{{ onNewTitle }}" placeholder="Short, precise summary of the issue" style="width: 100%; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; background: #fff; margin-bottom: 18px; font-family: 'Hanken Grotesk', sans-serif;">
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px;">
+              <div>
+                <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">SEVERITY</label>
+                <select value="{{ newSeverity }}" onChange="{{ onNewSeverity }}" style="width: 100%; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; background: #fff; font-family: 'Hanken Grotesk', sans-serif;">
+                  <sc-for list="{{ severityOptions }}" as="opt" hint-placeholder-count="3"><option value="{{ opt.v }}">{{ opt.v }}</option></sc-for>
+                </select>
+              </div>
+              <div>
+                <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">COMPONENT</label>
+                <select value="{{ newComponent }}" onChange="{{ onNewComponent }}" style="width: 100%; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; background: #fff; font-family: 'Hanken Grotesk', sans-serif;">
+                  <sc-for list="{{ componentOptions }}" as="opt" hint-placeholder-count="8"><option value="{{ opt.v }}">{{ opt.v }}</option></sc-for>
+                </select>
+              </div>
+            </div>
+
+            <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">DESCRIPTION *</label>
+            <textarea value="{{ newDesc }}" onInput="{{ onNewDesc }}" placeholder="Steps to reproduce, expected vs. observed behavior, affected version, logs…" style="width: 100%; min-height: 140px; font-size: 14px; padding: 12px 13px; border: 1px solid #d8dbd6; border-radius: 4px; background: #fff; resize: vertical; font-family: 'Hanken Grotesk', sans-serif; line-height: 1.5;"></textarea>
+
+            <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin: 18px 0 7px;">SCREENSHOTS</label>
+            <label class="vb-drop" style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border: 1.5px dashed #cdd1cb; border-radius: 6px; padding: 22px; cursor: pointer; background: #fbfcfb; transition: border-color .14s ease, background .14s ease;">
+              <span style="font-size: 22px; color: var(--accent,#117a6b);">⇪</span>
+              <span style="font-size: 13px; color: #5a5f66;">Click to upload or drop images here</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #9aa0a6;">PNG, JPG, GIF · up to 10 MB each</span>
+              <input type="file" accept="image/*" multiple="" onChange="{{ onPickFiles }}" style="display: none;">
+            </label>
+            <sc-if value="{{ hasNewFiles }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px;">
+                <sc-for list="{{ newFiles }}" as="f" hint-placeholder-count="0">
+                  <div style="position: relative; width: 104px;">
+                    {{ f.thumb }}
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #8a8f96; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ f.name }}</div>
+                    <div onClick="{{ f.onRemove }}" style="position: absolute; top: -7px; right: -7px; width: 20px; height: 20px; border-radius: 50%; background: #14171c; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.3);">✕</div>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+
+            <div style="display: flex; align-items: center; gap: 12px; margin-top: 20px;">
+              <div onClick="{{ submitTicket }}" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; border-radius: 4px; padding: 11px 20px; font-weight: 500; {{ submitStyle }}">Submit report</div>
+              <div onClick="{{ cancelNew }}" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #5a5f66; cursor: pointer; padding: 11px 8px;">Cancel</div>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #9aa0a6; margin-left: auto;">* required fields</span>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ========== BUGS: DETAIL ========== -->
+      <sc-if value="{{ bugsDetail }}" hint-placeholder-val="{{ false }}">
+        <div class="vb-screen" style="padding: 26px 30px; max-width: 820px;">
+          <div onClick="{{ backToList }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent,#117a6b); cursor: pointer; margin-bottom: 16px;">← Back to list</div>
+          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; color: var(--accent,#117a6b);">{{ selectedTicket.id }}</span>
+            <span style="font-size: 11px; padding: 3px 9px; border-radius: 3px; {{ selectedTicket.sevBadge }}">{{ selectedTicket.severity }}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 4px 10px; border-radius: 3px; {{ selectedTicket.statusBadge }}">{{ selectedTicket.status }}</span>
+          </div>
+          <h1 style="font-size: 21px; font-weight: 800; margin: 0 0 16px; line-height: 1.3;">{{ selectedTicket.title }}</h1>
+
+          <div style="display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid #e0e2de; border-radius: 4px; background: #fff; overflow: hidden; margin-bottom: 16px;">
+            <div style="padding: 12px 15px; border-right: 1px solid #e0e2de;"><div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #8a8f96;">COMPONENT</div><div style="font-size: 13px; font-weight: 600; margin-top: 4px;">{{ selectedTicket.component }}</div></div>
+            <div style="padding: 12px 15px; border-right: 1px solid #e0e2de;"><div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #8a8f96;">OPENED BY</div><div style="font-size: 13px; font-weight: 600; margin-top: 4px;">{{ selectedTicket.opener }}</div></div>
+            <div style="padding: 12px 15px; border-right: 1px solid #e0e2de;"><div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #8a8f96;">CREATED</div><div style="font-size: 13px; font-weight: 600; margin-top: 4px;">{{ selectedTicket.created }}</div></div>
+            <div style="padding: 12px 15px;"><div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #8a8f96;">UPDATED</div><div style="font-size: 13px; font-weight: 600; margin-top: 4px;">{{ selectedTicket.updated }}</div></div>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 10px; background: #f7f1e3; border: 1px solid #ecddbb; border-radius: 4px; padding: 11px 15px; margin-bottom: 22px; font-size: 13px; color: #8a6a1e;"><span style="font-size: 14px;">◷</span>{{ slaLine }}</div>
+
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8a8f96; margin-bottom: 14px;">DISCUSSION</div>
+          <div style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 22px;">
+            <sc-for list="{{ selectedTicket.thread }}" as="msg" hint-placeholder-count="2">
+              <sc-if value="{{ msg.isSystem }}" hint-placeholder-val="{{ false }}">
+                <div style="display: flex; align-items: center; gap: 12px; padding: 2px 0;">
+                  <div style="flex: 1; height: 1px; background: #eef0ed;"></div>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8a8f96; white-space: nowrap;">{{ msg.text }} · {{ msg.time }}</span>
+                  <div style="flex: 1; height: 1px; background: #eef0ed;"></div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ msg.isMessage }}" hint-placeholder-val="{{ true }}">
+                <div style="display: flex; flex-direction: column; align-items: {{ msg.align }};">
+                  <div style="max-width: 78%; border-radius: 6px; padding: 13px 15px; {{ msg.bubble }}">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;"><span style="font-size: 12.5px; font-weight: 700; color: {{ msg.nameColor }};">{{ msg.author }}</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #fff; background: {{ msg.roleBg }}; padding: 1px 6px; border-radius: 3px;">{{ msg.role }}</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #9aa0a6;">{{ msg.time }}</span></div>
+                    <div style="font-size: 13.5px; line-height: 1.55; color: #3a3f46;">{{ msg.text }}</div>
+                    <sc-if value="{{ msg.hasAttachments }}" hint-placeholder-val="{{ false }}">
+                      <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;">
+                        <sc-for list="{{ msg.attachments }}" as="att" hint-placeholder-count="0">{{ att.node }}</sc-for>
+                      </div>
+                    </sc-if>
+                  </div>
+                </div>
+              </sc-if>
+            </sc-for>
+          </div>
+
+          <sc-if value="{{ selectedTicket.notClosed }}" hint-placeholder-val="{{ true }}">
+          <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; padding: 14px;">
+            <textarea value="{{ replyDraft }}" onInput="{{ onReply }}" placeholder="Add a reply…" style="width: 100%; min-height: 76px; font-size: 14px; padding: 10px 12px; border: 1px solid #e0e2de; border-radius: 4px; background: #fbfcfb; resize: vertical; font-family: 'Hanken Grotesk', sans-serif; line-height: 1.5; margin-bottom: 12px;"></textarea>
+            <sc-if value="{{ hasReplyFiles }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
+                <sc-for list="{{ replyFiles }}" as="f" hint-placeholder-count="0">
+                  <div style="position: relative; width: 92px;">
+                    {{ f.thumb }}
+                    <div onClick="{{ f.onRemove }}" style="position: absolute; top: -7px; right: -7px; width: 19px; height: 19px; border-radius: 50%; background: #14171c; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 11px; cursor: pointer;">✕</div>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #5a5f66; border: 1px solid #e0e2de; border-radius: 4px; padding: 8px 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px;">📎 Attach screenshot<input type="file" accept="image/*" multiple="" onChange="{{ onPickReplyFiles }}" style="display: none;"></label>
+              <div style="display: flex; gap: 10px; align-items: center;">
+                <div onClick="{{ selectedTicket.onCloseToggle }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; border-radius: 4px; padding: 9px 16px; font-weight: 500; {{ selectedTicket.closeBtnStyle }}">{{ selectedTicket.closeBtnLabel }}</div>
+                <div onClick="{{ postReply }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; border-radius: 4px; padding: 9px 18px; font-weight: 500; {{ replyStyle }}">Reply</div>
+              </div>
+            </div>
+          </div>
+          </sc-if>
+          <sc-if value="{{ selectedTicket.isClosed }}" hint-placeholder-val="{{ false }}">
+            <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fafbf9; padding: 18px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
+              <div style="display: flex; align-items: center; gap: 11px;">
+                <span style="width: 26px; height: 26px; flex: none; border-radius: 50%; background: #e9eaec; color: #5a5f66; display: flex; align-items: center; justify-content: center; font-size: 13px;">✓</span>
+                <div style="font-size: 13.5px; color: #5a5f66; line-height: 1.5;">This issue is closed. Reopen it to add a comment.</div>
+              </div>
+              <div onClick="{{ selectedTicket.onCloseToggle }}" style="flex: none; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; border-radius: 4px; padding: 9px 16px; font-weight: 500; color:#117a6b; background:#fff; border:1px solid #bfe0d8; cursor:pointer;">Reopen issue</div>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <!-- ========== ACCOUNT ========== -->
+      <sc-if value="{{ isAccount }}" hint-placeholder-val="{{ false }}">
+        <div class="vb-screen" style="padding: 26px 30px; max-width: 720px;">
+          <h1 style="font-size: 22px; font-weight: 800; margin: 0 0 18px;">Account &amp; subscription</h1>
+          <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; padding: 22px; margin-bottom: 16px; display: flex; align-items: center; gap: 16px;">
+            <div style="width: 52px; height: 52px; border-radius: 6px; background: color-mix(in srgb, var(--accent,#117a6b) 80%, #fff); color: #0c2520; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 18px;">{{ orgInitials }}</div>
+            <div style="flex: 1;"><div style="font-size: 17px; font-weight: 700;">{{ org }}</div><div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #6b6f76; margin-top: 3px;">Sovereign plan · Long Term Support (LTS)</div></div>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #117a6b; background: #e2f0ec; border: 1px solid #bfe0d8; padding: 4px 10px; border-radius: 3px;">ACTIVE</span>
+          </div>
+          <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; overflow: hidden;">
+            <div style="display: flex; justify-content: space-between; padding: 15px 18px; border-bottom: 1px solid #f0f1ee;"><span style="font-size: 13.5px; color: #5a5f66;">Supported builds</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 13px;">LTS 0.8.x</span></div>
+            <div style="display: flex; justify-content: space-between; padding: 15px 18px; border-bottom: 1px solid #f0f1ee;"><span style="font-size: 13.5px; color: #5a5f66;">Vauban LTS subscriptions</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 13px;">2</span></div>
+            <div style="display: flex; justify-content: space-between; padding: 15px 18px; border-bottom: 1px solid #f0f1ee;"><span style="font-size: 13.5px; color: #5a5f66;">Vauban Industrial LTS subscriptions</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 13px;">1</span></div>
+            <div style="display: flex; justify-content: space-between; padding: 15px 18px;"><span style="font-size: 13.5px; color: #5a5f66;">Technical contact</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 13px;">support@vauban.sh</span></div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ========== ADMIN: DOCS ========== -->
+      <sc-if value="{{ isAdminDocs }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ adminDocsList }}" hint-placeholder-val="{{ true }}">
+          <div class="vb-screen" style="padding: 26px 30px;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px;">
+              <div>
+                <h1 style="font-size: 22px; font-weight: 800; margin: 0 0 4px;">Documentation editor</h1>
+                <p style="margin: 0; color: #6b6f76; font-size: 14px;">Write, version, publish or hide knowledge-base articles.</p>
+              </div>
+              <div onClick="{{ newDoc }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #fff; background: var(--accent,#117a6b); border-radius: 4px; padding: 10px 16px; cursor: pointer; font-weight: 500;">＋ New article</div>
+            </div>
+            <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; overflow: hidden;">
+              <div style="display: grid; grid-template-columns: 1fr 130px 60px 110px 210px; gap: 12px; padding: 11px 18px; border-bottom: 1px solid #e0e2de; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8a8f96; background: #fbfcfb;">
+                <div>TITLE</div><div>CATEGORY</div><div>VER.</div><div>STATUS</div><div style="text-align: right;">ACTIONS</div>
+              </div>
+              <sc-for list="{{ adminArticles }}" as="item" hint-placeholder-count="6">
+                <div style="display: grid; grid-template-columns: 1fr 130px 60px 110px 210px; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #f0f1ee; align-items: center;">
+                  <div style="min-width: 0;"><div style="font-size: 14px; font-weight: 600; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ item.title }}</div><div style="font-size: 12px; color: #8a8f96; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ item.excerpt }}</div></div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--accent,#117a6b);">{{ item.cat }}</div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #5a5f66;">{{ item.version }}</div>
+                  <div><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 3px 8px; border-radius: 3px; {{ item.pubBadge }}">{{ item.pubLabel }}</span></div>
+                  <div style="display: flex; gap: 6px; justify-content: flex-end;">
+                    <div onClick="{{ item.onEdit }}" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5a5f66; border: 1px solid #e0e2de; border-radius: 4px; padding: 6px 11px; cursor: pointer;">Edit</div>
+                    <div onClick="{{ item.onToggle }}" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--accent,#117a6b); border: 1px solid color-mix(in srgb, var(--accent,#117a6b) 30%, #fff); border-radius: 4px; padding: 6px 11px; cursor: pointer;">{{ item.toggleLabel }}</div>
+                    <div onClick="{{ item.onDelete }}" title="Delete article" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #b5403a; border: 1px solid #eccfcc; border-radius: 4px; padding: 6px 10px; cursor: pointer;">🗑</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ adminDocsEdit }}" hint-placeholder-val="{{ false }}">
+          <div class="vb-screen" style="padding: 26px 30px;">
+            <div onClick="{{ cancelDoc }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent,#117a6b); cursor: pointer; margin-bottom: 16px;">← Back to articles</div>
+            <h1 style="font-size: 22px; font-weight: 800; margin: 0 0 12px;">Compose article</h1>
+            <sc-if value="{{ editingExisting }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; gap: 10px; background: #f7f1e3; border: 1px solid #ecddbb; border-radius: 4px; padding: 11px 15px; margin-bottom: 18px; font-size: 13px; color: #8a6a1e;"><span>⚑</span>Editing an existing article publishes a new version and keeps the previous one — so it counts as two articles.</div>
+            </sc-if>
+            <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; padding: 24px;">
+              <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">TITLE *</label>
+              <input value="{{ docTitle }}" onInput="{{ onDocTitle }}" placeholder="Article title" style="width: 100%; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; margin-bottom: 18px; font-family: 'Hanken Grotesk', sans-serif;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px;">
+                <div>
+                  <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">CATEGORY</label>
+                  <select value="{{ docCat }}" onChange="{{ onDocCat }}" style="width: 100%; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; background: #fff; font-family: 'Hanken Grotesk', sans-serif;">
+                    <sc-for list="{{ docCatOptions }}" as="opt" hint-placeholder-count="5"><option value="{{ opt.v }}">{{ opt.v }}</option></sc-for>
+                  </select>
+                </div>
+                <div>
+                  <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">EXCERPT</label>
+                  <input value="{{ docExcerpt }}" onInput="{{ onDocExcerpt }}" placeholder="One-line summary" style="width: 100%; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; font-family: 'Hanken Grotesk', sans-serif;">
+                </div>
+              </div>
+              <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">CONTENT</label>
+              <textarea value="{{ docContent }}" onInput="{{ onDocContent }}" placeholder="Write the article…" style="width: 100%; min-height: 280px; font-size: 13.5px; padding: 12px 13px; border: 1px solid #d8dbd6; border-radius: 4px; resize: vertical; font-family: 'JetBrains Mono', monospace; line-height: 1.6;"></textarea>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #9aa0a6; margin-top: 8px; line-height: 1.7;">Formatting · <b>## Heading</b> · blank line = new paragraph · <b>- item</b> for bullet lists · <b>&gt; note</b> for a callout · <b>```</b> to fence a code block</div>
+              <div style="display: flex; align-items: center; gap: 12px; margin-top: 20px;">
+                <div onClick="{{ saveDoc }}" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; border-radius: 4px; padding: 11px 20px; font-weight: 500; {{ docSaveStyle }}">Publish article</div>
+                <div onClick="{{ cancelDoc }}" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #5a5f66; cursor: pointer; padding: 11px 8px;">Cancel</div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+      </sc-if>
+
+      <!-- ========== ADMIN: RELEASES ========== -->
+      <sc-if value="{{ isAdminReleases }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ adminRelList }}" hint-placeholder-val="{{ true }}">
+          <div class="vb-screen" style="padding: 26px 30px;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px;">
+              <div>
+                <h1 style="font-size: 22px; font-weight: 800; margin: 0 0 4px;">Release manager</h1>
+                <p style="margin: 0; color: #6b6f76; font-size: 14px;">Upload binaries, sign them automatically, and control what appears in Builds.</p>
+              </div>
+              <div onClick="{{ newRelease }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #fff; background: var(--accent,#117a6b); border-radius: 4px; padding: 10px 16px; cursor: pointer; font-weight: 500;">＋ New release</div>
+            </div>
+            <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; overflow: hidden;">
+              <div style="display: grid; grid-template-columns: 130px 90px 130px 90px 110px 210px; gap: 12px; padding: 11px 18px; border-bottom: 1px solid #e0e2de; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8a8f96; background: #fbfcfb;">
+                <div>VERSION</div><div>CHANNEL</div><div>DATE</div><div>SIZE</div><div>STATUS</div><div style="text-align: right;">ACTIONS</div>
+              </div>
+              <sc-for list="{{ adminBuilds }}" as="item" hint-placeholder-count="5">
+                <div style="display: grid; grid-template-columns: 130px 90px 130px 90px 110px 210px; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #f0f1ee; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 12px;">
+                  <div style="font-weight: 700; color: #14171c;">{{ item.version }}</div>
+                  <div><span style="font-size: 10px; padding: 2px 8px; border-radius: 3px; {{ item.badge }}">{{ item.channel }}</span></div>
+                  <div style="color: #5a5f66;">{{ item.date }}</div>
+                  <div style="color: #5a5f66;">{{ item.size }}</div>
+                  <div><span style="font-size: 10px; padding: 3px 8px; border-radius: 3px; {{ item.pubBadge }}">{{ item.pubLabel }}</span></div>
+                  <div style="display: flex; gap: 6px; justify-content: flex-end;"><div onClick="{{ item.onEdit }}" style="font-size: 11px; color: #5a5f66; border: 1px solid #e0e2de; border-radius: 4px; padding: 6px 11px; cursor: pointer;">Edit</div><div onClick="{{ item.onToggle }}" style="font-size: 11px; color: var(--accent,#117a6b); border: 1px solid color-mix(in srgb, var(--accent,#117a6b) 30%, #fff); border-radius: 4px; padding: 6px 11px; cursor: pointer;">{{ item.toggleLabel }}</div><div onClick="{{ item.onDelete }}" title="Delete release" style="font-size: 11px; color: #b5403a; border: 1px solid #eccfcc; border-radius: 4px; padding: 6px 10px; cursor: pointer;">🗑</div></div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ adminRelNew }}" hint-placeholder-val="{{ false }}">
+          <div class="vb-screen" style="padding: 26px 30px;">
+            <div onClick="{{ cancelRelease }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent,#117a6b); cursor: pointer; margin-bottom: 16px;">← Back to releases</div>
+            <h1 style="font-size: 22px; font-weight: 800; margin: 0 0 6px;">{{ relFormTitle }}</h1>
+            <p style="margin: 0 0 22px; color: #6b6f76; font-size: 14px;">{{ relFormSubtitle }}</p>
+            <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; padding: 24px;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 18px;">
+                <div>
+                  <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">VERSION *</label>
+                  <input value="{{ relVersion }}" onInput="{{ onRelVersion }}" placeholder="v0.8.7" style="width: 100%; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; font-family: 'JetBrains Mono', monospace;">
+                </div>
+                <div>
+                  <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">CHANNEL</label>
+                  <select value="{{ relChannel }}" onChange="{{ onRelChannel }}" style="width: 100%; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; background: #fff; font-family: 'Hanken Grotesk', sans-serif;">
+                    <sc-for list="{{ relChannelOptions }}" as="opt" hint-placeholder-count="3"><option value="{{ opt.v }}">{{ opt.v }}</option></sc-for>
+                  </select>
+                </div>
+                <div>
+                  <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">RELEASE DATE</label>
+                  <input value="{{ relDate }}" onInput="{{ onRelDate }}" type="date" style="width: 100%; font-size: 14px; padding: 10px 13px; border: 1px solid #d8dbd6; border-radius: 4px; font-family: 'JetBrains Mono', monospace;">
+                </div>
+              </div>
+              <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">RELEASE NOTES</label>
+              <textarea value="{{ relNotes }}" onInput="{{ onRelNotes }}" placeholder="One note per line, e.g.&#10;SECURITY: Self-heal CSRF on login after session expiry&#10;FIX: RDP reconnection handling&#10;PERF: SSH proxy latency reduced by 12%" style="width: 100%; min-height: 130px; font-size: 13px; padding: 12px 13px; border: 1px solid #d8dbd6; border-radius: 4px; resize: vertical; font-family: 'JetBrains Mono', monospace; line-height: 1.6; margin-bottom: 6px;"></textarea>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #9aa0a6; margin-bottom: 18px; line-height: 1.6;">One line per note · optional <b>TAG:</b> prefix — FIX · SECURITY · NEW · PERF · RBAC · BREAKING · PREVIEW</div>
+              <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">BINARY *</label>
+              <label class="vb-drop" style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border: 1.5px dashed #cdd1cb; border-radius: 6px; padding: 22px; cursor: pointer; background: #fbfcfb;">
+                <span style="font-size: 22px; color: var(--accent,#117a6b);">⬆</span>
+                <span style="font-size: 13px; color: #5a5f66;">Click to upload the release binary</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #9aa0a6;">Any file · SHA-256 + size computed on upload</span>
+                <input type="file" onChange="{{ onRelFile }}" style="display: none;">
+              </label>
+              <sc-if value="{{ relHasExistingInfo }}" hint-placeholder-val="{{ false }}">
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5a5f66; background: #fbfcfb; border: 1px solid #e8eae6; border-radius: 4px; padding: 9px 12px; margin-top: 10px;">{{ relExistingInfo }}</div>
+              </sc-if>
+              <sc-if value="{{ hasRelFile }}" hint-placeholder-val="{{ false }}">
+                <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fbfcfb; padding: 14px 16px; margin-top: 14px;">
+                  <div style="display: flex; justify-content: space-between; margin-bottom: 10px;"><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #14171c; font-weight: 600;">{{ relFileName }}</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #5a5f66;">{{ relSize }}</span></div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.04em; color: #8a8f96; margin-bottom: 5px;">SIGNATURE · SHA-256</div>
+                  <sc-if value="{{ relComputing }}" hint-placeholder-val="{{ false }}"><div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #b3801f;">computing…</div></sc-if>
+                  <sc-if value="{{ hasRelSha }}" hint-placeholder-val="{{ false }}"><div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: #1f9d86; word-break: break-all; line-height: 1.5;">✓ {{ relSha }}</div></sc-if>
+                </div>
+              </sc-if>
+              <div style="display: flex; align-items: center; gap: 12px; margin-top: 20px;">
+                <div onClick="{{ saveRelease }}" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; border-radius: 4px; padding: 11px 20px; font-weight: 500; {{ relSaveStyle }}">{{ relSaveLabel }}</div>
+                <div onClick="{{ cancelRelease }}" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #5a5f66; cursor: pointer; padding: 11px 8px;">Cancel</div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+      </sc-if>
+
+      <!-- ========== ADMIN: COMPANIES ========== -->
+      <sc-if value="{{ isAdminCompanies }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ companyListView }}" hint-placeholder-val="{{ true }}">
+          <div class="vb-screen" style="padding: 26px 30px;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px;">
+              <div>
+                <h1 style="font-size: 22px; font-weight: 800; margin: 0 0 4px;">Client companies</h1>
+                <p style="margin: 0; color: #6b6f76; font-size: 14px;">Onboard a client organization and provision up to 5 user accounts.</p>
+              </div>
+              <div onClick="{{ newCompany }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #fff; background: var(--accent,#117a6b); border-radius: 4px; padding: 10px 16px; cursor: pointer; font-weight: 500;">＋ New company</div>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 14px;">
+              <sc-for list="{{ companyCards }}" as="c" hint-placeholder-count="2">
+                <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; padding: 20px 22px;">
+                  <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+                    <div><div style="font-size: 16px; font-weight: 700;">{{ c.name }}</div><div style="font-size: 13px; color: #6b6f76; margin-top: 2px;">{{ c.contact }}</div></div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5a5f66; background: #f1f2f4; border-radius: 3px; padding: 4px 10px; white-space: nowrap;">{{ c.accountCount }}</span>
+                      <div onClick="{{ c.onEdit }}" title="Edit company" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5a5f66; border: 1px solid #e0e2de; border-radius: 4px; padding: 5px 11px; cursor: pointer;">Edit</div>
+                      <div onClick="{{ c.onDelete }}" title="Delete company" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #b5403a; border: 1px solid #eccfcc; border-radius: 4px; padding: 5px 10px; cursor: pointer;">🗑</div>
+                    </div>
+                  </div>
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; font-size: 13px; color: #3a3f46; border-top: 1px solid #f0f1ee; padding-top: 12px;">
+                    <div><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #8a8f96;">ADDRESS</span><br>{{ c.address }}</div>
+                    <div><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #8a8f96;">VAT</span><br><span style="font-family: 'JetBrains Mono', monospace;">{{ c.vat }}</span></div>
+                  </div>
+                  <div style="margin-top: 12px; border-top: 1px solid #f0f1ee; padding-top: 12px;">
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #8a8f96; margin-bottom: 8px;">USER ACCOUNTS</div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                      <sc-for list="{{ c.accounts }}" as="a" hint-placeholder-count="2">
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: #3a3f46; background: #f7f8f6; border: 1px solid #e8eae6; border-radius: 4px; padding: 5px 10px;">{{ a.email }}</span>
+                      </sc-for>
+                    </div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ companyNewView }}" hint-placeholder-val="{{ false }}">
+          <div class="vb-screen" style="padding: 26px 30px;">
+            <div onClick="{{ cancelCompany }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent,#117a6b); cursor: pointer; margin-bottom: 16px;">← Back to companies</div>
+            <h1 style="font-size: 22px; font-weight: 800; margin: 0 0 6px;">{{ coFormTitle }}</h1>
+            <p style="margin: 0 0 22px; color: #6b6f76; font-size: 14px;">{{ coFormSubtitle }}</p>
+            <div style="border: 1px solid #e0e2de; border-radius: 4px; background: #fff; padding: 24px;">
+              <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">COMPANY NAME *</label>
+              <input value="{{ coName }}" onInput="{{ onCoName }}" placeholder="Acme Corp" style="width: 100%; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; margin-bottom: 18px; font-family: 'Hanken Grotesk', sans-serif;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px;">
+                <div>
+                  <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">CONTACT POINT</label>
+                  <input value="{{ coContact }}" onInput="{{ onCoContact }}" placeholder="Name — email" style="width: 100%; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; font-family: 'Hanken Grotesk', sans-serif;">
+                </div>
+                <div>
+                  <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">VAT NUMBER</label>
+                  <input value="{{ coVat }}" onInput="{{ onCoVat }}" placeholder="FR 12 345678901" style="width: 100%; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; font-family: 'JetBrains Mono', monospace;">
+                </div>
+              </div>
+              <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">COMPANY ADDRESS</label>
+              <textarea value="{{ coAddress }}" onInput="{{ onCoAddress }}" placeholder="Street, postal code, city, country" style="width: 100%; min-height: 64px; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; resize: vertical; font-family: 'Hanken Grotesk', sans-serif; line-height: 1.5;"></textarea>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin: 22px 0 10px;">
+                <label style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66;">USER ACCOUNTS · max 5</label>
+                <sc-if value="{{ canAddAccount }}" hint-placeholder-val="{{ true }}">
+                  <div onClick="{{ addAccount }}" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--accent,#117a6b); border: 1px solid color-mix(in srgb, var(--accent,#117a6b) 30%, #fff); border-radius: 4px; padding: 6px 11px; cursor: pointer;">＋ Add account</div>
+                </sc-if>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 10px;">
+                <sc-for list="{{ coAccountRows }}" as="row" hint-placeholder-count="1">
+                  <div style="display: flex; gap: 10px; align-items: center;">
+                    <input value="{{ row.email }}" onInput="{{ row.onEmail }}" placeholder="email@company.com" style="flex: 1; font-size: 14px; padding: 10px 12px; border: 1px solid #d8dbd6; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;">
+                    <input value="{{ row.password }}" onInput="{{ row.onPassword }}" type="password" placeholder="password" style="width: 190px; font-size: 14px; padding: 10px 12px; border: 1px solid #d8dbd6; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;">
+                    <sc-if value="{{ row.canRemove }}" hint-placeholder-val="{{ false }}">
+                      <div onClick="{{ row.onRemove }}" style="flex: none; width: 32px; height: 32px; border-radius: 4px; border: 1px solid #e0e2de; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 13px; color: #8a8f96;">✕</div>
+                    </sc-if>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="display: flex; align-items: center; gap: 12px; margin-top: 22px;">
+                <div onClick="{{ saveCompany }}" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; border-radius: 4px; padding: 11px 20px; font-weight: 500; {{ coSaveStyle }}">{{ coSaveLabel }}</div>
+                <div onClick="{{ cancelCompany }}" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #5a5f66; cursor: pointer; padding: 11px 8px;">Cancel</div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+      </sc-if>
+
+      <!-- ========== DELETE CONFIRM MODAL ========== -->
+      <sc-if value="{{ confirmDeleteOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ cancelDelete }}" style="position: fixed; inset: 0; background: rgba(20,23,28,.55); display: flex; align-items: center; justify-content: center; z-index: 60; padding: 24px;">
+          <div onClick="{{ stopProp }}" style="width: 460px; max-width: 100%; background: #fff; border-radius: 8px; box-shadow: 0 24px 60px rgba(0,0,0,.3); overflow: hidden;">
+            <div style="padding: 24px 26px 20px;">
+              <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 14px;">
+                <div style="width: 40px; height: 40px; flex: none; border-radius: 8px; background: #f7e4e2; color: #b5403a; display: flex; align-items: center; justify-content: center; font-size: 20px;">⚠</div>
+                <h2 style="font-size: 18px; font-weight: 800; margin: 0;">Delete this {{ deleteKindLabel }}?</h2>
+              </div>
+              <p style="margin: 0 0 18px; font-size: 14px; color: #5a5f66; line-height: 1.55;">You are about to permanently delete <b style="color: #14171c;">{{ deleteTargetLabel }}</b>. This action cannot be undone.</p>
+              <label style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.04em; color: #5a5f66; margin-bottom: 7px;">TYPE <span style="color: #b5403a;">delete</span> TO CONFIRM</label>
+              <input value="{{ deleteConfirmText }}" onInput="{{ onDeleteConfirmText }}" placeholder="delete" style="width: 100%; font-size: 14px; padding: 11px 13px; border: 1px solid #d8dbd6; border-radius: 4px; font-family: 'JetBrains Mono', monospace;">
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 10px; padding: 16px 26px; background: #fafbf9; border-top: 1px solid #eef0ed;">
+              <div onClick="{{ cancelDelete }}" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #5a5f66; border: 1px solid #e0e2de; border-radius: 4px; padding: 10px 18px; cursor: pointer;">Cancel</div>
+              <div onClick="{{ confirmDeleteNow }}" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; border-radius: 4px; padding: 10px 18px; font-weight: 500; {{ deleteBtnStyle }}">Delete permanently</div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ========== LIGHTBOX ========== -->
+      <sc-if value="{{ hasLightbox }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeLightbox }}" style="position: fixed; top: 0; right: 0; bottom: 0; left: 76px; background: rgba(20,23,28,.82); display: flex; align-items: center; justify-content: center; padding: 38px; z-index: 60;">
+          {{ lightboxNode }}
+          <div onClick="{{ closeLightbox }}" style="position: absolute; top: 20px; right: 24px; width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,.14); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 18px; cursor: pointer;">✕</div>
+        </div>
+      </sc-if>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;: {&quot;width&quot;: 1280, &quot;height&quot;: 860}, &quot;accent&quot;: {&quot;editor&quot;: &quot;color&quot;, &quot;default&quot;: &quot;#117a6b&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;options&quot;: [&quot;#117a6b&quot;, &quot;#2f5fb0&quot;, &quot;#6b4a9e&quot;, &quot;#9a6b1f&quot;]}, &quot;orgName&quot;: {&quot;editor&quot;: &quot;text&quot;, &quot;default&quot;: &quot;ACME Infrastructure&quot;, &quot;tsType&quot;: &quot;string&quot;}}">
+class Component extends DCLogic {
+  state = {
+    screen: 'home',
+    docsQuery: '', docsCat: 'All', articleId: null,
+    buildChannel: 'All', openBuild: null, ephemeralLinks: {}, copiedLink: null, copiedCmd: null, nowTick: 0, dlTool: 'fetch',
+    bugStatus: 'All', bugQuery: '', bugsView: 'list', ticketId: null,
+    newTitle: '', newSeverity: 'Major', newComponent: 'Core', newDesc: '',
+    newFiles: [], replyFiles: [], lightboxUrl: null,
+    replyDraft: '',
+    seq: 215,
+    articles: null, builds: null,
+    adminDocView: 'list', adminDocId: null,
+    docTitle: '', docCat: 'Getting started', docExcerpt: '', docContent: '',
+    relView: 'list', relEditVersion: null, relVersion: '', relChannel: 'LTS', relDate: '2026-06-21', relNotes: '', relSha: '', relSize: '', relFileName: '', relComputing: false,
+    companyView: 'list', coEditIndex: null, coName: '', coContact: '', coAddress: '', coVat: '', coAccounts: [{ email: '', password: '' }],
+    confirmDelete: null, deleteConfirmText: '',
+    companies: [
+      { name: 'ACME Infrastructure', contact: 'M. Dubois — m.dubois@acme.example', address: '12 Rue de la Citadelle, 59000 Lille, France', vat: 'FR 12 345678901', accounts: [ { email: 'm.dubois@acme.example', password: '••••••••' }, { email: 'l.martin@acme.example', password: '••••••••' } ] },
+      { name: 'Helvetia Secure Cloud', contact: 'S. Bernard — s.bernard@helvetia.example', address: 'Bahnhofstrasse 4, 8001 Zürich, Switzerland', vat: 'CHE-123.456.789', accounts: [ { email: 's.bernard@helvetia.example', password: '••••••••' } ] }
+    ],
+    tickets: [
+      { id: 'VBN-214', title: 'Intermittent SSH proxy latency under heavy load', severity: 'Major', status: 'In analysis', component: 'SSH Proxy', created: 'Jun 17, 2026', updated: '3h ago', opener: 'M. Dubois',
+        thread: [
+          { author: 'M. Dubois', role: 'ACME', time: 'Jun 17 · 09:12', client: true, text: "Beyond ~400 concurrent sessions, connection-establishment latency spikes from 80 ms to over 2 s. Bastion CPU stays under 60%. Build v0.8.6 LTS.", shots: ['latency'] },
+          { author: 'Vauban Team', role: 'Support T2', time: 'Jun 17 · 14:40', client: false, text: "Received, thanks for the metrics. Initial analysis started (SLA 2–5 business days). Could you attach the output of `vauban diag --proxy` during a spike window?" }
+        ] },
+      { id: 'VBN-212', title: 'WebAuthn enrollment fails on Safari 17', severity: 'Minor', status: 'In progress', component: 'MFA', created: 'Jun 15, 2026', updated: 'yesterday', opener: 'L. Martin',
+        thread: [
+          { author: 'L. Martin', role: 'ACME', time: 'Jun 15 · 11:02', client: true, text: "Enrolling a hardware key fails silently on Safari 17.4 (macOS). Works on Chrome and Firefox.", shots: ['safari'] },
+          { author: 'Vauban Team', role: 'Support T2', time: 'Jun 16 · 08:25', client: false, text: "Reproduced. Related to the `residentKey` attribute on recent WebKit. Fix scheduled for 3.8.3; a workaround is available in the meantime." }
+        ] },
+      { id: 'VBN-209', title: 'Corrupted RDP recording after HA failover', severity: 'Critical', status: 'In analysis', component: 'RDP Gateway', created: 'Jun 13, 2026', updated: '1d ago', opener: 'S. Bernard',
+        thread: [
+          { author: 'S. Bernard', role: 'ACME', time: 'Jun 13 · 16:48', client: true, text: "After a cluster failover, in-flight RDP recordings are truncated and not replayable. Audit impact.", shots: ['terminal'] }
+        ] },
+      { id: 'VBN-208', title: 'RBAC docs: incorrect policy example', severity: 'Minor', status: 'Resolved', component: 'Documentation', created: 'Jun 8, 2026', updated: 'Jun 9', opener: 'M. Dubois',
+        thread: [
+          { author: 'M. Dubois', role: 'ACME', time: 'Jun 8 · 10:15', client: true, text: "The RBAC policy example in the guide uses a `role` field instead of `roles`." },
+          { author: 'Vauban Team', role: 'Support T2', time: 'Jun 9 · 09:30', client: false, text: "Fixed and published. Thanks for the report!" }
+        ] },
+      { id: 'VBN-205', title: 'SIEM export: UTC timestamp not documented', severity: 'Minor', status: 'Resolved', component: 'API', created: 'Jun 2, 2026', updated: 'Jun 5', opener: 'C. Petit',
+        thread: [
+          { author: 'C. Petit', role: 'ACME', time: 'Jun 2 · 14:00', client: true, text: "Exported events are in UTC but that's not stated anywhere — a source of confusion in our correlations." },
+          { author: 'Vauban Team', role: 'Support T2', time: 'Jun 5 · 11:10', client: false, text: "Note added to the API reference. An explicit `tz` field is coming in 3.9." }
+        ] }
+    ]
+  };
+
+  articles = [
+    { id: 'a1', cat: 'Getting started', updated: '2d', title: 'Quick start — deploy Vauban in 15 minutes', excerpt: 'Install the bastion, enroll a host, and open a supervised SSH session.', blocks: [
+      { type: 'p', text: 'Vauban ships as a single signed binary. This guide takes you from a fresh host to your first end-to-end recorded SSH session in about fifteen minutes. No agent is installed on the protected machines — every connection is brokered by the bastion.' },
+      { type: 'note', text: 'You will need: a Linux or FreeBSD host with 2 vCPU / 2 GB RAM, outbound access to your target hosts, and a DNS record pointing at the bastion.' },
+      { type: 'h', text: '1. Install the binary' },
+      { type: 'p', text: 'Download the latest LTS build for your platform and verify its signature before running it. The checksum is published alongside each release in the customer portal.' },
+      { type: 'code', text: '$ curl -fsSLO https://vauban.sh/releases/freebsd/15/x86_64/vauban-0.8.6\n$ vauban verify ./vauban-0.8.6\n  signature: OK (key 0xA3F9C1E…)\n$ install -m 0755 vauban-0.8.6 /usr/local/bin/vauban' },
+      { type: 'p', text: 'Initialize the server. This generates the host keys, the local policy store, and an admin enrollment token printed once to stdout.' },
+      { type: 'code', text: '$ vauban server init --domain bastion.acme.internal\n  ✓ host keys generated\n  ✓ policy store created at /var/db/vauban\n  admin token: vbn_enroll_8f3a…  (valid 30 min)' },
+      { type: 'h', text: '2. Enroll your first target host' },
+      { type: 'p', text: 'A target is any machine your users will reach through the bastion. Register it by address and assign it to a group — groups are what RBAC policies bind to.' },
+      { type: 'code', text: '$ vauban host add db-01.acme.internal \\\n    --group production \\\n    --protocol ssh' },
+      { type: 'list', items: [
+        'Use stable DNS names rather than IP addresses so policies survive re-addressing.',
+        'Group by blast radius (production, staging, pci) — not by team.',
+        'A host can belong to several groups; the most restrictive policy wins.'
+      ] },
+      { type: 'h', text: '3. Define an access policy' },
+      { type: 'p', text: 'Policies map subjects to the targets and actions they may use. Keep them narrow and compose by inheritance. The example below grants the on-call group supervised SSH on production, with session recording forced on.' },
+      { type: 'code', text: 'policy "oncall-prod" {\n  subjects = ["group:on-call"]\n  targets  = ["group:production"]\n  actions  = ["ssh:shell"]\n  record   = true\n  mfa      = "required"\n}' },
+      { type: 'note', text: 'With record = true, every keystroke and the full TTY stream are captured and signed for audit. Recordings are searchable from the portal.' },
+      { type: 'h', text: '4. Open your first session' },
+      { type: 'p', text: 'Point your SSH client at the bastion. Vauban authenticates you, enforces MFA, applies the policy, then transparently proxies you to the target while recording the session.' },
+      { type: 'code', text: '$ ssh db-01.acme.internal@bastion.acme.internal\n  ▸ MFA: approve push on your device… ✓\n  ▸ policy oncall-prod matched · recording on\n  Last login: Fri Jun 20 14:02 2026\n  db-01 $' },
+      { type: 'h', text: 'Next steps' },
+      { type: 'list', items: [
+        'Enable WebAuthn hardware keys for privileged sessions.',
+        'Wire audit events to your SIEM via native export or webhooks.',
+        'Deploy a second node behind a TCP load balancer for high availability.'
+      ] },
+      { type: 'p', text: 'That is the full loop: install, enroll, write a policy, connect. Everything from here is hardening and scale — covered in the deployment and security guides.' }
+    ] },
+    { id: 'a2', cat: 'Getting started', updated: '5d', title: 'Bastion architecture: SSH proxy & RDP gateway', excerpt: 'Overview of the components and the connection flow.', body: ["At its core, Vauban is an identity proxy: it authenticates the user, applies RBAC policies, then establishes the connection to the target while recording the session.", "No infrastructure secret is exposed to the end user: keys and credentials stay confined to the bastion."] },
+    { id: 'a3', cat: 'Deployment', updated: '1w', title: 'High-availability (HA) deployment', excerpt: 'Active/active cluster, failover, and shared recording storage.', body: ["In production, deploy at least two nodes behind a TCP load balancer. Active sessions are resumed without interruption during a failover.", "Session recordings should point to shared storage (S3-compatible or NFS) to stay available regardless of the node."] },
+    { id: 'a4', cat: 'Security', updated: '3d', title: 'Configuring RBAC: roles, groups, and policies', excerpt: 'Authorization model, inheritance, and least privilege.', body: ["Vauban's RBAC maps subjects (users, groups) to roles, which are themselves linked to policies describing the allowed targets and actions.", "Favor narrow roles and compose them via inheritance rather than granting broad access that is hard to audit."] },
+    { id: 'a5', cat: 'Security', updated: '4d', title: 'Enabling MFA (TOTP, WebAuthn)', excerpt: 'Enforce a second factor on all privileged sessions.', body: ["MFA can be made mandatory globally or per policy. Vauban supports TOTP and WebAuthn authenticators (hardware keys, platform biometrics).", "For critical access, combine WebAuthn with a short re-authentication window."] },
+    { id: 'a6', cat: 'Operations', updated: '6d', title: 'Session recording & replay', excerpt: 'Capture, indexing, and export of sessions for audit.', body: ["Every SSH/RDP session is recorded and indexed. Replay is available from the portal, with full-text search across SSH sessions.", "Recordings can be exported and signed to meet audit and compliance requirements."] },
+    { id: 'a7', cat: 'API', updated: '1d', title: 'API reference — REST & audit events', excerpt: 'Endpoints, token authentication, and webhooks.', body: ["The REST API lets you drive enrollment, policies, and log extraction. Authentication uses scoped bearer tokens.", "Audit events can be pushed in real time to your SIEM via webhooks or native SIEM export."] },
+    { id: 'a8', cat: 'Operations', updated: '1w', title: 'Real-time monitoring & alerting', excerpt: 'Prometheus metrics, health probes, and alert thresholds.', body: ["Vauban exposes Prometheus metrics (active sessions, proxy latency, authentication errors) and health probes for your orchestrators.", "Set alert thresholds on latency and authentication failure rate to detect drift before an incident."] }
+  ];
+
+  builds = [
+    { version: 'v1.0.0', channel: 'LTS', date: '2026-06-23', size: '21.1 MB', sha: '48f1014…', changelog: [
+      { tag: 'FIX', color: '#2f7d52', text: 'stop newsyslog rotation from killing daemon(8) and vauban' },
+      { tag: 'FEAT', color: '#2f5fb0', text: 'expand staff Casbin grants and disable IACS by default' } ] },
+    { version: 'v0.8.6', channel: 'Stable', date: '2026-06-18', size: '22.2 MB', sha: 'a3f9c1e…', changelog: [
+      { tag: 'SECURITY', color: '#b5403a', text: 'Self-heal CSRF on login after session expiry.' } ] },
+    { version: 'v0.7.16', channel: 'Stable', date: '2026-05-22', size: '20.4 MB', sha: '7d2b80a…', changelog: [
+      { tag: 'FIX', color: '#2f7d52', text: 'Stability and security fixes for the SSH proxy.' },
+      { tag: 'RBAC', color: '#117a6b', text: 'Support for nested groups in policies.' } ] },
+    { version: 'v0.7.4', channel: 'Stable', date: '2026-05-05', size: '17.8 MB', sha: 'f01c5d3…', changelog: [
+      { tag: 'FIX', color: '#2f7d52', text: 'False positives in session inactivity detection.' } ] },
+    { version: 'v0.7.2', channel: 'Stable', date: '2026-05-02', size: '17.8 MB', sha: 'c84ee21…', changelog: [
+      { tag: 'NEW', color: '#2f5fb0', text: 'Native SIEM export of audit events.' },
+      { tag: 'FIX', color: '#2f7d52', text: 'RDP gateway reconnection handling.' } ] },
+    { version: 'v0.6.6', channel: 'EOL', date: '2026-04-16', size: '15.7 MB', sha: '2a90f7b…', changelog: [
+      { tag: 'FIX', color: '#2f7d52', text: 'Maintenance and security release.' } ] },
+    { version: 'v0.6.5', channel: 'EOL', date: '2026-04-12', size: '15.6 MB', sha: 'e5571cc…', changelog: [
+      { tag: 'FIX', color: '#2f7d52', text: 'Maintenance and security release.' } ] },
+    { version: 'v0.6.3', channel: 'EOL', date: '2026-04-07', size: '15.3 MB', sha: 'b1d4a90…', changelog: [
+      { tag: 'FIX', color: '#2f7d52', text: 'Maintenance and security release.' } ] },
+    { version: 'v0.6.2', channel: 'EOL', date: '2026-04-04', size: '15.6 MB', sha: '9c0f3e2…', changelog: [
+      { tag: 'FIX', color: '#2f7d52', text: 'Maintenance and security release.' } ] },
+    { version: 'v0.6.0', channel: 'EOL', date: '2026-03-30', size: '15.5 MB', sha: '4e7aa61…', changelog: [
+      { tag: 'NEW', color: '#2f5fb0', text: 'RDP gateway general availability.' } ] },
+    { version: 'v0.5.0', channel: 'EOL', date: '2026-03-24', size: '15.4 MB', sha: 'd83b1c5…', changelog: [
+      { tag: 'NEW', color: '#2f5fb0', text: 'Session recording & replay.' } ] },
+    { version: 'v0.3.0', channel: 'EOL', date: '2026-03-15', size: '15.7 MB', sha: '6f2e0aa…', changelog: [
+      { tag: 'NEW', color: '#2f5fb0', text: 'RBAC roles and policies.' } ] },
+    { version: 'v0.2.1', channel: 'EOL', date: '2026-03-15', size: '14.8 MB', sha: 'a07c4d9…', changelog: [
+      { tag: 'FIX', color: '#2f7d52', text: 'Early preview maintenance.' } ] },
+    { version: 'v0.2.0', channel: 'EOL', date: '2026-03-15', size: '14.6 MB', sha: '1bb59f0…', changelog: [
+      { tag: 'NEW', color: '#2f5fb0', text: 'Initial public preview.' } ] }
+  ];
+
+  activity = [
+    { dot: '#117a6b', ref: 'v1.0.0', rest: ' (LTS) certified and signed', time: 'Jun 23' },
+    { dot: '#b3801f', ref: 'VBN-214', rest: ' moved to analysis', time: '3h ago' },
+    { dot: '#117a6b', ref: 'v0.8.6', rest: ' certified and signed', time: 'Jun 18' },
+    { dot: '#9aa0a6', ref: 'RBAC v2', rest: ' — documentation updated', time: 'Jun 12' },
+    { dot: '#2f7d52', ref: 'VBN-208', rest: ' resolved', time: 'Jun 9' }
+  ];
+
+  _shot(kind) {
+    const W = 680, H = 440;
+    const esc = (s) => s;
+    let inner = '';
+    if (kind === 'latency') {
+      let pts = '';
+      const vals = [40,42,38,44,41,39,43,40,120,210,260,180,90,46,44,41];
+      vals.forEach((v,i) => { pts += `${40 + i*38},${H-60-v*1.2} `; });
+      inner = `<rect width="${W}" height="${H}" fill="#0f1216"/>
+        <text x="28" y="40" fill="#d6e3df" font-family="monospace" font-size="18" font-weight="bold">SSH proxy — connect latency (ms)</text>
+        <text x="28" y="62" fill="#6b7280" font-family="monospace" font-size="12">14:00 → 14:15 · pic à 14:08</text>
+        <line x1="40" y1="${H-60}" x2="${W-30}" y2="${H-60}" stroke="#2a2f36" stroke-width="1"/>
+        <line x1="40" y1="80" x2="40" y2="${H-60}" stroke="#2a2f36" stroke-width="1"/>
+        <polyline points="${pts}" fill="none" stroke="#3ec2ad" stroke-width="2.5"/>
+        <circle cx="${40+10*38}" cy="${H-60-260*1.2}" r="5" fill="#b5403a"/>
+        <text x="${40+10*38+10}" y="${H-60-260*1.2}" fill="#e08b86" font-family="monospace" font-size="12">2.06 s</text>`;
+    } else if (kind === 'safari') {
+      inner = `<rect width="${W}" height="${H}" fill="#e9eaec"/>
+        <rect x="0" y="0" width="${W}" height="52" fill="#d8dade"/>
+        <circle cx="26" cy="26" r="6" fill="#ec6a5e"/><circle cx="46" cy="26" r="6" fill="#f4bf4f"/><circle cx="66" cy="26" r="6" fill="#61c554"/>
+        <rect x="150" y="14" width="380" height="24" rx="12" fill="#fbfbfc"/>
+        <text x="170" y="31" fill="#6b7280" font-family="monospace" font-size="12">bastion.acme.internal/enroll</text>
+        <rect x="170" y="120" width="340" height="200" rx="10" fill="#ffffff" stroke="#d8dade"/>
+        <text x="200" y="165" fill="#14171c" font-family="sans-serif" font-size="17" font-weight="bold">Register security key</text>
+        <rect x="200" y="190" width="280" height="44" rx="8" fill="#f1f2f4"/>
+        <text x="220" y="217" fill="#9aa0a6" font-family="sans-serif" font-size="13">Touch your authenticator…</text>
+        <rect x="200" y="250" width="280" height="46" rx="8" fill="#fbeae9" stroke="#eccfcd"/>
+        <text x="220" y="278" fill="#b5403a" font-family="monospace" font-size="12.5">NotAllowedError: operation failed</text>`;
+    } else {
+      const lines = [
+        ['$ vauban session replay 7f3a-rdp-01', '#6b7280'],
+        ['  loading recording… 1.2 GB', '#d6e3df'],
+        ['  [warn] segment 0x4 checksum mismatch', '#e0b341'],
+        ['  [warn] segment 0x5 truncated at 00:41:12', '#e0b341'],
+        ['  [error] cannot decode frame after failover', '#e08b86'],
+        ['  replay aborted (exit 23)', '#e08b86'],
+        ['$ _', '#3ec2ad']
+      ];
+      let t = lines.map((l,i)=>`<text x="28" y="${70 + i*34}" fill="${l[1]}" font-family="monospace" font-size="15">${l[0]}</text>`).join('');
+      inner = `<rect width="${W}" height="${H}" fill="#14171c"/>
+        <rect x="0" y="0" width="${W}" height="34" fill="#1d2127"/>
+        <circle cx="22" cy="17" r="5" fill="#ec6a5e"/><circle cx="40" cy="17" r="5" fill="#f4bf4f"/><circle cx="58" cy="17" r="5" fill="#61c554"/>
+        <text x="${W/2}" y="21" fill="#6b7280" font-family="monospace" font-size="12" text-anchor="middle">replay — db-01</text>
+        ${t}`;
+    }
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${inner}</svg>`;
+    return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+  }
+
+  _status(s) { const m = { 'New': ['#5a5f66', '#eef0ed', '#dfe2de'], 'In analysis': ['#b3801f', '#f7f1e3', '#ecddbb'], 'In progress': ['#117a6b', '#e2f0ec', '#bfe0d8'], 'Resolved': ['#2f7d52', '#e8f1ea', '#cfe2d6'], 'Closed': ['#5a5f66', '#e9eaec', '#d4d6da'] }; const v = m[s] || m['New']; return { c: v[0], str: `color:${v[0]};background:${v[1]};border:1px solid ${v[2]}` }; }
+  _sev(s) { const m = { 'Critical': ['#b5403a', '#f6e9e8', '#eccfcd'], 'Major': ['#b3801f', '#f7f1e3', '#ecddbb'], 'Minor': ['#5a5f66', '#eef0ed', '#dfe2de'] }; const v = m[s] || m['Minor']; return `color:${v[0]};background:${v[1]};border:1px solid ${v[2]}`; }
+  _chan(s) { const m = { 'LTS': ['#117a6b', '#e2f0ec', '#bfe0d8'], 'Stable': ['#2f5fb0', '#e9eef8', '#cdd9f0'], 'EOL': ['#8a7a52', '#efece2', '#e0d8c6'] }; const v = m[s] || m['Stable']; return `color:${v[0]};background:${v[1]};border:1px solid ${v[2]}`; }
+
+  _org() { return this.props.orgName || 'ACME Infrastructure'; }
+
+  go = (screen) => this.setState({ screen, articleId: null, bugsView: 'list', ticketId: null });
+  goDocs = () => this.go('docs');
+  goBuilds = () => this.go('builds');
+  goBugs = () => this.go('bugs');
+  goAccount = () => this.go('account');
+
+  onDocsQuery = (e) => this.setState({ docsQuery: e.target.value });
+  setDocsCat = (c) => this.setState({ docsCat: c, articleId: null });
+  openArticle = (id) => this.setState({ articleId: id });
+  closeArticle = () => this.setState({ articleId: null });
+  stopProp = (e) => { e.stopPropagation(); };
+
+  setChannel = (c) => this.setState({ buildChannel: c });
+  _cmpVerStr(a, b) { const pa = a.replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0); const pb = b.replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0); const len = Math.max(pa.length, pb.length); for (let i = 0; i < len; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d !== 0) return d; } return 0; }
+  _latestPublishedVersion() { const arr = (this.state.builds || this.builds).filter(b => b.published !== false).slice().sort((a, b) => this._cmpVerStr(b.version, a.version)); return arr[0] ? arr[0].version : null; }
+  toggleBuild = (v) => { const eff = this.state.openBuild === null ? this._latestPublishedVersion() : this.state.openBuild; this.setState({ openBuild: eff === v ? '__none__' : v }); };
+
+  LINK_TTL = 5 * 60 * 1000;
+  _uuid() {
+    if (crypto && crypto.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0, v = c==='x'?r:(r&0x3|0x8); return v.toString(16); });
+  }
+  _ensureTick() {
+    if (this._tick) return;
+    this._tick = setInterval(() => {
+      const links = this.state.ephemeralLinks;
+      if (Object.keys(links).length === 0) { clearInterval(this._tick); this._tick = null; return; }
+      this.setState({ nowTick: Date.now() });
+    }, 1000);
+  }
+  componentWillUnmount() { if (this._tick) { clearInterval(this._tick); this._tick = null; } }
+  genLink = (version) => {
+    const token = this._uuid();
+    const links = { ...this.state.ephemeralLinks, [version]: { token, expiresAt: Date.now() + this.LINK_TTL } };
+    this.setState({ ephemeralLinks: links, copiedLink: null, nowTick: Date.now() });
+    this._ensureTick();
+  };
+  revokeLink = (version) => {
+    const links = { ...this.state.ephemeralLinks }; delete links[version];
+    this.setState({ ephemeralLinks: links, copiedLink: this.state.copiedLink === version ? null : this.state.copiedLink });
+  };
+  copyLink = (version, url) => {
+    try { navigator.clipboard && navigator.clipboard.writeText(url); } catch (e) {}
+    this.setState({ copiedLink: version });
+    clearTimeout(this._copyT);
+    this._copyT = setTimeout(() => { if (this.state.copiedLink === version) this.setState({ copiedLink: null }); }, 1800);
+  };
+  setDlTool = (t) => this.setState({ dlTool: t });
+
+  // ---- delete with confirmation ----
+  askDelete = (kind, id, label) => this.setState({ confirmDelete: { kind, id, label }, deleteConfirmText: '' });
+  cancelDelete = () => this.setState({ confirmDelete: null, deleteConfirmText: '' });
+  onDeleteConfirmText = (e) => this.setState({ deleteConfirmText: e.target.value });
+  confirmDeleteNow = () => {
+    const d = this.state.confirmDelete;
+    if (!d || this.state.deleteConfirmText.trim().toLowerCase() !== 'delete') return;
+    if (d.kind === 'build') {
+      const arr = (this.state.builds || this.builds).filter(b => b.version !== d.id);
+      const links = { ...this.state.ephemeralLinks }; delete links[d.id];
+      this.setState({ builds: arr, ephemeralLinks: links, openBuild: this.state.openBuild === d.id ? null : this.state.openBuild });
+    } else if (d.kind === 'article') {
+      const arr = (this.state.articles || this.articles).filter(a => a.id !== d.id);
+      this.setState({ articles: arr, articleId: this.state.articleId === d.id ? null : this.state.articleId });
+    } else if (d.kind === 'company') {
+      const arr = this.state.companies.filter((c, i) => i !== d.id);
+      this.setState({ companies: arr });
+    }
+    this.setState({ confirmDelete: null, deleteConfirmText: '' });
+  };
+  copyCmd = (version, cmd) => {
+    try { navigator.clipboard && navigator.clipboard.writeText(cmd); } catch (e) {}
+    this.setState({ copiedCmd: version });
+    clearTimeout(this._copyCmdT);
+    this._copyCmdT = setTimeout(() => { if (this.state.copiedCmd === version) this.setState({ copiedCmd: null }); }, 1800);
+  };
+
+  setBugStatus = (s) => this.setState({ bugStatus: s });
+  onBugQuery = (e) => this.setState({ bugQuery: e.target.value });
+  openTicket = (id) => this.setState({ bugsView: 'detail', ticketId: id });
+  startNew = () => this.setState({ bugsView: 'new' });
+  cancelNew = () => this.setState({ bugsView: 'list' });
+  backToList = () => this.setState({ bugsView: 'list', ticketId: null });
+  toggleCloseIssue = (id) => {
+    const tickets = this.state.tickets.map(t => {
+      if (t.id !== id) return t;
+      const closing = t.status !== 'Closed';
+      const sys = closing
+        ? { system: true, time: 'Jun 20 · just now', text: 'Issue closed.' }
+        : { system: true, time: 'Jun 20 · just now', text: 'Issue reopened.' };
+      return { ...t, status: closing ? 'Closed' : 'In analysis', prevStatus: closing ? t.status : undefined, updated: 'just now', thread: [...t.thread, sys] };
+    });
+    this.setState({ tickets });
+  };
+
+  onNewTitle = (e) => this.setState({ newTitle: e.target.value });
+  onNewSeverity = (e) => this.setState({ newSeverity: e.target.value });
+  onNewComponent = (e) => this.setState({ newComponent: e.target.value });
+  onNewDesc = (e) => this.setState({ newDesc: e.target.value });
+  onReply = (e) => this.setState({ replyDraft: e.target.value });
+
+  _filesToAttachments(fileList) {
+    return Array.from(fileList || []).filter(f => f.type.startsWith('image/')).map(f => ({ name: f.name, url: URL.createObjectURL(f) }));
+  }
+  onPickFiles = (e) => { const atts = this._filesToAttachments(e.target.files); if (atts.length) this.setState({ newFiles: [...this.state.newFiles, ...atts] }); e.target.value = ''; };
+  removeNewFile = (i) => this.setState({ newFiles: this.state.newFiles.filter((_, idx) => idx !== i) });
+  onPickReplyFiles = (e) => { const atts = this._filesToAttachments(e.target.files); if (atts.length) this.setState({ replyFiles: [...this.state.replyFiles, ...atts] }); e.target.value = ''; };
+  removeReplyFile = (i) => this.setState({ replyFiles: this.state.replyFiles.filter((_, idx) => idx !== i) });
+  viewImage = (url) => this.setState({ lightboxUrl: url });
+  closeLightbox = () => this.setState({ lightboxUrl: null });
+
+  // ---- admin nav & helpers ----
+  goAdminScreen = (key) => { const p = { screen: key, articleId: null }; if (key==='admin-docs') p.adminDocView='list'; if (key==='admin-releases') p.relView='list'; if (key==='admin-companies') p.companyView='list'; this.setState(p); };
+  _pub(p) { return p ? 'color:#2f7d52;background:#e8f1ea;border:1px solid #cfe2d6' : 'color:#8a8f96;background:#eef0ed;border:1px solid #dfe2de'; }
+  _fmtSize(b) { if (b >= 1048576) return (b/1048576).toFixed(1) + ' MB'; if (b >= 1024) return (b/1024).toFixed(1) + ' KB'; return b + ' B'; }
+  _articleToText(a) {
+    const blocks = a.blocks || (a.body || []).map(t => ({ type:'p', text:t }));
+    return blocks.map(b => {
+      if (b.type==='h') return '## ' + b.text;
+      if (b.type==='code') return '```\n' + b.text + '\n```';
+      if (b.type==='note') return '> ' + b.text;
+      if (b.type==='list') return (b.items||[]).map(i => '- ' + i).join('\n');
+      return b.text;
+    }).join('\n\n');
+  }
+  _textToBlocks(text) {
+    const lines = (text||'').replace(/\r/g,'').split('\n');
+    const blocks = []; let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (line.trim() === '') { i++; continue; }
+      if (line.startsWith('```')) { const buf = []; i++; while (i < lines.length && !lines[i].startsWith('```')) { buf.push(lines[i]); i++; } i++; blocks.push({ type:'code', text: buf.join('\n') }); continue; }
+      if (line.startsWith('## ')) { blocks.push({ type:'h', text: line.slice(3).trim() }); i++; continue; }
+      if (line.startsWith('# ')) { blocks.push({ type:'h', text: line.slice(2).trim() }); i++; continue; }
+      if (line.startsWith('> ')) { blocks.push({ type:'note', text: line.slice(2).trim() }); i++; continue; }
+      if (line.startsWith('- ')) { const items = []; while (i < lines.length && lines[i].startsWith('- ')) { items.push(lines[i].slice(2).trim()); i++; } blocks.push({ type:'list', items }); continue; }
+      const buf = [line]; i++;
+      while (i < lines.length && lines[i].trim() !== '' && !/^(#{1,2} |> |- |```)/.test(lines[i])) { buf.push(lines[i]); i++; }
+      blocks.push({ type:'p', text: buf.join(' ') });
+    }
+    return blocks;
+  }
+
+  // ---- doc editor ----
+  newDoc = () => this.setState({ adminDocView:'edit', adminDocId:null, docTitle:'', docCat:'Getting started', docExcerpt:'', docContent:'' });
+  editDoc = (id) => { const a = (this.state.articles || this.articles).find(x => x.id === id); if (!a) return; this.setState({ adminDocView:'edit', adminDocId:id, docTitle:a.title, docCat:a.cat, docExcerpt:a.excerpt||'', docContent:this._articleToText(a) }); };
+  cancelDoc = () => this.setState({ adminDocView:'list' });
+  onDocTitle = (e) => this.setState({ docTitle:e.target.value });
+  onDocCat = (e) => this.setState({ docCat:e.target.value });
+  onDocExcerpt = (e) => this.setState({ docExcerpt:e.target.value });
+  onDocContent = (e) => this.setState({ docContent:e.target.value });
+  toggleDocPublish = (id) => { const arr = (this.state.articles || this.articles).map(a => a.id === id ? { ...a, published: a.published === false } : a); this.setState({ articles: arr }); };
+  saveDoc = () => {
+    const title = this.state.docTitle.trim(); if (!title) return;
+    const arr = (this.state.articles || this.articles).slice();
+    const blocks = this._textToBlocks(this.state.docContent);
+    const common = { cat:this.state.docCat, title, excerpt:this.state.docExcerpt.trim(), updated:'just now', published:true, blocks };
+    if (this.state.adminDocId == null) {
+      arr.unshift({ id:'doc-'+Date.now(), version:1, ...common });
+    } else {
+      const old = arr.find(a => a.id === this.state.adminDocId);
+      const newVer = ((old && old.version) || 1) + 1;
+      arr.unshift({ id:(this.state.adminDocId)+'-v'+newVer, version:newVer, ...common });
+    }
+    this.setState({ articles: arr, adminDocView:'list', adminDocId:null });
+  };
+
+  // ---- releases ----
+  newRelease = () => this.setState({ relView:'new', relEditVersion:null, relVersion:'', relChannel:'LTS', relDate:'2026-06-21', relNotes:'', relSha:'', relSize:'', relFileName:'', relComputing:false });
+  editRelease = (version) => {
+    const b = (this.state.builds || this.builds).find(x => x.version === version); if (!b) return;
+    const notes = (b.changelog || []).map(c => (c.tag && c.tag !== 'NOTE') ? (c.tag + ': ' + c.text) : c.text).join('\n');
+    this.setState({ relView:'new', relEditVersion:version, relVersion:b.version, relChannel:b.channel, relDate:b.date, relNotes:notes, relSha:b.sha || '', relSize:b.size || '', relFileName:'', relComputing:false });
+  };
+  cancelRelease = () => this.setState({ relView:'list' });
+  onRelVersion = (e) => this.setState({ relVersion:e.target.value });
+  onRelChannel = (e) => this.setState({ relChannel:e.target.value });
+  onRelDate = (e) => this.setState({ relDate:e.target.value });
+  onRelNotes = (e) => this.setState({ relNotes:e.target.value });
+  _noteColor(tag) { const m = { FIX:'#2f7d52', SECURITY:'#b5403a', NEW:'#2f5fb0', PERF:'#117a6b', RBAC:'#117a6b', BREAKING:'#b5403a', PREVIEW:'#b3801f', NOTE:'#5a5f66' }; return m[tag] || '#5a5f66'; }
+  onRelFile = async (e) => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    this.setState({ relFileName:f.name, relSize:this._fmtSize(f.size), relComputing:true, relSha:'' });
+    try {
+      const buf = await f.arrayBuffer();
+      const digest = await crypto.subtle.digest('SHA-256', buf);
+      const hex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2,'0')).join('');
+      this.setState({ relSha:hex, relComputing:false });
+    } catch (err) { this.setState({ relComputing:false }); }
+    e.target.value = '';
+  };
+  toggleBuildPublish = (version) => { const arr = (this.state.builds || this.builds).map(b => b.version === version ? { ...b, published: b.published === false } : b); this.setState({ builds: arr }); };
+  saveRelease = () => {
+    const v = this.state.relVersion.trim(); if (!v) return;
+    const version = v.startsWith('v') ? v : 'v' + v;
+    const changelog = this.state.relNotes.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+      const m = l.match(/^([A-Za-z][A-Za-z ]{1,14}):\s*(.+)$/);
+      let tag = 'NOTE', text = l;
+      if (m) { tag = m[1].trim().toUpperCase(); text = m[2].trim(); }
+      return { tag, color: this._noteColor(tag), text };
+    });
+    const finalChangelog = changelog.length ? changelog : [{ tag:'NOTE', color:'#5a5f66', text:'No release notes provided.' }];
+    const sha = this.state.relSha ? (this.state.relSha.indexOf('…') >= 0 ? this.state.relSha : this.state.relSha.slice(0,7) + '…') : '—';
+    const size = this.state.relSize || '—';
+    if (this.state.relEditVersion) {
+      const arr = (this.state.builds || this.builds).map(b => b.version === this.state.relEditVersion
+        ? { ...b, version, channel:this.state.relChannel, date:this.state.relDate || '—', size, sha, changelog:finalChangelog }
+        : b);
+      const openB = this.state.openBuild === this.state.relEditVersion ? version : this.state.openBuild;
+      this.setState({ builds: arr, relView:'list', relEditVersion:null, openBuild: openB });
+    } else {
+      const arr = (this.state.builds || this.builds).slice();
+      arr.unshift({ version, channel:this.state.relChannel, date:this.state.relDate || '—', size, sha, published:true, changelog:finalChangelog });
+      this.setState({ builds: arr, relView:'list' });
+    }
+  };
+
+  // ---- companies ----
+  newCompany = () => this.setState({ companyView:'new', coEditIndex:null, coName:'', coContact:'', coAddress:'', coVat:'', coAccounts:[{ email:'', password:'' }] });
+  editCompany = (i) => {
+    const c = this.state.companies[i]; if (!c) return;
+    const accounts = (c.accounts && c.accounts.length) ? c.accounts.map(a => ({ email:a.email, password:a.password || '' })) : [{ email:'', password:'' }];
+    this.setState({ companyView:'new', coEditIndex:i, coName:c.name, coContact: c.contact === '—' ? '' : c.contact, coAddress: c.address === '—' ? '' : c.address, coVat: c.vat === '—' ? '' : c.vat, coAccounts:accounts });
+  };
+  cancelCompany = () => this.setState({ companyView:'list' });
+  onCoName = (e) => this.setState({ coName:e.target.value });
+  onCoContact = (e) => this.setState({ coContact:e.target.value });
+  onCoAddress = (e) => this.setState({ coAddress:e.target.value });
+  onCoVat = (e) => this.setState({ coVat:e.target.value });
+  addAccount = () => { if (this.state.coAccounts.length >= 5) return; this.setState({ coAccounts:[...this.state.coAccounts, { email:'', password:'' }] }); };
+  removeAccount = (i) => this.setState({ coAccounts:this.state.coAccounts.filter((_, idx) => idx !== i) });
+  setAccount = (i, field, val) => { const a = this.state.coAccounts.map((x, idx) => idx === i ? { ...x, [field]: val } : x); this.setState({ coAccounts: a }); };
+  saveCompany = () => {
+    const name = this.state.coName.trim(); if (!name) return;
+    const accounts = this.state.coAccounts.filter(a => a.email.trim()).map(a => ({ email:a.email.trim(), password: (a.password && a.password.indexOf('•') < 0 && a.password.trim()) ? '••••••••' : (a.password || '••••••••') }));
+    const company = { name, contact:this.state.coContact.trim() || '—', address:this.state.coAddress.trim() || '—', vat:this.state.coVat.trim() || '—', accounts };
+    if (this.state.coEditIndex != null) {
+      const arr = this.state.companies.map((c, i) => i === this.state.coEditIndex ? company : c);
+      this.setState({ companies: arr, companyView:'list', coEditIndex:null });
+    } else {
+      this.setState({ companies:[company, ...this.state.companies], companyView:'list' });
+    }
+  };
+
+  submitTicket = () => {
+    const t = this.state.newTitle.trim(); const d = this.state.newDesc.trim();
+    if (!t || !d) return;
+    const id = 'VBN-' + this.state.seq;
+    const ticket = { id, title: t, severity: this.state.newSeverity, status: 'New', component: this.state.newComponent, created: 'Jun 20, 2026', updated: 'just now', opener: this._org(),
+      thread: [ { author: this._org(), role: 'ACME', time: 'Jun 20 · just now', client: true, text: d, attachments: this.state.newFiles } ] };
+    this.setState({ tickets: [ticket, ...this.state.tickets], seq: this.state.seq + 1, newTitle: '', newDesc: '', newSeverity: 'Major', newComponent: 'Core', newFiles: [], bugsView: 'detail', ticketId: id });
+  };
+
+  postReply = () => {
+    const txt = this.state.replyDraft.trim();
+    if (!txt && this.state.replyFiles.length === 0) return;
+    const cur = this.state.tickets.find(t => t.id === this.state.ticketId);
+    if (cur && cur.status === 'Closed') return;
+    const tickets = this.state.tickets.map(t => t.id === this.state.ticketId
+      ? { ...t, updated: 'just now', thread: [...t.thread, { author: this._org(), role: 'ACME', time: 'Jun 20 · just now', client: true, text: txt, attachments: this.state.replyFiles }] }
+      : t);
+    this.setState({ tickets, replyDraft: '', replyFiles: [] });
+  };
+
+  _chip(label, active) {
+    return active
+      ? { bg: 'var(--accent,#117a6b)', color: '#fff', bd: 'transparent' }
+      : { bg: '#fff', color: '#3a3f46', bd: '#d8dbd6' };
+  }
+
+  renderVals() {
+    const s = this.state;
+    const articles = s.articles || this.articles;
+    const builds = s.builds || this.builds;
+    const _cmpVer = (a, b) => { const pa = a.replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0); const pb = b.replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0); const len = Math.max(pa.length, pb.length); for (let i = 0; i < len; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d !== 0) return d; } return 0; };
+    const publishedBuilds = builds.filter(b => b.published !== false);
+    const homeBuild = publishedBuilds.slice().sort((a, b) => _cmpVer(b.version, a.version))[0] || null;
+    const homeBuildVersion = homeBuild ? homeBuild.version : '—';
+    const homeBuildChannel = homeBuild ? homeBuild.channel : '—';
+    const homeBuildBadge = homeBuild ? this._chan(homeBuild.channel) : 'color:#8a8f96;background:#eef0ed;border:1px solid #dfe2de';
+    const homeBuildNote = homeBuild && homeBuild.changelog && homeBuild.changelog[0] ? ('• ' + homeBuild.changelog[0].text) : 'No release notes.';
+    const homeBuildNotes = homeBuild && homeBuild.changelog && homeBuild.changelog.length ? homeBuild.changelog.map(c => ({ tag: c.tag, color: c.color, text: c.text })) : [{ tag: 'NOTE', color: '#5a5f66', text: 'No release notes.' }];
+    const homeBuildHasNote = !!homeBuild;
+    const org = this._org();
+    const orgInitials = org.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+    const orgSlug = org.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
+    const railDef = [ { key: 'home', icon: '▦', label: 'Home' }, { key: 'docs', icon: '❏', label: 'Docs' }, { key: 'builds', icon: '⬡', label: 'Builds' }, { key: 'bugs', icon: '⚑', label: 'Issues' } ];
+    const railItems = railDef.map(r => {
+      const active = s.screen === r.key || (r.key === 'bugs' && s.screen === 'bugs');
+      return { ...r, color: active ? 'color-mix(in srgb, var(--accent,#117a6b) 58%, #fff)' : '#6b7280', bg: active ? 'color-mix(in srgb, var(--accent,#117a6b) 26%, #14171c)' : 'transparent', onClick: () => this.go(r.key) };
+    });
+    const adminDef = [ { key:'admin-docs', icon:'✎', label:'Docs' }, { key:'admin-releases', icon:'⬆', label:'Rel.' }, { key:'admin-companies', icon:'⌂', label:'Orgs' } ];
+    const adminRailItems = adminDef.map(r => ({ ...r, color: s.screen===r.key ? 'color-mix(in srgb, var(--accent,#117a6b) 58%, #fff)' : '#6b7280', bg: s.screen===r.key ? 'color-mix(in srgb, var(--accent,#117a6b) 26%, #14171c)' : 'transparent', onClick: () => this.goAdminScreen(r.key) }));
+
+    // crumb
+    let crumb = 'dashboard';
+    if (s.screen === 'docs') crumb = 'documentation';
+    else if (s.screen === 'builds') crumb = 'builds';
+    else if (s.screen === 'account') crumb = 'account';
+    else if (s.screen === 'bugs') crumb = s.bugsView === 'new' ? 'issues/new' : (s.bugsView === 'detail' ? 'issues/' + (s.ticketId || '') : 'issues');
+    else if (s.screen === 'admin-docs') crumb = s.adminDocView === 'edit' ? 'admin/docs/edit' : 'admin/docs';
+    else if (s.screen === 'admin-releases') crumb = s.relView === 'new' ? 'admin/releases/new' : 'admin/releases';
+    else if (s.screen === 'admin-companies') crumb = s.companyView === 'new' ? 'admin/companies/new' : 'admin/companies';
+
+    // docs
+    const cats = ['All', 'Getting started', 'Deployment', 'Security', 'API', 'Operations'];
+    const dq = s.docsQuery.trim().toLowerCase();
+    const docsCats = cats.map(c => { const st = this._chip(c, c === s.docsCat); return { label: c, ...st, onClick: () => this.setDocsCat(c) }; });
+    const filteredArticles = articles.filter(a =>
+      a.published !== false &&
+      (s.docsCat === 'All' || a.cat === s.docsCat) &&
+      (!dq || a.title.toLowerCase().includes(dq) || a.excerpt.toLowerCase().includes(dq))
+    ).map(a => ({ ...a, onClick: () => this.openArticle(a.id), activeBg: a.id === s.articleId ? 'color-mix(in srgb, var(--accent,#117a6b) 7%, #fff)' : 'transparent' }));
+    let selectedArticle = articles.find(a => a.id === s.articleId) || null;
+    if (selectedArticle) {
+      const blocks = selectedArticle.blocks
+        ? selectedArticle.blocks
+        : (selectedArticle.body || []).map(t => ({ type: 'p', text: t }));
+      selectedArticle = { ...selectedArticle, blocks: blocks.map(b => ({
+        isH: b.type === 'h', isP: b.type === 'p', isCode: b.type === 'code', isList: b.type === 'list', isNote: b.type === 'note',
+        text: b.text || '', items: b.items || []
+      })) };
+    }
+
+    // builds
+    const channels = ['All', 'LTS', 'Stable', 'EOL'];
+    const buildChannels = channels.map(c => { const st = this._chip(c, c === s.buildChannel); return { label: c, ...st, onClick: () => this.setChannel(c) }; });
+    const filteredBuilds = builds.filter(b => (b.published !== false) && (s.buildChannel === 'All' || b.channel === s.buildChannel))
+      .map(b => {
+        const effectiveOpen = s.openBuild === null ? homeBuildVersion : s.openBuild;
+        const link = s.ephemeralLinks[b.version];
+        const remaining = link ? link.expiresAt - Date.now() : 0;
+        const live = !!link && remaining > 0;
+        const expired = !!link && remaining <= 0;
+        const mm = Math.max(0, Math.floor(remaining / 60000));
+        const ss = Math.max(0, Math.floor((remaining % 60000) / 1000));
+        const slug = b.version.replace(/^v/, '');
+        const fileName = 'vauban-' + slug + (b.channel === 'LTS' ? '+LTS' : '') + '.pkg';
+        const linkUrl = link ? ('https://customer.vauban.sh/releases/' + link.token + '/' + fileName) : '';
+        const cmd = this.state.dlTool === 'curl' ? ('curl -fLO ' + linkUrl) : ('fetch ' + linkUrl);
+        return {
+          ...b,
+          badge: this._chan(b.channel),
+          isOpen: b.version === effectiveOpen,
+          caret: b.version === effectiveOpen ? '▾' : '▸',
+          onClick: () => this.toggleBuild(b.version),
+          hasLink: !!link,
+          linkLive: live,
+          linkExpired: expired,
+          linkUrl,
+          genLinkLabel: link ? 'Regenerate link' : '5-minute download link',
+          countdownLabel: live ? ('expires in ' + mm + ':' + String(ss).padStart(2, '0')) : 'expired',
+          countdownColor: live ? (remaining < 60000 ? '#b5403a' : '#117a6b') : '#b5403a',
+          linkDotColor: live ? '#1f9d86' : '#b5403a',
+          copyLabel: s.copiedLink === b.version ? '✓ Copied' : 'Copy',
+          cmdCopied: s.copiedCmd === b.version,
+          cmdCopyIcon: s.copiedCmd === b.version ? '✓' : '⧉',
+          cmdCopyColor: s.copiedCmd === b.version ? '#9ece6a' : '#c7cdd9',
+          cmdCopyBg: s.copiedCmd === b.version ? 'rgba(158,206,106,.15)' : 'rgba(255,255,255,.08)',
+          dlCmd: cmd,
+          dlBin: this.state.dlTool === 'curl' ? 'curl -fLO' : 'fetch',
+          onGenLink: () => this.genLink(b.version),
+          onRevoke: () => this.revokeLink(b.version),
+          onCopyLink: () => this.copyLink(b.version, linkUrl),
+          onCopyCmd: () => this.copyCmd(b.version, cmd)
+        };
+      });
+
+    // bugs
+    const statuses = ['All', 'New', 'In analysis', 'In progress', 'Resolved', 'Closed'];
+    const bugStatuses = statuses.map(c => { const st = this._chip(c, c === s.bugStatus); return { label: c, ...st, onClick: () => this.setBugStatus(c) }; });
+    const bq = s.bugQuery.trim().toLowerCase();
+    const filteredTickets = s.tickets.filter(t =>
+      (s.bugStatus === 'All' || t.status === s.bugStatus) &&
+      (!bq || t.id.toLowerCase().includes(bq) || t.title.toLowerCase().includes(bq))
+    ).map(t => ({ ...t, statusBadge: this._status(t.status).str, sevBadge: this._sev(t.severity), onClick: () => this.openTicket(t.id) }));
+    const openCount = s.tickets.filter(t => t.status !== 'Resolved' && t.status !== 'Closed').length;
+    const analysisCount = s.tickets.filter(t => t.status === 'In analysis').length;
+
+    let selectedTicket = s.tickets.find(t => t.id === s.ticketId) || null;
+    if (selectedTicket) {
+      selectedTicket = { ...selectedTicket, statusBadge: this._status(selectedTicket.status).str, sevBadge: this._sev(selectedTicket.severity),
+        thread: selectedTicket.thread.map(m => {
+          const atts = [
+            ...((m.shots || []).map(k => ({ url: this._shot(k) }))),
+            ...((m.attachments || []).map(a => ({ url: a.url })))
+          ].map(a => ({ node: React.createElement('img', { src: a.url, onClick: () => this.viewImage(a.url), style: { width:'132px', height:'86px', borderRadius:'5px', border:'1px solid rgba(0,0,0,.12)', objectFit:'cover', objectPosition:'center top', cursor:'zoom-in' } }) }));
+          return { ...m,
+            isSystem: !!m.system,
+            isMessage: !m.system,
+            align: m.client ? 'flex-end' : 'flex-start',
+            nameColor: m.client ? 'var(--accent,#117a6b)' : '#14171c',
+            roleBg: m.client ? 'var(--accent,#117a6b)' : '#5a5f66',
+            bubble: m.client
+              ? 'background:color-mix(in srgb, var(--accent,#117a6b) 8%, #fff);border:1px solid color-mix(in srgb, var(--accent,#117a6b) 24%, #fff)'
+              : 'background:#fbfcfb;border:1px solid #e0e2de',
+            hasAttachments: atts.length > 0, attachments: atts };
+        }) };
+      const _closed = selectedTicket.status === 'Closed';
+      selectedTicket.isClosed = _closed;
+      selectedTicket.notClosed = !_closed;
+      selectedTicket.closeBtnLabel = _closed ? 'Reopen issue' : 'Close issue';
+      selectedTicket.closeBtnStyle = _closed
+        ? 'color:#117a6b;background:#fff;border:1px solid #bfe0d8;cursor:pointer'
+        : 'color:#b5403a;background:#fff;border:1px solid #eccfcc;cursor:pointer';
+      const _tid = selectedTicket.id;
+      selectedTicket.onCloseToggle = () => this.toggleCloseIssue(_tid);
+    }
+    const slaLine = selectedTicket && (selectedTicket.status === 'Resolved' || selectedTicket.status === 'Closed')
+      ? (selectedTicket.status === 'Closed' ? 'Issue closed.' : 'Issue resolved — closed within the SLA.')
+      : 'Initial analysis in progress · contractual SLA: 2–5 business days.';
+
+    const canSubmit = !!(s.newTitle.trim() && s.newDesc.trim());
+    const submitStyle = canSubmit
+      ? 'color:#fff;background:var(--accent,#117a6b);cursor:pointer'
+      : 'color:#9aa0a6;background:#eef0ed;cursor:not-allowed';
+    const canReply = !!(s.replyDraft.trim() || s.replyFiles.length);
+    const replyStyle = canReply
+      ? 'color:#fff;background:var(--accent,#117a6b);cursor:pointer'
+      : 'color:#9aa0a6;background:#eef0ed;cursor:not-allowed';
+
+    // admin: docs
+    const adminArticles = articles.map(a => { const pub = a.published !== false; return { id:a.id, title:a.title, excerpt:a.excerpt||'—', cat:a.cat, version:'v'+(a.version||1), pubBadge:this._pub(pub), pubLabel: pub?'PUBLISHED':'HIDDEN', toggleLabel: pub?'Unpublish':'Publish', onEdit:()=>this.editDoc(a.id), onToggle:()=>this.toggleDocPublish(a.id), onDelete:()=>this.askDelete('article', a.id, a.title) }; });
+    const docSaveStyle = s.docTitle.trim() ? 'color:#fff;background:var(--accent,#117a6b);cursor:pointer' : 'color:#9aa0a6;background:#eef0ed;cursor:not-allowed';
+    // admin: releases
+    const adminBuilds = builds.map(b => { const pub = b.published !== false; return { version:b.version, channel:b.channel, badge:this._chan(b.channel), date:b.date, size:b.size, pubBadge:this._pub(pub), pubLabel: pub?'PUBLISHED':'HIDDEN', toggleLabel: pub?'Unpublish':'Publish', onToggle:()=>this.toggleBuildPublish(b.version), onEdit:()=>this.editRelease(b.version), onDelete:()=>this.askDelete('build', b.version, b.version) }; });
+    const relSaveStyle = s.relVersion.trim() ? 'color:#fff;background:var(--accent,#117a6b);cursor:pointer' : 'color:#9aa0a6;background:#eef0ed;cursor:not-allowed';
+    // admin: companies
+    const companyCards = s.companies.map((c, i) => ({ name:c.name, contact:c.contact, address:c.address, vat:c.vat, accountCount: c.accounts.length + (c.accounts.length === 1 ? ' account' : ' accounts'), accounts:c.accounts, onEdit:()=>this.editCompany(i), onDelete:()=>this.askDelete('company', i, c.name) }));
+    const coAccountRows = s.coAccounts.map((a, i) => ({ email:a.email, password:a.password, onEmail:(e)=>this.setAccount(i,'email',e.target.value), onPassword:(e)=>this.setAccount(i,'password',e.target.value), onRemove:()=>this.removeAccount(i), canRemove: s.coAccounts.length > 1 }));
+    const coSaveStyle = s.coName.trim() ? 'color:#fff;background:var(--accent,#117a6b);cursor:pointer' : 'color:#9aa0a6;background:#eef0ed;cursor:not-allowed';
+
+    return {
+      accent: this.props.accent || '#117a6b',
+      org, orgInitials, orgSlug, crumb, railItems,
+      goDocs: this.goDocs, goBuilds: this.goBuilds, goBugs: this.goBugs, goAccount: this.goAccount,
+      isHome: s.screen === 'home', isDocs: s.screen === 'docs', isBuilds: s.screen === 'builds', isAccount: s.screen === 'account',
+      activity: this.activity.filter(a => { const m = /^v\d/.test(a.ref); if (!m) return true; const b = builds.find(x => x.version === a.ref); return !!b && b.published !== false; }),
+      openCount, analysisCount,
+      docsQuery: s.docsQuery, onDocsQuery: this.onDocsQuery, docsCats, filteredArticles,
+      closeArticle: this.closeArticle, stopProp: this.stopProp,
+      hasArticle: !!selectedArticle, noArticleSel: !selectedArticle, selectedArticle: selectedArticle || { cat: '', updated: '', title: '', blocks: [] },
+      noArticles: filteredArticles.length === 0,
+      buildChannels, filteredBuilds,
+      homeBuildVersion, homeBuildChannel, homeBuildBadge, homeBuildNote, homeBuildNotes, homeBuildHasNote,
+      dlTool: s.dlTool, dlToolIsFetch: s.dlTool === 'fetch', dlToolIsCurl: s.dlTool === 'curl',
+      setFetch: () => this.setDlTool('fetch'), setCurl: () => this.setDlTool('curl'),
+      fetchTabStyle: s.dlTool === 'fetch' ? 'background:#fff;color:#14171c;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08)' : 'background:transparent;color:#8a8f96',
+      curlTabStyle: s.dlTool === 'curl' ? 'background:#fff;color:#14171c;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08)' : 'background:transparent;color:#8a8f96',
+      bugsList: s.screen === 'bugs' && s.bugsView === 'list',
+      bugsNew: s.screen === 'bugs' && s.bugsView === 'new',
+      bugsDetail: s.screen === 'bugs' && s.bugsView === 'detail',
+      bugStatuses, bugQuery: s.bugQuery, onBugQuery: this.onBugQuery, filteredTickets, noTickets: filteredTickets.length === 0,
+      startNew: this.startNew, cancelNew: this.cancelNew, backToList: this.backToList,
+      newTitle: s.newTitle, newSeverity: s.newSeverity, newComponent: s.newComponent, newDesc: s.newDesc,
+      onNewTitle: this.onNewTitle, onNewSeverity: this.onNewSeverity, onNewComponent: this.onNewComponent, onNewDesc: this.onNewDesc,
+      onPickFiles: this.onPickFiles, hasNewFiles: s.newFiles.length > 0,
+      newFiles: s.newFiles.map((f, i) => ({ name: f.name, onRemove: () => this.removeNewFile(i), thumb: React.createElement('img', { src: f.url, onClick: () => this.viewImage(f.url), style: { width:'104px', height:'72px', borderRadius:'5px', border:'1px solid #e0e2de', objectFit:'cover', objectPosition:'center', cursor:'zoom-in', display:'block' } }) })),
+      onPickReplyFiles: this.onPickReplyFiles, hasReplyFiles: s.replyFiles.length > 0,
+      replyFiles: s.replyFiles.map((f, i) => ({ onRemove: () => this.removeReplyFile(i), thumb: React.createElement('img', { src: f.url, onClick: () => this.viewImage(f.url), style: { width:'92px', height:'62px', borderRadius:'5px', border:'1px solid #e0e2de', objectFit:'cover', objectPosition:'center', cursor:'zoom-in', display:'block' } }) })),
+      hasLightbox: !!s.lightboxUrl, lightboxNode: s.lightboxUrl ? React.createElement('img', { src: s.lightboxUrl, style: { maxWidth:'100%', maxHeight:'100%', borderRadius:'6px', boxShadow:'0 24px 60px rgba(0,0,0,.5)' } }) : null, closeLightbox: this.closeLightbox,
+      severityOptions: [{ v: 'Critical' }, { v: 'Major' }, { v: 'Minor' }],
+      componentOptions: ['Core', 'SSH Proxy', 'RDP Gateway', 'RBAC', 'MFA', 'Session Recording', 'API', 'CLI'].map(v => ({ v })),
+      submitTicket: this.submitTicket, submitStyle,
+      selectedTicket: selectedTicket || { id: '', title: '', thread: [] }, slaLine,
+      replyDraft: s.replyDraft, onReply: this.onReply, postReply: this.postReply, replyStyle,
+      adminRailItems,
+      isAdminDocs: s.screen==='admin-docs', adminDocsList: s.screen==='admin-docs' && s.adminDocView==='list', adminDocsEdit: s.screen==='admin-docs' && s.adminDocView==='edit',
+      adminArticles, newDoc: this.newDoc, saveDoc: this.saveDoc, cancelDoc: this.cancelDoc,
+      docTitle: s.docTitle, docCat: s.docCat, docExcerpt: s.docExcerpt, docContent: s.docContent,
+      onDocTitle: this.onDocTitle, onDocCat: this.onDocCat, onDocExcerpt: this.onDocExcerpt, onDocContent: this.onDocContent,
+      docCatOptions: ['Getting started','Deployment','Security','API','Operations'].map(v=>({v})),
+      docSaveStyle, editingExisting: s.adminDocId != null,
+      isAdminReleases: s.screen==='admin-releases', adminRelList: s.screen==='admin-releases' && s.relView==='list', adminRelNew: s.screen==='admin-releases' && s.relView==='new',
+      relEditing: s.relEditVersion != null,
+      relFormTitle: s.relEditVersion != null ? 'Edit release' : 'New release',
+      relFormSubtitle: s.relEditVersion != null ? 'Update the release details. Upload a new binary only if it changed — signature and size recompute automatically.' : 'Signature (SHA-256) and size are computed automatically from the uploaded binary.',
+      relSaveLabel: s.relEditVersion != null ? 'Save changes' : 'Publish release',
+      relExistingInfo: (s.relEditVersion != null && !s.relFileName) ? ('Current binary · ' + (s.relSize || '—') + ' · ' + (s.relSha || '—')) : '',
+      relHasExistingInfo: s.relEditVersion != null && !s.relFileName,
+      adminBuilds, newRelease: this.newRelease, saveRelease: this.saveRelease, cancelRelease: this.cancelRelease,
+      relVersion: s.relVersion, relChannel: s.relChannel, relDate: s.relDate, relNotes: s.relNotes, relSha: s.relSha, relSize: s.relSize, relFileName: s.relFileName, relComputing: s.relComputing,
+      onRelVersion: this.onRelVersion, onRelChannel: this.onRelChannel, onRelDate: this.onRelDate, onRelNotes: this.onRelNotes, onRelFile: this.onRelFile,
+      relChannelOptions: ['LTS','Stable','EOL'].map(v=>({v})),
+      hasRelSha: !!s.relSha, hasRelFile: !!s.relFileName, relSaveStyle,
+      isAdminCompanies: s.screen==='admin-companies', companyListView: s.screen==='admin-companies' && s.companyView==='list', companyNewView: s.screen==='admin-companies' && s.companyView==='new',
+      coEditing: s.coEditIndex != null,
+      coFormTitle: s.coEditIndex != null ? 'Edit client company' : 'New client company',
+      coFormSubtitle: s.coEditIndex != null ? 'Update the company details and their portal accounts.' : 'Collect the company details and create their portal accounts.',
+      coSaveLabel: s.coEditIndex != null ? 'Save changes' : 'Create company',
+      companyCards, newCompany: this.newCompany, saveCompany: this.saveCompany, cancelCompany: this.cancelCompany,
+      coName: s.coName, coContact: s.coContact, coAddress: s.coAddress, coVat: s.coVat,
+      onCoName: this.onCoName, onCoContact: this.onCoContact, onCoAddress: this.onCoAddress, onCoVat: this.onCoVat,
+      coAccountRows, canAddAccount: s.coAccounts.length < 5, addAccount: this.addAccount, coSaveStyle,
+      confirmDeleteOpen: !!s.confirmDelete,
+      deleteKindLabel: s.confirmDelete ? ({ build:'release', article:'article', company:'company' }[s.confirmDelete.kind]) : '',
+      deleteTargetLabel: s.confirmDelete ? s.confirmDelete.label : '',
+      deleteConfirmText: s.deleteConfirmText,
+      onDeleteConfirmText: this.onDeleteConfirmText,
+      cancelDelete: this.cancelDelete, confirmDeleteNow: this.confirmDeleteNow,
+      deleteBtnStyle: s.deleteConfirmText.trim().toLowerCase() === 'delete' ? 'color:#fff;background:#b5403a;cursor:pointer' : 'color:#d9a6a2;background:#f3dad8;cursor:not-allowed'
+    };
+  }
+}
+</script>
+</body>
+</html>

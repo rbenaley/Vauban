@@ -1,0 +1,21 @@
+# VCP - Testing overrides (layered on default.toml; no local.toml).
+
+environment = "testing"
+
+[server]
+host = "127.0.0.1"
+port = 8444
+public_origins = ["https://127.0.0.1:8444"]
+
+[server.tls]
+cert_path = "certs/test-server.crt"
+key_path = "certs/test-server.key"
+
+[server.tls.acme]
+enabled = false
+
+[database]
+url = "postgresql://localhost/vcp_test"
+
+[session]
+dangerous_disable_origin_verification = true

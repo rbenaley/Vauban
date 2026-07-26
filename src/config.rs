@@ -1,0 +1,371 @@
+//! TOML configuration (Vauban-style layering).
+//!
+//! Lookup order for the config directory:
+//! 1. `VCP_CONFIG_DIR` (must exist)
+//! 2. `{CARGO_MANIFEST_DIR}/config` (development checkout)
+//! 3. `/usr/local/etc/vcp` (production install)
+//!
+//! Loading:
+//! - Production: `vcp.conf` only (self-contained)
+//! - Development: `default.toml` + `development.toml` + optional `local.toml`
+//! - Testing: `default.toml` + `testing.toml` (no `local.toml`)
+//!
+//! Environment selection: `VCP_ENVIRONMENT` (`development` / `testing` /
+//! `production`). When unset, defaults to **production** (same as Vauban).
+
+use std::path::{Path, PathBuf};
+
+use config::{Config as ConfigBuilder, File};
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Environment {
+    Development,
+    Testing,
+    Production,
+}
+
+impl Environment {
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "development" | "dev" => Self::Development,
+            "testing" | "test" => Self::Testing,
+            _ => Self::Production,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Development => "development",
+            Self::Testing => "testing",
+            Self::Production => "production",
+        }
+    }
+
+    pub const fn is_production(self) -> bool {
+        matches!(self, Self::Production)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Config {
+    #[serde(default = "default_environment")]
+    pub environment: Environment,
+
+    pub server: ServerConfig,
+    pub database: DatabaseConfig,
+    pub access: AccessConfig,
+
+    #[serde(default)]
+    pub session: SessionConfig,
+}
+
+fn default_environment() -> Environment {
+    Environment::Production
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+
+    /// Trusted browser origins for session CSRF / Origin checks (HTTPS only).
+    #[serde(default)]
+    pub public_origins: Vec<String>,
+
+    pub tls: TlsConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsConfig {
+    pub cert_path: String,
+    pub key_path: String,
+    #[serde(default)]
+    pub ca_chain_path: Option<String>,
+    #[serde(default)]
+    pub acme: Option<AcmeConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AcmeConfig {
+    pub enabled: bool,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub domains: Vec<String>,
+    #[serde(default = "default_renew_before_hours")]
+    pub renew_before_hours: u32,
+    #[serde(default)]
+    pub account_key_path: String,
+    #[serde(default)]
+    pub staging: bool,
+    #[serde(default)]
+    pub directory_url: String,
+    #[serde(default)]
+    pub staging_directory_url: String,
+    #[serde(default)]
+    pub eab_kid: Option<String>,
+    #[serde(default)]
+    pub eab_hmac_key: Option<String>,
+}
+
+fn default_renew_before_hours() -> u32 {
+    24
+}
+
+impl AcmeConfig {
+    pub fn resolve_directory_url(&self) -> anyhow::Result<String> {
+        if self.staging && !self.staging_directory_url.is_empty() {
+            return Ok(self.staging_directory_url.clone());
+        }
+        if self.directory_url.is_empty() {
+            anyhow::bail!("ACME directory_url must be set when ACME is enabled");
+        }
+        Ok(self.directory_url.clone())
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.email.is_empty() {
+            anyhow::bail!("ACME email is required when ACME is enabled");
+        }
+        if self.domains.is_empty() {
+            anyhow::bail!("ACME domains list cannot be empty when ACME is enabled");
+        }
+        if self.account_key_path.is_empty() {
+            anyhow::bail!("ACME account_key_path is required when ACME is enabled");
+        }
+        self.resolve_directory_url()?;
+        if self.eab_kid.is_some() != self.eab_hmac_key.is_some() {
+            anyhow::bail!("eab_kid and eab_hmac_key must both be set or both be absent");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DatabaseConfig {
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccessConfig {
+    pub model_path: String,
+    pub policy_path: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SessionConfig {
+    /// When true, Topcoat does not register the Origin layer (local smoke only).
+    #[serde(default)]
+    pub dangerous_disable_origin_verification: bool,
+}
+
+impl Config {
+    /// Load using auto-discovered config directory and `VCP_ENVIRONMENT`.
+    pub fn load() -> anyhow::Result<Self> {
+        let dir = Self::find_config_dir()?;
+        let environment = std::env::var("VCP_ENVIRONMENT")
+            .map(|e| Environment::parse(&e))
+            .unwrap_or(Environment::Production);
+        Self::load_with_environment(dir, environment)
+    }
+
+    pub fn load_with_environment(
+        config_path: impl AsRef<Path>,
+        environment: Environment,
+    ) -> anyhow::Result<Self> {
+        let config_path = config_path.as_ref();
+        let mut builder = ConfigBuilder::builder();
+
+        if environment.is_production() {
+            let conf_path = config_path.join("vcp.conf");
+            let contents = std::fs::read_to_string(&conf_path)
+                .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", conf_path.display()))?;
+            builder =
+                builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
+        } else {
+            let default_path = config_path.join("default.toml");
+            if default_path.exists() {
+                builder = builder.add_source(File::from(default_path));
+            }
+
+            let env_path = config_path.join(format!("{}.toml", environment.as_str()));
+            if env_path.exists() {
+                builder = builder.add_source(File::from(env_path));
+            }
+
+            if environment != Environment::Testing {
+                let local_path = config_path.join("local.toml");
+                if local_path.exists() {
+                    builder = builder.add_source(File::from(local_path));
+                }
+            }
+        }
+
+        let mut cfg: Config = builder
+            .build()
+            .map_err(|e| anyhow::anyhow!("config build failed: {e}"))?
+            .try_deserialize()
+            .map_err(|e| anyhow::anyhow!("config deserialize failed: {e}"))?;
+
+        cfg.environment = environment;
+        cfg.resolve_paths();
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    fn find_config_dir() -> anyhow::Result<PathBuf> {
+        if let Ok(path) = std::env::var("VCP_CONFIG_DIR") {
+            let config_path = PathBuf::from(&path);
+            if config_path.exists() {
+                return Ok(config_path);
+            }
+            anyhow::bail!("VCP_CONFIG_DIR points to a missing directory: {path}");
+        }
+
+        let crate_config = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+        if crate_config.exists() {
+            return Ok(crate_config);
+        }
+
+        let system_config = Path::new("/usr/local/etc/vcp");
+        if system_config.exists() {
+            return Ok(system_config.to_path_buf());
+        }
+
+        anyhow::bail!(
+            "configuration directory not found. Searched:\n\
+             - VCP_CONFIG_DIR\n\
+             - {{CARGO_MANIFEST_DIR}}/config\n\
+             - /usr/local/etc/vcp"
+        );
+    }
+
+    fn resolve_paths(&mut self) {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        self.access.model_path = resolve_path(root, &self.access.model_path);
+        self.access.policy_path = resolve_path(root, &self.access.policy_path);
+        self.server.tls.cert_path = resolve_path(root, &self.server.tls.cert_path);
+        self.server.tls.key_path = resolve_path(root, &self.server.tls.key_path);
+        if let Some(ref chain) = self.server.tls.ca_chain_path {
+            self.server.tls.ca_chain_path = Some(resolve_path(root, chain));
+        }
+        if let Some(ref mut acme) = self.server.tls.acme
+            && !acme.account_key_path.is_empty()
+        {
+            acme.account_key_path = resolve_path(root, &acme.account_key_path);
+        }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.server.host.trim().is_empty() {
+            anyhow::bail!("server.host must not be empty");
+        }
+        if self.server.port == 0 {
+            anyhow::bail!("server.port must be non-zero");
+        }
+        if self.database.url.trim().is_empty() {
+            anyhow::bail!("database.url must not be empty");
+        }
+        if self.access.policy_path.trim().is_empty() {
+            anyhow::bail!("access.policy_path must not be empty");
+        }
+        if self.server.tls.cert_path.trim().is_empty() || self.server.tls.key_path.trim().is_empty()
+        {
+            anyhow::bail!("server.tls.cert_path and key_path are required");
+        }
+        for origin in &self.server.public_origins {
+            if origin.starts_with("http://") {
+                anyhow::bail!(
+                    "public_origins must be HTTPS only (got {origin}); cleartext HTTP is forbidden"
+                );
+            }
+            if !origin.starts_with("https://") {
+                anyhow::bail!("public_origins entry must start with https:// (got {origin})");
+            }
+        }
+        if self.environment.is_production() && self.session.dangerous_disable_origin_verification {
+            anyhow::bail!(
+                "session.dangerous_disable_origin_verification must be false in production"
+            );
+        }
+        if let Some(acme) = &self.server.tls.acme {
+            acme.validate()?;
+        }
+        Ok(())
+    }
+
+    /// Domains used for bootstrap self-signed certificates.
+    pub fn bootstrap_domains(&self) -> Vec<String> {
+        if let Some(acme) = &self.server.tls.acme
+            && acme.enabled
+            && !acme.domains.is_empty()
+        {
+            return acme.domains.clone();
+        }
+        vec!["localhost".to_owned(), "127.0.0.1".to_owned()]
+    }
+}
+
+fn resolve_path(root: &Path, path: &str) -> String {
+    if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        root.join(path).to_string_lossy().into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_development_layering() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+        let cfg = Config::load_with_environment(&dir, Environment::Development).unwrap();
+        assert_eq!(cfg.environment, Environment::Development);
+        assert_eq!(cfg.server.port, 8443);
+        assert!(cfg.database.url.contains("vcp"));
+        assert!(cfg.session.dangerous_disable_origin_verification);
+        assert!(Path::new(&cfg.access.policy_path).exists());
+        assert!(
+            cfg.server
+                .public_origins
+                .iter()
+                .all(|o| o.starts_with("https://"))
+        );
+    }
+
+    #[test]
+    fn loads_production_vcp_conf() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+        let cfg = Config::load_with_environment(&dir, Environment::Production).unwrap();
+        assert_eq!(cfg.environment, Environment::Production);
+        assert!(!cfg.session.dangerous_disable_origin_verification);
+        assert!(cfg.server.tls.acme.as_ref().is_some_and(|a| a.enabled));
+        assert_eq!(cfg.server.port, 443);
+    }
+
+    #[test]
+    fn rejects_http_public_origins() {
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Development,
+        )
+        .unwrap();
+        cfg.server.public_origins = vec!["http://localhost:8443".to_owned()];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("HTTPS only"));
+    }
+
+    #[test]
+    fn environment_aliases() {
+        assert_eq!(Environment::parse("dev"), Environment::Development);
+        assert_eq!(Environment::parse("test"), Environment::Testing);
+        assert_eq!(Environment::parse("production"), Environment::Production);
+    }
+}

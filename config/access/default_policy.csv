@@ -1,0 +1,17 @@
+p, role:member, docs, read
+p, role:member, builds, read
+p, role:member, builds, download
+p, role:member, issues, read
+p, role:member, issues, write
+p, role:member, account, read
+
+p, role:admin, docs, read
+p, role:admin, docs, write
+p, role:admin, builds, read
+p, role:admin, builds, download
+p, role:admin, releases, manage
+p, role:admin, issues, read
+p, role:admin, issues, write
+p, role:admin, companies, manage
+p, role:admin, account, read
+p, role:admin, admin, view

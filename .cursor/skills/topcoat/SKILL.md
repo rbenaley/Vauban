@@ -295,8 +295,10 @@ rules: `responsive-ui.mdc`. Design workflow: `designing-beautiful-websites`.
 - Escape hatch: narrow `sqlx` only when Toasty cannot express a query —
   not a second data model (`web-stack` § Database / ORM).
 
-First models at scaffold: `User`, session (`TokenHash` + expiry),
-`Organization`, membership.
+Scaffolded in the `vcp` binary: `User`, `AuthSession` (token hash hex +
+expiry), `Organization`, `Membership`, plus stub `DocArticle` /
+`Release` / `Issue`. Routes follow `/{org}/…` and `/{org}/admin/…`
+(see `web-stack`).
 
 ---
 

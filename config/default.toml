@@ -1,0 +1,35 @@
+# VCP - Default configuration
+# Shared base for non-production environments.
+# Override with development.toml / testing.toml and optional local.toml.
+
+environment = "development"
+
+[server]
+host = "127.0.0.1"
+port = 8443
+public_origins = ["https://127.0.0.1:8443", "https://localhost:8443"]
+
+[server.tls]
+cert_path = "certs/dev-server.crt"
+key_path = "certs/dev-server.key"
+
+[server.tls.acme]
+enabled = false
+email = ""
+domains = []
+renew_before_hours = 24
+account_key_path = "certs/acme-account.json"
+staging = true
+directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+[database]
+url = "postgresql://localhost/vcp"
+
+[access]
+model_path = "config/access/model.conf"
+policy_path = "config/access/default_policy.csv"
+
+[session]
+# Local smoke / curl without Origin. Never enable in vcp.conf.
+dangerous_disable_origin_verification = true

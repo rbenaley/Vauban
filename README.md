@@ -1,0 +1,117 @@
+# VCP — Vauban Customer Portal
+
+Authenticated customer portal for Vauban.
+
+## Stack
+
+- [Topcoat](https://github.com/tokio-rs/topcoat) 0.4 (SSR, module router, sessions, Tailwind)
+- [Toasty](https://github.com/tokio-rs/toasty) 0.9 + PostgreSQL
+- Casbin-format policy file under `config/access/` (custom loader; tenant gate on `{org}`)
+- TOML configuration under `config/` (same layering model as Vauban)
+- **HTTPS only** — TLS 1.3 via rustls; optional ACME TLS-ALPN-01 (no HTTP listener)
+
+## Prerequisites
+
+- Rust 1.95+ (see `rust-toolchain.toml`)
+- [just](https://github.com/casey/just)
+- PostgreSQL listening locally
+
+Create a database:
+
+```bash
+just db-create
+```
+
+## Configuration
+
+Application settings live in TOML files under `config/`. There is **no** `.env`
+for app config.
+
+| File | When |
+|------|------|
+| `config/default.toml` | Base (non-production) |
+| `config/development.toml` | Dev overlay |
+| `config/testing.toml` | Test overlay |
+| `config/local.toml` | Personal overrides (gitignored; copy from `local.toml.example`) |
+| `config/vcp.conf` | **Production only** (self-contained; no merge with `default.toml`) |
+
+Environment selection:
+
+```bash
+export VCP_ENVIRONMENT=development   # layered TOML
+# unset or production               # loads config/vcp.conf only
+```
+
+Config directory lookup:
+
+1. `VCP_CONFIG_DIR` (if set)
+2. `{crate}/config` (this repo)
+3. `/usr/local/etc/vcp`
+
+Production install path: `/usr/local/etc/vcp/vcp.conf` (plus `access/` policies and TLS material).
+
+### TLS
+
+- Cleartext HTTP is **forbidden**. The process binds HTTPS only.
+- Dev: on first boot, a self-signed cert is written to `certs/dev-server.{crt,key}` (gitignored).
+- Prod: configure `[server.tls]` PEM paths; enable `[server.tls.acme]` for automatic
+  issuance/renewal (TLS-ALPN-01, renews `renew_before_hours` before expiry, default 24h,
+  hot-activates without restart).
+- `public_origins` must be `https://…` only.
+
+Optional personal DB URL:
+
+```bash
+cp config/local.toml.example config/local.toml
+# edit [database].url
+```
+
+## Run
+
+```bash
+just run          # HTTPS on https://127.0.0.1:8443 (development)
+just validate     # fmt-check + clippy -D warnings + tests
+```
+
+Smoke against a self-signed cert:
+
+```bash
+curl -k https://127.0.0.1:8443/login
+```
+
+Browsers will warn on the self-signed cert until you trust it or use ACME in staging.
+
+### Seed login
+
+On first boot with an empty `users` table the app seeds:
+
+| Field | Value |
+|-------|--------|
+| Email | `admin@acme.example` |
+| Password | `password` |
+| Org slug | `acme-infrastructure` |
+| Role | `admin` |
+
+A second user `l.martin@acme.example` / `password` is seeded as `member` (no admin rail).
+
+## Route map
+
+| Path | Surface |
+|------|---------|
+| `/login` | Sign in |
+| `/{org}` | Dashboard |
+| `/{org}/docs` | Documentation KB |
+| `/{org}/builds` | Certified builds |
+| `/{org}/issues` | Issue tracker |
+| `/{org}/account` | Account & subscription |
+| `/{org}/admin/docs` | Documentation editor |
+| `/{org}/admin/releases` | Release manager |
+| `/{org}/admin/companies` | Client companies |
+
+Wrong org slug → **404** (no cross-tenant leak). Admin nest requires `admin:view`.
+
+## Validate
+
+```bash
+just validate
+```

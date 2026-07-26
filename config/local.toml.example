@@ -1,0 +1,5 @@
+# Copy to config/local.toml for personal overrides (gitignored).
+# Loaded only in development, after default.toml + development.toml.
+
+[database]
+url = "postgresql://localhost/vcp"

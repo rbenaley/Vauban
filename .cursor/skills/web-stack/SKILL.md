@@ -80,7 +80,8 @@ Router .app_context(db)
 - Models: `#[derive(toasty::Model)]` under `src/models/` (or
   `src/db/models/`). Keep a thin `src/db.rs` (or `src/db/mod.rs`) for
   connect / schema helpers — not a heavy repository layer unless needed.
-- Connection URL: `DATABASE_URL` (Postgres) from env / secret manager;
+- Connection URL: `[database].url` from TOML under `config/` (see
+  `src/config.rs`); production uses `config/vcp.conf` only;
   never commit real credentials.
 
 ### Sessions and tenancy
@@ -104,28 +105,46 @@ escape in a short comment or module docs at the call site.
 2. Wire pool into router `.app_context`; add `db(cx)` (+ memoize as needed).
 3. First models: `User`, session record (`TokenHash`), `Organization`,
    membership — enough for login + tenant.
-4. Schema create/reset via Toasty’s documented workflow; `DATABASE_URL`
+4. Schema create/reset via Toasty’s documented workflow; database URL from
+   TOML (`VCP_ENVIRONMENT=development` for local layering)
    in local/CI env samples (no secrets).
 5. CI: Postgres service (or testcontainers) + focused auth/tenant tests
    per `vcp-test-pyramid.mdc`.
 
 ## Routing and structure
 
-Prefer Topcoat **module-based routing** when it fits:
+Prefer Topcoat **`module_router!()`** with the mockup IA:
 
 ```text
 src/
-|-- app.rs                 -> /  (root layout / html shell)
-|-- db.rs                  -> connect / app_context registration
+|-- main.rs
+|-- db.rs                  -> Toasty connect / seed
 |-- models/                -> toasty::Model types
+|-- auth.rs                -> current_user / require_* helpers
+|-- perms.rs               -> PermissionContext + Casbin
+|-- layout.rs              -> shell primitives (rail, breadcrumb)
+|-- app.rs                 -> module_router! root + cookies/sessions/db
 `-- app/
-    |-- account.rs
-    |-- org.rs
-    |-- org/
-    |   `-- members.rs
-    `-- api/
-        `-- health.rs
+    |-- login.rs           -> /login
+    `-- org.rs             -> /{org} (path_param) + dashboard
+        `-- org/
+            |-- docs.rs
+            |-- builds.rs
+            |-- issues.rs
+            |-- account.rs
+            `-- admin.rs   -> /{org}/admin/* (admin_view gate)
+                `-- admin/
+                    |-- docs.rs
+                    |-- releases.rs
+                    `-- companies.rs
 ```
+
+### Shell conventions (Concept mockups)
+
+- Dark left rail, light content, accent teal `#117a6b`.
+- Breadcrumb: `portal / {org} / {section}`.
+- Client rail: Home, Docs, Builds, Issues; Admin rail: Docs, Rel., Orgs.
+- Org initials control links to `/{org}/account`.
 
 - HTML pages for humans; JSON under `/api/...` only for M2M / webhooks.
 - HTML forms MUST NOT post to machine JSON APIs as a substitute for

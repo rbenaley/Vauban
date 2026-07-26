@@ -10,8 +10,9 @@ patterns over clever shortcuts.
 
 ## Non-negotiables
 
-- **No secrets in the repo** (API keys, private keys, `.env` with real
-  credentials, session signing keys). Use env / secret manager only.
+- **No secrets in the repo** (API keys, private keys, real credentials in
+ committed TOML, session signing keys). Use `config/local.toml`
+ (gitignored), production `vcp.conf` on the host, or a secret manager.
 - **Validate all untrusted input** at trust boundaries (forms, query
   params, webhooks, uploaded files).
 - **CSRF protection** on cookie-based session mutations. With Topcoat

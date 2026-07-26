@@ -23,3 +23,12 @@ Thumbs.db
 # Database (local / accidental sqlite files)
 *.db
 *.sqlite
+
+# Local TLS material (self-signed / ACME account)
+certs/**
+!certs/.gitkeep
+
+
+# Added by cargo
+
+/target

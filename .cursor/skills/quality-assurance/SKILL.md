@@ -109,9 +109,17 @@ Happy-path-only tests are insufficient for those seams.
   (CI service, docker compose, or testcontainers) — do not default to
   SQLite for VCP app tests unless a one-off local smoke is explicitly
   documented.
-- Provide `DATABASE_URL` (or equivalent) in CI secrets / env; never
+- Provide database URL via TOML (`config/` / `vcp.conf` / CI-mounted
+  `VCP_CONFIG_DIR`); never
   commit credentials.
 - Tenant and session tests must assert **denial paths** (wrong org,
   expired session hash, missing membership), not only happy-path CRUD.
 - Prefer testing through production `db(cx)` / model helpers over a
   parallel Diesel-style harness copied from the bastion.
+
+### Scaffold smoke targets
+
+- `topcoat dev` (or `cargo run`) with Postgres + seed user.
+- Login → `/{org}/` dashboard for a member org.
+- Wrong org slug → **404** (no cross-tenant leak).
+- Non-admin hitting `/{org}/admin/*` → **403** / forbidden.
