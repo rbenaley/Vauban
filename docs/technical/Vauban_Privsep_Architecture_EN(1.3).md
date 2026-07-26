@@ -1288,7 +1288,8 @@ sequenceDiagram
 
 ### 10.1 Boot Order
 
-Services are started in dependency order:
+Services are started in dependency order (`SupervisorConfig::startup_order`,
+nine keys; optional leaves are skipped when their master switch is off):
 
 1. `vauban-audit` - No dependencies
 2. `vauban-vault` - No internal dependencies
@@ -1296,8 +1297,9 @@ Services are started in dependency order:
 4. `vauban-auth` - Depends on access, vault
 5. `vauban-proxy-ssh` - Depends on access, vault, audit
 6. `vauban-proxy-rdp` - Depends on access, vault, audit
-7. `vauban-proxy-iacs` - Depends on access, audit (gated on `industrial.enabled`; the supervisor pre-binds the IACS sshd listener FD with `O_NONBLOCK` and pre-loads the russh Ed25519 host key FD before fork; both FDs are inherited via `VAUBAN_IACS_LISTENER_FD` / `VAUBAN_IACS_HOST_KEY_FD`)
+7. `vauban-proxy-iacs` - Depends on access, audit (gated on `industrial.enabled`)
 8. `vauban-web` - Depends on auth, access, vault, audit
+9. `vauban-mailer` - Sealed SMTP outbox leaf (gated on `mailer.enabled`).
 
 ### 10.2 Startup Diagram
 
@@ -1313,7 +1315,7 @@ gantt
     section Phase 2
     vauban-audit          :1, 2
     vauban-vault          :1, 2
-    vauban-access           :1, 2
+    vauban-access         :1, 2
     
     section Phase 3
     vauban-auth           :2, 3
@@ -1325,6 +1327,9 @@ gantt
     
     section Phase 5
     vauban-web            :4, 5
+
+    section Phase 6
+    vauban-mailer         :5, 6
 ```
 
 ### 10.3 FreeBSD rc.d Integration
