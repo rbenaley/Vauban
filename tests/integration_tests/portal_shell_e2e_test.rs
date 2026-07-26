@@ -36,6 +36,39 @@ async fn e2e_login_page_renders_splash_chrome() {
     assert!(html.contains("vb-login-body"), "{html}");
     assert!(html.contains("Sign in"), "{html}");
     assert!(html.contains("VAUBAN"), "{html}");
+    assert!(html.contains("apple-touch-icon"), "{html}");
+}
+
+#[tokio::test]
+async fn e2e_well_known_icon_probes_return_brand_bitmaps() {
+    let _guard = db_lock().lock().await;
+    let router = test_router().await;
+
+    let ico = get(&router, "/favicon.ico", None).await;
+    assert_eq!(status(&ico), StatusCode::OK);
+    assert_eq!(
+        ico.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("image/x-icon")
+    );
+    let ico_bytes = ico.into_body().collect().await.expect("body").to_bytes();
+    assert!(ico_bytes.len() > 16, "favicon.ico too small");
+    assert_eq!(&ico_bytes[0..4], &[0x00, 0x00, 0x01, 0x00], "ICO magic");
+
+    for path in ["/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"] {
+        let resp = get(&router, path, None).await;
+        assert_eq!(status(&resp), StatusCode::OK, "{path}");
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("image/png"),
+            "{path}"
+        );
+        let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "{path} PNG magic");
+    }
 }
 
 #[tokio::test]

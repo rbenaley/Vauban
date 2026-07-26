@@ -44,6 +44,26 @@ grep -n 'runtime::script' src/app.rs >/dev/null \
   || fail "root_layout must include topcoat::runtime::script"
 grep -n 'stylesheet!' src/app.rs >/dev/null \
   || fail "root_layout must include tailwind stylesheet!"
+grep -n 'rel="icon"' src/app.rs >/dev/null \
+  || fail "root_layout must link a favicon"
+grep -n 'apple-touch-icon' src/app.rs >/dev/null \
+  || fail "root_layout must link apple-touch-icon"
+grep -n 'GET "/favicon.ico"' src/app.rs >/dev/null \
+  || fail "must serve /favicon.ico (browser probe)"
+grep -n 'GET "/apple-touch-icon.png"' src/app.rs >/dev/null \
+  || fail "must serve /apple-touch-icon.png (browser probe)"
+grep -n 'GET "/apple-touch-icon-precomposed.png"' src/app.rs >/dev/null \
+  || fail "must serve /apple-touch-icon-precomposed.png (browser probe)"
+test -f assets/favicon.svg \
+  || fail "assets/favicon.svg must exist (SVG brand mark)"
+test -f assets/favicon.ico \
+  || fail "assets/favicon.ico must exist for /favicon.ico"
+test -f assets/apple-touch-icon.png \
+  || fail "assets/apple-touch-icon.png must exist"
+test -f assets/apple-touch-icon-precomposed.png \
+  || fail "assets/apple-touch-icon-precomposed.png must exist"
+test -f assets/favicon-16x16.png -a -f assets/favicon-32x32.png \
+  || fail "assets/favicon-16x16.png and favicon-32x32.png must exist"
 
 grep -n 'fn nav_from_path' src/nav.rs >/dev/null \
   || fail "src/nav.rs must expose nav_from_path for unit/proptest"

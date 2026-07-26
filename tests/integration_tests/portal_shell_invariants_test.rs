@@ -48,6 +48,26 @@ fn inv_login_and_root_layout_pins() {
     assert!(app.contains("#[layout]"));
     assert!(app.contains("runtime::script"));
     assert!(app.contains("stylesheet!"));
+    assert!(app.contains("rel=\"icon\""));
+    assert!(app.contains("apple-touch-icon"));
+    assert!(app.contains("assets/favicon.svg"));
+    assert!(app.contains("assets/favicon.ico"));
+    assert!(app.contains("assets/apple-touch-icon.png"));
+    assert!(app.contains("GET \"/favicon.ico\""));
+    assert!(app.contains("GET \"/apple-touch-icon.png\""));
+    assert!(app.contains("GET \"/apple-touch-icon-precomposed.png\""));
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for rel in [
+        "assets/favicon.svg",
+        "assets/favicon.ico",
+        "assets/favicon-16x16.png",
+        "assets/favicon-32x32.png",
+        "assets/apple-touch-icon.png",
+        "assets/apple-touch-icon-precomposed.png",
+    ] {
+        assert!(root.join(rel).exists(), "missing {rel}");
+    }
 }
 
 #[test]

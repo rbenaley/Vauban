@@ -9,18 +9,35 @@ use std::sync::Arc;
 use toasty::Db;
 use topcoat::{
     Result,
-    asset::{AssetBundle, RouterBuilderAssetExt},
+    asset::{Asset, AssetBundle, RouterBuilderAssetExt, asset},
     context::{CxBuilder, try_app_context},
     cookie::RouterBuilderCookieExt,
     font,
     router::{
         Body, HeaderValue, Next, Response, Router, RouterBuilderDiscoverExt, SeeOther, Slot,
-        header, layer, layout, route, see_other,
+        StatusCode, header, layer, layout, route, see_other,
     },
     session::{Config as SessionConfig, RouterBuilderSessionExt},
     tailwind,
     view::view,
 };
+
+/// Brand mark for `<link rel="icon" type="image/svg+xml">`.
+const FAVICON_SVG: Asset = asset!("assets/favicon.svg");
+const FAVICON_16: Asset = asset!("assets/favicon-16x16.png");
+const FAVICON_32: Asset = asset!("assets/favicon-32x32.png");
+const APPLE_TOUCH_ICON: Asset = asset!("assets/apple-touch-icon.png");
+
+const FAVICON_ICO_BYTES: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/favicon.ico"));
+const APPLE_TOUCH_ICON_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/apple-touch-icon.png"
+));
+const APPLE_TOUCH_ICON_PRECOMPOSED_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/apple-touch-icon-precomposed.png"
+));
 
 use crate::{
     config::{Config, Environment},
@@ -82,6 +99,10 @@ async fn root_layout(slot: Slot<'_>) -> Result {
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
                 <title>"Vauban Portal"</title>
+                <link rel="icon" type="image/svg+xml" href=(FAVICON_SVG)>
+                <link rel="icon" type="image/png" sizes="32x32" href=(FAVICON_32)>
+                <link rel="icon" type="image/png" sizes="16x16" href=(FAVICON_16)>
+                <link rel="apple-touch-icon" href=(APPLE_TOUCH_ICON)>
                 font::link(font: HANKEN_GROTESK)
                 font::link(font: JETBRAINS_MONO)
                 <link rel="stylesheet" href=(tailwind::stylesheet!())>
@@ -132,4 +153,28 @@ async fn security_headers(cx: &mut CxBuilder, body: Body, next: Next<'_>) -> Res
 #[route(GET "/")]
 async fn root() -> Result<SeeOther> {
     Ok(see_other("/login"))
+}
+
+/// Browser / OS probes that otherwise spam CLF with 404s.
+fn static_icon_response(content_type: &'static str, bytes: &'static [u8]) -> Result<Response> {
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "public, max-age=604800")
+        .body(Body::from(bytes))?)
+}
+
+#[route(GET "/favicon.ico")]
+async fn favicon_ico() -> Result<Response> {
+    static_icon_response("image/x-icon", FAVICON_ICO_BYTES)
+}
+
+#[route(GET "/apple-touch-icon.png")]
+async fn apple_touch_icon() -> Result<Response> {
+    static_icon_response("image/png", APPLE_TOUCH_ICON_BYTES)
+}
+
+#[route(GET "/apple-touch-icon-precomposed.png")]
+async fn apple_touch_icon_precomposed() -> Result<Response> {
+    static_icon_response("image/png", APPLE_TOUCH_ICON_PRECOMPOSED_BYTES)
 }
