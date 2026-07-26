@@ -411,12 +411,14 @@ mod proptests {
             prop_assert!(r.suppressing);
             // Accumulate without newline.
             prop_assert_eq!(r.process_input_for_recording(&secret), None);
-            // Secret must not appear in the redacted marker.
+            // Flush must emit exactly the fixed marker (not the secret bytes).
+            // Do not also scan for `secret` as a substring of that marker:
+            // single-byte secrets like `b"T"` appear inside `"[REDACTED]"` and
+            // would false-fail even though redaction succeeded.
             let out = r
                 .process_input_for_recording(b"\r")
                 .expect("newline must flush");
             prop_assert_eq!(&out[..], b"[REDACTED]\r\n");
-            prop_assert!(!out.windows(secret.len()).any(|w| w == secret.as_slice()));
             // Reset: subsequent input passes through.
             let again = r.process_input_for_recording(b"ls\r");
             prop_assert_eq!(again, Some(b"ls\r".to_vec()));
