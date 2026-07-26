@@ -70,7 +70,6 @@ impl PolicyStore {
         Ok(Self { grants })
     }
 
-    #[cfg(test)]
     pub fn default_path() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("config/access/default_policy.csv")

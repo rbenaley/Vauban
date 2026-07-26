@@ -13,16 +13,21 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 use topcoat::router::RouterService;
-use tracing::warn;
+use tracing::{debug, warn};
 
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Serve a Topcoat router over TLS until `shutdown` completes.
+///
+/// When `quiet_self_signed_rejections` is true (development + ACME off),
+/// client alerts that reject the local self-signed cert are logged at
+/// debug instead of warn.
 pub async fn serve_https(
     listener: TcpListener,
     tls_config: Arc<ServerConfig>,
     service: impl Into<RouterService>,
     shutdown: impl Future<Output = ()>,
+    quiet_self_signed_rejections: bool,
 ) -> io::Result<()> {
     let addr = listener.local_addr().ok();
     topcoat::dev::notify_ready(addr).await;
@@ -55,7 +60,7 @@ pub async fn serve_https(
             let tls_stream = match acceptor.accept(stream).await {
                 Ok(s) => s,
                 Err(error) => {
-                    warn!(%error, "TLS handshake failed");
+                    log_handshake_failure(&error, quiet_self_signed_rejections);
                     return;
                 }
             };
@@ -115,5 +120,32 @@ pub async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => {}
         () = terminate => {}
+    }
+}
+
+fn log_handshake_failure(error: &impl std::fmt::Display, quiet_self_signed_rejections: bool) {
+    if quiet_self_signed_rejections && is_self_signed_rejection(error) {
+        debug!(%error, "TLS handshake failed");
+        return;
+    }
+    warn!(%error, "TLS handshake failed");
+}
+
+fn is_self_signed_rejection(error: &impl std::fmt::Display) -> bool {
+    error.to_string().contains("CertificateUnknown")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_certificate_unknown_alert() {
+        assert!(is_self_signed_rejection(
+            &"received fatal alert: CertificateUnknown"
+        ));
+        assert!(!is_self_signed_rejection(
+            &"peer is incompatible: SupportedVersionsExtensionRequired"
+        ));
     }
 }

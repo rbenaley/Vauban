@@ -1,32 +1,25 @@
 #![recursion_limit = "256"]
 
-mod acme;
-mod app;
-mod auth;
-mod config;
-mod db;
-mod layout;
-mod models;
-mod perms;
-mod tls;
-
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tracing::info;
 
-use crate::config::Config;
+use vcp::{acme, app, config, config::Config, db, perms, tls};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Config first so the default log filter can follow `environment`.
+    let cfg = Config::load()?;
+
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new(cfg.environment.default_log_filter())
+            }),
         )
         .init();
 
-    let cfg = Config::load()?;
     tls::install_crypto_provider()?;
 
     let database = db::connect(&cfg.database.url).await?;
@@ -58,6 +51,15 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let router = app::router(database, policy, &cfg);
-    tls::serve_https(listener, tls_config, router, tls::shutdown_signal()).await?;
+    let quiet_self_signed_rejections = cfg.environment == config::Environment::Development
+        && !cfg.server.tls.acme.as_ref().is_some_and(|a| a.enabled);
+    tls::serve_https(
+        listener,
+        tls_config,
+        router,
+        tls::shutdown_signal(),
+        quiet_self_signed_rejections,
+    )
+    .await?;
     Ok(())
 }

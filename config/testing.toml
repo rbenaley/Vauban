@@ -15,7 +15,8 @@ key_path = "certs/test-server.key"
 enabled = false
 
 [database]
-url = "postgresql://localhost/vcp_test"
+# Local-only test credentials (same pattern as Vauban vauban_test).
+url = "postgresql://vcp_test:vcp_test@localhost/vcp_test"
 
 [session]
 dangerous_disable_origin_verification = true

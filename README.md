@@ -16,12 +16,18 @@ Authenticated customer portal for Vauban.
 - [just](https://github.com/casey/just)
 - PostgreSQL listening locally
 
-Create a database:
+Create databases:
 
 ```bash
-just db-create
+just db-create        # local app DB `vcp`
+just db-create-test   # automated tests DB `vcp_test` (or: bash scripts/setup_test_db.sh)
 ```
 
+Automated tests load `VCP_ENVIRONMENT=testing` → `config/testing.toml`
+(`postgresql://vcp_test:vcp_test@localhost/vcp_test`). Run them with
+`--test-threads=1` (default in `just test` / `just validate`).
+See `docs/runbooks/auth_tenant_smoke_test.md` for the auth/tenant smoke
+checklist.
 ## Configuration
 
 Application settings live in TOML files under `config/`. There is **no** `.env`
@@ -113,5 +119,7 @@ Wrong org slug → **404** (no cross-tenant leak). Admin nest requires `admin:vi
 ## Validate
 
 ```bash
-just validate
+just db-create-test   # once
+just validate         # fmt-check + clippy -D warnings + tests
+bash scripts/check_auth_tenant.sh
 ```

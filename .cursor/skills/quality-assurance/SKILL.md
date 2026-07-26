@@ -42,17 +42,56 @@ rtk cargo test -p <crate> -- <filter> -- --test-threads=1
 ## 1. Behavioral test pyramid
 
 Deliver the layers in `vcp-test-pyramid.mdc` by default for significant
-behavioral changes: unit, invariants, proptest, battle, E2E, smoke
-runbook.
+behavioral changes. The classic "70% unit / 25% integration / 5% E2E"
+sketch is **insufficient** for auth / tenancy / entitlement seams.
+Every significant behavioral change ships **all six layers** unless the
+change is explicitly cosmetic (`vcp-test-pyramid.mdc`).
 
-| Layer | Intent |
-|-------|--------|
-| Unit | Pure domain rules (entitlements, validation, redaction) |
-| Invariants | Source / policy shape pins (`check_*.sh`, drift tests) |
-| Proptest | Properties over input spaces |
-| Battle | Contention / parallel clients |
-| E2E | Page + session + DB (or narrow real boundary) |
-| Smoke runbook | Staging checklist CI cannot replace |
+| Layer | Answers | Typical artifact |
+|-------|---------|------------------|
+| **Unit** | Local happy / sad paths | `#[test]` / `#[tokio::test]` next to the code |
+| **Invariants** | Source shape is the contract | `include_str!` / grep pins / `scripts/check_*.sh` |
+| **Proptest** | Property over a space of inputs | `proptest!` / random corpora tables |
+| **Battle** | Contention / multi-thread / flood | `battle_*` with `Barrier` / parallel load |
+| **E2E** | Real product seam already in tree | `*_e2e_test.rs`, page+DB+session path |
+| **Smoke runbook** | Staging ops CI cannot replace | `docs/runbooks/*_smoke_test.md` |
+
+Mnemonic:
+
+> unit = *what*, invariants = *how the code must look*, proptest = *for
+> all*, battle = *under contention*, E2E = *in the system*, runbook =
+> *on staging*.
+
+```
+                    ╱╲
+                   ╱  ╲     Smoke runbook (staging ops)
+                  ╱────╲
+                 ╱      ╲   E2E (product seams)
+                ╱────────╲
+               ╱          ╲ Battle (contention)
+              ╱────────────╲
+             ╱              ╲ Proptest (properties)
+            ╱────────────────╲
+           ╱                  ╲ Invariants (source pins)
+          ╱────────────────────╲
+         ╱                      ╲ Unit (local behavior)
+        ╱────────────────────────╲
+```
+
+Surface naming (auth / tenant example):
+`auth_tenant_{invariants,proptest,battle,e2e}_*` plus unit next to
+production code, `scripts/check_auth_tenant.sh`, and
+`docs/runbooks/auth_tenant_smoke_test.md`.
+
+### Database for automated tests
+
+- Dedicated Postgres database **`vcp_test`** (user/password `vcp_test`),
+  URL in `config/testing.toml`.
+- Provision once: `just db-create-test` or `bash scripts/setup_test_db.sh`.
+- Schema: Toasty `push_schema` on first `db::connect` (not Diesel).
+- Run tests single-threaded: `just test` / `--test-threads=1`.
+- Prefer production `app::router` + model helpers over a parallel
+  Diesel/Axum harness from the bastion.
 
 ### Always cover denial paths
 

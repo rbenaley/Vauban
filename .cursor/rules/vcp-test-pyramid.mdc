@@ -10,8 +10,9 @@ behavioral change. Do **not** wait for the user to ask for invariants /
 proptest / battle / E2E / a smoke runbook. Skipping layers is a process
 failure unless the change is explicitly cosmetic (see exceptions).
 
-Full detail and command placeholders live in the `quality-assurance`
-skill. Stack: Topcoat (Rust full-stack) — see the `web-stack` skill.
+Full detail, ASCII diagram, and command placeholders live in the
+`quality-assurance` skill §1. Stack: Topcoat (Rust full-stack) — see
+the `web-stack` skill.
 
 ## Layers (every behavioral surface)
 
@@ -30,6 +31,24 @@ One-liner mnemonic:
 > all*, battle = *under contention*, E2E = *in the system*, runbook =
 > *on staging*.
 
+```
+                    ╱╲
+                   ╱  ╲     Smoke runbook (staging ops)
+                  ╱────╲
+                 ╱      ╲   E2E (product seams)
+                ╱────────╲
+               ╱          ╲ Battle (contention)
+              ╱────────────╲
+             ╱              ╲ Proptest (properties)
+            ╱────────────────╲
+           ╱                  ╲ Invariants (source pins)
+          ╱────────────────────╲
+         ╱                      ╲ Unit (local behavior)
+        ╱────────────────────────╲
+```
+
+Postgres for DB-backed layers: `vcp_test` via `just db-create-test`
+(`config/testing.toml`).
 ## When the full pyramid is REQUIRED
 
 Treat as behavioral (full pyramid) any change that alters:

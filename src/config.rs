@@ -46,6 +46,17 @@ impl Environment {
     pub const fn is_production(self) -> bool {
         matches!(self, Self::Production)
     }
+
+    /// Default `RUST_LOG` filter when the env var is unset.
+    ///
+    /// Development enables `vcp=debug` so local self-signed TLS noise and
+    /// other crate debug lines are visible without flooding dependency crates.
+    pub const fn default_log_filter(self) -> &'static str {
+        match self {
+            Self::Development => "info,vcp=debug",
+            Self::Testing | Self::Production => "info",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -351,6 +362,17 @@ mod tests {
     }
 
     #[test]
+    fn loads_testing_layering_points_at_vcp_test() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+        let cfg = Config::load_with_environment(&dir, Environment::Testing).unwrap();
+        assert_eq!(cfg.environment, Environment::Testing);
+        assert_eq!(cfg.server.port, 8444);
+        assert!(cfg.database.url.contains("vcp_test"));
+        assert!(cfg.session.dangerous_disable_origin_verification);
+        assert!(!cfg.server.tls.acme.as_ref().is_some_and(|a| a.enabled));
+    }
+
+    #[test]
     fn rejects_http_public_origins() {
         let mut cfg = Config::load_with_environment(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
@@ -367,5 +389,14 @@ mod tests {
         assert_eq!(Environment::parse("dev"), Environment::Development);
         assert_eq!(Environment::parse("test"), Environment::Testing);
         assert_eq!(Environment::parse("production"), Environment::Production);
+    }
+
+    #[test]
+    fn development_default_log_filter_enables_crate_debug() {
+        assert_eq!(
+            Environment::Development.default_log_filter(),
+            "info,vcp=debug"
+        );
+        assert_eq!(Environment::Production.default_log_filter(), "info");
     }
 }

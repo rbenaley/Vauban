@@ -32,6 +32,42 @@ pub fn db(cx: &Cx) -> Db {
     app_context::<Db>(cx).clone()
 }
 
+/// True when the persisted session expiry is at or before "now".
+pub fn session_is_expired(expires_at: i64) -> bool {
+    expires_at <= now_unix()
+}
+
+/// Load a user for a persisted session token hash (hex). Returns `None` when
+/// the session is missing, expired, or the user row is gone.
+pub async fn load_user_for_token_hex(db: &mut Db, hex: &str) -> Option<User> {
+    let Ok(record) = AuthSession::get_by_token_hash(db, hex).await else {
+        return None;
+    };
+    if session_is_expired(record.expires_at) {
+        return None;
+    }
+    User::get_by_id(db, record.user_id).await.ok()
+}
+
+/// Persist or replace an `AuthSession` row (production path used by login and
+/// test fixtures — no parallel store).
+pub async fn persist_session_record(
+    db: &mut Db,
+    token_hash: String,
+    user_id: u64,
+    expires_at: i64,
+) -> anyhow::Result<()> {
+    let _ = AuthSession::delete_by_token_hash(db, &token_hash).await;
+    toasty::create!(AuthSession {
+        token_hash,
+        user_id,
+        expires_at,
+    })
+    .exec(db)
+    .await?;
+    Ok(())
+}
+
 #[memoize]
 async fn session_user(cx: &Cx) -> Option<User> {
     let Ok(Some(token_hash)) = session::token_hash(cx).await else {
@@ -43,13 +79,7 @@ async fn session_user(cx: &Cx) -> Option<User> {
 async fn load_user_by_token_hash(cx: &Cx, token_hash: &TokenHash) -> Option<User> {
     let mut db = db(cx);
     let hex = token_hash_hex(token_hash);
-    let Ok(record) = AuthSession::get_by_token_hash(&mut db, &hex).await else {
-        return None;
-    };
-    if record.expires_at <= now_unix() {
-        return None;
-    }
-    User::get_by_id(&mut db, record.user_id).await.ok()
+    load_user_for_token_hex(&mut db, &hex).await
 }
 
 pub async fn current_user(cx: &Cx) -> Option<&User> {
@@ -118,14 +148,7 @@ pub async fn persist_session(cx: &Cx, session: session::Session, user_id: u64) -
     let mut db = db(cx);
     let token_hash = token_hash_hex(&session.token_hash);
     let expires_at = system_expires_unix(session.expires_at);
-    let _ = AuthSession::delete_by_token_hash(&mut db, &token_hash).await;
-    toasty::create!(AuthSession {
-        token_hash,
-        user_id,
-        expires_at,
-    })
-    .exec(&mut db)
-    .await?;
+    persist_session_record(&mut db, token_hash, user_id, expires_at).await?;
     Ok(())
 }
 
@@ -141,4 +164,35 @@ fn system_expires_unix(expires_at: SystemTime) -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{hash_password, token_hash_hex, verify_password};
+    use topcoat::session::TokenHash;
+
+    #[test]
+    fn session_expiry_boundary() {
+        let now = now_unix();
+        assert!(session_is_expired(now));
+        assert!(session_is_expired(now - 1));
+        assert!(!session_is_expired(now + 3600));
+    }
+
+    #[test]
+    fn token_hash_hex_encodes_32_bytes() {
+        let raw = [0xabu8; 32];
+        let hash = TokenHash::new(raw);
+        let encoded = token_hash_hex(&hash);
+        assert_eq!(encoded, hex::encode(raw));
+        assert_eq!(encoded.len(), 64);
+    }
+
+    #[test]
+    fn password_helpers_reject_wrong_secret() {
+        let hash = hash_password("correct-horse").unwrap();
+        assert!(verify_password("correct-horse", &hash));
+        assert!(!verify_password("wrong", &hash));
+    }
 }
