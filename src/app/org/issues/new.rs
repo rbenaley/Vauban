@@ -7,12 +7,7 @@ use topcoat::{
     view::view,
 };
 
-use crate::{
-    app::org::Org,
-    auth::require_org,
-    layout::{self, NavSection},
-    perms::perms_for_user,
-};
+use crate::{app::org::Org, auth::require_org, perms::perms_for_user};
 
 #[page]
 async fn new_issue_page(cx: &Cx) -> Result {
@@ -26,9 +21,13 @@ async fn new_issue_page(cx: &Cx) -> Result {
     let list_href = format!("/{slug}/issues");
     let action = format!("/{slug}/issues");
 
-    let body = view! {
+    view! {
         <div style="max-width: 720px;">
-            <a class="vb-link" href=(list_href.clone()) style="display: inline-block; margin-bottom: 16px;">
+            <a
+                class="vb-link"
+                href=(list_href.clone())
+                style="display: inline-block; margin-bottom: 16px;"
+            >
                 "← Back to list"
             </a>
             <h1 class="vb-title">"Report an issue"</h1>
@@ -38,7 +37,11 @@ async fn new_issue_page(cx: &Cx) -> Result {
 
             <div class="vb-panel" style="padding: 24px;">
                 <form class="vb-form" method="POST" action=(action)>
-                    <label for="title" class="vb-mono" style="letter-spacing: 0.04em; font-size: 11px;">
+                    <label
+                        for="title"
+                        class="vb-mono"
+                        style="letter-spacing: 0.04em; font-size: 11px;"
+                    >
                         "TITLE *"
                     </label>
                     <input
@@ -49,9 +52,15 @@ async fn new_issue_page(cx: &Cx) -> Result {
                         placeholder="Short, precise summary of the issue"
                     >
 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div
+                        style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;"
+                    >
                         <div>
-                            <label for="severity" class="vb-mono" style="letter-spacing: 0.04em; font-size: 11px;">
+                            <label
+                                for="severity"
+                                class="vb-mono"
+                                style="letter-spacing: 0.04em; font-size: 11px;"
+                            >
                                 "SEVERITY"
                             </label>
                             <select id="severity" name="severity">
@@ -61,7 +70,11 @@ async fn new_issue_page(cx: &Cx) -> Result {
                             </select>
                         </div>
                         <div>
-                            <label for="component" class="vb-mono" style="letter-spacing: 0.04em; font-size: 11px;">
+                            <label
+                                for="component"
+                                class="vb-mono"
+                                style="letter-spacing: 0.04em; font-size: 11px;"
+                            >
                                 "COMPONENT"
                             </label>
                             <select id="component" name="component">
@@ -74,7 +87,11 @@ async fn new_issue_page(cx: &Cx) -> Result {
                         </div>
                     </div>
 
-                    <label for="details" class="vb-mono" style="letter-spacing: 0.04em; font-size: 11px;">
+                    <label
+                        for="details"
+                        class="vb-mono"
+                        style="letter-spacing: 0.04em; font-size: 11px;"
+                    >
                         "DESCRIPTION *"
                     </label>
                     <textarea
@@ -85,28 +102,41 @@ async fn new_issue_page(cx: &Cx) -> Result {
                         style="min-height: 140px;"
                     ></textarea>
 
-                    <label class="vb-mono" style="letter-spacing: 0.04em; font-size: 11px; margin-top: 18px;">
+                    <label
+                        class="vb-mono"
+                        style="letter-spacing: 0.04em; font-size: 11px; margin-top: 18px;"
+                    >
                         "SCREENSHOTS"
                     </label>
                     <div class="vb-drop">
-                        <span style="font-size: 22px; color: var(--accent);">"⇪"</span>
+                        <span style="font-size: 22px; color: var(--accent);">
+                            "⇪"
+                        </span>
                         <span>"Click to upload or drop images here"</span>
-                        <span class="vb-mono" style="font-size: 10.5px; color: #9aa0a6;">
+                        <span
+                            class="vb-mono"
+                            style="font-size: 10.5px; color: #9aa0a6;"
+                        >
                             "PNG, JPG, GIF · up to 10 MB each · upload stub"
                         </span>
                     </div>
 
-                    <div style="display: flex; align-items: center; gap: 12px; margin-top: 20px;">
+                    <div
+                        style="display: flex; align-items: center; gap: 12px; margin-top: 20px;"
+                    >
                         <button class="vb-btn" type="submit">"Submit report"</button>
-                        <a class="vb-link" href=(list_href) style="margin: 0;">"Cancel"</a>
-                        <span class="vb-mono" style="font-size: 11px; color: #9aa0a6; margin-left: auto;">
+                        <a class="vb-link" href=(list_href) style="margin: 0;">
+                            "Cancel"
+                        </a>
+                        <span
+                            class="vb-mono"
+                            style="font-size: 11px; color: #9aa0a6; margin-left: auto;"
+                        >
                             "* required fields"
                         </span>
                     </div>
                 </form>
             </div>
         </div>
-    };
-
-    layout::shell(cx, &ctx, &perms, NavSection::Issues, "issues / new", body).await
+    }
 }

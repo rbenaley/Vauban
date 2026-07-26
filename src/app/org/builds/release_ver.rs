@@ -7,13 +7,7 @@ use topcoat::{
 };
 
 use super::{BuildsQuery, load_releases, render_builds};
-use crate::{
-    app::org::Org,
-    auth::require_org,
-    layout::{self, NavSection},
-    models::Release,
-    perms::perms_for_user,
-};
+use crate::{app::org::Org, auth::require_org, models::Release, perms::perms_for_user};
 
 #[path_param]
 struct ReleaseVer(str);
@@ -56,7 +50,7 @@ async fn build_detail_page(cx: &Cx) -> Result {
             .collect()
     };
 
-    let body = render_builds(
+    render_builds(
         cx,
         org_slug,
         channel,
@@ -65,6 +59,5 @@ async fn build_detail_page(cx: &Cx) -> Result {
         show_link,
         perms.builds_download,
     )
-    .await;
-    layout::shell(cx, &ctx, &perms, NavSection::Builds, "builds", body).await
+    .await
 }

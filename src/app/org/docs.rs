@@ -10,10 +10,7 @@ use topcoat::{
 };
 
 use crate::{
-    app::org::Org,
-    auth::require_org,
-    layout::{self, NavSection},
-    models::DocArticle,
+    app::_components::chip_row, app::org::Org, auth::require_org, models::DocArticle,
     perms::perms_for_user,
 };
 
@@ -41,8 +38,7 @@ async fn docs_page(cx: &Cx) -> Result {
     }
 
     let (q, cat, filtered) = load_filtered_docs(cx, &DocsFilter::from_cx(cx)).await;
-    let body = docs_list_view(cx, slug, &q, &cat, &filtered).await;
-    layout::shell(cx, &ctx, &perms, NavSection::Docs, "documentation", body).await
+    docs_list_view(cx, slug, &q, &cat, &filtered).await
 }
 
 pub(super) struct DocsFilter {
@@ -96,17 +92,27 @@ pub(super) async fn docs_list_view(
     cat: &str,
     filtered: &[DocArticle],
 ) -> Result {
-    let all_active = if cat.is_empty() {
-        "vb-chip active"
-    } else {
-        "vb-chip"
-    };
     let base = format!("/{org_slug}/docs");
     let q_value = q.to_owned();
     let cat_owned = cat.to_owned();
     let org = org_slug.to_owned();
+    let mut chips: Vec<(String, String, bool)> =
+        vec![("All".to_owned(), base.clone(), cat.is_empty())];
+    for c in CATEGORIES {
+        let href = if q.is_empty() {
+            format!("{base}?cat={}", urlencoding_encode(c))
+        } else {
+            format!(
+                "{base}?q={}&cat={}",
+                urlencoding_encode(q),
+                urlencoding_encode(c)
+            )
+        };
+        chips.push(((*c).to_owned(), href, cat.eq_ignore_ascii_case(c)));
+    }
 
-    view! { cx =>
+    view! {
+        cx =>
         <h1 class="vb-title">"Documentation & knowledge base"</h1>
         <p class="vb-lead">"Operations, security, API, and deployment runbooks."</p>
 
@@ -123,26 +129,7 @@ pub(super) async fn docs_list_view(
             }
         </form>
 
-        <div class="vb-chip-row">
-            <a class=(all_active) href=(base.clone())>"All"</a>
-            for c in CATEGORIES {
-                let href = if q.is_empty() {
-                    format!("{base}?cat={}", urlencoding_encode(c))
-                } else {
-                    format!(
-                        "{base}?q={}&cat={}",
-                        urlencoding_encode(q),
-                        urlencoding_encode(c)
-                    )
-                };
-                let class = if cat.eq_ignore_ascii_case(c) {
-                    "vb-chip active"
-                } else {
-                    "vb-chip"
-                };
-                <a class=(class) href=(href)>(*c)</a>
-            }
-        </div>
+        chip_row(chips: &chips)
 
         <div class="vb-list">
             if filtered.is_empty() {
@@ -152,20 +139,30 @@ pub(super) async fn docs_list_view(
                     <a class="vb-row" href=(format!("/{}/docs/{}", org, article.slug))>
                         <div style="flex: 1; min-width: 0;">
                             <div style="font-weight: 700;">(article.title.clone())</div>
-                            <div style="font-size: 12.5px; color: var(--muted); margin-top: 2px;">
+                            <div
+                                style="font-size: 12.5px; color: var(--muted); margin-top: 2px;"
+                            >
                                 (article.summary.clone())
                             </div>
                         </div>
                         <div style="text-align: right; flex: none;">
-                            <div class="vb-mono" style="font-size: 10px; color: var(--accent);">
+                            <div
+                                class="vb-mono"
+                                style="font-size: 10px; color: var(--accent);"
+                            >
                                 (article.category.clone())
                             </div>
-                            <div class="vb-mono" style="font-size: 10px; color: #9aa0a6; margin-top: 3px;">
+                            <div
+                                class="vb-mono"
+                                style="font-size: 10px; color: #9aa0a6; margin-top: 3px;"
+                            >
                                 "Updated "
                                 (article.version.clone())
                             </div>
                         </div>
-                        <span style="font-size: 16px; color: #c2c6cb; flex: none;">"→"</span>
+                        <span style="font-size: 16px; color: #c2c6cb; flex: none;">
+                            "→"
+                        </span>
                     </a>
                 }
             }

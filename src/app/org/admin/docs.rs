@@ -9,13 +9,7 @@ use topcoat::{
     view::view,
 };
 
-use crate::{
-    app::org::Org,
-    auth::require_org,
-    layout::{self, NavSection},
-    models::DocArticle,
-    perms::perms_for_user,
-};
+use crate::{app::org::Org, auth::require_org, models::DocArticle, perms::perms_for_user};
 
 #[page]
 async fn admin_docs_page(cx: &Cx) -> Result {
@@ -32,15 +26,19 @@ async fn admin_docs_page(cx: &Cx) -> Result {
         .await
         .unwrap_or_default();
 
-    let body = view! {
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;">
+    view! {
+        <div
+            style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;"
+        >
             <div>
                 <h1 class="vb-title">"Documentation editor"</h1>
                 <p class="vb-lead" style="margin-bottom: 0;">
                     "Draft, publish, and revise knowledge-base articles."
                 </p>
             </div>
-            <a class="vb-btn" href=(format!("/{}/admin/docs/new", slug))>"+ New article"</a>
+            <a class="vb-btn" href=(format!("/{}/admin/docs/new", slug))>
+                "+ New article"
+            </a>
         </div>
 
         <div class="vb-table-wrap">
@@ -57,12 +55,16 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                 <tbody>
                     if articles.is_empty() {
                         <tr>
-                            <td colspan="5"><div class="vb-empty">"No articles yet."</div></td>
+                            <td colspan="5">
+                                <div class="vb-empty">"No articles yet."</div>
+                            </td>
                         </tr>
                     } else {
                         for article in articles {
                             <tr>
-                                <td style="font-family: 'Hanken Grotesk', sans-serif; font-weight: 700;">
+                                <td
+                                    style="font-family: 'Hanken Grotesk', sans-serif; font-weight: 700;"
+                                >
                                     (article.title.clone())
                                 </td>
                                 <td>(article.category.clone())</td>
@@ -71,7 +73,11 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                                     <span class="vb-badge soft">(article.status.clone())</span>
                                 </td>
                                 <td>
-                                    <a class="vb-link" href=(format!("/{}/admin/docs/new", slug)) style="margin: 0;">
+                                    <a
+                                        class="vb-link"
+                                        href=(format!("/{}/admin/docs/new", slug))
+                                        style="margin: 0;"
+                                    >
                                         "Edit"
                                     </a>
                                 </td>
@@ -84,15 +90,5 @@ async fn admin_docs_page(cx: &Cx) -> Result {
         <p class="vb-muted" style="margin-top: 14px;">
             "Publish / unpublish mutations ship in a later slice."
         </p>
-    };
-
-    layout::shell(
-        cx,
-        &ctx,
-        &perms,
-        NavSection::AdminDocs,
-        "admin / docs",
-        body,
-    )
-    .await
+    }
 }

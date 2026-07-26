@@ -2,7 +2,7 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, page, route, see_other},
+    router::{Form, SeeOther, Slot, layout, page, route, see_other},
     session,
     view::view,
 };
@@ -10,9 +10,38 @@ use topcoat::{
 use crate::{
     auth::{current_user, db, delete_session_hash, persist_session},
     db::verify_password,
-    layout,
     models::{Membership, Organization, User},
 };
+
+#[layout]
+async fn login_layout(slot: Slot<'_>) -> Result {
+    view! {
+        <div class="vb-login-body">
+            <div class="vb-login-wrap">
+                <div class="vb-login-brand">
+                    <svg
+                        width="120"
+                        height="120"
+                        viewBox="0 0 100 100"
+                        fill="none"
+                        aria-hidden="true"
+                    >
+                        <polygon
+                            points="50,4 65,24.02 89.84,27 80,50 89.84,73 65,75.98 50,96 35,75.98 10.16,73 20,50 10.16,27 35,24.02"
+                            stroke="#3ec2ad"
+                            stroke-width="4"
+                            stroke-linejoin="round"
+                        ></polygon>
+                        <circle cx="50" cy="50" r="9" stroke="#3ec2ad" stroke-width="4"></circle>
+                    </svg>
+                    <h1>"VAUBAN"</h1>
+                    <p>"CUSTOMER PORTAL"</p>
+                </div>
+                <div class="vb-login-panel">(slot.await?)</div>
+            </div>
+        </div>
+    }
+}
 
 #[page]
 async fn login_page(cx: &Cx) -> Result {
@@ -22,35 +51,37 @@ async fn login_page(cx: &Cx) -> Result {
         None
     };
 
-    layout::login_shell(
-        cx,
-        view! {
-            <h2>"Sign in"</h2>
-            <p class="vb-muted">"Access your customer organization."</p>
-            if let Some(slug) = continue_slug.clone() {
-                <p style="margin: 0 0 16px;">
-                    <a class="vb-btn" href=(format!("/{slug}"))>"Continue to portal"</a>
-                </p>
-            }
-            <form method="POST" action="/login">
-                <label for="email">"Email"</label>
-                <input id="email" name="email" type="email" required="" autocomplete="username">
-                <label for="password">"Password"</label>
-                <input
-                    id="password"
-                    name="password"
-                    type="password"
-                    required=""
-                    autocomplete="current-password"
-                >
-                <button type="submit">"Sign in"</button>
-            </form>
-            <p class="vb-muted" style="margin-top: 16px; font-size: 12px;">
-                "Seed: admin@acme.example / password"
+    view! {
+        <h2>"Sign in"</h2>
+        <p class="vb-muted">"Access your customer organization."</p>
+        if let Some(slug) = continue_slug.clone() {
+            <p style="margin: 0 0 16px;">
+                <a class="vb-btn" href=(format!("/{slug}"))>"Continue to portal"</a>
             </p>
-        },
-    )
-    .await
+        }
+        <form method="POST" action="/login">
+            <label for="email">"Email"</label>
+            <input
+                id="email"
+                name="email"
+                type="email"
+                required=""
+                autocomplete="username"
+            >
+            <label for="password">"Password"</label>
+            <input
+                id="password"
+                name="password"
+                type="password"
+                required=""
+                autocomplete="current-password"
+            >
+            <button type="submit">"Sign in"</button>
+        </form>
+        <p class="vb-muted" style="margin-top: 16px; font-size: 12px;">
+            "Seed: admin@acme.example / password"
+        </p>
+    }
 }
 
 #[derive(Deserialize)]

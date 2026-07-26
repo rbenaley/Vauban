@@ -9,13 +9,7 @@ use topcoat::{
     view::view,
 };
 
-use crate::{
-    app::org::Org,
-    auth::require_org,
-    layout::{self, NavSection},
-    models::Release,
-    perms::perms_for_user,
-};
+use crate::{app::org::Org, auth::require_org, models::Release, perms::perms_for_user};
 
 const CHANNELS: &[&str] = &["LTS", "Stable", "EOL"];
 
@@ -40,7 +34,7 @@ async fn builds_page(cx: &Cx) -> Result {
         .unwrap_or_default();
     let channel = channel.trim();
     let releases = load_releases(cx, channel).await;
-    let body = render_builds(
+    render_builds(
         cx,
         slug,
         channel,
@@ -49,8 +43,7 @@ async fn builds_page(cx: &Cx) -> Result {
         false,
         perms.builds_download,
     )
-    .await;
-    layout::shell(cx, &ctx, &perms, NavSection::Builds, "builds", body).await
+    .await
 }
 
 pub(super) async fn render_builds(
@@ -70,8 +63,12 @@ pub(super) async fn render_builds(
     let base = format!("/{org_slug}/builds");
     let org = org_slug.to_owned();
     let channel_owned = channel.to_owned();
+    let show_ephemeral = show_link && can_download;
 
     view! { cx =>
+        signal panel_open = true;
+        signal eph_tab = 0.0;
+
         <h1 class="vb-title">"Certified LTS builds"</h1>
         <p class="vb-lead">"Signed and verified binaries. Click a version for its changelog."</p>
 
@@ -126,6 +123,7 @@ pub(super) async fn render_builds(
                         "https://dl.vauban.sh/eph/{}/{}?t=demo",
                         org, rel.version
                     );
+                    let curl_line = format!("$ fetch {link_url}");
 
                     <div>
                         <a class=(row_class) href=(row_href)>
@@ -140,7 +138,10 @@ pub(super) async fn render_builds(
                             <div style="color: var(--accent); text-align: right;">(caret)</div>
                         </a>
                         if is_open {
-                            <div class="vb-build-panel">
+                            <div
+                                class="vb-build-panel"
+                                :style=$(if panel_open.get() { "" } else { "display: none" })
+                            >
                                 <div class="vb-section-label">
                                     "RELEASE NOTES · "
                                     (rel.version.clone())
@@ -164,10 +165,15 @@ pub(super) async fn render_builds(
                                         <a class="vb-btn outline" href=(gen_href)>
                                             "⧖ Generate ephemeral link"
                                         </a>
+                                        <button
+                                            type="button"
+                                            class="vb-btn muted"
+                                            @click=$(|_e| panel_open.set(false))
+                                        >"Collapse"</button>
                                         <span class="vb-btn muted">"Verify signature"</span>
                                     </div>
                                 }
-                                if show_link && can_download {
+                                if show_ephemeral {
                                     <div class="vb-ephemeral">
                                         <div class="vb-ephemeral-bar">
                                             <div class="vb-mono" style="font-size: 11px; letter-spacing: 0.04em; color: var(--accent); display: flex; align-items: center; gap: 9px;">
@@ -179,21 +185,34 @@ pub(super) async fn render_builds(
                                             </span>
                                         </div>
                                         <div style="padding: 14px 16px;">
-                                            <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                                            <div class="vb-chip-row" style="margin-bottom: 12px;">
+                                                <button
+                                                    type="button"
+                                                    class="vb-chip"
+                                                    :class=$(if eph_tab.get() == 0.0 { "vb-chip active" } else { "vb-chip" })
+                                                    @click=$(|_e| eph_tab.set(0.0))
+                                                >"URL"</button>
+                                                <button
+                                                    type="button"
+                                                    class="vb-chip"
+                                                    :class=$(if eph_tab.get() == 1.0 { "vb-chip active" } else { "vb-chip" })
+                                                    @click=$(|_e| eph_tab.set(1.0))
+                                                >"cURL"</button>
+                                            </div>
+                                            <div :style=$(if eph_tab.get() == 0.0 { "" } else { "display: none" })>
                                                 <input
                                                     class="vb-mono"
                                                     readonly=""
                                                     value=(link_url.clone())
-                                                    style="flex: 1; min-width: 0; font-size: 12px; padding: 10px 12px; border: 1px solid #e8eae6; border-radius: 4px; background: #f7f8f6;"
+                                                    style="width: 100%; box-sizing: border-box; font-size: 12px; padding: 10px 12px; border: 1px solid #e8eae6; border-radius: 4px; background: #f7f8f6;"
                                                 >
                                             </div>
-                                            <div class="vb-mono" style="font-size: 10px; letter-spacing: 0.06em; color: #8a8f96; margin-bottom: 8px;">
-                                                "RUN ON YOUR SERVER · NO AUTH NEEDED"
+                                            <div :style=$(if eph_tab.get() == 1.0 { "" } else { "display: none" })>
+                                                <div class="vb-mono" style="font-size: 10px; letter-spacing: 0.06em; color: #8a8f96; margin-bottom: 8px;">
+                                                    "RUN ON YOUR SERVER · NO AUTH NEEDED"
+                                                </div>
+                                                <pre class="vb-pre" style="margin: 0;">(curl_line.clone())</pre>
                                             </div>
-                                            <pre class="vb-pre" style="margin: 0;">
-                                                "$ fetch "
-                                                (link_url)
-                                            </pre>
                                             <div style="font-size: 12px; color: #8a8f96; margin-top: 10px; line-height: 1.5;">
                                                 "Valid for 5 minutes, single binary, no authentication. Stub token for visual fidelity."
                                             </div>

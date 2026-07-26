@@ -12,7 +12,6 @@ use topcoat::{
 use crate::{
     app::org::Org,
     auth::require_org,
-    layout::{self, NavSection},
     models::{MAX_USERS_PER_COMPANY, Organization},
     perms::perms_for_user,
     ui,
@@ -33,8 +32,10 @@ async fn admin_companies_page(cx: &Cx) -> Result {
         .await
         .unwrap_or_default();
 
-    let body = view! {
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;">
+    view! {
+        <div
+            style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;"
+        >
             <div>
                 <h1 class="vb-title">"Client companies"</h1>
                 <p class="vb-lead" style="margin-bottom: 0;">
@@ -43,55 +44,71 @@ async fn admin_companies_page(cx: &Cx) -> Result {
                     " user accounts per company."
                 </p>
             </div>
-            <a class="vb-btn" href=(format!("/{}/admin/companies/new", slug))>"+ Onboard company"</a>
+            <a class="vb-btn" href=(format!("/{}/admin/companies/new", slug))>
+                "+ Onboard company"
+            </a>
         </div>
 
-        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px;">
+        <div
+            style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px;"
+        >
             if companies.is_empty() {
                 <div class="vb-empty">"No companies."</div>
             } else {
                 for company in companies {
                     let initials = ui::org_initials(&company.name);
                     <div class="vb-company-card">
-                        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 14px;">
-                            <div style="width: 40px; height: 40px; border-radius: 6px; background: color-mix(in srgb, var(--accent) 80%, #fff); color: #0c2520; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px;">
+                        <div
+                            style="display: flex; align-items: center; gap: 12px; margin-bottom: 14px;"
+                        >
+                            <div
+                                style="width: 40px; height: 40px; border-radius: 6px; background: color-mix(in srgb, var(--accent) 80%, #fff); color: #0c2520; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px;"
+                            >
                                 (initials)
                             </div>
                             <div style="min-width: 0;">
                                 <div style="font-weight: 700;">(company.name.clone())</div>
-                                <div class="vb-mono" style="font-size: 11px; color: #8a8f96;">
+                                <div
+                                    class="vb-mono"
+                                    style="font-size: 11px; color: #8a8f96;"
+                                >
                                     (company.slug.clone())
                                 </div>
                             </div>
-                            <span class="vb-badge soft" style="margin-left: auto;">(company.status.clone())</span>
+                            <span class="vb-badge soft" style="margin-left: auto;">
+                                (company.status.clone())
+                            </span>
                         </div>
-                        <div style="font-size: 13px; color: #5a5f66; line-height: 1.5; margin-bottom: 10px;">
+                        <div
+                            style="font-size: 13px; color: #5a5f66; line-height: 1.5; margin-bottom: 10px;"
+                        >
                             (company.address.clone())
                         </div>
-                        <div class="vb-mono" style="font-size: 11px; color: #8a8f96; margin-bottom: 8px;">
+                        <div
+                            class="vb-mono"
+                            style="font-size: 11px; color: #8a8f96; margin-bottom: 8px;"
+                        >
                             (company.vat.clone())
                         </div>
-                        <div style="font-size: 13px; margin-bottom: 12px;">(company.plan_label.clone())</div>
-                        <div class="vb-mono" style="font-size: 11px; color: var(--accent);">
+                        <div style="font-size: 13px; margin-bottom: 12px;">
+                            (company.plan_label.clone())
+                        </div>
+                        <div
+                            class="vb-mono"
+                            style="font-size: 11px; color: var(--accent);"
+                        >
                             "Accounts · max "
                             (MAX_USERS_PER_COMPANY.to_string())
                         </div>
-                        <a class="vb-link" href=(format!("/{}/admin/companies/new", slug))>
+                        <a
+                            class="vb-link"
+                            href=(format!("/{}/admin/companies/new", slug))
+                        >
                             "Edit →"
                         </a>
                     </div>
                 }
             }
         </div>
-    };
-
-    layout::shell(
-        cx,
-        &ctx,
-        &perms,
-        NavSection::AdminCompanies,
-        "admin / companies",
-        body,
-    )
-    .await
+    }
 }

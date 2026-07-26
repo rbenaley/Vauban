@@ -74,10 +74,23 @@ cp config/local.toml.example config/local.toml
 
 ## Run
 
+Install the Topcoat CLI once (asset bundling + `view!` formatting):
+
 ```bash
-just run          # HTTPS on https://127.0.0.1:8443 (development)
-just validate     # fmt-check + clippy -D warnings + tests
+cargo install topcoat-cli --version 0.4.0
 ```
+
+```bash
+just run          # build + asset bundle + HTTPS on https://127.0.0.1:8443
+just validate     # fmt-check (rustfmt + topcoat fmt) + clippy + tests
+just dev          # topcoat HMR (no custom TLS); prefer just run for HTTPS
+just bundle       # topcoat asset bundle → target/assets
+just fmt          # cargo fmt + topcoat fmt
+```
+
+`just run` keeps VCP’s custom TLS 1.3 serve path. `topcoat dev` is for
+UI HMR only; it does not replace HTTPS. Production fails closed if the
+asset bundle is missing (`AssetBundle::load()`).
 
 Smoke against a self-signed cert:
 
@@ -120,6 +133,6 @@ Wrong org slug → **404** (no cross-tenant leak). Admin nest requires `admin:vi
 
 ```bash
 just db-create-test   # once
-just validate         # fmt-check + clippy -D warnings + tests
+just validate         # fmt-check + clippy -D warnings + bundle + tests
 bash scripts/check_auth_tenant.sh
 ```

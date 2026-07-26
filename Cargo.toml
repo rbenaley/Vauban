@@ -25,7 +25,7 @@ thiserror = "2.0.19"
 toasty = { version = "0.9.0", features = ["postgresql"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
-topcoat = { version = "0.4.0", features = ["tailwind"] }
+topcoat = { version = "0.4.0", features = ["tailwind", "font-fontsource"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

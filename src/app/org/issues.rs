@@ -12,9 +12,9 @@ use topcoat::{
 };
 
 use crate::{
+    app::_components::{severity_badge, status_badge},
     app::org::Org,
     auth::{db, require_org},
-    layout::{self, NavSection},
     models::Issue,
     perms::perms_for_user,
 };
@@ -73,21 +73,33 @@ async fn issues_page(cx: &Cx) -> Result {
     };
     let q_value = query.and_then(|q| q.q.clone()).unwrap_or_default();
 
-    let body = view! {
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 6px;">
+    view! {
+        <div
+            style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 6px;"
+        >
             <h1 class="vb-title" style="margin: 0;">"Issue tracker"</h1>
             if perms.issues_write {
-                <a class="vb-btn" href=(format!("/{}/issues/new", slug))>"＋ Report an issue"</a>
+                <a class="vb-btn" href=(format!("/{}/issues/new", slug))>
+                    "＋ Report an issue"
+                </a>
             }
         </div>
         <p class="vb-lead" style="display: flex; align-items: center; gap: 8px;">
-            <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--warn); display: inline-block;"></span>
+            <span
+                style="width: 6px; height: 6px; border-radius: 50%; background: var(--warn); display: inline-block;"
+            ></span>
             "SLA: initial analysis within "
-            <strong style="color: var(--text); font-weight: 700;">"2–5 business days"</strong>
+            <strong style="color: var(--text); font-weight: 700;">
+                "2–5 business days"
+            </strong>
             "."
         </p>
 
-        <form method="GET" action=(base.clone()) style="display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;">
+        <form
+            method="GET"
+            action=(base.clone())
+            style="display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;"
+        >
             <input
                 class="vb-search"
                 style="margin: 0; flex: 1; min-width: 240px;"
@@ -108,8 +120,7 @@ async fn issues_page(cx: &Cx) -> Result {
                     format!("{base}?status={}", urlencoding_encode(s))
                 } else {
                     format!(
-                        "{base}?q={}&status={}",
-                        urlencoding_encode(&q),
+                        "{base}?q={}&status={}", urlencoding_encode(& q),
                         urlencoding_encode(s)
                     )
                 };
@@ -127,30 +138,34 @@ async fn issues_page(cx: &Cx) -> Result {
                 <div class="vb-empty">"No matching issues."</div>
             } else {
                 for issue in filtered {
-                    let sev_class = sev_class(&issue.severity);
-                    let status_class = status_class(&issue.status);
                     <a class="vb-row" href=(format!("/{}/issues/{}", slug, issue.key))>
-                        <div class="vb-mono" style="color: var(--accent); font-size: 12px; font-weight: 700; width: 76px; flex: none;">
+                        <div
+                            class="vb-mono"
+                            style="color: var(--accent); font-size: 12px; font-weight: 700; width: 76px; flex: none;"
+                        >
                             (issue.key.clone())
                         </div>
                         <div style="flex: 1; min-width: 0;">
-                            <div style="font-size: 14.5px; font-weight: 600; margin-bottom: 4px;">
+                            <div
+                                style="font-size: 14.5px; font-weight: 600; margin-bottom: 4px;"
+                            >
                                 (issue.title.clone())
                             </div>
-                            <div class="vb-mono" style="font-size: 11px; color: #8a8f96;">
+                            <div
+                                class="vb-mono"
+                                style="font-size: 11px; color: #8a8f96;"
+                            >
                                 (issue.component.clone())
                                 " · opened by customer · updated recently"
                             </div>
                         </div>
-                        <span class=(sev_class)>(issue.severity.clone())</span>
-                        <span class=(status_class)>(issue.status.clone())</span>
+                        severity_badge(severity: &issue.severity)
+                        status_badge(status: &issue.status)
                     </a>
                 }
             }
         </div>
-    };
-
-    layout::shell(cx, &ctx, &perms, NavSection::Issues, "issues", body).await
+    }
 }
 
 #[derive(Deserialize)]
@@ -200,27 +215,6 @@ async fn report_issue(cx: &Cx, Form(form): Form<ReportForm>) -> Result<SeeOther>
     }
 
     Ok(see_other(&format!("/{slug}/issues")))
-}
-
-pub(super) fn sev_class(severity: &str) -> &'static str {
-    match severity.to_ascii_lowercase().as_str() {
-        "critical" => "vb-sev critical",
-        "major" => "vb-sev major",
-        _ => "vb-sev minor",
-    }
-}
-
-pub(super) fn status_class(status: &str) -> &'static str {
-    let s = status.to_ascii_lowercase();
-    if s.contains("analysis") {
-        "vb-status analysis"
-    } else if s == "resolved" {
-        "vb-status resolved"
-    } else if s == "closed" {
-        "vb-status closed"
-    } else {
-        "vb-status open"
-    }
 }
 
 fn urlencoding_encode(value: &str) -> String {

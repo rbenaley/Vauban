@@ -8,11 +8,7 @@ use topcoat::{
 };
 
 use crate::{
-    app::org::Org,
-    auth::require_org,
-    layout::{self, NavSection},
-    models::MAX_USERS_PER_COMPANY,
-    perms::perms_for_user,
+    app::org::Org, auth::require_org, models::MAX_USERS_PER_COMPANY, perms::perms_for_user,
 };
 
 #[page]
@@ -26,9 +22,13 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
 
     let back = format!("/{slug}/admin/companies");
 
-    let body = view! {
+    view! {
         <div style="max-width: 720px;">
-            <a class="vb-link" href=(back.clone()) style="display: inline-block; margin-bottom: 16px;">
+            <a
+                class="vb-link"
+                href=(back.clone())
+                style="display: inline-block; margin-bottom: 16px;"
+            >
                 "← Client companies"
             </a>
             <h1 class="vb-title">"Onboard company"</h1>
@@ -49,20 +49,16 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
                     <textarea id="address" name="address"></textarea>
                     <div style="display: flex; gap: 12px; margin-top: 18px;">
                         <button class="vb-btn" type="submit">"Save (stub)"</button>
-                        <a class="vb-link" href=(back) style="margin: 0; align-self: center;">"Cancel"</a>
+                        <a
+                            class="vb-link"
+                            href=(back)
+                            style="margin: 0; align-self: center;"
+                        >
+                            "Cancel"
+                        </a>
                     </div>
                 </form>
             </div>
         </div>
-    };
-
-    layout::shell(
-        cx,
-        &ctx,
-        &perms,
-        NavSection::AdminCompanies,
-        "admin / companies / new",
-        body,
-    )
-    .await
+    }
 }

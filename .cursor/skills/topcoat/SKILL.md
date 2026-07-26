@@ -254,9 +254,10 @@ Concepts:
 - **`#[shard]`**: component re-rendered on the server when `$(...)`
   args change; HTML swapped in. **Same trust boundary as procedures.**
 
-**VCP:** fine for progressive UI (toggles, search-as-you-type). Prefer
-boring PRG forms for critical auth/billing mutations. Never treat shard /
-procedure args as trusted org/entitlement claims.
+**VCP:** allowed for progressive UI (modal dismiss, panel collapse,
+ephemeral tabs). Prefer boring PRG forms for login/admin mutations.
+Never treat shard / procedure args as trusted org/entitlement claims.
+Sensitive mutations stay **POST forms + PRG**. No React / HTMX / Alpine.
 
 ---
 
@@ -265,12 +266,24 @@ procedure args as trusted org/entitlement claims.
 - `const X: Asset = asset!("./file.png");` → content-hashed URL; serve via
   bundle from `topcoat` CLI / `AssetBundle::load()`.
 - Tailwind: feature `tailwind`, `topcoat::tailwind::stylesheet!()` —
-  standalone CLI, no Node required for that path.
-- `topcoat ui`: copy editable components into the project (shadcn-like).
-- Fonts / icons: `font!`, Iconify integration.
+  standalone CLI, no Node required for that path. VCP input CSS is
+  `styles.css` (`@import "tailwindcss"`, `@source`, Concept `@theme`).
+- Fonts: feature `font-fontsource` + `fontsource_font!` (see `src/fonts.rs`).
+- `topcoat ui`: **optional / out of scope for VCP** — keep Concept `vb-*`
+  components under `src/app/_components/`, do not vendor shadcn defaults.
 
-**VCP:** brand toward `vauban.sh`, not bastion dark admin chrome. Responsive
-rules: `responsive-ui.mdc`. Design workflow: `designing-beautiful-websites`.
+**VCP required idioms**
+
+| Idiom | Where |
+|-------|--------|
+| `#[layout]` + `Slot` | Root (`app.rs`), login splash, org chrome |
+| `#[component]` | `app/_components/*` (rail, topbar, modal, chips, badges) |
+| `stylesheet!()` + `runtime::script()` + `dev::script()` | Root layout `<head>` |
+| `AssetBundle::load()` | Fail closed in production; warn + empty only in dev/test |
+| `just bundle` / `topcoat asset bundle` | After build so CSS/runtime assets resolve |
+
+**VCP:** brand toward Concept / `vauban.sh`, not bastion dark admin chrome
+or Topcoat UI purple defaults. Responsive: `responsive-ui.mdc`.
 
 ---
 
@@ -306,13 +319,18 @@ expiry), `Organization`, `Membership`, plus stub `DocArticle` /
 
 | Command | Purpose |
 |---------|---------|
-| `topcoat dev` | Build, bundle, serve, watch, HMR |
-| `topcoat fmt` | Format `view!` and other macro bodies |
-| `topcoat ui …` | Init theme / add / update / remove UI components |
-| `cargo run` | Serve without the full CLI workflow |
+| `topcoat dev` | Build, bundle, serve, watch, HMR (no custom HTTPS) |
+| `just run` | **Preferred serve**: custom TLS 1.3 HTTPS + asset bundle |
+| `topcoat fmt` | Format `view!` and other macro bodies (`just fmt`) |
+| `topcoat asset bundle` | Write `target/assets` (`just bundle`) |
+| `topcoat ui …` | **Out of scope** for VCP Concept UI |
 
-Validation for VCP still follows `dev-validation-cycle.mdc` /
-`quality-assurance` (`cargo fmt`, clippy `-D warnings`, tests).
+Validation: `just validate` = rustfmt check + `topcoat fmt` no-op +
+clippy `-D warnings` + asset bundle + tests (`dev-validation-cycle.mdc` /
+`quality-assurance`). Requires `cargo install topcoat-cli`.
+
+**Do not** switch the binary to `topcoat::start` — VCP keeps
+`src/tls/serve.rs` for HTTPS.
 
 ---
 

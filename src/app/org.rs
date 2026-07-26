@@ -9,25 +9,52 @@ mod issues;
 use topcoat::{
     Result,
     context::Cx,
-    router::{page, path_param},
+    router::{Slot, layout, page, path_param},
     view::view,
 };
 
 use crate::{
     auth::require_org,
-    layout::{self, NavSection},
     models::{DocArticle, Issue, Release},
+    nav::nav_from_cx,
     perms::perms_for_user,
 };
 
+use super::_components::{vb_rail, vb_topbar};
+
 #[path_param]
 pub struct Org(str);
+
+#[layout]
+async fn org_layout(cx: &Cx, slot: Slot<'_>) -> Result {
+    let slug = path_param::<Org>(cx);
+    let ctx = require_org(cx, slug).await?;
+    let perms = perms_for_user(cx, &ctx.user).await;
+    let (section, crumb) = nav_from_cx(cx);
+    let org_slug = ctx.org.slug.clone();
+    let org_name = ctx.org.name.clone();
+
+    view! {
+        cx =>
+        <div class="vb-shell">
+            vb_rail(
+                org_slug: &org_slug,
+                org_name: &org_name,
+                section: section,
+                show_admin: perms.admin_view
+            )
+            <div class="vb-main">
+                vb_topbar(org_slug: &org_slug, org_name: &org_name, crumb: &crumb)
+                <div class="vb-scroll"><div class="vb-screen">(slot.await?)</div></div>
+            </div>
+        </div>
+    }
+}
 
 #[page]
 async fn dashboard(cx: &Cx) -> Result {
     let slug = path_param::<Org>(cx);
     let ctx = require_org(cx, slug).await?;
-    let perms = perms_for_user(cx, &ctx.user).await;
 
     let mut database = crate::auth::db(cx);
     let releases = Release::all().exec(&mut database).await.unwrap_or_default();
@@ -72,7 +99,7 @@ async fn dashboard(cx: &Cx) -> Result {
         })
         .collect();
 
-    let body = view! {
+    view! {
         <h1 class="vb-title">"Dashboard"</h1>
 
         <div class="vb-stat-row">
@@ -91,22 +118,41 @@ async fn dashboard(cx: &Cx) -> Result {
         </div>
 
         <div class="vb-grid-3">
-            <a class="vb-card" href=(format!("/{}/docs", slug)) style="padding: 20px; min-height: 168px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <a
+                class="vb-card"
+                href=(format!("/{}/docs", slug))
+                style="padding: 20px; min-height: 168px;"
+            >
+                <div
+                    style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
+                >
                     <span style="font-size: 20px;">"❏"</span>
-                    <span class="vb-mono" style="font-size: 10px; color: var(--muted-2);">
+                    <span
+                        class="vb-mono"
+                        style="font-size: 10px; color: var(--muted-2);"
+                    >
                         (article_count.to_string())
                         " articles"
                     </span>
                 </div>
-                <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">"Documentation"</div>
-                <div style="font-size: 13px; color: var(--muted); line-height: 1.45; flex: 1;">
+                <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">
+                    "Documentation"
+                </div>
+                <div
+                    style="font-size: 13px; color: var(--muted); line-height: 1.45; flex: 1;"
+                >
                     "Guides, API reference, and deployment runbooks."
                 </div>
                 <div class="vb-link">"Open →"</div>
             </a>
-            <a class="vb-card" href=(format!("/{}/builds", slug)) style="padding: 20px; min-height: 168px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <a
+                class="vb-card"
+                href=(format!("/{}/builds", slug))
+                style="padding: 20px; min-height: 168px;"
+            >
+                <div
+                    style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
+                >
                     <span style="font-size: 20px;">"⬡"</span>
                     <span class="vb-mono" style="font-size: 10px; color: var(--ok);">
                         (build_version.clone())
@@ -116,21 +162,33 @@ async fn dashboard(cx: &Cx) -> Result {
                 <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">
                     "LTS builds & changelogs"
                 </div>
-                <div style="font-size: 13px; color: var(--muted); line-height: 1.45; flex: 1;">
+                <div
+                    style="font-size: 13px; color: var(--muted); line-height: 1.45; flex: 1;"
+                >
                     "Signed, verified binaries with long-term support."
                 </div>
                 <div class="vb-link">"Open →"</div>
             </a>
-            <a class="vb-card" href=(format!("/{}/issues", slug)) style="padding: 20px; min-height: 168px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <a
+                class="vb-card"
+                href=(format!("/{}/issues", slug))
+                style="padding: 20px; min-height: 168px;"
+            >
+                <div
+                    style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
+                >
                     <span style="font-size: 20px;">"⚑"</span>
                     <span class="vb-mono" style="font-size: 10px; color: var(--warn);">
                         (open_count.to_string())
                         " open"
                     </span>
                 </div>
-                <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">"Issue tracker"</div>
-                <div style="font-size: 13px; color: var(--muted); line-height: 1.45; flex: 1;">
+                <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">
+                    "Issue tracker"
+                </div>
+                <div
+                    style="font-size: 13px; color: var(--muted); line-height: 1.45; flex: 1;"
+                >
                     "Report an issue. Initial analysis within 2–5 business days."
                 </div>
                 <div class="vb-link">"Open →"</div>
@@ -143,23 +201,35 @@ async fn dashboard(cx: &Cx) -> Result {
                 <div class="vb-activity-item">
                     <div class="vb-dot"></div>
                     <div style="flex: 1; font-size: 13.5px; color: #3a3f46;">
-                        <span class="vb-mono" style="color: var(--accent); font-size: 12.5px;">
+                        <span
+                            class="vb-mono"
+                            style="color: var(--accent); font-size: 12.5px;"
+                        >
                             (build_version.clone())
                         </span>
-                        " (" (build_channel.clone()) ") certified and signed"
+                        " ("
+                        (build_channel.clone())
+                        ") certified and signed"
                     </div>
-                    <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">"Jun 23"</div>
+                    <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">
+                        "Jun 23"
+                    </div>
                 </div>
                 if let Some(issue) = issues.first() {
                     <div class="vb-activity-item">
                         <div class="vb-dot warn"></div>
                         <div style="flex: 1; font-size: 13.5px; color: #3a3f46;">
-                            <span class="vb-mono" style="color: var(--accent); font-size: 12.5px;">
+                            <span
+                                class="vb-mono"
+                                style="color: var(--accent); font-size: 12.5px;"
+                            >
                                 (issue.key.clone())
                             </span>
                             " moved to analysis"
                         </div>
-                        <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">"3h ago"</div>
+                        <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">
+                            "3h ago"
+                        </div>
                     </div>
                 }
                 if let Some(doc) = articles.first() {
@@ -169,33 +239,48 @@ async fn dashboard(cx: &Cx) -> Result {
                             (doc.title.clone())
                             " — documentation updated"
                         </div>
-                        <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">"Jun 12"</div>
+                        <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">
+                            "Jun 12"
+                        </div>
                     </div>
                 }
             </div>
             <div class="vb-panel">
                 <div class="vb-section-label">"LATEST CERTIFIED BUILD"</div>
-                <div style="display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;">
+                <div
+                    style="display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;"
+                >
                     <span class="vb-mono" style="font-size: 22px; font-weight: 700;">
                         (build_version)
                     </span>
                     <span class="vb-badge">(build_channel)</span>
-                    <span class="vb-mono" style="font-size: 11px; color: var(--ok);">"signed ✓"</span>
+                    <span class="vb-mono" style="font-size: 11px; color: var(--ok);">
+                        "signed ✓"
+                    </span>
                 </div>
                 for (tag, text) in note_lines {
                     <div style="display: flex; gap: 10px; margin-bottom: 8px;">
-                        <span class="vb-mono" style="font-size: 9px; font-weight: 600; color: var(--ok); flex: none;">
+                        <span
+                            class="vb-mono"
+                            style="font-size: 9px; font-weight: 600; color: var(--ok); flex: none;"
+                        >
                             (tag)
                         </span>
-                        <span style="font-size: 13px; color: #5a5f66; line-height: 1.5;">(text)</span>
+                        <span
+                            style="font-size: 13px; color: #5a5f66; line-height: 1.5;"
+                        >
+                            (text)
+                        </span>
                     </div>
                 }
-                <a class="vb-link" href=(format!("/{}/builds", slug)) style="display: inline-block; margin-top: 14px;">
+                <a
+                    class="vb-link"
+                    href=(format!("/{}/builds", slug))
+                    style="display: inline-block; margin-top: 14px;"
+                >
                     "All builds →"
                 </a>
             </div>
         </div>
-    };
-
-    layout::shell(cx, &ctx, &perms, NavSection::Home, "dashboard", body).await
+    }
 }

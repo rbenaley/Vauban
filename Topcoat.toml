@@ -1,0 +1,3 @@
+# Topcoat project marker (CLI: topcoat fmt, topcoat dev, topcoat asset bundle).
+# VCP keeps a custom HTTPS serve path — prefer `just run` for TLS; use
+# `topcoat dev` for HMR during UI work (see README).

@@ -40,8 +40,8 @@ static-asset embedding assumptions unless explicitly requested.
 | Reactivity | Optional `topcoat-runtime`: signals, `$(...)`, `@` / `:` — **experimental / limited vocabulary** |
 | Server partials | `#[shard]` (HTTP re-render; **args are untrusted**) |
 | Server actions | `#[procedure]` (HTTP RPC; **args are untrusted**) |
-| Styling | `tailwind` feature + `topcoat ui` (vendored shadcn-like components) |
-| Assets | `asset!` + `AssetBundle::load()`; fonts/icons via Topcoat helpers |
+| Styling | `tailwind` + `styles.css` Concept `@theme` / `vb-*` (not Topcoat UI) |
+| Assets | `stylesheet!()` + `AssetBundle::load()`; Fontsource via `font-fontsource` |
 | Cookies | `.cookies()`; signed / private (AES-256-GCM) jars; app `Key` in app context |
 | Sessions | `.sessions(SessionConfig)` — BYO storage of **SHA-256 token hash** + expiry |
 | CSRF | Session `OriginLayer` (Sec-Fetch-Site / Origin) — keep mutations on non-GET |
@@ -49,7 +49,7 @@ static-asset embedding assumptions unless explicitly requested.
 | Dates in HTML | `vcp_tz` cookie + `format_local*` — see `timezone-localization.mdc` |
 | ORM | **Toasty** ([tokio-rs/toasty](https://github.com/tokio-rs/toasty)) |
 | Database | **PostgreSQL** (dev / staging / prod). SQLite is not the default |
-| Tooling | `topcoat dev`, `topcoat fmt`, `topcoat ui`; include `topcoat::dev::script()` in layouts for HMR |
+| Tooling | `just run` (HTTPS), `topcoat dev` (HMR), `topcoat fmt`, `just bundle`; root layout includes `runtime::script()` + `dev::script()` |
 
 ## Database / ORM (Toasty + PostgreSQL)
 
@@ -122,29 +122,32 @@ src/
 |-- models/                -> toasty::Model types
 |-- auth.rs                -> current_user / require_* helpers
 |-- perms.rs               -> PermissionContext + Casbin
-|-- layout.rs              -> shell primitives (rail, breadcrumb)
-|-- app.rs                 -> module_router! root + cookies/sessions/db
+|-- nav.rs                 -> NavSection + crumb from URI
+|-- fonts.rs               -> Fontsource Hanken / JetBrains
+|-- app.rs                 -> root #[layout], module_router!, assets
 `-- app/
-    |-- login.rs           -> /login
-    `-- org.rs             -> /{org} (path_param) + dashboard
+    |-- _components/       -> #[component] vb_* (group, no URL)
+    |-- login.rs           -> login #[layout] + /login
+    `-- org.rs             -> org #[layout] (rail/topbar) + /{org}
         `-- org/
             |-- docs.rs
             |-- builds.rs
             |-- issues.rs
             |-- account.rs
             `-- admin.rs   -> /{org}/admin/* (admin_view gate)
-                `-- admin/
-                    |-- docs.rs
-                    |-- releases.rs
-                    `-- companies.rs
 ```
+
+`styles.css` + `Topcoat.toml` at package root. Pages return **bodies only**;
+layouts own chrome. Deep-link routes for docs/builds/issues stay shareable;
+runtime signals enhance in-page dismiss/collapse/tabs only.
 
 ### Shell conventions (Concept mockups)
 
-- Dark left rail, light content, accent teal `#117a6b`.
-- Breadcrumb: `portal / {org} / {section}`.
+- Dark left rail, light content, accent teal `#117a6b` (`@theme` + `vb-*`).
+- Breadcrumb: `vauban://portal / {org} / {section}` via `vb_topbar`.
 - Client rail: Home, Docs, Builds, Issues; Admin rail: Docs, Rel., Orgs.
 - Org initials control links to `/{org}/account`.
+- **Do not** vendor `topcoat ui` for the portal shell.
 
 - HTML pages for humans; JSON under `/api/...` only for M2M / webhooks.
 - HTML forms MUST NOT post to machine JSON APIs as a substitute for
@@ -157,9 +160,9 @@ src/
 - **Server-first**: components may be async and talk to the DB directly.
 - **No parallel SPA**: do not introduce React/Vue/Svelte for the portal
   shell unless the user explicitly asks.
-- Use Topcoat UI primitives (button, card, …) vendored into the repo so
-  design can be edited locally — align brand with `vauban.sh`, not the
-  bastion dark admin chrome by default.
+- Prefer Concept `#[component]` fragments under `app/_components`. Topcoat
+  UI registry vendoring is optional/out of scope — align with Concept /
+  `vauban.sh`, not bastion dark admin chrome or shadcn defaults.
 - Accessibility: visible focus, labels, sensible semantics; WCAG 2.1 AA
   as the bar for interactive flows.
 - Responsive: follow `responsive-ui.mdc` (mobile-first, 375 px).

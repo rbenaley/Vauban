@@ -5,12 +5,7 @@ use topcoat::{
     view::view,
 };
 
-use crate::{
-    app::org::Org,
-    auth::require_org,
-    layout::{self, NavSection},
-    perms::perms_for_user,
-};
+use crate::{app::org::Org, auth::require_org, perms::perms_for_user};
 
 #[page]
 async fn account_page(cx: &Cx) -> Result {
@@ -25,11 +20,14 @@ async fn account_page(cx: &Cx) -> Result {
     let user_name = ctx.user.display_name.clone();
     let user_email = ctx.user.email.clone();
 
-    let body = view! {
+    view! {
         <h1 class="vb-title">"Account & subscription"</h1>
         <p class="vb-lead">"Organization profile and plan entitlements."</p>
 
-        <div class="vb-panel" style="display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 12px;">
+        <div
+            class="vb-panel"
+            style="display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 12px;"
+        >
             <div>
                 <div style="font-weight: 800; font-size: 18px;">(org.name.clone())</div>
                 <div class="vb-muted">(org.plan_label.clone())</div>
@@ -49,7 +47,9 @@ async fn account_page(cx: &Cx) -> Result {
             </div>
             <div class="vb-kv">
                 <span class="vb-muted">"Vauban Industrial LTS subscriptions"</span>
-                <span class="vb-mono">(org.industrial_lts_subscriptions.to_string())</span>
+                <span class="vb-mono">
+                    (org.industrial_lts_subscriptions.to_string())
+                </span>
             </div>
             <div class="vb-kv">
                 <span class="vb-muted">"Technical contact"</span>
@@ -76,7 +76,5 @@ async fn account_page(cx: &Cx) -> Result {
         <form method="POST" action="/logout">
             <button class="vb-btn ghost" type="submit">"Sign out"</button>
         </form>
-    };
-
-    layout::shell(cx, &ctx, &perms, NavSection::Account, "account", body).await
+    }
 }

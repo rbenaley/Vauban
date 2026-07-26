@@ -9,10 +9,7 @@ use topcoat::{
 
 use super::{DocsFilter, docs_list_view, load_filtered_docs};
 use crate::{
-    app::org::Org,
-    auth::require_org,
-    layout::{self, NavSection},
-    models::DocArticle,
+    app::_components::article_modal_shell, app::org::Org, auth::require_org, models::DocArticle,
     perms::perms_for_user,
 };
 
@@ -39,61 +36,30 @@ async fn doc_article_page(cx: &Cx) -> Result {
     };
 
     let (q, cat, filtered) = load_filtered_docs(cx, &DocsFilter::from_cx(cx)).await;
-    let body = docs_list_view(cx, org_slug, &q, &cat, &filtered).await;
+    let list = docs_list_view(cx, org_slug, &q, &cat, &filtered).await;
     let close_href = format!("/{org_slug}/docs");
-    let modal = article_modal(cx, &article, org_slug, &close_href).await;
-
-    layout::shell_with_modal(
-        cx,
-        &ctx,
-        &perms,
-        NavSection::Docs,
-        "documentation",
-        body,
-        modal,
-    )
-    .await
-}
-
-async fn article_modal(cx: &Cx, article: &DocArticle, org_slug: &str, close_href: &str) -> Result {
-    let close = close_href.to_owned();
-    let close2 = close.clone();
-    let cat = article.category.clone();
-    let version = article.version.clone();
+    let blocks = article_blocks(cx, &article.slug, &article.summary, org_slug).await;
     let title = article.title.clone();
-    let summary = article.summary.clone();
-    let slug = article.slug.clone();
-    let org = org_slug.to_owned();
-    let blocks = article_blocks(cx, &slug, &summary, &org).await;
+    let category = article.category.clone();
+    let version = article.version.clone();
 
-    view! { cx =>
-        <div class="vb-modal-root" role="dialog" aria-modal="true" aria-label=(title.clone())>
-            <a class="vb-modal-backdrop" href=(close.clone()) aria-label="Close article"></a>
-            <div class="vb-modal">
-                <div class="vb-modal-head">
-                    <div>
-                        <div class="vb-mono" style="font-size: 10px; color: var(--accent); letter-spacing: 0.06em; margin-bottom: 8px;">
-                            (cat)
-                            " · Updated "
-                            (version)
-                        </div>
-                        <h2 style="font-size: 23px; font-weight: 800; margin: 0; line-height: 1.25;">
-                            (title)
-                        </h2>
-                    </div>
-                    <a class="vb-modal-close" href=(close2) aria-label="Close">"✕"</a>
-                </div>
-                <div class="vb-modal-body">
-                    (blocks?)
-                </div>
-            </div>
-        </div>
+    view! {
+        cx =>
+        (list?)
+        article_modal_shell(
+            title: &title,
+            category: &category,
+            version: &version,
+            close_href: &close_href,
+            body: blocks
+        )
     }
 }
 
 async fn article_blocks(cx: &Cx, slug: &str, summary: &str, org_slug: &str) -> Result {
     if slug == "quick-start" {
-        return view! { cx =>
+        return view! {
+            cx =>
             <p>
                 "Vauban ships as a single signed binary. This guide takes you from a fresh host to your first end-to-end recorded SSH session in about fifteen minutes. No agent is installed on the protected machines — every connection is brokered by the bastion."
             </p>
@@ -124,9 +90,15 @@ async fn article_blocks(cx: &Cx, slug: &str, summary: &str, org_slug: &str) -> R
                 "$ vauban host add db-01.acme.internal \\\n    --group production \\\n    --protocol ssh"
             </pre>
             <ul>
-                <li>"Use stable DNS names rather than IP addresses so policies survive re-addressing."</li>
-                <li>"Group by blast radius (production, staging, pci) — not by team."</li>
-                <li>"A host can belong to several groups; the most restrictive policy wins."</li>
+                <li>
+                    "Use stable DNS names rather than IP addresses so policies survive re-addressing."
+                </li>
+                <li>
+                    "Group by blast radius (production, staging, pci) — not by team."
+                </li>
+                <li>
+                    "A host can belong to several groups; the most restrictive policy wins."
+                </li>
             </ul>
             <h3>"3. Define an access policy"</h3>
             <p>
@@ -152,14 +124,17 @@ async fn article_blocks(cx: &Cx, slug: &str, summary: &str, org_slug: &str) -> R
             <ul>
                 <li>"Enable WebAuthn hardware keys for privileged sessions."</li>
                 <li>"Wire audit events to your SIEM via native export or webhooks."</li>
-                <li>"Deploy a second node behind a TCP load balancer for high availability."</li>
+                <li>
+                    "Deploy a second node behind a TCP load balancer for high availability."
+                </li>
             </ul>
         };
     }
 
     let summary = summary.to_owned();
     let org = org_slug.to_owned();
-    view! { cx =>
+    view! {
+        cx =>
         <h3>"Overview"</h3>
         <p>(summary.clone())</p>
         <h3>"Example"</h3>

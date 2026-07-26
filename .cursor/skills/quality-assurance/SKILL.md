@@ -17,7 +17,7 @@ Companion hard gates:
 A task is **not done** until format, clippy, relevant structural lints,
 and tests all pass on the touched scope.
 
-1. **Format** — `rtk cargo fmt` (+ `topcoat fmt` when macros changed)
+1. **Format** — `just fmt` (`cargo fmt` + `topcoat fmt`; signal files skipped)
 2. **Clippy** — warnings as errors on touched crates
 3. **Structural lints** — matching `scripts/check_*.sh` only
 4. **Focused tests** — change + denial paths; then widen before hand-off
@@ -122,7 +122,7 @@ Happy-path-only tests are insufficient for those seams.
 
 ## 2. Definition of done
 
-- [ ] `cargo fmt` clean (and `topcoat fmt` if applicable)
+- [ ] `just fmt` / `just fmt-check` clean (includes topcoat fmt)
 - [ ] Clippy `-D warnings` clean on touched crates
 - [ ] Relevant structural lints green
 - [ ] Focused tests executed and green after the above
@@ -158,7 +158,7 @@ Happy-path-only tests are insufficient for those seams.
 
 ### Scaffold smoke targets
 
-- `topcoat dev` (or `cargo run`) with Postgres + seed user.
+- `just run` (HTTPS + asset bundle) or `topcoat dev` (HMR) with Postgres + seed user.
 - Login → `/{org}/` dashboard for a member org.
 - Wrong org slug → **404** (no cross-tenant leak).
 - Non-admin hitting `/{org}/admin/*` → **403** / forbidden.
