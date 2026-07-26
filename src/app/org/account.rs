@@ -22,38 +22,59 @@ async fn account_page(cx: &Cx) -> Result {
     }
 
     let org = ctx.org.clone();
+    let user_name = ctx.user.display_name.clone();
+    let user_email = ctx.user.email.clone();
 
     let body = view! {
-        <h1>"Account & subscription"</h1>
-        <div class="card" style="margin-top: 18px; display: flex; justify-content: space-between; gap: 16px; align-items: center;">
+        <h1 class="vb-title">"Account & subscription"</h1>
+        <p class="vb-lead">"Organization profile and plan entitlements."</p>
+
+        <div class="vb-panel" style="display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 12px;">
             <div>
                 <div style="font-weight: 800; font-size: 18px;">(org.name.clone())</div>
-                <div class="muted">(org.plan_label.clone())</div>
+                <div class="vb-muted">(org.plan_label.clone())</div>
             </div>
-            <div style="font-family: ui-monospace, monospace; font-size: 12px; color: var(--accent); background: #e7f6f2; padding: 4px 10px; border-radius: 999px;">
-                (org.status.clone())
-            </div>
+            <span class="vb-badge soft">(org.status.clone())</span>
         </div>
-        <div class="card" style="margin-top: 12px;">
-            <div style="display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #e8ebe6;">
-                <span class="muted">"Supported builds"</span>
-                <span>(org.supported_builds.clone())</span>
+
+        <div class="vb-panel" style="margin-bottom: 12px;">
+            <div class="vb-section-label">"SUBSCRIPTION"</div>
+            <div class="vb-kv">
+                <span class="vb-muted">"Supported builds"</span>
+                <span class="vb-mono">(org.supported_builds.clone())</span>
             </div>
-            <div style="display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #e8ebe6;">
-                <span class="muted">"Vauban LTS subscriptions"</span>
-                <span>(org.lts_subscriptions.to_string())</span>
+            <div class="vb-kv">
+                <span class="vb-muted">"Vauban LTS subscriptions"</span>
+                <span class="vb-mono">(org.lts_subscriptions.to_string())</span>
             </div>
-            <div style="display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #e8ebe6;">
-                <span class="muted">"Vauban Industrial LTS subscriptions"</span>
-                <span>(org.industrial_lts_subscriptions.to_string())</span>
+            <div class="vb-kv">
+                <span class="vb-muted">"Vauban Industrial LTS subscriptions"</span>
+                <span class="vb-mono">(org.industrial_lts_subscriptions.to_string())</span>
             </div>
-            <div style="display: flex; justify-content: space-between; padding: 10px 0;">
-                <span class="muted">"Technical contact"</span>
+            <div class="vb-kv">
+                <span class="vb-muted">"Technical contact"</span>
                 <span>(org.technical_contact.clone())</span>
             </div>
         </div>
-        <form method="POST" action="/logout" style="margin-top: 18px;">
-            <button class="btn" type="submit">"Sign out"</button>
+
+        <div class="vb-panel" style="margin-bottom: 18px;">
+            <div class="vb-section-label">"SIGNED-IN USER"</div>
+            <div class="vb-kv">
+                <span class="vb-muted">"Name"</span>
+                <span>(user_name)</span>
+            </div>
+            <div class="vb-kv">
+                <span class="vb-muted">"Email"</span>
+                <span class="vb-mono">(user_email)</span>
+            </div>
+            <div class="vb-kv">
+                <span class="vb-muted">"Role"</span>
+                <span class="vb-mono">(ctx.user.role.clone())</span>
+            </div>
+        </div>
+
+        <form method="POST" action="/logout">
+            <button class="vb-btn ghost" type="submit">"Sign out"</button>
         </form>
     };
 

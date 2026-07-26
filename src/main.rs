@@ -24,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
 
     let database = db::connect(&cfg.database.url).await?;
     db::seed_if_empty(&database).await?;
+    db::ensure_demo_catalog(&database).await?;
 
     let policy = Arc::new(perms::PolicyStore::load_from_csv(&cfg.access.policy_path)?);
     let (tls_config, resolver) = tls::build_server_config(&cfg)?;

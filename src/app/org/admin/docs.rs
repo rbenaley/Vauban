@@ -1,3 +1,7 @@
+//! Admin documentation list at `/{org}/admin/docs`.
+
+mod new;
+
 use topcoat::{
     Result,
     context::Cx,
@@ -29,34 +33,57 @@ async fn admin_docs_page(cx: &Cx) -> Result {
         .unwrap_or_default();
 
     let body = view! {
-        <h1>"Documentation editor"</h1>
-        <p class="muted">"Draft and publish knowledge-base articles (stub)."</p>
-        <div class="card" style="margin-top: 18px;">
-            if articles.is_empty() {
-                <p class="muted">"No articles. Editor UI ships in a later slice."</p>
-            } else {
-                <table>
-                    <thead>
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;">
+            <div>
+                <h1 class="vb-title">"Documentation editor"</h1>
+                <p class="vb-lead" style="margin-bottom: 0;">
+                    "Draft, publish, and revise knowledge-base articles."
+                </p>
+            </div>
+            <a class="vb-btn" href=(format!("/{}/admin/docs/new", slug))>"+ New article"</a>
+        </div>
+
+        <div class="vb-table-wrap">
+            <table class="vb-table">
+                <thead>
+                    <tr>
+                        <th>"TITLE"</th>
+                        <th>"CATEGORY"</th>
+                        <th>"VER."</th>
+                        <th>"STATUS"</th>
+                        <th>"ACTIONS"</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    if articles.is_empty() {
                         <tr>
-                            <th>"TITLE"</th>
-                            <th>"CATEGORY"</th>
-                            <th>"SLUG"</th>
+                            <td colspan="5"><div class="vb-empty">"No articles yet."</div></td>
                         </tr>
-                    </thead>
-                    <tbody>
+                    } else {
                         for article in articles {
                             <tr>
-                                <td>(article.title.clone())</td>
+                                <td style="font-family: 'Hanken Grotesk', sans-serif; font-weight: 700;">
+                                    (article.title.clone())
+                                </td>
                                 <td>(article.category.clone())</td>
-                                <td style="font-family: ui-monospace, monospace;">
-                                    (article.slug.clone())
+                                <td>(article.version.clone())</td>
+                                <td>
+                                    <span class="vb-badge soft">(article.status.clone())</span>
+                                </td>
+                                <td>
+                                    <a class="vb-link" href=(format!("/{}/admin/docs/new", slug)) style="margin: 0;">
+                                        "Edit"
+                                    </a>
                                 </td>
                             </tr>
                         }
-                    </tbody>
-                </table>
-            }
+                    }
+                </tbody>
+            </table>
         </div>
+        <p class="vb-muted" style="margin-top: 14px;">
+            "Publish / unpublish mutations ship in a later slice."
+        </p>
     };
 
     layout::shell(

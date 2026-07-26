@@ -90,17 +90,61 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
     .exec(&mut db)
     .await?;
 
-    toasty::create!(DocArticle {
-        title: "Quick start — deploy Vauban in 15 minutes".to_owned(),
-        summary: "Install the bastion, enroll a host, and open a supervised SSH session."
-            .to_owned(),
-        category: "Getting started".to_owned(),
-        slug: "quick-start".to_owned(),
-        version: "v1".to_owned(),
-        status: "PUBLISHED".to_owned(),
-    })
-    .exec(&mut db)
-    .await?;
+    for (title, summary, category, slug) in [
+        (
+            "Quick start — deploy Vauban in 15 minutes",
+            "Install the bastion, enroll a host, and open a supervised SSH session.",
+            "Getting started",
+            "quick-start",
+        ),
+        (
+            "Bastion architecture: SSH proxy & RDP gateway",
+            "How the control plane, proxies, and audit path fit together.",
+            "Getting started",
+            "bastion-architecture",
+        ),
+        (
+            "High-availability (HA) deployment",
+            "Multi-node layout, failover expectations, and health checks.",
+            "Deployment",
+            "ha-deployment",
+        ),
+        (
+            "Configuring RBAC: roles, groups, and policies",
+            "Casbin model, role nesting, and least-privilege patterns.",
+            "Security",
+            "configuring-rbac",
+        ),
+        (
+            "Enabling MFA (TOTP, WebAuthn)",
+            "Require a second factor for interactive and API access.",
+            "Security",
+            "enabling-mfa",
+        ),
+        (
+            "Session recording & replay",
+            "Retention, storage, and forensic replay of supervised sessions.",
+            "Operations",
+            "session-recording",
+        ),
+        (
+            "API reference — REST & audit events",
+            "Machine endpoints, authentication, and event schemas.",
+            "API",
+            "api-reference",
+        ),
+    ] {
+        toasty::create!(DocArticle {
+            title: title.to_owned(),
+            summary: summary.to_owned(),
+            category: category.to_owned(),
+            slug: slug.to_owned(),
+            version: "v1".to_owned(),
+            status: "PUBLISHED".to_owned(),
+        })
+        .exec(&mut db)
+        .await?;
+    }
 
     toasty::create!(Release {
         version: "v1.0.0".to_owned(),
@@ -116,6 +160,18 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
     .exec(&mut db)
     .await?;
 
+    toasty::create!(Release {
+        version: "v0.8.6".to_owned(),
+        channel: "LTS".to_owned(),
+        released_on: "2026-06-18".to_owned(),
+        size_mb: "20.4".to_owned(),
+        signature_prefix: "a91c002".to_owned(),
+        status: "PUBLISHED".to_owned(),
+        notes: "FIX: proxy reconnect under load\nFIX: audit seal clock skew".to_owned(),
+    })
+    .exec(&mut db)
+    .await?;
+
     toasty::create!(Issue {
         key: "VBN-214".to_owned(),
         title: "Intermittent SSH proxy latency under heavy load".to_owned(),
@@ -127,7 +183,117 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
     .exec(&mut db)
     .await?;
 
+    toasty::create!(Issue {
+        key: "VBN-208".to_owned(),
+        title: "RDP clipboard sync drops large payloads".to_owned(),
+        component: "RDP Gateway".to_owned(),
+        severity: "Minor".to_owned(),
+        status: "Open".to_owned(),
+        organization_id: org.id,
+    })
+    .exec(&mut db)
+    .await?;
+
     let _ = (admin, member);
+    Ok(())
+}
+
+/// Top up missing Concept catalog rows when the DB already had a sparse seed.
+pub async fn ensure_demo_catalog(db: &Db) -> anyhow::Result<()> {
+    let mut db = db.clone();
+    let existing = DocArticle::all().exec(&mut db).await?;
+    let have: std::collections::HashSet<String> = existing.into_iter().map(|a| a.slug).collect();
+
+    for (title, summary, category, slug) in [
+        (
+            "Bastion architecture: SSH proxy & RDP gateway",
+            "How the control plane, proxies, and audit path fit together.",
+            "Getting started",
+            "bastion-architecture",
+        ),
+        (
+            "High-availability (HA) deployment",
+            "Multi-node layout, failover expectations, and health checks.",
+            "Deployment",
+            "ha-deployment",
+        ),
+        (
+            "Configuring RBAC: roles, groups, and policies",
+            "Casbin model, role nesting, and least-privilege patterns.",
+            "Security",
+            "configuring-rbac",
+        ),
+        (
+            "Enabling MFA (TOTP, WebAuthn)",
+            "Require a second factor for interactive and API access.",
+            "Security",
+            "enabling-mfa",
+        ),
+        (
+            "Session recording & replay",
+            "Retention, storage, and forensic replay of supervised sessions.",
+            "Operations",
+            "session-recording",
+        ),
+        (
+            "API reference — REST & audit events",
+            "Machine endpoints, authentication, and event schemas.",
+            "API",
+            "api-reference",
+        ),
+    ] {
+        if have.contains(slug) {
+            continue;
+        }
+        toasty::create!(DocArticle {
+            title: title.to_owned(),
+            summary: summary.to_owned(),
+            category: category.to_owned(),
+            slug: slug.to_owned(),
+            version: "v1".to_owned(),
+            status: "PUBLISHED".to_owned(),
+        })
+        .exec(&mut db)
+        .await?;
+    }
+
+    let releases = Release::all().exec(&mut db).await?;
+    let have_ver: std::collections::HashSet<String> =
+        releases.into_iter().map(|r| r.version).collect();
+    for (version, channel, date, size, sig, notes) in [
+        (
+            "v0.8.6",
+            "Stable",
+            "2026-06-18",
+            "22.2",
+            "a3f9c1e",
+            "SECURITY: Self-heal CSRF on login after session expiry.",
+        ),
+        (
+            "v0.7.16",
+            "Stable",
+            "2026-05-22",
+            "20.4",
+            "7d2b80a",
+            "FIX: Stability and security fixes for the SSH proxy.\nRBAC: Support for nested groups in policies.",
+        ),
+    ] {
+        if have_ver.contains(version) {
+            continue;
+        }
+        toasty::create!(Release {
+            version: version.to_owned(),
+            channel: channel.to_owned(),
+            released_on: date.to_owned(),
+            size_mb: size.to_owned(),
+            signature_prefix: sig.to_owned(),
+            status: "PUBLISHED".to_owned(),
+            notes: notes.to_owned(),
+        })
+        .exec(&mut db)
+        .await?;
+    }
+
     Ok(())
 }
 

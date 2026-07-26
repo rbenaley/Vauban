@@ -1,3 +1,7 @@
+//! Admin releases list at `/{org}/admin/releases`.
+
+mod new;
+
 use topcoat::{
     Result,
     context::Cx,
@@ -26,36 +30,55 @@ async fn admin_releases_page(cx: &Cx) -> Result {
     let releases = Release::all().exec(&mut database).await.unwrap_or_default();
 
     let body = view! {
-        <h1>"Release manager"</h1>
-        <p class="muted">"Publish signed LTS builds (stub — no upload yet)."</p>
-        <div class="card" style="margin-top: 18px;">
-            if releases.is_empty() {
-                <p class="muted">"No releases recorded."</p>
-            } else {
-                <table>
-                    <thead>
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;">
+            <div>
+                <h1 class="vb-title">"Release manager"</h1>
+                <p class="vb-lead" style="margin-bottom: 0;">
+                    "Publish signed builds that appear in the customer Builds list."
+                </p>
+            </div>
+            <a class="vb-btn" href=(format!("/{}/admin/releases/new", slug))>"+ Publish release"</a>
+        </div>
+
+        <div class="vb-table-wrap">
+            <table class="vb-table">
+                <thead>
+                    <tr>
+                        <th>"VERSION"</th>
+                        <th>"CHANNEL"</th>
+                        <th>"DATE"</th>
+                        <th>"SIZE"</th>
+                        <th>"STATUS"</th>
+                        <th>"ACTIONS"</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    if releases.is_empty() {
                         <tr>
-                            <th>"VERSION"</th>
-                            <th>"CHANNEL"</th>
-                            <th>"DATE"</th>
-                            <th>"SIZE"</th>
+                            <td colspan="6"><div class="vb-empty">"No releases recorded."</div></td>
                         </tr>
-                    </thead>
-                    <tbody>
+                    } else {
                         for rel in releases {
                             <tr>
-                                <td style="font-family: ui-monospace, monospace;">
-                                    (rel.version.clone())
-                                </td>
-                                <td>(rel.channel.clone())</td>
+                                <td style="font-weight: 700;">(rel.version.clone())</td>
+                                <td><span class="vb-badge soft">(rel.channel.clone())</span></td>
                                 <td>(rel.released_on.clone())</td>
                                 <td>(rel.size_mb.clone()) " MB"</td>
+                                <td>(rel.status.clone())</td>
+                                <td>
+                                    <a class="vb-link" href=(format!("/{}/admin/releases/new", slug)) style="margin: 0;">
+                                        "Edit"
+                                    </a>
+                                </td>
                             </tr>
                         }
-                    </tbody>
-                </table>
-            }
+                    }
+                </tbody>
+            </table>
         </div>
+        <p class="vb-muted" style="margin-top: 14px;">
+            "Upload and signing workflow ships in a later slice."
+        </p>
     };
 
     layout::shell(

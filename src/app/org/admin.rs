@@ -28,20 +28,32 @@ async fn admin_index(cx: &Cx) -> Result {
     }
 
     let body = view! {
-        <h1>"Administration"</h1>
-        <p class="muted">"Manage documentation, releases, and client companies."</p>
-        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 18px;">
-            <a class="card" href=(format!("/{}/admin/docs", slug)) style="text-decoration: none; color: inherit;">
-                <div style="font-weight: 700;">"Documentation editor"</div>
-                <p class="muted">"Publish and revise the knowledge base."</p>
+        <h1 class="vb-title">"Administration"</h1>
+        <p class="vb-lead">"Manage documentation, releases, and client companies."</p>
+        <div class="vb-grid-3">
+            <a class="vb-card" href=(format!("/{}/admin/docs", slug)) style="padding: 20px; min-height: 140px;">
+                <div style="font-size: 20px; margin-bottom: 12px;">"✎"</div>
+                <div style="font-weight: 700; margin-bottom: 5px;">"Documentation editor"</div>
+                <div class="vb-muted" style="font-size: 13px; flex: 1;">
+                    "Publish and revise the knowledge base."
+                </div>
+                <div class="vb-link">"Open →"</div>
             </a>
-            <a class="card" href=(format!("/{}/admin/releases", slug)) style="text-decoration: none; color: inherit;">
-                <div style="font-weight: 700;">"Release manager"</div>
-                <p class="muted">"Channels, signatures, and build metadata."</p>
+            <a class="vb-card" href=(format!("/{}/admin/releases", slug)) style="padding: 20px; min-height: 140px;">
+                <div style="font-size: 20px; margin-bottom: 12px;">"↑"</div>
+                <div style="font-weight: 700; margin-bottom: 5px;">"Release manager"</div>
+                <div class="vb-muted" style="font-size: 13px; flex: 1;">
+                    "Channels, signatures, and build metadata."
+                </div>
+                <div class="vb-link">"Open →"</div>
             </a>
-            <a class="card" href=(format!("/{}/admin/companies", slug)) style="text-decoration: none; color: inherit;">
-                <div style="font-weight: 700;">"Client companies"</div>
-                <p class="muted">"Tenants, plans, and seat limits (max 5 users)."</p>
+            <a class="vb-card" href=(format!("/{}/admin/companies", slug)) style="padding: 20px; min-height: 140px;">
+                <div style="font-size: 20px; margin-bottom: 12px;">"⌂"</div>
+                <div style="font-weight: 700; margin-bottom: 5px;">"Client companies"</div>
+                <div class="vb-muted" style="font-size: 13px; flex: 1;">
+                    "Tenants, plans, and seat limits (max 5 users)."
+                </div>
+                <div class="vb-link">"Open →"</div>
             </a>
         </div>
     };

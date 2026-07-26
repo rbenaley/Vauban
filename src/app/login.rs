@@ -22,33 +22,34 @@ async fn login_page(cx: &Cx) -> Result {
         None
     };
 
-    layout::login_shell(cx, view! {
-        <h1>"Vauban Portal"</h1>
-        <p class="muted">"Sign in to your customer organization."</p>
-        if let Some(slug) = continue_slug.clone() {
-            <p>
-                <a class="btn" href=(format!("/{slug}")) style="display:inline-block;margin-bottom:16px;">
-                    "Continue to portal"
-                </a>
+    layout::login_shell(
+        cx,
+        view! {
+            <h2>"Sign in"</h2>
+            <p class="vb-muted">"Access your customer organization."</p>
+            if let Some(slug) = continue_slug.clone() {
+                <p style="margin: 0 0 16px;">
+                    <a class="vb-btn" href=(format!("/{slug}"))>"Continue to portal"</a>
+                </p>
+            }
+            <form method="POST" action="/login">
+                <label for="email">"Email"</label>
+                <input id="email" name="email" type="email" required="" autocomplete="username">
+                <label for="password">"Password"</label>
+                <input
+                    id="password"
+                    name="password"
+                    type="password"
+                    required=""
+                    autocomplete="current-password"
+                >
+                <button type="submit">"Sign in"</button>
+            </form>
+            <p class="vb-muted" style="margin-top: 16px; font-size: 12px;">
+                "Seed: admin@acme.example / password"
             </p>
-        }
-        <form method="POST" action="/login">
-            <label for="email">"Email"</label>
-            <input id="email" name="email" type="email" required="" autocomplete="username">
-            <label for="password">"Password"</label>
-            <input
-                id="password"
-                name="password"
-                type="password"
-                required=""
-                autocomplete="current-password"
-            >
-            <button type="submit">"Sign in"</button>
-        </form>
-        <p class="muted" style="margin-top: 16px;">
-            "Seed: admin@acme.example / password"
-        </p>
-    })
+        },
+    )
     .await
 }
 

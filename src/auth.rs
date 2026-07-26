@@ -21,7 +21,6 @@ use crate::{
 pub struct AuthUser {
     #[allow(dead_code)]
     pub id: u64,
-    #[allow(dead_code)]
     pub email: String,
     pub display_name: String,
     /// Active membership role for the current org request (empty if none).

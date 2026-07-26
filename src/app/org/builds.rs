@@ -1,7 +1,11 @@
+//! Builds list at `/{org}/builds` — Concept expandable changelog rows.
+
+mod release_ver;
+
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, page, path_param},
+    router::{forbidden, page, path_param, query_params},
     view::view,
 };
 
@@ -13,6 +17,14 @@ use crate::{
     perms::perms_for_user,
 };
 
+const CHANNELS: &[&str] = &["LTS", "Stable", "EOL"];
+
+#[query_params]
+pub(super) struct BuildsQuery {
+    pub channel: Option<String>,
+    pub link: Option<String>,
+}
+
 #[page]
 async fn builds_page(cx: &Cx) -> Result {
     let slug = path_param::<Org>(cx);
@@ -22,51 +34,208 @@ async fn builds_page(cx: &Cx) -> Result {
         return Err(forbidden().into());
     }
 
-    let mut database = crate::auth::db(cx);
-    let releases = Release::all().exec(&mut database).await.unwrap_or_default();
+    let channel = query_params::<BuildsQuery>(cx)
+        .ok()
+        .and_then(|q| q.channel.clone())
+        .unwrap_or_default();
+    let channel = channel.trim();
+    let releases = load_releases(cx, channel).await;
+    let body = render_builds(
+        cx,
+        slug,
+        channel,
+        &releases,
+        None,
+        false,
+        perms.builds_download,
+    )
+    .await;
+    layout::shell(cx, &ctx, &perms, NavSection::Builds, "builds", body).await
+}
 
-    let body = view! {
-        <h1>"Certified LTS builds"</h1>
-        <p class="muted">"Signed binaries for your supported channels."</p>
-        <div class="card" style="margin-top: 18px; overflow-x: auto;">
-            <table>
-                <thead>
-                    <tr>
-                        <th>"VERSION"</th>
-                        <th>"CHANNEL"</th>
-                        <th>"DATE"</th>
-                        <th>"SIGNATURE"</th>
-                        <th>"SIZE"</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    if releases.is_empty() {
-                        <tr><td colspan="5" class="muted">"No published builds."</td></tr>
-                    } else {
-                        for rel in releases {
-                            <tr>
-                                <td style="font-family: ui-monospace, monospace; font-weight: 700;">
-                                    (rel.version.clone())
-                                </td>
-                                <td>(rel.channel.clone())</td>
-                                <td>(rel.released_on.clone())</td>
-                                <td style="font-family: ui-monospace, monospace;">
-                                    (rel.signature_prefix.clone())
-                                    "…"
-                                </td>
-                                <td>(rel.size_mb.clone()) " MB"</td>
-                            </tr>
-                        }
-                    }
-                </tbody>
-            </table>
-            if perms.builds_download {
-                <p class="muted" style="margin-top: 14px;">
-                    "Download and time-limited links will land in a later slice."
-                </p>
+pub(super) async fn render_builds(
+    cx: &Cx,
+    org_slug: &str,
+    channel: &str,
+    releases: &[Release],
+    open_version: Option<&str>,
+    show_link: bool,
+    can_download: bool,
+) -> Result {
+    let all_class = if channel.is_empty() {
+        "vb-chip active"
+    } else {
+        "vb-chip"
+    };
+    let base = format!("/{org_slug}/builds");
+    let org = org_slug.to_owned();
+    let channel_owned = channel.to_owned();
+
+    view! { cx =>
+        <h1 class="vb-title">"Certified LTS builds"</h1>
+        <p class="vb-lead">"Signed and verified binaries. Click a version for its changelog."</p>
+
+        <div class="vb-chip-row">
+            <a class=(all_class) href=(base.clone())>"All"</a>
+            for ch in CHANNELS {
+                let href = format!("{base}?channel={ch}");
+                let class = if channel.eq_ignore_ascii_case(ch) {
+                    "vb-chip active"
+                } else {
+                    "vb-chip"
+                };
+                <a class=(class) href=(href)>(*ch)</a>
             }
         </div>
-    };
 
-    layout::shell(cx, &ctx, &perms, NavSection::Builds, "builds", body).await
+        <div class="vb-table-wrap">
+            <div class="vb-build-head">
+                <div>"VERSION"</div>
+                <div>"CHANNEL"</div>
+                <div>"DATE"</div>
+                <div>"SIGNATURE (SHA-256)"</div>
+                <div>"SIZE"</div>
+                <div></div>
+            </div>
+            if releases.is_empty() {
+                <div class="vb-empty">"No published builds."</div>
+            } else {
+                for rel in releases {
+                    let is_open = open_version.is_some_and(|v| v == rel.version);
+                    let row_href = if is_open {
+                        if channel_owned.is_empty() {
+                            base.clone()
+                        } else {
+                            format!("{base}?channel={channel_owned}")
+                        }
+                    } else if channel_owned.is_empty() {
+                        format!("/{}/builds/{}", org, rel.version)
+                    } else {
+                        format!("/{}/builds/{}?channel={}", org, rel.version, channel_owned)
+                    };
+                    let row_class = if is_open {
+                        "vb-build-row open"
+                    } else {
+                        "vb-build-row"
+                    };
+                    let caret = if is_open { "▾" } else { "▸" };
+                    let notes = parse_notes(&rel.notes);
+                    let size_label = format!("{} MB", rel.size_mb);
+                    let gen_href = format!("/{}/builds/{}?link=1", org, rel.version);
+                    let link_url = format!(
+                        "https://dl.vauban.sh/eph/{}/{}?t=demo",
+                        org, rel.version
+                    );
+
+                    <div>
+                        <a class=(row_class) href=(row_href)>
+                            <div style="font-weight: 700; color: #14171c;">(rel.version.clone())</div>
+                            <div><span class="vb-badge soft">(rel.channel.clone())</span></div>
+                            <div style="color: #5a5f66;">(rel.released_on.clone())</div>
+                            <div style="color: var(--ok); font-size: 11.5px; display: flex; align-items: center; gap: 6px;">
+                                <span>"✓"</span>
+                                <span style="color: #8a8f96;">(rel.signature_prefix.clone()) "…"</span>
+                            </div>
+                            <div style="color: #5a5f66;">(size_label.clone())</div>
+                            <div style="color: var(--accent); text-align: right;">(caret)</div>
+                        </a>
+                        if is_open {
+                            <div class="vb-build-panel">
+                                <div class="vb-section-label">
+                                    "RELEASE NOTES · "
+                                    (rel.version.clone())
+                                </div>
+                                for (tag, color, text) in notes {
+                                    let tag_style = format!(
+                                        "font-size: 10px; font-weight: 600; flex: none; width: 76px; color: {color};"
+                                    );
+                                    <div style="display: flex; gap: 10px; margin-bottom: 8px; font-size: 13.5px; color: #3a3f46;">
+                                        <span class="vb-mono" style=(tag_style)>(tag)</span>
+                                        <span>(text)</span>
+                                    </div>
+                                }
+                                if can_download {
+                                    <div class="vb-btn-row">
+                                        <span class="vb-btn">
+                                            "↓ Download ("
+                                            (size_label)
+                                            ")"
+                                        </span>
+                                        <a class="vb-btn outline" href=(gen_href)>
+                                            "⧖ Generate ephemeral link"
+                                        </a>
+                                        <span class="vb-btn muted">"Verify signature"</span>
+                                    </div>
+                                }
+                                if show_link && can_download {
+                                    <div class="vb-ephemeral">
+                                        <div class="vb-ephemeral-bar">
+                                            <div class="vb-mono" style="font-size: 11px; letter-spacing: 0.04em; color: var(--accent); display: flex; align-items: center; gap: 9px;">
+                                                <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--ok);"></span>
+                                                "EPHEMERAL DOWNLOAD LINK"
+                                            </div>
+                                            <span class="vb-mono" style="font-size: 11.5px; color: var(--warn);">
+                                                "04:58 remaining"
+                                            </span>
+                                        </div>
+                                        <div style="padding: 14px 16px;">
+                                            <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                                                <input
+                                                    class="vb-mono"
+                                                    readonly=""
+                                                    value=(link_url.clone())
+                                                    style="flex: 1; min-width: 0; font-size: 12px; padding: 10px 12px; border: 1px solid #e8eae6; border-radius: 4px; background: #f7f8f6;"
+                                                >
+                                            </div>
+                                            <div class="vb-mono" style="font-size: 10px; letter-spacing: 0.06em; color: #8a8f96; margin-bottom: 8px;">
+                                                "RUN ON YOUR SERVER · NO AUTH NEEDED"
+                                            </div>
+                                            <pre class="vb-pre" style="margin: 0;">
+                                                "$ fetch "
+                                                (link_url)
+                                            </pre>
+                                            <div style="font-size: 12px; color: #8a8f96; margin-top: 10px; line-height: 1.5;">
+                                                "Valid for 5 minutes, single binary, no authentication. Stub token for visual fidelity."
+                                            </div>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            }
+        </div>
+    }
+}
+
+pub(super) fn parse_notes(notes: &str) -> Vec<(String, &'static str, String)> {
+    notes
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            if let Some((tag, rest)) = line.split_once(':') {
+                let tag = tag.trim().to_owned();
+                let color = match tag.to_ascii_uppercase().as_str() {
+                    "FIX" => "#2f7d52",
+                    "FEAT" | "NEW" => "#2f5fb0",
+                    "SECURITY" => "#b5403a",
+                    "RBAC" => "#117a6b",
+                    _ => "#117a6b",
+                };
+                (tag, color, rest.trim().to_owned())
+            } else {
+                ("NOTE".to_owned(), "#117a6b", line.trim().to_owned())
+            }
+        })
+        .collect()
+}
+
+pub(super) async fn load_releases(cx: &Cx, channel: &str) -> Vec<Release> {
+    let mut database = crate::auth::db(cx);
+    let releases = Release::all().exec(&mut database).await.unwrap_or_default();
+    releases
+        .into_iter()
+        .filter(|r| channel.is_empty() || r.channel.eq_ignore_ascii_case(channel))
+        .collect()
 }
