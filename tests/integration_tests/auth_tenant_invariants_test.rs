@@ -6,12 +6,17 @@ use vcp::perms::{PolicyStore, TRACKED_PERMS};
 
 #[test]
 fn inv_check_auth_tenant_script() {
-    let status = Command::new("bash")
+    let output = Command::new("bash")
         .arg("scripts/check_auth_tenant.sh")
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status()
+        .output()
         .expect("run check_auth_tenant.sh");
-    assert!(status.success(), "scripts/check_auth_tenant.sh failed");
+    assert!(
+        output.status.success(),
+        "scripts/check_auth_tenant.sh failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
