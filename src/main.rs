@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use vcp::{acme, app, config, config::Config, db, perms, tls};
+use vcp::{acme, app, config::Config, db, perms, tls};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -42,6 +42,13 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    let access_log = tls::AccessLog::open(&cfg.server.access_log_path).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to open access log {}: {e}",
+            cfg.server.access_log_path
+        )
+    })?;
+
     let addr = (cfg.server.host.as_str(), cfg.server.port);
     let listener = TcpListener::bind(addr).await?;
     info!(
@@ -52,14 +59,12 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let router = app::router(database, policy, &cfg);
-    let quiet_self_signed_rejections = cfg.environment == config::Environment::Development
-        && !cfg.server.tls.acme.as_ref().is_some_and(|a| a.enabled);
     tls::serve_https(
         listener,
         tls_config,
         router,
+        access_log,
         tls::shutdown_signal(),
-        quiet_self_signed_rejections,
     )
     .await?;
     Ok(())

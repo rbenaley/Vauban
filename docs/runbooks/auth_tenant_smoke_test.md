@@ -15,6 +15,7 @@ Related:
 - Plan: `.cursor/plans/vcp_test_pyramid_c64572e6.plan.md`
 - Lint: `scripts/check_auth_tenant.sh`
 - Pyramid: `.cursor/rules/vcp-test-pyramid.mdc`
+- Shell chrome (layouts / rail): [`portal_shell_smoke_test.md`](portal_shell_smoke_test.md)
 
 ## Automated prerequisites
 
@@ -31,14 +32,14 @@ rtk cargo test --test integration_tests -- auth_tenant -- --test-threads=1
 ## Lab prerequisites
 
 - Postgres with `vcp` (dev) and optionally `vcp_test` (already used above).
-- `VCP_ENVIRONMENT=development` + `just run` (HTTPS `:8443`).
+- `VCP_ENVIRONMENT=development` + `just run` (HTTPS `:3000`).
 - Browser or `curl -k` willing to accept the local self-signed cert.
 - Seed users (empty DB): `admin@acme.example` / `password` (admin),
   `l.martin@acme.example` / `password` (member); org `acme-infrastructure`.
 
 ## A -- Login calm
 
-1. Open `https://127.0.0.1:8443/login` (trust self-signed if prompted).
+1. Open `https://127.0.0.1:3000/login` (trust self-signed if prompted).
 2. Sign in as `admin@acme.example` / `password`.
 3. Expect redirect to `/acme-infrastructure` dashboard (200).
 4. Confirm left rail shows Admin entries for the admin user.
@@ -48,7 +49,7 @@ Pass: authenticated dashboard for a member org.
 ## B -- Wrong org (anti-enumeration)
 
 1. While logged in as the admin seed user, open
-   `https://127.0.0.1:8443/not-a-real-org`.
+   `https://127.0.0.1:3000/not-a-real-org`.
 2. Expect **404** (not 403, not another org's data).
 
 Pass: no cross-tenant leak / existence oracle via chatty errors.
@@ -56,7 +57,7 @@ Pass: no cross-tenant leak / existence oracle via chatty errors.
 ## C -- Member denied admin nest
 
 1. Sign out; sign in as `l.martin@acme.example` / `password`.
-2. Open `https://127.0.0.1:8443/acme-infrastructure/admin`.
+2. Open `https://127.0.0.1:3000/acme-infrastructure/admin`.
 3. Expect **403** Forbidden (no admin rail useful access).
 
 Pass: Casbin `admin:view` fail-closed for `member`.

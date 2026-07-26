@@ -24,9 +24,17 @@ pub async fn vb_rail(
     let admin_orgs_href = format!("/{org_slug}/admin/companies");
     let initials = ui::org_initials(org_name);
 
-    view! { cx =>
+    view! {
+        cx =>
         <nav class="vb-rail" aria-label="Primary">
-            <svg class="vb-rail-logo" width="28" height="28" viewBox="0 0 100 100" fill="none" aria-hidden="true">
+            <svg
+                class="vb-rail-logo"
+                width="28"
+                height="28"
+                viewBox="0 0 100 100"
+                fill="none"
+                aria-hidden="true"
+            >
                 <polygon
                     points="50,4 65,24.02 89.84,27 80,50 89.84,73 65,75.98 50,96 35,75.98 10.16,73 20,50 10.16,27 35,24.02"
                     stroke="color-mix(in srgb, var(--accent,#117a6b) 60%, #fff)"
@@ -60,15 +68,24 @@ pub async fn vb_rail(
             if show_admin {
                 <div class="vb-rail-rule"></div>
                 <div class="vb-rail-admin">"ADMIN"</div>
-                <a href=(admin_docs_href) class=(rail_class(section == NavSection::AdminDocs))>
+                <a
+                    href=(admin_docs_href)
+                    class=(rail_class(section == NavSection::AdminDocs))
+                >
                     <span class="ico">"✎"</span>
                     <span>"Docs"</span>
                 </a>
-                <a href=(admin_rel_href) class=(rail_class(section == NavSection::AdminReleases))>
+                <a
+                    href=(admin_rel_href)
+                    class=(rail_class(section == NavSection::AdminReleases))
+                >
                     <span class="ico">"↑"</span>
                     <span>"Rel."</span>
                 </a>
-                <a href=(admin_orgs_href) class=(rail_class(section == NavSection::AdminCompanies))>
+                <a
+                    href=(admin_orgs_href)
+                    class=(rail_class(section == NavSection::AdminCompanies))
+                >
                     <span class="ico">"⌂"</span>
                     <span>"Orgs"</span>
                 </a>

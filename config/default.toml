@@ -6,8 +6,10 @@ environment = "development"
 
 [server]
 host = "127.0.0.1"
-port = 8443
-public_origins = ["https://127.0.0.1:8443", "https://localhost:8443"]
+port = 3000
+public_origins = ["https://127.0.0.1:3000", "https://localhost:3000"]
+# Apache CLF access log (relative paths resolve against the crate root).
+access_log_path = "logs/vcp-access.log"
 
 [server.tls]
 cert_path = "certs/dev-server.crt"

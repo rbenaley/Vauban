@@ -17,11 +17,12 @@ use vcp::{
 };
 
 static TRACING: OnceLock<()> = OnceLock::new();
+static CRYPTO: OnceLock<()> = OnceLock::new();
 static DB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static SCHEMA_READY: OnceLock<()> = OnceLock::new();
 
 /// Absolute HTTPS origin used so `__Host-` / `Secure` session cookies apply.
-pub const TEST_ORIGIN: &str = "https://127.0.0.1:8444";
+pub const TEST_ORIGIN: &str = "https://127.0.0.1:3001";
 
 fn ensure_tracing() {
     TRACING.get_or_init(|| {
@@ -32,6 +33,13 @@ fn ensure_tracing() {
             )
             .with_test_writer()
             .try_init();
+    });
+}
+
+/// Install the rustls crypto provider once per test process.
+pub fn install_crypto_once() {
+    CRYPTO.get_or_init(|| {
+        let _ = vcp::tls::install_crypto_provider();
     });
 }
 

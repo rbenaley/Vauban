@@ -14,8 +14,8 @@ use topcoat::{
     cookie::RouterBuilderCookieExt,
     font,
     router::{
-        Body, HeaderValue, Next, Response, Router, RouterBuilderDiscoverExt, SeeOther, Slot, layer,
-        layout, route, see_other,
+        Body, HeaderValue, Next, Response, Router, RouterBuilderDiscoverExt, SeeOther, Slot,
+        header, layer, layout, route, see_other,
     },
     session::{Config as SessionConfig, RouterBuilderSessionExt},
     tailwind,
@@ -99,8 +99,28 @@ async fn security_headers(cx: &mut CxBuilder, body: Body, next: Next<'_>) -> Res
         .map(|h| h.0)
         .unwrap_or(false);
     let mut response = next.run(cx, body).await?;
+    let headers = response.headers_mut();
+    // Dynamic HTML/API/redirects: never cache. Leave asset/font routes alone —
+    // Topcoat already sets `public, max-age=31536000, immutable` on those.
+    if !headers.contains_key(header::CACHE_CONTROL) {
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    // Clickjacking: deny framing (partial CSP; avoid a full policy that would
+    // fight Topcoat runtime / Fontsource CDN without an audit).
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("frame-ancestors 'none'"),
+    );
+    headers.insert(
+        http::HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("geolocation=(), camera=(), microphone=()"),
+    );
     if enable_hsts {
-        response.headers_mut().insert(
+        headers.insert(
             "strict-transport-security",
             HeaderValue::from_static("max-age=31536000; includeSubDomains"),
         );

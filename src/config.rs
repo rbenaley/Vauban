@@ -85,6 +85,12 @@ pub struct ServerConfig {
     #[serde(default)]
     pub public_origins: Vec<String>,
 
+    /// Apache Common Log Format access log path.
+    ///
+    /// Production default: `/var/log/vcp-access.log`. Non-production: under
+    /// the crate `logs/` directory (gitignored).
+    pub access_log_path: String,
+
     pub tls: TlsConfig,
 }
 
@@ -260,6 +266,7 @@ impl Config {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         self.access.model_path = resolve_path(root, &self.access.model_path);
         self.access.policy_path = resolve_path(root, &self.access.policy_path);
+        self.server.access_log_path = resolve_path(root, &self.server.access_log_path);
         self.server.tls.cert_path = resolve_path(root, &self.server.tls.cert_path);
         self.server.tls.key_path = resolve_path(root, &self.server.tls.key_path);
         if let Some(ref chain) = self.server.tls.ca_chain_path {
@@ -284,6 +291,9 @@ impl Config {
         }
         if self.access.policy_path.trim().is_empty() {
             anyhow::bail!("access.policy_path must not be empty");
+        }
+        if self.server.access_log_path.trim().is_empty() {
+            anyhow::bail!("server.access_log_path must not be empty");
         }
         if self.server.tls.cert_path.trim().is_empty() || self.server.tls.key_path.trim().is_empty()
         {
@@ -339,7 +349,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
         let cfg = Config::load_with_environment(&dir, Environment::Development).unwrap();
         assert_eq!(cfg.environment, Environment::Development);
-        assert_eq!(cfg.server.port, 8443);
+        assert_eq!(cfg.server.port, 3000);
         assert!(cfg.database.url.contains("vcp"));
         assert!(cfg.session.dangerous_disable_origin_verification);
         assert!(Path::new(&cfg.access.policy_path).exists());
@@ -348,6 +358,11 @@ mod tests {
                 .public_origins
                 .iter()
                 .all(|o| o.starts_with("https://"))
+        );
+        assert!(
+            cfg.server.access_log_path.ends_with("logs/vcp-access.log"),
+            "{}",
+            cfg.server.access_log_path
         );
     }
 
@@ -359,6 +374,7 @@ mod tests {
         assert!(!cfg.session.dangerous_disable_origin_verification);
         assert!(cfg.server.tls.acme.as_ref().is_some_and(|a| a.enabled));
         assert_eq!(cfg.server.port, 443);
+        assert_eq!(cfg.server.access_log_path, "/var/log/vcp-access.log");
     }
 
     #[test]
@@ -366,10 +382,15 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
         let cfg = Config::load_with_environment(&dir, Environment::Testing).unwrap();
         assert_eq!(cfg.environment, Environment::Testing);
-        assert_eq!(cfg.server.port, 8444);
+        assert_eq!(cfg.server.port, 3001);
         assert!(cfg.database.url.contains("vcp_test"));
         assert!(cfg.session.dangerous_disable_origin_verification);
         assert!(!cfg.server.tls.acme.as_ref().is_some_and(|a| a.enabled));
+        assert!(
+            cfg.server.access_log_path.ends_with("logs/vcp-access.log"),
+            "{}",
+            cfg.server.access_log_path
+        );
     }
 
     #[test]
@@ -379,7 +400,7 @@ mod tests {
             Environment::Development,
         )
         .unwrap();
-        cfg.server.public_origins = vec!["http://localhost:8443".to_owned()];
+        cfg.server.public_origins = vec!["http://localhost:3000".to_owned()];
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("HTTPS only"));
     }

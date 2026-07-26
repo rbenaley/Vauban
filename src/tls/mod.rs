@@ -1,12 +1,17 @@
 //! TLS 1.3 edge (rustls) and certificate bootstrap.
 
+mod access_log;
 mod resolver;
 mod serve;
 
+pub use access_log::{AccessLog, format_common_log};
 pub use resolver::{
     AcmeResolver, certified_key_from_der, certified_key_from_pem, generate_self_signed_cert,
 };
-pub use serve::{serve_https, shutdown_signal};
+pub use serve::{
+    HANDSHAKE_LOG_IDLE, HandshakeCapture, HandshakeFailureLog, note_handshake_failure, serve_https,
+    shutdown_signal,
+};
 
 use std::sync::Arc;
 

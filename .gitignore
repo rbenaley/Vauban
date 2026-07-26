@@ -28,6 +28,9 @@ Thumbs.db
 certs/**
 !certs/.gitkeep
 
+# Local Apache CLF access logs
+logs/**
+!logs/.gitkeep
 
 # Added by cargo
 

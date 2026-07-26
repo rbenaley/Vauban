@@ -27,7 +27,9 @@ Automated tests load `VCP_ENVIRONMENT=testing` → `config/testing.toml`
 (`postgresql://vcp_test:vcp_test@localhost/vcp_test`). Run them with
 `--test-threads=1` (default in `just test` / `just validate`).
 See `docs/runbooks/auth_tenant_smoke_test.md` for the auth/tenant smoke
-checklist.
+checklist, `docs/runbooks/http_edge_smoke_test.md` for HTTPS access log +
+security headers, and `docs/runbooks/portal_shell_smoke_test.md` for
+layout / rail / topbar chrome.
 ## Configuration
 
 Application settings live in TOML files under `config/`. There is **no** `.env`
@@ -56,6 +58,10 @@ Config directory lookup:
 
 Production install path: `/usr/local/etc/vcp/vcp.conf` (plus `access/` policies and TLS material).
 
+Apache CLF access log path: `server.access_log_path` (`/var/log/vcp-access.log` in
+production; `logs/vcp-access.log` under the crate root in development/testing;
+the `logs/` directory is gitignored).
+
 ### TLS
 
 - Cleartext HTTP is **forbidden**. The process binds HTTPS only.
@@ -81,7 +87,7 @@ cargo install topcoat-cli --version 0.4.0
 ```
 
 ```bash
-just run          # build + asset bundle + HTTPS on https://127.0.0.1:8443
+just run          # build + asset bundle + HTTPS on https://127.0.0.1:3000
 just validate     # fmt-check (rustfmt + topcoat fmt) + clippy + tests
 just dev          # topcoat HMR (no custom TLS); prefer just run for HTTPS
 just bundle       # topcoat asset bundle → target/assets
@@ -95,7 +101,7 @@ asset bundle is missing (`AssetBundle::load()`).
 Smoke against a self-signed cert:
 
 ```bash
-curl -k https://127.0.0.1:8443/login
+curl -k https://127.0.0.1:3000/login
 ```
 
 Browsers will warn on the self-signed cert until you trust it or use ACME in staging.
@@ -135,4 +141,6 @@ Wrong org slug → **404** (no cross-tenant leak). Admin nest requires `admin:vi
 just db-create-test   # once
 just validate         # fmt-check + clippy -D warnings + bundle + tests
 bash scripts/check_auth_tenant.sh
+bash scripts/check_http_edge.sh
+bash scripts/check_portal_shell.sh
 ```

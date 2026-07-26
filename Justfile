@@ -86,9 +86,9 @@ validate: fmt-check clippy test
 release:
     topcoat asset bundle --release
 
-# Run the portal over HTTPS (defaults to development config, port 8443)
+# Run the portal over HTTPS (defaults to development config, port 3000)
 # Examples: just run | just run --release
-# Smoke: curl -k https://127.0.0.1:8443/login
+# Smoke: curl -k https://127.0.0.1:3000/login
 # Bundles assets so Concept CSS / Fontsource / runtime script resolve.
 run *ARGS: bundle
     cargo run {{ARGS}}
