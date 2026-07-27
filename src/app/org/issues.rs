@@ -12,7 +12,7 @@ use topcoat::{
 };
 
 use crate::{
-    app::_components::{severity_badge, status_badge},
+    app::_components::{ico_plus, severity_badge, status_badge},
     app::org::Org,
     auth::{db, require_org},
     models::Issue,
@@ -79,8 +79,9 @@ async fn issues_page(cx: &Cx) -> Result {
         >
             <h1 class="vb-title" style="margin: 0;">"Issue tracker"</h1>
             if perms.issues_write {
-                <a class="vb-btn" href=(format!("/{}/issues/new", slug))>
-                    "＋ Report an issue"
+                <a class="vb-btn vb-btn-ico" href=(format!("/{}/issues/new", slug))>
+                    (ico_plus(cx, 14).await?)
+                    <span>"Report an issue"</span>
                 </a>
             }
         </div>

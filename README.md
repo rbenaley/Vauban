@@ -143,6 +143,7 @@ Structural lints (also exercised via `*_invariants_test`):
 bash scripts/check_auth_tenant.sh
 bash scripts/check_http_edge.sh
 bash scripts/check_portal_shell.sh
+bash scripts/check_no_unicode_icons.sh
 bash scripts/check_admin_docs.sh
 bash scripts/check_portal_issues.sh
 bash scripts/check_admin_releases.sh

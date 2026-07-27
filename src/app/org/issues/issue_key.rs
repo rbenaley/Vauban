@@ -8,7 +8,7 @@ use topcoat::{
 };
 
 use crate::{
-    app::_components::{severity_badge, status_badge},
+    app::_components::{ico_check, ico_paperclip, severity_badge, status_badge},
     app::org::Org,
     auth::require_org,
     models::Issue,
@@ -45,11 +45,11 @@ async fn issue_detail_page(cx: &Cx) -> Result {
     view! {
         <div style="max-width: 820px;">
             <a
-                class="vb-link"
+                class="vb-back"
                 href=(list_href)
-                style="display: inline-block; margin-bottom: 16px;"
+                style="margin-bottom: 16px; margin-top: 0;"
             >
-                "← Back to list"
+                "Back to list"
             </a>
             <div
                 style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;"
@@ -199,9 +199,9 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                 >
                     <div style="display: flex; align-items: center; gap: 11px;">
                         <span
-                            style="width: 26px; height: 26px; flex: none; border-radius: 50%; background: #e9eaec; color: #5a5f66; display: flex; align-items: center; justify-content: center; font-size: 13px;"
+                            style="width: 26px; height: 26px; flex: none; border-radius: 50%; background: #e9eaec; color: #5a5f66; display: flex; align-items: center; justify-content: center;"
                         >
-                            "✓"
+                            (ico_check(cx, 13).await?)
                         </span>
                         <div
                             style="font-size: 13.5px; color: #5a5f66; line-height: 1.5;"
@@ -220,7 +220,10 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                     <div
                         style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;"
                     >
-                        <span class="vb-btn muted">"📎 Attach screenshot"</span>
+                        <span class="vb-btn muted vb-btn-ico">
+                            (ico_paperclip(cx, 13).await?)
+                            <span>"Attach screenshot"</span>
+                        </span>
                         <div style="display: flex; gap: 10px;">
                             <span class="vb-btn muted">"Close issue"</span>
                             <span class="vb-btn">"Reply"</span>

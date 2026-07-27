@@ -40,11 +40,11 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
     view! {
         <div style="max-width: 720px;">
             <a
-                class="vb-link"
+                class="vb-back"
                 href=(back.clone())
-                style="display: inline-block; margin-bottom: 16px;"
+                style="margin-bottom: 16px; margin-top: 0;"
             >
-                "← Release manager"
+                "Release manager"
             </a>
             <h1 class="vb-title">"Publish release"</h1>
             <p class="vb-lead">

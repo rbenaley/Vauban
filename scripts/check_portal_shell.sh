@@ -72,4 +72,30 @@ grep -n 'fn nav_from_path' src/nav.rs >/dev/null \
 grep -n 'fn nav_from_cx' src/nav.rs >/dev/null \
   || fail "src/nav.rs must expose nav_from_cx"
 
+STYLES="styles.css"
+grep -n 'a.vb-rail-item.active' "$STYLES" >/dev/null \
+  || fail "$STYLES must style a.vb-rail-item.active"
+grep -n 'a.vb-rail-item .lbl' "$STYLES" >/dev/null \
+  || fail "$STYLES must style rail labels (.lbl) in mono separately from icons"
+grep -n 'a.vb-rail-item .vb-ico svg' "$STYLES" >/dev/null \
+  || fail "$STYLES must size rail icon SVGs (.vb-ico)"
+grep -n 'ico_home(cx, 17)' src/app/_components/rail.rs >/dev/null \
+  || fail "vb_rail must use shared SVG rail icons (ico_home)"
+bash scripts/check_no_unicode_icons.sh
+
+grep -n 'color-mix(in srgb, var(--accent) 26%, #14171c)' "$STYLES" >/dev/null \
+  || fail "$STYLES active rail bg must use accent mix on #14171c"
+grep -n 'color-mix(in srgb, var(--accent) 58%, #fff)' "$STYLES" >/dev/null \
+  || fail "$STYLES active rail color must use accent mix on #fff"
+grep -n -- '--rail-idle: #6b7280' "$STYLES" >/dev/null \
+  || fail "$STYLES --rail-idle must be #6b7280"
+if awk '
+  /a\.vb-rail-item\.active/ { in_block=1 }
+  in_block && /background:[[:space:]]*var\(--accent\)/ { found=1 }
+  in_block && /}/ { in_block=0 }
+  END { exit !found }
+' "$STYLES"; then
+  fail "$STYLES must not use solid accent fill on active rail items"
+fi
+
 echo "check_portal_shell: OK"

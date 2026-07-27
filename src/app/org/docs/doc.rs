@@ -9,7 +9,7 @@ use topcoat::{
 
 use super::{DocsFilter, docs_list_view};
 use crate::{
-    app::_components::article_modal_shell,
+    app::_components::{article_modal_shell, ico_issues},
     app::org::Org,
     auth::require_org,
     models::{DOC_STATUS_PUBLISHED, DocArticle},
@@ -125,7 +125,7 @@ async fn quick_start_blocks(cx: &Cx) -> Result {
             "Vauban ships as a single signed binary. This guide takes you from a fresh host to your first end-to-end recorded SSH session in about fifteen minutes. No agent is installed on the protected machines — every connection is brokered by the bastion."
         </p>
         <div class="vb-callout">
-            <span>"⚑"</span>
+            (ico_issues(cx, 16).await?)
             <span>
                 "You will need: a Linux or FreeBSD host with 2 vCPU / 2 GB RAM, outbound access to your target hosts, and a DNS record pointing at the bastion."
             </span>
@@ -135,13 +135,13 @@ async fn quick_start_blocks(cx: &Cx) -> Result {
             "Download the latest LTS build for your platform and verify its signature before running it. The checksum is published alongside each release in the customer portal."
         </p>
         <pre class="vb-pre">
-            "$ curl -fsSLO https://vauban.sh/releases/freebsd/15/x86_64/vauban-0.8.6\n$ vauban verify ./vauban-0.8.6\n  signature: OK (key 0xA3F9C1E…)\n$ install -m 0755 vauban-0.8.6 /usr/local/bin/vauban"
+            "$ curl -fsSLO https://vauban.sh/releases/freebsd/15/x86_64/vauban-0.8.6\n$ vauban verify ./vauban-0.8.6\n  signature: OK (key 0xA3F9C1E...)\n$ install -m 0755 vauban-0.8.6 /usr/local/bin/vauban"
         </pre>
         <p>
             "Initialize the server. This generates the host keys, the local policy store, and an admin enrollment token printed once to stdout."
         </p>
         <pre class="vb-pre">
-            "$ vauban server init --domain bastion.acme.internal\n  ✓ host keys generated\n  ✓ policy store created at /var/db/vauban\n  admin token: vbn_enroll_8f3a…  (valid 30 min)"
+            "$ vauban server init --domain bastion.acme.internal\n  [ok] host keys generated\n  [ok] policy store created at /var/db/vauban\n  admin token: vbn_enroll_8f3a...  (valid 30 min)"
         </pre>
         <h3>"2. Enroll your first target host"</h3>
         <p>
@@ -169,7 +169,7 @@ async fn quick_start_blocks(cx: &Cx) -> Result {
             "policy \"oncall-prod\" {\n  subjects = [\"group:on-call\"]\n  targets  = [\"group:production\"]\n  actions  = [\"ssh:shell\"]\n  record   = true\n  mfa      = \"required\"\n}"
         </pre>
         <div class="vb-callout">
-            <span>"⚑"</span>
+            (ico_issues(cx, 16).await?)
             <span>
                 "With record = true, every keystroke and the full TTY stream are captured and signed for audit. Recordings are searchable from the portal."
             </span>
@@ -179,7 +179,7 @@ async fn quick_start_blocks(cx: &Cx) -> Result {
             "Point your SSH client at the bastion. Vauban authenticates you, enforces MFA, applies the policy, then transparently proxies you to the target while recording the session."
         </p>
         <pre class="vb-pre">
-            "$ ssh db-01.acme.internal@bastion.acme.internal\n  ▸ MFA: approve push on your device… ✓\n  ▸ policy oncall-prod matched · recording on\n  Last login: Fri Jun 20 14:02 2026\n  db-01 $"
+            "$ ssh db-01.acme.internal@bastion.acme.internal\n  > MFA: approve push on your device... [ok]\n  > policy oncall-prod matched · recording on\n  Last login: Fri Jun 20 14:02 2026\n  db-01 $"
         </pre>
         <h3>"Next steps"</h3>
         <ul>
@@ -206,7 +206,7 @@ async fn placeholder_blocks(cx: &Cx, summary: &str, org_slug: &str) -> Result {
             "\nvaubanctl host enroll --token <TOKEN>"
         </pre>
         <div class="vb-callout">
-            <span>"⚑"</span>
+            (ico_issues(cx, 16).await?)
             <span>
                 "Initial analysis and support follow your subscription SLA (2–5 business days)."
             </span>

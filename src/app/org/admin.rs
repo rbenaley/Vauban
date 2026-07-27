@@ -11,7 +11,12 @@ use topcoat::{
     view::view,
 };
 
-use crate::{app::org::Org, auth::require_org, perms::perms_for_user};
+use crate::{
+    app::_components::{ico_edit, ico_orgs, ico_release},
+    app::org::Org,
+    auth::require_org,
+    perms::perms_for_user,
+};
 
 #[page]
 async fn admin_index(cx: &Cx) -> Result {
@@ -31,42 +36,42 @@ async fn admin_index(cx: &Cx) -> Result {
                 href=(format!("/{}/admin/docs", slug))
                 style="padding: 20px; min-height: 140px;"
             >
-                <div style="font-size: 20px; margin-bottom: 12px;">"✎"</div>
+                <div style="margin-bottom: 12px;">(ico_edit(cx, 20).await?)</div>
                 <div style="font-weight: 700; margin-bottom: 5px;">
                     "Documentation editor"
                 </div>
                 <div class="vb-muted" style="font-size: 13px; flex: 1;">
                     "Publish and revise the knowledge base."
                 </div>
-                <div class="vb-link">"Open →"</div>
+                <div class="vb-link">"Open"</div>
             </a>
             <a
                 class="vb-card"
                 href=(format!("/{}/admin/releases", slug))
                 style="padding: 20px; min-height: 140px;"
             >
-                <div style="font-size: 20px; margin-bottom: 12px;">"↑"</div>
+                <div style="margin-bottom: 12px;">(ico_release(cx, 20).await?)</div>
                 <div style="font-weight: 700; margin-bottom: 5px;">
                     "Release manager"
                 </div>
                 <div class="vb-muted" style="font-size: 13px; flex: 1;">
                     "Channels, signatures, and build metadata."
                 </div>
-                <div class="vb-link">"Open →"</div>
+                <div class="vb-link">"Open"</div>
             </a>
             <a
                 class="vb-card"
                 href=(format!("/{}/admin/companies", slug))
                 style="padding: 20px; min-height: 140px;"
             >
-                <div style="font-size: 20px; margin-bottom: 12px;">"⌂"</div>
+                <div style="margin-bottom: 12px;">(ico_orgs(cx, 20).await?)</div>
                 <div style="font-weight: 700; margin-bottom: 5px;">
                     "Client companies"
                 </div>
                 <div class="vb-muted" style="font-size: 13px; flex: 1;">
                     "Tenants, plans, and seat limits (max 5 users)."
                 </div>
-                <div class="vb-link">"Open →"</div>
+                <div class="vb-link">"Open"</div>
             </a>
         </div>
     }

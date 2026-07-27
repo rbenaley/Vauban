@@ -6,6 +6,8 @@ use topcoat::{
 
 use crate::{auth::require_org, nav::NavSection, perms::perms_for_user, ui};
 
+use super::icons::{ico_builds, ico_docs, ico_edit, ico_home, ico_issues, ico_orgs, ico_release};
+
 /// Org rail chrome. Resolves org/perms via memoized `require_org` (locality).
 #[component]
 pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
@@ -50,20 +52,20 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
                 ></circle>
             </svg>
             <a href=(home_href.clone()) class=(rail_class(section == NavSection::Home))>
-                <span class="ico">"▦"</span>
-                <span>"Home"</span>
+                (ico_home(cx, 17).await?)
+                <span class="lbl">"Home"</span>
             </a>
             <a href=(docs_href) class=(rail_class(section == NavSection::Docs))>
-                <span class="ico">"❏"</span>
-                <span>"Docs"</span>
+                (ico_docs(cx, 17).await?)
+                <span class="lbl">"Docs"</span>
             </a>
             <a href=(builds_href) class=(rail_class(section == NavSection::Builds))>
-                <span class="ico">"⬡"</span>
-                <span>"Builds"</span>
+                (ico_builds(cx, 17).await?)
+                <span class="lbl">"Builds"</span>
             </a>
             <a href=(issues_href) class=(rail_class(section == NavSection::Issues))>
-                <span class="ico">"⚑"</span>
-                <span>"Issues"</span>
+                (ico_issues(cx, 17).await?)
+                <span class="lbl">"Issues"</span>
             </a>
             if show_admin {
                 <div class="vb-rail-rule"></div>
@@ -72,22 +74,22 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
                     href=(admin_docs_href)
                     class=(rail_class(section == NavSection::AdminDocs))
                 >
-                    <span class="ico">"✎"</span>
-                    <span>"Docs"</span>
+                    (ico_edit(cx, 17).await?)
+                    <span class="lbl">"Docs"</span>
                 </a>
                 <a
                     href=(admin_rel_href)
                     class=(rail_class(section == NavSection::AdminReleases))
                 >
-                    <span class="ico">"↑"</span>
-                    <span>"Rel."</span>
+                    (ico_release(cx, 17).await?)
+                    <span class="lbl">"Rel."</span>
                 </a>
                 <a
                     href=(admin_orgs_href)
                     class=(rail_class(section == NavSection::AdminCompanies))
                 >
-                    <span class="ico">"⌂"</span>
-                    <span>"Orgs"</span>
+                    (ico_orgs(cx, 17).await?)
+                    <span class="lbl">"Orgs"</span>
                 </a>
             }
             <a href=(account_href) class="vb-rail-account" title="Account">

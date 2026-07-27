@@ -104,7 +104,7 @@ async fn admin_companies_page(cx: &Cx) -> Result {
                             class="vb-link"
                             href=(format!("/{}/admin/companies/new", slug))
                         >
-                            "Edit →"
+                            "Edit"
                         </a>
                     </div>
                 }

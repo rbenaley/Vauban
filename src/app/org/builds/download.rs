@@ -1,4 +1,4 @@
-//! Entitlement-gated download stub: authorized → 501 (no artifact storage yet).
+//! Entitlement-gated download stub: authorized -> 501 (no artifact storage yet).
 
 use topcoat::{
     Result,

@@ -7,6 +7,8 @@ use topcoat::{
     view::{component, view},
 };
 
+use super::icons::ico_close;
+
 #[component]
 pub async fn article_modal_shell(
     cx: &Cx,
@@ -62,7 +64,7 @@ pub async fn article_modal_shell(
                             e.prevent_default();
                             open.set(false);
                         })
-                    >"✕"</a>
+                    >(ico_close(cx, 14).await?)</a>
                 </div>
                 <div class="vb-modal-body">
                     (body?)

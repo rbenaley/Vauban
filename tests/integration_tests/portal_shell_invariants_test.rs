@@ -28,6 +28,27 @@ fn inv_no_legacy_layout_module() {
 }
 
 #[test]
+fn inv_rail_active_uses_accent_color_mix() {
+    let css = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
+    assert!(
+        css.contains("color-mix(in srgb, var(--accent) 26%, #14171c)"),
+        "active rail background must use accent mix on rail bg"
+    );
+    assert!(
+        css.contains("color-mix(in srgb, var(--accent) 58%, #fff)"),
+        "active rail foreground must use accent mix on white"
+    );
+    assert!(
+        css.contains("--rail-idle: #6b7280"),
+        "rail idle token must be #6b7280"
+    );
+    assert!(
+        !css.contains("a.vb-rail-item.active {\n  background: var(--accent);"),
+        "active rail must not use solid accent fill"
+    );
+}
+
+#[test]
 fn inv_org_layout_chrome_pins() {
     let org = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
     assert!(org.contains("#[layout]"));

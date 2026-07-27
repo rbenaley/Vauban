@@ -42,11 +42,11 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
     view! {
         <div style="max-width: 720px;">
             <a
-                class="vb-link"
+                class="vb-back"
                 href=(back.clone())
-                style="display: inline-block; margin-bottom: 16px;"
+                style="margin-bottom: 16px; margin-top: 0;"
             >
-                "← Client companies"
+                "Client companies"
             </a>
             <h1 class="vb-title">"Onboard company"</h1>
             <p class="vb-lead">

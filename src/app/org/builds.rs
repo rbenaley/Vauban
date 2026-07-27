@@ -10,7 +10,15 @@ use topcoat::{
     view::view,
 };
 
-use crate::{app::org::Org, auth::require_org, models::Release, perms::perms_for_user};
+use crate::{
+    app::_components::{
+        ico_arrow_down, ico_check, ico_chevron_down, ico_chevron_right, ico_hourglass,
+    },
+    app::org::Org,
+    auth::require_org,
+    models::Release,
+    perms::perms_for_user,
+};
 
 const CHANNELS: &[&str] = &["LTS", "Stable", "EOL"];
 
@@ -116,7 +124,6 @@ pub(super) async fn render_builds(
                     } else {
                         "vb-build-row"
                     };
-                    let caret = if is_open { "▾" } else { "▸" };
                     let notes = parse_notes(&rel.notes);
                     let size_label = format!("{} MB", rel.size_mb);
                     let gen_href = format!("/{}/builds/{}?link=1", org, rel.version);
@@ -132,11 +139,17 @@ pub(super) async fn render_builds(
                             <div><span class="vb-badge soft">(rel.channel.clone())</span></div>
                             <div style="color: #5a5f66;">(rel.released_on.clone())</div>
                             <div style="color: var(--ok); font-size: 11.5px; display: flex; align-items: center; gap: 6px;">
-                                <span>"✓"</span>
+                                (ico_check(cx, 12).await?)
                                 <span style="color: #8a8f96;">(rel.signature_prefix.clone()) "…"</span>
                             </div>
                             <div style="color: #5a5f66;">(size_label.clone())</div>
-                            <div style="color: var(--accent); text-align: right;">(caret)</div>
+                            <div style="color: var(--accent); display: flex; justify-content: flex-end;">
+                                if is_open {
+                                    (ico_chevron_down(cx, 14).await?)
+                                } else {
+                                    (ico_chevron_right(cx, 14).await?)
+                                }
+                            </div>
                         </a>
                         if is_open {
                             <div
@@ -164,14 +177,18 @@ pub(super) async fn render_builds(
                                     );
                                     <div class="vb-btn-row">
                                         <form method="POST" action=(dl_action)>
-                                            <button class="vb-btn" type="submit">
-                                                "↓ Download ("
-                                                (size_label)
-                                                ")"
+                                            <button class="vb-btn vb-btn-ico" type="submit">
+                                                (ico_arrow_down(cx, 14).await?)
+                                                <span>
+                                                    "Download ("
+                                                    (size_label)
+                                                    ")"
+                                                </span>
                                             </button>
                                         </form>
-                                        <a class="vb-btn outline" href=(gen_href)>
-                                            "⧖ Generate ephemeral link"
+                                        <a class="vb-btn outline vb-btn-ico" href=(gen_href)>
+                                            (ico_hourglass(cx, 14).await?)
+                                            <span>"Generate ephemeral link"</span>
                                         </a>
                                         <button
                                             type="button"

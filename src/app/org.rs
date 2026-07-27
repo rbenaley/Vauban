@@ -15,11 +15,12 @@ use topcoat::{
 
 use crate::{
     auth::require_org,
-    models::{DocArticle, Issue, Release},
+    models::{DOC_STATUS_PUBLISHED, DocArticle, Issue, Release},
     nav::nav_from_cx,
+    ui::{channel_badge_class, note_tag_color},
 };
 
-use super::_components::{vb_rail, vb_topbar};
+use super::_components::{ico_builds, ico_docs, ico_issues, vb_rail, vb_topbar};
 
 #[path_param]
 pub struct Org(str);
@@ -78,22 +79,32 @@ async fn dashboard(cx: &Cx) -> Result {
         .filter(|i| i.status != "Resolved" && i.status != "Closed")
         .count();
     let in_analysis = issues.iter().filter(|i| i.status == "In analysis").count();
-    let article_count = articles.len();
+    let article_count = articles
+        .iter()
+        .filter(|a| a.status == DOC_STATUS_PUBLISHED)
+        .count();
 
-    let note_lines: Vec<(String, String)> = build_notes
+    let note_lines: Vec<(String, String, &'static str)> = build_notes
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
             if let Some((tag, rest)) = line.split_once(':') {
-                (tag.trim().to_owned(), rest.trim().to_owned())
+                let tag = tag.trim().to_owned();
+                let color = note_tag_color(&tag);
+                (tag, rest.trim().to_owned(), color)
             } else {
-                ("NOTE".to_owned(), line.trim().to_owned())
+                (
+                    "NOTE".to_owned(),
+                    line.trim().to_owned(),
+                    note_tag_color("NOTE"),
+                )
             }
         })
         .collect();
+    let channel_badge = channel_badge_class(&build_channel).to_owned();
 
     view! {
-        <h1 class="vb-title">"Dashboard"</h1>
+        <h1 class="vb-title dash">"Dashboard"</h1>
 
         <div class="vb-stat-row">
             <div class="vb-stat">
@@ -119,7 +130,7 @@ async fn dashboard(cx: &Cx) -> Result {
                 <div
                     style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
                 >
-                    <span style="font-size: 20px;">"❏"</span>
+                    (ico_docs(cx, 20).await?)
                     <span
                         class="vb-mono"
                         style="font-size: 10px; color: var(--muted-2);"
@@ -136,7 +147,7 @@ async fn dashboard(cx: &Cx) -> Result {
                 >
                     "Guides, API reference, and deployment runbooks."
                 </div>
-                <div class="vb-link">"Open →"</div>
+                <div class="vb-link">"Open"</div>
             </a>
             <a
                 class="vb-card"
@@ -146,10 +157,10 @@ async fn dashboard(cx: &Cx) -> Result {
                 <div
                     style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
                 >
-                    <span style="font-size: 20px;">"⬡"</span>
-                    <span class="vb-mono" style="font-size: 10px; color: var(--ok);">
+                    (ico_builds(cx, 20).await?)
+                    <span class="vb-mono vb-signed" style="font-size: 10px; color: var(--ok);">
                         (build_version.clone())
-                        " · signed ✓"
+                        " · signed"
                     </span>
                 </div>
                 <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">
@@ -160,7 +171,7 @@ async fn dashboard(cx: &Cx) -> Result {
                 >
                     "Signed, verified binaries with long-term support."
                 </div>
-                <div class="vb-link">"Open →"</div>
+                <div class="vb-link">"Open"</div>
             </a>
             <a
                 class="vb-card"
@@ -170,7 +181,7 @@ async fn dashboard(cx: &Cx) -> Result {
                 <div
                     style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
                 >
-                    <span style="font-size: 20px;">"⚑"</span>
+                    (ico_issues(cx, 20).await?)
                     <span class="vb-mono" style="font-size: 10px; color: var(--warn);">
                         (open_count.to_string())
                         " open"
@@ -184,7 +195,7 @@ async fn dashboard(cx: &Cx) -> Result {
                 >
                     "Report an issue. Initial analysis within 2–5 business days."
                 </div>
-                <div class="vb-link">"Open →"</div>
+                <div class="vb-link">"Open"</div>
             </a>
         </div>
 
@@ -225,7 +236,8 @@ async fn dashboard(cx: &Cx) -> Result {
                         </div>
                     </div>
                 }
-                if let Some(doc) = articles.first() {
+                if let Some(doc) = articles.iter().find(|a| a.status == DOC_STATUS_PUBLISHED)
+                {
                     <div class="vb-activity-item">
                         <div class="vb-dot muted"></div>
                         <div style="flex: 1; font-size: 13.5px; color: #3a3f46;">
@@ -246,16 +258,20 @@ async fn dashboard(cx: &Cx) -> Result {
                     <span class="vb-mono" style="font-size: 22px; font-weight: 700;">
                         (build_version)
                     </span>
-                    <span class="vb-badge">(build_channel)</span>
-                    <span class="vb-mono" style="font-size: 11px; color: var(--ok);">
-                        "signed ✓"
+                    <span class=(channel_badge.clone())>(build_channel)</span>
+                    <span class="vb-mono vb-signed" style="font-size: 11px; color: var(--ok);">
+                        "signed"
                     </span>
                 </div>
-                for (tag, text) in note_lines {
-                    <div style="display: flex; gap: 10px; margin-bottom: 8px;">
+                for (tag, text, color) in note_lines {
+                    <div
+                        style="display: flex; gap: 8px; align-items: baseline; margin-bottom: 7px;"
+                    >
                         <span
                             class="vb-mono"
-                            style="font-size: 9px; font-weight: 600; color: var(--ok); flex: none;"
+                            style=(format!(
+                                "font-size: 9px; font-weight: 600; letter-spacing: 0.04em; color: {color}; flex: none;"
+                            ))
                         >
                             (tag)
                         </span>
@@ -271,7 +287,7 @@ async fn dashboard(cx: &Cx) -> Result {
                     href=(format!("/{}/builds", slug))
                     style="display: inline-block; margin-top: 14px;"
                 >
-                    "All builds →"
+                    "All builds"
                 </a>
             </div>
         </div>

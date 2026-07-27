@@ -24,11 +24,11 @@ async fn new_issue_page(cx: &Cx) -> Result {
     view! {
         <div style="max-width: 720px;">
             <a
-                class="vb-link"
+                class="vb-back"
                 href=(list_href.clone())
-                style="display: inline-block; margin-bottom: 16px;"
+                style="margin-bottom: 16px; margin-top: 0;"
             >
-                "← Back to list"
+                "Back to list"
             </a>
             <h1 class="vb-title">"Report an issue"</h1>
             <p class="vb-lead">

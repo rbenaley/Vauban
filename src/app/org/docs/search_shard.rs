@@ -9,7 +9,9 @@ use topcoat::{
 };
 
 use super::{DocsFilter, load_filtered_docs};
-use crate::{app::org::Org, auth::require_org, perms::perms_for_user};
+use crate::{
+    app::_components::ico_chevron_right, app::org::Org, auth::require_org, perms::perms_for_user,
+};
 
 /// Shard args are attacker-controlled — always re-authorize.
 #[shard]
@@ -69,8 +71,8 @@ pub async fn docs_search_results(cx: &Cx, org_slug: String, q: String, cat: Stri
                                 (article.version.clone())
                             </div>
                         </div>
-                        <span style="font-size: 16px; color: #c2c6cb; flex: none;">
-                            "→"
+                        <span style="color: #c2c6cb; flex: none; display: inline-flex;">
+                            (ico_chevron_right(cx, 16).await?)
                         </span>
                     </a>
                 }
