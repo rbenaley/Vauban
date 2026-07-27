@@ -12,11 +12,20 @@ Framework knowledge (crate map, sessions, runtime, anti-patterns) lives
 in the **`topcoat` skill** — read it when unsure. This skill is VCP’s
 product conventions on top of that base.
 
+Upstream orientation (keep in sync with `topcoat` skill):
+
+- [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat)
+- [Toasty 0.6.0 — what is new?](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
+  (VCP pins **toasty 0.9** — confirm APIs against `Cargo.toml` / lock)
+
 VCP is a **Topcoat** application ([tokio-rs/topcoat](https://github.com/tokio-rs/topcoat)).
 Depend on the facade crate `topcoat` only (internal crates are
 implementation details). Workspace status as of study: **~0.4.x**,
 edition **2024**, MSRV **1.95**, `unsafe_code = deny`. Early-stage —
-expect breaking changes; pin versions.
+expect breaking changes; pin versions. Topcoat and Axum are
+**complementary** (Topcoat for the HTML portal; Axum only if a raw
+HTTP API seam is explicitly needed — do not rebuild the portal in
+Axum+Askama).
 
 **Product shape:** Internet CRUD portal over HTTPS request/response.
 Do **not** enable Topcoat’s optional `websocket` feature. Prefer pages
@@ -56,22 +65,29 @@ static-asset embedding assumptions unless explicitly requested.
 **Locked choice.** Do not introduce Diesel as a parallel stack. Do not
 copy bastion Diesel schemas or migrations from `../Vauban`.
 
+Toasty is an async ORM (ease-of-use first; SQL + NoSQL). VCP uses the
+**PostgreSQL** driver only. Topcoat’s roadmap mentions tighter Toasty
+integration later — wire `app_context` + `db(cx)` today.
+
 ### Pinning
 
-- Toasty is **0.x** — expect breaking changes. Pin **exact** versions in
-  `Cargo.toml` / `Cargo.lock`; bump deliberately after reading the
-  changelog. Do not track git `main` ad hoc.
+- Toasty is **0.x** — expect breaking changes (0.4→0.6 shipped quickly;
+  VCP currently pins **0.9.0**). Pin **exact** versions in `Cargo.toml`
+  / `Cargo.lock`; bump deliberately after reading the changelog. Do not
+  track git `main` ad hoc.
 - Enable the **PostgreSQL** driver feature (not SQLite) for the app
-  default. See Topcoat’s `examples/toasty-todo` for a minimal Toasty
-  wiring pattern (that example uses SQLite — VCP uses Postgres instead).
+  default. See Topcoat’s `examples/toasty-todo` for a minimal wiring
+  pattern (that example uses SQLite — VCP uses Postgres instead).
 - Guide: [Toasty guide](https://tokio-rs.github.io/toasty/nightly/guide/).
+- Orientation: [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
+  (deferred / select / `Vec` scalars landed by 0.6; verify against 0.9).
 
 ### Access pattern
 
 ```text
 Router .app_context(db)
   -> fn db(cx: &Cx) -> DbHandle
-  -> models / queries in pages, shards, procedures
+  -> models / queries in pages, components, shards, procedures
 ```
 
 - Register the Toasty DB / pool on the router with `.app_context(...)`.
@@ -80,9 +96,31 @@ Router .app_context(db)
 - Models: `#[derive(toasty::Model)]` under `src/models/` (or
   `src/db/models/`). Keep a thin `src/db.rs` (or `src/db/mod.rs`) for
   connect / schema helpers — not a heavy repository layer unless needed.
+- Prefer **locality of behavior**: components/pages fetch what they need
+  via `cx` helpers rather than always prop-drilling full graphs from
+  parents (`topcoat` skill §7).
 - Connection URL: `[database].url` from TOML under `config/` (see
   `src/config.rs`); production uses `config/vcp.conf` only;
   never commit real credentials.
+- Automated tests: `vcp_test` via `just test` / `just validate`
+  (`ensure-vcp-test`); URL in `config/testing.toml`.
+
+### Query capabilities (prefer before inventing raw SQL)
+
+Capabilities from Toasty ≥0.6 (confirm names against the locked crate):
+
+| Capability | Shape | When |
+|------------|-------|------|
+| Deferred fields | `#[deferred] body: Deferred<T>` + `.include(Model::fields().body())` | Omit large columns on list/index queries; load on demand |
+| Field `select()` | `.select(Model::fields().title())` → scalars / tuples, **not** full model | Projections, lightweight lists |
+| `Vec` of scalars | e.g. `tags: Vec<String>` | Postgres **arrays** (other SQL → JSON; DynamoDB lists) |
+| Collection updates | `.tags(toasty::stmt::extend([...]))` | Append / mutate without blind full rewrite |
+| Array filters | `.tags().intersects([...])` (and related) | Tag / set membership |
+
+Also available upstream when needed: richer query expressions, db-native
+enums, optimistic version control, TLS for DB clients. Document/JSON(B)
+storage is on Toasty’s roadmap — do **not** invent a parallel document
+layer in VCP until Toasty exposes it cleanly.
 
 ### Sessions and tenancy
 
@@ -94,10 +132,11 @@ Router .app_context(db)
 
 ### Escape hatch
 
-If Toasty cannot express a query cleanly, a **narrow** `sqlx` (or
-equivalent) module is allowed for that seam only. Do **not** grow a
-second full data model or duplicate entities in both ORMs. Document the
-escape in a short comment or module docs at the call site.
+If Toasty cannot express a query cleanly **after** checking deferred /
+`select` / collection APIs, a **narrow** `sqlx` (or equivalent) module
+is allowed for that seam only. Do **not** grow a second full data model
+or duplicate entities in both ORMs. Document the escape in a short
+comment or module docs at the call site.
 
 ### App scaffold checklist (when creating the binary)
 
@@ -178,10 +217,17 @@ shards), never via a WebSocket channel. Dates and tenant scope follow
 
 ## Request-scoped concerns
 
-Topcoat’s philosophy: **functions, not middlewares** for app logic
-([docs](https://github.com/tokio-rs/topcoat/blob/main/crates/topcoat/docs/functions_not_middlewares.md)).
-Use `cx: &Cx` helpers + `#[memoize]` so pages, layouts, and components
-can call `require_auth` / `require_perms` without prop-drilling.
+Topcoat’s guiding principle: **locality of behavior** — keep fetch,
+auth, and rendering close
+([announcement](https://tokio.rs/blog/2026-07-22-announcing-topcoat),
+[functions_not_middlewares](https://github.com/tokio-rs/topcoat/blob/main/crates/topcoat/docs/functions_not_middlewares.md)).
+
+- Prefer `async fn foo(cx: &Cx)` helpers over middleware that stuffs
+  `User` into extensions, and over extractors that force prop-drilling.
+- Components may load their own data; use `#[memoize]` (request-scoped)
+  so repeated lookups for the same key dedupe within one request.
+- Protect data **inside** the page/component via `require_*` — do not
+  rely on a distant middleware “having run”.
 
 Typical helpers (names illustrative):
 
@@ -217,9 +263,15 @@ From Topcoat session/cookie guides:
 
 ## Procedures and shards (trust boundary)
 
-Both expose HTTP endpoints. Treat arguments as **attacker-controlled**:
-re-check auth, tenant, and Casbin inside the procedure/shard body; do
-not trust client-supplied org ids or entitlement claims.
+Topcoat reactivity is **not WASM**: signals/`$(...)` can run
+client-only; `#[shard]` re-renders HTML on the server when bound args
+change; `#[procedure]` is HTTP RPC. Details: `topcoat` skill §10.
+
+`#[shard]` and `#[procedure]` expose HTTP endpoints. Treat arguments as
+**attacker-controlled**: re-check auth, tenant, and Casbin inside the
+body; do not trust client-supplied org ids or entitlement claims.
+Prefer PRG forms for sensitive mutations; reserve shards for progressive
+UI (filters, expands) that still re-authorize.
 
 ## What not to copy from the bastion web skill
 

@@ -13,30 +13,57 @@ Canonical upstream: [tokio-rs/topcoat](https://github.com/tokio-rs/topcoat).
 Agent map of the repo: upstream `AGENTS.md`. User guides live under each
 crate’s `docs/` (embedded into rustdoc).
 
+Announcement / orientation (read when refreshing mental model):
+
+- [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat)
+  (2026-07-22, Carl Lerche & Julien Scholz)
+- Sibling ORM: [Toasty 0.6.0 — what is new?](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
+  (field select / deferred / `Vec` scalars; VCP pins a newer 0.x — see
+  `Cargo.toml`)
+
 This skill captures a study of Topcoat for the **Vauban Customer Portal**.
 VCP product constraints that override framework capabilities are marked
 **VCP**. Broader conventions live in the `web-stack` skill and the
 `.cursor/rules/*.mdc` set.
 
-**Last studied:** 2026-07-26 against upstream `main` (~workspace **0.4.0**,
-edition **2024**, MSRV **1.95**). Re-check crates.io / GitHub before
-scaffold if months have passed — the framework is early-stage.
+**Last studied:** 2026-07-27 against upstream ~**0.4.0** (edition **2024**,
+MSRV **1.95**) plus the Tokio blog announcements above. Re-check
+crates.io / GitHub before scaffold if months have passed — the framework
+is early-stage (first public release wave).
+
+Community: Tokio Discord `#topcoat` (and `#toasty` for the ORM).
 
 ---
 
 ## 1. What Topcoat is
 
-- Batteries-included **server-rendered** Rust web framework (Tokio).
+- Modular, batteries-included **server-rendered** Rust web framework
+  (Tokio). Reactivity is *not* WASM: the server renders HTML, and the
+  runtime attaches **reactive instructions as metadata** (same *idea*
+  family as HTMX — snippets + instructions — with a Rust→JS expression
+  subset instead of a separate client app).
 - Apps depend on the **facade** crate `topcoat` only. Internal crates
   (`topcoat-view`, `topcoat-router`, …) are implementation details.
 - Priorities: simplicity and productivity; **safe Rust only**
   (`unsafe_code = deny` in the upstream workspace).
 - Explicitly **early-stage / experimental** — expect breaking changes.
   Pin versions in VCP.
+- Ecosystem story (upstream): **Toasty** (ORM, ready since 2026-04) then
+  **Topcoat** (web). Roadmap mentions tighter Toasty integration,
+  validations, email — wire today’s APIs; do not wait for future sugar.
+
+### Topcoat vs Axum (upstream guidance)
+
+| | Topcoat | Axum |
+|---|---------|------|
+| Role | Full-stack HTML app (pages, layouts, assets, sessions, light reactivity) | Lower-level HTTP router / APIs |
+| Overlap | Many apps will use **both** | Prefer Axum when you only need raw HTTP endpoints |
+| Do not | Rebuild a Topcoat-shaped portal in Axum+Askama “for familiarity” | Assume Axum replaces Topcoat’s UI stack |
 
 **VCP:** Internet CRUD portal over HTTPS request/response. Do **not**
 enable the optional `websocket` feature. TLS 1.3 + post-quantum readiness
 are VCP’s edge concern (`tls-post-quantum.mdc`), not provided by Topcoat.
+Custom serve path: `src/tls/serve.rs` (not `topcoat::start`).
 
 ---
 
@@ -148,18 +175,29 @@ Upstream guides: `topcoat-view/macro/docs/view.md`, `component.md`, etc.
 
 ---
 
-## 7. Request context — functions, not middlewares
+## 7. Request context — locality of behavior
 
-Philosophy (upstream `functions_not_middlewares.md`):
+Guiding principle from the [Topcoat announcement](https://tokio.rs/blog/2026-07-22-announcing-topcoat)
+and upstream `functions_not_middlewares.md`:
+
+**Locality of behavior** — keep data fetching, auth, and rendering close
+together. Humans and AI reason better over small regions of code.
 
 - Prefer short `async fn foo(cx: &Cx)` helpers over middleware that
   stuffs `User` into extensions, and over extractors that force
   prop-drilling through every component.
-- Use `#[memoize]` so repeated `require_auth` / DB lookups in one request
-  dedupe.
+- Let components **fetch their own data** instead of always receiving
+  preloaded structs from parents (compose with `cx`).
+- Use `#[memoize]` (request-scoped, React `cache`-like) so repeated
+  `require_auth` / DB lookups in one request dedupe when several
+  components ask for the same key.
+- Protect data **inside** the component / page via helpers
+  (`require_auth`, `require_org`, `require_perms`) rather than hoping a
+  distant middleware ran — fail closed with redirect / 403 / 404.
 - `app_context::<T>(cx)` for long-lived values registered with
   `.app_context(value)` (DB pool, cookie `Key`, …).
-- Reach for layers only for compression, tracing, low-level HTTP.
+- Reach for layers only for compression, tracing, low-level HTTP —
+  not app authZ.
 
 **VCP pattern:**
 
@@ -238,26 +276,72 @@ instead of a cookie.
 ## 10. Runtime (reactivity) — experimental
 
 Upstream warns: **highly experimental**, limited expression vocabulary,
-breaking changes expected.
+breaking changes expected. Optional escape hatches: HTMX / Alpine.js
+integrations (features) — **VCP does not adopt those as the default**.
 
-Concepts:
+### Why not WASM (Leptos / Dioxus)
+
+Those frameworks shine for heavy client interactivity via Rust→WASM.
+Topcoat targets apps that do **not** need that: avoid a second compile
+target, bundle splitting, and client/server serialization. Markup stays
+on the server so components can be `async`, hit the DB, and check
+permissions safely. Client reactivity is a **type-checked Rust subset**
+cross-compiled to JS via macros (`$(...)`) — stay in Rust, no WASM.
+
+### Two reactivity layers
+
+| Layer | Where it runs | Typical use |
+|-------|---------------|-------------|
+| **Signals + `$(...)`** | Browser only (no round-trip) | Toggle visibility, local UI state |
+| **`#[shard]`** | Server re-render + HTML swap when `$(...)` args change | Live search / filtered lists that need DB |
+| **`#[procedure]`** | Server HTTP RPC from the browser | Imperative server actions (still untrusted args) |
+
+Announcement-shaped examples (illustrative):
+
+```rust
+// Client-only: no server round-trip
+view! {
+    signal open = false;
+    <button @click=$(|_e| open.set(!open.get()))>
+        "What is Topcoat?"
+    </button>
+    <p :hidden=$(!open.get())>"A fullstack Rust framework."</p>
+}
+
+// Shard: server re-renders as the signal changes
+#[component]
+async fn search() -> Result {
+    view! {
+        signal query = String::new();
+        <input @input=$(|e: Event| query.set(e.target.value))>
+        search_results(query: $(query.get()))
+    }
+}
+
+#[shard]
+async fn search_results(cx: &Cx, query: String) -> Result {
+    // Runs on the server; args are untrusted — re-auth / tenant / Casbin.
+    view! { /* … */ }
+}
+```
+
+Mechanics checklist:
 
 - Include `topcoat::runtime::script()` in `<head>`; load
   `AssetBundle` on the router.
-- `$(...)` / `expr!`: dual Rust + JS expression; server evaluates for SSR,
-  browser re-runs when signals change.
+- `$(...)` / `expr!`: dual Rust + JS; SSR evaluates, browser re-runs on
+  signal change.
 - `signal name = …;` in `view!`: browser state.
 - `@click` / `@input` / …: event handlers (closures or raw JS strings).
 - `:attr=$(...)`: bind attributes kept in sync.
-- **`#[procedure]`**: async server fn callable from the browser (HTTP).
-  **Arguments are attacker-controlled — re-auth and re-authorize.**
-- **`#[shard]`**: component re-rendered on the server when `$(...)`
-  args change; HTML swapped in. **Same trust boundary as procedures.**
+- **`#[procedure]`** / **`#[shard]`**: **arguments are attacker-controlled
+  — re-auth and re-authorize every time.**
 
 **VCP:** allowed for progressive UI (modal dismiss, panel collapse,
-ephemeral tabs). Prefer boring PRG forms for login/admin mutations.
-Never treat shard / procedure args as trusted org/entitlement claims.
-Sensitive mutations stay **POST forms + PRG**. No React / HTMX / Alpine.
+ephemeral tabs, light live filters). Prefer boring PRG forms for
+login/admin mutations. Never treat shard / procedure args as trusted
+org/entitlement claims. Sensitive mutations stay **POST forms + PRG**.
+No React / HTMX / Alpine as the product stack.
 
 ---
 
@@ -269,8 +353,10 @@ Sensitive mutations stay **POST forms + PRG**. No React / HTMX / Alpine.
   standalone CLI, no Node required for that path. VCP input CSS is
   `styles.css` (`@import "tailwindcss"`, `@source`, Concept `@theme`).
 - Fonts: feature `font-fontsource` + `fontsource_font!` (see `src/fonts.rs`).
-- `topcoat ui`: **optional / out of scope for VCP** — keep Concept `vb-*`
-  components under `src/app/_components/`, do not vendor shadcn defaults.
+- Icons: Iconify sets via `iconify::include!("…")` when needed (optional).
+- `topcoat ui`: shadcn-inspired **copy-into-your-tree** Tailwind components
+  (`topcoat ui …`). **Optional / out of scope for VCP** — keep Concept
+  `vb-*` under `src/app/_components/`; do not vendor Topcoat UI defaults.
 
 **VCP required idioms**
 
@@ -297,16 +383,34 @@ or Topcoat UI purple defaults. Responsive: `responsive-ui.mdc`.
 
 ### ORM (VCP locked): Toasty + PostgreSQL
 
-- **ORM:** [Toasty](https://github.com/tokio-rs/toasty) — async, Tokio
-  ecosystem; Topcoat example: `examples/toasty-todo` (SQLite there;
-  **VCP uses the PostgreSQL driver**).
+- **ORM:** [Toasty](https://github.com/tokio-rs/toasty) — async ORM,
+  ease-of-use first; SQL + NoSQL (DynamoDB today on NoSQL). Topcoat
+  example: `examples/toasty-todo` (SQLite there; **VCP uses PostgreSQL**).
 - **Guide:** [Toasty guide](https://tokio-rs.github.io/toasty/nightly/guide/).
+- Orientation: [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
+  (capabilities below landed by 0.6; VCP pins a newer 0.x in
+  `Cargo.toml` — confirm APIs against the locked version).
 - **Topcoat roadmap** mentions deeper Toasty integration (forms /
-  validations); do not wait for it — wire Toasty via `app_context` +
-  `db(cx)` today (see `web-stack`).
-- Pin exact **0.x** versions; expect churn.
+  validations); do not wait — wire via `app_context` + `db(cx)` today
+  (`web-stack`).
+- Pin exact **0.x** versions; expect churn (0.4→0.6 shipped quickly).
 - Escape hatch: narrow `sqlx` only when Toasty cannot express a query —
   not a second data model (`web-stack` § Database / ORM).
+
+**Useful Toasty capabilities (prefer before inventing raw SQL):**
+
+| Capability | Shape | When |
+|------------|-------|------|
+| Deferred fields | `#[deferred] body: Deferred<String>` + `.include(Model::fields().body())` | Omit large columns on list queries; load on demand |
+| Field `select()` | `.select(Model::fields().title())` → scalars / tuples, **not** full model | Index pages, projections |
+| `Vec` of scalars | e.g. `tags: Vec<String>` | Postgres **arrays**; other SQL → JSON; DynamoDB lists |
+| Collection updates | `.tags(toasty::stmt::extend([...]))` | Append / mutate without rewriting whole vec blindly |
+| Array filters | `.tags().intersects([...])` (and related) | Tag / set membership queries |
+
+Also called out upstream (use when needed): richer query expressions,
+db-native enums, optimistic version control, TLS for DB clients.
+Document/JSON(B)-style storage is on the Toasty roadmap — do not invent
+a parallel document layer in VCP until Toasty exposes it.
 
 Scaffolded in the `vcp` binary: `User`, `AuthSession` (token hash hex +
 expiry), `Organization`, `Membership`, plus stub `DocArticle` /
@@ -351,13 +455,14 @@ clippy `-D warnings` + asset bundle + tests (`dev-validation-cycle.mdc` /
 
 ## 15. Upstream doc index (refresh when needed)
 
-Getting started / router / context / cookies / sessions / runtime /
-assets / Tailwind / UI / htmx / alpine-ajax — under
-`crates/topcoat/docs/` on GitHub.
-
-Module router: `crates/topcoat-router/docs/module_router.md`.
-
-Macros: `crates/topcoat-*/macro/docs/`.
+| Source | Use for |
+|--------|---------|
+| [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat) | Motivation, locality, reactivity vs WASM, Axum split, roadmap |
+| [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0) | Deferred / select / `Vec` scalars / collection ops |
+| `crates/topcoat/docs/` on GitHub | Getting started, router, context, cookies, sessions, runtime, assets, Tailwind, UI, htmx, alpine-ajax |
+| `crates/topcoat-router/docs/module_router.md` | Module router conventions |
+| `crates/topcoat-*/macro/docs/` | Macro-specific guides |
+| [Toasty guide](https://tokio-rs.github.io/toasty/nightly/guide/) | ORM details beyond the blog |
 
 When behavior is unclear, **fetch the current upstream guide** rather
 than guessing from memory of older releases.
