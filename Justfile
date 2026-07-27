@@ -71,7 +71,8 @@ build *ARGS:
 # Bundle Topcoat assets into target/assets.
 # Builds first: the bundler scans the compiled binary for asset! decls
 # (Tailwind OUT_DIR CSS, fonts, etc.). Safe to call without a prior validate.
-bundle *ARGS: ensure-topcoat build
+# Profile must match the binary: `just bundle` | `just bundle --release`.
+bundle *ARGS: ensure-topcoat (build ARGS)
     # Explicit --bin: the package also ships `vcp-cli` (Toasty migrations).
     topcoat asset bundle --bin vcp {{ARGS}}
 
@@ -144,8 +145,10 @@ release: ensure-topcoat
 # Examples: just run | just run --release
 # Smoke: curl -k https://127.0.0.1:3000/login
 # Bundles assets so Concept CSS / Fontsource / runtime script resolve.
+# Forwards ARGS to build + topcoat asset bundle so release binaries match
+# the asset IDs in target/assets (avoids Topcoat resolve panics).
 # Does not require a prior `just validate` — installs CLI + builds + bundles.
-run *ARGS: bundle
+run *ARGS: (bundle ARGS)
     cargo run {{ARGS}}
 
 # Hot-reload via Topcoat CLI (auto-installs topcoat-cli if missing)

@@ -75,6 +75,7 @@ cp config/local.toml.example config/local.toml
 
 ```bash
 just run          # build + asset bundle + HTTPS on https://127.0.0.1:3000
+just run --release  # same with release binary + matching asset bundle
 just validate     # fmt-check (rustfmt + topcoat fmt) + clippy + tests
 just dev          # topcoat HMR (no custom TLS); prefer just run for HTTPS
 just bundle       # cargo build + topcoat asset bundle → target/assets
