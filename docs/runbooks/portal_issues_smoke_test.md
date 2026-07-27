@@ -35,8 +35,8 @@ rtk cargo test --test integration_tests -- portal_issues -- --test-threads=1
 ## A -- Happy path
 
 1. Sign in as `admin@acme.example` / `password` (or member where appropriate).
-2. Exercise the surface on `/acme-infrastructure/…` per product IA.
-3. Confirm expected success status / visible data.
+2. Open `/acme-infrastructure/issues/VBN-214` and confirm discussion comments / status dividers come from the DB (timestamps relative, opener display name).
+3. Post a reply; confirm it persists after reload. Dashboard recent activity must show real `released_on` / `updated_at` labels (not fixed mock dates).
 
 Pass: surface behaves as in the focused E2E suite.
 

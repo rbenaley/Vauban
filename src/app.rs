@@ -27,6 +27,8 @@ const FAVICON_SVG: Asset = asset!("assets/favicon.svg");
 const FAVICON_16: Asset = asset!("assets/favicon-16x16.png");
 const FAVICON_32: Asset = asset!("assets/favicon-32x32.png");
 const APPLE_TOUCH_ICON: Asset = asset!("assets/apple-touch-icon.png");
+/// First-party script: persist browser IANA zone as `vcp_tz` for SSR dates.
+const VCP_TZ_JS: Asset = asset!("assets/vcp_tz.js");
 
 const FAVICON_ICO_BYTES: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/favicon.ico"));
@@ -106,6 +108,7 @@ async fn root_layout(slot: Slot<'_>) -> Result {
                 font::link(font: HANKEN_GROTESK)
                 font::link(font: JETBRAINS_MONO)
                 <link rel="stylesheet" href=(tailwind::stylesheet!())>
+                <script src=(VCP_TZ_JS) defer=""></script>
                 topcoat::runtime::script()
                 topcoat::dev::script()
             </head>

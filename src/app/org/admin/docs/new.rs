@@ -12,7 +12,7 @@ use crate::{
     app::org::Org,
     auth::{db, require_org},
     db::now_unix,
-    models::{DOC_STATUS_DRAFT, DOC_STATUS_PUBLISHED, DocArticle},
+    models::{DOC_CATEGORIES, DOC_STATUS_DRAFT, DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
     slug::slugify,
 };
@@ -41,15 +41,15 @@ async fn admin_docs_new_page(cx: &Cx) -> Result {
     let action = format!("/{slug}/admin/docs/new");
 
     view! {
-        <div style="max-width: 720px;">
+        <div>
             <a
                 class="vb-back"
                 href=(back.clone())
                 style="margin-bottom: 16px; margin-top: 0;"
             >
-                "Documentation editor"
+                "Back to articles"
             </a>
-            <h1 class="vb-title">"Publish article"</h1>
+            <h1 class="vb-title">"Compose article"</h1>
             <p class="vb-lead">"Draft or publish a knowledge-base article."</p>
             <div class="vb-panel" style="padding: 24px;">
                 <form class="vb-form" method="POST" action=(action)>
@@ -60,38 +60,44 @@ async fn admin_docs_new_page(cx: &Cx) -> Result {
                         required=""
                         placeholder="Article title"
                     >
-                    <label for="category">"Category"</label>
-                    <select id="category" name="category">
-                        <option>"Getting started"</option>
-                        <option>"Deployment"</option>
-                        <option>"Security"</option>
-                        <option>"API"</option>
-                        <option>"Operations"</option>
-                    </select>
-                    <label for="summary">"Summary"</label>
-                    <input id="summary" name="summary" placeholder="One-line summary">
-                    <label for="body">"Body"</label>
+                    <div class="vb-form-grid2">
+                        <div>
+                            <label for="category">"Category"</label>
+                            <select id="category" name="category" required="">
+                                for cat in DOC_CATEGORIES {
+                                    let label = (*cat).to_owned();
+                                    <option value=(label.clone())>(label)</option>
+                                }
+                            </select>
+                        </div>
+                        <div>
+                            <label for="summary">"Excerpt"</label>
+                            <input
+                                id="summary"
+                                name="summary"
+                                placeholder="One-line summary"
+                            >
+                        </div>
+                    </div>
+                    <label for="body">"Content"</label>
                     <textarea
                         id="body"
                         name="body"
-                        placeholder="Plain-text content…"
-                        style="min-height: 180px;"
+                        placeholder="Write the article…"
+                        style="min-height: 280px;"
                         required=""
                     ></textarea>
+                    <p class="vb-form-hint">
+                        "Formatting · ## Heading · blank line = new paragraph · - item for bullet lists · ::: callout … ::: · ``` to fence a code block"
+                    </p>
                     <div
-                        style="display: flex; gap: 12px; margin-top: 18px; flex-wrap: wrap;"
+                        style="display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; align-items: center;"
                     >
                         <button class="vb-btn" type="submit" name="publish" value="1">
-                            "Publish"
+                            "Publish article"
                         </button>
                         <button class="vb-btn muted" type="submit">"Save draft"</button>
-                        <a
-                            class="vb-link"
-                            href=(back)
-                            style="margin: 0; align-self: center;"
-                        >
-                            "Cancel"
-                        </a>
+                        <a class="vb-link" href=(back) style="margin: 0;">"Cancel"</a>
                     </div>
                 </form>
             </div>
@@ -160,5 +166,5 @@ async fn admin_docs_create(cx: &Cx, Form(form): Form<CreateDocForm>) -> Result<S
     .exec(&mut database)
     .await;
 
-    Ok(see_other(&format!("/{slug}/admin/docs/{article_slug}")))
+    Ok(see_other(&format!("/{slug}/admin/docs")))
 }

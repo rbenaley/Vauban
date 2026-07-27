@@ -32,9 +32,9 @@ async fn e2e_vcp_tz_cookie_changes_admin_docs_time() {
         .unwrap()
         .timestamp();
     let article_slug = unique_slug("tz-doc");
-    {
+    let article_id = {
         let mut conn = db.clone();
-        let _ = toasty::create!(DocArticle {
+        toasty::create!(DocArticle {
             title: "TZ Article".to_owned(),
             summary: "s".to_owned(),
             category: "API".to_owned(),
@@ -46,8 +46,9 @@ async fn e2e_vcp_tz_cookie_changes_admin_docs_time() {
         })
         .exec(&mut conn)
         .await
-        .expect("doc");
-    }
+        .expect("doc")
+        .id
+    };
 
     let form = format!("email={}&password=password", urlencoding_encode(&email));
     let login = post_form(&router, "/login", None, &form).await;
@@ -56,11 +57,21 @@ async fn e2e_vcp_tz_cookie_changes_admin_docs_time() {
     let utc_cookie = format!("{session}; vcp_tz=UTC");
     let paris_cookie = format!("{session}; vcp_tz=Europe/Paris");
 
-    let utc_page = get(&router, &format!("/{slug}/admin/docs"), Some(&utc_cookie)).await;
+    let utc_page = get(
+        &router,
+        &format!("/{slug}/admin/docs/{article_id}"),
+        Some(&utc_cookie),
+    )
+    .await;
     assert_eq!(status(&utc_page), StatusCode::OK);
     let utc_html = body_text(utc_page).await;
 
-    let paris_page = get(&router, &format!("/{slug}/admin/docs"), Some(&paris_cookie)).await;
+    let paris_page = get(
+        &router,
+        &format!("/{slug}/admin/docs/{article_id}"),
+        Some(&paris_cookie),
+    )
+    .await;
     assert_eq!(status(&paris_page), StatusCode::OK);
     let paris_html = body_text(paris_page).await;
 
@@ -79,4 +90,16 @@ async fn e2e_vcp_tz_cookie_changes_admin_docs_time() {
     );
 
     cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_root_layout_serves_vcp_tz_script() {
+    let router = test_router().await;
+    let login_page = get(&router, "/login", None).await;
+    assert_eq!(status(&login_page), StatusCode::OK);
+    let html = body_text(login_page).await;
+    assert!(
+        html.contains("vcp_tz") || html.contains("vcp_tz.js"),
+        "login HTML must reference vcp_tz script: {html}"
+    );
 }

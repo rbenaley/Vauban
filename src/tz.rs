@@ -48,6 +48,28 @@ pub fn unix_rfc3339(secs: i64) -> String {
     }
 }
 
+/// Compact relative label for activity feeds (`3h ago`, `2d ago`).
+/// Falls back to `YYYY-MM-DD` in `tz` when older than a week.
+pub fn format_relative(secs: i64, now: i64, tz: Tz) -> String {
+    let delta = now.saturating_sub(secs);
+    if delta < 60 {
+        return "just now".to_owned();
+    }
+    if delta < 3_600 {
+        return format!("{}m ago", delta / 60);
+    }
+    if delta < 86_400 {
+        return format!("{}h ago", delta / 3_600);
+    }
+    if delta < 86_400 * 7 {
+        return format!("{}d ago", delta / 86_400);
+    }
+    match Utc.timestamp_opt(secs, 0).single() {
+        Some(dt) => dt.with_timezone(&tz).format("%Y-%m-%d").to_string(),
+        None => format!("{secs}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,5 +87,16 @@ mod tests {
     #[test]
     fn cookie_name_is_stable() {
         assert_eq!(VCP_TZ_COOKIE, "vcp_tz");
+    }
+
+    #[test]
+    fn format_relative_buckets() {
+        let now = 1_000_000_i64;
+        assert_eq!(format_relative(now - 30, now, Tz::UTC), "just now");
+        assert_eq!(format_relative(now - 120, now, Tz::UTC), "2m ago");
+        assert_eq!(format_relative(now - 7_200, now, Tz::UTC), "2h ago");
+        assert_eq!(format_relative(now - 172_800, now, Tz::UTC), "2d ago");
+        let week_plus = format_relative(now - 86_400 * 10, now, Tz::UTC);
+        assert!(week_plus.contains('-'), "got {week_plus}");
     }
 }

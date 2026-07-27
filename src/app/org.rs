@@ -15,8 +15,10 @@ use topcoat::{
 
 use crate::{
     auth::require_org,
+    db::now_unix,
     models::{DOC_STATUS_PUBLISHED, DocArticle, Issue, Release},
     nav::nav_from_cx,
+    tz::{browser_tz, format_relative, format_unix_local},
     ui::{channel_badge_class, note_tag_color},
 };
 
@@ -51,28 +53,29 @@ async fn dashboard(cx: &Cx) -> Result {
     let ctx = require_org(cx, slug).await?;
 
     let mut database = crate::auth::db(cx);
-    let releases = Release::all().exec(&mut database).await.unwrap_or_default();
-    let issues = Issue::all()
+    let mut releases = Release::all().exec(&mut database).await.unwrap_or_default();
+    releases.sort_by(|a, b| b.released_on.cmp(&a.released_on));
+    let mut issues = Issue::all()
         .filter(Issue::fields().organization_id().eq(ctx.org.id))
         .exec(&mut database)
         .await
         .unwrap_or_default();
+    issues.sort_by_key(|i| std::cmp::Reverse(i.updated_at));
     let articles = DocArticle::all()
         .exec(&mut database)
         .await
         .unwrap_or_default();
 
-    let build_version = releases
-        .first()
+    let latest_release = releases.first();
+    let build_version = latest_release
         .map(|r| r.version.clone())
         .unwrap_or_else(|| "—".to_owned());
-    let build_channel = releases
-        .first()
+    let build_channel = latest_release
         .map(|r| r.channel.clone())
         .unwrap_or_else(|| "LTS".to_owned());
-    let build_notes = releases
-        .first()
-        .map(|r| r.notes.clone())
+    let build_notes = latest_release.map(|r| r.notes.clone()).unwrap_or_default();
+    let build_released_on = latest_release
+        .map(|r| r.released_on.clone())
         .unwrap_or_default();
     let open_count = issues
         .iter()
@@ -102,6 +105,31 @@ async fn dashboard(cx: &Cx) -> Result {
         })
         .collect();
     let channel_badge = channel_badge_class(&build_channel).to_owned();
+
+    let tz = browser_tz(cx);
+    let now = now_unix();
+    let latest_issue = issues.first().cloned();
+    let issue_activity = latest_issue.as_ref().map(|issue| {
+        let copy = if issue.status.eq_ignore_ascii_case("In analysis") {
+            " moved to analysis"
+        } else if issue.status.eq_ignore_ascii_case("Resolved")
+            || issue.status.eq_ignore_ascii_case("Closed")
+        {
+            " was closed"
+        } else {
+            " was updated"
+        };
+        (
+            issue.key.clone(),
+            copy,
+            format_relative(issue.updated_at, now, tz),
+        )
+    });
+    let latest_doc = articles
+        .iter()
+        .filter(|a| a.status == DOC_STATUS_PUBLISHED)
+        .max_by_key(|a| a.updated_at)
+        .map(|a| (a.title.clone(), format_unix_local(a.updated_at, tz)));
 
     view! {
         <h1 class="vb-title dash">"Dashboard"</h1>
@@ -158,7 +186,10 @@ async fn dashboard(cx: &Cx) -> Result {
                     style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
                 >
                     (ico_builds(cx, 20).await?)
-                    <span class="vb-mono vb-signed" style="font-size: 10px; color: var(--ok);">
+                    <span
+                        class="vb-mono vb-signed"
+                        style="font-size: 10px; color: var(--ok);"
+                    >
                         (build_version.clone())
                         " · signed"
                     </span>
@@ -202,24 +233,26 @@ async fn dashboard(cx: &Cx) -> Result {
         <div class="vb-grid-2">
             <div class="vb-panel">
                 <div class="vb-section-label">"RECENT ACTIVITY"</div>
-                <div class="vb-activity-item">
-                    <div class="vb-dot"></div>
-                    <div style="flex: 1; font-size: 13.5px; color: #3a3f46;">
-                        <span
-                            class="vb-mono"
-                            style="color: var(--accent); font-size: 12.5px;"
-                        >
-                            (build_version.clone())
-                        </span>
-                        " ("
-                        (build_channel.clone())
-                        ") certified and signed"
+                if !build_version.is_empty() && build_version != "—" {
+                    <div class="vb-activity-item">
+                        <div class="vb-dot"></div>
+                        <div style="flex: 1; font-size: 13.5px; color: #3a3f46;">
+                            <span
+                                class="vb-mono"
+                                style="color: var(--accent); font-size: 12.5px;"
+                            >
+                                (build_version.clone())
+                            </span>
+                            " ("
+                            (build_channel.clone())
+                            ") certified and signed"
+                        </div>
+                        <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">
+                            (build_released_on.clone())
+                        </div>
                     </div>
-                    <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">
-                        "Jun 23"
-                    </div>
-                </div>
-                if let Some(issue) = issues.first() {
+                }
+                if let Some((key, copy, when)) = issue_activity {
                     <div class="vb-activity-item">
                         <div class="vb-dot warn"></div>
                         <div style="flex: 1; font-size: 13.5px; color: #3a3f46;">
@@ -227,25 +260,24 @@ async fn dashboard(cx: &Cx) -> Result {
                                 class="vb-mono"
                                 style="color: var(--accent); font-size: 12.5px;"
                             >
-                                (issue.key.clone())
+                                (key)
                             </span>
-                            " moved to analysis"
+                            (copy)
                         </div>
                         <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">
-                            "3h ago"
+                            (when)
                         </div>
                     </div>
                 }
-                if let Some(doc) = articles.iter().find(|a| a.status == DOC_STATUS_PUBLISHED)
-                {
+                if let Some((title, when)) = latest_doc {
                     <div class="vb-activity-item">
                         <div class="vb-dot muted"></div>
                         <div style="flex: 1; font-size: 13.5px; color: #3a3f46;">
-                            (doc.title.clone())
+                            (title)
                             " — documentation updated"
                         </div>
                         <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">
-                            "Jun 12"
+                            (when)
                         </div>
                     </div>
                 }
@@ -259,7 +291,10 @@ async fn dashboard(cx: &Cx) -> Result {
                         (build_version)
                     </span>
                     <span class=(channel_badge.clone())>(build_channel)</span>
-                    <span class="vb-mono vb-signed" style="font-size: 11px; color: var(--ok);">
+                    <span
+                        class="vb-mono vb-signed"
+                        style="font-size: 11px; color: var(--ok);"
+                    >
                         "signed"
                     </span>
                 </div>

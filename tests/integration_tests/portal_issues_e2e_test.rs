@@ -1,7 +1,8 @@
-//! E2E: issue report persists details; wrong org 404.
+//! E2E: issue report persists details; wrong org 404; reply from DB.
 
 use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
+use vcp::models::{ISSUE_COMMENT_KIND_COMMENT, ISSUE_ROLE_SUPPORT, Issue, IssueComment};
 
 use crate::common::{
     cleanup, cookie_header, create_org_with_membership, create_test_org, db_lock, get, post_form,
@@ -65,6 +66,90 @@ async fn e2e_report_issue_persists_and_shows_details() {
         html.contains(details) || html.contains("Test portal latency"),
         "detail should show persisted details; html={html}"
     );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_issue_detail_shows_seeded_comment_and_reply() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("iss-cmt");
+    let slug = unique_slug("iss-cmt-org");
+    let (user, org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let now = vcp::db::now_unix();
+    let key = format!("VBN-{}", unique_slug("k").replace('-', ""));
+    let support_body = "Initial analysis underway from DB.";
+    {
+        let mut conn = db.clone();
+        let issue = toasty::create!(Issue {
+            key: key.clone(),
+            title: "Comment e2e".to_owned(),
+            component: "SSH Proxy".to_owned(),
+            severity: "Major".to_owned(),
+            status: "In analysis".to_owned(),
+            organization_id: org.id,
+            details: "Reporter opener text".to_owned(),
+            opened_by_user_id: user.id,
+            created_at: now - 10_000,
+            updated_at: now - 1_000,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("issue");
+        let _ = toasty::create!(IssueComment {
+            issue_id: issue.id,
+            author_user_id: user.id,
+            author_role: ISSUE_ROLE_SUPPORT.to_owned(),
+            body: support_body.to_owned(),
+            kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
+            created_at: now - 1_000,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("comment");
+    }
+
+    let detail = get(&router, &format!("/{slug}/issues/{key}"), cookie.as_deref()).await;
+    assert_eq!(status(&detail), StatusCode::OK);
+    let html = body_text(detail).await;
+    assert!(
+        html.contains(support_body),
+        "seeded comment missing: {html}"
+    );
+    assert!(
+        html.contains("Reporter opener text"),
+        "opener details missing: {html}"
+    );
+    assert!(
+        !html.contains("Vauban Support"),
+        "must not show hardcoded support fixture"
+    );
+
+    let reply = "Follow-up metrics attached.";
+    let form = format!("body={}", urlencoding_encode(reply));
+    let posted = post_form(
+        &router,
+        &format!("/{slug}/issues/{key}/reply"),
+        cookie.as_deref(),
+        &form,
+    )
+    .await;
+    assert!(
+        status(&posted).is_redirection(),
+        "reply should PRG, got {}",
+        status(&posted)
+    );
+
+    let after = get(&router, &format!("/{slug}/issues/{key}"), cookie.as_deref()).await;
+    assert_eq!(status(&after), StatusCode::OK);
+    let html = body_text(after).await;
+    assert!(html.contains(reply), "reply missing after POST: {html}");
 
     cleanup(&db).await;
 }

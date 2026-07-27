@@ -15,8 +15,10 @@ use crate::{
     app::_components::{ico_plus, severity_badge, status_badge},
     app::org::Org,
     auth::{db, require_org},
-    models::Issue,
+    db::now_unix,
+    models::{Issue, User},
     perms::perms_for_user,
+    tz::{browser_tz, format_relative},
 };
 
 const STATUSES: &[&str] = &["Open", "In analysis", "Resolved", "Closed"];
@@ -54,6 +56,9 @@ async fn issues_page(cx: &Cx) -> Result {
         .exec(&mut database)
         .await
         .unwrap_or_default();
+    let users = User::all().exec(&mut database).await.unwrap_or_default();
+    let tz = browser_tz(cx);
+    let now = now_unix();
     let filtered: Vec<_> = issues
         .into_iter()
         .filter(|i| {
@@ -139,6 +144,16 @@ async fn issues_page(cx: &Cx) -> Result {
                 <div class="vb-empty">"No matching issues."</div>
             } else {
                 for issue in filtered {
+                    let opener = users
+                        .iter()
+                        .find(|u| u.id == issue.opened_by_user_id)
+                        .map(|u| u.display_name.clone())
+                        .unwrap_or_else(|| "Unknown".to_owned());
+                    let updated = format_relative(issue.updated_at, now, tz);
+                    let meta = format!(
+                        "{} · opened by {} · updated {}", issue.component, opener,
+                        updated
+                    );
                     <a class="vb-row" href=(format!("/{}/issues/{}", slug, issue.key))>
                         <div
                             class="vb-mono"
@@ -156,8 +171,7 @@ async fn issues_page(cx: &Cx) -> Result {
                                 class="vb-mono"
                                 style="font-size: 11px; color: #8a8f96;"
                             >
-                                (issue.component.clone())
-                                " · opened by customer · updated recently"
+                                (meta)
                             </div>
                         </div>
                         severity_badge(severity: &issue.severity)
@@ -202,6 +216,7 @@ async fn report_issue(cx: &Cx, Form(form): Form<ReportForm>) -> Result<SeeOther>
     let details = form.details.trim().to_owned();
 
     if !title.is_empty() {
+        let now = now_unix();
         let _ = toasty::create!(Issue {
             key: key.clone(),
             title,
@@ -210,6 +225,9 @@ async fn report_issue(cx: &Cx, Form(form): Form<ReportForm>) -> Result<SeeOther>
             status: "Open".to_owned(),
             organization_id: ctx.org.id,
             details,
+            opened_by_user_id: ctx.user.id,
+            created_at: now,
+            updated_at: now,
         })
         .exec(&mut database)
         .await;

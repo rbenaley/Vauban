@@ -10,6 +10,8 @@ pub mod app;
 pub mod auth;
 pub mod config;
 pub mod db;
+pub mod docs_body;
+pub mod docs_version;
 pub mod fonts;
 pub mod models;
 pub mod nav;

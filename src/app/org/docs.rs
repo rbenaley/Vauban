@@ -80,7 +80,7 @@ pub(super) async fn load_filtered_docs(
         query = query.filter(DocArticle::fields().category().eq(&filter.cat));
     }
     let articles = query.exec(&mut database).await.unwrap_or_default();
-    let filtered: Vec<_> = articles
+    let mut filtered: Vec<_> = articles
         .into_iter()
         .filter(|a| {
             filter.q.is_empty()
@@ -88,6 +88,7 @@ pub(super) async fn load_filtered_docs(
                 || a.summary.to_lowercase().contains(&filter.q)
         })
         .collect();
+    filtered.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
     (filter.q.clone(), filter.cat.clone(), filtered)
 }
 

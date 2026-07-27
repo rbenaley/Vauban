@@ -124,9 +124,10 @@ async fn models_issue_and_stubs_create() {
 
     let email = unique_email("issue");
     let slug = unique_slug("issue-org");
-    let (_user, org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let (user, org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
 
     let mut conn = db.clone();
+    let now = vcp::db::now_unix();
     let issue = toasty::create!(Issue {
         key: format!("TEST-{}", unique_slug("k")),
         title: "Latency".to_owned(),
@@ -135,6 +136,9 @@ async fn models_issue_and_stubs_create() {
         status: "Open".to_owned(),
         organization_id: org.id,
         details: "details here".to_owned(),
+        opened_by_user_id: user.id,
+        created_at: now,
+        updated_at: now,
     })
     .exec(&mut conn)
     .await

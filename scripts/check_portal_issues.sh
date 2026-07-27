@@ -30,4 +30,18 @@ grep -n 'issue.details' "$DETAIL" >/dev/null || fail "$DETAIL must render issue.
 grep -n 'issues_read' "$DETAIL" >/dev/null || fail "$DETAIL must gate on issues_read"
 grep -n 'organization_id' "$DETAIL" >/dev/null || fail "$DETAIL must scope by organization_id"
 
+grep -n 'IssueComment' "$DETAIL" >/dev/null \
+  || fail "$DETAIL must load IssueComment timeline from DB"
+grep -nE '#\[route\(POST|/reply' "$DETAIL" >/dev/null \
+  || fail "$DETAIL must expose POST reply route"
+grep -n 'opened_by_user_id' "$LIST" >/dev/null \
+  || fail "$LIST must persist opened_by_user_id on create"
+grep -n 'struct IssueComment' src/models/mod.rs >/dev/null \
+  || fail "models must define IssueComment"
+
+# No hardcodéd Concept timeline fixtures.
+if grep -nE '"Vauban Support"|"3h ago"|"Jun 20"|"Jun 23"' "$DETAIL" "$LIST" src/app/org.rs >/dev/null 2>&1; then
+  fail "issue/dashboard UI must not hardcode timeline fixtures (Vauban Support / relative dates)"
+fi
+
 echo "check_portal_issues: OK"

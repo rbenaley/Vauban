@@ -198,6 +198,53 @@ a.vb-btn.outline, button.vb-btn.outline {
 a.vb-btn.muted, button.vb-btn.muted {
   background: #fff; color: #5a5f66; border: 1px solid var(--border);
 }
+a.vb-btn.danger, button.vb-btn.danger {
+  background: #fff; color: #b5403a; border: 1px solid #eccfcc;
+  padding: 6px 10px; font-size: 11px; line-height: 1; display: inline-flex;
+  align-items: center; justify-content: center;
+}
+a.vb-btn.compact, button.vb-btn.compact {
+  padding: 6px 11px; font-size: 11px; font-weight: 500;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+.vb-row-actions {
+  display: flex; gap: 6px; justify-content: flex-end; align-items: center; flex-wrap: wrap;
+}
+.vb-row-actions form { margin: 0; }
+.vb-confirm-root {
+  position: fixed; inset: 0; z-index: 60; display: flex; align-items: center;
+  justify-content: center; padding: 24px; background: rgba(20,23,28,.55);
+}
+.vb-confirm {
+  width: 100%; max-width: 420px; background: #fff; border-radius: 6px;
+  padding: 22px 24px; box-shadow: 0 24px 60px rgba(0,0,0,.32);
+}
+.vb-confirm h2 { font-size: 18px; font-weight: 800; margin: 0 0 8px; }
+.vb-confirm p { margin: 0 0 14px; color: #5a5f66; font-size: 14px; line-height: 1.5; }
+.vb-confirm .vb-form label { margin-top: 0; }
+.vb-confirm-actions {
+  display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap;
+}
+.vb-form-grid2 {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px;
+}
+@media (max-width: 720px) {
+  .vb-form-grid2 { grid-template-columns: 1fr; }
+}
+.vb-form-hint {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10.5px; color: #9aa0a6; margin: 8px 0 0; line-height: 1.7;
+}
+.vb-title-cell { min-width: 0; }
+.vb-title-cell .vb-title-main {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-size: 14px; font-weight: 600; margin-bottom: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.vb-title-cell .vb-title-sub {
+  font-size: 12px; color: #8a8f96;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .vb-ephemeral {
   margin-top: 16px; border: 1px solid #d7e3df; border-radius: 6px; background: #fff; overflow: hidden;
 }

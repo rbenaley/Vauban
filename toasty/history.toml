@@ -4,3 +4,13 @@ version = 1
 id = 7227258433402660679
 name = "0000_initial.sql"
 snapshot_name = "0000_snapshot.toml"
+
+[[migrations]]
+id = 8297320574297276907
+name = "0001_issue_comments.sql"
+snapshot_name = "0001_snapshot.toml"
+
+[[migrations]]
+id = 2117877316932323482
+name = "0002_doc_slug_versions.sql"
+snapshot_name = "0002_snapshot.toml"

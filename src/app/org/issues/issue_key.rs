@@ -1,18 +1,24 @@
 //! Issue detail at `/{org}/issues/{issue_key}`.
 
+use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, page, path_param},
+    router::{Form, SeeOther, forbidden, page, path_param, route, see_other},
     view::view,
 };
 
 use crate::{
-    app::_components::{ico_check, ico_paperclip, severity_badge, status_badge},
+    app::_components::{ico_check, ico_hourglass, ico_paperclip, severity_badge, status_badge},
     app::org::Org,
-    auth::require_org,
-    models::Issue,
+    auth::{db, require_org},
+    db::now_unix,
+    models::{
+        ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_REPORTER,
+        ISSUE_ROLE_SUPPORT, ISSUE_ROLE_SYSTEM, Issue, IssueComment, User,
+    },
     perms::perms_for_user,
+    tz::{browser_tz, format_relative, format_unix_local, unix_rfc3339},
 };
 
 #[path_param]
@@ -28,7 +34,7 @@ async fn issue_detail_page(cx: &Cx) -> Result {
         return Err(forbidden().into());
     }
 
-    let mut database = crate::auth::db(cx);
+    let mut database = db(cx);
     let issues = Issue::all()
         .filter(Issue::fields().organization_id().eq(ctx.org.id))
         .exec(&mut database)
@@ -38,9 +44,30 @@ async fn issue_detail_page(cx: &Cx) -> Result {
         return Err(topcoat::router::not_found().into());
     };
 
+    let mut comments = IssueComment::all()
+        .filter(IssueComment::fields().issue_id().eq(issue.id))
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    comments.sort_by_key(|c| c.created_at);
+
+    let users = User::all().exec(&mut database).await.unwrap_or_default();
+    let opener_name = user_display(&users, issue.opened_by_user_id);
+
+    let tz = browser_tz(cx);
+    let now = now_unix();
+    let created_label = format_unix_local(issue.created_at, tz);
+    let created_rfc = unix_rfc3339(issue.created_at);
+    let updated_label = format_relative(issue.updated_at, now, tz);
+    let updated_rfc = unix_rfc3339(issue.updated_at);
+    let opener_created = format_relative(issue.created_at, now, tz);
+
     let list_href = format!("/{org_slug}/issues");
+    let reply_action = format!("/{org_slug}/issues/{}/reply", issue.key);
     let closed = issue.status.eq_ignore_ascii_case("Closed")
         || issue.status.eq_ignore_ascii_case("Resolved");
+
+    let timeline = build_timeline_rows(&issue, &comments, &users, now, tz);
 
     view! {
         <div style="max-width: 820px;">
@@ -84,7 +111,7 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                         "OPENED BY"
                     </div>
                     <div style="font-size: 13px; font-weight: 600; margin-top: 4px;">
-                        "Customer"
+                        (opener_name.clone())
                     </div>
                 </div>
                 <div>
@@ -92,7 +119,7 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                         "CREATED"
                     </div>
                     <div style="font-size: 13px; font-weight: 600; margin-top: 4px;">
-                        "Jun 20"
+                        <time datetime=(created_rfc)>(created_label)</time>
                     </div>
                 </div>
                 <div>
@@ -100,13 +127,13 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                         "UPDATED"
                     </div>
                     <div style="font-size: 13px; font-weight: 600; margin-top: 4px;">
-                        "3h ago"
+                        <time datetime=(updated_rfc)>(updated_label)</time>
                     </div>
                 </div>
             </div>
 
             <div class="vb-callout">
-                <span>"◷"</span>
+                (ico_hourglass(cx, 16).await?)
                 <span>
                     "SLA: initial analysis within 2–5 business days from the report timestamp."
                 </span>
@@ -124,19 +151,19 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                             style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;"
                         >
                             <span style="font-size: 12.5px; font-weight: 700;">
-                                "Customer"
+                                (opener_name)
                             </span>
                             <span
                                 class="vb-mono"
                                 style="font-size: 9.5px; color: #fff; background: #5a5f66; padding: 1px 6px; border-radius: 3px;"
                             >
-                                "reporter"
+                                (ISSUE_ROLE_REPORTER)
                             </span>
                             <span
                                 class="vb-mono"
                                 style="font-size: 10px; color: #9aa0a6;"
                             >
-                                "Jun 20"
+                                (opener_created)
                             </span>
                         </div>
                         <div
@@ -146,50 +173,9 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                         </div>
                     </div>
                 </div>
-                <div
-                    style="display: flex; align-items: center; gap: 12px; padding: 2px 0;"
-                >
-                    <div style="flex: 1; height: 1px; background: #eef0ed;"></div>
-                    <span
-                        class="vb-mono"
-                        style="font-size: 11px; color: #8a8f96; white-space: nowrap;"
-                    >
-                        "Moved to analysis · 3h ago"
-                    </span>
-                    <div style="flex: 1; height: 1px; background: #eef0ed;"></div>
-                </div>
-                <div
-                    style="display: flex; flex-direction: column; align-items: flex-end;"
-                >
-                    <div class="vb-bubble support">
-                        <div
-                            style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;"
-                        >
-                            <span
-                                style="font-size: 12.5px; font-weight: 700; color: var(--accent);"
-                            >
-                                "Vauban Support"
-                            </span>
-                            <span
-                                class="vb-mono"
-                                style="font-size: 9.5px; color: #fff; background: var(--accent); padding: 1px 6px; border-radius: 3px;"
-                            >
-                                "support"
-                            </span>
-                            <span
-                                class="vb-mono"
-                                style="font-size: 10px; color: #9aa0a6;"
-                            >
-                                "2h ago"
-                            </span>
-                        </div>
-                        <div
-                            style="font-size: 13.5px; line-height: 1.55; color: #3a3f46;"
-                        >
-                            "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway."
-                        </div>
-                    </div>
-                </div>
+                for row in timeline {
+                    (render_timeline_row(cx, row).await?)
+                }
             </div>
 
             if closed {
@@ -213,27 +199,198 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                 </div>
             } else if perms.issues_write {
                 <div class="vb-panel" style="padding: 14px;">
-                    <textarea
-                        placeholder="Add a reply…"
-                        style="width: 100%; min-height: 76px; font-size: 14px; padding: 10px 12px; border: 1px solid #e0e2de; border-radius: 4px; background: #fbfcfb; resize: vertical; font-family: 'Hanken Grotesk', sans-serif; line-height: 1.5; margin-bottom: 12px;"
-                    ></textarea>
-                    <div
-                        style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;"
-                    >
-                        <span class="vb-btn muted vb-btn-ico">
-                            (ico_paperclip(cx, 13).await?)
-                            <span>"Attach screenshot"</span>
-                        </span>
-                        <div style="display: flex; gap: 10px;">
-                            <span class="vb-btn muted">"Close issue"</span>
-                            <span class="vb-btn">"Reply"</span>
+                    <form method="POST" action=(reply_action)>
+                        <textarea
+                            name="body"
+                            required=""
+                            placeholder="Add a reply…"
+                            style="width: 100%; min-height: 76px; font-size: 14px; padding: 10px 12px; border: 1px solid #e0e2de; border-radius: 4px; background: #fbfcfb; resize: vertical; font-family: 'Hanken Grotesk', sans-serif; line-height: 1.5; margin-bottom: 12px;"
+                        ></textarea>
+                        <div
+                            style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;"
+                        >
+                            <span class="vb-btn muted vb-btn-ico">
+                                (ico_paperclip(cx, 13).await?)
+                                <span>"Attach screenshot"</span>
+                            </span>
+                            <div style="display: flex; gap: 10px;">
+                                <span class="vb-btn muted">"Close issue"</span>
+                                <button class="vb-btn" type="submit">"Reply"</button>
+                            </div>
                         </div>
-                    </div>
-                    <p class="vb-muted" style="margin: 12px 0 0; font-size: 12px;">
-                        "Reply / close mutations ship in a later slice — layout matches Concept."
-                    </p>
+                    </form>
                 </div>
             }
         </div>
     }
+}
+
+#[derive(Deserialize)]
+struct ReplyForm {
+    body: String,
+}
+
+#[route(POST "/{org}/issues/{issue_key}/reply")]
+async fn reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOther> {
+    let org_slug = path_param::<Org>(cx);
+    let key = path_param::<IssueKey>(cx);
+    let ctx = require_org(cx, org_slug)
+        .await
+        .map_err(|_| topcoat::router::not_found())?;
+    let perms = perms_for_user(cx, &ctx.user).await;
+    if !perms.issues_write {
+        return Ok(see_other(&format!("/{org_slug}/issues/{key}")));
+    }
+
+    let body = form.body.trim().to_owned();
+    if body.is_empty() {
+        return Ok(see_other(&format!("/{org_slug}/issues/{key}")));
+    }
+
+    let mut database = db(cx);
+    let issues = Issue::all()
+        .filter(Issue::fields().organization_id().eq(ctx.org.id))
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    let Some(mut issue) = issues.into_iter().find(|i| i.key == *key) else {
+        return Ok(see_other(&format!("/{org_slug}/issues")));
+    };
+
+    let closed = issue.status.eq_ignore_ascii_case("Closed")
+        || issue.status.eq_ignore_ascii_case("Resolved");
+    if closed {
+        return Ok(see_other(&format!("/{org_slug}/issues/{key}")));
+    }
+
+    let now = now_unix();
+    let role = if perms.admin_view {
+        ISSUE_ROLE_SUPPORT
+    } else {
+        ISSUE_ROLE_REPORTER
+    };
+
+    let _ = toasty::create!(IssueComment {
+        issue_id: issue.id,
+        author_user_id: ctx.user.id,
+        author_role: role.to_owned(),
+        body,
+        kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
+        created_at: now,
+    })
+    .exec(&mut database)
+    .await;
+
+    let _ = issue.update().updated_at(now).exec(&mut database).await;
+
+    Ok(see_other(&format!("/{org_slug}/issues/{key}")))
+}
+
+struct TimelineRow {
+    kind: String,
+    author_name: String,
+    author_role: String,
+    body: String,
+    when: String,
+    support_side: bool,
+}
+
+fn build_timeline_rows(
+    _issue: &Issue,
+    comments: &[IssueComment],
+    users: &[User],
+    now: i64,
+    tz: chrono_tz::Tz,
+) -> Vec<TimelineRow> {
+    comments
+        .iter()
+        .map(|c| {
+            let support_side = c.author_role == ISSUE_ROLE_SUPPORT;
+            let author_name = if c.author_role == ISSUE_ROLE_SYSTEM {
+                String::new()
+            } else if c.author_user_id == 0 && support_side {
+                "Support".to_owned()
+            } else {
+                user_display(users, c.author_user_id)
+            };
+            TimelineRow {
+                kind: c.kind.clone(),
+                author_name,
+                author_role: c.author_role.clone(),
+                body: c.body.clone(),
+                when: format_relative(c.created_at, now, tz),
+                support_side,
+            }
+        })
+        .collect()
+}
+
+async fn render_timeline_row(cx: &Cx, row: TimelineRow) -> Result {
+    if row.kind == ISSUE_COMMENT_KIND_STATUS {
+        let label = format!("{} · {}", row.body, row.when);
+        return view! {
+            cx =>
+            <div style="display: flex; align-items: center; gap: 12px; padding: 2px 0;">
+                <div style="flex: 1; height: 1px; background: #eef0ed;"></div>
+                <span
+                    class="vb-mono"
+                    style="font-size: 11px; color: #8a8f96; white-space: nowrap;"
+                >
+                    (label)
+                </span>
+                <div style="flex: 1; height: 1px; background: #eef0ed;"></div>
+            </div>
+        };
+    }
+
+    let bubble_class = if row.support_side {
+        "vb-bubble support"
+    } else {
+        "vb-bubble"
+    };
+    let align = if row.support_side {
+        "display: flex; flex-direction: column; align-items: flex-end;"
+    } else {
+        "display: flex; flex-direction: column; align-items: flex-start;"
+    };
+    let name_style = if row.support_side {
+        "font-size: 12.5px; font-weight: 700; color: var(--accent);"
+    } else {
+        "font-size: 12.5px; font-weight: 700;"
+    };
+    let badge_bg = if row.support_side {
+        "font-size: 9.5px; color: #fff; background: var(--accent); padding: 1px 6px; border-radius: 3px;"
+    } else {
+        "font-size: 9.5px; color: #fff; background: #5a5f66; padding: 1px 6px; border-radius: 3px;"
+    };
+
+    view! {
+        cx =>
+        <div style=(align)>
+            <div class=(bubble_class)>
+                <div
+                    style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;"
+                >
+                    <span style=(name_style)>(row.author_name)</span>
+                    <span class="vb-mono" style=(badge_bg)>(row.author_role)</span>
+                    <span class="vb-mono" style="font-size: 10px; color: #9aa0a6;">
+                        (row.when)
+                    </span>
+                </div>
+                <div
+                    style="font-size: 13.5px; line-height: 1.55; color: #3a3f46; white-space: pre-wrap;"
+                >
+                    (row.body)
+                </div>
+            </div>
+        </div>
+    }
+}
+
+fn user_display(users: &[User], id: u64) -> String {
+    users
+        .iter()
+        .find(|u| u.id == id)
+        .map(|u| u.display_name.clone())
+        .unwrap_or_else(|| "Unknown".to_owned())
 }

@@ -1,4 +1,4 @@
-//! Toasty models for the VCP portal scaffold.
+//! Toasty models for the VCP customer portal.
 
 use toasty::{Deferred, Model};
 
@@ -7,6 +7,15 @@ pub const MAX_USERS_PER_COMPANY: usize = 5;
 
 pub const DOC_STATUS_DRAFT: &str = "DRAFT";
 pub const DOC_STATUS_PUBLISHED: &str = "PUBLISHED";
+
+/// Category options for admin compose (Concept select).
+pub const DOC_CATEGORIES: &[&str] = &[
+    "Getting started",
+    "Deployment",
+    "Security",
+    "API",
+    "Operations",
+];
 
 #[derive(Debug, Clone, Model)]
 pub struct User {
@@ -92,14 +101,15 @@ pub struct DocArticle {
 
     pub category: String,
 
-    #[unique]
+    /// Shared across versions of the same article (not unique).
+    #[index]
     pub slug: String,
 
     pub version: String,
 
     pub status: String,
 
-    /// Plain-text body (deferred on list queries; include on detail).
+    /// Dialect body (headings, fences, callouts); deferred on list, include on detail.
     pub body: Deferred<String>,
 
     /// Unix timestamp (seconds) of last update.
@@ -127,6 +137,12 @@ pub struct Release {
     pub notes: String,
 }
 
+pub const ISSUE_COMMENT_KIND_COMMENT: &str = "comment";
+pub const ISSUE_COMMENT_KIND_STATUS: &str = "status_change";
+pub const ISSUE_ROLE_REPORTER: &str = "reporter";
+pub const ISSUE_ROLE_SUPPORT: &str = "support";
+pub const ISSUE_ROLE_SYSTEM: &str = "system";
+
 #[derive(Debug, Clone, Model)]
 pub struct Issue {
     #[key]
@@ -145,6 +161,40 @@ pub struct Issue {
 
     pub organization_id: u64,
 
-    /// Free-text report details from the issue form.
+    /// Free-text report details from the issue form (opening message).
     pub details: String,
+
+    /// User who opened the issue.
+    pub opened_by_user_id: u64,
+
+    /// Unix timestamp (seconds) when the issue was created.
+    pub created_at: i64,
+
+    /// Unix timestamp (seconds) of last update (reply or status change).
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Model)]
+#[table = "issue_comments"]
+pub struct IssueComment {
+    #[key]
+    #[auto]
+    pub id: u64,
+
+    #[index]
+    pub issue_id: u64,
+
+    /// Author user id (0 for system rows without a user).
+    pub author_user_id: u64,
+
+    /// `reporter`, `support`, or `system`.
+    pub author_role: String,
+
+    pub body: String,
+
+    /// `comment` or `status_change`.
+    pub kind: String,
+
+    /// Unix timestamp (seconds).
+    pub created_at: i64,
 }

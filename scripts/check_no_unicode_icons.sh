@@ -12,7 +12,7 @@ fail() {
 }
 
 # Decorative / control glyphs formerly used as icons in view! markup and CSS.
-PATTERN='[→←↑↓✓✕＋✎⌂⚑▾▸⧖▪📎★☆]'
+PATTERN='[→←↑↓✓✕＋✎⌂⚑▾▸⧖▪📎★☆◷]'
 
 hits="$(
   {

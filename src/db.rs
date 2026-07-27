@@ -15,7 +15,11 @@ use toasty::migration::History;
 use toasty::schema::db::Migration;
 use toasty_cli::Config as ToastyConfig;
 
-use crate::models::{DocArticle, Issue, Membership, Organization, Release, User};
+use crate::docs_body;
+use crate::models::{
+    DocArticle, ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_SUPPORT,
+    ISSUE_ROLE_SYSTEM, Issue, IssueComment, Membership, Organization, Release, User,
+};
 
 /// Open a Toasty handle with VCP models registered (no schema changes).
 pub async fn open(database_url: &str) -> anyhow::Result<Db> {
@@ -28,6 +32,7 @@ pub async fn open(database_url: &str) -> anyhow::Result<Db> {
             crate::models::DocArticle,
             crate::models::Release,
             crate::models::Issue,
+            crate::models::IssueComment,
         ))
         .connect(database_url)
         .await?)
@@ -222,7 +227,8 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
     .exec(&mut db)
     .await?;
 
-    toasty::create!(Issue {
+    let now = now_unix();
+    let issue_214 = toasty::create!(Issue {
         key: "VBN-214".to_owned(),
         title: "Intermittent SSH proxy latency under heavy load".to_owned(),
         component: "SSH Proxy".to_owned(),
@@ -230,6 +236,31 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         status: "In analysis".to_owned(),
         organization_id: org.id,
         details: "Seeing intermittent latency spikes on the SSH proxy under load. Happy to share metrics.".to_owned(),
+        opened_by_user_id: member.id,
+        created_at: now - 86_400,
+        updated_at: now - 7_200,
+    })
+    .exec(&mut db)
+    .await?;
+
+    toasty::create!(IssueComment {
+        issue_id: issue_214.id,
+        author_user_id: 0,
+        author_role: ISSUE_ROLE_SYSTEM.to_owned(),
+        body: "Moved to analysis".to_owned(),
+        kind: ISSUE_COMMENT_KIND_STATUS.to_owned(),
+        created_at: now - 10_800,
+    })
+    .exec(&mut db)
+    .await?;
+
+    toasty::create!(IssueComment {
+        issue_id: issue_214.id,
+        author_user_id: admin.id,
+        author_role: ISSUE_ROLE_SUPPORT.to_owned(),
+        body: "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway.".to_owned(),
+        kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
+        created_at: now - 7_200,
     })
     .exec(&mut db)
     .await?;
@@ -242,11 +273,13 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         status: "Open".to_owned(),
         organization_id: org.id,
         details: "Large clipboard payloads fail to sync over RDP.".to_owned(),
+        opened_by_user_id: member.id,
+        created_at: now - 172_800,
+        updated_at: now - 172_800,
     })
     .exec(&mut db)
     .await?;
 
-    let _ = (admin, member);
     Ok(())
 }
 
@@ -348,27 +381,230 @@ pub async fn ensure_demo_catalog(db: &Db) -> anyhow::Result<()> {
         .await?;
     }
 
+    refresh_thin_doc_bodies(&mut db).await?;
+    ensure_demo_issue_comments(&mut db).await?;
+    Ok(())
+}
+
+/// Backfill demo discussion rows for seeded issues that have none yet.
+async fn ensure_demo_issue_comments(db: &mut Db) -> anyhow::Result<()> {
+    let issues = Issue::all().exec(db).await?;
+    let users = User::all().exec(db).await?;
+    let admin_id = users
+        .iter()
+        .find(|u| u.email == "admin@acme.example")
+        .map(|u| u.id)
+        .unwrap_or(0);
+    let now = now_unix();
+
+    for issue in issues {
+        let comments = IssueComment::all()
+            .filter(IssueComment::fields().issue_id().eq(issue.id))
+            .exec(db)
+            .await?;
+        if !comments.is_empty() {
+            continue;
+        }
+        if issue.status.eq_ignore_ascii_case("In analysis") {
+            toasty::create!(IssueComment {
+                issue_id: issue.id,
+                author_user_id: 0,
+                author_role: ISSUE_ROLE_SYSTEM.to_owned(),
+                body: "Moved to analysis".to_owned(),
+                kind: ISSUE_COMMENT_KIND_STATUS.to_owned(),
+                created_at: issue.updated_at.saturating_sub(3_600).max(issue.created_at),
+            })
+            .exec(db)
+            .await?;
+            toasty::create!(IssueComment {
+                issue_id: issue.id,
+                author_user_id: admin_id,
+                author_role: ISSUE_ROLE_SUPPORT.to_owned(),
+                body: "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway.".to_owned(),
+                kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
+                created_at: issue.updated_at.max(now.saturating_sub(7_200)),
+            })
+            .exec(db)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Replace pre-dialect thin bodies so existing local DBs pick up rich content.
+async fn refresh_thin_doc_bodies(db: &mut Db) -> anyhow::Result<()> {
+    let articles = DocArticle::all()
+        .include(DocArticle::fields().body())
+        .exec(db)
+        .await?;
+    for mut article in articles {
+        let body = article.body.get().clone();
+        if !docs_body::is_thin_seed_body(&body, &article.summary) {
+            continue;
+        }
+        let rich = seed_doc_body(&article.slug, &article.summary);
+        article
+            .update()
+            .body(rich)
+            .updated_at(now_unix())
+            .exec(db)
+            .await?;
+    }
     Ok(())
 }
 
 fn seed_doc_body(slug: &str, summary: &str) -> String {
-    if slug == "quick-start" {
-        return concat!(
-            "Vauban ships as a single signed binary. This guide takes you from a fresh host ",
-            "to your first end-to-end recorded SSH session in about fifteen minutes.\n\n",
-            "1. Install the binary\n",
-            "Download the latest LTS build and verify its signature before running it.\n\n",
-            "2. Enroll your first target host\n",
-            "Register machines by DNS name and assign them to groups.\n\n",
-            "3. Define an access policy\n",
-            "Map subjects to targets and actions; keep policies narrow.\n\n",
-            "4. Open your first session\n",
-            "Point SSH at the bastion. Vauban authenticates, enforces MFA, and records the session."
-        )
-        .to_owned();
+    match slug {
+        "quick-start" => QUICK_START_BODY.to_owned(),
+        "bastion-architecture" => format!(
+            "{summary}\n\n\
+             # Control plane\n\n\
+             The bastion brokers every session. Proxies terminate client connections and \
+             open supervised channels to enrolled targets.\n\n\
+             ::: callout\n\
+             No agent is installed on protected machines — policy is enforced at the bastion.\n\
+             :::\n\n\
+             # Audit path\n\n\
+             Session recordings and audit events are sealed for later replay from the portal."
+        ),
+        "ha-deployment" => format!(
+            "{summary}\n\n\
+             # Topology\n\n\
+             Run at least two bastion nodes behind a TCP load balancer. Shared policy store \
+             and session metadata keep failover within SLA.\n\n\
+             ```\n\
+             # health check\n\
+             curl -fsS https://bastion.example/healthz\n\
+             ```\n\n\
+             ::: callout\n\
+             Sticky sessions are not required for SSH; reconnects re-authenticate through MFA.\n\
+             :::"
+        ),
+        "configuring-rbac" => format!(
+            "{summary}\n\n\
+             # Subjects and targets\n\n\
+             Bind roles to groups, then map groups to target sets. Prefer nested groups over \
+             one-off user grants.\n\n\
+             ```\n\
+             policy \"oncall-prod\" {{\n\
+               subjects = [\"group:on-call\"]\n\
+               targets  = [\"group:production\"]\n\
+               actions  = [\"ssh:shell\"]\n\
+             }}\n\
+             ```"
+        ),
+        "enabling-mfa" => format!(
+            "{summary}\n\n\
+             # Factors\n\n\
+             Require TOTP or WebAuthn for interactive shells. API tokens remain scoped and short-lived.\n\n\
+             ::: callout\n\
+             Privileged sessions should prefer hardware-backed WebAuthn keys.\n\
+             :::"
+        ),
+        "session-recording" => format!(
+            "{summary}\n\n\
+             # Retention\n\n\
+             Recordings follow your subscription retention window. Export to SIEM via webhook when needed.\n\n\
+             - Full TTY stream is sealed and searchable\n\
+             - Replay is available from the customer portal\n\
+             - Retention defaults are plan-specific"
+        ),
+        "api-reference" => format!(
+            "{summary}\n\n\
+             # Authentication\n\n\
+             Machine endpoints use bearer tokens issued from the portal. Audit events are JSON over HTTPS.\n\n\
+             ```\n\
+             curl -H \"Authorization: Bearer $TOKEN\" \\\n\
+               https://portal.example/api/v1/audit/events\n\
+             ```"
+        ),
+        _ => format!(
+            "{summary}\n\n\
+             # Overview\n\n\
+             {summary}\n\n\
+             ::: callout\n\
+             Initial analysis and support follow your subscription SLA (2-5 business days).\n\
+             :::"
+        ),
     }
-    format!("{summary}\n\nFull article body will expand as the knowledge base grows.")
 }
+
+const QUICK_START_BODY: &str = r#"Vauban ships as a single signed binary. This guide takes you from a fresh host to your first end-to-end recorded SSH session in about fifteen minutes. No agent is installed on the protected machines — every connection is brokered by the bastion.
+
+::: callout
+You will need: a Linux or FreeBSD host with 2 vCPU / 2 GB RAM, outbound access to your target hosts, and a DNS record pointing at the bastion.
+:::
+
+# 1. Install the binary
+
+Download the latest LTS build for your platform and verify its signature before running it. The checksum is published alongside each release in the customer portal.
+
+```
+$ curl -fsSLO https://vauban.sh/releases/freebsd/15/x86_64/vauban-0.8.6
+$ vauban verify ./vauban-0.8.6
+  signature: OK (key 0xA3F9C1E...)
+$ install -m 0755 vauban-0.8.6 /usr/local/bin/vauban
+```
+
+Initialize the server. This generates the host keys, the local policy store, and an admin enrollment token printed once to stdout.
+
+```
+$ vauban server init --domain bastion.acme.internal
+  [ok] host keys generated
+  [ok] policy store created at /var/db/vauban
+  admin token: vbn_enroll_8f3a...  (valid 30 min)
+```
+
+# 2. Enroll your first target host
+
+A target is any machine your users will reach through the bastion. Register it by address and assign it to a group — groups are what RBAC policies bind to.
+
+```
+$ vauban host add db-01.acme.internal \
+    --group production \
+    --protocol ssh
+```
+
+- Use stable DNS names rather than IP addresses so policies survive re-addressing.
+- Group by blast radius (production, staging, pci) — not by team.
+- A host can belong to several groups; the most restrictive policy wins.
+
+# 3. Define an access policy
+
+Policies map subjects to the targets and actions they may use. Keep them narrow and compose by inheritance.
+
+```
+policy "oncall-prod" {
+  subjects = ["group:on-call"]
+  targets  = ["group:production"]
+  actions  = ["ssh:shell"]
+  record   = true
+  mfa      = "required"
+}
+```
+
+::: callout
+With record = true, every keystroke and the full TTY stream are captured and signed for audit. Recordings are searchable from the portal.
+:::
+
+# 4. Open your first session
+
+Point your SSH client at the bastion. Vauban authenticates you, enforces MFA, applies the policy, then transparently proxies you to the target while recording the session.
+
+```
+$ ssh db-01.acme.internal@bastion.acme.internal
+  > MFA: approve push on your device... [ok]
+  > policy oncall-prod matched · recording on
+  Last login: Fri Jun 20 14:02 2026
+  db-01 $
+```
+
+# Next steps
+
+- Enable WebAuthn hardware keys for privileged sessions.
+- Wire audit events to your SIEM via native export or webhooks.
+- Deploy a second node behind a TCP load balancer for high availability.
+"#;
 
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
     let salt = SaltString::generate(&mut OsRng);
