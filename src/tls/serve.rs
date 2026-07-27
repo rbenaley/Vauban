@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 use topcoat::router::RouterService;
-use tracing::debug;
+use tracing::trace;
 
 use super::access_log::{AccessLog, AccessLogService};
 
@@ -56,13 +56,13 @@ impl HandshakeFailureLog {
         }
     }
 
-    /// Production logger: `debug!` emit + async idle flush.
+    /// Production logger: `trace!` emit + async idle flush.
     pub fn production() -> Arc<Self> {
         Arc::new(Self::new(
             HANDSHAKE_LOG_IDLE,
             true,
             Arc::new(|error, count| {
-                debug!("TLS handshake failed error={error} count={count}");
+                trace!("TLS handshake failed error={error} count={count}");
             }),
         ))
     }

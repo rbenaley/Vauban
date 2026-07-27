@@ -105,8 +105,12 @@ fn inv_handshake_coalescer_pins() {
     assert!(src.contains("TLS handshake failed error="));
     assert!(src.contains("count={count}"));
     assert!(
-        src.contains("debug!"),
-        "coalesced handshake failures must stay at debug"
+        src.contains("trace!"),
+        "coalesced handshake failures must stay at trace"
+    );
+    assert!(
+        !src.contains("debug!(\"TLS handshake failed"),
+        "handshake failures must not log at debug"
     );
     assert!(src.contains("struct HandshakeFailureLog"));
 }

@@ -98,7 +98,8 @@ done
 sleep 0.3
 ```
 
-In process logs, expect **one** (or few) `DEBUG vcp::tls::serve:` line shaped like:
+With default filter (`vcp=debug`), these lines are hidden. With `vcp=trace`,
+expect **one** (or few) `TRACE vcp::tls::serve:` line shaped like:
 
 ```text
 TLS handshake failed error=… count=N
@@ -107,4 +108,5 @@ TLS handshake failed error=… count=N
 with `N > 1` after the idle window (~150 ms quiet), **not** one line per failed
 handshake.
 
-Pass: coalesced `count=N` appears; no DEBUG flood of identical single-count lines.
+Pass: coalesced `count=N` appears under `vcp=trace`; no DEBUG flood under the
+default filter.

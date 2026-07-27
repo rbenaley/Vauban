@@ -58,7 +58,7 @@ grep -n 'header::CACHE_CONTROL' "$APP" >/dev/null \
 grep -n 'contains_key(header::CACHE_CONTROL)' "$APP" >/dev/null \
   || fail "$APP must only set no-store when Cache-Control is absent"
 
-# TLS handshake failure coalescing (ops DEBUG, not request CLF).
+# TLS handshake failure coalescing (ops TRACE, not request CLF).
 SERVE="src/tls/serve.rs"
 grep -n 'note_handshake_failure' "$SERVE" >/dev/null \
   || fail "$SERVE must call note_handshake_failure on accept Err"
@@ -70,8 +70,11 @@ grep -n 'TLS handshake failed error=' "$SERVE" >/dev/null \
   || fail "$SERVE must emit coalesced TLS handshake failed template"
 grep -n 'count={count}' "$SERVE" >/dev/null \
   || fail "$SERVE must include count=N in coalesced handshake log"
-grep -n 'debug!' "$SERVE" >/dev/null \
-  || fail "handshake coalescing must use debug! (not info flood)"
+grep -n 'trace!' "$SERVE" >/dev/null \
+  || fail "handshake coalescing must use trace! (benign client noise)"
+if grep -nE 'debug!\("TLS handshake failed' "$SERVE" >/dev/null; then
+  fail "handshake coalescing must not use debug! for TLS handshake failed"
+fi
 grep -n 'struct HandshakeFailureLog' "$SERVE" >/dev/null \
   || fail "$SERVE must expose HandshakeFailureLog for pyramid tests"
 
