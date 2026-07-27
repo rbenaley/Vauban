@@ -1,5 +1,6 @@
 //! Admin documentation list at `/{org}/admin/docs`.
 
+mod doc;
 mod new;
 
 use topcoat::{
@@ -9,7 +10,13 @@ use topcoat::{
     view::view,
 };
 
-use crate::{app::org::Org, auth::require_org, models::DocArticle, perms::perms_for_user};
+use crate::{
+    app::org::Org,
+    auth::require_org,
+    models::DocArticle,
+    perms::perms_for_user,
+    tz::{browser_tz, format_unix_local},
+};
 
 #[page]
 async fn admin_docs_page(cx: &Cx) -> Result {
@@ -25,6 +32,7 @@ async fn admin_docs_page(cx: &Cx) -> Result {
         .exec(&mut database)
         .await
         .unwrap_or_default();
+    let tz = browser_tz(cx);
 
     view! {
         <div
@@ -49,18 +57,20 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                         <th>"CATEGORY"</th>
                         <th>"VER."</th>
                         <th>"STATUS"</th>
+                        <th>"UPDATED"</th>
                         <th>"ACTIONS"</th>
                     </tr>
                 </thead>
                 <tbody>
                     if articles.is_empty() {
                         <tr>
-                            <td colspan="5">
+                            <td colspan="6">
                                 <div class="vb-empty">"No articles yet."</div>
                             </td>
                         </tr>
                     } else {
                         for article in articles {
+                            let updated = format_unix_local(article.updated_at, tz);
                             <tr>
                                 <td
                                     style="font-family: 'Hanken Grotesk', sans-serif; font-weight: 700;"
@@ -72,10 +82,13 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                                 <td>
                                     <span class="vb-badge soft">(article.status.clone())</span>
                                 </td>
+                                <td class="vb-mono" style="font-size: 11px;">(updated)</td>
                                 <td>
                                     <a
                                         class="vb-link"
-                                        href=(format!("/{}/admin/docs/new", slug))
+                                        href=(format!(
+                                            "/{}/admin/docs/{}", slug, article.slug
+                                        ))
                                         style="margin: 0;"
                                     >
                                         "Edit"
@@ -87,8 +100,5 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                 </tbody>
             </table>
         </div>
-        <p class="vb-muted" style="margin-top: 14px;">
-            "Publish / unpublish mutations ship in a later slice."
-        </p>
     }
 }

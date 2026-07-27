@@ -90,7 +90,8 @@ production code, `scripts/check_auth_tenant.sh`, and
 - Provision: `just db-create-test` / `scripts/setup_test_db.sh`, or
   automatically via `ensure-vcp-test` when running `just test` /
   `just validate`.
-- Schema: Toasty `push_schema` on first `db::connect` (not Diesel).
+- Schema: Toasty migrations under `toasty/` applied on `db::connect`
+  (`vcp-cli migration generate|apply`; not Diesel / not `push_schema`).
 - Run tests single-threaded: `just test` / `--test-threads=1`.
 - Prefer production `app::router` + model helpers over a parallel
   Diesel/Axum harness from the bastion.

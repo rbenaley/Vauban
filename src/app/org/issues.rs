@@ -198,7 +198,7 @@ async fn report_issue(cx: &Cx, Form(form): Form<ReportForm>) -> Result<SeeOther>
     let title = form.title.trim().to_owned();
     let component = form.component.trim().to_owned();
     let severity = form.severity.trim().to_owned();
-    let _details = form.details.trim().to_owned();
+    let details = form.details.trim().to_owned();
 
     if !title.is_empty() {
         let _ = toasty::create!(Issue {
@@ -208,6 +208,7 @@ async fn report_issue(cx: &Cx, Form(form): Form<ReportForm>) -> Result<SeeOther>
             severity,
             status: "Open".to_owned(),
             organization_id: ctx.org.id,
+            details,
         })
         .exec(&mut database)
         .await;

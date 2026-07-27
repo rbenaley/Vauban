@@ -134,9 +134,24 @@ Wrong org slug → **404** (no cross-tenant leak). Admin nest requires `admin:vi
 ## Validate
 
 ```bash
-just db-create-test   # once
-just validate         # fmt-check + clippy -D warnings + bundle + tests
+just validate         # ensure-vcp-test + fmt-check + clippy + bundle + tests
+```
+
+Structural lints (also exercised via `*_invariants_test`):
+
+```bash
 bash scripts/check_auth_tenant.sh
 bash scripts/check_http_edge.sh
 bash scripts/check_portal_shell.sh
+bash scripts/check_admin_docs.sh
+bash scripts/check_portal_issues.sh
+bash scripts/check_admin_releases.sh
+bash scripts/check_admin_companies.sh
+bash scripts/check_builds_entitlement.sh
+bash scripts/check_toasty_filters.sh
+bash scripts/check_docs_search_shard.sh
+bash scripts/check_display_tz.sh
 ```
+
+Staging smoke runbooks live under [`docs/runbooks/`](docs/runbooks/).
+After model/schema changes, reset the test DB: `just db-reset-test`.

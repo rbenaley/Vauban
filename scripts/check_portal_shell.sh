@@ -30,8 +30,10 @@ grep -n 'vb_rail' src/app/org.rs >/dev/null \
   || fail "org_layout must render vb_rail"
 grep -n 'vb_topbar' src/app/org.rs >/dev/null \
   || fail "org_layout must render vb_topbar"
-grep -n 'show_admin: perms.admin_view' src/app/org.rs >/dev/null \
-  || fail "org_layout must gate admin rail via perms.admin_view"
+grep -n 'admin_view' src/app/_components/rail.rs >/dev/null \
+  || fail "vb_rail must gate ADMIN block via perms.admin_view"
+grep -n 'require_org' src/app/_components/rail.rs >/dev/null \
+  || fail "vb_rail must resolve org via require_org"
 grep -n 'nav_from_cx' src/app/org.rs >/dev/null \
   || fail "org_layout must derive nav via nav_from_cx"
 grep -n 'vb-shell' src/app/org.rs >/dev/null \

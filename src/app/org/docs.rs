@@ -1,6 +1,9 @@
 //! Documentation list at `/{org}/docs`.
 
 mod doc;
+mod search_shard;
+
+pub(super) use search_shard::docs_search_results;
 
 use topcoat::{
     Result,
@@ -10,7 +13,10 @@ use topcoat::{
 };
 
 use crate::{
-    app::_components::chip_row, app::org::Org, auth::require_org, models::DocArticle,
+    app::_components::chip_row,
+    app::org::Org,
+    auth::require_org,
+    models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
 };
 
@@ -37,13 +43,13 @@ async fn docs_page(cx: &Cx) -> Result {
         return Err(forbidden().into());
     }
 
-    let (q, cat, filtered) = load_filtered_docs(cx, &DocsFilter::from_cx(cx)).await;
-    docs_list_view(cx, slug, &q, &cat, &filtered).await
+    let filter = DocsFilter::from_cx(cx);
+    docs_list_view(cx, slug, &filter.q, &filter.cat).await
 }
 
 pub(super) struct DocsFilter {
-    q: String,
-    cat: String,
+    pub(super) q: String,
+    pub(super) cat: String,
 }
 
 impl DocsFilter {
@@ -68,30 +74,24 @@ pub(super) async fn load_filtered_docs(
     filter: &DocsFilter,
 ) -> (String, String, Vec<DocArticle>) {
     let mut database = crate::auth::db(cx);
-    let articles = DocArticle::all()
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
+    let mut query =
+        DocArticle::all().filter(DocArticle::fields().status().eq(DOC_STATUS_PUBLISHED));
+    if !filter.cat.is_empty() {
+        query = query.filter(DocArticle::fields().category().eq(&filter.cat));
+    }
+    let articles = query.exec(&mut database).await.unwrap_or_default();
     let filtered: Vec<_> = articles
         .into_iter()
         .filter(|a| {
-            let cat_ok = filter.cat.is_empty() || a.category.eq_ignore_ascii_case(&filter.cat);
-            let q_ok = filter.q.is_empty()
+            filter.q.is_empty()
                 || a.title.to_lowercase().contains(&filter.q)
-                || a.summary.to_lowercase().contains(&filter.q);
-            cat_ok && q_ok
+                || a.summary.to_lowercase().contains(&filter.q)
         })
         .collect();
     (filter.q.clone(), filter.cat.clone(), filtered)
 }
 
-pub(super) async fn docs_list_view(
-    cx: &Cx,
-    org_slug: &str,
-    q: &str,
-    cat: &str,
-    filtered: &[DocArticle],
-) -> Result {
+pub(super) async fn docs_list_view(cx: &Cx, org_slug: &str, q: &str, cat: &str) -> Result {
     let base = format!("/{org_slug}/docs");
     let q_value = q.to_owned();
     let cat_owned = cat.to_owned();
@@ -113,6 +113,8 @@ pub(super) async fn docs_list_view(
 
     view! {
         cx =>
+        signal query = q_value.clone();
+
         <h1 class="vb-title">"Documentation & knowledge base"</h1>
         <p class="vb-lead">"Operations, security, API, and deployment runbooks."</p>
 
@@ -121,8 +123,9 @@ pub(super) async fn docs_list_view(
                 class="vb-search"
                 type="search"
                 name="q"
-                value=(q_value)
+                value=(q_value.clone())
                 placeholder="Search the documentation…"
+                @input=$(|e: topcoat::runtime::Event| query.set(e.target.value))
             >
             if !cat_owned.is_empty() {
                 <input type="hidden" name="cat" value=(cat_owned.clone())>
@@ -131,42 +134,11 @@ pub(super) async fn docs_list_view(
 
         chip_row(chips: &chips)
 
-        <div class="vb-list">
-            if filtered.is_empty() {
-                <div class="vb-empty">"No matching articles."</div>
-            } else {
-                for article in filtered {
-                    <a class="vb-row" href=(format!("/{}/docs/{}", org, article.slug))>
-                        <div style="flex: 1; min-width: 0;">
-                            <div style="font-weight: 700;">(article.title.clone())</div>
-                            <div
-                                style="font-size: 12.5px; color: var(--muted); margin-top: 2px;"
-                            >
-                                (article.summary.clone())
-                            </div>
-                        </div>
-                        <div style="text-align: right; flex: none;">
-                            <div
-                                class="vb-mono"
-                                style="font-size: 10px; color: var(--accent);"
-                            >
-                                (article.category.clone())
-                            </div>
-                            <div
-                                class="vb-mono"
-                                style="font-size: 10px; color: #9aa0a6; margin-top: 3px;"
-                            >
-                                "Updated "
-                                (article.version.clone())
-                            </div>
-                        </div>
-                        <span style="font-size: 16px; color: #c2c6cb; flex: none;">
-                            "→"
-                        </span>
-                    </a>
-                }
-            }
-        </div>
+        docs_search_results(
+            org_slug: $(org.clone()),
+            q: $(query.get()),
+            cat: $(cat_owned.clone())
+        )
     }
 }
 

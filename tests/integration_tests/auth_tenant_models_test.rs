@@ -134,11 +134,13 @@ async fn models_issue_and_stubs_create() {
         severity: "Major".to_owned(),
         status: "Open".to_owned(),
         organization_id: org.id,
+        details: "details here".to_owned(),
     })
     .exec(&mut conn)
     .await
     .expect("issue");
     assert_eq!(issue.organization_id, org.id);
+    assert_eq!(issue.details, "details here");
 
     let doc = toasty::create!(DocArticle {
         title: "Test doc".to_owned(),
@@ -147,11 +149,14 @@ async fn models_issue_and_stubs_create() {
         slug: unique_slug("doc"),
         version: "v1".to_owned(),
         status: "DRAFT".to_owned(),
+        body: "Body text".to_owned(),
+        updated_at: vcp::db::now_unix(),
     })
     .exec(&mut conn)
     .await
     .expect("doc");
     assert!(doc.slug.starts_with("test-"));
+    assert_eq!(doc.body.get(), "Body text");
 
     let rel = toasty::create!(Release {
         version: format!("test-{}", unique_slug("rel")),

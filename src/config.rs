@@ -235,7 +235,8 @@ impl Config {
         Ok(cfg)
     }
 
-    fn find_config_dir() -> anyhow::Result<PathBuf> {
+    /// Resolve the config directory (same search order as [`Config::load`]).
+    pub fn find_config_dir() -> anyhow::Result<PathBuf> {
         if let Ok(path) = std::env::var("VCP_CONFIG_DIR") {
             let config_path = PathBuf::from(&path);
             if config_path.exists() {

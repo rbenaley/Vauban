@@ -95,13 +95,11 @@ pub struct OrgContext {
     pub user: AuthUser,
 }
 
-/// Resolve `{org}` slug + membership. Fail with **404** when the org is
-/// missing or the user is not a member (anti-enumeration).
-pub async fn require_org(cx: &Cx, slug: &str) -> Result<OrgContext, NotFoundError> {
-    let user = match require_auth(cx).await {
-        Ok(u) => u,
-        Err(_) => return Err(not_found()),
-    };
+/// Resolve `{org}` slug + membership (memoized). `None` means missing auth,
+/// org, or membership — callers map that to **404** (anti-enumeration).
+#[memoize]
+async fn org_context(cx: &Cx, slug: &str) -> Option<OrgContext> {
+    let user = require_auth(cx).await.ok()?;
     let mut db = db(cx);
 
     let org = Organization::all()
@@ -109,8 +107,7 @@ pub async fn require_org(cx: &Cx, slug: &str) -> Result<OrgContext, NotFoundErro
         .exec(&mut db)
         .await
         .ok()
-        .and_then(|mut rows| rows.pop())
-        .ok_or_else(not_found)?;
+        .and_then(|mut rows| rows.pop())?;
 
     let membership = Membership::all()
         .filter(Membership::fields().user_id().eq(user.id))
@@ -118,10 +115,9 @@ pub async fn require_org(cx: &Cx, slug: &str) -> Result<OrgContext, NotFoundErro
         .exec(&mut db)
         .await
         .ok()
-        .and_then(|mut rows| rows.pop())
-        .ok_or_else(not_found)?;
+        .and_then(|mut rows| rows.pop())?;
 
-    Ok(OrgContext {
+    Some(OrgContext {
         org,
         user: AuthUser {
             id: user.id,
@@ -130,6 +126,14 @@ pub async fn require_org(cx: &Cx, slug: &str) -> Result<OrgContext, NotFoundErro
             role: membership.role,
         },
     })
+}
+
+/// Resolve `{org}` slug + membership. Fail with **404** when the org is
+/// missing or the user is not a member (anti-enumeration).
+///
+/// Backed by memoized [`org_context`] so layout + page share one lookup.
+pub async fn require_org(cx: &Cx, slug: &str) -> Result<OrgContext, NotFoundError> {
+    org_context(cx, slug).await.cloned().ok_or_else(not_found)
 }
 
 /// Fail-closed admin gate (scaffold helper for upcoming admin mutations).

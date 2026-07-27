@@ -1,5 +1,6 @@
 //! Builds list at `/{org}/builds` — Concept expandable changelog rows.
 
+mod download;
 mod release_ver;
 
 use topcoat::{
@@ -156,12 +157,19 @@ pub(super) async fn render_builds(
                                     </div>
                                 }
                                 if can_download {
+                                    let dl_action = format!(
+                                        "/{}/builds/{}/download",
+                                        org,
+                                        rel.version
+                                    );
                                     <div class="vb-btn-row">
-                                        <span class="vb-btn">
-                                            "↓ Download ("
-                                            (size_label)
-                                            ")"
-                                        </span>
+                                        <form method="POST" action=(dl_action)>
+                                            <button class="vb-btn" type="submit">
+                                                "↓ Download ("
+                                                (size_label)
+                                                ")"
+                                            </button>
+                                        </form>
                                         <a class="vb-btn outline" href=(gen_href)>
                                             "⧖ Generate ephemeral link"
                                         </a>
@@ -252,9 +260,13 @@ pub(super) fn parse_notes(notes: &str) -> Vec<(String, &'static str, String)> {
 
 pub(super) async fn load_releases(cx: &Cx, channel: &str) -> Vec<Release> {
     let mut database = crate::auth::db(cx);
-    let releases = Release::all().exec(&mut database).await.unwrap_or_default();
-    releases
-        .into_iter()
-        .filter(|r| channel.is_empty() || r.channel.eq_ignore_ascii_case(channel))
-        .collect()
+    if channel.is_empty() {
+        return Release::all().exec(&mut database).await.unwrap_or_default();
+    }
+    let channel_owned = channel.to_owned();
+    Release::all()
+        .filter(Release::fields().channel().eq(&channel_owned))
+        .exec(&mut database)
+        .await
+        .unwrap_or_default()
 }

@@ -1,5 +1,8 @@
-//! Toasty database connection and seed data.
+//! Toasty database connection, migrations, and seed data.
 
+use std::collections::HashSet;
+use std::fs;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use argon2::{
@@ -7,11 +10,16 @@ use argon2::{
     password_hash::{SaltString, rand_core::OsRng},
 };
 use toasty::Db;
+use toasty::db::ConnectContext;
+use toasty::migration::History;
+use toasty::schema::db::Migration;
+use toasty_cli::Config as ToastyConfig;
 
 use crate::models::{DocArticle, Issue, Membership, Organization, Release, User};
 
-pub async fn connect(database_url: &str) -> anyhow::Result<Db> {
-    let db = Db::builder()
+/// Open a Toasty handle with VCP models registered (no schema changes).
+pub async fn open(database_url: &str) -> anyhow::Result<Db> {
+    Ok(Db::builder()
         .models(toasty::models!(
             crate::models::User,
             crate::models::AuthSession,
@@ -22,16 +30,56 @@ pub async fn connect(database_url: &str) -> anyhow::Result<Db> {
             crate::models::Issue,
         ))
         .connect(database_url)
-        .await?;
-    // Scaffold: Toasty `push_schema` is not idempotent. Tolerate an already
-    // provisioned database until a real migration story lands.
-    if let Err(err) = db.push_schema().await {
-        let msg = err.to_string();
-        if !msg.contains("already exists") {
-            return Err(err.into());
-        }
-    }
+        .await?)
+}
+
+/// Open the database and apply any pending Toasty migrations from `toasty/`.
+pub async fn connect(database_url: &str) -> anyhow::Result<Db> {
+    let db = open(database_url).await?;
+    apply_pending_migrations(&db).await?;
     Ok(db)
+}
+
+fn package_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Apply migrations listed in `toasty/history.toml` that are not yet recorded
+/// in `__toasty_migrations`. Paths are resolved from the package root so this
+/// works regardless of process CWD.
+pub async fn apply_pending_migrations(db: &Db) -> anyhow::Result<()> {
+    let root = package_root();
+    let config = ToastyConfig::load_from(&root.join("Toasty.toml"))?;
+    let history_path = root.join(config.migration.get_history_file_path());
+    let history = History::load_or_default(&history_path)?;
+
+    if history.entries().is_empty() {
+        anyhow::bail!(
+            "no Toasty migrations in {}; run: cargo run --bin vcp-cli -- migration generate --name initial",
+            history_path.display()
+        );
+    }
+
+    let migrations_dir = root.join(config.migration.get_migrations_dir());
+    let mut conn = db.driver().connect(&ConnectContext::default()).await?;
+    let applied = conn.applied_migrations().await?;
+    let applied_ids: HashSet<u64> = applied.iter().map(|m| m.id()).collect();
+
+    for entry in history.entries() {
+        if applied_ids.contains(&entry.id) {
+            continue;
+        }
+        let path = migrations_dir.join(&entry.name);
+        let sql = fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("failed to read migration {}: {e}", path.display()))?;
+        let migration = Migration::new_sql(sql);
+        conn.apply_migration(entry.id, &entry.name, &migration)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to apply {}: {e}", entry.name))?;
+        tracing::info!(migration = %entry.name, "applied Toasty migration");
+    }
+
+    Ok(())
 }
 
 pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
@@ -141,6 +189,8 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
             slug: slug.to_owned(),
             version: "v1".to_owned(),
             status: "PUBLISHED".to_owned(),
+            body: seed_doc_body(slug, summary),
+            updated_at: now_unix(),
         })
         .exec(&mut db)
         .await?;
@@ -179,6 +229,7 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         severity: "Major".to_owned(),
         status: "In analysis".to_owned(),
         organization_id: org.id,
+        details: "Seeing intermittent latency spikes on the SSH proxy under load. Happy to share metrics.".to_owned(),
     })
     .exec(&mut db)
     .await?;
@@ -190,6 +241,7 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         severity: "Minor".to_owned(),
         status: "Open".to_owned(),
         organization_id: org.id,
+        details: "Large clipboard payloads fail to sync over RDP.".to_owned(),
     })
     .exec(&mut db)
     .await?;
@@ -252,6 +304,8 @@ pub async fn ensure_demo_catalog(db: &Db) -> anyhow::Result<()> {
             slug: slug.to_owned(),
             version: "v1".to_owned(),
             status: "PUBLISHED".to_owned(),
+            body: seed_doc_body(slug, summary),
+            updated_at: now_unix(),
         })
         .exec(&mut db)
         .await?;
@@ -297,6 +351,25 @@ pub async fn ensure_demo_catalog(db: &Db) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn seed_doc_body(slug: &str, summary: &str) -> String {
+    if slug == "quick-start" {
+        return concat!(
+            "Vauban ships as a single signed binary. This guide takes you from a fresh host ",
+            "to your first end-to-end recorded SSH session in about fifteen minutes.\n\n",
+            "1. Install the binary\n",
+            "Download the latest LTS build and verify its signature before running it.\n\n",
+            "2. Enroll your first target host\n",
+            "Register machines by DNS name and assign them to groups.\n\n",
+            "3. Define an access policy\n",
+            "Map subjects to targets and actions; keep policies narrow.\n\n",
+            "4. Open your first session\n",
+            "Point SSH at the bastion. Vauban authenticates, enforces MFA, and records the session."
+        )
+        .to_owned();
+    }
+    format!("{summary}\n\nFull article body will expand as the knowledge base grows.")
+}
+
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
@@ -338,5 +411,49 @@ mod tests {
         let hash = hash_password("password").expect("hash");
         assert!(verify_password("password", &hash));
         assert!(!verify_password("wrong", &hash));
+    }
+
+    #[test]
+    fn toasty_migration_tree_is_present() {
+        let root = package_root();
+        assert!(
+            root.join("Toasty.toml").is_file(),
+            "Toasty.toml must exist at package root"
+        );
+        assert!(
+            root.join("toasty").join("history.toml").is_file(),
+            "toasty/history.toml must exist (run: cargo run --bin vcp-cli -- migration generate)"
+        );
+        let migrations = root.join("toasty").join("migrations");
+        assert!(migrations.is_dir(), "toasty/migrations/ must exist");
+        let sql_count = std::fs::read_dir(&migrations)
+            .expect("read migrations dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "sql"))
+            .count();
+        assert!(
+            sql_count > 0,
+            "expected at least one .sql migration under toasty/migrations/"
+        );
+    }
+
+    #[test]
+    fn connect_source_does_not_use_push_schema_scaffold() {
+        let src = include_str!("db.rs");
+        // Split the needle so this assert body does not match itself.
+        let forbidden = format!(".{}(", "push_schema");
+        assert!(
+            !src.contains(&forbidden),
+            "db::connect must use Toasty migrations, not push_schema"
+        );
+        let scaffold = format!("async fn {}", "ensure_schema_columns");
+        assert!(
+            !src.contains(&scaffold),
+            "scaffold ALTER helper must stay removed"
+        );
+        assert!(
+            src.contains("apply_pending_migrations"),
+            "db::connect must apply pending Toasty migrations"
+        );
     }
 }

@@ -17,7 +17,6 @@ use crate::{
     auth::require_org,
     models::{DocArticle, Issue, Release},
     nav::nav_from_cx,
-    perms::perms_for_user,
 };
 
 use super::_components::{vb_rail, vb_topbar};
@@ -28,23 +27,17 @@ pub struct Org(str);
 #[layout]
 async fn org_layout(cx: &Cx, slot: Slot<'_>) -> Result {
     let slug = path_param::<Org>(cx);
-    let ctx = require_org(cx, slug).await?;
-    let perms = perms_for_user(cx, &ctx.user).await;
+    // Membership gate (memoized; rail/topbar re-use the same lookup).
+    let _ctx = require_org(cx, slug).await?;
     let (section, crumb) = nav_from_cx(cx);
-    let org_slug = ctx.org.slug.clone();
-    let org_name = ctx.org.name.clone();
+    let org_slug = slug.to_owned();
 
     view! {
         cx =>
         <div class="vb-shell">
-            vb_rail(
-                org_slug: &org_slug,
-                org_name: &org_name,
-                section: section,
-                show_admin: perms.admin_view
-            )
+            vb_rail(org_slug: &org_slug, section: section)
             <div class="vb-main">
-                vb_topbar(org_slug: &org_slug, org_name: &org_name, crumb: &crumb)
+                vb_topbar(org_slug: &org_slug, crumb: &crumb)
                 <div class="vb-scroll"><div class="vb-screen">(slot.await?)</div></div>
             </div>
         </div>

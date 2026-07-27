@@ -1,0 +1,82 @@
+//! E2E: vcp_tz cookie changes visible admin docs timestamps.
+
+use chrono::{TimeZone, Utc};
+use http_body_util::BodyExt;
+use topcoat::router::StatusCode;
+use vcp::models::DocArticle;
+
+use crate::common::{
+    cleanup, cookie_header, create_org_with_membership, db_lock, get, post_form, status, test_db,
+    test_router, unique_email, unique_slug, urlencoding_encode,
+};
+
+async fn body_text(resp: topcoat::router::Response) -> String {
+    let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[tokio::test]
+async fn e2e_vcp_tz_cookie_changes_admin_docs_time() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("tz-admin");
+    let slug = unique_slug("tz-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+
+    // Fixed instant: 2026-06-23 12:00:00 UTC → Paris CEST 14:00.
+    let fixed = Utc
+        .with_ymd_and_hms(2026, 6, 23, 12, 0, 0)
+        .unwrap()
+        .timestamp();
+    let article_slug = unique_slug("tz-doc");
+    {
+        let mut conn = db.clone();
+        let _ = toasty::create!(DocArticle {
+            title: "TZ Article".to_owned(),
+            summary: "s".to_owned(),
+            category: "API".to_owned(),
+            slug: article_slug.clone(),
+            version: "v1".to_owned(),
+            status: "DRAFT".to_owned(),
+            body: "body".to_owned(),
+            updated_at: fixed,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("doc");
+    }
+
+    let form = format!("email={}&password=password", urlencoding_encode(&email));
+    let login = post_form(&router, "/login", None, &form).await;
+    let session = cookie_header(&login).expect("session cookie");
+
+    let utc_cookie = format!("{session}; vcp_tz=UTC");
+    let paris_cookie = format!("{session}; vcp_tz=Europe/Paris");
+
+    let utc_page = get(&router, &format!("/{slug}/admin/docs"), Some(&utc_cookie)).await;
+    assert_eq!(status(&utc_page), StatusCode::OK);
+    let utc_html = body_text(utc_page).await;
+
+    let paris_page = get(&router, &format!("/{slug}/admin/docs"), Some(&paris_cookie)).await;
+    assert_eq!(status(&paris_page), StatusCode::OK);
+    let paris_html = body_text(paris_page).await;
+
+    assert!(
+        utc_html.contains("12:00") || utc_html.contains("2026-06-23"),
+        "UTC page should show noon UTC: {utc_html}"
+    );
+    assert!(
+        paris_html.contains("14:00") || paris_html.contains("13:00"),
+        "Paris page should show localized hour: {paris_html}"
+    );
+    // Visible strings should differ when both render the fixture row.
+    assert_ne!(
+        utc_html, paris_html,
+        "timezone cookie must change rendered HTML"
+    );
+
+    cleanup(&db).await;
+}

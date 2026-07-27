@@ -38,7 +38,7 @@ psql -h "$DB_HOST" -d "$DB_NAME" -c "GRANT ALL ON SCHEMA public TO $DB_USER;"
 psql -h "$DB_HOST" -d "$DB_NAME" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO $DB_USER;"
 psql -h "$DB_HOST" -d "$DB_NAME" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO $DB_USER;"
 
-# Ownership helps Toasty push_schema on a fresh DB created by another role.
+# Ownership helps Toasty migrations on a fresh DB created by another role.
 psql -h "$DB_HOST" -d "$DB_NAME" -c "ALTER DATABASE $DB_NAME OWNER TO $DB_USER;" 2>/dev/null || true
 psql -h "$DB_HOST" -d "$DB_NAME" -c "ALTER SCHEMA public OWNER TO $DB_USER;" 2>/dev/null || true
 
@@ -48,7 +48,7 @@ echo ""
 echo "URL (also in config/testing.toml):"
 echo "  postgresql://$DB_USER:$DB_PASSWORD@$DB_HOST/$DB_NAME"
 echo ""
-echo "Schema is applied on first db::connect (Toasty push_schema)."
+echo "Schema is applied on first db::connect (Toasty migrations under toasty/)."
 echo "Run tests:"
 echo "  just test"
 echo ""

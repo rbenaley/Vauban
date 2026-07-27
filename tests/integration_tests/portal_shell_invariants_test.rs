@@ -33,7 +33,18 @@ fn inv_org_layout_chrome_pins() {
     assert!(org.contains("#[layout]"));
     assert!(org.contains("vb_rail"));
     assert!(org.contains("vb_topbar"));
-    assert!(org.contains("show_admin: perms.admin_view"));
+    let rail = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/_components/rail.rs"
+    ));
+    assert!(
+        rail.contains("admin_view"),
+        "vb_rail must gate ADMIN via admin_view"
+    );
+    assert!(
+        rail.contains("require_org"),
+        "vb_rail must resolve org via require_org"
+    );
     assert!(org.contains("nav_from_cx"));
     assert!(org.contains("vb-shell"));
 }

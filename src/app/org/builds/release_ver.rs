@@ -34,10 +34,16 @@ async fn build_detail_page(cx: &Cx) -> Result {
         .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
 
     let mut database = crate::auth::db(cx);
-    let all = Release::all().exec(&mut database).await.unwrap_or_default();
-    if !all.iter().any(|r| r.version == *ver) {
+    let ver_key = ver.to_string();
+    let matched = Release::all()
+        .filter(Release::fields().version().eq(&ver_key))
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    if matched.is_empty() {
         return Err(topcoat::router::not_found().into());
     }
+    let all = Release::all().exec(&mut database).await.unwrap_or_default();
 
     let releases = load_releases(cx, channel).await;
     // Ensure the open version is visible even if channel filter would hide it.

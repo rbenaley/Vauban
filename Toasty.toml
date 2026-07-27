@@ -1,0 +1,8 @@
+# Toasty migration config (see https://tokio-rs.github.io/toasty/nightly/guide/schema-management.html).
+# Paths are relative to the package root (CARGO_MANIFEST_DIR).
+
+[migration]
+path = "toasty"
+prefix_style = "Sequential"
+checksums = false
+statement_breakpoints = true

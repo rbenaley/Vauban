@@ -62,6 +62,14 @@ Pass: no cross-tenant leak / existence oracle via chatty errors.
 
 Pass: Casbin `admin:view` fail-closed for `member`.
 
+## D -- Org shell + admin compose methods
+
+1. As admin, open `/acme-infrastructure` — expect 200 with rail + topbar.
+2. Open `/acme-infrastructure/admin/docs/new` (and releases/companies new).
+3. Confirm compose forms use **POST** (View Source / DevTools) — not GET stubs.
+
+Pass: org shell loads; admin compose forms are POST.
+
 ## Related automated coverage
 
 | Layer | Filter / artifact |

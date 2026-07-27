@@ -23,13 +23,53 @@ fn inv_check_auth_tenant_script() {
 fn inv_require_org_maps_unauthenticated_to_not_found() {
     let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/auth.rs"));
     assert!(
-        src.contains("Err(_) => return Err(not_found())"),
-        "require_org must map auth failure to not_found (anti-enumeration)"
+        src.contains("require_auth(cx).await.ok()?")
+            || src.contains("Err(_) => return Err(not_found())"),
+        "org_context must map auth failure to None / not_found (anti-enumeration)"
     );
     assert!(
         src.contains("ok_or_else(not_found)"),
         "require_org must 404 missing org / membership"
     );
+}
+
+#[test]
+fn inv_require_org_is_memoized() {
+    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/auth.rs"));
+    assert!(
+        src.contains("async fn org_context"),
+        "memoized org_context helper must exist"
+    );
+    let fn_idx = src.find("async fn org_context").expect("org_context fn");
+    let window = &src[fn_idx.saturating_sub(80)..fn_idx];
+    assert!(
+        window.contains("#[memoize]"),
+        "org_context must be annotated with #[memoize]"
+    );
+    assert!(
+        src.contains("org_context(cx, slug)"),
+        "require_org must call memoized org_context"
+    );
+}
+
+#[test]
+fn inv_admin_compose_forms_use_post() {
+    for rel in [
+        "src/app/org/admin/docs/new.rs",
+        "src/app/org/admin/releases/new.rs",
+        "src/app/org/admin/companies/new.rs",
+    ] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        assert!(
+            src.contains("method=\"POST\""),
+            "{rel} must POST compose forms"
+        );
+        assert!(
+            !src.contains("method=\"GET\""),
+            "{rel} must not GET compose forms"
+        );
+    }
 }
 
 #[test]

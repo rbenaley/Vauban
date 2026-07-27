@@ -144,9 +144,11 @@ comment or module docs at the call site.
 2. Wire pool into router `.app_context`; add `db(cx)` (+ memoize as needed).
 3. First models: `User`, session record (`TokenHash`), `Organization`,
    membership — enough for login + tenant.
-4. Schema create/reset via Toasty’s documented workflow; database URL from
-   TOML (`VCP_ENVIRONMENT=development` for local layering)
-   in local/CI env samples (no secrets).
+4. Schema via Toasty migrations (`Toasty.toml`, `toasty/`, binary
+   `vcp-cli`): edit models → `just db-migrate-generate NAME=…` → review
+   SQL → `just db-migrate`. `db::connect` applies pending migrations.
+   Do **not** use `push_schema` for the app DB. URL from TOML
+   (`VCP_ENVIRONMENT=development` for local layering); no secrets in git.
 5. CI: Postgres service (or testcontainers) + focused auth/tenant tests
    per `vcp-test-pyramid.mdc`.
 

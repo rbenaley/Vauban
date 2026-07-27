@@ -107,3 +107,54 @@ async fn battle_parallel_membership_reads() {
 
     cleanup(&db).await;
 }
+
+#[tokio::test]
+async fn battle_parallel_org_slug_membership_lookups() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-org");
+    let slug = unique_slug("battle-req-org");
+    let (user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let n = 12usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    let url = crate::common::database_url();
+    let slug_owned = slug.clone();
+
+    for _ in 0..n {
+        let url = url.clone();
+        let barrier = barrier.clone();
+        let slug = slug_owned.clone();
+        let user_id = user.id;
+        let org_id = org.id;
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let db = vcp::db::connect(&url).await.expect("connect");
+            let mut conn = db.clone();
+            let found = vcp::models::Organization::all()
+                .filter(vcp::models::Organization::fields().slug().eq(&slug))
+                .exec(&mut conn)
+                .await
+                .expect("orgs");
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].id, org_id);
+            let memberships = Membership::all()
+                .filter(Membership::fields().user_id().eq(user_id))
+                .filter(Membership::fields().organization_id().eq(org_id))
+                .exec(&mut conn)
+                .await
+                .expect("memberships");
+            assert_eq!(memberships.len(), 1);
+            assert_eq!(memberships[0].role, "member");
+        }));
+    }
+
+    for h in handles {
+        h.await.expect("join");
+    }
+
+    cleanup(&db).await;
+}

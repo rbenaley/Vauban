@@ -1,9 +1,12 @@
 //! Toasty models for the VCP portal scaffold.
 
-use toasty::Model;
+use toasty::{Deferred, Model};
 
 /// Maximum user accounts provisioned per client company (mockup rule).
 pub const MAX_USERS_PER_COMPANY: usize = 5;
+
+pub const DOC_STATUS_DRAFT: &str = "DRAFT";
+pub const DOC_STATUS_PUBLISHED: &str = "PUBLISHED";
 
 #[derive(Debug, Clone, Model)]
 pub struct User {
@@ -89,11 +92,18 @@ pub struct DocArticle {
 
     pub category: String,
 
+    #[unique]
     pub slug: String,
 
     pub version: String,
 
     pub status: String,
+
+    /// Plain-text body (deferred on list queries; include on detail).
+    pub body: Deferred<String>,
+
+    /// Unix timestamp (seconds) of last update.
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Model)]
@@ -134,4 +144,7 @@ pub struct Issue {
     pub status: String,
 
     pub organization_id: u64,
+
+    /// Free-text report details from the issue form.
+    pub details: String,
 }

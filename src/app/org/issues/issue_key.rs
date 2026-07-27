@@ -140,9 +140,9 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                             </span>
                         </div>
                         <div
-                            style="font-size: 13.5px; line-height: 1.55; color: #3a3f46;"
+                            style="font-size: 13.5px; line-height: 1.55; color: #3a3f46; white-space: pre-wrap;"
                         >
-                            "Seeing intermittent latency spikes on the SSH proxy under load. Happy to share metrics."
+                            (issue.details.clone())
                         </div>
                     </div>
                 </div>

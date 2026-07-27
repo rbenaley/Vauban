@@ -34,6 +34,31 @@ if ! grep -n 'ok_or_else(not_found)' src/auth.rs >/dev/null; then
   fail "src/auth.rs must map missing org/membership to not_found"
 fi
 
+# Org context must be request-memoized (layout + page share one lookup).
+if ! grep -nE '#\[memoize\]' src/auth.rs >/dev/null; then
+  fail "src/auth.rs must use #[memoize]"
+fi
+if ! awk '/#\[memoize\]/{m=1; next} m && /async fn org_context/{found=1; exit} /^pub |^async |^fn /{m=0} END{exit !found}' src/auth.rs; then
+  fail "#[memoize] must annotate org_context (backing require_org)"
+fi
+if ! grep -n 'org_context(cx, slug)' src/auth.rs >/dev/null; then
+  fail "require_org must call memoized org_context"
+fi
+
+# Admin compose forms must POST (OriginLayer / PRG), not GET stubs.
+for f in \
+  src/app/org/admin/docs/new.rs \
+  src/app/org/admin/releases/new.rs \
+  src/app/org/admin/companies/new.rs
+do
+  if grep -n 'method="GET"' "$f" >/dev/null 2>&1; then
+    fail "$f must not use method=GET on compose forms"
+  fi
+  if ! grep -n 'method="POST"' "$f" >/dev/null 2>&1; then
+    fail "$f must use method=POST on compose forms"
+  fi
+done
+
 # Admin nest must consult admin_view.
 if ! grep -REn --include='*.rs' 'admin_view' src/app/org/admin.rs src/app/org/admin >/dev/null 2>&1; then
   fail "admin nest must check admin_view"

@@ -14,5 +14,8 @@ pub mod fonts;
 pub mod models;
 pub mod nav;
 pub mod perms;
+pub mod seats;
+pub mod slug;
 pub mod tls;
+pub mod tz;
 pub mod ui;

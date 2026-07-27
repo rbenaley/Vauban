@@ -4,10 +4,14 @@ use topcoat::{
     view::{component, view},
 };
 
+use crate::auth::require_org;
+
+/// Org topbar chrome. Resolves org name via memoized `require_org`.
 #[component]
-pub async fn vb_topbar(cx: &Cx, org_slug: &str, org_name: &str, crumb: &str) -> Result {
+pub async fn vb_topbar(cx: &Cx, org_slug: &str, crumb: &str) -> Result {
+    let ctx = require_org(cx, org_slug).await?;
     let org_slug = org_slug.to_owned();
-    let org_name = org_name.to_owned();
+    let org_name = ctx.org.name.clone();
     let crumb = crumb.to_owned();
 
     view! {

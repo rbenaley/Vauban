@@ -72,7 +72,8 @@ build *ARGS:
 # Builds first: the bundler scans the compiled binary for asset! decls
 # (Tailwind OUT_DIR CSS, fonts, etc.). Safe to call without a prior validate.
 bundle *ARGS: ensure-topcoat build
-    topcoat asset bundle {{ARGS}}
+    # Explicit --bin: the package also ships `vcp-cli` (Toasty migrations).
+    topcoat asset bundle --bin vcp {{ARGS}}
 
 # Check without producing binaries
 check *ARGS:
@@ -137,7 +138,7 @@ validate: fmt-check clippy test
 # Build release binary + asset bundle
 release: ensure-topcoat
     cargo build --release
-    topcoat asset bundle --release
+    topcoat asset bundle --bin vcp --release
 
 # Run the portal over HTTPS (defaults to development config, port 3000)
 # Examples: just run | just run --release
@@ -156,16 +157,25 @@ dev *ARGS: ensure-topcoat
 db-create:
     createdb vcp || true
 
-# Drop and recreate local Postgres database `vcp` (destructive)
+# Drop and recreate local Postgres database `vcp` (destructive), then apply migrations
 db-reset:
     dropdb --if-exists vcp
     createdb vcp
+    just db-migrate
+
+# Apply pending Toasty migrations (development URL from layered TOML)
+db-migrate:
+    cargo run --bin vcp-cli -- migration apply
+
+# Diff models vs last snapshot and write a new migration (optional NAME=…)
+db-migrate-generate NAME="migration":
+    cargo run --bin vcp-cli -- migration generate --name {{NAME}}
 
 # Create Postgres `vcp_test` + role for automated tests
 db-create-test:
     bash scripts/setup_test_db.sh
 
-# Drop and recreate `vcp_test` (destructive), then re-grant
+# Drop and recreate `vcp_test` (destructive), then re-grant (schema via db::connect)
 db-reset-test:
     dropdb --if-exists vcp_test || true
     bash scripts/setup_test_db.sh
