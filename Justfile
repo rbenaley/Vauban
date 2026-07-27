@@ -7,6 +7,10 @@
 # Recipes that need it call `ensure-topcoat`, which installs the pinned version
 # on first use — so `just validate` and `just run` work without a prior manual
 # `cargo install`.
+#
+# Automated tests need Postgres role/DB `vcp_test`. `ensure-vcp-test` provisions
+# them on first use so `just validate` / `just test` do not require a prior
+# `just db-create-test`.
 
 export VCP_ENVIRONMENT := env("VCP_ENVIRONMENT", "development")
 
@@ -17,6 +21,9 @@ export PATH := cargo_home + "/bin:" + env_var("PATH")
 
 # Keep in sync with README / topcoat facade pin in Cargo.toml.
 topcoat_cli_version := "0.4.0"
+
+# Match config/testing.toml (user/password/db host).
+vcp_test_url := "postgresql://vcp_test:vcp_test@localhost/vcp_test"
 
 # Install pinned topcoat-cli when missing. Used by validate, run, bundle, fmt.
 [private]
@@ -35,6 +42,27 @@ ensure-topcoat:
       exit 1
     fi
     echo "topcoat CLI ready: $(command -v topcoat)" >&2
+
+# Provision Postgres role/DB vcp_test when missing. Used by validate / test.
+[private]
+ensure-vcp-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v psql >/dev/null 2>&1; then
+      echo "error: psql required to provision vcp_test (install PostgreSQL client tools)" >&2
+      exit 1
+    fi
+    if PGPASSWORD=vcp_test psql -h localhost -U vcp_test -d vcp_test -Atc 'SELECT 1' >/dev/null 2>&1; then
+      exit 0
+    fi
+    echo "Postgres vcp_test role/DB missing; running db-create-test…" >&2
+    just db-create-test
+    if ! PGPASSWORD=vcp_test psql -h localhost -U vcp_test -d vcp_test -Atc 'SELECT 1' >/dev/null 2>&1; then
+      echo "error: could not connect as vcp_test after setup ({{vcp_test_url}})" >&2
+      echo "hint: ensure PostgreSQL is running and your OS user can createdb/createuser" >&2
+      exit 1
+    fi
+    echo "vcp_test ready" >&2
 
 # Build the binary
 build *ARGS:
@@ -95,16 +123,15 @@ fmt-check: ensure-topcoat
       exit 1
     fi
 
-# Run tests (single-threaded; needs vcp_test — see db-create-test)
-# Bundles assets first so stylesheet!/runtime script resolve.
-test *ARGS: bundle
+# Run tests (single-threaded). Ensures vcp_test + asset bundle first.
+test *ARGS: ensure-vcp-test bundle
     cargo test {{ARGS}} -- --test-threads=1
 
 # Clippy with warnings as errors
 clippy *ARGS:
     cargo clippy --all-targets {{ARGS}} -- -D warnings
 
-# Full validation cycle: fmt check + clippy + asset bundle + tests
+# Full validation cycle: fmt check + clippy + ensure vcp_test + asset bundle + tests
 validate: fmt-check clippy test
 
 # Build release binary + asset bundle

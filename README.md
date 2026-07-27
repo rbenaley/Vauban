@@ -23,6 +23,10 @@ just db-create        # local app DB `vcp`
 just db-create-test   # automated tests DB `vcp_test` (or: bash scripts/setup_test_db.sh)
 ```
 
+`just validate` / `just test` call `ensure-vcp-test` and provision
+`vcp_test` (role + DB) on first use when the connection check fails.
+Manual `just db-create-test` remains available.
+
 ## Configuration
 
 Application settings live in TOML files under `config/`. There is **no** `.env`

@@ -87,7 +87,9 @@ production code, `scripts/check_auth_tenant.sh`, and
 
 - Dedicated Postgres database **`vcp_test`** (user/password `vcp_test`),
   URL in `config/testing.toml`.
-- Provision once: `just db-create-test` or `bash scripts/setup_test_db.sh`.
+- Provision: `just db-create-test` / `scripts/setup_test_db.sh`, or
+  automatically via `ensure-vcp-test` when running `just test` /
+  `just validate`.
 - Schema: Toasty `push_schema` on first `db::connect` (not Diesel).
 - Run tests single-threaded: `just test` / `--test-threads=1`.
 - Prefer production `app::router` + model helpers over a parallel
