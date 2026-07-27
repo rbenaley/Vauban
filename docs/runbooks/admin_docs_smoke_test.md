@@ -29,12 +29,12 @@ rtk cargo test --test integration_tests -- admin_docs -- --test-threads=1
 
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
 - Browser or `curl -k` willing to accept the local self-signed cert.
-- Seed users: `admin@acme.example` / `password` (admin),
+- Seed users: `support@vauban.sh` / `password` (staff),
   `l.martin@acme.example` / `password` (member); org `acme-infrastructure`.
 
 ## A -- Happy path
 
-1. Sign in as `admin@acme.example` / `password` (or member where appropriate).
+1. Sign in as `support@vauban.sh` / `password` (or member where appropriate).
 2. Open `/acme-infrastructure/admin/docs` — list ACTIONS must show **Edit**, **Unpublish**/**Publish**, and trash **Delete** (no UPDATED column). Title rows show excerpt under the title.
 3. Open compose (`+ New article` or Edit): form is **full width**, titled **Compose article**, with Category|Excerpt on one row and a tall Content field.
 4. Click Delete on a disposable row → type `delete` → **Delete permanently**; article disappears from admin list and client KB if it was published.

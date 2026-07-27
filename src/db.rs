@@ -18,7 +18,8 @@ use toasty_cli::Config as ToastyConfig;
 use crate::docs_body;
 use crate::models::{
     DocArticle, ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_SUPPORT,
-    ISSUE_ROLE_SYSTEM, Issue, IssueComment, Membership, Organization, Release, User,
+    ISSUE_ROLE_SYSTEM, Issue, IssueComment, MEMBERSHIP_ROLE_ORG, Membership, Organization,
+    PORTAL_ROLE_ADMIN, RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release, User,
 };
 
 /// Open a Toasty handle with VCP models registered (no schema changes).
@@ -96,10 +97,11 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
 
     let password_hash = hash_password("password")?;
 
-    let admin = toasty::create!(User {
-        email: "admin@acme.example".to_owned(),
-        display_name: "M. Dubois".to_owned(),
+    let support = toasty::create!(User {
+        email: "support@vauban.sh".to_owned(),
+        display_name: "Vauban Support".to_owned(),
         password_hash: password_hash.clone(),
+        portal_role: PORTAL_ROLE_ADMIN.to_owned(),
     })
     .exec(&mut db)
     .await?;
@@ -108,6 +110,22 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         email: "l.martin@acme.example".to_owned(),
         display_name: "L. Martin".to_owned(),
         password_hash,
+        portal_role: String::new(),
+    })
+    .exec(&mut db)
+    .await?;
+
+    let vauban = toasty::create!(Organization {
+        slug: RESERVED_ORG_SLUG.to_owned(),
+        name: "Vauban".to_owned(),
+        address: "Vauban — reserved preview tenant".to_owned(),
+        vat: "BE0508613560".to_owned(),
+        plan_label: "Internal · Vauban Support".to_owned(),
+        supported_builds: "LTS".to_owned(),
+        lts_subscriptions: 0,
+        industrial_lts_subscriptions: 0,
+        technical_contact: "support@vauban.sh".to_owned(),
+        status: "INTERNAL".to_owned(),
     })
     .exec(&mut db)
     .await?;
@@ -121,16 +139,16 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         supported_builds: "LTS 0.8.x".to_owned(),
         lts_subscriptions: 2,
         industrial_lts_subscriptions: 1,
-        technical_contact: "support@vauban.sh".to_owned(),
+        technical_contact: "l.martin@acme.example".to_owned(),
         status: "ACTIVE".to_owned(),
     })
     .exec(&mut db)
     .await?;
 
     toasty::create!(Membership {
-        user_id: admin.id,
-        organization_id: org.id,
-        role: "admin".to_owned(),
+        user_id: support.id,
+        organization_id: vauban.id,
+        role: MEMBERSHIP_ROLE_ORG.to_owned(),
     })
     .exec(&mut db)
     .await?;
@@ -138,7 +156,7 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
     toasty::create!(Membership {
         user_id: member.id,
         organization_id: org.id,
-        role: "member".to_owned(),
+        role: MEMBERSHIP_ROLE_ORG.to_owned(),
     })
     .exec(&mut db)
     .await?;
@@ -211,6 +229,7 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         notes:
             "FIX: stop newsyslog rotation from killing daemon(8)\nFEAT: expand staff Casbin grants"
                 .to_owned(),
+        organization_id: RELEASE_GA_ORG_ID,
     })
     .exec(&mut db)
     .await?;
@@ -223,6 +242,20 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         signature_prefix: "a91c002".to_owned(),
         status: "PUBLISHED".to_owned(),
         notes: "FIX: proxy reconnect under load\nFIX: audit seal clock skew".to_owned(),
+        organization_id: RELEASE_GA_ORG_ID,
+    })
+    .exec(&mut db)
+    .await?;
+
+    toasty::create!(Release {
+        version: "v0.8.6-acme1".to_owned(),
+        channel: "LTS".to_owned(),
+        released_on: "2026-06-20".to_owned(),
+        size_mb: "20.5".to_owned(),
+        signature_prefix: "b7e4d01".to_owned(),
+        status: "PUBLISHED".to_owned(),
+        notes: "HOTFIX: Acme-only proxy backpressure patch".to_owned(),
+        organization_id: org.id,
     })
     .exec(&mut db)
     .await?;
@@ -256,7 +289,7 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
 
     toasty::create!(IssueComment {
         issue_id: issue_214.id,
-        author_user_id: admin.id,
+        author_user_id: support.id,
         author_role: ISSUE_ROLE_SUPPORT.to_owned(),
         body: "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway.".to_owned(),
         kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
@@ -376,6 +409,7 @@ pub async fn ensure_demo_catalog(db: &Db) -> anyhow::Result<()> {
             signature_prefix: sig.to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: notes.to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
         })
         .exec(&mut db)
         .await?;
@@ -390,9 +424,9 @@ pub async fn ensure_demo_catalog(db: &Db) -> anyhow::Result<()> {
 async fn ensure_demo_issue_comments(db: &mut Db) -> anyhow::Result<()> {
     let issues = Issue::all().exec(db).await?;
     let users = User::all().exec(db).await?;
-    let admin_id = users
+    let support_id = users
         .iter()
-        .find(|u| u.email == "admin@acme.example")
+        .find(|u| u.email == "support@vauban.sh")
         .map(|u| u.id)
         .unwrap_or(0);
     let now = now_unix();
@@ -418,7 +452,7 @@ async fn ensure_demo_issue_comments(db: &mut Db) -> anyhow::Result<()> {
             .await?;
             toasty::create!(IssueComment {
                 issue_id: issue.id,
-                author_user_id: admin_id,
+                author_user_id: support_id,
                 author_role: ISSUE_ROLE_SUPPORT.to_owned(),
                 body: "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway.".to_owned(),
                 kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),

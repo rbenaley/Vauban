@@ -59,7 +59,7 @@ async fn e2e_vcp_tz_cookie_changes_admin_docs_time() {
 
     let utc_page = get(
         &router,
-        &format!("/{slug}/admin/docs/{article_id}"),
+        &format!("/admin/docs/{article_id}"),
         Some(&utc_cookie),
     )
     .await;
@@ -68,7 +68,7 @@ async fn e2e_vcp_tz_cookie_changes_admin_docs_time() {
 
     let paris_page = get(
         &router,
-        &format!("/{slug}/admin/docs/{article_id}"),
+        &format!("/admin/docs/{article_id}"),
         Some(&paris_cookie),
     )
     .await;

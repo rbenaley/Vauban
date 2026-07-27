@@ -14,17 +14,21 @@ use topcoat::{
 
 use crate::{
     db::{now_unix, token_hash_hex},
-    models::{AuthSession, Membership, Organization, User},
+    models::{
+        AuthSession, MEMBERSHIP_ROLE_ORG, Membership, Organization, PORTAL_ROLE_ADMIN,
+        RESERVED_ORG_SLUG, User,
+    },
 };
 
 #[derive(Debug, Clone)]
 pub struct AuthUser {
-    #[allow(dead_code)]
     pub id: u64,
     pub email: String,
     pub display_name: String,
-    /// Active membership role for the current org request (empty if none).
+    /// Casbin role for this request (`org` or `admin`).
     pub role: String,
+    /// Persisted `User.portal_role` (`admin` for Vauban Support, else empty).
+    pub portal_role: String,
 }
 
 pub fn db(cx: &Cx) -> Db {
@@ -95,8 +99,26 @@ pub struct OrgContext {
     pub user: AuthUser,
 }
 
+#[derive(Debug, Clone)]
+pub struct StaffContext {
+    pub user: AuthUser,
+}
+
+fn auth_user_from(user: &User, casbin_role: String) -> AuthUser {
+    AuthUser {
+        id: user.id,
+        email: user.email.clone(),
+        display_name: user.display_name.clone(),
+        role: casbin_role,
+        portal_role: user.portal_role.clone(),
+    }
+}
+
 /// Resolve `{org}` slug + membership (memoized). `None` means missing auth,
 /// org, or membership — callers map that to **404** (anti-enumeration).
+///
+/// Staff Casbin context uses `portal_role` (`admin`) even on `/vauban` preview.
+/// Reserved org `vauban` is staff-only.
 #[memoize]
 async fn org_context(cx: &Cx, slug: &str) -> Option<OrgContext> {
     let user = require_auth(cx).await.ok()?;
@@ -109,6 +131,11 @@ async fn org_context(cx: &Cx, slug: &str) -> Option<OrgContext> {
         .ok()
         .and_then(|mut rows| rows.pop())?;
 
+    let is_reserved = org.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG);
+    if is_reserved && user.portal_role != PORTAL_ROLE_ADMIN {
+        return None;
+    }
+
     let membership = Membership::all()
         .filter(Membership::fields().user_id().eq(user.id))
         .filter(Membership::fields().organization_id().eq(org.id))
@@ -117,14 +144,18 @@ async fn org_context(cx: &Cx, slug: &str) -> Option<OrgContext> {
         .ok()
         .and_then(|mut rows| rows.pop())?;
 
+    // Memberships are always `org`; staff preview uses portal_role for Casbin.
+    let casbin_role = if user.portal_role == PORTAL_ROLE_ADMIN {
+        PORTAL_ROLE_ADMIN.to_owned()
+    } else if membership.role == MEMBERSHIP_ROLE_ORG {
+        MEMBERSHIP_ROLE_ORG.to_owned()
+    } else {
+        membership.role
+    };
+
     Some(OrgContext {
         org,
-        user: AuthUser {
-            id: user.id,
-            email: user.email.clone(),
-            display_name: user.display_name.clone(),
-            role: membership.role,
-        },
+        user: auth_user_from(user, casbin_role),
     })
 }
 
@@ -136,7 +167,21 @@ pub async fn require_org(cx: &Cx, slug: &str) -> Result<OrgContext, NotFoundErro
     org_context(cx, slug).await.cloned().ok_or_else(not_found)
 }
 
-/// Fail-closed admin gate (scaffold helper for upcoming admin mutations).
+/// Vauban Support gate for `/admin/*`. Anonymous → **404**; authenticated
+/// non-staff → **403**.
+pub async fn require_staff(cx: &Cx) -> Result<StaffContext> {
+    let Some(user) = current_user(cx).await else {
+        return Err(not_found().into());
+    };
+    if user.portal_role != PORTAL_ROLE_ADMIN {
+        return Err(forbidden().into());
+    }
+    let auth = auth_user_from(user, PORTAL_ROLE_ADMIN.to_owned());
+    crate::perms::require_admin_view(cx, &auth).await?;
+    Ok(StaffContext { user: auth })
+}
+
+/// Fail-closed admin gate (scaffold helper).
 #[allow(dead_code)]
 pub async fn require_org_admin(cx: &Cx, slug: &str) -> Result<OrgContext, ForbiddenError> {
     let ctx = match require_org(cx, slug).await {

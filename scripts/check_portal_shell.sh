@@ -25,11 +25,19 @@ grep -n '#\[layout\]' src/app/login.rs >/dev/null \
   || fail "src/app/login.rs must define login #[layout]"
 grep -n '#\[layout\]' src/app/org.rs >/dev/null \
   || fail "src/app/org.rs must define org #[layout]"
+grep -n '#\[layout\]' src/app/admin.rs >/dev/null \
+  || fail "src/app/admin.rs must define admin #[layout]"
 
 grep -n 'vb_rail' src/app/org.rs >/dev/null \
   || fail "org_layout must render vb_rail"
 grep -n 'vb_topbar' src/app/org.rs >/dev/null \
   || fail "org_layout must render vb_topbar"
+grep -n 'vb_rail' src/app/admin.rs >/dev/null \
+  || fail "admin_layout must render vb_rail"
+grep -n 'require_staff' src/app/admin.rs >/dev/null \
+  || fail "admin_layout must call require_staff"
+grep -n '/admin/issues' src/app/_components/rail.rs >/dev/null \
+  || fail "vb_rail admin Issues must link /admin/issues"
 grep -n 'admin_view' src/app/_components/rail.rs >/dev/null \
   || fail "vb_rail must gate ADMIN block via perms.admin_view"
 grep -n 'require_org' src/app/_components/rail.rs >/dev/null \

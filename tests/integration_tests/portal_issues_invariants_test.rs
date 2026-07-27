@@ -44,9 +44,30 @@ fn inv_issue_detail_renders_details() {
     );
     assert!(src.contains("/reply"), "detail must expose reply POST path");
     assert!(
-        !src.contains("Vauban Support"),
-        "must not hardcode support author fixture"
+        src.contains("Vauban Support"),
+        "support-side timeline must display Vauban Support"
     );
+}
+
+#[test]
+fn inv_admin_issues_aggregate_surface() {
+    let list = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/issues.rs"
+    ));
+    let detail = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/issues/issue_key.rs"
+    ));
+    assert!(list.contains("require_staff"));
+    assert!(list.contains("issues_read"));
+    assert!(
+        list.contains("org"),
+        "list must support optional org filter"
+    );
+    assert!(detail.contains("Vauban Support"));
+    assert!(detail.contains("ISSUE_ROLE_SUPPORT"));
+    assert!(detail.contains("/admin/issues/"));
 }
 
 #[test]

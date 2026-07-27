@@ -98,6 +98,7 @@ async fn battle_parallel_channel_release_filters() {
                 signature_prefix: "x".to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "n".to_owned(),
+                organization_id: 0,
             })
             .exec(&mut conn)
             .await

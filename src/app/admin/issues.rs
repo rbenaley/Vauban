@@ -1,24 +1,19 @@
-//! Issue tracker list at `/{org}/issues`.
+//! Aggregated issue tracker at `/admin/issues` (all orgs, staff-only).
 
 mod issue_key;
-mod new;
 
-use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{
-        Form, SeeOther, forbidden, page, path_param, query_params, redirect, route, see_other,
-    },
+    router::{forbidden, page, query_params},
     view::view,
 };
 
 use crate::{
-    app::_components::{ico_plus, severity_badge, status_badge},
-    app::org::Org,
-    auth::{db, require_org},
+    app::_components::{severity_badge, status_badge},
+    auth::require_staff,
     db::now_unix,
-    models::{Issue, RESERVED_ORG_SLUG, User},
+    models::{Issue, Organization, User},
     perms::perms_for_user,
     tz::{browser_tz, format_relative},
 };
@@ -26,34 +21,21 @@ use crate::{
 const STATUSES: &[&str] = &["Open", "In analysis", "Resolved", "Closed"];
 
 #[query_params]
-struct IssuesQuery {
+struct AdminIssuesQuery {
     q: Option<String>,
     status: Option<String>,
-}
-
-#[route(GET "/vauban/issues")]
-async fn redirect_reserved_issues_list() -> Result<SeeOther> {
-    Ok(see_other("/admin/issues"))
-}
-
-#[route(POST "/vauban/issues")]
-async fn redirect_reserved_issues_create() -> Result<SeeOther> {
-    Ok(see_other("/admin/issues"))
+    org: Option<String>,
 }
 
 #[page]
-async fn issues_page(cx: &Cx) -> Result {
-    let slug = path_param::<Org>(cx);
-    if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Err(redirect("/admin/issues").into());
-    }
-    let ctx = require_org(cx, slug).await?;
-    let perms = perms_for_user(cx, &ctx.user).await;
+async fn admin_issues_page(cx: &Cx) -> Result {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
     if !perms.issues_read {
         return Err(forbidden().into());
     }
 
-    let query = query_params::<IssuesQuery>(cx).ok();
+    let query = query_params::<AdminIssuesQuery>(cx).ok();
     let q = query
         .and_then(|q| q.q.as_deref())
         .unwrap_or("")
@@ -64,52 +46,59 @@ async fn issues_page(cx: &Cx) -> Result {
         .unwrap_or("")
         .trim()
         .to_owned();
+    let org_filter = query
+        .and_then(|q| q.org.as_deref())
+        .unwrap_or("")
+        .trim()
+        .to_owned();
 
     let mut database = crate::auth::db(cx);
-    let issues = Issue::all()
-        .filter(Issue::fields().organization_id().eq(ctx.org.id))
+    let mut issues = Issue::all().exec(&mut database).await.unwrap_or_default();
+    issues.sort_by_key(|i| std::cmp::Reverse(i.updated_at));
+    let orgs = Organization::all()
         .exec(&mut database)
         .await
         .unwrap_or_default();
     let users = User::all().exec(&mut database).await.unwrap_or_default();
+
+    let org_id_filter = resolve_org_filter(&orgs, &org_filter);
+
     let tz = browser_tz(cx);
     let now = now_unix();
     let filtered: Vec<_> = issues
         .into_iter()
         .filter(|i| {
+            let org_ok = if org_filter.is_empty() {
+                true
+            } else {
+                org_id_filter == Some(i.organization_id)
+            };
             let status_ok = status.is_empty() || i.status.eq_ignore_ascii_case(&status);
             let q_ok = q.is_empty()
                 || i.key.to_lowercase().contains(&q)
                 || i.title.to_lowercase().contains(&q);
-            status_ok && q_ok
+            org_ok && status_ok && q_ok
         })
         .collect();
 
-    let base = format!("/{}/issues", slug);
+    let base = "/admin/issues".to_owned();
     let all_class = if status.is_empty() {
         "vb-chip active"
     } else {
         "vb-chip"
     };
     let q_value = query.and_then(|q| q.q.clone()).unwrap_or_default();
+    let org_value = org_filter.clone();
 
     view! {
-        <div
-            style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 6px;"
-        >
-            <h1 class="vb-title" style="margin: 0;">"Issue tracker"</h1>
-            if perms.issues_write {
-                <a class="vb-btn vb-btn-ico" href=(format!("/{}/issues/new", slug))>
-                    (ico_plus(cx, 14).await?)
-                    <span>"Report an issue"</span>
-                </a>
-            }
+        <div style="margin-bottom: 6px;">
+            <h1 class="vb-title" style="margin: 0;">"Issues"</h1>
         </div>
         <p class="vb-lead" style="display: flex; align-items: center; gap: 8px;">
             <span
                 style="width: 6px; height: 6px; border-radius: 50%; background: var(--warn); display: inline-block;"
             ></span>
-            "SLA: initial analysis within "
+            "Aggregated support queue across all organizations. SLA: initial analysis within "
             <strong style="color: var(--text); font-weight: 700;">
                 "2–5 business days"
             </strong>
@@ -123,11 +112,19 @@ async fn issues_page(cx: &Cx) -> Result {
         >
             <input
                 class="vb-search"
-                style="margin: 0; flex: 1; min-width: 240px;"
+                style="margin: 0; flex: 1; min-width: 200px;"
                 type="search"
                 name="q"
                 value=(q_value)
                 placeholder="Search (ID, title)…"
+            >
+            <input
+                class="vb-search"
+                style="margin: 0; width: 180px;"
+                type="search"
+                name="org"
+                value=(org_value)
+                placeholder="Org slug or id…"
             >
             if !status.is_empty() {
                 <input type="hidden" name="status" value=(status.clone())>
@@ -135,16 +132,9 @@ async fn issues_page(cx: &Cx) -> Result {
         </form>
 
         <div class="vb-chip-row">
-            <a class=(all_class) href=(base.clone())>"All"</a>
+            <a class=(all_class) href=(chip_href(&base, &q, &org_filter, ""))>"All"</a>
             for s in STATUSES {
-                let href = if q.is_empty() {
-                    format!("{base}?status={}", urlencoding_encode(s))
-                } else {
-                    format!(
-                        "{base}?q={}&status={}", urlencoding_encode(& q),
-                        urlencoding_encode(s)
-                    )
-                };
+                let href = chip_href(&base, &q, &org_filter, s);
                 let class = if status.eq_ignore_ascii_case(s) {
                     "vb-chip active"
                 } else {
@@ -164,12 +154,17 @@ async fn issues_page(cx: &Cx) -> Result {
                         .find(|u| u.id == issue.opened_by_user_id)
                         .map(|u| u.display_name.clone())
                         .unwrap_or_else(|| "Unknown".to_owned());
+                    let org_label = orgs
+                        .iter()
+                        .find(|o| o.id == issue.organization_id)
+                        .map(|o| format!("{} ({})", o.name, o.slug))
+                        .unwrap_or_else(|| format!("org#{}", issue.organization_id));
                     let updated = format_relative(issue.updated_at, now, tz);
                     let meta = format!(
-                        "{} · opened by {} · updated {}", issue.component, opener,
-                        updated
+                        "{} · {} · opened by {} · updated {}", org_label, issue.component,
+                        opener, updated
                     );
-                    <a class="vb-row" href=(format!("/{}/issues/{}", slug, issue.key))>
+                    <a class="vb-row" href=(format!("/admin/issues/{}", issue.key))>
                         <div
                             class="vb-mono"
                             style="color: var(--accent); font-size: 12px; font-weight: 700; width: 76px; flex: none;"
@@ -198,61 +193,36 @@ async fn issues_page(cx: &Cx) -> Result {
     }
 }
 
-#[derive(Deserialize)]
-struct ReportForm {
-    title: String,
-    component: String,
-    severity: String,
-    details: String,
+fn resolve_org_filter(orgs: &[Organization], raw: &str) -> Option<u64> {
+    if raw.is_empty() {
+        return None;
+    }
+    if let Ok(id) = raw.parse::<u64>()
+        && orgs.iter().any(|o| o.id == id)
+    {
+        return Some(id);
+    }
+    orgs.iter()
+        .find(|o| o.slug.eq_ignore_ascii_case(raw))
+        .map(|o| o.id)
 }
 
-#[route(POST "/{org}/issues")]
-async fn report_issue(cx: &Cx, Form(form): Form<ReportForm>) -> Result<SeeOther> {
-    let slug = path_param::<Org>(cx);
-    if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Ok(see_other("/admin/issues"));
+fn chip_href(base: &str, q: &str, org: &str, status: &str) -> String {
+    let mut parts = Vec::new();
+    if !q.is_empty() {
+        parts.push(format!("q={}", urlencoding_encode(q)));
     }
-    let ctx = require_org(cx, slug)
-        .await
-        .map_err(|_| topcoat::router::not_found())?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.issues_write {
-        return Ok(see_other(&format!("/{slug}/issues")));
+    if !org.is_empty() {
+        parts.push(format!("org={}", urlencoding_encode(org)));
     }
-
-    let mut database = db(cx);
-    let existing = Issue::all()
-        .filter(Issue::fields().organization_id().eq(ctx.org.id))
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let next = existing.len() + 200;
-    let key = format!("VBN-{next}");
-    let title = form.title.trim().to_owned();
-    let component = form.component.trim().to_owned();
-    let severity = form.severity.trim().to_owned();
-    let details = form.details.trim().to_owned();
-
-    if !title.is_empty() {
-        let now = now_unix();
-        let _ = toasty::create!(Issue {
-            key: key.clone(),
-            title,
-            component,
-            severity,
-            status: "Open".to_owned(),
-            organization_id: ctx.org.id,
-            details,
-            opened_by_user_id: ctx.user.id,
-            created_at: now,
-            updated_at: now,
-        })
-        .exec(&mut database)
-        .await;
-        return Ok(see_other(&format!("/{slug}/issues/{key}")));
+    if !status.is_empty() {
+        parts.push(format!("status={}", urlencoding_encode(status)));
     }
-
-    Ok(see_other(&format!("/{slug}/issues")))
+    if parts.is_empty() {
+        base.to_owned()
+    } else {
+        format!("{base}?{}", parts.join("&"))
+    }
 }
 
 fn urlencoding_encode(value: &str) -> String {

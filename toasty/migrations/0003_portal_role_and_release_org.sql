@@ -1,0 +1,2 @@
+ALTER TABLE "users" ADD COLUMN "portal_role" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "releases" ADD COLUMN "organization_id" BIGINT NOT NULL DEFAULT 0;

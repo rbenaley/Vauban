@@ -1,16 +1,15 @@
-//! Admin compose / create at `/{org}/admin/docs/new`.
+//! Admin compose / create at `/admin/docs/new`.
 
 use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, forbidden, page, path_param, route, see_other},
+    router::{Form, SeeOther, forbidden, page, route, see_other},
     view::view,
 };
 
 use crate::{
-    app::org::Org,
-    auth::{db, require_org},
+    auth::{db, require_staff},
     db::now_unix,
     models::{DOC_CATEGORIES, DOC_STATUS_DRAFT, DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
@@ -30,21 +29,17 @@ struct CreateDocForm {
 
 #[page]
 async fn admin_docs_new_page(cx: &Cx) -> Result {
-    let slug = path_param::<Org>(cx);
-    let ctx = require_org(cx, slug).await?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.admin_view || !perms.docs_write {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.docs_write {
         return Err(forbidden().into());
     }
-
-    let back = format!("/{slug}/admin/docs");
-    let action = format!("/{slug}/admin/docs/new");
 
     view! {
         <div>
             <a
                 class="vb-back"
-                href=(back.clone())
+                href="/admin/docs"
                 style="margin-bottom: 16px; margin-top: 0;"
             >
                 "Back to articles"
@@ -52,7 +47,7 @@ async fn admin_docs_new_page(cx: &Cx) -> Result {
             <h1 class="vb-title">"Compose article"</h1>
             <p class="vb-lead">"Draft or publish a knowledge-base article."</p>
             <div class="vb-panel" style="padding: 24px;">
-                <form class="vb-form" method="POST" action=(action)>
+                <form class="vb-form" method="POST" action="/admin/docs/new">
                     <label for="title">"Title"</label>
                     <input
                         id="title"
@@ -97,7 +92,7 @@ async fn admin_docs_new_page(cx: &Cx) -> Result {
                             "Publish article"
                         </button>
                         <button class="vb-btn muted" type="submit">"Save draft"</button>
-                        <a class="vb-link" href=(back) style="margin: 0;">"Cancel"</a>
+                        <a class="vb-link" href="/admin/docs" style="margin: 0;">"Cancel"</a>
                     </div>
                 </form>
             </div>
@@ -105,18 +100,17 @@ async fn admin_docs_new_page(cx: &Cx) -> Result {
     }
 }
 
-#[route(POST "/{org}/admin/docs/new")]
+#[route(POST "/admin/docs/new")]
 async fn admin_docs_create(cx: &Cx, Form(form): Form<CreateDocForm>) -> Result<SeeOther> {
-    let slug = path_param::<Org>(cx);
-    let ctx = require_org(cx, slug).await.map_err(|_| forbidden())?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.admin_view || !perms.docs_write {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.docs_write {
         return Err(forbidden().into());
     }
 
     let title = form.title.trim().to_owned();
     if title.is_empty() {
-        return Ok(see_other(&format!("/{slug}/admin/docs/new")));
+        return Ok(see_other("/admin/docs/new"));
     }
     let category = form.category.trim().to_owned();
     let body = form.body.trim().to_owned();
@@ -166,5 +160,5 @@ async fn admin_docs_create(cx: &Cx, Form(form): Form<CreateDocForm>) -> Result<S
     .exec(&mut database)
     .await;
 
-    Ok(see_other(&format!("/{slug}/admin/docs")))
+    Ok(see_other("/admin/docs"))
 }

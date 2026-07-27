@@ -22,7 +22,7 @@ proptest! {
 
     #[test]
     fn prop_unknown_roles_lack_admin_view(role in "[a-z]{3,12}") {
-        prop_assume!(role != "admin" && role != "member");
+        prop_assume!(role != "admin" && role != "org");
         let store = PolicyStore::load_from_csv(PolicyStore::default_path()).unwrap();
         let ctx = store.context_for_role(&role);
         prop_assert!(!ctx.admin_view);

@@ -29,8 +29,8 @@ rtk cargo test --test integration_tests -- portal_shell -- --test-threads=1
 
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
 - Browser or `curl -k`.
-- Seed: `admin@acme.example` / `password`, `l.martin@acme.example` / `password`,
-  org `acme-infrastructure`.
+- Seed: `support@vauban.sh` / `password` (staff → `/vauban`),
+  `l.martin@acme.example` / `password` (client → `/acme-infrastructure`).
 
 ## A -- Login splash chrome
 
@@ -41,12 +41,12 @@ Pass: login page shows branded splash, not a bare form on a blank page.
 
 ## B -- Org shell chrome
 
-1. Sign in as `admin@acme.example` / `password`.
-2. On `/acme-infrastructure`, expect left rail + topbar crumb
-   (`vauban://portal / …`) and an **ADMIN** rail block.
+1. Sign in as `support@vauban.sh` / `password`.
+2. On `/vauban`, expect left rail + topbar crumb and an **ADMIN** rail
+   block. Primary Issues link and admin Issues both go to `/admin/issues`
+   (not `/vauban/issues`).
 3. Sign out; sign in as `l.martin@acme.example` / `password`.
-4. Expect the same shell chrome **without** the ADMIN rail block.
+4. Expect shell chrome on `/acme-infrastructure` **without** the ADMIN
+   rail block; Issues → `/{org}/issues`.
 
-Pass: admin sees ADMIN rail; member sees shell without ADMIN.
-
-For wrong-org / 403 admin nest, use the auth_tenant runbook.
+Pass: staff sees ADMIN rail + Issues → `/admin/issues`; client has no ADMIN.

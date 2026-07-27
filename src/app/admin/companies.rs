@@ -1,36 +1,37 @@
-//! Admin companies at `/{org}/admin/companies` — Concept card layout.
+//! Admin companies at `/admin/companies` — Concept card layout.
 
 mod new;
 
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, page, path_param},
+    router::{forbidden, page},
     view::view,
 };
 
 use crate::{
-    app::org::Org,
-    auth::require_org,
-    models::{MAX_USERS_PER_COMPANY, Organization},
+    auth::require_staff,
+    models::{MAX_USERS_PER_COMPANY, Organization, RESERVED_ORG_SLUG},
     perms::perms_for_user,
     ui,
 };
 
 #[page]
 async fn admin_companies_page(cx: &Cx) -> Result {
-    let slug = path_param::<Org>(cx);
-    let ctx = require_org(cx, slug).await?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.admin_view || !perms.companies_manage {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.companies_manage {
         return Err(forbidden().into());
     }
 
     let mut database = crate::auth::db(cx);
-    let companies = Organization::all()
+    let companies: Vec<_> = Organization::all()
         .exec(&mut database)
         .await
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| !c.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG))
+        .collect();
 
     view! {
         <div
@@ -44,7 +45,7 @@ async fn admin_companies_page(cx: &Cx) -> Result {
                     " user accounts per company."
                 </p>
             </div>
-            <a class="vb-btn" href=(format!("/{}/admin/companies/new", slug))>
+            <a class="vb-btn" href="/admin/companies/new">
                 "+ Onboard company"
             </a>
         </div>
@@ -100,10 +101,7 @@ async fn admin_companies_page(cx: &Cx) -> Result {
                             "Accounts · max "
                             (MAX_USERS_PER_COMPANY.to_string())
                         </div>
-                        <a
-                            class="vb-link"
-                            href=(format!("/{}/admin/companies/new", slug))
-                        >
+                        <a class="vb-link" href="/admin/companies/new">
                             "Edit"
                         </a>
                     </div>

@@ -21,7 +21,7 @@ fn inv_check_admin_docs_script() {
 fn inv_admin_docs_create_is_post_and_gated() {
     let src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/app/org/admin/docs/new.rs"
+        "/src/app/admin/docs/new.rs"
     ));
     assert!(src.contains("method=\"POST\""));
     assert!(src.contains("docs_write"));
@@ -32,7 +32,7 @@ fn inv_admin_docs_create_is_post_and_gated() {
 fn inv_admin_docs_publish_routes_exist() {
     let src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/app/org/admin/docs/doc.rs"
+        "/src/app/admin/docs/doc.rs"
     ));
     assert!(src.contains("/publish"));
     assert!(src.contains("/unpublish"));
@@ -79,7 +79,7 @@ fn inv_client_doc_modal_uses_docs_body_parser() {
 fn inv_admin_docs_save_versions_and_redirects_list() {
     let src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/app/org/admin/docs/doc.rs"
+        "/src/app/admin/docs/doc.rs"
     ));
     assert!(src.contains("bump_version"));
     assert!(src.contains("unpublish_other_published"));
@@ -101,7 +101,7 @@ fn inv_admin_docs_save_versions_and_redirects_list() {
 fn inv_admin_list_uses_id_and_sorts() {
     let src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/app/org/admin/docs.rs"
+        "/src/app/admin/docs.rs"
     ));
     assert!(src.contains("article.id"));
     assert!(src.contains("sort_by_key"));
@@ -120,11 +120,11 @@ fn inv_admin_list_uses_id_and_sorts() {
 fn inv_admin_compose_full_width_concept_layout() {
     let new = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/app/org/admin/docs/new.rs"
+        "/src/app/admin/docs/new.rs"
     ));
     let edit = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/app/org/admin/docs/doc.rs"
+        "/src/app/admin/docs/doc.rs"
     ));
     assert!(new.contains("Compose article"));
     assert!(edit.contains("Compose article"));

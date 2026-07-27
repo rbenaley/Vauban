@@ -5,8 +5,8 @@ use topcoat::router::StatusCode;
 use vcp::{db::now_unix, models::DocArticle};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, create_test_org, db_lock, get, post_form,
-    status, test_db, test_router, unique_email, unique_slug, urlencoding_encode,
+    cleanup, cookie_header, create_org_with_membership, db_lock, get, post_form, status, test_db,
+    test_router, unique_email, unique_slug, urlencoding_encode,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -95,13 +95,7 @@ async fn e2e_admin_docs_create_publish_visible_on_client() {
         "title={}&category=API&summary=sum&body=Hello+body&publish=1",
         urlencoding_encode(&title)
     );
-    let create = post_form(
-        &router,
-        &format!("/{slug}/admin/docs/new"),
-        cookie.as_deref(),
-        &form,
-    )
-    .await;
+    let create = post_form(&router, "/admin/docs/new", cookie.as_deref(), &form).await;
     assert!(
         status(&create).is_redirection(),
         "create should PRG, got {}",
@@ -142,13 +136,7 @@ async fn e2e_draft_not_visible_on_client_docs() {
         "title={}&category=API&summary=sum&body=Secret+draft",
         urlencoding_encode(&title)
     );
-    let create = post_form(
-        &router,
-        &format!("/{slug}/admin/docs/new"),
-        cookie.as_deref(),
-        &form,
-    )
-    .await;
+    let create = post_form(&router, "/admin/docs/new", cookie.as_deref(), &form).await;
     assert!(status(&create).is_redirection());
 
     let article_slug = vcp::slug::slugify(&title);
@@ -187,41 +175,43 @@ async fn e2e_member_denied_admin_docs() {
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
     let cookie = login(&router, &email).await;
 
-    let admin = get(&router, &format!("/{slug}/admin/docs"), cookie.as_deref()).await;
+    let admin = get(&router, "/admin/docs", cookie.as_deref()).await;
     assert_eq!(status(&admin), StatusCode::FORBIDDEN);
 
     let form = "title=Nope&category=API&body=x&publish=1";
-    let create = post_form(
-        &router,
-        &format!("/{slug}/admin/docs/new"),
-        cookie.as_deref(),
-        form,
-    )
-    .await;
+    let create = post_form(&router, "/admin/docs/new", cookie.as_deref(), form).await;
     assert_eq!(status(&create), StatusCode::FORBIDDEN);
 
     cleanup(&db).await;
 }
 
 #[tokio::test]
-async fn e2e_admin_docs_wrong_org_is_404() {
+async fn e2e_admin_docs_anonymous_is_404() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
     let router = test_router().await;
 
-    let email = unique_email("adoc-wo");
-    let slug = unique_slug("adoc-home");
+    let missing = get(&router, "/admin/docs", None).await;
+    assert_eq!(status(&missing), StatusCode::NOT_FOUND);
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_legacy_org_admin_docs_path_is_404() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("adoc-legacy");
+    let slug = unique_slug("adoc-legacy-org");
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
-    let _other = create_test_org(&db, &unique_slug("adoc-other")).await;
     let cookie = login(&router, &email).await;
 
-    let missing = get(
-        &router,
-        &format!("/{}/admin/docs", unique_slug("no-access")),
-        cookie.as_deref(),
-    )
-    .await;
+    // Former `/{org}/admin/*` nest is gone — staff tools live under `/admin/*`.
+    let missing = get(&router, &format!("/{slug}/admin/docs"), cookie.as_deref()).await;
     assert_eq!(status(&missing), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
@@ -268,7 +258,7 @@ async fn e2e_admin_docs_publish_toggles_client_visibility() {
 
     let pub_resp = post_form(
         &router,
-        &format!("/{slug}/admin/docs/{article_id}/publish"),
+        &format!("/admin/docs/{article_id}/publish"),
         cookie.as_deref(),
         "",
     )
@@ -280,8 +270,7 @@ async fn e2e_admin_docs_publish_toggles_client_visibility() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert_eq!(
-        location,
-        format!("/{slug}/admin/docs"),
+        location, "/admin/docs",
         "publish must redirect to admin list"
     );
 
@@ -325,7 +314,7 @@ async fn e2e_admin_list_shows_concept_actions() {
         .expect("create");
     }
 
-    let list = get(&router, &format!("/{slug}/admin/docs"), cookie.as_deref()).await;
+    let list = get(&router, "/admin/docs", cookie.as_deref()).await;
     assert_eq!(status(&list), StatusCode::OK);
     let html = body_text(list).await;
     assert!(html.contains("Edit"), "missing Edit: {html}");
@@ -341,12 +330,7 @@ async fn e2e_admin_list_shows_concept_actions() {
     );
     assert!(!html.contains(">UPDATED<"), "UPDATED column should be gone");
 
-    let compose = get(
-        &router,
-        &format!("/{slug}/admin/docs/new"),
-        cookie.as_deref(),
-    )
-    .await;
+    let compose = get(&router, "/admin/docs/new", cookie.as_deref()).await;
     assert_eq!(status(&compose), StatusCode::OK);
     let compose_html = body_text(compose).await;
     assert!(compose_html.contains("Compose article"));
@@ -389,7 +373,7 @@ async fn e2e_admin_docs_delete_with_confirm() {
 
     let bad = post_form(
         &router,
-        &format!("/{slug}/admin/docs/{article_id}/delete"),
+        &format!("/admin/docs/{article_id}/delete"),
         cookie.as_deref(),
         "confirm=nope",
     )
@@ -421,7 +405,7 @@ async fn e2e_admin_docs_delete_with_confirm() {
 
     let confirm_page = get(
         &router,
-        &format!("/{slug}/admin/docs?delete={article_id}&err=confirm"),
+        &format!("/admin/docs?delete={article_id}&err=confirm"),
         cookie.as_deref(),
     )
     .await;
@@ -435,7 +419,7 @@ async fn e2e_admin_docs_delete_with_confirm() {
 
     let ok = post_form(
         &router,
-        &format!("/{slug}/admin/docs/{article_id}/delete"),
+        &format!("/admin/docs/{article_id}/delete"),
         cookie.as_deref(),
         "confirm=delete",
     )
@@ -495,7 +479,7 @@ async fn e2e_member_denied_admin_docs_delete() {
 
     let del = post_form(
         &router,
-        &format!("/{slug}/admin/docs/{article_id}/delete"),
+        &format!("/admin/docs/{article_id}/delete"),
         cookie.as_deref(),
         "confirm=delete",
     )
@@ -543,7 +527,7 @@ async fn e2e_publish_new_version_unpublishes_previous() {
     );
     let save = post_form(
         &router,
-        &format!("/{slug}/admin/docs/{v1_id}"),
+        &format!("/admin/docs/{v1_id}"),
         cookie.as_deref(),
         &form,
     )
@@ -554,7 +538,7 @@ async fn e2e_publish_new_version_unpublishes_previous() {
         .get(topcoat::router::header::LOCATION)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert_eq!(location, format!("/{slug}/admin/docs"));
+    assert_eq!(location, "/admin/docs");
 
     {
         let mut conn = db.clone();
@@ -591,7 +575,7 @@ async fn e2e_publish_new_version_unpublishes_previous() {
         "client must not show unpublished v1 body"
     );
 
-    let admin_list = get(&router, &format!("/{slug}/admin/docs"), cookie.as_deref()).await;
+    let admin_list = get(&router, "/admin/docs", cookie.as_deref()).await;
     assert_eq!(status(&admin_list), StatusCode::OK);
     let list_html = body_text(admin_list).await;
     let v2_pos = list_html.find("v2").expect("v2 in admin list");

@@ -46,6 +46,6 @@ fn inv_builds_load_releases_uses_channel_filter() {
         env!("CARGO_MANIFEST_DIR"),
         "/src/app/org/builds.rs"
     ));
-    assert!(src.contains("fn load_releases"));
+    assert!(src.contains("fn load_releases_for_org"));
     assert!(src.contains("fields().channel()"));
 }

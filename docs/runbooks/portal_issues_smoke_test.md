@@ -1,11 +1,11 @@
 # Runbook -- Portal issue tracker
 
-> Manual validation after shipping **issue report details persist + wrong-org 404**. CI covers unit /
-> invariants / proptest / battle / in-process E2E against `vcp_test`;
-> staging proves browser HTTPS and denial paths.
+> Manual validation after shipping **client issues + staff aggregate**.
+> CI covers unit / invariants / proptest / battle / in-process E2E against
+> `vcp_test`; staging proves browser HTTPS and denial paths.
 >
 > Audience: release / staging operators.
-> Severity: **BLOCKING** for this surface. Do not ship without A–B.
+> Severity: **BLOCKING** for this surface. Do not ship without A–C.
 
 Related:
 
@@ -29,20 +29,31 @@ rtk cargo test --test integration_tests -- portal_issues -- --test-threads=1
 
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
 - Browser or `curl -k` willing to accept the local self-signed cert.
-- Seed users: `admin@acme.example` / `password` (admin),
-  `l.martin@acme.example` / `password` (member); org `acme-infrastructure`.
+- Seed users: staff `support@vauban.sh` / `password`; client
+  `l.martin@acme.example` / `password` on `acme-infrastructure`.
 
-## A -- Happy path
+## A -- Client happy path
 
-1. Sign in as `admin@acme.example` / `password` (or member where appropriate).
-2. Open `/acme-infrastructure/issues/VBN-214` and confirm discussion comments / status dividers come from the DB (timestamps relative, opener display name).
-3. Post a reply; confirm it persists after reload. Dashboard recent activity must show real `released_on` / `updated_at` labels (not fixed mock dates).
+1. Sign in as `l.martin@acme.example` / `password`.
+2. Open `/acme-infrastructure/issues/VBN-214` and confirm discussion
+   comments / status dividers come from the DB.
+3. Confirm support replies display as **Vauban Support**.
+4. Post a reply; confirm it persists after reload.
 
-Pass: surface behaves as in the focused E2E suite.
+Pass: client issue timeline and replies work under the org slug.
 
-## B -- Denial paths
+## B -- Staff aggregate
 
-1. As `l.martin@acme.example`, confirm admin-only routes return **403**.
+1. Sign in as `support@vauban.sh` / `password`.
+2. Open `/admin/issues` — expect aggregated list (optional org filter).
+3. Open an issue detail under `/admin/issues/{key}` and post a staff reply.
+4. Open `/vauban/issues` — expect redirect to `/admin/issues`.
+
+Pass: staff issues live under `/admin/issues`; reserved org issues redirect.
+
+## C -- Denial paths
+
+1. As `l.martin@acme.example`, GET `/admin/issues` — expect **403**.
 2. While authenticated, open a non-member org slug — expect **404**.
 3. Anonymous / expired session must not leak tenant data.
 

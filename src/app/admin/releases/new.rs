@@ -1,17 +1,16 @@
-//! Admin publish release at `/{org}/admin/releases/new`.
+//! Admin publish release at `/admin/releases/new`.
 
 use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, forbidden, page, path_param, route, see_other},
+    router::{Form, SeeOther, forbidden, page, route, see_other},
     view::view,
 };
 
 use crate::{
-    app::org::Org,
-    auth::{db, require_org},
-    models::Release,
+    auth::{db, require_staff},
+    models::{Organization, RELEASE_GA_ORG_ID, Release},
     perms::perms_for_user,
 };
 
@@ -23,25 +22,31 @@ struct CreateReleaseForm {
     date: String,
     #[serde(default)]
     notes: String,
+    /// Empty / missing = GA ([`RELEASE_GA_ORG_ID`]).
+    #[serde(default)]
+    organization_id: String,
 }
 
 #[page]
 async fn admin_releases_new_page(cx: &Cx) -> Result {
-    let slug = path_param::<Org>(cx);
-    let ctx = require_org(cx, slug).await?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.admin_view || !perms.releases_manage {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.releases_manage {
         return Err(forbidden().into());
     }
 
-    let back = format!("/{slug}/admin/releases");
-    let action = format!("/{slug}/admin/releases/new");
+    let mut database = db(cx);
+    let mut orgs = Organization::all()
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    orgs.sort_by(|a, b| a.name.cmp(&b.name));
 
     view! {
         <div style="max-width: 720px;">
             <a
                 class="vb-back"
-                href=(back.clone())
+                href="/admin/releases"
                 style="margin-bottom: 16px; margin-top: 0;"
             >
                 "Release manager"
@@ -51,7 +56,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                 "Channel metadata and notes. Binary upload ships later."
             </p>
             <div class="vb-panel" style="padding: 24px;">
-                <form class="vb-form" method="POST" action=(action)>
+                <form class="vb-form" method="POST" action="/admin/releases/new">
                     <div
                         style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;"
                     >
@@ -77,6 +82,18 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                             <input id="date" name="date" type="date">
                         </div>
                     </div>
+                    <label for="organization_id">"Target organization"</label>
+                    <select id="organization_id" name="organization_id">
+                        <option value="">"Generally available (all orgs)"</option>
+                        for org in orgs {
+                            let value = org.id.to_string();
+                            let label = format!("{} ({})", org.name, org.slug);
+                            <option value=(value)>(label)</option>
+                        }
+                    </select>
+                    <p class="vb-form-hint">
+                        "Leave empty for a GA build visible to every organization. Pick an org for a private hotfix."
+                    </p>
                     <label for="notes">"Release notes (TAG: text)"</label>
                     <textarea
                         id="notes"
@@ -100,7 +117,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                         <button class="vb-btn" type="submit">"Publish"</button>
                         <a
                             class="vb-link"
-                            href=(back)
+                            href="/admin/releases"
                             style="margin: 0; align-self: center;"
                         >
                             "Cancel"
@@ -112,18 +129,17 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
     }
 }
 
-#[route(POST "/{org}/admin/releases/new")]
+#[route(POST "/admin/releases/new")]
 async fn admin_releases_create(cx: &Cx, Form(form): Form<CreateReleaseForm>) -> Result<SeeOther> {
-    let slug = path_param::<Org>(cx);
-    let ctx = require_org(cx, slug).await.map_err(|_| forbidden())?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.admin_view || !perms.releases_manage {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.releases_manage {
         return Err(forbidden().into());
     }
 
     let version = form.version.trim().to_owned();
     if version.is_empty() {
-        return Ok(see_other(&format!("/{slug}/admin/releases/new")));
+        return Ok(see_other("/admin/releases/new"));
     }
     let channel = form.channel.trim().to_owned();
     let released_on = {
@@ -135,6 +151,14 @@ async fn admin_releases_create(cx: &Cx, Form(form): Form<CreateReleaseForm>) -> 
         }
     };
     let notes = form.notes.trim().to_owned();
+    let organization_id = {
+        let raw = form.organization_id.trim();
+        if raw.is_empty() {
+            RELEASE_GA_ORG_ID
+        } else {
+            raw.parse::<u64>().unwrap_or(RELEASE_GA_ORG_ID)
+        }
+    };
 
     let mut database = db(cx);
     let _ = toasty::create!(Release {
@@ -145,9 +169,10 @@ async fn admin_releases_create(cx: &Cx, Form(form): Form<CreateReleaseForm>) -> 
         signature_prefix: "pending".to_owned(),
         status: "PUBLISHED".to_owned(),
         notes,
+        organization_id,
     })
     .exec(&mut database)
     .await;
 
-    Ok(see_other(&format!("/{slug}/admin/releases")))
+    Ok(see_other("/admin/releases"))
 }

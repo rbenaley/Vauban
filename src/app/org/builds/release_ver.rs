@@ -6,7 +6,7 @@ use topcoat::{
     router::{forbidden, page, path_param, query_params},
 };
 
-use super::{BuildsQuery, load_releases, render_builds};
+use super::{BuildsQuery, load_releases_for_org, release_visible_to_org, render_builds};
 use crate::{app::org::Org, auth::require_org, models::Release, perms::perms_for_user};
 
 #[path_param]
@@ -40,20 +40,19 @@ async fn build_detail_page(cx: &Cx) -> Result {
         .exec(&mut database)
         .await
         .unwrap_or_default();
-    if matched.is_empty() {
+    let Some(matched) = matched
+        .into_iter()
+        .find(|r| release_visible_to_org(r, ctx.org.id))
+    else {
         return Err(topcoat::router::not_found().into());
-    }
-    let all = Release::all().exec(&mut database).await.unwrap_or_default();
+    };
 
-    let releases = load_releases(cx, channel).await;
+    let releases = load_releases_for_org(cx, ctx.org.id, channel).await;
     // Ensure the open version is visible even if channel filter would hide it.
     let releases = if releases.iter().any(|r| r.version == *ver) {
         releases
     } else {
-        all.into_iter()
-            .filter(|r| r.version == *ver)
-            .chain(releases)
-            .collect()
+        std::iter::once(matched).chain(releases).collect()
     };
 
     render_builds(

@@ -10,7 +10,7 @@ use topcoat::{
 use crate::{
     auth::{current_user, db, delete_session_hash, persist_session},
     db::verify_password,
-    models::{Membership, Organization, User},
+    models::{Membership, Organization, PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG, User},
 };
 
 #[layout]
@@ -79,7 +79,7 @@ async fn login_page(cx: &Cx) -> Result {
             <button type="submit">"Sign in"</button>
         </form>
         <p class="vb-muted" style="margin-top: 16px; font-size: 12px;">
-            "Seed: admin@acme.example / password"
+            "Seed: support@vauban.sh / password"
         </p>
     }
 }
@@ -109,9 +109,13 @@ async fn login(cx: &Cx, Form(form): Form<LoginForm>) -> Result<SeeOther> {
     let session = session::start(cx).await?;
     persist_session(cx, session, user.id).await?;
 
-    let slug = first_org_slug(cx, user.id)
-        .await?
-        .unwrap_or_else(|| "acme-infrastructure".to_owned());
+    let slug = if user.portal_role == PORTAL_ROLE_ADMIN {
+        RESERVED_ORG_SLUG.to_owned()
+    } else {
+        first_client_org_slug(cx, user.id)
+            .await?
+            .unwrap_or_else(|| "acme-infrastructure".to_owned())
+    };
     Ok(see_other(&format!("/{slug}")))
 }
 
@@ -125,16 +129,29 @@ async fn logout(cx: &Cx) -> Result<SeeOther> {
 
 async fn first_org_slug(cx: &Cx, user_id: u64) -> Result<Option<String>> {
     let mut database = db(cx);
+    let Ok(user) = User::get_by_id(&mut database, user_id).await else {
+        return Ok(None);
+    };
+    if user.portal_role == PORTAL_ROLE_ADMIN {
+        return Ok(Some(RESERVED_ORG_SLUG.to_owned()));
+    }
+    first_client_org_slug(cx, user_id).await
+}
+
+/// First membership org whose slug is not the reserved preview tenant.
+async fn first_client_org_slug(cx: &Cx, user_id: u64) -> Result<Option<String>> {
+    let mut database = db(cx);
     let memberships = Membership::all()
         .filter(Membership::fields().user_id().eq(user_id))
         .exec(&mut database)
         .await
         .unwrap_or_default();
-    let Some(m) = memberships.into_iter().next() else {
-        return Ok(None);
-    };
-    match Organization::get_by_id(&mut database, m.organization_id).await {
-        Ok(org) => Ok(Some(org.slug)),
-        Err(_) => Ok(None),
+    for m in memberships {
+        if let Ok(org) = Organization::get_by_id(&mut database, m.organization_id).await
+            && !org.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG)
+        {
+            return Ok(Some(org.slug));
+        }
     }
+    Ok(None)
 }

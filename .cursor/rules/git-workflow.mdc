@@ -33,6 +33,12 @@ from the user.**
 - The tests pass.
 - The code compiles.
 
+## Plans
+
+**Always include `.cursor/plans/`** when committing work that has a plan
+(or when plan files are untracked/modified alongside the change). Do not
+omit plans from the staging set unless the user explicitly excludes them.
+
 ## Commit messages
 
 **Use ASCII characters only in commit messages.**

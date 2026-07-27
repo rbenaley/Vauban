@@ -21,7 +21,7 @@ fn inv_check_display_tz_script() {
 fn inv_admin_docs_uses_format_unix_local() {
     let src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/app/org/admin/docs/doc.rs"
+        "/src/app/admin/docs/doc.rs"
     ));
     assert!(src.contains("browser_tz"));
     assert!(src.contains("format_unix_local") || src.contains("format_local"));

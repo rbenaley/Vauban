@@ -140,9 +140,9 @@ mod tests {
     }
 
     #[test]
-    fn member_cannot_manage_releases() {
+    fn org_role_cannot_manage_releases() {
         let store = PolicyStore::load_from_csv(PolicyStore::default_path()).unwrap();
-        let ctx = store.context_for_role("member");
+        let ctx = store.context_for_role("org");
         assert!(ctx.docs_read);
         assert!(!ctx.docs_write);
         assert!(!ctx.releases_manage);

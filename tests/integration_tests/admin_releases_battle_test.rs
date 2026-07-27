@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use tokio::sync::Barrier;
-use vcp::models::Release;
+use vcp::models::{RELEASE_GA_ORG_ID, Release};
 
 use crate::common::{cleanup, db_lock, test_db, unique_slug};
 
@@ -35,6 +35,7 @@ async fn battle_concurrent_release_creates() {
                 signature_prefix: "pending".to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: battle".to_owned(),
+                organization_id: RELEASE_GA_ORG_ID,
             })
             .exec(&mut conn)
             .await

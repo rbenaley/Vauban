@@ -6,6 +6,7 @@ use topcoat::{
     router::{StatusCode, forbidden, not_found, path_param, route},
 };
 
+use super::release_visible_to_org;
 use crate::{
     app::org::Org,
     auth::{db, require_org},
@@ -36,7 +37,7 @@ async fn builds_download(cx: &Cx) -> Result<(StatusCode, &'static str)> {
         .exec(&mut database)
         .await
         .unwrap_or_default();
-    if found.is_empty() {
+    if !found.iter().any(|r| release_visible_to_org(r, ctx.org.id)) {
         return Err(not_found().into());
     }
 

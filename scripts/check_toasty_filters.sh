@@ -33,10 +33,11 @@ grep -n 'DOC_STATUS_PUBLISHED' "$DOCS" >/dev/null \
 grep -n 'include(DocArticle::fields().body())' "$DOC_DETAIL" >/dev/null \
   || fail "$DOC_DETAIL must .include(body) for deferred body"
 
-# Builds channel filter via Toasty fields.
-grep -n 'fn load_releases' "$BUILDS" >/dev/null || fail "$BUILDS must define load_releases"
+# Builds channel filter via Toasty fields (org-scoped loader).
+grep -n 'fn load_releases_for_org' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must define load_releases_for_org"
 grep -n 'fields().channel()' "$BUILDS" >/dev/null \
-  || fail "$BUILDS load_releases must filter via fields().channel()"
+  || fail "$BUILDS load_releases_for_org must filter via fields().channel()"
 
 # Guard against unfiltered DocArticle::all() as the primary list path without status.
 if grep -n 'DocArticle::all()' "$DOCS" >/dev/null; then

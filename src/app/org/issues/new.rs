@@ -3,15 +3,23 @@
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, page, path_param},
+    router::{SeeOther, forbidden, page, path_param, redirect, route, see_other},
     view::view,
 };
 
-use crate::{app::org::Org, auth::require_org, perms::perms_for_user};
+use crate::{app::org::Org, auth::require_org, models::RESERVED_ORG_SLUG, perms::perms_for_user};
+
+#[route(GET "/vauban/issues/new")]
+async fn redirect_reserved_issues_new() -> Result<SeeOther> {
+    Ok(see_other("/admin/issues"))
+}
 
 #[page]
 async fn new_issue_page(cx: &Cx) -> Result {
     let slug = path_param::<Org>(cx);
+    if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+        return Err(redirect("/admin/issues").into());
+    }
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.issues_write {

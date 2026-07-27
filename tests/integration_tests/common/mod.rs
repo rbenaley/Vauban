@@ -12,7 +12,10 @@ use vcp::{
     auth::persist_session_record,
     config::{Config, Environment},
     db::{self, hash_password, now_unix},
-    models::{AuthSession, DocArticle, Issue, Membership, Organization, Release, User},
+    models::{
+        AuthSession, DocArticle, Issue, MEMBERSHIP_ROLE_ORG, Membership, Organization,
+        PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG, Release, User,
+    },
     perms::PolicyStore,
 };
 
@@ -102,16 +105,42 @@ pub fn unique_slug(prefix: &str) -> String {
 }
 
 pub async fn create_test_user(db: &Db, email: &str, password: &str) -> User {
+    create_test_user_with_portal_role(db, email, password, "").await
+}
+
+pub async fn create_test_user_with_portal_role(
+    db: &Db,
+    email: &str,
+    password: &str,
+    portal_role: &str,
+) -> User {
     let mut db = db.clone();
     let password_hash = hash_password(password).expect("hash password");
     toasty::create!(User {
         email: email.to_owned(),
         display_name: format!("Test {email}"),
         password_hash,
+        portal_role: portal_role.to_owned(),
     })
     .exec(&mut db)
     .await
     .expect("create user")
+}
+
+/// Find or create the reserved `vauban` org (staff chrome preview tenant).
+pub async fn ensure_reserved_org(db: &Db) -> Organization {
+    let mut conn = db.clone();
+    let existing = Organization::all()
+        .filter(Organization::fields().slug().eq(RESERVED_ORG_SLUG))
+        .exec(&mut conn)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .next();
+    if let Some(org) = existing {
+        return org;
+    }
+    create_test_org(db, RESERVED_ORG_SLUG).await
 }
 
 pub async fn create_test_org(db: &Db, slug: &str) -> Organization {
@@ -152,9 +181,19 @@ pub async fn create_org_with_membership(
     slug: &str,
     role: &str,
 ) -> (User, Organization) {
-    let user = create_test_user(db, email, password).await;
+    let is_admin = role == "admin" || role == PORTAL_ROLE_ADMIN;
+    let user = if is_admin {
+        create_test_user_with_portal_role(db, email, password, PORTAL_ROLE_ADMIN).await
+    } else {
+        create_test_user(db, email, password).await
+    };
     let org = create_test_org(db, slug).await;
-    create_membership(db, user.id, org.id, role).await;
+    // Memberships are always `org`; staff capability lives on `User.portal_role`.
+    create_membership(db, user.id, org.id, MEMBERSHIP_ROLE_ORG).await;
+    if is_admin && !slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+        let vauban = ensure_reserved_org(db).await;
+        create_membership(db, user.id, vauban.id, MEMBERSHIP_ROLE_ORG).await;
+    }
     (user, org)
 }
 

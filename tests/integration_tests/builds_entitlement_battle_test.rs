@@ -5,7 +5,7 @@ use std::sync::Arc;
 use http_body_util::BodyExt;
 use tokio::sync::Barrier;
 use topcoat::router::StatusCode;
-use vcp::models::Release;
+use vcp::models::{RELEASE_GA_ORG_ID, Release};
 
 use crate::common::{
     cleanup, cookie_header, create_org_with_membership, db_lock, post_form, status, test_db,
@@ -33,6 +33,7 @@ async fn battle_parallel_download_posts() {
             signature_prefix: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
         })
         .exec(&mut conn)
         .await

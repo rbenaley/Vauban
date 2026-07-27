@@ -1,11 +1,11 @@
-//! E2E: authorized download 501; wrong org 404; anonymous denied.
+//! E2E: authorized download 501; wrong org 404; anonymous denied; GA vs private.
 
 use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
-use vcp::models::Release;
+use vcp::models::{RELEASE_GA_ORG_ID, Release};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, create_test_org, db_lock, post_form,
+    cleanup, cookie_header, create_org_with_membership, create_test_org, db_lock, get, post_form,
     status, test_db, test_router, unique_email, unique_slug, urlencoding_encode,
 };
 
@@ -42,6 +42,7 @@ async fn e2e_authorized_download_returns_501() {
             signature_prefix: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
         })
         .exec(&mut conn)
         .await
@@ -85,6 +86,7 @@ async fn e2e_download_wrong_org_is_404() {
             signature_prefix: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
         })
         .exec(&mut conn)
         .await
@@ -122,6 +124,7 @@ async fn e2e_download_anonymous_denied() {
             signature_prefix: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
         })
         .exec(&mut conn)
         .await
@@ -145,6 +148,95 @@ async fn e2e_download_anonymous_denied() {
         "anonymous must not get 501, got {st}"
     );
     assert_ne!(st, StatusCode::NOT_IMPLEMENTED);
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_org_private_release_hidden_from_other_org() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email_a = unique_email("priv-a");
+    let slug_a = unique_slug("priv-a");
+    let (_user_a, org_a) =
+        create_org_with_membership(&db, &email_a, "password", &slug_a, "org").await;
+
+    let email_b = unique_email("priv-b");
+    let slug_b = unique_slug("priv-b");
+    let (_user_b, _org_b) =
+        create_org_with_membership(&db, &email_b, "password", &slug_b, "org").await;
+
+    let private_ver = unique_slug("priv-rel");
+    let ga_ver = unique_slug("ga-rel");
+    {
+        let mut conn = db.clone();
+        let _ = toasty::create!(Release {
+            version: private_ver.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            size_mb: "1.0".to_owned(),
+            signature_prefix: "abc".to_owned(),
+            status: "PUBLISHED".to_owned(),
+            notes: "HOTFIX: private".to_owned(),
+            organization_id: org_a.id,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("private release");
+        let _ = toasty::create!(Release {
+            version: ga_ver.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-07-02".to_owned(),
+            size_mb: "1.0".to_owned(),
+            signature_prefix: "def".to_owned(),
+            status: "PUBLISHED".to_owned(),
+            notes: "GA".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("ga release");
+    }
+
+    let cookie_a = login(&router, &email_a).await;
+    let list_a = get(&router, &format!("/{slug_a}/builds"), cookie_a.as_deref()).await;
+    assert!(status(&list_a).is_success());
+    let body_a = body_text(list_a).await;
+    assert!(
+        body_a.contains(&private_ver),
+        "owner must see private build"
+    );
+    assert!(body_a.contains(&ga_ver), "owner must see GA build");
+
+    let cookie_b = login(&router, &email_b).await;
+    let list_b = get(&router, &format!("/{slug_b}/builds"), cookie_b.as_deref()).await;
+    assert!(status(&list_b).is_success());
+    let body_b = body_text(list_b).await;
+    assert!(
+        !body_b.contains(&private_ver),
+        "other org must not see private build"
+    );
+    assert!(body_b.contains(&ga_ver), "other org must see GA build");
+
+    let detail_b = get(
+        &router,
+        &format!("/{slug_b}/builds/{private_ver}"),
+        cookie_b.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&detail_b), StatusCode::NOT_FOUND);
+
+    let dl_b = post_form(
+        &router,
+        &format!("/{slug_b}/builds/{private_ver}/download"),
+        cookie_b.as_deref(),
+        "",
+    )
+    .await;
+    assert_eq!(status(&dl_b), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
 }

@@ -49,6 +49,7 @@ async fn models_reject_duplicate_email() {
         email: email.clone(),
         display_name: "Dup".to_owned(),
         password_hash: "x".to_owned(),
+        portal_role: String::new(),
     })
     .exec(&mut conn)
     .await;
@@ -170,11 +171,13 @@ async fn models_issue_and_stubs_create() {
         signature_prefix: "deadbeef".to_owned(),
         status: "DRAFT".to_owned(),
         notes: "notes".to_owned(),
+        organization_id: 0,
     })
     .exec(&mut conn)
     .await
     .expect("release");
     assert!(rel.version.starts_with("test-"));
+    assert_eq!(rel.organization_id, 0);
 
     cleanup(&db).await;
 }

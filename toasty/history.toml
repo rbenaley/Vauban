@@ -14,3 +14,8 @@ snapshot_name = "0001_snapshot.toml"
 id = 2117877316932323482
 name = "0002_doc_slug_versions.sql"
 snapshot_name = "0002_snapshot.toml"
+
+[[migrations]]
+id = 3093399681866925641
+name = "0003_portal_role_and_release_org.sql"
+snapshot_name = "0003_snapshot.toml"

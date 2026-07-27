@@ -29,20 +29,22 @@ rtk cargo test --test integration_tests -- admin_releases -- --test-threads=1
 
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
 - Browser or `curl -k` willing to accept the local self-signed cert.
-- Seed users: `admin@acme.example` / `password` (admin),
-  `l.martin@acme.example` / `password` (member); org `acme-infrastructure`.
+- Seed users: staff `support@vauban.sh` / `password`; client
+  `l.martin@acme.example` / `password` on `acme-infrastructure`.
 
 ## A -- Happy path
 
-1. Sign in as `admin@acme.example` / `password` (or member where appropriate).
-2. Exercise the surface on `/acme-infrastructure/…` per product IA.
-3. Confirm expected success status / visible data.
+1. Sign in as `support@vauban.sh` / `password`.
+2. Open `/admin/releases/new` and publish a GA release (empty target org).
+3. Publish an org-targeted hotfix; confirm TARGET column on the list.
+4. As the client, confirm only GA + their private builds appear under
+   `/{org}/builds`.
 
 Pass: surface behaves as in the focused E2E suite.
 
 ## B -- Denial paths
 
-1. As `l.martin@acme.example`, confirm admin-only routes return **403**.
+1. As `l.martin@acme.example`, confirm `/admin/releases` returns **403**.
 2. While authenticated, open a non-member org slug — expect **404**.
 3. Anonymous / expired session must not leak tenant data.
 

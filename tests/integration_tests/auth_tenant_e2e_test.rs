@@ -99,7 +99,7 @@ async fn e2e_member_denied_admin_nest() {
     assert!(cookie.is_some(), "login cookie required");
 
     // Module page path for admin docs editor (Casbin admin_view + docs_write).
-    let admin = get(&router, &format!("/{slug}/admin/docs"), cookie.as_deref()).await;
+    let admin = get(&router, "/admin/docs", cookie.as_deref()).await;
     assert_eq!(
         status(&admin),
         StatusCode::FORBIDDEN,

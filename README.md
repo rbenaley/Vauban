@@ -106,30 +106,30 @@ Browsers will warn on the self-signed cert until you trust it or use ACME in sta
 
 On first boot with an empty `users` table the app seeds:
 
-| Field | Value |
-|-------|--------|
-| Email | `admin@acme.example` |
-| Password | `password` |
-| Org slug | `acme-infrastructure` |
-| Role | `admin` |
+| Email | Password | Notes |
+|-------|----------|--------|
+| `support@vauban.sh` | `password` | Vauban Support (`portal_role=admin`); membership on reserved org `vauban`; lands on `/vauban` |
+| `l.martin@acme.example` | `password` | Client user (`role:org`) on `acme-infrastructure` only (org technical contact) |
 
-A second user `l.martin@acme.example` / `password` is seeded as `member` (no admin rail).
+Slug **`vauban`** is reserved (not a billable client). Client companies cannot create or rename to that slug.
 
 ## Route map
 
 | Path | Surface |
 |------|---------|
 | `/login` | Sign in |
-| `/{org}` | Dashboard |
-| `/{org}/docs` | Documentation KB |
-| `/{org}/builds` | Certified builds |
-| `/{org}/issues` | Issue tracker |
+| `/{org}` | Dashboard (clients + staff preview on `vauban`) |
+| `/{org}/docs` | Documentation KB (shared catalogue) |
+| `/{org}/builds` | Builds (GA + that org's private releases) |
+| `/{org}/issues` | Client issue tracker (**not** for slug `vauban`) |
 | `/{org}/account` | Account & subscription |
-| `/{org}/admin/docs` | Documentation editor |
-| `/{org}/admin/releases` | Release manager |
-| `/{org}/admin/companies` | Client companies |
+| `/admin` | Admin hub (redirects to `/admin/issues`) |
+| `/admin/issues` | Aggregated issues (staff; optional org filter) |
+| `/admin/docs` | Documentation editor |
+| `/admin/releases` | Release manager (GA or org-targeted) |
+| `/admin/companies` | Client companies (excludes reserved `vauban`) |
 
-Wrong org slug → **404** (no cross-tenant leak). Admin nest requires `admin:view`.
+Wrong org slug → **404** (no cross-tenant leak). `/admin/*` requires Vauban Support (`portal_role=admin` + Casbin `admin:view`). Direct `/vauban/issues*` redirects to `/admin/issues`.
 
 ## Validate
 

@@ -47,9 +47,9 @@ fi
 
 # Admin compose forms must POST (OriginLayer / PRG), not GET stubs.
 for f in \
-  src/app/org/admin/docs/new.rs \
-  src/app/org/admin/releases/new.rs \
-  src/app/org/admin/companies/new.rs
+  src/app/admin/docs/new.rs \
+  src/app/admin/releases/new.rs \
+  src/app/admin/companies/new.rs
 do
   if grep -n 'method="GET"' "$f" >/dev/null 2>&1; then
     fail "$f must not use method=GET on compose forms"
@@ -59,9 +59,12 @@ do
   fi
 done
 
-# Admin nest must consult admin_view.
-if ! grep -REn --include='*.rs' 'admin_view' src/app/org/admin.rs src/app/org/admin >/dev/null 2>&1; then
-  fail "admin nest must check admin_view"
+# Admin nest must gate via require_staff (which enforces admin_view).
+if ! grep -n 'require_staff' src/app/admin.rs >/dev/null; then
+  fail "src/app/admin.rs layout must call require_staff"
+fi
+if ! grep -n 'require_admin_view' src/auth.rs >/dev/null; then
+  fail "require_staff must call require_admin_view"
 fi
 
 # Policy catalogue file must exist and mention admin view.

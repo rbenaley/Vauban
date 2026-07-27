@@ -16,7 +16,7 @@ use crate::{
     },
     app::org::Org,
     auth::require_org,
-    models::Release,
+    models::{RELEASE_GA_ORG_ID, Release},
     perms::perms_for_user,
 };
 
@@ -42,7 +42,7 @@ async fn builds_page(cx: &Cx) -> Result {
         .and_then(|q| q.channel.clone())
         .unwrap_or_default();
     let channel = channel.trim();
-    let releases = load_releases(cx, channel).await;
+    let releases = load_releases_for_org(cx, ctx.org.id, channel).await;
     render_builds(
         cx,
         slug,
@@ -275,15 +275,24 @@ pub(super) fn parse_notes(notes: &str) -> Vec<(String, &'static str, String)> {
         .collect()
 }
 
-pub(super) async fn load_releases(cx: &Cx, channel: &str) -> Vec<Release> {
+/// Releases visible to an org: GA (`organization_id == 0`) or targeted at that org.
+pub(super) fn release_visible_to_org(release: &Release, org_id: u64) -> bool {
+    release.organization_id == RELEASE_GA_ORG_ID || release.organization_id == org_id
+}
+
+pub(super) async fn load_releases_for_org(cx: &Cx, org_id: u64, channel: &str) -> Vec<Release> {
     let mut database = crate::auth::db(cx);
-    if channel.is_empty() {
-        return Release::all().exec(&mut database).await.unwrap_or_default();
-    }
-    let channel_owned = channel.to_owned();
-    Release::all()
-        .filter(Release::fields().channel().eq(&channel_owned))
-        .exec(&mut database)
-        .await
-        .unwrap_or_default()
+    let all = if channel.is_empty() {
+        Release::all().exec(&mut database).await.unwrap_or_default()
+    } else {
+        let channel_owned = channel.to_owned();
+        Release::all()
+            .filter(Release::fields().channel().eq(&channel_owned))
+            .exec(&mut database)
+            .await
+            .unwrap_or_default()
+    };
+    all.into_iter()
+        .filter(|r| release_visible_to_org(r, org_id))
+        .collect()
 }

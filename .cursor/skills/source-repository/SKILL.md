@@ -69,6 +69,8 @@ api, db, ui, assets, config, tests, docs
 - Imperative mood: `add license download`, not `added` / `adds`.
 - Subject ≤72 chars; no trailing period.
 - Body explains **why**, not a file list.
+- **Always stage `.cursor/plans/`** with the related change (never omit
+  plans from the commit unless the user explicitly excludes them).
 
 ## Pull requests
 

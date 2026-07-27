@@ -1,11 +1,12 @@
 # Runbook -- Builds download entitlement
 
-> Manual validation after shipping **authorized 501 download stub**. CI covers unit /
-> invariants / proptest / battle / in-process E2E against `vcp_test`;
-> staging proves browser HTTPS and denial paths.
+> Manual validation after shipping **authorized 501 download stub** and
+> **GA vs org-private release visibility**. CI covers unit / invariants /
+> proptest / battle / in-process E2E against `vcp_test`; staging proves
+> browser HTTPS and denial paths.
 >
 > Audience: release / staging operators.
-> Severity: **BLOCKING** for this surface. Do not ship without A–B.
+> Severity: **BLOCKING** for this surface. Do not ship without A–C.
 
 Related:
 
@@ -29,20 +30,32 @@ rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=
 
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
 - Browser or `curl -k` willing to accept the local self-signed cert.
-- Seed users: `admin@acme.example` / `password` (admin),
-  `l.martin@acme.example` / `password` (member); org `acme-infrastructure`.
+- Seed users: staff `support@vauban.sh` / `password`; client
+  `l.martin@acme.example` / `password` on `acme-infrastructure`.
+- Seed includes GA releases plus an Acme-private hotfix (`v0.8.6-acme1`).
 
 ## A -- Happy path
 
-1. Sign in as `admin@acme.example` / `password` (or member where appropriate).
-2. Exercise the surface on `/acme-infrastructure/…` per product IA.
-3. Confirm expected success status / visible data.
+1. Sign in as `l.martin@acme.example` / `password`.
+2. Open `/acme-infrastructure/builds` — expect GA builds **and** the
+   Acme-private hotfix.
+3. Download POST on a visible version returns **501**
+   (`download not configured`) until artifact storage ships.
 
-Pass: surface behaves as in the focused E2E suite.
+Pass: client sees GA + own private builds; download stub is 501.
 
-## B -- Denial paths
+## B -- Org-private isolation
 
-1. As `l.martin@acme.example`, confirm admin-only routes return **403**.
+1. As staff, publish (or confirm) a release targeted at another org only.
+2. As `l.martin@acme.example`, confirm that private build does **not**
+   appear under `/acme-infrastructure/builds`.
+3. Direct detail/download URL for a foreign private version → **404**.
+
+Pass: `organization_id` targeting is enforced on list/detail/download.
+
+## C -- Denial paths
+
+1. As client, confirm `/admin/releases` returns **403**.
 2. While authenticated, open a non-member org slug — expect **404**.
 3. Anonymous / expired session must not leak tenant data.
 

@@ -1,6 +1,7 @@
 //! Module router root: `/` redirect, `/login`, `/{org}/…`.
 
 mod _components;
+mod admin;
 mod login;
 mod org;
 

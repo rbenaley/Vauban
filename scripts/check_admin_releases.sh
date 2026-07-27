@@ -10,8 +10,8 @@ fail() {
   exit 1
 }
 
-NEW="src/app/org/admin/releases/new.rs"
-LIST="src/app/org/admin/releases.rs"
+NEW="src/app/admin/releases/new.rs"
+LIST="src/app/admin/releases.rs"
 
 [[ -f "$NEW" ]] || fail "missing $NEW"
 

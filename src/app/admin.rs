@@ -1,0 +1,45 @@
+//! Global admin tools under `/admin/…` — gated by [`crate::auth::require_staff`].
+
+mod companies;
+mod docs;
+mod issues;
+mod releases;
+
+use topcoat::{
+    Result,
+    context::Cx,
+    router::{SeeOther, Slot, layout, route, see_other},
+    view::view,
+};
+
+use crate::{
+    app::_components::{vb_rail, vb_topbar},
+    auth::require_staff,
+    models::RESERVED_ORG_SLUG,
+    nav::nav_from_cx,
+};
+
+#[layout]
+async fn admin_layout(cx: &Cx, slot: Slot<'_>) -> Result {
+    let _staff = require_staff(cx).await?;
+    let (section, crumb) = nav_from_cx(cx);
+    let org_slug = RESERVED_ORG_SLUG.to_owned();
+
+    view! {
+        cx =>
+        <div class="vb-shell">
+            vb_rail(org_slug: &org_slug, section: section)
+            <div class="vb-main">
+                vb_topbar(org_slug: &org_slug, crumb: &crumb)
+                <div class="vb-scroll"><div class="vb-screen">(slot.await?)</div></div>
+            </div>
+        </div>
+    }
+}
+
+/// Hub redirects to the first admin tool (Issues).
+#[route(GET "/admin")]
+async fn admin_index(cx: &Cx) -> Result<SeeOther> {
+    let _staff = require_staff(cx).await?;
+    Ok(see_other("/admin/issues"))
+}

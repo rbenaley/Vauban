@@ -11,8 +11,8 @@ fail() {
 }
 
 TZ="src/tz.rs"
-ADMIN_DOCS="src/app/org/admin/docs.rs"
-ADMIN_DOC="src/app/org/admin/docs/doc.rs"
+ADMIN_DOCS="src/app/admin/docs.rs"
+ADMIN_DOC="src/app/admin/docs/doc.rs"
 CLIENT_DOC="src/app/org/docs/doc.rs"
 
 [[ -f "$TZ" ]] || fail "missing $TZ"

@@ -1,17 +1,16 @@
-//! Admin onboard company at `/{org}/admin/companies/new`.
+//! Admin onboard company at `/admin/companies/new`.
 
 use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, forbidden, page, path_param, route, see_other},
+    router::{Form, SeeOther, forbidden, page, route, see_other},
     view::view,
 };
 
 use crate::{
-    app::org::Org,
-    auth::{db, require_org},
-    models::{MAX_USERS_PER_COMPANY, Organization},
+    auth::{db, require_staff},
+    models::{MAX_USERS_PER_COMPANY, Organization, RESERVED_ORG_SLUG},
     perms::perms_for_user,
     slug::slugify,
 };
@@ -29,21 +28,17 @@ struct CreateCompanyForm {
 
 #[page]
 async fn admin_companies_new_page(cx: &Cx) -> Result {
-    let slug = path_param::<Org>(cx);
-    let ctx = require_org(cx, slug).await?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.admin_view || !perms.companies_manage {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.companies_manage {
         return Err(forbidden().into());
     }
-
-    let back = format!("/{slug}/admin/companies");
-    let action = format!("/{slug}/admin/companies/new");
 
     view! {
         <div style="max-width: 720px;">
             <a
                 class="vb-back"
-                href=(back.clone())
+                href="/admin/companies"
                 style="margin-bottom: 16px; margin-top: 0;"
             >
                 "Client companies"
@@ -55,7 +50,7 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
                 " user accounts per company."
             </p>
             <div class="vb-panel" style="padding: 24px;">
-                <form class="vb-form" method="POST" action=(action)>
+                <form class="vb-form" method="POST" action="/admin/companies/new">
                     <label for="name">"Company name"</label>
                     <input id="name" name="name" required="">
                     <label for="contact">"Technical contact"</label>
@@ -68,7 +63,7 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
                         <button class="vb-btn" type="submit">"Save"</button>
                         <a
                             class="vb-link"
-                            href=(back)
+                            href="/admin/companies"
                             style="margin: 0; align-self: center;"
                         >
                             "Cancel"
@@ -80,20 +75,23 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
     }
 }
 
-#[route(POST "/{org}/admin/companies/new")]
+#[route(POST "/admin/companies/new")]
 async fn admin_companies_create(cx: &Cx, Form(form): Form<CreateCompanyForm>) -> Result<SeeOther> {
-    let slug = path_param::<Org>(cx);
-    let ctx = require_org(cx, slug).await.map_err(|_| forbidden())?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.admin_view || !perms.companies_manage {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.companies_manage {
         return Err(forbidden().into());
     }
 
     let name = form.name.trim().to_owned();
     if name.is_empty() {
-        return Ok(see_other(&format!("/{slug}/admin/companies/new")));
+        return Ok(see_other("/admin/companies/new"));
     }
-    let mut org_slug = slugify(&name);
+    let base_slug = slugify(&name);
+    if base_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+        return Ok(see_other("/admin/companies/new"));
+    }
+    let mut org_slug = base_slug.clone();
     let mut database = db(cx);
     let mut n = 2u32;
     loop {
@@ -105,11 +103,14 @@ async fn admin_companies_create(cx: &Cx, Form(form): Form<CreateCompanyForm>) ->
         if clash.is_empty() {
             break;
         }
-        org_slug = format!("{}-{n}", slugify(&name));
+        org_slug = format!("{}-{n}", base_slug);
         n += 1;
         if n > 100 {
             break;
         }
+    }
+    if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+        return Ok(see_other("/admin/companies/new"));
     }
 
     let contact = form.contact.trim().to_owned();
@@ -131,5 +132,5 @@ async fn admin_companies_create(cx: &Cx, Form(form): Form<CreateCompanyForm>) ->
     .exec(&mut database)
     .await;
 
-    Ok(see_other(&format!("/{slug}/admin/companies")))
+    Ok(see_other("/admin/companies"))
 }

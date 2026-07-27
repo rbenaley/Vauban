@@ -97,7 +97,7 @@ async fn battle_parallel_membership_reads() {
                 .filter(|m| m.user_id == user_id && m.organization_id == org_id)
                 .collect::<Vec<_>>();
             assert_eq!(hit.len(), 1);
-            assert_eq!(hit[0].role, "member");
+            assert_eq!(hit[0].role, "org");
         }));
     }
 
@@ -148,7 +148,7 @@ async fn battle_parallel_org_slug_membership_lookups() {
                 .await
                 .expect("memberships");
             assert_eq!(memberships.len(), 1);
-            assert_eq!(memberships[0].role, "member");
+            assert_eq!(memberships[0].role, "org");
         }));
     }
 

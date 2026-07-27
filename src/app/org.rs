@@ -1,7 +1,6 @@
 //! Org-scoped routes under `/{org}/…`.
 
 mod account;
-mod admin;
 mod builds;
 mod docs;
 mod issues;
@@ -16,7 +15,9 @@ use topcoat::{
 use crate::{
     auth::require_org,
     db::now_unix,
-    models::{DOC_STATUS_PUBLISHED, DocArticle, Issue, Release},
+    models::{
+        DOC_STATUS_PUBLISHED, DocArticle, Issue, RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release,
+    },
     nav::nav_from_cx,
     tz::{browser_tz, format_relative, format_unix_local},
     ui::{channel_badge_class, note_tag_color},
@@ -53,7 +54,13 @@ async fn dashboard(cx: &Cx) -> Result {
     let ctx = require_org(cx, slug).await?;
 
     let mut database = crate::auth::db(cx);
-    let mut releases = Release::all().exec(&mut database).await.unwrap_or_default();
+    let mut releases = Release::all()
+        .exec(&mut database)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.organization_id == RELEASE_GA_ORG_ID || r.organization_id == ctx.org.id)
+        .collect::<Vec<_>>();
     releases.sort_by(|a, b| b.released_on.cmp(&a.released_on));
     let mut issues = Issue::all()
         .filter(Issue::fields().organization_id().eq(ctx.org.id))
@@ -65,6 +72,12 @@ async fn dashboard(cx: &Cx) -> Result {
         .exec(&mut database)
         .await
         .unwrap_or_default();
+
+    let issues_href = if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+        "/admin/issues".to_owned()
+    } else {
+        format!("/{slug}/issues")
+    };
 
     let latest_release = releases.first();
     let build_version = latest_release
@@ -206,7 +219,7 @@ async fn dashboard(cx: &Cx) -> Result {
             </a>
             <a
                 class="vb-card"
-                href=(format!("/{}/issues", slug))
+                href=(issues_href)
                 style="padding: 20px; min-height: 168px;"
             >
                 <div

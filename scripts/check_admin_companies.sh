@@ -10,7 +10,7 @@ fail() {
   exit 1
 }
 
-NEW="src/app/org/admin/companies/new.rs"
+NEW="src/app/admin/companies/new.rs"
 SEATS="src/seats.rs"
 MODELS="src/models/mod.rs"
 

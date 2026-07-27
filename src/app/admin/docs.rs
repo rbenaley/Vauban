@@ -1,4 +1,4 @@
-//! Admin documentation list at `/{org}/admin/docs`.
+//! Admin documentation list at `/admin/docs`.
 
 mod doc;
 mod new;
@@ -6,14 +6,13 @@ mod new;
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, page, path_param, query_params},
+    router::{forbidden, page, query_params},
     view::view,
 };
 
 use crate::{
     app::_components::ico_trash,
-    app::org::Org,
-    auth::require_org,
+    auth::require_staff,
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
 };
@@ -26,10 +25,9 @@ struct AdminDocsQuery {
 
 #[page]
 async fn admin_docs_page(cx: &Cx) -> Result {
-    let slug = path_param::<Org>(cx);
-    let ctx = require_org(cx, slug).await?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.admin_view || !perms.docs_write {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.docs_write {
         return Err(forbidden().into());
     }
 
@@ -61,7 +59,7 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                     "Write, version, publish or hide knowledge-base articles."
                 </p>
             </div>
-            <a class="vb-btn" href=(format!("/{}/admin/docs/new", slug))>
+            <a class="vb-btn" href="/admin/docs/new">
                 "+ New article"
             </a>
         </div>
@@ -86,16 +84,11 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                         </tr>
                     } else {
                         for article in articles {
-                            let edit_href = format!("/{}/admin/docs/{}", slug, article.id);
-                            let publish_action = format!(
-                                "/{}/admin/docs/{}/publish", slug, article.id
-                            );
-                            let unpublish_action = format!(
-                                "/{}/admin/docs/{}/unpublish", slug, article.id
-                            );
-                            let delete_href = format!(
-                                "/{}/admin/docs?delete={}", slug, article.id
-                            );
+                            let edit_href = format!("/admin/docs/{}", article.id);
+                            let publish_action = format!("/admin/docs/{}/publish", article.id);
+                            let unpublish_action =
+                                format!("/admin/docs/{}/unpublish", article.id);
+                            let delete_href = format!("/admin/docs?delete={}", article.id);
                             let is_published = article.status == DOC_STATUS_PUBLISHED;
                             let summary = if article.summary.trim().is_empty() {
                                 "—".to_owned()
@@ -158,8 +151,8 @@ async fn admin_docs_page(cx: &Cx) -> Result {
         </div>
 
         if let Some(target) = delete_target {
-            let cancel = format!("/{slug}/admin/docs");
-            let action = format!("/{slug}/admin/docs/{}/delete", target.id);
+            let cancel = "/admin/docs".to_owned();
+            let action = format!("/admin/docs/{}/delete", target.id);
             <div
                 class="vb-confirm-root"
                 role="dialog"

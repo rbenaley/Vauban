@@ -2,11 +2,14 @@
 
 use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
-use vcp::models::{ISSUE_COMMENT_KIND_COMMENT, ISSUE_ROLE_SUPPORT, Issue, IssueComment};
+use vcp::models::{
+    ISSUE_COMMENT_KIND_COMMENT, ISSUE_ROLE_SUPPORT, Issue, IssueComment, RESERVED_ORG_SLUG,
+};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, create_test_org, db_lock, get, post_form,
-    status, test_db, test_router, unique_email, unique_slug, urlencoding_encode,
+    cleanup, cookie_header, create_org_with_membership, create_test_org, db_lock,
+    ensure_reserved_org, get, post_form, status, test_db, test_router, unique_email, unique_slug,
+    urlencoding_encode,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -127,8 +130,8 @@ async fn e2e_issue_detail_shows_seeded_comment_and_reply() {
         "opener details missing: {html}"
     );
     assert!(
-        !html.contains("Vauban Support"),
-        "must not show hardcoded support fixture"
+        html.contains("Vauban Support"),
+        "support-role comments must display as Vauban Support: {html}"
     );
 
     let reply = "Follow-up metrics attached.";
@@ -174,6 +177,84 @@ async fn e2e_issues_wrong_org_is_404() {
     )
     .await;
     assert_eq!(status(&missing), StatusCode::NOT_FOUND);
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_admin_issues_aggregate_and_reserved_redirect() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+    let _vauban = ensure_reserved_org(&db).await;
+
+    let staff_email = unique_email("iss-adm");
+    let client_slug = unique_slug("iss-client");
+    let (user, org) =
+        create_org_with_membership(&db, &staff_email, "password", &client_slug, "admin").await;
+    let cookie = login(&router, &staff_email).await;
+
+    let now = vcp::db::now_unix();
+    let key = format!("VBN-{}", unique_slug("ak").replace('-', ""));
+    {
+        let mut conn = db.clone();
+        let _ = toasty::create!(Issue {
+            key: key.clone(),
+            title: "Admin aggregate visible".to_owned(),
+            component: "Portal".to_owned(),
+            severity: "Major".to_owned(),
+            status: "Open".to_owned(),
+            organization_id: org.id,
+            details: "Cross-org queue body".to_owned(),
+            opened_by_user_id: user.id,
+            created_at: now,
+            updated_at: now,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("issue");
+    }
+
+    let list = get(&router, "/admin/issues", cookie.as_deref()).await;
+    assert_eq!(status(&list), StatusCode::OK);
+    let html = body_text(list).await;
+    assert!(html.contains(&key), "aggregate list missing key: {html}");
+    assert!(
+        html.contains(&client_slug) || html.contains("Admin aggregate visible"),
+        "aggregate list should show org or title: {html}"
+    );
+
+    let detail = get(&router, &format!("/admin/issues/{key}"), cookie.as_deref()).await;
+    assert_eq!(status(&detail), StatusCode::OK);
+    let html = body_text(detail).await;
+    assert!(html.contains("Cross-org queue body"), "detail missing body");
+
+    let reserved = get(
+        &router,
+        &format!("/{RESERVED_ORG_SLUG}/issues"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert!(
+        status(&reserved).is_redirection(),
+        "reserved org issues should redirect, got {}",
+        status(&reserved)
+    );
+    let location = reserved
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/admin/issues");
+
+    let member_email = unique_email("iss-mem");
+    let member_slug = unique_slug("iss-mem-org");
+    let (_mu, _mo) =
+        create_org_with_membership(&db, &member_email, "password", &member_slug, "member").await;
+    let member_cookie = login(&router, &member_email).await;
+    let denied = get(&router, "/admin/issues", member_cookie.as_deref()).await;
+    assert_eq!(status(&denied), StatusCode::FORBIDDEN);
 
     cleanup(&db).await;
 }

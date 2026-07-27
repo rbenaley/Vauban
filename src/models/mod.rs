@@ -5,6 +5,18 @@ use toasty::{Deferred, Model};
 /// Maximum user accounts provisioned per client company (mockup rule).
 pub const MAX_USERS_PER_COMPANY: usize = 5;
 
+/// Reserved org slug for Vauban Support client-preview chrome (not a billable tenant).
+pub const RESERVED_ORG_SLUG: &str = "vauban";
+
+/// `User.portal_role` for Vauban Support staff (Casbin `role:admin`).
+pub const PORTAL_ROLE_ADMIN: &str = "admin";
+
+/// `Membership.role` for every org membership (Casbin `role:org`).
+pub const MEMBERSHIP_ROLE_ORG: &str = "org";
+
+/// `Release.organization_id` sentinel: generally available to all orgs.
+pub const RELEASE_GA_ORG_ID: u64 = 0;
+
 pub const DOC_STATUS_DRAFT: &str = "DRAFT";
 pub const DOC_STATUS_PUBLISHED: &str = "PUBLISHED";
 
@@ -29,6 +41,9 @@ pub struct User {
     pub display_name: String,
 
     pub password_hash: String,
+
+    /// Empty for client users; [`PORTAL_ROLE_ADMIN`] for Vauban Support staff.
+    pub portal_role: String,
 }
 
 /// Persisted Topcoat session: SHA-256 token hash (hex) + expiry, never the raw token.
@@ -85,7 +100,7 @@ pub struct Membership {
     #[index]
     pub organization_id: u64,
 
-    /// Casbin subject role without prefix, e.g. `member` or `admin`.
+    /// Casbin subject role without prefix; always [`MEMBERSHIP_ROLE_ORG`].
     pub role: String,
 }
 
@@ -135,6 +150,9 @@ pub struct Release {
     pub status: String,
 
     pub notes: String,
+
+    /// [`RELEASE_GA_ORG_ID`] for GA; otherwise the target organization id.
+    pub organization_id: u64,
 }
 
 pub const ISSUE_COMMENT_KIND_COMMENT: &str = "comment";

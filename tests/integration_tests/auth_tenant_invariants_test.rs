@@ -55,9 +55,9 @@ fn inv_require_org_is_memoized() {
 #[test]
 fn inv_admin_compose_forms_use_post() {
     for rel in [
-        "src/app/org/admin/docs/new.rs",
-        "src/app/org/admin/releases/new.rs",
-        "src/app/org/admin/companies/new.rs",
+        "src/app/admin/docs/new.rs",
+        "src/app/admin/releases/new.rs",
+        "src/app/admin/companies/new.rs",
     ] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
         let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
@@ -74,14 +74,15 @@ fn inv_admin_compose_forms_use_post() {
 
 #[test]
 fn inv_admin_nest_checks_admin_view() {
-    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org/admin.rs"));
+    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/admin.rs"));
     assert!(
-        src.contains("admin_view"),
-        "admin nest must gate on admin_view"
+        src.contains("require_staff"),
+        "admin nest must gate via require_staff"
     );
+    let auth = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/auth.rs"));
     assert!(
-        src.contains("forbidden()"),
-        "admin nest must fail closed with forbidden"
+        auth.contains("require_admin_view"),
+        "require_staff must enforce admin_view via require_admin_view"
     );
 }
 
@@ -103,7 +104,7 @@ fn inv_tracked_perms_match_default_policy_csv() {
     let store = PolicyStore::load_from_csv(PolicyStore::default_path()).unwrap();
     for &(resource, action) in TRACKED_PERMS {
         let granted =
-            store.allows("admin", resource, action) || store.allows("member", resource, action);
+            store.allows("admin", resource, action) || store.allows("org", resource, action);
         assert!(
             granted,
             "tracked permission {resource}:{action} missing from default_policy.csv grants"

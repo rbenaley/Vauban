@@ -31,7 +31,7 @@ fn inv_seat_cap_is_five() {
 fn inv_admin_companies_create_is_post_and_gated() {
     let src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/app/org/admin/companies/new.rs"
+        "/src/app/admin/companies/new.rs"
     ));
     assert!(src.contains("method=\"POST\""));
     assert!(src.contains("companies_manage"));

@@ -21,7 +21,7 @@ fn inv_check_admin_releases_script() {
 fn inv_admin_releases_create_is_post_and_gated() {
     let src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/app/org/admin/releases/new.rs"
+        "/src/app/admin/releases/new.rs"
     ));
     assert!(src.contains("method=\"POST\""));
     assert!(!src.contains("method=\"GET\""));

@@ -1,7 +1,7 @@
 //! E2E: admin company create + seat helper + member 403.
 
 use topcoat::router::StatusCode;
-use vcp::models::MAX_USERS_PER_COMPANY;
+use vcp::models::{MAX_USERS_PER_COMPANY, Organization, RESERVED_ORG_SLUG};
 use vcp::seats::{can_add_member, membership_count};
 
 use crate::common::{
@@ -34,25 +34,14 @@ async fn e2e_admin_creates_company() {
         "name={}&contact=ops%40example.com&vat=FR123&address=1+Test",
         urlencoding_encode(&name)
     );
-    let create = post_form(
-        &router,
-        &format!("/{slug}/admin/companies/new"),
-        cookie.as_deref(),
-        &form,
-    )
-    .await;
+    let create = post_form(&router, "/admin/companies/new", cookie.as_deref(), &form).await;
     assert!(
         status(&create).is_redirection(),
         "create should PRG, got {}",
         status(&create)
     );
 
-    let list = get(
-        &router,
-        &format!("/{slug}/admin/companies"),
-        cookie.as_deref(),
-    )
-    .await;
+    let list = get(&router, "/admin/companies", cookie.as_deref()).await;
     assert_eq!(status(&list), StatusCode::OK);
 
     cleanup(&db).await;
@@ -99,23 +88,78 @@ async fn e2e_member_denied_admin_companies() {
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
     let cookie = login(&router, &email).await;
 
-    let page = get(
-        &router,
-        &format!("/{slug}/admin/companies/new"),
-        cookie.as_deref(),
-    )
-    .await;
+    let page = get(&router, "/admin/companies/new", cookie.as_deref()).await;
     assert_eq!(status(&page), StatusCode::FORBIDDEN);
 
     let form = "name=Test+Denied&contact=&vat=&address=";
-    let create = post_form(
-        &router,
-        &format!("/{slug}/admin/companies/new"),
-        cookie.as_deref(),
-        form,
-    )
-    .await;
+    let create = post_form(&router, "/admin/companies/new", cookie.as_deref(), form).await;
     assert_eq!(status(&create), StatusCode::FORBIDDEN);
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_reserved_org_slug_rejected_and_hidden_from_list() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("co-reserved");
+    let slug = unique_slug("co-reserved-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let before = {
+        let mut conn = db.clone();
+        Organization::all()
+            .exec(&mut conn)
+            .await
+            .expect("orgs")
+            .len()
+    };
+
+    let form = format!(
+        "name={}&contact=&vat=&address=",
+        urlencoding_encode("Vauban")
+    );
+    let create = post_form(&router, "/admin/companies/new", cookie.as_deref(), &form).await;
+    assert!(status(&create).is_redirection());
+    let location = create
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        location, "/admin/companies/new",
+        "reserved slug must bounce back to the form"
+    );
+
+    let after = {
+        let mut conn = db.clone();
+        Organization::all()
+            .exec(&mut conn)
+            .await
+            .expect("orgs")
+            .len()
+    };
+    assert_eq!(before, after, "must not insert a reserved-slug company");
+
+    let list = get(&router, "/admin/companies", cookie.as_deref()).await;
+    assert_eq!(status(&list), StatusCode::OK);
+    let html = {
+        use http_body_util::BodyExt;
+        let bytes = list.into_body().collect().await.expect("body").to_bytes();
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    // Company cards only (topbar crumb may show reserved slug for staff chrome).
+    let cards: Vec<&str> = html.split("vb-company-card").skip(1).collect();
+    for card in cards {
+        assert!(
+            !card.contains(RESERVED_ORG_SLUG),
+            "companies list cards must exclude reserved slug"
+        );
+    }
 
     cleanup(&db).await;
 }

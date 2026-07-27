@@ -1,4 +1,4 @@
-//! Admin edit / publish / delete at `/{org}/admin/docs/{doc}` (article id).
+//! Admin edit / publish / delete at `/admin/docs/{doc}` (article id).
 
 use serde::Deserialize;
 use topcoat::{
@@ -10,8 +10,7 @@ use topcoat::{
 
 use crate::{
     app::_components::ico_issues,
-    app::org::Org,
-    auth::{db, require_org},
+    auth::{db, require_staff},
     db::now_unix,
     docs_version::{bump_version, is_delete_confirm, unpublish_other_published},
     models::{DOC_CATEGORIES, DOC_STATUS_DRAFT, DOC_STATUS_PUBLISHED, DocArticle},
@@ -53,11 +52,10 @@ fn parse_doc_id(raw: &str) -> Option<u64> {
 
 #[page]
 async fn admin_docs_edit_page(cx: &Cx) -> Result {
-    let org_slug = path_param::<Org>(cx);
     let doc_raw = path_param::<Doc>(cx);
-    let ctx = require_org(cx, org_slug).await?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.admin_view || !perms.docs_write {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.docs_write {
         return Err(forbidden().into());
     }
 
@@ -68,8 +66,7 @@ async fn admin_docs_edit_page(cx: &Cx) -> Result {
         return Err(not_found().into());
     };
 
-    let back = format!("/{org_slug}/admin/docs");
-    let action = format!("/{org_slug}/admin/docs/{doc_id}");
+    let action = format!("/admin/docs/{doc_id}");
     let is_published = article.status == DOC_STATUS_PUBLISHED;
     let tz = browser_tz(cx);
     let updated = format_unix_local(article.updated_at, tz);
@@ -85,7 +82,7 @@ async fn admin_docs_edit_page(cx: &Cx) -> Result {
         <div>
             <a
                 class="vb-back"
-                href=(back.clone())
+                href="/admin/docs"
                 style="margin-bottom: 16px; margin-top: 0;"
             >
                 "Back to articles"
@@ -156,7 +153,7 @@ async fn admin_docs_edit_page(cx: &Cx) -> Result {
                         style="display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; align-items: center;"
                     >
                         <button class="vb-btn" type="submit">(save_label)</button>
-                        <a class="vb-link" href=(back) style="margin: 0;">"Cancel"</a>
+                        <a class="vb-link" href="/admin/docs" style="margin: 0;">"Cancel"</a>
                     </div>
                 </form>
             </div>
@@ -164,13 +161,12 @@ async fn admin_docs_edit_page(cx: &Cx) -> Result {
     }
 }
 
-#[route(POST "/{org}/admin/docs/{doc}")]
+#[route(POST "/admin/docs/{doc}")]
 async fn admin_docs_update(cx: &Cx, Form(form): Form<UpdateDocForm>) -> Result<SeeOther> {
-    let org_slug = path_param::<Org>(cx);
     let doc_raw = path_param::<Doc>(cx);
-    let ctx = require_org(cx, org_slug).await.map_err(|_| forbidden())?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.admin_view || !perms.docs_write {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.docs_write {
         return Err(forbidden().into());
     }
 
@@ -193,7 +189,6 @@ async fn admin_docs_update(cx: &Cx, Form(form): Form<UpdateDocForm>) -> Result<S
         }
     };
 
-    let list = format!("/{org_slug}/admin/docs");
     let mut database = db(cx);
     let now = now_unix();
 
@@ -227,26 +222,25 @@ async fn admin_docs_update(cx: &Cx, Form(form): Form<UpdateDocForm>) -> Result<S
             .await;
     }
 
-    Ok(see_other(&list))
+    Ok(see_other("/admin/docs"))
 }
 
-#[route(POST "/{org}/admin/docs/{doc}/publish")]
+#[route(POST "/admin/docs/{doc}/publish")]
 async fn admin_docs_publish(cx: &Cx) -> Result<SeeOther> {
     set_status(cx, DOC_STATUS_PUBLISHED).await
 }
 
-#[route(POST "/{org}/admin/docs/{doc}/unpublish")]
+#[route(POST "/admin/docs/{doc}/unpublish")]
 async fn admin_docs_unpublish(cx: &Cx) -> Result<SeeOther> {
     set_status(cx, DOC_STATUS_DRAFT).await
 }
 
-#[route(POST "/{org}/admin/docs/{doc}/delete")]
+#[route(POST "/admin/docs/{doc}/delete")]
 async fn admin_docs_delete(cx: &Cx, Form(form): Form<DeleteDocForm>) -> Result<SeeOther> {
-    let org_slug = path_param::<Org>(cx);
     let doc_raw = path_param::<Doc>(cx);
-    let ctx = require_org(cx, org_slug).await.map_err(|_| forbidden())?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.admin_view || !perms.docs_write {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.docs_write {
         return Err(forbidden().into());
     }
 
@@ -257,23 +251,23 @@ async fn admin_docs_delete(cx: &Cx, Form(form): Form<DeleteDocForm>) -> Result<S
         return Err(not_found().into());
     };
 
-    let list = format!("/{org_slug}/admin/docs");
     if !is_delete_confirm(&form.confirm) {
-        return Ok(see_other(&format!("{list}?delete={doc_id}&err=confirm")));
+        return Ok(see_other(&format!(
+            "/admin/docs?delete={doc_id}&err=confirm"
+        )));
     }
 
     let mut database = db(cx);
     let _ = article.delete().exec(&mut database).await;
 
-    Ok(see_other(&list))
+    Ok(see_other("/admin/docs"))
 }
 
 async fn set_status(cx: &Cx, status: &str) -> Result<SeeOther> {
-    let org_slug = path_param::<Org>(cx);
     let doc_raw = path_param::<Doc>(cx);
-    let ctx = require_org(cx, org_slug).await.map_err(|_| forbidden())?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.admin_view || !perms.docs_write {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.docs_write {
         return Err(forbidden().into());
     }
     let Some(doc_id) = parse_doc_id(doc_raw) else {
@@ -293,5 +287,5 @@ async fn set_status(cx: &Cx, status: &str) -> Result<SeeOther> {
     if status == DOC_STATUS_PUBLISHED {
         let _ = unpublish_other_published(&mut database, &article.slug, article.id).await;
     }
-    Ok(see_other(&format!("/{org_slug}/admin/docs")))
+    Ok(see_other("/admin/docs"))
 }

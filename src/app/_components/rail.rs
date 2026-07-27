@@ -19,11 +19,13 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
     let home_href = format!("/{org_slug}");
     let docs_href = format!("/{org_slug}/docs");
     let builds_href = format!("/{org_slug}/builds");
-    let issues_href = format!("/{org_slug}/issues");
+    // Staff Issues live under `/admin/issues` (not `/{org}/issues`).
+    let issues_href = if show_admin {
+        "/admin/issues".to_owned()
+    } else {
+        format!("/{org_slug}/issues")
+    };
     let account_href = format!("/{org_slug}/account");
-    let admin_docs_href = format!("/{org_slug}/admin/docs");
-    let admin_rel_href = format!("/{org_slug}/admin/releases");
-    let admin_orgs_href = format!("/{org_slug}/admin/companies");
     let initials = ui::org_initials(&org_name);
 
     view! {
@@ -63,7 +65,12 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
                 (ico_builds(cx, 17).await?)
                 <span class="lbl">"Builds"</span>
             </a>
-            <a href=(issues_href) class=(rail_class(section == NavSection::Issues))>
+            <a
+                href=(issues_href.clone())
+                class=(rail_class(
+                    section == NavSection::Issues || section == NavSection::AdminIssues,
+                ))
+            >
                 (ico_issues(cx, 17).await?)
                 <span class="lbl">"Issues"</span>
             </a>
@@ -71,21 +78,28 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
                 <div class="vb-rail-rule"></div>
                 <div class="vb-rail-admin">"ADMIN"</div>
                 <a
-                    href=(admin_docs_href)
+                    href="/admin/issues"
+                    class=(rail_class(section == NavSection::AdminIssues))
+                >
+                    (ico_issues(cx, 17).await?)
+                    <span class="lbl">"Issues"</span>
+                </a>
+                <a
+                    href="/admin/docs"
                     class=(rail_class(section == NavSection::AdminDocs))
                 >
                     (ico_edit(cx, 17).await?)
                     <span class="lbl">"Docs"</span>
                 </a>
                 <a
-                    href=(admin_rel_href)
+                    href="/admin/releases"
                     class=(rail_class(section == NavSection::AdminReleases))
                 >
                     (ico_release(cx, 17).await?)
                     <span class="lbl">"Rel."</span>
                 </a>
                 <a
-                    href=(admin_orgs_href)
+                    href="/admin/companies"
                     class=(rail_class(section == NavSection::AdminCompanies))
                 >
                     (ico_orgs(cx, 17).await?)

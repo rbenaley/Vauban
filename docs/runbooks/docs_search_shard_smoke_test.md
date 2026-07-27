@@ -29,12 +29,12 @@ rtk cargo test --test integration_tests -- docs_search_shard -- --test-threads=1
 
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
 - Browser or `curl -k` willing to accept the local self-signed cert.
-- Seed users: `admin@acme.example` / `password` (admin),
+- Seed users: `support@vauban.sh` / `password` (staff),
   `l.martin@acme.example` / `password` (member); org `acme-infrastructure`.
 
 ## A -- Happy path
 
-1. Sign in as `admin@acme.example` / `password` (or member where appropriate).
+1. Sign in as `support@vauban.sh` / `password` (or member where appropriate).
 2. Exercise the surface on `/acme-infrastructure/…` per product IA.
 3. Confirm expected success status / visible data.
 

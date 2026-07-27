@@ -10,9 +10,9 @@ fail() {
   exit 1
 }
 
-NEW="src/app/org/admin/docs/new.rs"
-DOC="src/app/org/admin/docs/doc.rs"
-LIST="src/app/org/admin/docs.rs"
+NEW="src/app/admin/docs/new.rs"
+DOC="src/app/admin/docs/doc.rs"
+LIST="src/app/admin/docs.rs"
 CLIENT="src/app/org/docs.rs"
 CLIENT_DOC="src/app/org/docs/doc.rs"
 
@@ -50,8 +50,8 @@ grep -n 'pub fn escape_html' src/docs_body.rs >/dev/null \
   || fail "docs_body.rs must export escape_html"
 
 # Versioning UX: Save redirects to list; published save bumps version.
-grep -n 'see_other(&list)' "$DOC" >/dev/null \
-  || fail "$DOC Save must redirect via list URL (see_other(&list))"
+grep -nE 'see_other\("/admin/docs"\)|see_other\(&list\)' "$DOC" >/dev/null \
+  || fail "$DOC Save must redirect to /admin/docs list"
 grep -n 'bump_version' "$DOC" >/dev/null \
   || fail "$DOC must bump version when saving a published article"
 grep -n 'unpublish_other_published' "$DOC" >/dev/null \
