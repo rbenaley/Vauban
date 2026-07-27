@@ -327,7 +327,8 @@ expiry), `Organization`, `Membership`, plus stub `DocArticle` /
 
 Validation: `just validate` = rustfmt check + `topcoat fmt` no-op +
 clippy `-D warnings` + asset bundle + tests (`dev-validation-cycle.mdc` /
-`quality-assurance`). Requires `cargo install topcoat-cli`.
+`quality-assurance`). `just validate` / `just run` / `just bundle` call
+`ensure-topcoat` (auto-installs pinned `topcoat-cli` when missing).
 
 **Do not** switch the binary to `topcoat::start` — VCP keeps
 `src/tls/serve.rs` for HTTPS.

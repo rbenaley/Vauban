@@ -2,15 +2,48 @@
 #
 # Single-package crate (`vcp`). Use `just` instead of ad-hoc cargo commands.
 # Local runs default to VCP_ENVIRONMENT=development (layered TOML under config/).
+#
+# Topcoat CLI (`topcoat-cli`) is required for asset bundling and `view!` fmt.
+# Recipes that need it call `ensure-topcoat`, which installs the pinned version
+# on first use — so `just validate` and `just run` work without a prior manual
+# `cargo install`.
 
 export VCP_ENVIRONMENT := env("VCP_ENVIRONMENT", "development")
+
+# Prefer cargo-installed binaries even when the parent shell PATH is thin
+# (IDE tasks, minimal CI images, fresh shells).
+cargo_home := env_var_or_default("CARGO_HOME", env_var("HOME") + "/.cargo")
+export PATH := cargo_home + "/bin:" + env_var("PATH")
+
+# Keep in sync with README / topcoat facade pin in Cargo.toml.
+topcoat_cli_version := "0.4.0"
+
+# Install pinned topcoat-cli when missing. Used by validate, run, bundle, fmt.
+[private]
+ensure-topcoat:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v topcoat >/dev/null 2>&1; then
+      exit 0
+    fi
+    echo "topcoat CLI not found; installing topcoat-cli {{topcoat_cli_version}}…" >&2
+    echo "(one-time; needs network + write access to {{cargo_home}}/bin)" >&2
+    cargo install topcoat-cli --version "{{topcoat_cli_version}}"
+    if ! command -v topcoat >/dev/null 2>&1; then
+      echo "error: topcoat-cli installed but 'topcoat' is still not on PATH" >&2
+      echo "hint: add {{cargo_home}}/bin to PATH, then re-run" >&2
+      exit 1
+    fi
+    echo "topcoat CLI ready: $(command -v topcoat)" >&2
 
 # Build the binary
 build *ARGS:
     cargo build {{ARGS}}
 
-# Bundle Topcoat assets into target/assets (builds via topcoat-cli)
-bundle *ARGS:
+# Bundle Topcoat assets into target/assets.
+# Builds first: the bundler scans the compiled binary for asset! decls
+# (Tailwind OUT_DIR CSS, fonts, etc.). Safe to call without a prior validate.
+bundle *ARGS: ensure-topcoat build
     topcoat asset bundle {{ARGS}}
 
 # Check without producing binaries
@@ -19,20 +52,16 @@ check *ARGS:
 
 # Format Rust sources + Topcoat view! macros
 # Note: topcoat-cli 0.4 panics on `signal` declarations — those files are skipped.
-fmt:
+fmt: ensure-topcoat
     cargo fmt --all
     just topcoat-fmt
 
 # topcoat fmt over src, skipping files that declare runtime signals.
 # topcoat-cli 0.4 panics on `signal` (unimplemented in the formatter).
 # Use grep (not rg) so this works outside Cursor's PATH.
-topcoat-fmt:
+topcoat-fmt: ensure-topcoat
     #!/usr/bin/env bash
     set -euo pipefail
-    if ! command -v topcoat >/dev/null 2>&1; then
-      echo "error: topcoat CLI required (cargo install topcoat-cli)" >&2
-      exit 1
-    fi
     files=()
     while IFS= read -r f; do
       [[ -f "$f" ]] || continue
@@ -49,14 +78,10 @@ topcoat-fmt:
     topcoat fmt "${files[@]}"
 
 # Format check (CI): rustfmt --check, then topcoat fmt must be a no-op
-fmt-check:
+fmt-check: ensure-topcoat
     #!/usr/bin/env bash
     set -euo pipefail
     cargo fmt --all -- --check
-    if ! command -v topcoat >/dev/null 2>&1; then
-      echo "error: topcoat CLI required (cargo install topcoat-cli)" >&2
-      exit 1
-    fi
     # Compare file digests before/after so uncommitted WIP does not false-fail.
     before=$(mktemp)
     after=$(mktemp)
@@ -83,19 +108,21 @@ clippy *ARGS:
 validate: fmt-check clippy test
 
 # Build release binary + asset bundle
-release:
+release: ensure-topcoat
+    cargo build --release
     topcoat asset bundle --release
 
 # Run the portal over HTTPS (defaults to development config, port 3000)
 # Examples: just run | just run --release
 # Smoke: curl -k https://127.0.0.1:3000/login
 # Bundles assets so Concept CSS / Fontsource / runtime script resolve.
+# Does not require a prior `just validate` — installs CLI + builds + bundles.
 run *ARGS: bundle
     cargo run {{ARGS}}
 
-# Hot-reload via Topcoat CLI (requires `cargo install topcoat-cli`)
+# Hot-reload via Topcoat CLI (auto-installs topcoat-cli if missing)
 # Note: custom HTTPS TLS is provided by `just run`, not by `topcoat dev`.
-dev *ARGS:
+dev *ARGS: ensure-topcoat
     topcoat dev {{ARGS}}
 
 # Create local Postgres database `vcp` if missing

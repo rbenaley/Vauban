@@ -69,18 +69,21 @@ cp config/local.toml.example config/local.toml
 
 ## Run
 
-Install the Topcoat CLI once (asset bundling + `view!` formatting):
-
-```bash
-cargo install topcoat-cli --version 0.4.0
-```
-
 ```bash
 just run          # build + asset bundle + HTTPS on https://127.0.0.1:3000
 just validate     # fmt-check (rustfmt + topcoat fmt) + clippy + tests
 just dev          # topcoat HMR (no custom TLS); prefer just run for HTTPS
-just bundle       # topcoat asset bundle → target/assets
+just bundle       # cargo build + topcoat asset bundle → target/assets
 just fmt          # cargo fmt + topcoat fmt
+```
+
+`just run` and `just validate` install the pinned Topcoat CLI
+(`topcoat-cli` 0.4.0) on first use when `topcoat` is missing from
+`PATH` / `$CARGO_HOME/bin`. No prior `just validate` is required before
+`just run`. Manual install remains available:
+
+```bash
+cargo install topcoat-cli --version 0.4.0
 ```
 
 `just run` keeps VCP’s custom TLS 1.3 serve path. `topcoat dev` is for
