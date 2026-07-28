@@ -4,12 +4,12 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, forbidden, page, route, see_other},
+    router::{Form, SeeOther, page, route, see_other},
     view::view,
 };
 
 use crate::{
-    auth::{db, require_staff},
+    auth::{capability_denied, db, require_staff},
     models::{MAX_USERS_PER_COMPANY, Organization, RESERVED_ORG_SLUG},
     perms::perms_for_user,
     slug::slugify,
@@ -31,7 +31,7 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     view! {
@@ -80,7 +80,7 @@ async fn admin_companies_create(cx: &Cx, Form(form): Form<CreateCompanyForm>) ->
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let name = form.name.trim().to_owned();

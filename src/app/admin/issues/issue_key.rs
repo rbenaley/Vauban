@@ -4,13 +4,13 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, forbidden, page, path_param, query_params, route, see_other},
+    router::{Form, SeeOther, page, path_param, query_params, route, see_other},
     view::view,
 };
 
 use crate::{
     app::_components::{ico_check, ico_hourglass, ico_paperclip, severity_badge, status_badge},
-    auth::{db, require_staff},
+    auth::{capability_denied, db, require_staff},
     db::now_unix,
     models::{
         ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_REPORTER,
@@ -34,7 +34,7 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.issues_read {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let org_hint = query_params::<AdminIssueDetailQuery>(cx)

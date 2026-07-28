@@ -125,7 +125,7 @@ async fn e2e_admin_issues_search_shard_anonymous_is_404() {
 }
 
 #[tokio::test]
-async fn e2e_admin_issues_search_shard_member_is_403() {
+async fn e2e_admin_issues_search_shard_member_is_404() {
     let _guard = db_lock().lock().await;
     let fx = staff_admin_issues_shard().await;
 
@@ -144,7 +144,7 @@ async fn e2e_admin_issues_search_shard_member_is_403() {
         &admin_issues_search_shard_body("ssh", "", ""),
     )
     .await;
-    assert_eq!(status(&shard), StatusCode::FORBIDDEN);
+    assert_eq!(status(&shard), StatusCode::NOT_FOUND);
 
     cleanup(&fx.db).await;
 }

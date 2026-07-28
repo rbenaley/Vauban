@@ -4,12 +4,12 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, forbidden, page, route, see_other},
+    router::{Form, SeeOther, page, route, see_other},
     view::view,
 };
 
 use crate::{
-    auth::{db, require_staff},
+    auth::{capability_denied, db, require_staff},
     db::now_unix,
     models::{DOC_CATEGORIES, DOC_STATUS_DRAFT, DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
@@ -32,7 +32,7 @@ async fn admin_docs_new_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     view! {
@@ -107,7 +107,7 @@ async fn admin_docs_create(cx: &Cx, Form(form): Form<CreateDocForm>) -> Result<S
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let title = form.title.trim().to_owned();

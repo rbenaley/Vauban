@@ -156,7 +156,7 @@ async fn e2e_docs_search_shard_anonymous_is_404() {
 }
 
 #[tokio::test]
-async fn e2e_docs_search_shard_missing_docs_read_is_403() {
+async fn e2e_docs_search_shard_missing_docs_read_is_404() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
@@ -189,7 +189,7 @@ async fn e2e_docs_search_shard_missing_docs_read_is_403() {
 
     let body = docs_search_shard_body(&slug, "ssh", "");
     let shard = post_json(&router, &shard_path, Some(&cookie), &body).await;
-    assert_eq!(status(&shard), StatusCode::FORBIDDEN);
+    assert_eq!(status(&shard), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
 }

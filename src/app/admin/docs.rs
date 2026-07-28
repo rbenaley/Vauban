@@ -6,13 +6,13 @@ mod new;
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, page, query_params},
+    router::{page, query_params},
     view::view,
 };
 
 use crate::{
     app::_components::ico_trash,
-    auth::require_staff,
+    auth::{capability_denied, require_staff},
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
 };
@@ -28,7 +28,7 @@ async fn admin_docs_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let mut database = crate::auth::db(cx);

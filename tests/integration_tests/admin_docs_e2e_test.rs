@@ -176,11 +176,11 @@ async fn e2e_member_denied_admin_docs() {
     let cookie = login(&router, &email).await;
 
     let admin = get(&router, "/admin/docs", cookie.as_deref()).await;
-    assert_eq!(status(&admin), StatusCode::FORBIDDEN);
+    assert_eq!(status(&admin), StatusCode::NOT_FOUND);
 
     let form = "title=Nope&category=API&body=x&publish=1";
     let create = post_form(&router, "/admin/docs/new", cookie.as_deref(), form).await;
-    assert_eq!(status(&create), StatusCode::FORBIDDEN);
+    assert_eq!(status(&create), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
 }
@@ -484,7 +484,7 @@ async fn e2e_member_denied_admin_docs_delete() {
         "confirm=delete",
     )
     .await;
-    assert_eq!(status(&del), StatusCode::FORBIDDEN);
+    assert_eq!(status(&del), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
 }

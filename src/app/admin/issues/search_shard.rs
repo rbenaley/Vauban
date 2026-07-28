@@ -3,11 +3,11 @@
 //! Shard POSTs hit `/_topcoat/shards/{id}` — admin layout does not run.
 //! Always re-authorize with `require_staff` before loading data.
 
-use topcoat::{Result, context::Cx, router::forbidden, runtime::shard, view::view};
+use topcoat::{Result, context::Cx, runtime::shard, view::view};
 
 use crate::{
     app::_components::{severity_badge, status_badge},
-    auth::require_staff,
+    auth::{capability_denied, require_staff},
     db::now_unix,
     issues_search::{
         issue_matches_org, issue_matches_query, issue_matches_status, normalize_org_filter,
@@ -29,7 +29,7 @@ pub async fn admin_issues_search_results(
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.issues_read {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let q = normalize_query(&q);

@@ -3,11 +3,16 @@
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, page, path_param, query_params},
+    router::{page, path_param, query_params},
 };
 
 use super::{BuildsQuery, load_releases_for_org, release_visible_to_org, render_builds};
-use crate::{app::org::Org, auth::require_org, models::Release, perms::perms_for_user};
+use crate::{
+    app::org::Org,
+    auth::{capability_denied, require_org},
+    models::Release,
+    perms::perms_for_user,
+};
 
 #[path_param]
 struct ReleaseVer(str);
@@ -19,7 +24,7 @@ async fn build_detail_page(cx: &Cx) -> Result {
     let ctx = require_org(cx, org_slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.builds_read {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let q = query_params::<BuildsQuery>(cx).ok();

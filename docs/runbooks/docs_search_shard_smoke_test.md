@@ -57,7 +57,8 @@ Replay a captured shard POST (or use the in-process E2E as the oracle):
 2. Body `org_slug` set to another existing org the user does not belong
    to → **404**, no foreign titles/slugs.
 3. Same POST without session cookie → **404**.
-4. Membership with an unknown role (no Casbin `docs,read`) → **403**.
+4. Membership with an unknown role (no Casbin `docs,read`) → **404**
+   (capability entry; anti-enumeration).
 
 Pass: forged tenant / anon / missing permission never leak docs HTML.
 

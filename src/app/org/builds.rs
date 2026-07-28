@@ -7,7 +7,7 @@ mod release_ver;
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, page, path_param, query_params},
+    router::{page, path_param, query_params},
     view::{component, view},
 };
 
@@ -16,7 +16,7 @@ use crate::{
         ico_arrow_down, ico_check, ico_chevron_down, ico_chevron_right, ico_copy, ico_hourglass,
     },
     app::org::Org,
-    auth::{config, require_org},
+    auth::{capability_denied, config, require_org},
     db::now_unix,
     models::{RELEASE_GA_ORG_ID, Release},
     perms::perms_for_user,
@@ -39,7 +39,7 @@ async fn builds_page(cx: &Cx) -> Result {
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.builds_read {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let q = query_params::<BuildsQuery>(cx).ok();

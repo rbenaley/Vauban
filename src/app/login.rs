@@ -1,16 +1,18 @@
+use std::sync::Arc;
+
 use serde::Deserialize;
 use topcoat::{
     Result,
-    context::Cx,
-    router::{Form, SeeOther, Slot, layout, page, route, see_other},
+    context::{Cx, app_context},
+    router::{Form, SeeOther, Slot, layout, page, redirect, route, see_other},
     session,
     view::view,
 };
 
 use crate::{
-    auth::{current_user, db, delete_session_hash, persist_session},
-    db::verify_password,
-    models::{Membership, Organization, PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG, User},
+    auth::{current_user, db, delete_session_hash, home_org_slug, persist_session},
+    login_limit::{LoginRateLimiter, verify_login_password},
+    models::{PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG, User},
 };
 
 #[layout]
@@ -45,20 +47,16 @@ async fn login_layout(slot: Slot<'_>) -> Result {
 
 #[page]
 async fn login_page(cx: &Cx) -> Result {
-    let continue_slug = if let Some(user) = current_user(cx).await {
-        first_org_slug(cx, user.id).await?
-    } else {
-        None
-    };
+    // Valid session: skip the login form and land on the portal home.
+    if let Some(user) = current_user(cx).await
+        && let Some(slug) = home_org_slug(cx, user).await?
+    {
+        return Err(redirect(&format!("/{slug}")).into());
+    }
 
     view! {
         <h2>"Sign in"</h2>
         <p class="vb-muted">"Access your customer organization."</p>
-        if let Some(slug) = continue_slug.clone() {
-            <p style="margin: 0 0 16px;">
-                <a class="vb-btn" href=(format!("/{slug}"))>"Continue to portal"</a>
-            </p>
-        }
         <form method="POST" action="/login">
             <label for="email">"Email"</label>
             <input
@@ -92,30 +90,41 @@ struct LoginForm {
 
 #[route(POST "/login")]
 async fn login(cx: &Cx, Form(form): Form<LoginForm>) -> Result<SeeOther> {
-    let mut database = db(cx);
     let email = form.email.trim().to_lowercase();
+    let limiter = app_context::<Arc<LoginRateLimiter>>(cx);
+
+    // Locked out: still run dummy verify so timing stays similar, then same redirect.
+    let allowed = limiter.allow(&email);
+    let mut database = db(cx);
     let users = User::all()
         .filter(User::fields().email().eq(&email))
         .exec(&mut database)
         .await
         .unwrap_or_default();
-    let Some(user) = users.into_iter().next() else {
-        return Ok(see_other("/login"));
-    };
-    if !verify_password(&form.password, &user.password_hash) {
+    let user = users.into_iter().next();
+    let hash = user.as_ref().map(|u| u.password_hash.as_str());
+    let password_ok = verify_login_password(&form.password, hash);
+
+    if !allowed || !password_ok {
+        if allowed {
+            limiter.record_failure(&email);
+        }
         return Ok(see_other("/login"));
     }
+
+    let user = user.expect("password_ok implies user");
+    limiter.clear(&email);
 
     let session = session::start(cx).await?;
     persist_session(cx, session, user.id).await?;
 
-    let slug = if user.portal_role == PORTAL_ROLE_ADMIN {
-        RESERVED_ORG_SLUG.to_owned()
-    } else {
-        first_client_org_slug(cx, user.id)
-            .await?
-            .unwrap_or_else(|| "acme-infrastructure".to_owned())
-    };
+    let slug = home_org_slug(cx, &user).await?.unwrap_or_else(|| {
+        if user.portal_role == PORTAL_ROLE_ADMIN {
+            RESERVED_ORG_SLUG.to_owned()
+        } else {
+            "acme-infrastructure".to_owned()
+        }
+    });
     Ok(see_other(&format!("/{slug}")))
 }
 
@@ -125,33 +134,4 @@ async fn logout(cx: &Cx) -> Result<SeeOther> {
         delete_session_hash(cx, &hash).await?;
     }
     Ok(see_other("/login"))
-}
-
-async fn first_org_slug(cx: &Cx, user_id: u64) -> Result<Option<String>> {
-    let mut database = db(cx);
-    let Ok(user) = User::get_by_id(&mut database, user_id).await else {
-        return Ok(None);
-    };
-    if user.portal_role == PORTAL_ROLE_ADMIN {
-        return Ok(Some(RESERVED_ORG_SLUG.to_owned()));
-    }
-    first_client_org_slug(cx, user_id).await
-}
-
-/// First membership org whose slug is not the reserved preview tenant.
-async fn first_client_org_slug(cx: &Cx, user_id: u64) -> Result<Option<String>> {
-    let mut database = db(cx);
-    let memberships = Membership::all()
-        .filter(Membership::fields().user_id().eq(user_id))
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    for m in memberships {
-        if let Ok(org) = Organization::get_by_id(&mut database, m.organization_id).await
-            && !org.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG)
-        {
-            return Ok(Some(org.slug));
-        }
-    }
-    Ok(None)
 }

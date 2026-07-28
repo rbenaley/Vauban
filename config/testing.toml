@@ -21,3 +21,9 @@ url = "postgresql://vcp_test:vcp_test@localhost/vcp_test"
 
 [session]
 dangerous_disable_origin_verification = true
+
+# High ceiling so normal tests do not trip lockout; E2E rate-limit uses a custom limiter.
+[login]
+max_attempts = 1000
+window_secs = 300
+lockout_secs = 1

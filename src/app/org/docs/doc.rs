@@ -3,7 +3,7 @@
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, not_found, page, path_param},
+    router::{not_found, page, path_param},
     view::view,
 };
 
@@ -11,7 +11,7 @@ use super::{DocsFilter, docs_list_view};
 use crate::{
     app::_components::{article_modal_shell, ico_issues},
     app::org::Org,
-    auth::require_org,
+    auth::{capability_denied, require_org},
     docs_body::{self, Block},
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
@@ -28,7 +28,7 @@ async fn doc_article_page(cx: &Cx) -> Result {
     let ctx = require_org(cx, org_slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.docs_read {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let mut database = crate::auth::db(cx);

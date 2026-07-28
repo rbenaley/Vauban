@@ -87,6 +87,76 @@ fn inv_admin_nest_checks_admin_view() {
 }
 
 #[test]
+fn inv_capability_denied_helper_exists() {
+    let auth = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/auth.rs"));
+    assert!(
+        auth.contains("pub fn capability_denied"),
+        "capability_denied must be public for entry gates"
+    );
+}
+
+#[test]
+fn inv_reserved_org_staff_only_in_org_context() {
+    let auth = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/auth.rs"));
+    let start = auth.find("async fn org_context").expect("org_context");
+    let body = &auth[start..start + 800.min(auth.len() - start)];
+    assert!(
+        body.contains("RESERVED_ORG_SLUG") && body.contains("PORTAL_ROLE_ADMIN"),
+        "org_context must gate reserved org to staff"
+    );
+}
+
+#[test]
+fn inv_login_uses_verify_login_password_and_limiter() {
+    let login = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/login.rs"));
+    assert!(login.contains("verify_login_password"));
+    assert!(login.contains("LoginRateLimiter"));
+    let default_toml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/default.toml"));
+    assert!(default_toml.contains("[login]"));
+    assert!(default_toml.contains("max_attempts"));
+}
+
+#[test]
+fn inv_require_org_admin_not_forbidden() {
+    let auth = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/auth.rs"));
+    let start = auth
+        .find("pub async fn require_org_admin")
+        .expect("require_org_admin");
+    let rest = &auth[start..];
+    let end = rest[1..]
+        .find("\npub async fn ")
+        .map(|i| i + 1)
+        .unwrap_or(rest.len());
+    let body = &rest[..end];
+    assert!(
+        !body.contains("forbidden()"),
+        "require_org_admin must not remap to forbidden"
+    );
+}
+
+#[test]
+fn inv_require_staff_maps_denials_to_not_found() {
+    let auth = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/auth.rs"));
+    let start = auth
+        .find("pub async fn require_staff")
+        .expect("require_staff");
+    let rest = &auth[start..];
+    let end = rest[1..]
+        .find("\npub async fn ")
+        .map(|i| i + 1)
+        .unwrap_or(rest.len());
+    let body = &rest[..end];
+    assert!(
+        body.contains("not_found()"),
+        "require_staff must 404 on denial"
+    );
+    assert!(
+        !body.contains("forbidden()"),
+        "require_staff must not 403 (anti-enumeration for /admin/*)"
+    );
+}
+
+#[test]
 fn inv_router_trusts_public_origins() {
     let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
     assert!(
@@ -110,6 +180,29 @@ fn inv_tracked_perms_match_default_policy_csv() {
             "tracked permission {resource}:{action} missing from default_policy.csv grants"
         );
     }
+}
+
+#[test]
+fn inv_session_entry_redirects_via_home_org_slug() {
+    let app = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
+    assert!(
+        app.contains("home_org_slug"),
+        "GET / must land authenticated users via home_org_slug"
+    );
+    let login = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/login.rs"));
+    assert!(
+        login.contains("home_org_slug"),
+        "GET /login must redirect authenticated users via home_org_slug"
+    );
+    assert!(
+        !login.contains("Continue to portal"),
+        "login must not offer a Continue to portal button"
+    );
+    let auth = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/auth.rs"));
+    assert!(
+        auth.contains("fn resolve_home_org_slug"),
+        "pure resolve_home_org_slug must exist for unit/proptest coverage"
+    );
 }
 
 #[test]

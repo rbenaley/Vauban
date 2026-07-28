@@ -70,6 +70,9 @@ pub struct Config {
 
     #[serde(default)]
     pub session: SessionConfig,
+
+    #[serde(default)]
+    pub login: LoginConfig,
 }
 
 fn default_environment() -> Environment {
@@ -182,6 +185,39 @@ pub struct SessionConfig {
     /// When true, Topcoat does not register the Origin layer (local smoke only).
     #[serde(default)]
     pub dangerous_disable_origin_verification: bool,
+}
+
+/// Login anti-enumeration / brute-force controls.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LoginConfig {
+    #[serde(default = "default_login_max_attempts")]
+    pub max_attempts: u32,
+    #[serde(default = "default_login_window_secs")]
+    pub window_secs: u64,
+    #[serde(default = "default_login_lockout_secs")]
+    pub lockout_secs: u64,
+}
+
+impl Default for LoginConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: default_login_max_attempts(),
+            window_secs: default_login_window_secs(),
+            lockout_secs: default_login_lockout_secs(),
+        }
+    }
+}
+
+fn default_login_max_attempts() -> u32 {
+    10
+}
+
+fn default_login_window_secs() -> u64 {
+    300
+}
+
+fn default_login_lockout_secs() -> u64 {
+    900
 }
 
 impl Config {

@@ -10,16 +10,14 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{
-        Form, SeeOther, forbidden, page, path_param, query_params, redirect, route, see_other,
-    },
+    router::{Form, SeeOther, page, path_param, query_params, redirect, route, see_other},
     view::view,
 };
 
 use crate::{
     app::_components::ico_plus,
     app::org::Org,
-    auth::{db, require_org},
+    auth::{capability_denied, db, require_org},
     db::now_unix,
     issues_search::{normalize_query, normalize_status},
     models::{Issue, RESERVED_ORG_SLUG},
@@ -53,7 +51,7 @@ async fn issues_page(cx: &Cx) -> Result {
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.issues_read {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let query = query_params::<IssuesQuery>(cx).ok();

@@ -78,7 +78,7 @@ Pass: Concept-style collapse works with default-open.
 
 ## D -- Denial paths
 
-1. As client, confirm `/admin/releases` returns **403**.
+1. As client, confirm `/admin/releases` returns **404**.
 2. While authenticated, open a non-member org slug — expect **404**.
 3. Anonymous / expired session must not leak tenant data.
 

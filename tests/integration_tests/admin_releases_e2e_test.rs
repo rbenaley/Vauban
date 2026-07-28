@@ -1,4 +1,4 @@
-//! E2E: admin release create + member 403.
+//! E2E: admin release create + member 404.
 
 use topcoat::router::StatusCode;
 use vcp::models::Release;
@@ -59,11 +59,11 @@ async fn e2e_member_denied_admin_releases() {
     let cookie = login(&router, &email).await;
 
     let page = get(&router, "/admin/releases/new", cookie.as_deref()).await;
-    assert_eq!(status(&page), StatusCode::FORBIDDEN);
+    assert_eq!(status(&page), StatusCode::NOT_FOUND);
 
     let form = "version=test-1.0.0&channel=LTS&date=2026-07-01&notes=x";
     let create = post_form(&router, "/admin/releases/new", cookie.as_deref(), form).await;
-    assert_eq!(status(&create), StatusCode::FORBIDDEN);
+    assert_eq!(status(&create), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
 }

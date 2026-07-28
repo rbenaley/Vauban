@@ -1,11 +1,15 @@
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, page, path_param},
+    router::{page, path_param},
     view::view,
 };
 
-use crate::{app::org::Org, auth::require_org, perms::perms_for_user};
+use crate::{
+    app::org::Org,
+    auth::{capability_denied, require_org},
+    perms::perms_for_user,
+};
 
 #[page]
 async fn account_page(cx: &Cx) -> Result {
@@ -13,7 +17,7 @@ async fn account_page(cx: &Cx) -> Result {
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.account_read {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let org = ctx.org.clone();

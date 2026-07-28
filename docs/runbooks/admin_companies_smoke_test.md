@@ -43,7 +43,7 @@ Pass: surface behaves as in the focused E2E suite.
 
 ## B -- Denial paths
 
-1. As `l.martin@acme.example`, confirm `/admin/companies` returns **403**.
+1. As `l.martin@acme.example`, confirm `/admin/companies` returns **404**.
 2. While authenticated, open a non-member org slug — expect **404**.
 3. Anonymous / expired session must not leak tenant data.
 

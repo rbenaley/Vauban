@@ -11,7 +11,7 @@ use toasty::Db;
 use topcoat::{
     Result,
     asset::{Asset, AssetBundle, RouterBuilderAssetExt, asset},
-    context::{CxBuilder, try_app_context},
+    context::{Cx, CxBuilder, try_app_context},
     cookie::RouterBuilderCookieExt,
     font,
     router::{
@@ -44,9 +44,11 @@ const APPLE_TOUCH_ICON_PRECOMPOSED_BYTES: &[u8] = include_bytes!(concat!(
 ));
 
 use crate::{
+    auth::{current_user, home_org_slug},
     config::{Config, Environment},
     fonts::{HANKEN_GROTESK, JETBRAINS_MONO},
     http_canonical::{should_redirect_trailing_slash, trailing_slash_redirect_location},
+    login_limit::LoginRateLimiter,
     perms::PolicyStore,
 };
 
@@ -66,6 +68,7 @@ pub fn router(db: Db, policy: Arc<PolicyStore>, cfg: &Config) -> Router {
 
     let assets = load_assets(cfg.environment);
     let enable_hsts = EnableHsts(cfg.environment == Environment::Production);
+    let login_limiter = Arc::new(LoginRateLimiter::new(&cfg.login));
 
     topcoat::router::module_router!()
         .cookies()
@@ -75,6 +78,7 @@ pub fn router(db: Db, policy: Arc<PolicyStore>, cfg: &Config) -> Router {
         .app_context(policy)
         .app_context(Arc::new(cfg.clone()))
         .app_context(enable_hsts)
+        .app_context(login_limiter)
         .discover()
         .build()
 }
@@ -172,9 +176,14 @@ fn apply_security_headers(headers: &mut http::HeaderMap, enable_hsts: bool) {
     }
 }
 
-/// Unauthenticated entry: send browsers to the login form.
+/// Entry: authenticated users land on their portal home; others go to login.
 #[route(GET "/")]
-async fn root() -> Result<SeeOther> {
+async fn root(cx: &Cx) -> Result<SeeOther> {
+    if let Some(user) = current_user(cx).await
+        && let Some(slug) = home_org_slug(cx, user).await?
+    {
+        return Ok(see_other(&format!("/{slug}")));
+    }
     Ok(see_other("/login"))
 }
 

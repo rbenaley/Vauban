@@ -8,14 +8,14 @@ pub(super) use search_shard::docs_search_results;
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, page, path_param, query_params},
+    router::{page, path_param, query_params},
     view::view,
 };
 
 use crate::{
     app::_components::chip_row,
     app::org::Org,
-    auth::require_org,
+    auth::{capability_denied, require_org},
     docs_search::{normalize_category, normalize_query, text_matches_query},
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
@@ -41,7 +41,7 @@ async fn docs_page(cx: &Cx) -> Result {
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.docs_read {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let filter = DocsFilter::from_cx(cx);

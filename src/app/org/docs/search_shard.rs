@@ -3,17 +3,13 @@
 //! Shard POSTs hit `/_topcoat/shards/{id}` — there is no `{org}` path
 //! segment. Tenant must come from the shard argument (re-authorized below).
 
-use topcoat::{
-    Result,
-    context::Cx,
-    router::{forbidden, not_found},
-    runtime::shard,
-    view::view,
-};
+use topcoat::{Result, context::Cx, router::not_found, runtime::shard, view::view};
 
 use super::{DocsFilter, load_filtered_docs};
 use crate::{
-    app::_components::ico_chevron_right, auth::require_org, docs_search::normalize_org_slug,
+    app::_components::ico_chevron_right,
+    auth::{capability_denied, require_org},
+    docs_search::normalize_org_slug,
     perms::perms_for_user,
 };
 
@@ -24,7 +20,7 @@ pub async fn docs_search_results(cx: &Cx, org_slug: String, q: String, cat: Stri
     let ctx = require_org(cx, org).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.docs_read {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let filter = DocsFilter::normalized(&q, &cat);

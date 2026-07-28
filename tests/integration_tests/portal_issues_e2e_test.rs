@@ -254,7 +254,7 @@ async fn e2e_admin_issues_aggregate_and_reserved_redirect() {
         create_org_with_membership(&db, &member_email, "password", &member_slug, "member").await;
     let member_cookie = login(&router, &member_email).await;
     let denied = get(&router, "/admin/issues", member_cookie.as_deref()).await;
-    assert_eq!(status(&denied), StatusCode::FORBIDDEN);
+    assert_eq!(status(&denied), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
 }

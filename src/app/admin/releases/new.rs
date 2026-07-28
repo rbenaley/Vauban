@@ -4,12 +4,12 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, forbidden, page, route, see_other},
+    router::{Form, SeeOther, page, route, see_other},
     view::view,
 };
 
 use crate::{
-    auth::{db, require_staff},
+    auth::{capability_denied, db, require_staff},
     models::{Organization, RELEASE_GA_ORG_ID, Release},
     perms::perms_for_user,
 };
@@ -32,7 +32,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let mut database = db(cx);
@@ -134,7 +134,7 @@ async fn admin_releases_create(cx: &Cx, Form(form): Form<CreateReleaseForm>) -> 
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let version = form.version.trim().to_owned();

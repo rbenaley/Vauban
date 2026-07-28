@@ -1,4 +1,4 @@
-//! E2E: admin company create + seat helper + member 403.
+//! E2E: admin company create + seat helper + member 404.
 
 use topcoat::router::StatusCode;
 use vcp::models::{MAX_USERS_PER_COMPANY, Organization, RESERVED_ORG_SLUG};
@@ -89,11 +89,11 @@ async fn e2e_member_denied_admin_companies() {
     let cookie = login(&router, &email).await;
 
     let page = get(&router, "/admin/companies/new", cookie.as_deref()).await;
-    assert_eq!(status(&page), StatusCode::FORBIDDEN);
+    assert_eq!(status(&page), StatusCode::NOT_FOUND);
 
     let form = "name=Test+Denied&contact=&vat=&address=";
     let create = post_form(&router, "/admin/companies/new", cookie.as_deref(), form).await;
-    assert_eq!(status(&create), StatusCode::FORBIDDEN);
+    assert_eq!(status(&create), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
 }

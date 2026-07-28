@@ -2,15 +2,10 @@
 
 mod new;
 
-use topcoat::{
-    Result,
-    context::Cx,
-    router::{forbidden, page},
-    view::view,
-};
+use topcoat::{Result, context::Cx, router::page, view::view};
 
 use crate::{
-    auth::require_staff,
+    auth::{capability_denied, require_staff},
     models::{MAX_USERS_PER_COMPANY, Organization, RESERVED_ORG_SLUG},
     perms::perms_for_user,
     ui,
@@ -21,7 +16,7 @@ async fn admin_companies_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let mut database = crate::auth::db(cx);

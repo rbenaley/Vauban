@@ -52,7 +52,7 @@ Pass: shard POSTs stay 200; both filters update live; no panics.
 ## B -- Denial paths (fail-closed)
 
 1. Same shard POST without cookie → **404**.
-2. As `l.martin@acme.example`, POST to a captured shard path → **403**.
+2. As `l.martin@acme.example`, POST to a captured shard path → **404**.
 3. Confirm denial bodies do not include foreign issue titles/keys.
 
 Pass: staff-only; fail-closed without data leak.

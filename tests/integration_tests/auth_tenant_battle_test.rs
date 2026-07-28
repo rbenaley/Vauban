@@ -3,15 +3,16 @@
 use std::sync::Arc;
 
 use tokio::sync::Barrier;
+use topcoat::router::StatusCode;
 use vcp::{
-    auth::{load_user_for_token_hex, persist_session_record},
+    auth::{load_user_for_token_hex, persist_session_record, resolve_home_org_slug},
     db::now_unix,
-    models::Membership,
+    models::{Membership, PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG},
 };
 
 use crate::common::{
-    cleanup, create_org_with_membership, create_test_user, db_lock, test_db, unique_email,
-    unique_slug,
+    cleanup, create_org_with_membership, create_test_org, create_test_user, db_lock, get, status,
+    test_db, test_router, unique_email, unique_slug,
 };
 
 #[tokio::test]
@@ -149,6 +150,150 @@ async fn battle_parallel_org_slug_membership_lookups() {
                 .expect("memberships");
             assert_eq!(memberships.len(), 1);
             assert_eq!(memberships[0].role, "org");
+        }));
+    }
+
+    for h in handles {
+        h.await.expect("join");
+    }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn battle_parallel_session_root_redirects() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = Arc::new(test_router().await);
+
+    let email = unique_email("battle-root");
+    let slug = unique_slug("battle-home");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let cookie = crate::common::login_cookie(&router, &email)
+        .await
+        .expect("session cookie");
+    let expected = format!("/{slug}");
+
+    let n = 12usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for _ in 0..n {
+        let router = router.clone();
+        let barrier = barrier.clone();
+        let cookie = cookie.clone();
+        let expected = expected.clone();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let resp = get(&router, "/", Some(&cookie)).await;
+            assert!(status(&resp).is_redirection());
+            assert_ne!(status(&resp), StatusCode::PERMANENT_REDIRECT);
+            let loc = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .expect("location");
+            assert_eq!(loc, expected);
+            assert_eq!(
+                resolve_home_org_slug("", Some(expected.trim_start_matches('/').to_owned()))
+                    .as_deref(),
+                Some(expected.trim_start_matches('/'))
+            );
+            assert_eq!(
+                resolve_home_org_slug(PORTAL_ROLE_ADMIN, None).as_deref(),
+                Some(RESERVED_ORG_SLUG)
+            );
+        }));
+    }
+
+    for h in handles {
+        h.await.expect("join");
+    }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn battle_parallel_wrong_org_and_admin_denials_are_404() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = Arc::new(test_router().await);
+
+    let email = unique_email("battle-deny");
+    let slug = unique_slug("battle-deny-home");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let foreign = unique_slug("battle-deny-foreign");
+    let _other = create_test_org(&db, &foreign).await;
+
+    let cookie = crate::common::login_cookie(&router, &email)
+        .await
+        .expect("session cookie");
+    let invented = unique_slug("battle-deny-missing");
+
+    let n = 12usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let router = router.clone();
+        let barrier = barrier.clone();
+        let cookie = cookie.clone();
+        let foreign = foreign.clone();
+        let invented = invented.clone();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let path = match i % 3 {
+                0 => format!("/{foreign}"),
+                1 => format!("/{invented}"),
+                _ => "/admin/docs".to_owned(),
+            };
+            let resp = get(&router, &path, Some(&cookie)).await;
+            assert_eq!(status(&resp), StatusCode::NOT_FOUND, "path={path}");
+        }));
+    }
+
+    for h in handles {
+        h.await.expect("join");
+    }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn battle_parallel_login_failures_stay_redirect() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let mut cfg = crate::common::test_config().await;
+    cfg.login.max_attempts = 100;
+    cfg.login.lockout_secs = 1;
+    let router = Arc::new(crate::common::test_router_with_config(cfg).await);
+
+    let email = unique_email("battle-login-fail");
+    let slug = unique_slug("battle-login-fail");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let n = 8usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let router = router.clone();
+        let barrier = barrier.clone();
+        let email = email.clone();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let enc = email.replace('@', "%40");
+            let form = format!("email={enc}&password=wrong-{i}");
+            let resp = crate::common::post_form(&router, "/login", None, &form).await;
+            assert!(status(&resp).is_redirection());
+            let loc = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .expect("location");
+            assert_eq!(loc, "/login");
         }));
     }
 

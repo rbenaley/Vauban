@@ -53,7 +53,8 @@ Pass: shard POSTs stay 200; UI updates; no worker panics.
 1. Body `org_slug` empty / whitespace → **404**.
 2. Body `org_slug` set to another org the user does not belong to → **404**.
 3. Same POST without session cookie → **404**.
-4. Membership with an unknown role (no Casbin `issues,read`) → **403**.
+4. Membership with an unknown role (no Casbin `issues,read`) → **404**
+   (capability entry; anti-enumeration).
 
 Pass: forged tenant / anon / missing permission never leak issue HTML.
 

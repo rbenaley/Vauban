@@ -4,13 +4,13 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, forbidden, not_found, page, path_param, route, see_other},
+    router::{Form, SeeOther, not_found, page, path_param, route, see_other},
     view::view,
 };
 
 use crate::{
     app::_components::ico_issues,
-    auth::{db, require_staff},
+    auth::{capability_denied, db, require_staff},
     db::now_unix,
     docs_version::{bump_version, is_delete_confirm, unpublish_other_published},
     models::{DOC_CATEGORIES, DOC_STATUS_DRAFT, DOC_STATUS_PUBLISHED, DocArticle},
@@ -56,7 +56,7 @@ async fn admin_docs_edit_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let Some(doc_id) = parse_doc_id(doc_raw) else {
@@ -169,7 +169,7 @@ async fn admin_docs_update(cx: &Cx, Form(form): Form<UpdateDocForm>) -> Result<S
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let Some(doc_id) = parse_doc_id(doc_raw) else {
@@ -243,7 +243,7 @@ async fn admin_docs_delete(cx: &Cx, Form(form): Form<DeleteDocForm>) -> Result<S
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let Some(doc_id) = parse_doc_id(doc_raw) else {
@@ -270,7 +270,7 @@ async fn set_status(cx: &Cx, status: &str) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
     let Some(doc_id) = parse_doc_id(doc_raw) else {
         return Err(not_found().into());

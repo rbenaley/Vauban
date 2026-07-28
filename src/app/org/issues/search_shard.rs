@@ -3,17 +3,11 @@
 //! Shard POSTs hit `/_topcoat/shards/{id}` — there is no `{org}` path
 //! segment. Tenant must come from the shard argument (re-authorized below).
 
-use topcoat::{
-    Result,
-    context::Cx,
-    router::{forbidden, not_found},
-    runtime::shard,
-    view::view,
-};
+use topcoat::{Result, context::Cx, router::not_found, runtime::shard, view::view};
 
 use crate::{
     app::_components::{severity_badge, status_badge},
-    auth::require_org,
+    auth::{capability_denied, require_org},
     db::now_unix,
     docs_search::normalize_org_slug,
     issues_search::{issue_matches_query, issue_matches_status, normalize_query, normalize_status},
@@ -29,7 +23,7 @@ pub async fn issues_search_results(cx: &Cx, org_slug: String, q: String, status:
     let ctx = require_org(cx, org).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.issues_read {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let q = normalize_query(&q);

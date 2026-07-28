@@ -8,12 +8,12 @@ pub(super) use search_shard::admin_issues_search_results;
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, page, query_params},
+    router::{page, query_params},
     view::view,
 };
 
 use crate::{
-    auth::require_staff,
+    auth::{capability_denied, require_staff},
     issues_search::{normalize_org_filter, normalize_query, normalize_status},
     perms::perms_for_user,
 };
@@ -32,7 +32,7 @@ async fn admin_issues_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.issues_read {
-        return Err(forbidden().into());
+        return Err(capability_denied().into());
     }
 
     let query = query_params::<AdminIssuesQuery>(cx).ok();

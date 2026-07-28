@@ -16,6 +16,7 @@ pub mod docs_version;
 pub mod fonts;
 pub mod http_canonical;
 pub mod issues_search;
+pub mod login_limit;
 pub mod models;
 pub mod nav;
 pub mod perms;

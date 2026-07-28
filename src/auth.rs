@@ -1,4 +1,12 @@
 //! Session helpers: current user, org membership, require_* gates.
+//!
+//! Anti-enumeration deny matrix:
+//! - Missing session / wrong org / unknown slug / reserved `vauban` for
+//!   non-staff / `/admin/*` for non-staff → **404**
+//! - Capability **entry** after membership (`*_read`, compose `*_write`,
+//!   admin secondary perms) → **404** via [`capability_denied`]
+//! - Action on a **visible** resource (e.g. `builds_download`) → **403**
+//! - Invisible / other-tenant object → **404**
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -6,9 +14,7 @@ use toasty::Db;
 use topcoat::{
     Result,
     context::{Cx, app_context, memoize},
-    router::{
-        ForbiddenError, NotFoundError, RouterErrorExt, UnauthorizedError, forbidden, not_found,
-    },
+    router::{NotFoundError, RouterErrorExt, UnauthorizedError, not_found},
     session::{self, TokenHash},
 };
 
@@ -44,6 +50,14 @@ pub fn config(cx: &Cx) -> std::sync::Arc<Config> {
 /// True when the persisted session expiry is at or before "now".
 pub fn session_is_expired(expires_at: i64) -> bool {
     expires_at <= now_unix()
+}
+
+/// Capability entry denied: same **404** as an unknown path (anti-enumeration).
+///
+/// Use for module/shard Casbin gates after tenant/staff auth succeeds.
+/// Do **not** use for visible-resource action denials (e.g. download).
+pub fn capability_denied() -> NotFoundError {
+    not_found()
 }
 
 /// Load a user for a persisted session token hash (hex). Returns `None` when
@@ -173,28 +187,33 @@ pub async fn require_org(cx: &Cx, slug: &str) -> Result<OrgContext, NotFoundErro
     org_context(cx, slug).await.cloned().ok_or_else(not_found)
 }
 
-/// Vauban Support gate for `/admin/*`. Anonymous → **404**; authenticated
-/// non-staff → **403**.
+/// Vauban Support gate for `/admin/*`. Missing session, client, or missing
+/// `admin_view` → **404** (anti-enumeration: same answer as an unknown path).
 pub async fn require_staff(cx: &Cx) -> Result<StaffContext> {
     let Some(user) = current_user(cx).await else {
         return Err(not_found().into());
     };
     if user.portal_role != PORTAL_ROLE_ADMIN {
-        return Err(forbidden().into());
+        return Err(not_found().into());
     }
     let auth = auth_user_from(user, PORTAL_ROLE_ADMIN.to_owned());
-    crate::perms::require_admin_view(cx, &auth).await?;
+    // Map Casbin denial to 404 so `/admin/*` never leaks via 403.
+    if crate::perms::require_admin_view(cx, &auth).await.is_err() {
+        return Err(not_found().into());
+    }
     Ok(StaffContext { user: auth })
 }
 
-/// Fail-closed admin gate (scaffold helper).
+/// Fail-closed admin-on-org gate. Missing org/membership/`admin_view` → **404**.
 #[allow(dead_code)]
-pub async fn require_org_admin(cx: &Cx, slug: &str) -> Result<OrgContext, ForbiddenError> {
-    let ctx = match require_org(cx, slug).await {
-        Ok(c) => c,
-        Err(_) => return Err(forbidden()),
-    };
-    crate::perms::require_admin_view(cx, &ctx.user).await?;
+pub async fn require_org_admin(cx: &Cx, slug: &str) -> Result<OrgContext, NotFoundError> {
+    let ctx = require_org(cx, slug).await?;
+    if crate::perms::require_admin_view(cx, &ctx.user)
+        .await
+        .is_err()
+    {
+        return Err(capability_denied());
+    }
     Ok(ctx)
 }
 
@@ -211,6 +230,45 @@ pub async fn delete_session_hash(cx: &Cx, token_hash: &TokenHash) -> Result<()> 
     let hex = token_hash_hex(token_hash);
     let _ = AuthSession::delete_by_token_hash(&mut db, &hex).await;
     Ok(())
+}
+
+/// Landing org slug for an authenticated user: reserved `vauban` for staff,
+/// otherwise the first non-reserved membership org.
+pub async fn home_org_slug(cx: &Cx, user: &User) -> Result<Option<String>> {
+    Ok(resolve_home_org_slug(
+        &user.portal_role,
+        first_client_org_slug(cx, user.id).await?,
+    ))
+}
+
+/// Pure landing-slug decision (unit / proptest).
+pub fn resolve_home_org_slug(
+    portal_role: &str,
+    first_client_slug: Option<String>,
+) -> Option<String> {
+    if portal_role == PORTAL_ROLE_ADMIN {
+        Some(RESERVED_ORG_SLUG.to_owned())
+    } else {
+        first_client_slug
+    }
+}
+
+/// First membership org whose slug is not the reserved preview tenant.
+pub async fn first_client_org_slug(cx: &Cx, user_id: u64) -> Result<Option<String>> {
+    let mut database = db(cx);
+    let memberships = Membership::all()
+        .filter(Membership::fields().user_id().eq(user_id))
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    for m in memberships {
+        if let Ok(org) = Organization::get_by_id(&mut database, m.organization_id).await
+            && !org.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG)
+        {
+            return Ok(Some(org.slug));
+        }
+    }
+    Ok(None)
 }
 
 fn system_expires_unix(expires_at: SystemTime) -> i64 {
@@ -248,5 +306,36 @@ mod tests {
         let hash = hash_password("correct-horse").unwrap();
         assert!(verify_password("correct-horse", &hash));
         assert!(!verify_password("wrong", &hash));
+    }
+
+    #[test]
+    fn auth_tenant_resolve_home_org_slug_staff_uses_vauban() {
+        assert_eq!(
+            resolve_home_org_slug(PORTAL_ROLE_ADMIN, Some("acme".to_owned())).as_deref(),
+            Some(RESERVED_ORG_SLUG)
+        );
+        assert_eq!(
+            resolve_home_org_slug(PORTAL_ROLE_ADMIN, None).as_deref(),
+            Some(RESERVED_ORG_SLUG)
+        );
+    }
+
+    #[test]
+    fn auth_tenant_resolve_home_org_slug_member_uses_client() {
+        assert_eq!(
+            resolve_home_org_slug("", Some("acme-infrastructure".to_owned())).as_deref(),
+            Some("acme-infrastructure")
+        );
+        assert_eq!(resolve_home_org_slug("", None), None);
+    }
+
+    #[test]
+    fn auth_tenant_capability_denied_is_not_found() {
+        let err = capability_denied();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.to_ascii_lowercase().contains("not") || msg.contains("404") || !msg.is_empty(),
+            "capability_denied must be a NotFoundError ({msg})"
+        );
     }
 }

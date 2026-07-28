@@ -89,6 +89,10 @@ pub fn db_lock() -> &'static Mutex<()> {
 
 pub async fn test_router() -> Router {
     let cfg = test_config().await;
+    test_router_with_config(cfg).await
+}
+
+pub async fn test_router_with_config(cfg: Config) -> Router {
     let database = test_db().await;
     let policy = std::sync::Arc::new(
         PolicyStore::load_from_csv(&cfg.access.policy_path).expect("load policy"),

@@ -7,7 +7,7 @@
 >
 > Audience: release / staging operators.
 > Severity: **BLOCKING** for portal auth / tenant changes. Do not ship
-> without A–C.
+> without A–D.
 
 Related:
 
@@ -50,6 +50,18 @@ rtk cargo test --test integration_tests -- auth_tenant -- --test-threads=1
 
 Pass: staff lands on reserved preview org; client lands on their org.
 
+## A2 -- Session entry (no Continue button)
+
+1. While still signed in as `l.martin@acme.example`, open `/` and `/login`.
+2. Expect an immediate redirect to `/acme-infrastructure` (no login form,
+   no "Continue to portal" button).
+3. Sign out; sign in as `support@vauban.sh`; open `/` and `/login`.
+4. Expect redirect to `/vauban` in both cases.
+5. With no cookie (private window), open `/` — expect redirect to `/login`
+   and the sign-in form.
+
+Pass: valid sessions skip `/` and `/login` chrome; anonymous `/` → login.
+
 ## B -- Wrong org (anti-enumeration)
 
 1. While logged in as the staff seed user, open
@@ -57,17 +69,31 @@ Pass: staff lands on reserved preview org; client lands on their org.
 2. Expect **404** (not 403, not another org's data).
 3. As `l.martin@acme.example`, open `/vauban` — expect **404**
    (reserved org is staff-only).
+4. As `l.martin@acme.example`, open an **existing** other company slug
+   (if present) and an invented slug — both **404**, same answer.
 
 Pass: no cross-tenant leak / existence oracle via chatty errors.
 
-## C -- Client denied admin nest
+## C -- Admin nest anti-enumeration
 
 1. Sign in as `l.martin@acme.example` / `password`.
 2. Open `https://127.0.0.1:3000/admin` and `/admin/docs`.
-3. Expect **403** (authenticated non-staff).
-4. Anonymous GET `/admin/issues` — expect **404**.
+3. Expect **404** (same as an unknown path — not 403).
+4. Anonymous GET `/admin/issues` — expect **404** as well.
+5. As the client, POST `/admin/companies/new` with a dummy form — **404**.
 
-Pass: `/admin/*` is staff-only; clients never see admin tools.
+Pass: clients and strangers get the same answer; `/admin/*` does not leak.
+
+## D -- Login timing / rate limit (qualitative)
+
+1. From a private window, POST wrong password for a real seed email and
+   for a never-used email — both redirect to `/login` with the same form.
+2. Repeat failed attempts against one email until the configured
+   `[login]` lockout; response must still be redirect to `/login` (no
+   distinct “locked” page).
+3. Successful seed login still works after a calm period / process restart.
+
+Pass: no obvious timing or message oracle; lockout is silent.
 
 ## Related automated coverage
 

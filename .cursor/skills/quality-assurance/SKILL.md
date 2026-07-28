@@ -168,4 +168,6 @@ Happy-path-only tests are insufficient for those seams.
 - `just run` (HTTPS + asset bundle) or `topcoat dev` (HMR) with Postgres + seed user.
 - Login → `/{org}/` dashboard for a member org.
 - Wrong org slug → **404** (no cross-tenant leak).
-- Non-admin hitting `/{org}/admin/*` → **403** / forbidden.
+- Non-admin hitting `/admin/*` → **404** (anti-enumeration; same as anonymous).
+- Capability **entry** denials (`*_read` / compose `*_write`) → **404**;
+  visible-resource action denial (`builds_download`) may stay **403**.
