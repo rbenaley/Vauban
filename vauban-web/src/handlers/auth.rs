@@ -15,7 +15,6 @@ use diesel_async::RunQueryDsl;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
-use validator::Validate;
 use zeroize::Zeroize;
 
 use askama::Template;
@@ -50,15 +49,22 @@ use crate::error::is_htmx_request;
 ///
 /// `Debug` is manually implemented to redact the `password` and `mfa_code`
 /// fields, preventing accidental credential leaks in logs.
-#[derive(Deserialize, Validate)]
+///
+/// Credential length floors are enforced at runtime against
+/// `[auth.ldaps].login_*_min_length` (absolute floors 3 / 12), not via
+/// compile-time `validator` attributes.
+#[derive(Deserialize)]
 pub struct LoginRequest {
-    #[validate(length(min = 3))]
     pub username: String,
-    #[validate(length(min = 12))]
     pub password: String,
     pub mfa_code: Option<String>,
     pub csrf_token: Option<String>,
 }
+
+/// Canonical warn message when login credentials are shorter than the
+/// configured `[auth.ldaps]` floors (LDAPS bind is not attempted).
+pub const LOGIN_CREDS_BELOW_MINS_WARN: &str =
+    "login credentials below configured minimums; LDAPS bind not attempted";
 
 impl std::fmt::Debug for LoginRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -104,9 +110,32 @@ pub async fn login(
         return rate_limit_response(htmx, rate_result.reset_in_secs);
     }
 
-    // Validation -- return the same generic error as invalid credentials
-    // to prevent password policy enumeration (SEC-05).
-    if validator::Validate::validate(&request).is_err() {
+    // Login-form length floors (`[auth.ldaps].login_*_min_length`, absolute
+    // mins 3 / 12). Return the same generic error as invalid credentials to
+    // prevent policy enumeration (SEC-05). When rejected, warn so operators
+    // can see that LDAPS was never contacted for this reason.
+    let user_min = state.config.auth.ldaps.login_username_min_length;
+    let pass_min = state.config.auth.ldaps.login_password_min_length;
+    let username_len = request.username.chars().count();
+    let password_len = request.password.chars().count();
+    if !shared::validation::credentials_meet_login_mins(
+        &request.username,
+        &request.password,
+        user_min,
+        pass_min,
+    ) {
+        // tracing macros require a string literal for the message body; the
+        // structured `reason` field carries [`LOGIN_CREDS_BELOW_MINS_WARN`] so
+        // the const cannot drift unused, and the unit pin keeps both equal.
+        tracing::warn!(
+            username_len,
+            password_len,
+            login_username_min_length = user_min,
+            login_password_min_length = pass_min,
+            ldap_enabled = state.config.auth.ldaps.enabled,
+            reason = LOGIN_CREDS_BELOW_MINS_WARN,
+            "login credentials below configured minimums; LDAPS bind not attempted"
+        );
         return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
     }
 
@@ -1782,7 +1811,12 @@ mod tests {
             csrf_token: None,
         };
 
-        assert!(request.validate().is_ok());
+        assert!(shared::validation::credentials_meet_login_mins(
+            &request.username,
+            &request.password,
+            shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR,
+            shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR,
+        ));
     }
 
     #[test]
@@ -1794,7 +1828,12 @@ mod tests {
             csrf_token: None,
         };
 
-        assert!(request.validate().is_err());
+        assert!(!shared::validation::credentials_meet_login_mins(
+            &request.username,
+            &request.password,
+            shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR,
+            shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR,
+        ));
     }
 
     #[test]
@@ -1806,7 +1845,12 @@ mod tests {
             csrf_token: None,
         };
 
-        assert!(request.validate().is_err());
+        assert!(!shared::validation::credentials_meet_login_mins(
+            &request.username,
+            &request.password,
+            shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR,
+            shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR,
+        ));
     }
 
     #[test]
@@ -1818,7 +1862,12 @@ mod tests {
             csrf_token: None,
         };
 
-        assert!(request.validate().is_ok());
+        assert!(shared::validation::credentials_meet_login_mins(
+            &request.username,
+            &request.password,
+            shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR,
+            shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR,
+        ));
         assert!(request.mfa_code.is_some());
     }
 
@@ -1831,7 +1880,12 @@ mod tests {
             csrf_token: None,
         };
 
-        assert!(request.validate().is_ok());
+        assert!(shared::validation::credentials_meet_login_mins(
+            &request.username,
+            &request.password,
+            shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR,
+            shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR,
+        ));
     }
 
     #[test]
@@ -1843,7 +1897,26 @@ mod tests {
             csrf_token: None,
         };
 
-        assert!(request.validate().is_ok());
+        assert!(shared::validation::credentials_meet_login_mins(
+            &request.username,
+            &request.password,
+            shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR,
+            shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR,
+        ));
+    }
+
+    #[test]
+    fn test_login_creds_below_mins_warn_literal_pinned() {
+        let source = include_str!("auth.rs");
+        assert!(
+            source.contains(LOGIN_CREDS_BELOW_MINS_WARN),
+            "auth.rs must emit the canonical warn literal for below-mins logins"
+        );
+        // tracing requires a string literal in the macro; pin the const matches it.
+        assert_eq!(
+            LOGIN_CREDS_BELOW_MINS_WARN,
+            "login credentials below configured minimums; LDAPS bind not attempted"
+        );
     }
 
     // ==================== LoginResponse Tests ====================
@@ -2307,7 +2380,12 @@ mod tests {
             mfa_code: None,
             csrf_token: None,
         };
-        assert!(request.validate().is_ok());
+        assert!(shared::validation::credentials_meet_login_mins(
+            &request.username,
+            &request.password,
+            shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR,
+            shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR,
+        ));
     }
 
     #[test]
@@ -2319,7 +2397,12 @@ mod tests {
             csrf_token: None,
         };
         // Unicode chars count as 1 each
-        assert!(request.validate().is_ok());
+        assert!(shared::validation::credentials_meet_login_mins(
+            &request.username,
+            &request.password,
+            shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR,
+            shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR,
+        ));
     }
 
     #[test]
@@ -2330,7 +2413,29 @@ mod tests {
             mfa_code: None,
             csrf_token: None,
         };
-        assert!(request.validate().is_ok());
+        assert!(shared::validation::credentials_meet_login_mins(
+            &request.username,
+            &request.password,
+            shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR,
+            shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR,
+        ));
+    }
+
+    #[test]
+    fn test_login_request_raised_password_min_rejects_mid_length() {
+        // Configured floor 20: a 15-char password fails even though >= absolute 12.
+        assert!(!shared::validation::credentials_meet_login_mins(
+            "validuser",
+            "123456789012345", // 15 chars
+            3,
+            20,
+        ));
+        assert!(shared::validation::credentials_meet_login_mins(
+            "validuser",
+            "12345678901234567890", // 20 chars
+            3,
+            20,
+        ));
     }
 
     // ==================== is_encrypted Tests (backward compat) ====================

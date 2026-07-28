@@ -91,6 +91,47 @@ pub fn is_valid_hostname(input: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b':' | b'_' | b'-'))
 }
 
+/// Absolute floor for `[auth.ldaps].login_username_min_length`.
+/// Config values below this refuse to start (fail-closed).
+pub const LDAP_LOGIN_USERNAME_MIN_FLOOR: usize = 3;
+
+/// Absolute floor for `[auth.ldaps].login_password_min_length`.
+/// Config values below this refuse to start (fail-closed).
+pub const LDAP_LOGIN_PASSWORD_MIN_FLOOR: usize = 12;
+
+/// Validate operator-configured login credential length floors.
+///
+/// These knobs gate the login form *before* an LDAPS bind is attempted;
+/// they do not enforce directory password policy. Absolute floors are
+/// [`LDAP_LOGIN_USERNAME_MIN_FLOOR`] / [`LDAP_LOGIN_PASSWORD_MIN_FLOOR`].
+pub fn validate_ldap_login_length_config(
+    username_min: usize,
+    password_min: usize,
+) -> Result<(), String> {
+    if username_min < LDAP_LOGIN_USERNAME_MIN_FLOOR {
+        return Err(format!(
+            "[auth.ldaps] login_username_min_length must be >= {LDAP_LOGIN_USERNAME_MIN_FLOOR} (got {username_min})"
+        ));
+    }
+    if password_min < LDAP_LOGIN_PASSWORD_MIN_FLOOR {
+        return Err(format!(
+            "[auth.ldaps] login_password_min_length must be >= {LDAP_LOGIN_PASSWORD_MIN_FLOOR} (got {password_min})"
+        ));
+    }
+    Ok(())
+}
+
+/// Whether typed login credentials meet the configured character-count mins.
+#[must_use]
+pub fn credentials_meet_login_mins(
+    username: &str,
+    password: &str,
+    username_min: usize,
+    password_min: usize,
+) -> bool {
+    username.chars().count() >= username_min && password.chars().count() >= password_min
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +247,64 @@ mod tests {
         for s in invalid {
             assert!(!is_valid_hostname(s), "expected invalid: {s:?}");
         }
+    }
+
+    #[test]
+    fn ldap_login_length_config_accepts_floors_and_above() {
+        let cases = [
+            (LDAP_LOGIN_USERNAME_MIN_FLOOR, LDAP_LOGIN_PASSWORD_MIN_FLOOR),
+            (3, 12),
+            (3, 14),
+            (8, 12),
+            (16, 32),
+        ];
+        for (u, p) in cases {
+            assert!(
+                validate_ldap_login_length_config(u, p).is_ok(),
+                "expected Ok for username_min={u} password_min={p}"
+            );
+        }
+    }
+
+    #[test]
+    fn ldap_login_length_config_rejects_below_floors() {
+        let cases = [
+            (
+                LDAP_LOGIN_USERNAME_MIN_FLOOR - 1,
+                LDAP_LOGIN_PASSWORD_MIN_FLOOR,
+            ),
+            (2, 12),
+            (0, 12),
+            (
+                LDAP_LOGIN_USERNAME_MIN_FLOOR,
+                LDAP_LOGIN_PASSWORD_MIN_FLOOR - 1,
+            ),
+            (3, 11),
+            (3, 0),
+            (2, 11),
+        ];
+        for (u, p) in cases {
+            let err = validate_ldap_login_length_config(u, p).expect_err(&format!(
+                "expected Err for username_min={u} password_min={p}"
+            ));
+            assert!(
+                err.contains("[auth.ldaps]"),
+                "error must mention [auth.ldaps]: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn credentials_meet_login_mins_uses_char_count() {
+        assert!(credentials_meet_login_mins("abc", "123456789012", 3, 12));
+        assert!(!credentials_meet_login_mins("ab", "123456789012", 3, 12));
+        assert!(!credentials_meet_login_mins("abc", "12345678901", 3, 12));
+        // Multi-byte chars count as one each.
+        assert!(credentials_meet_login_mins(
+            "ééé",
+            "ä".repeat(12).as_str(),
+            3,
+            12
+        ));
     }
 }

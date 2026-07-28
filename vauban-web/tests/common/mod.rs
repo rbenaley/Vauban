@@ -189,6 +189,17 @@ impl TestApp {
             .await
     }
 
+    /// Shared Auth IPC stub for every LDAP-wired [`TestApp`] variant so the
+    /// bind-attempt counter and pipe topology stay singular per test binary.
+    async fn shared_ldap_auth_client() -> std::sync::Arc<vauban_web::ipc::AuthIpcClient> {
+        static AUTH_SERVICE: OnceCell<auth_ipc_test_service::InProcessAuthService> =
+            OnceCell::const_new();
+        let auth_service = AUTH_SERVICE
+            .get_or_init(|| async { auth_ipc_test_service::spawn() })
+            .await;
+        std::sync::Arc::clone(&auth_service.auth_client)
+    }
+
     /// Test application variant wired for LDAP login tests: `[auth.ldaps]` is
     /// enabled (order `["local", "ldap"]`) and `auth_ipc_client` points at the
     /// in-process [`auth_ipc_test_service`] stub directory. Cached in its own
@@ -198,13 +209,24 @@ impl TestApp {
         static LDAP_APP: OnceCell<TestApp> = OnceCell::const_new();
         LDAP_APP
             .get_or_init(|| async {
-                static AUTH_SERVICE: OnceCell<auth_ipc_test_service::InProcessAuthService> =
-                    OnceCell::const_new();
-                let auth_service = AUTH_SERVICE
-                    .get_or_init(|| async { auth_ipc_test_service::spawn() })
-                    .await;
-                let auth_client = std::sync::Arc::clone(&auth_service.auth_client);
+                let auth_client = Self::shared_ldap_auth_client().await;
                 Self::create_inner(Some(auth_client)).await
+            })
+            .await
+    }
+
+    /// LDAP-enabled test app with a raised
+    /// `[auth.ldaps].login_password_min_length` (20) so integration tests can
+    /// prove mid-length passwords never reach the directory stub.
+    pub async fn spawn_ldap_raised_password_min() -> &'static TestApp {
+        static LDAP_RAISED_APP: OnceCell<TestApp> = OnceCell::const_new();
+        LDAP_RAISED_APP
+            .get_or_init(|| async {
+                let auth_client = Self::shared_ldap_auth_client().await;
+                Self::create_inner_with(Some(auth_client), |config| {
+                    config.auth.ldaps.login_password_min_length = 20;
+                })
+                .await
             })
             .await
     }
@@ -1699,6 +1721,7 @@ pub mod ipc_test_service {
 pub mod auth_ipc_test_service {
     use std::os::unix::io::IntoRawFd;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread::JoinHandle;
 
     use argon2::Argon2;
@@ -1708,6 +1731,21 @@ pub mod auth_ipc_test_service {
     use shared::ipc::IpcChannel;
     use shared::messages::{LdapBindOutcome, Message};
     use vauban_web::ipc::AuthIpcClient;
+
+    /// Counts `AuthLdapBind` messages received by the stub. Used by login-floor
+    /// tests to prove the web layer never contacted the directory when typed
+    /// credentials are below `[auth.ldaps].login_*_min_length`.
+    static LDAP_BIND_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+
+    /// Snapshot of how many LDAP bind IPC requests the stub has seen.
+    pub fn ldap_bind_attempt_count() -> u64 {
+        LDAP_BIND_ATTEMPTS.load(Ordering::SeqCst)
+    }
+
+    /// Reset the bind counter (call at the start of each floor-gated test).
+    pub fn reset_ldap_bind_attempt_count() {
+        LDAP_BIND_ATTEMPTS.store(0, Ordering::SeqCst);
+    }
 
     fn verify_argon2(password: &str, hash: &str) -> bool {
         match PasswordHash::new(hash) {
@@ -1771,6 +1809,7 @@ pub mod auth_ipc_test_service {
                         username,
                         password,
                     }) => {
+                        LDAP_BIND_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
                         let outcome = stub_outcome(&username, password.as_str());
                         let msg = Message::AuthLdapBindResponse {
                             request_id,

@@ -279,7 +279,8 @@ pub struct AuthConfig {
 ///
 /// The web process never opens an LDAP connection itself; it forwards bind
 /// requests to vauban-auth over IPC. It therefore only needs to know
-/// whether LDAP is enabled and where it sits in the authentication order.
+/// whether LDAP is enabled, where it sits in the authentication order, and
+/// the login-form credential length floors applied before any bind.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WebLdapConfig {
     /// Master switch. When `false`, no LDAP bind is ever attempted, even for
@@ -292,6 +293,18 @@ pub struct WebLdapConfig {
     /// this list.
     #[serde(default = "WebLdapConfig::default_order")]
     pub order: Vec<String>,
+    /// Minimum username character count accepted on the login form before an
+    /// LDAPS bind is attempted. Absolute floor is
+    /// [`shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR`] (boot fails if lower).
+    #[serde(default = "WebLdapConfig::default_login_username_min_length")]
+    pub login_username_min_length: usize,
+    /// Minimum password character count accepted on the login form before an
+    /// LDAPS bind is attempted. Absolute floor is
+    /// [`shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR`] (boot fails if lower).
+    /// Independent of [`SecurityConfig::password_min_length`] (local password
+    /// create/change only).
+    #[serde(default = "WebLdapConfig::default_login_password_min_length")]
+    pub login_password_min_length: usize,
 }
 
 impl Default for WebLdapConfig {
@@ -299,6 +312,8 @@ impl Default for WebLdapConfig {
         Self {
             enabled: false,
             order: Self::default_order(),
+            login_username_min_length: Self::default_login_username_min_length(),
+            login_password_min_length: Self::default_login_password_min_length(),
         }
     }
 }
@@ -306,6 +321,14 @@ impl Default for WebLdapConfig {
 impl WebLdapConfig {
     fn default_order() -> Vec<String> {
         vec!["local".to_string()]
+    }
+
+    fn default_login_username_min_length() -> usize {
+        shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR
+    }
+
+    fn default_login_password_min_length() -> usize {
+        shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR
     }
 
     /// Whether the LDAP backend participates in JIT provisioning of unknown
@@ -317,6 +340,15 @@ impl WebLdapConfig {
                 .order
                 .iter()
                 .any(|backend| backend.eq_ignore_ascii_case("ldap"))
+    }
+
+    /// Fail-closed boot check for login credential length floors.
+    /// Validated even when LDAP is disabled.
+    pub fn validate(&self) -> Result<(), String> {
+        shared::validation::validate_ldap_login_length_config(
+            self.login_username_min_length,
+            self.login_password_min_length,
+        )
     }
 }
 
@@ -1678,6 +1710,14 @@ impl Config {
             .validate()
             .map_err(crate::error::AppError::Config)?;
 
+        // LDAPS login-form length floors (absolute mins 3 / 12); fail-closed
+        // even when LDAP is disabled so enabling later cannot start illegal.
+        config
+            .auth
+            .ldaps
+            .validate()
+            .map_err(crate::error::AppError::Config)?;
+
         Ok(config)
     }
 
@@ -2545,6 +2585,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_auth_ldaps_login_mins_documented_in_shipped_tomls() {
+        let production = include_str!("../../config/vauban.conf");
+        let default = include_str!("../../config/default.toml");
+        for (label, body) in [("vauban.conf", production), ("default.toml", default)] {
+            assert!(
+                body.contains("login_username_min_length"),
+                "{label} must document login_username_min_length"
+            );
+            assert!(
+                body.contains("login_password_min_length"),
+                "{label} must document login_password_min_length"
+            );
+        }
+    }
+
     // ==================== OptionalSecret Zeroize Tests ====================
 
     #[test]
@@ -2758,5 +2814,85 @@ mod tests {
             !config.security.require_justification,
             "require_justification should be false from testing.toml"
         );
+    }
+
+    // ==================== WebLdapConfig login length floors ====================
+
+    #[test]
+    fn test_web_ldap_default_login_mins_match_shared_floors() {
+        let ldap = WebLdapConfig::default();
+        assert_eq!(
+            ldap.login_username_min_length,
+            shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR
+        );
+        assert_eq!(
+            ldap.login_password_min_length,
+            shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR
+        );
+        assert!(ldap.validate().is_ok());
+    }
+
+    #[test]
+    fn test_web_ldap_validate_rejects_mins_below_floors() {
+        let short_user = WebLdapConfig {
+            login_username_min_length: 2,
+            ..WebLdapConfig::default()
+        };
+        let err = short_user.validate().expect_err("username min 2 must fail");
+        assert!(err.contains("login_username_min_length"), "got: {err}");
+
+        let short_pass = WebLdapConfig {
+            login_password_min_length: 11,
+            ..WebLdapConfig::default()
+        };
+        let err = short_pass
+            .validate()
+            .expect_err("password min 11 must fail");
+        assert!(err.contains("login_password_min_length"), "got: {err}");
+    }
+
+    #[test]
+    fn test_web_ldap_login_mins_loaded_from_default_toml() {
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
+        assert_eq!(
+            config.auth.ldaps.login_username_min_length,
+            shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR
+        );
+        assert_eq!(
+            config.auth.ldaps.login_password_min_length,
+            shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR
+        );
+    }
+
+    #[test]
+    fn test_load_rejects_ldap_login_mins_below_floors() {
+        // Overlay onto real testing config so secret_key / TLS / CORS stay valid.
+        let dir = test_fixtures::config_dir();
+        let base = std::fs::read_to_string(dir.join("default.toml")).expect("default.toml");
+        let testing = std::fs::read_to_string(dir.join("testing.toml")).expect("testing.toml");
+        let overlay = r#"
+[auth.ldaps]
+enabled = false
+order = ["local"]
+login_username_min_length = 3
+login_password_min_length = 11
+"#;
+        let settings = config::Config::builder()
+            .add_source(config::File::from_str(&base, config::FileFormat::Toml))
+            .add_source(config::File::from_str(&testing, config::FileFormat::Toml))
+            .add_source(config::File::from_str(overlay, config::FileFormat::Toml))
+            .build()
+            .expect("build layered config");
+        let mut cfg: Config = settings.try_deserialize().expect("deserialize");
+        cfg.environment = Environment::Testing;
+        let err = cfg
+            .auth
+            .ldaps
+            .validate()
+            .expect_err("password min 11 must fail validate");
+        assert!(err.contains("login_password_min_length"), "got: {err}");
     }
 }

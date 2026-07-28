@@ -253,6 +253,20 @@ pub struct LdapConfig {
     #[allow(dead_code)]
     #[serde(default = "default_ldap_order")]
     pub order: Vec<String>,
+    /// Minimum username character count accepted on the login form before an
+    /// LDAPS bind is attempted. Consumed by vauban-web; accepted here for a
+    /// single `[auth.ldaps]` schema. Absolute floor is
+    /// [`shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR`] (boot fails if lower).
+    #[allow(dead_code)]
+    #[serde(default = "default_ldap_login_username_min_length")]
+    pub login_username_min_length: usize,
+    /// Minimum password character count accepted on the login form before an
+    /// LDAPS bind is attempted. Consumed by vauban-web; accepted here for a
+    /// single `[auth.ldaps]` schema. Absolute floor is
+    /// [`shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR`] (boot fails if lower).
+    #[allow(dead_code)]
+    #[serde(default = "default_ldap_login_password_min_length")]
+    pub login_password_min_length: usize,
 }
 
 fn default_ldap_ca_cert_file() -> String {
@@ -267,6 +281,14 @@ fn default_ldap_order() -> Vec<String> {
     vec!["ldap".to_string(), "local".to_string()]
 }
 
+fn default_ldap_login_username_min_length() -> usize {
+    shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR
+}
+
+fn default_ldap_login_password_min_length() -> usize {
+    shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR
+}
+
 impl Default for LdapConfig {
     fn default() -> Self {
         Self {
@@ -276,6 +298,8 @@ impl Default for LdapConfig {
             ca_cert_file: default_ldap_ca_cert_file(),
             timeout_secs: default_ldap_timeout_secs(),
             order: default_ldap_order(),
+            login_username_min_length: default_ldap_login_username_min_length(),
+            login_password_min_length: default_ldap_login_password_min_length(),
         }
     }
 }
@@ -333,10 +357,19 @@ impl LdapConfig {
     }
 
     /// Reject transport-downgrading or malformed configurations at load time.
-    /// A disabled LDAP block is always valid. When enabled, the `url` MUST use
-    /// the `ldaps://` scheme (plaintext `ldap://` is forbidden), resolve to a
-    /// valid `(host, port)`, and a non-empty `dn_template` MUST be set.
+    ///
+    /// Login length floors are validated even when LDAP is disabled (so flipping
+    /// `enabled` later cannot start with an illegal config). When enabled, the
+    /// `url` MUST use the `ldaps://` scheme (plaintext `ldap://` is forbidden),
+    /// resolve to a valid `(host, port)`, and a non-empty `dn_template` MUST be
+    /// set.
     pub fn validate(&self) -> Result<()> {
+        shared::validation::validate_ldap_login_length_config(
+            self.login_username_min_length,
+            self.login_password_min_length,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+
         if !self.enabled {
             return Ok(());
         }
@@ -2037,6 +2070,52 @@ mod tests {
     #[test]
     fn ldap_validate_accepts_valid_enabled_config() {
         let l = ldap(true, "ldaps://dc1.example.com:636");
+        assert!(l.validate().is_ok());
+    }
+
+    #[test]
+    fn ldap_default_login_mins_match_shared_floors() {
+        let l = LdapConfig::default();
+        assert_eq!(
+            l.login_username_min_length,
+            shared::validation::LDAP_LOGIN_USERNAME_MIN_FLOOR
+        );
+        assert_eq!(
+            l.login_password_min_length,
+            shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR
+        );
+        assert!(l.validate().is_ok());
+    }
+
+    #[test]
+    fn ldap_validate_rejects_login_mins_below_floors_even_when_disabled() {
+        let short_user = LdapConfig {
+            enabled: false,
+            login_username_min_length: 2,
+            ..LdapConfig::default()
+        };
+        let err = short_user.validate().unwrap_err().to_string();
+        assert!(err.contains("login_username_min_length"), "got: {err}");
+
+        let short_pass = LdapConfig {
+            enabled: false,
+            login_password_min_length: 11,
+            ..LdapConfig::default()
+        };
+        let err = short_pass.validate().unwrap_err().to_string();
+        assert!(err.contains("login_password_min_length"), "got: {err}");
+    }
+
+    #[test]
+    fn ldap_validate_accepts_raised_login_mins() {
+        let l = LdapConfig {
+            enabled: true,
+            url: "ldaps://dc1.example.com:636".to_string(),
+            dn_template: "{username}@example.com".to_string(),
+            login_username_min_length: 8,
+            login_password_min_length: 20,
+            ..LdapConfig::default()
+        };
         assert!(l.validate().is_ok());
     }
 

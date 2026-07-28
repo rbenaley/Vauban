@@ -24,7 +24,9 @@ use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::AsyncPgConnection;
 use diesel_async::RunQueryDsl as _;
 
-use crate::common::auth_ipc_test_service::{LDAP_DOWN_USERNAME, LDAP_GOOD_PASSWORD};
+use crate::common::auth_ipc_test_service::{
+    LDAP_DOWN_USERNAME, LDAP_GOOD_PASSWORD, ldap_bind_attempt_count, reset_ldap_bind_attempt_count,
+};
 use crate::common::{TestApp, test_db, unwrap_ok};
 use crate::fixtures::unique_name;
 use vauban_web::models::user::{AuthSource, NewUser, User};
@@ -293,6 +295,77 @@ async fn local_account_authenticates_with_ldap_enabled() {
     assert!(
         hx_redirect(&response_ldap_pw).is_none(),
         "local accounts must not accept the directory password"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Password shorter than the absolute floor (12) must never reach AuthLdapBind.
+#[tokio::test]
+#[serial]
+async fn short_password_never_sends_auth_ldap_bind() {
+    let app = TestApp::spawn_ldap().await;
+    reset_ldap_bind_attempt_count();
+    let before = ldap_bind_attempt_count();
+
+    let username = unique_name("test_ldap_short");
+    let response = login_web_htmx(app, &username, "short-pass").await; // 10 chars
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    assert!(
+        hx_redirect(&response).is_none(),
+        "below-mins login must not authenticate"
+    );
+    assert_eq!(
+        ldap_bind_attempt_count(),
+        before,
+        "AuthLdapBind must not be sent when password is below login_password_min_length"
+    );
+    assert!(
+        response.text().contains("Incorrect") || response.text().contains("incorrect"),
+        "client must see the generic invalid-credentials message"
+    );
+}
+
+/// Raised `[auth.ldaps].login_password_min_length` (20): a 15-char password
+/// (above absolute floor 12) still must not contact the directory.
+#[tokio::test]
+#[serial]
+async fn raised_password_min_skips_bind_for_mid_length_password() {
+    let app = TestApp::spawn_ldap_raised_password_min().await;
+    reset_ldap_bind_attempt_count();
+    let before = ldap_bind_attempt_count();
+
+    let username = unique_name("test_ldap_mid");
+    // 15 chars: passes absolute floor 12, fails configured min 20.
+    let response = login_web_htmx(app, &username, "123456789012345").await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    assert!(hx_redirect(&response).is_none());
+    assert_eq!(
+        ldap_bind_attempt_count(),
+        before,
+        "AuthLdapBind must not be sent when password is below raised login_password_min_length"
+    );
+}
+
+/// Control: a password that meets the floors still reaches the stub (counter bumps).
+#[tokio::test]
+#[serial]
+async fn password_meeting_floors_still_reaches_ldap_stub() {
+    let app = TestApp::spawn_ldap().await;
+    let mut conn = app.get_conn().await;
+    reset_ldap_bind_attempt_count();
+    let before = ldap_bind_attempt_count();
+
+    let username = unique_name("test_ldap_reach");
+    insert_ldap_user(&mut conn, &username, false).await;
+
+    let response = login_web_htmx(app, &username, LDAP_WRONG_PASSWORD).await;
+    assert!(hx_redirect(&response).is_none());
+    assert!(
+        ldap_bind_attempt_count() > before,
+        "AuthLdapBind must be attempted when credentials meet login mins"
     );
 
     test_db::cleanup(&mut conn).await;

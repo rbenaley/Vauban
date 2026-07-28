@@ -142,18 +142,36 @@ dn_template = "{username}@example.com"
 ca_cert_file = "/usr/local/etc/vauban/certs/ldap_ca.pem"
 timeout_secs = 5
 order = ["ldap", "local"]
+login_username_min_length = 3
+login_password_min_length = 12
 ```
 
 Only `ldaps://` is accepted; a plaintext `ldap://` URL is rejected at config
 load. The CA file lives under the existing `0700 root:wheel` `certs/` directory
 (no new ACL).
 
-Web (`config/default.toml`, `[auth.ldaps]`) only needs the routing knobs:
+`login_username_min_length` / `login_password_min_length` are login-form
+floors applied **before** any LDAPS bind. They do **not** enforce directory
+password policy (AD / Authentik still owns that) and are independent of
+`security.password_min_length` (local password create/change only). Absolute
+floors are username >= 3 and password >= 12; values below those refuse to
+start (fail-closed at config load on both supervisor and web). Operators may
+raise them to skip useless binds when typed credentials are obviously too
+short. When a login is rejected for this reason, vauban-web emits a `warn!`
+(`login credentials below configured minimums; LDAPS bind not attempted`)
+and returns the same generic invalid-credentials response as every other
+failure mode.
+
+Web (`config/default.toml`, `[auth.ldaps]`) needs the routing knobs and the
+same login-form floors (directory URL / CA / DN live in the supervisor
+config):
 
 ```toml
 [auth.ldaps]
 enabled = false
 order = ["local"]
+login_username_min_length = 3
+login_password_min_length = 12
 ```
 
 ## 9. Security analysis
@@ -166,13 +184,17 @@ order = ["local"]
   (the public webpki roots are intentionally not trusted); SNI/hostname
   verification uses the configured host.
 - **Anti-enumeration**: invalid credentials, unreachable directory and TLS
-  errors are indistinguishable to the client.
+  errors are indistinguishable to the client. Login-form length rejections
+  use the same generic client response; ops see a dedicated `warn!` when the
+  bind was skipped for minimum length.
 - **Anti-downgrade**: an `Ldap` user never falls back to local password
   verification.
 - **Lockout**: LDAP failures do not touch Vauban's local lockout counters,
   preventing a local-state oracle on directory accounts.
 - **Fail-closed BER codec**: every malformed / truncated / oversized response
   is an `io::Error`, never a panic.
+- **Fail-closed login floors**: `[auth.ldaps].login_*_min_length` below the
+  absolute floors (3 / 12) refuse boot on supervisor and web.
 
 ## 10. Testing strategy
 
