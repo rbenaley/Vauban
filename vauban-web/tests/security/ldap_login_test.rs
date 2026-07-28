@@ -327,6 +327,50 @@ async fn short_password_never_sends_auth_ldap_bind() {
     );
 }
 
+/// Username shorter than the absolute floor (3) must never reach AuthLdapBind.
+#[tokio::test]
+#[serial]
+async fn short_username_never_sends_auth_ldap_bind() {
+    let app = TestApp::spawn_ldap().await;
+    reset_ldap_bind_attempt_count();
+    let before = ldap_bind_attempt_count();
+
+    let response = login_web_htmx(app, "ab", LDAP_GOOD_PASSWORD).await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    assert!(hx_redirect(&response).is_none());
+    assert_eq!(
+        ldap_bind_attempt_count(),
+        before,
+        "AuthLdapBind must not be sent when username is below login_username_min_length"
+    );
+}
+
+/// Even an existing directory-backed account never hits the stub when the
+/// typed password is below the login-form floor (gate is before auth_source).
+#[tokio::test]
+#[serial]
+async fn existing_ldap_user_short_password_never_binds() {
+    let app = TestApp::spawn_ldap().await;
+    let mut conn = app.get_conn().await;
+    reset_ldap_bind_attempt_count();
+    let before = ldap_bind_attempt_count();
+
+    let username = unique_name("test_ldap_exist_short");
+    insert_ldap_user(&mut conn, &username, false).await;
+
+    let response = login_web_htmx(app, &username, "tooshort").await; // 8 chars
+    assert_eq!(response.status_code().as_u16(), 200);
+    assert!(hx_redirect(&response).is_none());
+    assert_eq!(
+        ldap_bind_attempt_count(),
+        before,
+        "existing Ldap users must still be blocked by login-form floors before bind"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
 /// Raised `[auth.ldaps].login_password_min_length` (20): a 15-char password
 /// (above absolute floor 12) still must not contact the directory.
 #[tokio::test]
