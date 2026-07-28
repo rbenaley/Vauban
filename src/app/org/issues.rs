@@ -33,10 +33,11 @@ struct IssuesQuery {
 }
 
 #[route(GET "/vauban/issues")]
-async fn redirect_reserved_issues_list() -> Result<SeeOther> {
-    Ok(see_other("/admin/issues"))
+async fn redirect_reserved_issues_list() -> Result {
+    Err(redirect("/admin/issues").into())
 }
 
+/// POST alias: keep `see_other` (303) so the follow-up is GET, not a re-POST.
 #[route(POST "/vauban/issues")]
 async fn redirect_reserved_issues_create() -> Result<SeeOther> {
     Ok(see_other("/admin/issues"))

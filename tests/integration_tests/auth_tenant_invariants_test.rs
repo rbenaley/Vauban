@@ -205,6 +205,61 @@ fn inv_session_entry_redirects_via_home_org_slug() {
     );
 }
 
+/// Slice from `marker` through the matching close brace of the function body.
+fn fn_body<'a>(src: &'a str, marker: &str) -> &'a str {
+    let start = src
+        .find(marker)
+        .unwrap_or_else(|| panic!("missing {marker}"));
+    let rest = &src[start..];
+    let open = rest
+        .find('{')
+        .unwrap_or_else(|| panic!("{marker}: missing '{{'"));
+    let mut depth = 0usize;
+    for (i, ch) in rest[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &rest[..open + i + 1];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("{marker}: unbalanced braces");
+}
+
+#[test]
+fn inv_get_navigational_redirects_use_redirect_not_see_other() {
+    let app = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
+    let root = fn_body(app, "async fn root(cx");
+    assert!(
+        root.contains("Err(redirect(") && !root.contains("see_other"),
+        "GET / must Err(redirect(...)), not see_other"
+    );
+    let admin = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/admin.rs"));
+    let hub = fn_body(admin, "async fn admin_index");
+    assert!(
+        hub.contains("Err(redirect(") && !hub.contains("see_other"),
+        "GET /admin must Err(redirect(...)), not see_other"
+    );
+    let issues = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/issues.rs"
+    ));
+    let list = fn_body(issues, "async fn redirect_reserved_issues_list");
+    assert!(
+        list.contains("Err(redirect(") && !list.contains("see_other"),
+        "GET /vauban/issues must Err(redirect(...))"
+    );
+    let create = fn_body(issues, "async fn redirect_reserved_issues_create");
+    assert!(
+        create.contains("see_other") && !create.contains("Err(redirect("),
+        "POST /vauban/issues alias must keep see_other (303)"
+    );
+}
+
 #[test]
 fn inv_policy_csv_roles_use_role_prefix() {
     let csv = include_str!(concat!(

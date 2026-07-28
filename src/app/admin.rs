@@ -8,7 +8,7 @@ mod releases;
 use topcoat::{
     Result,
     context::Cx,
-    router::{SeeOther, Slot, layout, route, see_other},
+    router::{Slot, layout, redirect, route},
     view::view,
 };
 
@@ -38,8 +38,9 @@ async fn admin_layout(cx: &Cx, slot: Slot<'_>) -> Result {
 }
 
 /// Hub redirects to the first admin tool (Issues).
+/// Navigational GET → `redirect` (307), not `see_other` (303 PRG).
 #[route(GET "/admin")]
-async fn admin_index(cx: &Cx) -> Result<SeeOther> {
+async fn admin_index(cx: &Cx) -> Result {
     let _staff = require_staff(cx).await?;
-    Ok(see_other("/admin/issues"))
+    Err(redirect("/admin/issues").into())
 }

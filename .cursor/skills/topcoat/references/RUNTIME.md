@@ -106,7 +106,7 @@ helper truly cannot express the need (document why if so).
 | Helper | Status | Pattern |
 |--------|--------|---------|
 | `see_other(uri)` | 303 | PRG after successful POST/PUT/DELETE → `Ok(see_other(...))` |
-| `redirect(uri)` | 307 | Temporary; keep method → usually `Err(redirect(...).into())` |
+| `redirect(uri)` | 307 | Temporary navigational GET (hubs, aliases) → `Err(redirect(...).into())` |
 | `redirect_permanent(uri)` | 308 | Permanent / canonical URL → same `Err(...).into()` or `IntoResponse` in a layer |
 
 Trailing-slash canonicalization (VCP):

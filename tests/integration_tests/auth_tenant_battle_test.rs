@@ -187,8 +187,7 @@ async fn battle_parallel_session_root_redirects() {
         handles.push(tokio::spawn(async move {
             barrier.wait().await;
             let resp = get(&router, "/", Some(&cookie)).await;
-            assert!(status(&resp).is_redirection());
-            assert_ne!(status(&resp), StatusCode::PERMANENT_REDIRECT);
+            assert_eq!(status(&resp), StatusCode::TEMPORARY_REDIRECT);
             let loc = resp
                 .headers()
                 .get("location")

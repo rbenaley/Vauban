@@ -3,7 +3,7 @@
 use topcoat::{
     Result,
     context::Cx,
-    router::{SeeOther, page, path_param, redirect, route, see_other},
+    router::{page, path_param, redirect, route},
     view::view,
 };
 
@@ -15,8 +15,8 @@ use crate::{
 };
 
 #[route(GET "/vauban/issues/new")]
-async fn redirect_reserved_issues_new() -> Result<SeeOther> {
-    Ok(see_other("/admin/issues"))
+async fn redirect_reserved_issues_new() -> Result {
+    Err(redirect("/admin/issues").into())
 }
 
 #[page]

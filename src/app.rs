@@ -15,9 +15,8 @@ use topcoat::{
     cookie::RouterBuilderCookieExt,
     font,
     router::{
-        Body, HeaderValue, IntoResponse, Next, Response, Router, RouterBuilderDiscoverExt,
-        SeeOther, Slot, StatusCode, header, layer, layout, method, redirect_permanent, route,
-        see_other, uri,
+        Body, HeaderValue, IntoResponse, Next, Response, Router, RouterBuilderDiscoverExt, Slot,
+        StatusCode, header, layer, layout, method, redirect, redirect_permanent, route, uri,
     },
     session::{Config as SessionConfig, RouterBuilderSessionExt},
     tailwind,
@@ -177,14 +176,15 @@ fn apply_security_headers(headers: &mut http::HeaderMap, enable_hsts: bool) {
 }
 
 /// Entry: authenticated users land on their portal home; others go to login.
+/// Navigational GET → `redirect` (307), not `see_other` (303 PRG).
 #[route(GET "/")]
-async fn root(cx: &Cx) -> Result<SeeOther> {
+async fn root(cx: &Cx) -> Result {
     if let Some(user) = current_user(cx).await
         && let Some(slug) = home_org_slug(cx, user).await?
     {
-        return Ok(see_other(&format!("/{slug}")));
+        return Err(redirect(&format!("/{slug}")).into());
     }
-    Ok(see_other("/login"))
+    Err(redirect("/login").into())
 }
 
 /// Browser / OS probes that otherwise spam CLF with 404s.

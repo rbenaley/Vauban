@@ -437,8 +437,8 @@ a parallel document layer in VCP until Toasty exposes it.
 
 Scaffolded in the `vcp` binary: `User`, `AuthSession` (token hash hex +
 expiry), `Organization`, `Membership`, plus stub `DocArticle` /
-`Release` / `Issue`. Routes follow `/{org}/…` and `/{org}/admin/…`
-(see `web-stack`).
+`Release` / `Issue`. Client routes follow `/{org}/…`; staff tools live
+under `/admin/…` (see `web-stack`).
 
 ---
 

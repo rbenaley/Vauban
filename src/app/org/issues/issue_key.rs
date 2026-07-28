@@ -234,11 +234,12 @@ struct ReplyForm {
 }
 
 #[route(GET "/vauban/issues/{issue_key}")]
-async fn redirect_reserved_issue_detail(cx: &Cx) -> Result<SeeOther> {
+async fn redirect_reserved_issue_detail(cx: &Cx) -> Result {
     let key = path_param::<IssueKey>(cx);
-    Ok(see_other(&format!("/admin/issues/{key}")))
+    Err(redirect(&format!("/admin/issues/{key}")).into())
 }
 
+/// POST alias: keep `see_other` (303) so the follow-up is GET, not a re-POST.
 #[route(POST "/vauban/issues/{issue_key}/reply")]
 async fn redirect_reserved_issue_reply(cx: &Cx) -> Result<SeeOther> {
     let key = path_param::<IssueKey>(cx);

@@ -107,6 +107,25 @@ if ! grep -n 'fn resolve_home_org_slug' src/auth.rs >/dev/null; then
   fail "src/auth.rs must expose resolve_home_org_slug (pure landing decision)"
 fi
 
+# Navigational GET hubs use redirect (307), not see_other (303 PRG).
+if ! grep -A10 'async fn root' src/app.rs | grep -q 'Err(redirect('; then
+  fail "GET / (root) must Err(redirect(...))"
+fi
+if grep -A10 'async fn root' src/app.rs | grep -q 'see_other'; then
+  fail "GET / must not use see_other"
+fi
+if ! grep -A8 'async fn admin_index' src/app/admin.rs | grep -q 'Err(redirect('; then
+  fail "GET /admin must Err(redirect(...))"
+fi
+if ! grep -A3 'async fn redirect_reserved_issues_list' src/app/org/issues.rs \
+  | grep -q 'Err(redirect('; then
+  fail "GET /vauban/issues must Err(redirect(...))"
+fi
+if ! grep -A3 'async fn redirect_reserved_issues_create' src/app/org/issues.rs \
+  | grep -q 'see_other'; then
+  fail "POST /vauban/issues alias must keep see_other"
+fi
+
 # Capability entry denials must use capability_denied (404), not forbidden.
 if ! grep -n 'fn capability_denied' src/auth.rs >/dev/null; then
   fail "src/auth.rs must expose capability_denied"

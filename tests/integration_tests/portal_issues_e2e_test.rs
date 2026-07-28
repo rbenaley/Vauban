@@ -236,9 +236,10 @@ async fn e2e_admin_issues_aggregate_and_reserved_redirect() {
         cookie.as_deref(),
     )
     .await;
-    assert!(
-        status(&reserved).is_redirection(),
-        "reserved org issues should redirect, got {}",
+    assert_eq!(
+        status(&reserved),
+        StatusCode::TEMPORARY_REDIRECT,
+        "GET /vauban/issues must use redirect (307), got {}",
         status(&reserved)
     );
     let location = reserved

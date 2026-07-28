@@ -21,11 +21,12 @@ functions over middlewares.
 ```rust
 async fn require_perms(cx: &Cx) -> Result<PermissionContext> { /* … */ }
 
-#[page("/{org}/admin/docs")]
+#[page] // /admin/docs — staff nest under /admin/*
 async fn admin_docs(cx: &Cx) -> Result {
-    let perms = require_perms(cx).await?;
+    let staff = require_staff(cx).await?; // admin_view; non-staff → 404
+    let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
-        return Err(/* 403 — fail closed */);
+        return Err(capability_denied().into()); // entry deny → 404
     }
     view! { /* … */ }
 }
@@ -35,8 +36,8 @@ async fn admin_docs(cx: &Cx) -> Result {
   string compares.
 - **Never** treat “logged in” as enough for org data: Casbin **and**
   membership on the path `{org}` slug (404 if not a member).
-- Admin nest (`/{org}/admin/*`): layout gate on `admin_view` (or the
-  minimum permission of the sub-tree) **plus** body re-check.
+- Admin nest (`/admin/*`): layout gate via `require_staff` (`admin_view`)
+  **plus** body re-check; clients/anonymous get **404** (anti-enumeration).
 
 ## Permission catalogue (mockup IA)
 

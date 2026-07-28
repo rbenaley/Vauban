@@ -234,7 +234,11 @@ async fn e2e_anonymous_root_redirects_to_login() {
     let _guard = db_lock().lock().await;
     let router = test_router().await;
     let resp = get(&router, "/", None).await;
-    assert!(status(&resp).is_redirection());
+    assert_eq!(
+        status(&resp),
+        StatusCode::TEMPORARY_REDIRECT,
+        "GET / must use redirect (307), not see_other (303)"
+    );
     assert_eq!(location(&resp), Some("/login"));
 }
 
@@ -253,11 +257,11 @@ async fn e2e_member_session_root_and_login_redirect_to_org() {
 
     let expected = format!("/{slug}");
     let root = get(&router, "/", cookie.as_deref()).await;
-    assert!(status(&root).is_redirection());
+    assert_eq!(status(&root), StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(location(&root), Some(expected.as_str()));
 
     let login = get(&router, "/login", cookie.as_deref()).await;
-    assert!(status(&login).is_redirection());
+    assert_eq!(status(&login), StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(location(&login), Some(expected.as_str()));
     let html = body_text(login).await;
     assert!(
@@ -283,11 +287,11 @@ async fn e2e_staff_session_root_and_login_redirect_to_vauban() {
 
     let expected = format!("/{RESERVED_ORG_SLUG}");
     let root = get(&router, "/", cookie.as_deref()).await;
-    assert!(status(&root).is_redirection());
+    assert_eq!(status(&root), StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(location(&root), Some(expected.as_str()));
 
     let login = get(&router, "/login", cookie.as_deref()).await;
-    assert!(status(&login).is_redirection());
+    assert_eq!(status(&login), StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(location(&login), Some(expected.as_str()));
 
     cleanup(&db).await;
@@ -308,7 +312,7 @@ async fn e2e_expired_session_root_falls_back_to_login() {
     expire_all_sessions_for_user(&db, user.id).await;
 
     let root = get(&router, "/", cookie.as_deref()).await;
-    assert!(status(&root).is_redirection());
+    assert_eq!(status(&root), StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(location(&root), Some("/login"));
 
     cleanup(&db).await;

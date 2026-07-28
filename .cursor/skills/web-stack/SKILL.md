@@ -169,14 +169,24 @@ src/
 `-- app/
     |-- _components/       -> #[component] vb_* (group, no URL)
     |-- login.rs           -> login #[layout] + /login
-    `-- org.rs             -> org #[layout] (rail/topbar) + /{org}
-        `-- org/
-            |-- docs.rs
-            |-- builds.rs
-            |-- issues.rs
-            |-- account.rs
-            `-- admin.rs   -> /{org}/admin/* (admin_view gate)
+    |-- org.rs             -> org #[layout] (rail/topbar) + /{org}
+    |-- org/
+    |   |-- docs.rs
+    |   |-- builds.rs
+    |   |-- issues.rs
+    |   `-- account.rs
+    |-- admin.rs           -> admin #[layout] + /admin (require_staff)
+    `-- admin/
+        |-- issues.rs      -> /admin/issues (aggregated)
+        |-- docs.rs
+        |-- releases.rs
+        `-- companies.rs
 ```
+
+Staff tools live under global `/admin/*` (Casbin `admin_view` via
+`require_staff`). Reserved org `vauban` is the staff **preview** tenant
+for client chrome (`/{org}/docs`, builds); `/vauban/issues*` redirects
+to `/admin/issues`. Do not nest admin under `/{org}/admin/*`.
 
 `styles.css` + `Topcoat.toml` at package root. Pages return **bodies only**;
 layouts own chrome. Deep-link routes for docs/builds/issues stay shareable;
@@ -188,7 +198,8 @@ skill §10).
 
 - Dark left rail, light content, accent teal `#117a6b` (`@theme` + `vb-*`).
 - Breadcrumb: `vauban://portal / {org} / {section}` via `vb_topbar`.
-- Client rail: Home, Docs, Builds, Issues; Admin rail: Docs, Rel., Orgs.
+- Client rail: Home, Docs, Builds, Issues; staff ADMIN block: Issues,
+  Docs, Rel., Companies (links under `/admin/…`).
 - Org initials control links to `/{org}/account`.
 - **Do not** vendor `topcoat ui` for the portal shell.
 
