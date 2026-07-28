@@ -142,6 +142,10 @@ Happy-path-only tests are insufficient for those seams.
   stored UTC (`timezone-localization.mdc`).
 - UI design critique / IA: `designing-beautiful-websites`.
 - Implementation conventions: `web-stack`.
+- Topcoat progressive UI: enforce the `@click` **function-expression**
+  bind contract on SSR HTML (`common/topcoat_click.rs`); do not expect
+  CI to drive real clicks — that stays in the smoke runbook. See
+  `topcoat` skill §10 + `references/RUNTIME.md`.
 - Do **not** import bastion IPC / proxy / recording harnesses.
 
 ### Database tests (Toasty + PostgreSQL)

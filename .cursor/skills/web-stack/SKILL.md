@@ -46,7 +46,7 @@ static-asset embedding assumptions unless explicitly requested.
 | Framework | Topcoat facade (`topcoat::start` / `Router`) |
 | Templates / UI | `view!`, `#[component]`, `#[page]` / `#[layout]` / `#[route]` |
 | Routing | Prefer `.discover()` + module tree (`module_router!`) |
-| Reactivity | Optional `topcoat-runtime`: signals, `$(...)`, `@` / `:` — **experimental / limited vocabulary** |
+| Reactivity | `topcoat-runtime`: signals, `$(...)`, `@` / `:` — see **`topcoat` skill §10** + `references/RUNTIME.md` ( `@click` must be a function; no first-party UI JS for tabs/countdown) |
 | Server partials | `#[shard]` (HTTP re-render; **args are untrusted**) |
 | Server actions | `#[procedure]` (HTTP RPC; **args are untrusted**) |
 | Styling | `tailwind` + `styles.css` Concept `@theme` / `vb-*` (not Topcoat UI) |
@@ -180,7 +180,9 @@ src/
 
 `styles.css` + `Topcoat.toml` at package root. Pages return **bodies only**;
 layouts own chrome. Deep-link routes for docs/builds/issues stay shareable;
-runtime signals enhance in-page dismiss/collapse/tabs only.
+runtime signals enhance in-page dismiss/collapse/tabs only (never mint
+security tokens client-side; raw `@click` must be a function — `topcoat`
+skill §10).
 
 ### Shell conventions (Concept mockups)
 

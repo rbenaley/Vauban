@@ -1,12 +1,14 @@
 # Runbook -- Builds download entitlement
 
-> Manual validation after shipping **authorized 501 download stub** and
-> **GA vs org-private release visibility**. CI covers unit / invariants /
-> proptest / battle / in-process E2E against `vcp_test`; staging proves
-> browser HTTPS and denial paths.
+> Manual validation after shipping **authorized 501 download stub**,
+> **GA vs org-private release visibility**, and **Concept Builds chrome**
+> (default-open latest + **server-side** ephemeral download links via
+> Topcoat POST/PRG). CI covers unit / invariants / proptest / battle /
+> in-process E2E against `vcp_test`; staging proves browser HTTPS and
+> denial paths.
 >
 > Audience: release / staging operators.
-> Severity: **BLOCKING** for this surface. Do not ship without A–C.
+> Severity: **BLOCKING** for this surface. Do not ship without A–D.
 
 Related:
 
@@ -33,16 +35,29 @@ rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=
 - Seed users: staff `support@vauban.sh` / `password`; client
   `l.martin@acme.example` / `password` on `acme-infrastructure`.
 - Seed includes GA releases plus an Acme-private hotfix (`v0.8.6-acme1`).
+- Schema includes `ephemeral_downloads` (apply migrations / `just db-reset` if needed).
 
-## A -- Happy path
+## A -- Happy path + Concept chrome
 
 1. Sign in as `l.martin@acme.example` / `password`.
-2. Open `/acme-infrastructure/builds` — expect GA builds **and** the
-   Acme-private hotfix.
-3. Download POST on a visible version returns **501**
+2. Open `/acme-infrastructure/builds` — expect the **latest** build panel
+   open by default (release notes visible).
+3. Action row: **Download (size)**, **5-minute download link**,
+   **Verify signature** (no Collapse).
+4. Submit **5-minute download link** — server issues a UUID token and
+   redirects back; panel shows Concept URL, live countdown (Topcoat
+   signal), Copy / SVG copy, Revoke, and fetch/cURL tabs (client signal,
+   no navigation).
+5. Click **cURL** then **fetch** — command bin and active tab must switch
+   without a page reload. CI covers the Topcoat `@click` bind contract
+   (handlers must be function expressions); this step is the real DOM
+   toggle that in-process E2E cannot drive.
+6. Regenerate / Revoke via POST forms. After expiry, expect
+   **Generate new link** (no custom JS asset — Topcoat runtime only).
+7. Download POST on a visible version returns **501**
    (`download not configured`) until artifact storage ships.
 
-Pass: client sees GA + own private builds; download stub is 501.
+Pass: Concept chrome + server ephemeral tokens; download remains 501.
 
 ## B -- Org-private isolation
 
@@ -53,7 +68,15 @@ Pass: client sees GA + own private builds; download stub is 501.
 
 Pass: `organization_id` targeting is enforced on list/detail/download.
 
-## C -- Denial paths
+## C -- Collapse without re-open loop
+
+1. On the list with latest open, click the open row — expect collapse
+   (`?open=none`) with no panel.
+2. Click a version again — panel opens for that version.
+
+Pass: Concept-style collapse works with default-open.
+
+## D -- Denial paths
 
 1. As client, confirm `/admin/releases` returns **403**.
 2. While authenticated, open a non-member org slug — expect **404**.

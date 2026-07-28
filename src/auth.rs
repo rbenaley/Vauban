@@ -13,6 +13,7 @@ use topcoat::{
 };
 
 use crate::{
+    config::Config,
     db::{now_unix, token_hash_hex},
     models::{
         AuthSession, MEMBERSHIP_ROLE_ORG, Membership, Organization, PORTAL_ROLE_ADMIN,
@@ -33,6 +34,11 @@ pub struct AuthUser {
 
 pub fn db(cx: &Cx) -> Db {
     app_context::<Db>(cx).clone()
+}
+
+/// Application config from router `app_context`.
+pub fn config(cx: &Cx) -> std::sync::Arc<Config> {
+    app_context::<std::sync::Arc<Config>>(cx).clone()
 }
 
 /// True when the persisted session expiry is at or before "now".

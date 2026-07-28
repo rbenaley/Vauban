@@ -34,6 +34,7 @@ pub async fn open(database_url: &str) -> anyhow::Result<Db> {
             crate::models::Release,
             crate::models::Issue,
             crate::models::IssueComment,
+            crate::models::EphemeralDownload,
         ))
         .connect(database_url)
         .await?)

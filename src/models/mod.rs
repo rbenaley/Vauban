@@ -216,3 +216,33 @@ pub struct IssueComment {
     /// Unix timestamp (seconds).
     pub created_at: i64,
 }
+
+/// TTL for Concept-style ephemeral download links (seconds).
+pub const EPH_DOWNLOAD_TTL_SECS: i64 = 5 * 60;
+
+/// Server-issued short-lived download token (display stub until CDN exists).
+#[derive(Debug, Clone, Model)]
+#[table = "ephemeral_downloads"]
+pub struct EphemeralDownload {
+    #[key]
+    #[auto]
+    pub id: u64,
+
+    #[unique]
+    pub token: String,
+
+    #[index]
+    pub user_id: u64,
+
+    #[index]
+    pub organization_id: u64,
+
+    /// Release version string the link is scoped to.
+    pub release_version: String,
+
+    /// Unix timestamp (seconds) when the token expires.
+    pub expires_at: i64,
+
+    /// Unix timestamp (seconds) when the token was issued.
+    pub created_at: i64,
+}

@@ -5,7 +5,8 @@ environment = "development"
 [server]
 host = "127.0.0.1"
 port = 3000
-# Replace with the public portal origin(s). Format: https://host[:port]
+# Public origin(s) for session CSRF and absolute customer URLs (downloads).
+# Format: https://host[:port] — first entry is the primary link host.
 public_origins = ["https://127.0.0.1:3000", "https://localhost:3000"]
 access_log_path = "logs/vcp-access.log"
 

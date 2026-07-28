@@ -1,5 +1,12 @@
 //! Shared harness for `vcp_test` integration suites.
 
+mod topcoat_click;
+
+pub use topcoat_click::{
+    assert_topcoat_click_handlers_are_functions, data_topcoat_on_click_values,
+    is_topcoat_function_handler,
+};
+
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,8 +20,8 @@ use vcp::{
     config::{Config, Environment},
     db::{self, hash_password, now_unix},
     models::{
-        AuthSession, DocArticle, Issue, MEMBERSHIP_ROLE_ORG, Membership, Organization,
-        PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG, Release, User,
+        AuthSession, DocArticle, EphemeralDownload, Issue, MEMBERSHIP_ROLE_ORG, Membership,
+        Organization, PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG, Release, User,
     },
     perms::PolicyStore,
 };
@@ -247,6 +254,18 @@ pub async fn cleanup(db: &Db) {
     for rel in releases {
         if rel.version.starts_with("test-") {
             let _ = Release::delete_by_id(&mut db, rel.id).await;
+        }
+    }
+
+    let ephs = EphemeralDownload::all()
+        .exec(&mut db)
+        .await
+        .unwrap_or_default();
+    for row in ephs {
+        let drop =
+            test_user_ids.contains(&row.user_id) || test_org_ids.contains(&row.organization_id);
+        if drop {
+            let _ = row.delete().exec(&mut db).await;
         }
     }
 

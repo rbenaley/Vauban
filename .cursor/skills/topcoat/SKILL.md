@@ -2,9 +2,9 @@
 name: topcoat
 description: >-
   Durable knowledge of the Topcoat framework for VCP. Use when scaffolding,
-  implementing pages/components/shards/procedures, sessions, cookies, routing,
-  assets, Tailwind/UI, or when unsure how Topcoat works. Read before inventing
-  Axum/Askama/HTMX patterns.
+  implementing pages/components/shards/procedures, signals, @click/:bind,
+  sessions, cookies, routing, assets, Tailwind/UI, or when unsure how Topcoat
+  works. Read before inventing Axum/Askama/HTMX or first-party UI JS.
 ---
 
 # Topcoat knowledge base (VCP)
@@ -26,10 +26,10 @@ VCP product constraints that override framework capabilities are marked
 **VCP**. Broader conventions live in the `web-stack` skill and the
 `.cursor/rules/*.mdc` set.
 
-**Last studied:** 2026-07-27 against upstream ~**0.4.0** (edition **2024**,
-MSRV **1.95**) plus the Tokio blog announcements above. Re-check
-crates.io / GitHub before scaffold if months have passed — the framework
-is early-stage (first public release wave).
+**Last studied:** 2026-07-28 against upstream ~**0.4.0** (edition **2024**,
+MSRV **1.95**) plus VCP builds ephemeral UI (signals, `@click` bind
+contract). Re-check crates.io / GitHub before scaffold if months have
+passed — the framework is early-stage.
 
 Community: Tokio Discord `#topcoat` (and `#toasty` for the ORM).
 
@@ -276,74 +276,77 @@ instead of a cookie.
 ## 10. Runtime (reactivity) — experimental
 
 Upstream warns: **highly experimental**, limited expression vocabulary,
-breaking changes expected. Optional escape hatches: HTMX / Alpine.js
-integrations (features) — **VCP does not adopt those as the default**.
+breaking changes expected. **VCP does not** adopt HTMX / Alpine as the
+default. Deep playbook: [`references/RUNTIME.md`](references/RUNTIME.md).
 
-### Why not WASM (Leptos / Dioxus)
+### Layers
 
-Those frameworks shine for heavy client interactivity via Rust→WASM.
-Topcoat targets apps that do **not** need that: avoid a second compile
-target, bundle splitting, and client/server serialization. Markup stays
-on the server so components can be `async`, hit the DB, and check
-permissions safely. Client reactivity is a **type-checked Rust subset**
-cross-compiled to JS via macros (`$(...)`) — stay in Rust, no WASM.
+| Layer | Where | VCP use |
+|-------|-------|---------|
+| **Signals + `$(...)` / `@` / `:`** | Browser | Tabs, countdown, show/hide, copy affordances |
+| **`#[shard]`** | Server HTML swap | Live search / filtered lists needing DB |
+| **`#[procedure]`** | Server RPC | Imperative actions (args untrusted) |
+| **POST + PRG** | Full navigation | Auth, mint/revoke tokens, admin mutations |
 
-### Two reactivity layers
+**VCP split:** mint entitlements / tokens **server-side** (POST/PRG + DB).
+Use Topcoat signals only for **ephemeral UI** after SSR. Do **not** add
+first-party `assets/vcp_*.js` for toggles the runtime can express.
 
-| Layer | Where it runs | Typical use |
-|-------|---------------|-------------|
-| **Signals + `$(...)`** | Browser only (no round-trip) | Toggle visibility, local UI state |
-| **`#[shard]`** | Server re-render + HTML swap when `$(...)` args change | Live search / filtered lists that need DB |
-| **`#[procedure]`** | Server HTTP RPC from the browser | Imperative server actions (still untrusted args) |
+### Non-negotiable: `@click` bind contract (0.4)
 
-Announcement-shaped examples (illustrative):
+Runtime attaches handlers as:
 
-```rust
-// Client-only: no server round-trip
-view! {
-    signal open = false;
-    <button @click=$(|_e| open.set(!open.get()))>
-        "What is Topcoat?"
-    </button>
-    <p :hidden=$(!open.get())>"A fullstack Rust framework."</p>
-}
-
-// Shard: server re-renders as the signal changes
-#[component]
-async fn search() -> Result {
-    view! {
-        signal query = String::new();
-        <input @input=$(|e: Event| query.set(e.target.value))>
-        search_results(query: $(query.get()))
-    }
-}
-
-#[shard]
-async fn search_results(cx: &Cx, query: String) -> Result {
-    // Runs on the server; args are untrusted — re-auth / tenant / Casbin.
-    view! { /* … */ }
-}
+```js
+s = new Function("cx", "return " + attrValue)(cx);
+el.addEventListener(type, e => s(wrappedEvent));
 ```
 
-Mechanics checklist:
+So the attribute must **evaluate to a function**. Statement forms run at
+**bind / scan time** and can throw — aborting the TreeWalker so **later
+handlers on the page never attach**.
 
-- Include `topcoat::runtime::script()` in `<head>`; load
-  `AssetBundle` on the router.
-- `$(...)` / `expr!`: dual Rust + JS; SSR evaluates, browser re-runs on
-  signal change.
-- `signal name = …;` in `view!`: browser state.
-- `@click` / `@input` / …: event handlers (closures or raw JS strings).
-- `:attr=$(...)`: bind attributes kept in sync.
-- **`#[procedure]`** / **`#[shard]`**: **arguments are attacker-controlled
-  — re-auth and re-authorize every time.**
+| Form | Result |
+|------|--------|
+| `@click=$(|_e| signal.set(…))` | OK (`$()` → function) |
+| `@click=$(|e: Event| { e.prevent_default(); … })` | OK (prefer typed `Event`) |
+| `@click="(e) => { … }"` / `@click="() => { … }"` | OK (raw JS **function**) |
+| `@click="navigator.clipboard…; this.…"` | **FORBIDDEN** — runs at bind, breaks siblings |
 
-**VCP:** allowed for progressive UI (modal dismiss, panel collapse,
-ephemeral tabs, light live filters). Prefer boring PRG forms for
-login/admin mutations. Never treat shard / procedure args as trusted
-org/entitlement claims. Sensitive mutations stay **POST forms + PRG**.
-No React / HTMX / Alpine as the product stack.
+Clipboard / DOM that `$()` cannot express: raw **function** using the
+Topcoat event wrapper, e.g.
+`(e) => { const el = e.current_target.inner; … }`.
+Do not rely on `this` as the element.
 
----
+CI helper: `tests/integration_tests/common/topcoat_click.rs`
+(`assert_topcoat_click_handlers_are_functions`). Real click→DOM stays in
+the smoke runbook (no headless browser in the pyramid).
+
+### Patterns that work in VCP
+
+- **Show/hide:** `:style=$(if live.get() { "" } else { "display:none" })`
+  (proven). Prefer this over fragile `:class` when toggling visibility.
+- **Bool / number signals:** `signal x = false;` / `f64` for countdown;
+  client `if` uses `.dehydrate()` under the hood.
+- **Ticks:** `@animationiteration=$(|_e| { … set … })` + tiny CSS
+  `animation` (see `.vb-eph-tick`).
+- **Tabs without navigation:** one `signal use_curl = false` +
+  `@click=$(|_e| use_curl.set(true/false))` + reactive cmd text /
+  `:data-copy` — never `?tool=` round-trips.
+- **Config in handlers:** put `Arc<Config>` in `app_context`; read via
+  `auth::config(cx)` (absolute URLs → `primary_public_origin()`).
+- **`topcoat fmt`:** 0.4 panics on `signal` decls — `just fmt` skips
+  those files (`Justfile` `topcoat-fmt`).
+
+### Mechanics checklist
+
+- `topcoat::runtime::script()` in root layout + `AssetBundle` on router
+  (`just bundle` / `just run`).
+- `$(...)`: dual Rust + JS; text nodes skip first DOM patch (SSR text
+  stays until the signal changes).
+- Scan order is document order: an early throwing `@click` kills later
+  binds on the same page.
+- Shard / procedure args: **re-auth + re-authorize every time.**
+
 
 ## 11. Assets, Tailwind, UI
 
@@ -446,9 +449,12 @@ clippy `-D warnings` + asset bundle + tests (`dev-validation-cycle.mdc` /
 | Askama templates | `view!` |
 | Axum extractors as the auth model | `cx` functions + memoize |
 | HTMX+Alpine as the default stack | Topcoat runtime / shards / PRG |
+| First-party JS for fetch/cURL tabs / countdown | Signals + `@` / `:` (see §10) |
+| `@click="navigator…; this.…"` (bind-time stmts) | `@click="(e) => { … }"` or `$()` |
 | Capsicum `include_bytes!` static registry | `asset!` pipeline |
 | Bastion WebSocket dashboards | HTTP CRUD only |
 | Trusting procedure/shard args | Re-check session + Casbin + tenant |
+| Hardcoded download host constants | `server.public_origins` / `primary_public_origin()` |
 | Assuming Topcoat does TLS | Edge TLS 1.3 / PQ (`tls-post-quantum.mdc`) |
 
 ---
@@ -473,6 +479,7 @@ than guessing from memory of older releases.
 
 | Artifact | Role |
 |----------|------|
+| `references/RUNTIME.md` | Signals / `@click` pitfalls / test contracts |
 | `web-stack` skill | VCP conventions (incl. Toasty + Postgres) |
 | `casbin-permissions.mdc` | AuthZ gates |
 | `portal-security.mdc` | Tenancy, CSRF, secrets |
@@ -480,3 +487,4 @@ than guessing from memory of older releases.
 | `timezone-localization.mdc` | `vcp_tz` |
 | `vcp-test-pyramid.mdc` | Behavioral tests |
 | `quality-assurance` skill | fmt / clippy / tests |
+| `tests/.../common/topcoat_click.rs` | SSR `@click` function-expression contract |

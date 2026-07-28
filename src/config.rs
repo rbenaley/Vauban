@@ -82,6 +82,9 @@ pub struct ServerConfig {
     pub port: u16,
 
     /// Trusted browser origins for session CSRF / Origin checks (HTTPS only).
+    ///
+    /// The first entry is also the primary host for absolute customer URLs
+    /// (ephemeral download links, etc.).
     #[serde(default)]
     pub public_origins: Vec<String>,
 
@@ -300,6 +303,9 @@ impl Config {
         {
             anyhow::bail!("server.tls.cert_path and key_path are required");
         }
+        if self.server.public_origins.is_empty() {
+            anyhow::bail!("server.public_origins must contain at least one HTTPS origin");
+        }
         for origin in &self.server.public_origins {
             if origin.starts_with("http://") {
                 anyhow::bail!(
@@ -319,6 +325,17 @@ impl Config {
             acme.validate()?;
         }
         Ok(())
+    }
+
+    /// Primary public origin (first `server.public_origins` entry).
+    ///
+    /// Used for customer-facing absolute URLs (ephemeral download links, etc.).
+    pub fn primary_public_origin(&self) -> &str {
+        self.server
+            .public_origins
+            .first()
+            .map(String::as_str)
+            .expect("server.public_origins validated non-empty")
     }
 
     /// Domains used for bootstrap self-signed certificates.
@@ -376,6 +393,7 @@ mod tests {
         assert!(cfg.server.tls.acme.as_ref().is_some_and(|a| a.enabled));
         assert_eq!(cfg.server.port, 443);
         assert_eq!(cfg.server.access_log_path, "/var/log/vcp-access.log");
+        assert_eq!(cfg.primary_public_origin(), "https://access.vauban.sh");
     }
 
     #[test]

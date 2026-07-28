@@ -190,13 +190,18 @@ a.vb-modal-close:hover { background: #f5f6f4; }
 .vb-build-panel {
   padding: 18px 22px 22px; background: #fbfcfb; border-bottom: 1px solid #f0f1ee;
 }
-.vb-btn-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
-a.vb-btn.outline, button.vb-btn.outline {
+.vb-btn-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; align-items: center; }
+a.vb-btn.outline, button.vb-btn.outline, span.vb-btn.outline {
   background: #fff; color: var(--accent);
   border: 1px solid color-mix(in srgb, var(--accent) 32%, #fff);
 }
-a.vb-btn.muted, button.vb-btn.muted {
-  background: #fff; color: #5a5f66; border: 1px solid var(--border);
+a.vb-btn.muted, button.vb-btn.muted, span.vb-btn.muted {
+  background: #fff; color: #5a5f66; border: 1px solid #e0e2de;
+}
+.vb-btn-build {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px; font-weight: 500; padding: 9px 16px; border-radius: 4px;
+  line-height: 1.2;
 }
 a.vb-btn.danger, button.vb-btn.danger {
   background: #fff; color: #b5403a; border: 1px solid #eccfcc;
@@ -246,12 +251,102 @@ a.vb-btn.compact, button.vb-btn.compact {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .vb-ephemeral {
+  position: relative;
   margin-top: 16px; border: 1px solid #d7e3df; border-radius: 6px; background: #fff; overflow: hidden;
 }
 .vb-ephemeral-bar {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
   padding: 10px 16px; background: #f1f7f5; border-bottom: 1px solid #e2ece9;
 }
+.vb-ephemeral-title {
+  display: flex; align-items: center; gap: 9px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px; letter-spacing: 0.04em; color: var(--accent);
+}
+.vb-ephemeral-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none;
+}
+.vb-ephemeral-bar-actions {
+  display: flex; align-items: center; gap: 14px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px;
+}
+.vb-ephemeral-revoke {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px; color: #8a8f96;
+}
+.vb-ephemeral-revoke:hover { color: #5a5f66; }
+.vb-ephemeral-body { padding: 14px 16px; }
+.vb-ephemeral-url-row {
+  display: flex; gap: 8px; align-items: stretch; margin-bottom: 12px;
+}
+.vb-ephemeral-url {
+  flex: 1; min-width: 0; font-size: 12px; color: #14171c;
+  background: #f7f8f6; border: 1px solid #e8eae6; border-radius: 4px;
+  padding: 10px 12px; overflow-x: auto; white-space: nowrap;
+}
+input.vb-ephemeral-url {
+  width: 100%; box-sizing: border-box; outline: none;
+}
+.vb-ephemeral-countdown.warn { color: #b5403a; }
+.vb-ephemeral-dot.warn { background: #b5403a; }
+.vb-ephemeral-cmd-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.vb-ephemeral-run-label {
+  font-size: 10px; letter-spacing: 0.06em; color: #8a8f96;
+}
+.vb-eph-seg {
+  display: flex; gap: 2px; background: #eef0ed; border-radius: 5px; padding: 2px;
+}
+.vb-eph-seg-btn {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px; padding: 5px 13px; border-radius: 4px; cursor: pointer;
+  border: 0; background: transparent; color: #5a5f66;
+  text-decoration: none; display: inline-block;
+}
+a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
+.vb-eph-seg-btn.active {
+  background: #fff; color: #14171c; box-shadow: 0 1px 2px rgba(0,0,0,.06);
+}
+.vb-ephemeral-cmd {
+  position: relative;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px; color: #cdd6f4; background: #14171c; border-radius: 4px;
+  padding: 12px 44px 12px 14px; overflow-x: auto; white-space: nowrap; line-height: 1.6;
+}
+.vb-ephemeral-prompt { color: #7f8696; }
+.vb-ephemeral-cmd-bin { color: #7aa2f7; }
+.vb-ephemeral-cmd-url { color: #9ece6a; }
+.vb-ephemeral-cmd-copy {
+  position: absolute; top: 6px; right: 7px; width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 5px; cursor: pointer; border: 0;
+  color: #9aa0a6; background: rgba(255,255,255,.06);
+  font-size: 18px; font-weight: 700; line-height: 1;
+}
+.vb-ephemeral-cmd-copy:hover, .vb-ephemeral-cmd-copy.copied {
+  color: #9ece6a; background: rgba(158,206,106,.12);
+}
+.vb-eph-tick {
+  position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; border: 0;
+  opacity: 0; pointer-events: none; overflow: hidden;
+  animation: vb-eph-tick 1s linear infinite;
+}
+.vb-eph-tick[hidden] { display: none !important; animation: none; }
+@keyframes vb-eph-tick {
+  from { transform: translateX(0); }
+  to { transform: translateX(0.01px); }
+}
+.vb-ephemeral-help {
+  font-size: 12px; color: #8a8f96; margin-top: 10px; line-height: 1.5;
+}
+.vb-ephemeral-expired {
+  padding: 16px; display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+}
+.vb-ephemeral-expired-copy { font-size: 13px; color: #8a8f96; }
 .vb-drop {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
   border: 1.5px dashed #cdd1cb; border-radius: 6px; padding: 22px; background: #fbfcfb;
@@ -353,13 +448,13 @@ a.vb-card:hover { border-color: var(--accent); transform: translateY(-2px); }
   display: inline-flex; align-items: center; gap: 0.45em;
 }
 .vb-chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
-a.vb-chip, span.vb-chip {
+a.vb-chip, span.vb-chip, button.vb-chip {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 12px; padding: 6px 12px; border-radius: 4px;
   border: 1px solid var(--border); color: var(--text); background: #fff;
   text-decoration: none; display: inline-block;
 }
-a.vb-chip.active, span.vb-chip.active {
+a.vb-chip.active, span.vb-chip.active, button.vb-chip.active {
   background: var(--accent); color: #fff; border-color: var(--accent);
 }
 .vb-search {
@@ -412,11 +507,13 @@ a.vb-row:hover { background: #fafbfa; }
   color: #8a7a52; background: #efece2; border-color: #e0d8c6; font-weight: 500;
 }
 .vb-btn {
-  display: inline-block; background: var(--accent); color: #fff;
+  display: inline-flex; align-items: center; gap: 0.45em;
+  background: var(--accent); color: #fff;
   border-radius: 4px; padding: 10px 16px; text-decoration: none;
   font-size: 13px; border: 0; cursor: pointer; font-weight: 600;
   font-family: 'Hanken Grotesk', system-ui, sans-serif;
 }
+span.vb-btn { cursor: default; }
 .vb-btn.ghost {
   background: #fff; color: var(--text); border: 1px solid var(--border);
 }

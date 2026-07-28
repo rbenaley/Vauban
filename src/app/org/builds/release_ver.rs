@@ -28,10 +28,6 @@ async fn build_detail_page(cx: &Cx) -> Result {
         .and_then(|q| q.channel.clone())
         .unwrap_or_default();
     let channel = channel.trim();
-    let show_link = q
-        .as_ref()
-        .and_then(|q| q.link.as_deref())
-        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
 
     let mut database = crate::auth::db(cx);
     let ver_key = ver.to_string();
@@ -47,13 +43,11 @@ async fn build_detail_page(cx: &Cx) -> Result {
         return Err(topcoat::router::not_found().into());
     };
 
-    let releases = load_releases_for_org(cx, ctx.org.id, channel).await;
+    let mut releases = load_releases_for_org(cx, ctx.org.id, channel).await;
     // Ensure the open version is visible even if channel filter would hide it.
-    let releases = if releases.iter().any(|r| r.version == *ver) {
-        releases
-    } else {
-        std::iter::once(matched).chain(releases).collect()
-    };
+    if !releases.iter().any(|r| r.version == *ver) {
+        releases.insert(0, matched);
+    }
 
     render_builds(
         cx,
@@ -61,8 +55,9 @@ async fn build_detail_page(cx: &Cx) -> Result {
         channel,
         &releases,
         Some(ver),
-        show_link,
         perms.builds_download,
+        ctx.user.id,
+        ctx.org.id,
     )
     .await
 }

@@ -71,6 +71,7 @@ pub fn router(db: Db, policy: Arc<PolicyStore>, cfg: &Config) -> Router {
         .assets(assets)
         .app_context(db)
         .app_context(policy)
+        .app_context(Arc::new(cfg.clone()))
         .app_context(enable_hsts)
         .discover()
         .build()

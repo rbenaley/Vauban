@@ -269,6 +269,29 @@ pub async fn ico_check(cx: &Cx, size: u32) -> Result {
     }
 }
 
+/// Overlapping rectangles — Concept “copy command” affordance.
+pub async fn ico_copy(cx: &Cx, size: u32) -> Result {
+    let s = size.to_string();
+    let style = box_style(size);
+    view! {
+        cx =>
+        <span class="vb-ico" aria-hidden="true" style=(style)>
+            <svg
+                width=(s.clone())
+                height=(s)
+                viewBox="0 0 17 17"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linejoin="round"
+            >
+                <rect x="5.5" y="5.5" width="8" height="8" rx="1.2"></rect>
+                <path d="M3.5 11.5 V4.2 A1.2 1.2 0 0 1 4.7 3 H11.5"></path>
+            </svg>
+        </span>
+    }
+}
+
 pub async fn ico_hourglass(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
