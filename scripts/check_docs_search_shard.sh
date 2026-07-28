@@ -45,6 +45,8 @@ grep -n 'docs_search_results' "$DOCS" >/dev/null || fail "$DOCS must invoke docs
 grep -n 'org_slug:' "$DOCS" >/dev/null || fail "$DOCS must pass org_slug shard arg"
 grep -n 'DocsFilter::normalized\|normalize_query' "$DOCS" >/dev/null \
   || fail "$DOCS must share filter normalization with the shard"
+# Progressive-enhancement filter form (not a mutation) — keep GET for ?q= URLs.
+grep -n 'method="GET"' "$DOCS" >/dev/null || fail "$DOCS search filter form must use method=GET"
 grep -n 'normalize_org_slug' "$HELPERS" >/dev/null || fail "$HELPERS must define normalize_org_slug"
 grep -n 'normalize_query' "$HELPERS" >/dev/null || fail "$HELPERS must define normalize_query"
 

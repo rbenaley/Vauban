@@ -69,6 +69,7 @@ async fn admin_issues_page(cx: &Cx) -> Result {
             "."
         </p>
 
+        // Filter only (shareable ?q= / ?org=); live results use the shard. Not a mutation.
         <form
             method="GET"
             action=(base.clone())

@@ -115,6 +115,7 @@ pub(super) async fn docs_list_view(cx: &Cx, org_slug: &str, q: &str, cat: &str) 
         <h1 class="vb-title">"Documentation & knowledge base"</h1>
         <p class="vb-lead">"Operations, security, API, and deployment runbooks."</p>
 
+        // Filter only (shareable ?q=); live results use the shard. Not a mutation.
         <form method="GET" action=(base.clone())>
             <input
                 class="vb-search"

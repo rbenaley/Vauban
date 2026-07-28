@@ -206,8 +206,11 @@ skill §10).
 - HTML pages for humans; JSON under `/api/...` only for M2M / webhooks.
 - HTML forms MUST NOT post to machine JSON APIs as a substitute for
   page handlers.
-- Prefer PRG (Post-Redirect-Get) for full form submissions; use shards /
-  procedures for in-page updates that truly need them.
+- Prefer PRG (Post-Redirect-Get) for **mutating** form submissions; use
+  shards / procedures for in-page updates that truly need them.
+- **GET filter forms** (docs / issues search) are idiomatic: they only
+  refine list query params (`?q=`, status chips). Keep them GET for
+  shareable URLs; do not convert to POST “for CSRF”. Mutations stay POST.
 - Redirects: prefer Topcoat idioms — `see_other` (303 PRG), `redirect`
   (307 temporary), `redirect_permanent` (308 canonical / permanent). Do
   not hand-roll `301`/`302` + `Location` when those helpers fit (see
@@ -321,7 +324,7 @@ Diagnostic commands: prefix with `rtk` (`rtk-proxy.mdc`).
 - [ ] Page / layout / shard placed in the module tree intentionally
 - [ ] Auth + Casbin + tenant checks (fail closed)
 - [ ] Org-scoped DB queries filter on active tenant
-- [ ] Forms: CSRF + validation + PRG or documented shard/procedure
+- [ ] Forms: mutations POST + CSRF/PRG; filter/search GET OK; or shard/procedure
 - [ ] Dates localized via `format_local*` when shown in HTML
 - [ ] No secrets in logs; no cross-tenant leakage in errors
 - [ ] Pyramid layers listed for the change

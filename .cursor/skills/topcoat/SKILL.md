@@ -286,7 +286,8 @@ or expired. Guard with `ok_or_redirect("/login")` / unauthorized helpers.
 
 **VCP:** OriginLayer is always on (`trust_origin` from
 `server.public_origins`); mutations on POST (etc.); never
-state-changing GET. Aligns with `portal-security.mdc`.
+state-changing GET. Read-only list filters may use GET forms (docs /
+issues search). Aligns with `portal-security.mdc`.
 
 Custom `TokenStore` can put the token in `Authorization: Bearer` for M2M
 instead of a cookie.
@@ -305,12 +306,19 @@ default. Deep playbook: [`references/RUNTIME.md`](references/RUNTIME.md).
 |-------|-------|---------|
 | **Signals + `$(...)` / `@` / `:`** | Browser | Tabs, countdown, show/hide, copy affordances |
 | **`#[shard]`** | Server HTML swap | Live search / filtered lists needing DB |
+| **GET filter forms** | Full navigation | Docs/issues search fallback (shareable `?q=` URLs); **not** mutations |
 | **`#[procedure]`** | Server RPC | Imperative actions (args untrusted) |
 | **POST + PRG** | Full navigation | Auth, mint/revoke tokens, admin mutations |
 
 **VCP split:** mint entitlements / tokens **server-side** (POST/PRG + DB).
 Use Topcoat signals only for **ephemeral UI** after SSR. Do **not** add
 first-party `assets/vcp_*.js` for toggles the runtime can express.
+
+**GET filter forms (idiomatic):** list search on docs / org issues /
+admin issues uses `method="GET"` as progressive-enhancement fallback
+beside the live shard. That is a filter, not a mutation — OriginLayer
+does not apply, and converting these to POST would break shareable
+query URLs. Compose / report / reply forms stay `method="POST"`.
 
 ### Non-negotiable: `@click` bind contract (0.4)
 

@@ -38,6 +38,8 @@ fi
 
 grep -n 'admin_issues_search_results' "$PAGE" >/dev/null || fail "$PAGE must invoke admin_issues_search_results shard"
 grep -n 'org_query' "$PAGE" >/dev/null || fail "$PAGE must wire org_query signal"
+# Progressive-enhancement filter form (not a mutation) — keep GET for ?q= / ?org=.
+grep -n 'method="GET"' "$PAGE" >/dev/null || fail "$PAGE search filter form must use method=GET"
 grep -n 'resolve_org_filter' "$HELPERS" >/dev/null || fail "$HELPERS must define resolve_org_filter"
 
 echo "check_admin_issues_search_shard: OK"

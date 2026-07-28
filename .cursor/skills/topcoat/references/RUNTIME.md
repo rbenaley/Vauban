@@ -125,6 +125,7 @@ be applied to the redirect response before returning `Ok(response)`.
 |---------|-----------|
 | Issue / revoke download token | `#[route(POST)]` + DB + `see_other` (303) |
 | Show panel after mint | SSR from DB row on GET |
+| Docs / issues list filter (no mutation) | `method="GET"` form + optional live `#[shard]` |
 | fetch ↔ cURL tab, live countdown, copy | Signals only |
 | Absolute URL host | `Config::primary_public_origin()` from `server.public_origins` |
 | Trailing slash / renamed path | `redirect_permanent` (308) in edge layer or handler |

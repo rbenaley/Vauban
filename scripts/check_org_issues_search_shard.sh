@@ -40,6 +40,8 @@ fi
 
 grep -n 'issues_search_results' "$PAGE" >/dev/null || fail "$PAGE must invoke issues_search_results shard"
 grep -n 'org_slug:' "$PAGE" >/dev/null || fail "$PAGE must pass org_slug shard arg"
+# Progressive-enhancement filter form (not a mutation) — keep GET for ?q= URLs.
+grep -n 'method="GET"' "$PAGE" >/dev/null || fail "$PAGE search filter form must use method=GET"
 grep -n 'normalize_query' "$HELPERS" >/dev/null || fail "$HELPERS must define normalize_query"
 grep -n 'issue_matches_query' "$HELPERS" >/dev/null || fail "$HELPERS must define issue_matches_query"
 
