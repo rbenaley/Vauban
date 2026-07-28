@@ -173,6 +173,26 @@ Upstream guides: `topcoat-view/macro/docs/view.md`, `component.md`, etc.
 
 **VCP:** prefer module-based routing + discover for the portal tree.
 
+### Redirects (prefer Topcoat helpers)
+
+**Always prefer** the idiomatic Topcoat redirect helpers over hand-rolled
+`StatusCode` + `Location` responses:
+
+| Helper | Status | Use when |
+|--------|--------|----------|
+| `see_other(uri)` | **303** | Successful mutation → navigate with GET (**PRG**). Return `Ok(see_other(...))` / `Result<SeeOther>`. |
+| `redirect(uri)` | **307** | Temporary redirect; **preserves** method. Prefer for short-lived “go there instead” from a handler (`Err(redirect(...).into())`). |
+| `redirect_permanent(uri)` | **308** | Permanent URL move / canonicalization; **preserves** method. Prefer for trailing-slash strip, renamed routes, legacy path aliases. |
+
+Rules:
+
+- Do **not** invent `301` / `302` / raw `Response::builder().status(...).header(LOCATION, …)` when one of the three helpers fits.
+- `ok_or_redirect("/login")` is fine for auth gates (uses the temporary redirect path).
+- Canonical trailing-slash (and similar wide URL fixes): root `#[layer]` + `redirect_permanent` + pure path helper — see `src/http_canonical.rs` and `references/RUNTIME.md`.
+- Open redirects: only allow origin-relative `Location` values you control; never bounce to an untrusted query param.
+
+Detail and PRG notes: `references/RUNTIME.md` § Redirects.
+
 ---
 
 ## 7. Request context — locality of behavior

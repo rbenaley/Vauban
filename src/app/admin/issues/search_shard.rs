@@ -78,8 +78,8 @@ pub async fn admin_issues_search_results(
                         .unwrap_or_else(|| format!("org#{}", issue.organization_id));
                     let updated = format_relative(issue.updated_at, now, tz);
                     let meta = format!(
-                        "{} · {} · opened by {} · updated {}",
-                        org_label, issue.component, opener, updated
+                        "{} · {} · opened by {} · updated {}", org_label, issue
+                        .component, opener, updated
                     );
                     <a class="vb-row" href=(format!("/admin/issues/{}", issue.key))>
                         <div

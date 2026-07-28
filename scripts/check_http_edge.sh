@@ -41,6 +41,23 @@ grep -n 'access_log_path = "/var/log/vcp-access.log"' config/vcp.conf >/dev/null
 grep -n 'logs/' .gitignore >/dev/null \
   || fail ".gitignore must exclude the local logs/ directory"
 
+# Trailing-slash canonicalization (wide redirect_permanent / 308 on GET/HEAD).
+HELPERS="src/http_canonical.rs"
+[[ -f "$HELPERS" ]] || fail "missing $HELPERS"
+grep -n 'trailing_slash_redirect_location' "$HELPERS" >/dev/null \
+  || fail "$HELPERS must define trailing_slash_redirect_location"
+grep -n 'should_redirect_trailing_slash' "$HELPERS" >/dev/null \
+  || fail "$HELPERS must define should_redirect_trailing_slash"
+grep -n 'redirect_permanent' src/app.rs >/dev/null \
+  || fail "src/app.rs must use topcoat redirect_permanent for trailing slashes"
+grep -n 'trailing_slash_redirect_location' src/app.rs >/dev/null \
+  || fail "src/app.rs security layer must call trailing_slash_redirect_location"
+grep -n 'should_redirect_trailing_slash' src/app.rs >/dev/null \
+  || fail "src/app.rs must gate trailing-slash redirects to safe methods"
+if grep -nE 'MOVED_PERMANENTLY|moved_permanently' src/app.rs >/dev/null; then
+  fail "src/app.rs must not hand-roll 301; use redirect_permanent (308)"
+fi
+
 # Dynamic responses must set the hardening headers (and no-store for HTML).
 APP="src/app.rs"
 grep -n 'no-store' "$APP" >/dev/null \

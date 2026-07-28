@@ -98,14 +98,36 @@ shard handlers.
 Admin shards also skip the page layout: re-run `require_staff` (and the
 relevant Casbin check) inside the `#[shard]` before loading data.
 
+## Redirects (idiomatic)
+
+Prefer Topcoat helpers — do not hand-roll status + `Location` unless a
+helper truly cannot express the need (document why if so).
+
+| Helper | Status | Pattern |
+|--------|--------|---------|
+| `see_other(uri)` | 303 | PRG after successful POST/PUT/DELETE → `Ok(see_other(...))` |
+| `redirect(uri)` | 307 | Temporary; keep method → usually `Err(redirect(...).into())` |
+| `redirect_permanent(uri)` | 308 | Permanent / canonical URL → same `Err(...).into()` or `IntoResponse` in a layer |
+
+Trailing-slash canonicalization (VCP):
+
+- Pure helper: `http_canonical::trailing_slash_redirect_location`
+- Safe methods only (`GET` / `HEAD`) via `should_redirect_trailing_slash`
+- Root layer calls `redirect_permanent(&location).into_response(cx)?`
+- Do **not** use `MOVED_PERMANENTLY` (301) when `redirect_permanent` fits
+
+In a `#[layer]`, convert with `IntoResponse` so security headers can still
+be applied to the redirect response before returning `Ok(response)`.
+
 ## PRG vs client state
 
 | Concern | Mechanism |
 |---------|-----------|
-| Issue / revoke download token | `#[route(POST)]` + DB + `SeeOther` |
+| Issue / revoke download token | `#[route(POST)]` + DB + `see_other` (303) |
 | Show panel after mint | SSR from DB row on GET |
 | fetch ↔ cURL tab, live countdown, copy | Signals only |
 | Absolute URL host | `Config::primary_public_origin()` from `server.public_origins` |
+| Trailing slash / renamed path | `redirect_permanent` (308) in edge layer or handler |
 
 Never generate security tokens in the browser. Never use `?tool=` (or
 similar) just to switch a tab the client can own.

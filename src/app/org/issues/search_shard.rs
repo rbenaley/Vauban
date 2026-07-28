@@ -69,7 +69,8 @@ pub async fn issues_search_results(cx: &Cx, org_slug: String, q: String, status:
                         .unwrap_or_else(|| "Unknown".to_owned());
                     let updated = format_relative(issue.updated_at, now, tz);
                     let meta = format!(
-                        "{} · opened by {} · updated {}", issue.component, opener, updated
+                        "{} · opened by {} · updated {}", issue.component, opener,
+                        updated
                     );
                     <a class="vb-row" href=(format!("/{}/issues/{}", org, issue.key))>
                         <div

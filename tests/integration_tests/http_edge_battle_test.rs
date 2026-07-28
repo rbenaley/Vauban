@@ -125,3 +125,36 @@ async fn battle_parallel_security_header_reads() {
         h.await.expect("join");
     }
 }
+
+#[tokio::test]
+async fn battle_parallel_trailing_slash_308() {
+    let _guard = db_lock().lock().await;
+    let n = 12usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let barrier = barrier.clone();
+        let router = test_router().await;
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let path = if i % 2 == 0 { "/login/" } else { "/login/?x=1" };
+            let resp = get(&router, path, None).await;
+            assert_eq!(status(&resp), StatusCode::PERMANENT_REDIRECT);
+            let loc = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .expect("location");
+            if i % 2 == 0 {
+                assert_eq!(loc, "/login");
+            } else {
+                assert_eq!(loc, "/login?x=1");
+            }
+        }));
+    }
+
+    for h in handles {
+        h.await.expect("join");
+    }
+}

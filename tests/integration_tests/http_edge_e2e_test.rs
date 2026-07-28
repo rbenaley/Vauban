@@ -5,10 +5,12 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use topcoat::router::StatusCode;
+use topcoat::router::{Method, StatusCode};
 use vcp::tls::{AccessLog, HandshakeFailureLog, build_server_config, serve_https};
 
-use crate::common::{db_lock, get, install_crypto_once, status, test_config, test_router};
+use crate::common::{
+    db_lock, get, install_crypto_once, post_form, request, status, test_config, test_router,
+};
 
 fn header<'a>(resp: &'a topcoat::router::Response, name: &str) -> Option<&'a str> {
     resp.headers().get(name).and_then(|v| v.to_str().ok())
@@ -43,11 +45,57 @@ async fn e2e_root_redirect_also_sets_security_headers() {
         "expected redirect from /, got {}",
         status(&resp)
     );
+    assert_ne!(
+        status(&resp),
+        StatusCode::PERMANENT_REDIRECT,
+        "root `/` must not use trailing-slash redirect_permanent"
+    );
     assert_eq!(header(&resp, "cache-control"), Some("no-store"));
     assert_eq!(header(&resp, "x-content-type-options"), Some("nosniff"));
     assert_eq!(
         header(&resp, "content-security-policy"),
         Some("frame-ancestors 'none'")
+    );
+}
+
+#[tokio::test]
+async fn e2e_trailing_slash_get_is_308_canonical() {
+    let _guard = db_lock().lock().await;
+    let router = test_router().await;
+
+    let resp = get(&router, "/login/", None).await;
+    assert_eq!(status(&resp), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(header(&resp, "location"), Some("/login"));
+    assert_eq!(header(&resp, "cache-control"), Some("no-store"));
+    assert_eq!(header(&resp, "x-content-type-options"), Some("nosniff"));
+
+    let with_q = get(&router, "/login/?next=1", None).await;
+    assert_eq!(status(&with_q), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(header(&with_q, "location"), Some("/login?next=1"));
+
+    let multi = get(&router, "/login///", None).await;
+    assert_eq!(status(&multi), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(header(&multi, "location"), Some("/login"));
+}
+
+#[tokio::test]
+async fn e2e_trailing_slash_head_is_308() {
+    let _guard = db_lock().lock().await;
+    let router = test_router().await;
+    let resp = request(&router, Method::HEAD, "/login/", None, None).await;
+    assert_eq!(status(&resp), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(header(&resp, "location"), Some("/login"));
+}
+
+#[tokio::test]
+async fn e2e_trailing_slash_post_is_not_308() {
+    let _guard = db_lock().lock().await;
+    let router = test_router().await;
+    let resp = post_form(&router, "/login/", None, "email=x&password=y").await;
+    assert_ne!(
+        status(&resp),
+        StatusCode::PERMANENT_REDIRECT,
+        "POST must not receive trailing-slash redirect_permanent"
     );
 }
 

@@ -197,6 +197,10 @@ skill §10).
   page handlers.
 - Prefer PRG (Post-Redirect-Get) for full form submissions; use shards /
   procedures for in-page updates that truly need them.
+- Redirects: prefer Topcoat idioms — `see_other` (303 PRG), `redirect`
+  (307 temporary), `redirect_permanent` (308 canonical / permanent). Do
+  not hand-roll `301`/`302` + `Location` when those helpers fit (see
+  `topcoat` skill §6 + `references/RUNTIME.md`).
 
 ## Rendering principles
 

@@ -15,8 +15,9 @@ use topcoat::{
     cookie::RouterBuilderCookieExt,
     font,
     router::{
-        Body, HeaderValue, Next, Response, Router, RouterBuilderDiscoverExt, SeeOther, Slot,
-        StatusCode, header, layer, layout, route, see_other,
+        Body, HeaderValue, IntoResponse, Next, Response, Router, RouterBuilderDiscoverExt,
+        SeeOther, Slot, StatusCode, header, layer, layout, method, redirect_permanent, route,
+        see_other, uri,
     },
     session::{Config as SessionConfig, RouterBuilderSessionExt},
     tailwind,
@@ -45,6 +46,7 @@ const APPLE_TOUCH_ICON_PRECOMPOSED_BYTES: &[u8] = include_bytes!(concat!(
 use crate::{
     config::{Config, Environment},
     fonts::{HANKEN_GROTESK, JETBRAINS_MONO},
+    http_canonical::{should_redirect_trailing_slash, trailing_slash_redirect_location},
     perms::PolicyStore,
 };
 
@@ -124,8 +126,25 @@ async fn security_headers(cx: &mut CxBuilder, body: Body, next: Next<'_>) -> Res
     let enable_hsts = try_app_context::<EnableHsts>(cx)
         .map(|h| h.0)
         .unwrap_or(false);
-    let mut response = next.run(cx, body).await?;
-    let headers = response.headers_mut();
+
+    // Wide canonical redirect: strip trailing slashes via Topcoat
+    // `redirect_permanent` (HTTP 308) on GET/HEAD only.
+    let redirect_to = if should_redirect_trailing_slash(method(cx)) {
+        let req_uri = uri(cx);
+        trailing_slash_redirect_location(req_uri.path(), req_uri.query())
+    } else {
+        None
+    };
+    let mut response = match redirect_to {
+        Some(location) => redirect_permanent(&location).into_response(cx)?,
+        None => next.run(cx, body).await?,
+    };
+
+    apply_security_headers(response.headers_mut(), enable_hsts);
+    Ok(response)
+}
+
+fn apply_security_headers(headers: &mut http::HeaderMap, enable_hsts: bool) {
     // Dynamic HTML/API/redirects: never cache. Leave asset/font routes alone —
     // Topcoat already sets `public, max-age=31536000, immutable` on those.
     if !headers.contains_key(header::CACHE_CONTROL) {
@@ -151,7 +170,6 @@ async fn security_headers(cx: &mut CxBuilder, body: Body, next: Next<'_>) -> Res
             HeaderValue::from_static("max-age=31536000; includeSubDomains"),
         );
     }
-    Ok(response)
 }
 
 /// Unauthenticated entry: send browsers to the login form.

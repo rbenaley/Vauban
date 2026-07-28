@@ -14,6 +14,7 @@ pub mod docs_body;
 pub mod docs_search;
 pub mod docs_version;
 pub mod fonts;
+pub mod http_canonical;
 pub mod issues_search;
 pub mod models;
 pub mod nav;

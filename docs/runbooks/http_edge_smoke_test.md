@@ -1,11 +1,12 @@
 # Runbook -- HTTPS edge (access log + security headers)
 
 > Manual validation after shipping **Apache CLF access logging**, dynamic
-> `Cache-Control: no-store`, or browser hardening headers
-> (`X-Content-Type-Options`, CSP `frame-ancestors`, `Permissions-Policy`).
+> `Cache-Control: no-store`, browser hardening headers
+> (`X-Content-Type-Options`, CSP `frame-ancestors`, `Permissions-Policy`),
+> or **trailing-slash `redirect_permanent` (308) canonical redirects**.
 >
 > Audience: release / staging operators.
-> Severity: **BLOCKING** for edge/header changes. Do not ship without A–D.
+> Severity: **BLOCKING** for edge/header changes. Do not ship without A–E.
 
 Related:
 
@@ -110,3 +111,23 @@ handshake.
 
 Pass: coalesced `count=N` appears under `vcp=trace`; no DEBUG flood under the
 default filter.
+
+## E -- Trailing-slash canonical `redirect_permanent` (308)
+
+```bash
+curl -k -sI https://127.0.0.1:3000/login/
+curl -k -sI "https://127.0.0.1:3000/login/?next=1"
+curl -k -sI https://127.0.0.1:3000/
+```
+
+Expect:
+
+| Request | Status | `Location` |
+|---------|--------|------------|
+| `/login/` | **308** | `/login` |
+| `/login/?next=1` | **308** | `/login?next=1` |
+| `/` | **303** (or other non-308 redirect to login) | `/login` |
+
+Also confirm security headers (`no-store`, `nosniff`, CSP) remain on the 308.
+
+Pass: trailing slashes canonicalize via Topcoat `redirect_permanent`; root `/` is unchanged.

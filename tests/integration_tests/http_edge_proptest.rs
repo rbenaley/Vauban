@@ -1,10 +1,12 @@
-//! Property tests for Apache CLF formatting and handshake coalescing.
+//! Property tests for Apache CLF formatting, handshake coalescing, and
+//! trailing-slash canonicalization.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use http::{Method, Version};
 use proptest::prelude::*;
+use vcp::http_canonical::{should_redirect_trailing_slash, trailing_slash_redirect_location};
 use vcp::tls::{HandshakeFailureLog, format_common_log};
 
 fn peer(octets: (u8, u8, u8, u8)) -> SocketAddr {
@@ -64,6 +66,30 @@ proptest! {
         prop_assert!(!line.contains("/q\"x"));
         prop_assert!(line.contains("%22"));
         prop_assert!(line.contains(&status_bytes));
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    #[test]
+    fn prop_trailing_slash_location_is_origin_relative(
+        segs in prop::collection::vec("[a-z0-9-]{1,10}", 1..6),
+        slashes in 1usize..5,
+        q in prop::option::of("[a-z0-9=_-]{1,20}")
+    ) {
+        let path = format!("/{}{}", segs.join("/"), "/".repeat(slashes));
+        let loc = trailing_slash_redirect_location(&path, q.as_deref()).expect("redirect");
+        prop_assert!(loc.starts_with('/'));
+        prop_assert!(!loc.starts_with("http"));
+        prop_assert!(!loc.ends_with('/'));
+        let expected = format!("/{}", segs.join("/"));
+        match &q {
+            Some(query) => prop_assert_eq!(loc, format!("{expected}?{query}")),
+            None => prop_assert_eq!(loc, expected),
+        }
+        prop_assert!(should_redirect_trailing_slash(&Method::GET));
+        prop_assert!(!should_redirect_trailing_slash(&Method::POST));
     }
 }
 

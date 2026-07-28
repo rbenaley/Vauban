@@ -79,6 +79,32 @@ fn inv_security_headers_layer_pins() {
 }
 
 #[test]
+fn inv_trailing_slash_canonical_redirect_permanent() {
+    let app = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
+    assert!(app.contains("redirect_permanent"));
+    assert!(app.contains("trailing_slash_redirect_location"));
+    assert!(app.contains("should_redirect_trailing_slash"));
+    assert!(
+        !app.contains("MOVED_PERMANENTLY") && !app.contains("moved_permanently"),
+        "use idiomatic redirect_permanent (308), not hand-rolled 301"
+    );
+
+    let helpers = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/http_canonical.rs"
+    ));
+    assert!(helpers.contains("pub fn trailing_slash_redirect_location"));
+    assert!(helpers.contains("pub fn should_redirect_trailing_slash"));
+    assert!(
+        helpers.contains("Method::GET") && helpers.contains("Method::HEAD"),
+        "permanent redirect only for safe methods"
+    );
+
+    let lib = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
+    assert!(lib.contains("pub mod http_canonical"));
+}
+
+#[test]
 fn inv_clf_format_contract() {
     let src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
