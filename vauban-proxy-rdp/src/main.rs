@@ -373,12 +373,12 @@ async fn run_service() -> Result<()> {
     let web_async =
         AsyncIpcChannel::new(web_channel).context("Failed to create async web channel")?;
 
-    // Initialise state up front so AccessGuard can borrow it as its
+    // Initialize state up front so AccessGuard can borrow it as its
     // metrics sink (each grant/deny/timeout/ipc-error lands on
     // ServiceState atomics; see AccessGuardMetrics impl above).
     let state = Arc::new(ServiceState::default());
 
-    // SECURITY: Initialise the AccessGuard BEFORE entering the Capsicum
+    // SECURITY: Initialize the AccessGuard BEFORE entering the Capsicum
     // sandbox so that any setup-time failure (missing env, invalid fd)
     // terminates the service (fail-closed boot). Symmetric to
     // vauban-proxy-ssh: the supervisor wires `ProxyRdp -> Access` in its
@@ -388,7 +388,7 @@ async fn run_service() -> Result<()> {
     // bypass identified in the post-MFA security audit could be replayed
     // verbatim against RDP).
     // rustfmt::skip: the single-line `from_env(PROTOCOL_RDP, ...)` form is
-    // pinned by `test_proxy_rdp_initialises_access_guard_from_env`; letting
+    // pinned by `test_proxy_rdp_initializes_access_guard_from_env`; letting
     // rustfmt wrap the arguments would split the grepped substring.
     #[rustfmt::skip]
     let access_wiring: AccessGuardWiring =
@@ -399,7 +399,7 @@ async fn run_service() -> Result<()> {
                  (refusing to start; sessions cannot be authorised without it)",
             )?;
     let access_guard = Arc::clone(&access_wiring.guard);
-    info!("AccessGuard initialised (defense-in-depth RBAC re-check)");
+    info!("AccessGuard initialized (defense-in-depth RBAC re-check)");
 
     let audit_channel = audit_fds.map(|(r, w)| {
         let ch = unsafe { IpcChannel::from_raw_fds(r, w) };
@@ -1295,7 +1295,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proxy_rdp_initialises_access_guard_from_env() {
+    fn test_proxy_rdp_initializes_access_guard_from_env() {
         let source = prod_source();
         assert!(
             source.contains("AccessGuard::from_env(PROTOCOL_RDP"),
@@ -1305,7 +1305,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proxy_rdp_access_guard_initialised_before_sandbox() {
+    fn test_proxy_rdp_access_guard_initialized_before_sandbox() {
         let source = prod_source();
         let from_env = source
             .find("AccessGuard::from_env")

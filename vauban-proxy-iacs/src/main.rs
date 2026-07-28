@@ -351,7 +351,7 @@ async fn run_service() -> Result<()> {
              authorised without it)",
         )?;
     let access_guard = Arc::clone(&access_wiring.guard);
-    info!("AccessGuard initialised (defense-in-depth RBAC re-check for iacs_tunnel)");
+    info!("AccessGuard initialized (defense-in-depth RBAC re-check for iacs_tunnel)");
 
     let audit_channel = audit_fds.map(|(r, w)| {
         let ch = unsafe { IpcChannel::from_raw_fds(r, w) };

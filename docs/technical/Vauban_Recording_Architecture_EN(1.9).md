@@ -817,7 +817,7 @@ path. The template branches first on `is_ssh()`, then on
 
 `isoff-main` + `SegmentList` is used (rather than `isoff-on-demand` +
 `SegmentBase`) because the fMP4 writer does not emit `sidx` boxes;
-`SegmentList` provides explicit byte ranges for the initialisation
+`SegmentList` provides explicit byte ranges for the initialization
 segment (`ftyp+moov`) and the media data (`moof+mdat`). `serve_segment`
 streams those byte ranges with HTTP Range support so Shaka Player can
 seek without buffering whole files.
@@ -826,7 +826,7 @@ seek without buffering whole files.
 
 A single GET on `/recordings/{uuid}/session.cast` streams the
 asciicast as `application/x-asciicast`. asciinema-player (MIT) is
-loaded as an external script and initialised by reading
+loaded as an external script and initialized by reading
 `data-src` / `data-*` attributes (CSP-compliant, no inline JS):
 
 ```html
@@ -935,7 +935,7 @@ indices in URLs are validated as ASCII digits before being forwarded.
 
 ### 12.4 Content Security Policy
 
-Every player initialisation script is loaded as an external file
+Every player initialization script is loaded as an external file
 from the same origin (no `'unsafe-inline'` in `script-src`). Each
 script reads its configuration from `data-*` attributes on DOM
 elements. The CSP includes `media-src 'self' blob:` because Shaka
@@ -1162,7 +1162,7 @@ available alongside this one for archaeological purposes.
 - asciinema-player (MIT) for terminal playback.
 - SSH IPC family (`SshRecordingStart` / `SshRecordingData` /
   `SshRecordingEnd`).
-- CSP-compliant external initialisation script.
+- CSP-compliant external initialization script.
 
 ### 1.0 (February 2026)
 

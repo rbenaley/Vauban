@@ -393,12 +393,12 @@ async fn run_service() -> Result<()> {
     let web_async =
         AsyncIpcChannel::new(web_channel).context("Failed to create async web channel")?;
 
-    // Initialise state up front so AccessGuard can borrow it as its
+    // Initialize state up front so AccessGuard can borrow it as its
     // metrics sink (each grant/deny/timeout/ipc-error lands on
     // ServiceState atomics; see AccessGuardMetrics impl above).
     let state = Arc::new(ServiceState::default());
 
-    // SECURITY: Initialise the AccessGuard BEFORE entering the Capsicum
+    // SECURITY: Initialize the AccessGuard BEFORE entering the Capsicum
     // sandbox so that any setup-time failure (missing env, invalid fd)
     // terminates the service (fail-closed boot). The shared module
     // consumes VAUBAN_ACCESS_IPC_READ / WRITE here and removes them
@@ -413,7 +413,7 @@ async fn run_service() -> Result<()> {
                  (refusing to start; sessions cannot be authorised without it)",
             )?;
     let access_guard = Arc::clone(&access_wiring.guard);
-    info!("AccessGuard initialised (defense-in-depth RBAC re-check)");
+    info!("AccessGuard initialized (defense-in-depth RBAC re-check)");
 
     let audit_channel = audit_fds.map(|(r, w)| {
         let ch = unsafe { IpcChannel::from_raw_fds(r, w) };
@@ -430,11 +430,11 @@ async fn run_service() -> Result<()> {
             let ch = unsafe { IpcChannel::from_raw_fds(r, w) };
             match VaultDecryptClient::new(ch) {
                 Ok(client) => {
-                    info!("Vault decrypt-only IPC client initialised");
+                    info!("Vault decrypt-only IPC client initialized");
                     Some(client)
                 }
                 Err(e) => {
-                    error!(error = %e, "Failed to initialise Vault IPC client");
+                    error!(error = %e, "Failed to initialize Vault IPC client");
                     None
                 }
             }
@@ -1527,7 +1527,7 @@ mod tests {
     // spawn, and the handler call site.
 
     #[test]
-    fn test_proxy_ssh_initialises_access_guard_from_env() {
+    fn test_proxy_ssh_initializes_access_guard_from_env() {
         let source = prod_source();
         assert!(
             source.contains("AccessGuard::from_env(PROTOCOL_SSH"),

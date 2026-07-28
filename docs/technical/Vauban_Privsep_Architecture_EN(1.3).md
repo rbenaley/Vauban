@@ -752,7 +752,7 @@ flowchart TB
 The proxy's `main.rs` strictly orders pre- and post-`cap_enter` work:
 
 1. Read FDs and env knobs.
-2. Initialise the BLAKE3 session-token MAC key.
+2. Initialize the BLAKE3 session-token MAC key.
 3. Wire `AccessGuard::from_env` (defense-in-depth RBAC re-check).
 4. Open the audit IPC channel.
 5. **Drain the host key FD via `read_host_key_from_fd`** (single-shot read; FD closed before sandbox).

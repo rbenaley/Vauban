@@ -168,14 +168,14 @@ fn run_service() -> Result<()> {
     let ldap_runtime = if ldap_enabled {
         match build_ldap_runtime(&supervisor_channel, fd_passing_socket) {
             Ok(rt) => {
-                info!(host = %rt.host, port = rt.port, "LDAPS bind runtime initialised");
+                info!(host = %rt.host, port = rt.port, "LDAPS bind runtime initialized");
                 Some(rt)
             }
             Err(e) => {
-                // Fail-closed: LDAP was promised but we could not initialise.
+                // Fail-closed: LDAP was promised but we could not initialize.
                 // We keep running (local accounts still work) but every LDAP
                 // bind will report Unreachable.
-                error!("Failed to initialise LDAPS runtime: {e:#}");
+                error!("Failed to initialize LDAPS runtime: {e:#}");
                 None
             }
         }

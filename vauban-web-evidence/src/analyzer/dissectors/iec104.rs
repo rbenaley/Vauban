@@ -230,7 +230,7 @@ fn cause_label(cot: u8) -> &'static str {
         1 => "periodic/cyclic",
         2 => "background",
         3 => "spontaneous",
-        4 => "initialised",
+        4 => "initialized",
         5 => "request/requested",
         6 => "act",
         7 => "actcon",

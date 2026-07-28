@@ -1040,7 +1040,7 @@ pub struct MfaCodeForm {
     pub csrf_token: String,
 }
 
-/// Form for the MFA setup initialisation (POST /mfa/setup/init).
+/// Form for the MFA setup initialization (POST /mfa/setup/init).
 ///
 /// VAU-008 (ephemeral): the `password` field is GONE. First enrolment needs
 /// only a valid CSRF token (the user just logged in). For ROTATION (already
@@ -1182,7 +1182,7 @@ pub(crate) async fn mfa_qr_from_secret(
     Ok((stored_secret.to_string(), qr))
 }
 
-/// MFA setup initialisation handler (POST /mfa/setup/init).
+/// MFA setup initialization handler (POST /mfa/setup/init).
 ///
 /// VAU-008 (ephemeral): the ONLY place a TOTP secret is (re)generated. Gated by
 /// CSRF. The generated candidate is written ONLY to the per-session in-memory

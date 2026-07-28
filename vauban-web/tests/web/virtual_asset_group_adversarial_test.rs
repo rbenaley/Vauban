@@ -29,7 +29,7 @@
 //!   soft-DELETE must never panic and must converge.
 //! * **A52** — Race: virtual-rule + asset creation interleaved across
 //!   100 iterations, the reachable set is monotonically the union.
-//! * **A53** — Boot-time tampering surface: the OnceLock initialiser
+//! * **A53** — Boot-time tampering surface: the OnceLock initializer
 //!   refuses to start vauban-access if the virtual row is missing
 //!   (whitebox check on `init_or_die`).
 //! * **A54** — AccessGuard agreement under saturation: 50 sequential

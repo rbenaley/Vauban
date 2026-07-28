@@ -34,7 +34,7 @@ pub fn set_brand_name(name: String) {
 }
 
 /// Read the configured brand, falling back to `"VAUBAN"` if the cell
-/// has not been initialised (e.g. unit tests that build a
+/// has not been initialized (e.g. unit tests that build a
 /// [`VaubanConfig`] without going through `main`). Public so the
 /// templates module can also expose it through context structs that
 /// don't carry a full [`VaubanConfig`] (no current consumer needs
@@ -671,7 +671,7 @@ mod tests {
     fn brand_baskesen_renders_turkish_flag_svg_in_sidebar() {
         let user = create_test_user();
         let mut base = BaseTemplate::new("Dashboard".to_string(), Some(user), chrono_tz::Tz::UTC);
-        // The OnceLock cache may not be initialised in this test
+        // The OnceLock cache may not be initialized in this test
         // process, so we set the field directly on the struct --
         // exercising the same code path the production renderer hits
         // after `set_brand_name` has populated the cache.
@@ -730,7 +730,7 @@ mod tests {
     // ==================== Brand cell (set_brand_name / brand_name) ====================
 
     #[test]
-    fn brand_name_helper_falls_back_to_vauban_when_uninitialised() {
+    fn brand_name_helper_falls_back_to_vauban_when_uninitialized() {
         // Defensive: code paths that build a `VaubanConfig::default()`
         // before `main` has had a chance to install the brand (early
         // boot, unit tests, embedded smoke checks) must still see

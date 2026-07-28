@@ -930,7 +930,7 @@ ERROR  protocol="rdp" error="…"                 AccessGuard IPC error - denyin
 On startup, every proxy logs:
 
 ```
-INFO  AccessGuard initialised (defense-in-depth RBAC re-check)
+INFO  AccessGuard initialized (defense-in-depth RBAC re-check)
 INFO  AccessGuard dispatcher started   protocol="ssh"
 ```
 
