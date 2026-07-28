@@ -74,26 +74,32 @@ cp config/local.toml.example config/local.toml
 ## Run
 
 ```bash
-just run          # build + asset bundle + HTTPS on https://127.0.0.1:3000
-just run --release  # same with release binary + matching asset bundle
-just validate     # fmt-check (rustfmt + topcoat fmt) + clippy + tests
-just dev          # topcoat HMR (no custom TLS); prefer just run for HTTPS
-just bundle       # cargo build + topcoat asset bundle → target/assets
-just fmt          # cargo fmt + topcoat fmt
+just run              # build + asset bundle + HTTPS on https://127.0.0.1:3000
+just run --release    # same with release binary + matching asset bundle
+just release          # cargo build --release + matching asset bundle (no run)
+just validate         # fmt-check + clippy + ensure-vcp-test + bundle + tests
+just test             # ensure-vcp-test + bundle + cargo test (--test-threads=1)
+just fmt              # cargo fmt + topcoat fmt
+just clippy           # clippy with warnings as errors
+just bundle           # cargo build + topcoat asset bundle → target/assets
+just bundle --release # release binary + matching asset bundle
+just dev              # topcoat HMR (no custom TLS); prefer just run for HTTPS
+just db-migrate       # apply pending Toasty migrations (dev DB)
+just db-reset         # drop/recreate local `vcp` + migrate (destructive)
+just db-reset-test    # drop/recreate `vcp_test` (destructive)
 ```
 
-`just run` and `just validate` install the pinned Topcoat CLI
-(`topcoat-cli` 0.4.0) on first use when `topcoat` is missing from
-`PATH` / `$CARGO_HOME/bin`. No prior `just validate` is required before
-`just run`. Manual install remains available:
+Recipes that need the Topcoat CLI (`run`, `bundle`, `release`, `fmt`,
+`validate`, `dev`, …) call `ensure-topcoat`, which installs the pinned
+`topcoat-cli` 0.4.0 on first use when `topcoat` is missing from `PATH` /
+`$CARGO_HOME/bin`. No manual `cargo install` and no prior `just validate`
+are required before `just run`.
 
-```bash
-cargo install topcoat-cli --version 0.4.0
-```
-
-`just run` keeps VCP’s custom TLS 1.3 serve path. `topcoat dev` is for
-UI HMR only; it does not replace HTTPS. Production fails closed if the
-asset bundle is missing (`AssetBundle::load()`).
+`just run` keeps VCP’s custom TLS 1.3 serve path. `topcoat dev` / `just
+dev` is for UI HMR only; it does not replace HTTPS. Production fails
+closed if the asset bundle is missing (`AssetBundle::load()`). Pass
+`--release` through `just run` / `just bundle` so binary and asset IDs
+stay matched (a profile mismatch panics at request time).
 
 Smoke against a self-signed cert:
 
