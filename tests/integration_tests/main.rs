@@ -12,6 +12,9 @@
 //! - `cargo test --test integration_tests -- toasty_filters -- --test-threads=1`
 //! - `cargo test --test integration_tests -- toasty_migrations -- --test-threads=1`
 //! - `cargo test --test integration_tests -- docs_search_shard -- --test-threads=1`
+//! - `cargo test --test integration_tests -- org_issues_search_shard -- --test-threads=1`
+//! - `cargo test --test integration_tests -- admin_issues_search_shard -- --test-threads=1`
+//! - `cargo test --test integration_tests -- issues_search_shard -- --test-threads=1`
 //! - `cargo test --test integration_tests -- display_tz -- --test-threads=1`
 
 mod admin_companies_battle_test;
@@ -22,6 +25,10 @@ mod admin_docs_battle_test;
 mod admin_docs_e2e_test;
 mod admin_docs_invariants_test;
 mod admin_docs_proptest;
+mod admin_issues_search_shard_battle_test;
+mod admin_issues_search_shard_e2e_test;
+mod admin_issues_search_shard_invariants_test;
+mod admin_issues_search_shard_proptest;
 mod admin_releases_battle_test;
 mod admin_releases_e2e_test;
 mod admin_releases_invariants_test;
@@ -48,6 +55,10 @@ mod http_edge_battle_test;
 mod http_edge_e2e_test;
 mod http_edge_invariants_test;
 mod http_edge_proptest;
+mod org_issues_search_shard_battle_test;
+mod org_issues_search_shard_e2e_test;
+mod org_issues_search_shard_invariants_test;
+mod org_issues_search_shard_proptest;
 mod portal_issues_battle_test;
 mod portal_issues_e2e_test;
 mod portal_issues_invariants_test;

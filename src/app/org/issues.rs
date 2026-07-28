@@ -2,6 +2,9 @@
 
 mod issue_key;
 mod new;
+mod search_shard;
+
+pub(super) use search_shard::issues_search_results;
 
 use serde::Deserialize;
 use topcoat::{
@@ -14,13 +17,13 @@ use topcoat::{
 };
 
 use crate::{
-    app::_components::{ico_plus, severity_badge, status_badge},
+    app::_components::ico_plus,
     app::org::Org,
     auth::{db, require_org},
     db::now_unix,
-    models::{Issue, RESERVED_ORG_SLUG, User},
+    issues_search::{normalize_query, normalize_status},
+    models::{Issue, RESERVED_ORG_SLUG},
     perms::perms_for_user,
-    tz::{browser_tz, format_relative},
 };
 
 const STATUSES: &[&str] = &["Open", "In analysis", "Resolved", "Closed"];
@@ -54,36 +57,8 @@ async fn issues_page(cx: &Cx) -> Result {
     }
 
     let query = query_params::<IssuesQuery>(cx).ok();
-    let q = query
-        .and_then(|q| q.q.as_deref())
-        .unwrap_or("")
-        .trim()
-        .to_lowercase();
-    let status = query
-        .and_then(|q| q.status.as_deref())
-        .unwrap_or("")
-        .trim()
-        .to_owned();
-
-    let mut database = crate::auth::db(cx);
-    let issues = Issue::all()
-        .filter(Issue::fields().organization_id().eq(ctx.org.id))
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let users = User::all().exec(&mut database).await.unwrap_or_default();
-    let tz = browser_tz(cx);
-    let now = now_unix();
-    let filtered: Vec<_> = issues
-        .into_iter()
-        .filter(|i| {
-            let status_ok = status.is_empty() || i.status.eq_ignore_ascii_case(&status);
-            let q_ok = q.is_empty()
-                || i.key.to_lowercase().contains(&q)
-                || i.title.to_lowercase().contains(&q);
-            status_ok && q_ok
-        })
-        .collect();
+    let q = normalize_query(query.and_then(|q| q.q.as_deref()).unwrap_or(""));
+    let status = normalize_status(query.and_then(|q| q.status.as_deref()).unwrap_or(""));
 
     let base = format!("/{}/issues", slug);
     let all_class = if status.is_empty() {
@@ -92,8 +67,13 @@ async fn issues_page(cx: &Cx) -> Result {
         "vb-chip"
     };
     let q_value = query.and_then(|q| q.q.clone()).unwrap_or_default();
+    let org = slug.to_owned();
+    let status_owned = status.clone();
 
     view! {
+        cx =>
+        signal query = q_value.clone();
+
         <div
             style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 6px;"
         >
@@ -126,11 +106,12 @@ async fn issues_page(cx: &Cx) -> Result {
                 style="margin: 0; flex: 1; min-width: 240px;"
                 type="search"
                 name="q"
-                value=(q_value)
+                value=(q_value.clone())
                 placeholder="Search (ID, title)…"
+                @input=$(|e: topcoat::runtime::Event| query.set(e.target.value))
             >
-            if !status.is_empty() {
-                <input type="hidden" name="status" value=(status.clone())>
+            if !status_owned.is_empty() {
+                <input type="hidden" name="status" value=(status_owned.clone())>
             }
         </form>
 
@@ -141,7 +122,8 @@ async fn issues_page(cx: &Cx) -> Result {
                     format!("{base}?status={}", urlencoding_encode(s))
                 } else {
                     format!(
-                        "{base}?q={}&status={}", urlencoding_encode(& q),
+                        "{base}?q={}&status={}",
+                        urlencoding_encode(&q),
                         urlencoding_encode(s)
                     )
                 };
@@ -154,47 +136,11 @@ async fn issues_page(cx: &Cx) -> Result {
             }
         </div>
 
-        <div class="vb-list">
-            if filtered.is_empty() {
-                <div class="vb-empty">"No matching issues."</div>
-            } else {
-                for issue in filtered {
-                    let opener = users
-                        .iter()
-                        .find(|u| u.id == issue.opened_by_user_id)
-                        .map(|u| u.display_name.clone())
-                        .unwrap_or_else(|| "Unknown".to_owned());
-                    let updated = format_relative(issue.updated_at, now, tz);
-                    let meta = format!(
-                        "{} · opened by {} · updated {}", issue.component, opener,
-                        updated
-                    );
-                    <a class="vb-row" href=(format!("/{}/issues/{}", slug, issue.key))>
-                        <div
-                            class="vb-mono"
-                            style="color: var(--accent); font-size: 12px; font-weight: 700; width: 76px; flex: none;"
-                        >
-                            (issue.key.clone())
-                        </div>
-                        <div style="flex: 1; min-width: 0;">
-                            <div
-                                style="font-size: 14.5px; font-weight: 600; margin-bottom: 4px;"
-                            >
-                                (issue.title.clone())
-                            </div>
-                            <div
-                                class="vb-mono"
-                                style="font-size: 11px; color: #8a8f96;"
-                            >
-                                (meta)
-                            </div>
-                        </div>
-                        severity_badge(severity: &issue.severity)
-                        status_badge(status: &issue.status)
-                    </a>
-                }
-            }
-        </div>
+        issues_search_results(
+            org_slug: $(org.clone()),
+            q: $(query.get()),
+            status: $(status_owned.clone())
+        )
     }
 }
 

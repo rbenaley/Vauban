@@ -85,6 +85,19 @@ swapped; keep a static `class=` only if you understand bind replaces it.
 CSS animation + `@animationiteration` (see builds ephemeral `.vb-eph-tick`):
 one tick per second, update `remaining` / `mins` / `secs` / `live` signals.
 
+## Shards and path params
+
+Shard POSTs hit `/_topcoat/shards/{id}` — **not** the page URL. There is
+no `{org}` (or other page path param) on that route. Calling
+`path_param::<Org>(cx)` inside a `#[shard]` **panics** at runtime.
+
+Pass tenant / ids as **shard arguments** from the page (`$(org.clone())`)
+and re-check with `require_org` / Casbin. Never read page path params in
+shard handlers.
+
+Admin shards also skip the page layout: re-run `require_staff` (and the
+relevant Casbin check) inside the `#[shard]` before loading data.
+
 ## PRG vs client state
 
 | Concern | Mechanism |

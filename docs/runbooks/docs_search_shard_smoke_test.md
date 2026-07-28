@@ -1,8 +1,9 @@
 # Runbook -- Docs search shard
 
-> Manual validation after shipping **shard re-auth + GET /docs**. CI covers unit /
-> invariants / proptest / battle / in-process E2E against `vcp_test`;
-> staging proves browser HTTPS and denial paths.
+> Manual validation after shipping **live docs search** (Topcoat shard
+> re-auth on every keystroke). CI covers unit / invariants / proptest /
+> battle / in-process E2E against `vcp_test`; staging proves browser
+> HTTPS, Network POSTs to `/_topcoat/shards/…`, and denial paths.
 >
 > Audience: release / staging operators.
 > Severity: **BLOCKING** for this surface. Do not ship without A–B.
@@ -11,48 +12,62 @@ Related:
 
 - [README](../../README.md) (seed login, route map)
 - Lint: `scripts/check_docs_search_shard.sh`
+- Pure helpers: `src/docs_search.rs`
 - Pyramid: `.cursor/rules/vcp-test-pyramid.mdc`
-- Filter: `cargo test --test integration_tests -- docs_search_shard -- --test-threads=1`
+- Filter: `just test -- docs_search_shard`
 - Auth denials: [`auth_tenant_smoke_test.md`](auth_tenant_smoke_test.md)
 
 ## Automated prerequisites
 
 ```bash
 bash scripts/setup_test_db.sh   # or: just db-create-test
-rtk cargo fmt --all -- --check
-rtk cargo clippy --all-targets -- -D warnings
+just fmt-check
+just clippy
 bash scripts/check_docs_search_shard.sh
-rtk cargo test --test integration_tests -- docs_search_shard -- --test-threads=1
+just test -- docs_search_shard
 ```
 
 ## Lab prerequisites
 
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
-- Browser or `curl -k` willing to accept the local self-signed cert.
+- Browser DevTools Network panel (filter `shards`) or `curl -k`.
 - Seed users: `support@vauban.sh` / `password` (staff),
   `l.martin@acme.example` / `password` (member); org `acme-infrastructure`.
+- Confirm server logs are visible (`just run` terminal) so panics are obvious.
 
-## A -- Happy path
+## A -- Live search happy path
 
-1. Sign in as `support@vauban.sh` / `password` (or member where appropriate).
-2. Exercise the surface on `/acme-infrastructure/…` per product IA.
-3. Confirm expected success status / visible data.
+1. Sign in as `l.martin@acme.example` / `password`.
+2. Open `/acme-infrastructure/docs`.
+3. Open DevTools → Network; filter on `/_topcoat/shards`.
+4. Type `ssh` gradually into the search field (do not submit the form).
+5. Confirm POSTs to `/_topcoat/shards/{id}` return **200** (not 500).
+6. Confirm the article list updates without a full page reload.
+7. Confirm the `just run` terminal shows **no**
+   `path parameter "org" was not found` panic.
+8. Clear the field — full published list returns.
 
-Pass: surface behaves as in the focused E2E suite.
+Pass: shard POSTs stay 200; UI updates; no worker panics.
 
-## B -- Denial paths
+## B -- Denial paths (fail-closed)
 
-1. As `l.martin@acme.example`, confirm admin-only routes return **403**.
-2. While authenticated, open a non-member org slug — expect **404**.
-3. Anonymous / expired session must not leak tenant data.
+Replay a captured shard POST (or use the in-process E2E as the oracle):
 
-Pass: Casbin + tenant fail-closed.
+1. Body `org_slug` empty / whitespace → **404**, no article HTML.
+2. Body `org_slug` set to another existing org the user does not belong
+   to → **404**, no foreign titles/slugs.
+3. Same POST without session cookie → **404**.
+4. Membership with an unknown role (no Casbin `docs,read`) → **403**.
+
+Pass: forged tenant / anon / missing permission never leak docs HTML.
 
 ## Related automated coverage
 
 | Layer | Filter / artifact |
 |-------|-------------------|
+| Unit | `docs_search_shard_*` in `src/docs_search.rs` |
 | Invariants | `inv_`, `scripts/check_docs_search_shard.sh` |
-| Proptest | `prop_` |
-| Battle | `battle_` |
-| E2E | `e2e_` (`--test integration_tests`) |
+| Proptest | `prop_` (+ unit `docs_search_shard_prop_*`) |
+| Battle | `battle_parallel_docs_search_shard_posts_return_200` |
+| E2E | `e2e_docs_search_shard_*` denials + match |
+| Smoke | this runbook (A–B) |

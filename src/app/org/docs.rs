@@ -16,6 +16,7 @@ use crate::{
     app::_components::chip_row,
     app::org::Org,
     auth::require_org,
+    docs_search::{normalize_category, normalize_query, text_matches_query},
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
 };
@@ -53,19 +54,18 @@ pub(super) struct DocsFilter {
 }
 
 impl DocsFilter {
+    pub(super) fn normalized(q: &str, cat: &str) -> Self {
+        Self {
+            q: normalize_query(q),
+            cat: normalize_category(cat),
+        }
+    }
+
     pub(super) fn from_cx(cx: &Cx) -> Self {
         let query = query_params::<DocsQuery>(cx).ok();
-        let q = query
-            .and_then(|q| q.q.as_deref())
-            .unwrap_or("")
-            .trim()
-            .to_lowercase();
-        let cat = query
-            .and_then(|q| q.cat.as_deref())
-            .unwrap_or("")
-            .trim()
-            .to_owned();
-        Self { q, cat }
+        let q = query.and_then(|q| q.q.as_deref()).unwrap_or("");
+        let cat = query.and_then(|q| q.cat.as_deref()).unwrap_or("");
+        Self::normalized(q, cat)
     }
 }
 
@@ -82,11 +82,7 @@ pub(super) async fn load_filtered_docs(
     let articles = query.exec(&mut database).await.unwrap_or_default();
     let mut filtered: Vec<_> = articles
         .into_iter()
-        .filter(|a| {
-            filter.q.is_empty()
-                || a.title.to_lowercase().contains(&filter.q)
-                || a.summary.to_lowercase().contains(&filter.q)
-        })
+        .filter(|a| text_matches_query(&filter.q, &a.title, &a.summary))
         .collect();
     filtered.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
     (filter.q.clone(), filter.cat.clone(), filtered)

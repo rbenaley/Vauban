@@ -1,43 +1,35 @@
 //! Live docs search shard — re-checks org + docs_read on every render.
+//!
+//! Shard POSTs hit `/_topcoat/shards/{id}` — there is no `{org}` path
+//! segment. Tenant must come from the shard argument (re-authorized below).
 
 use topcoat::{
     Result,
     context::Cx,
-    router::{forbidden, path_param},
+    router::{forbidden, not_found},
     runtime::shard,
     view::view,
 };
 
 use super::{DocsFilter, load_filtered_docs};
 use crate::{
-    app::_components::ico_chevron_right, app::org::Org, auth::require_org, perms::perms_for_user,
+    app::_components::ico_chevron_right, auth::require_org, docs_search::normalize_org_slug,
+    perms::perms_for_user,
 };
 
 /// Shard args are attacker-controlled — always re-authorize.
 #[shard]
 pub async fn docs_search_results(cx: &Cx, org_slug: String, q: String, cat: String) -> Result {
-    let path_org = path_param::<Org>(cx);
-    // Prefer path org; fall back to shard arg only if path missing.
-    let org = if (*path_org).is_empty() {
-        org_slug.as_str()
-    } else {
-        // Reject cross-tenant shard args.
-        if !org_slug.is_empty() && org_slug != *path_org {
-            return Err(forbidden().into());
-        }
-        path_org
-    };
+    let org = normalize_org_slug(&org_slug).ok_or_else(not_found)?;
     let ctx = require_org(cx, org).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.docs_read {
         return Err(forbidden().into());
     }
 
-    let filter = DocsFilter {
-        q: q.trim().to_lowercase(),
-        cat: cat.trim().to_owned(),
-    };
+    let filter = DocsFilter::normalized(&q, &cat);
     let (_, _, filtered) = load_filtered_docs(cx, &filter).await;
+    // Links use the authorized org slug, never the raw shard arg.
     let org = ctx.org.slug.clone();
 
     view! {

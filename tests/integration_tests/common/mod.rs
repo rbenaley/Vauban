@@ -20,8 +20,9 @@ use vcp::{
     config::{Config, Environment},
     db::{self, hash_password, now_unix},
     models::{
-        AuthSession, DocArticle, EphemeralDownload, Issue, MEMBERSHIP_ROLE_ORG, Membership,
-        Organization, PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG, Release, User,
+        AuthSession, DOC_STATUS_PUBLISHED, DocArticle, EphemeralDownload, Issue,
+        MEMBERSHIP_ROLE_ORG, Membership, Organization, PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG,
+        Release, User,
     },
     perms::PolicyStore,
 };
@@ -315,6 +316,140 @@ pub async fn get(router: &Router, path: &str, cookie: Option<&str>) -> Response 
 
 pub async fn post_form(router: &Router, path: &str, cookie: Option<&str>, form: &str) -> Response {
     request(router, Method::POST, path, cookie, Some(form.to_owned())).await
+}
+
+/// POST JSON (Topcoat shard / procedure bodies).
+pub async fn post_json(router: &Router, path: &str, cookie: Option<&str>, json: &str) -> Response {
+    let uri = absolute_uri(path);
+    let mut builder = Request::builder().method(Method::POST).uri(uri);
+    if let Some(cookie) = cookie {
+        builder = builder.header("cookie", cookie);
+    }
+    builder = builder
+        .header("origin", TEST_ORIGIN)
+        .header("content-type", "application/json");
+    let req = builder
+        .body(Body::from(json.to_owned()))
+        .expect("build json request");
+    router.handle(req).await
+}
+
+/// Login helper (password fixture `password`).
+pub async fn login_cookie(router: &Router, email: &str) -> Option<String> {
+    let form = format!("email={}&password=password", urlencoding_encode(email));
+    let login = post_form(router, "/login", None, &form).await;
+    cookie_header(&login)
+}
+
+/// Extract the first `/_topcoat/shards/{id}` path from SSR HTML.
+pub fn shard_path_from_html(html: &str) -> Option<String> {
+    let key = "/_topcoat/shards/";
+    let i = html.find(key)?;
+    let rest = &html[i..];
+    let end = rest
+        .find(['"', '\'', ' ', ')', ',', '&'])
+        .unwrap_or(rest.len());
+    Some(rest[..end].replace("\\/", "/"))
+}
+
+/// JSON body for `docs_search_results(org_slug, q, cat)`.
+pub fn docs_search_shard_body(org_slug: &str, q: &str, cat: &str) -> String {
+    format!(
+        "[{},{},{}]",
+        json_string(org_slug),
+        json_string(q),
+        json_string(cat)
+    )
+}
+
+fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Create a published doc article with a `test-` slug prefix for cleanup.
+pub async fn create_published_doc(
+    db: &Db,
+    title: &str,
+    summary: &str,
+    category: &str,
+    slug: &str,
+) -> DocArticle {
+    let mut conn = db.clone();
+    toasty::create!(DocArticle {
+        title: title.to_owned(),
+        summary: summary.to_owned(),
+        category: category.to_owned(),
+        slug: slug.to_owned(),
+        version: "v1".to_owned(),
+        status: DOC_STATUS_PUBLISHED.to_owned(),
+        body: "body".to_owned(),
+        updated_at: now_unix(),
+    })
+    .exec(&mut conn)
+    .await
+    .expect("create published doc")
+}
+
+/// JSON body for `issues_search_results(org_slug, q, status)`.
+pub fn org_issues_search_shard_body(org_slug: &str, q: &str, status: &str) -> String {
+    format!(
+        "[{},{},{}]",
+        json_string(org_slug),
+        json_string(q),
+        json_string(status)
+    )
+}
+
+/// JSON body for `admin_issues_search_results(q, org, status)`.
+pub fn admin_issues_search_shard_body(q: &str, org: &str, status: &str) -> String {
+    format!(
+        "[{},{},{}]",
+        json_string(q),
+        json_string(org),
+        json_string(status)
+    )
+}
+
+/// Create an open issue for search fixtures (cleaned via test org id).
+pub async fn create_test_issue(
+    db: &Db,
+    organization_id: u64,
+    opened_by_user_id: u64,
+    key: &str,
+    title: &str,
+    status: &str,
+) -> Issue {
+    let mut conn = db.clone();
+    let now = now_unix();
+    toasty::create!(Issue {
+        key: key.to_owned(),
+        title: title.to_owned(),
+        component: "SSH Proxy".to_owned(),
+        severity: "Major".to_owned(),
+        status: status.to_owned(),
+        organization_id,
+        details: "fixture".to_owned(),
+        opened_by_user_id,
+        created_at: now,
+        updated_at: now,
+    })
+    .exec(&mut conn)
+    .await
+    .expect("create test issue")
 }
 
 pub fn status(resp: &Response) -> StatusCode {
