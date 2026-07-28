@@ -60,9 +60,6 @@ pub fn router(db: Db, policy: Arc<PolicyStore>, cfg: &Config) -> Router {
     for origin in &cfg.server.public_origins {
         sessions = sessions.trust_origin(origin.clone());
     }
-    if cfg.session.dangerous_disable_origin_verification {
-        sessions = sessions.dangerous_disable_origin_verification();
-    }
     let sessions = sessions.build();
 
     let assets = load_assets(cfg.environment);

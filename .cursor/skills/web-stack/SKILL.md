@@ -271,8 +271,8 @@ From Topcoat session/cookie guides:
   the raw token.
 - `.sessions()` installs an **`OriginLayer`**: non-safe methods must
   present same-origin `Sec-Fetch-Site` (or matching `Origin`). Trust
-  extra origins explicitly (e.g. OAuth `form_post`); do not disable
-  verification without a replacement CSRF design.
+  origins via `server.public_origins` / `trust_origin`; Origin
+  verification is always enabled.
 - Keep state-changing routes on `POST` (etc.); a state-changing `GET`
   bypasses the OriginLayer by design.
 - App cookie defaults: helper wrapping `cookies(cx)` with Secure /

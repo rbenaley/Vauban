@@ -69,9 +69,6 @@ pub struct Config {
     pub access: AccessConfig,
 
     #[serde(default)]
-    pub session: SessionConfig,
-
-    #[serde(default)]
     pub login: LoginConfig,
 }
 
@@ -178,13 +175,6 @@ pub struct DatabaseConfig {
 pub struct AccessConfig {
     pub model_path: String,
     pub policy_path: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct SessionConfig {
-    /// When true, Topcoat does not register the Origin layer (local smoke only).
-    #[serde(default)]
-    pub dangerous_disable_origin_verification: bool,
 }
 
 /// Login anti-enumeration / brute-force controls.
@@ -352,11 +342,6 @@ impl Config {
                 anyhow::bail!("public_origins entry must start with https:// (got {origin})");
             }
         }
-        if self.environment.is_production() && self.session.dangerous_disable_origin_verification {
-            anyhow::bail!(
-                "session.dangerous_disable_origin_verification must be false in production"
-            );
-        }
         if let Some(acme) = &self.server.tls.acme {
             acme.validate()?;
         }
@@ -405,7 +390,6 @@ mod tests {
         assert_eq!(cfg.environment, Environment::Development);
         assert_eq!(cfg.server.port, 3000);
         assert!(cfg.database.url.contains("vcp"));
-        assert!(cfg.session.dangerous_disable_origin_verification);
         assert!(Path::new(&cfg.access.policy_path).exists());
         assert!(
             cfg.server
@@ -418,6 +402,9 @@ mod tests {
             "{}",
             cfg.server.access_log_path
         );
+        assert_eq!(cfg.login.max_attempts, 10);
+        assert_eq!(cfg.login.window_secs, 300);
+        assert_eq!(cfg.login.lockout_secs, 900);
     }
 
     #[test]
@@ -425,11 +412,13 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
         let cfg = Config::load_with_environment(&dir, Environment::Production).unwrap();
         assert_eq!(cfg.environment, Environment::Production);
-        assert!(!cfg.session.dangerous_disable_origin_verification);
         assert!(cfg.server.tls.acme.as_ref().is_some_and(|a| a.enabled));
         assert_eq!(cfg.server.port, 443);
         assert_eq!(cfg.server.access_log_path, "/var/log/vcp-access.log");
         assert_eq!(cfg.primary_public_origin(), "https://access.vauban.sh");
+        assert_eq!(cfg.login.max_attempts, 10);
+        assert_eq!(cfg.login.window_secs, 300);
+        assert_eq!(cfg.login.lockout_secs, 900);
     }
 
     #[test]
@@ -439,13 +428,15 @@ mod tests {
         assert_eq!(cfg.environment, Environment::Testing);
         assert_eq!(cfg.server.port, 3001);
         assert!(cfg.database.url.contains("vcp_test"));
-        assert!(cfg.session.dangerous_disable_origin_verification);
         assert!(!cfg.server.tls.acme.as_ref().is_some_and(|a| a.enabled));
         assert!(
             cfg.server.access_log_path.ends_with("logs/vcp-access.log"),
             "{}",
             cfg.server.access_log_path
         );
+        // Elevated ceiling so suite login floods do not lock out.
+        assert_eq!(cfg.login.max_attempts, 1000);
+        assert_eq!(cfg.login.lockout_secs, 1);
     }
 
     #[test]

@@ -82,12 +82,11 @@ directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 ```
 
-Prod [`config/vcp.conf`](config/vcp.conf): `port = 443`, absolute paths under `/usr/local/etc/vcp/`, ACME `enabled = true` (or ready-to-enable with clear CHANGE-ME), `public_origins` HTTPS only, `session.dangerous_disable_origin_verification = false`.
+Prod [`config/vcp.conf`](config/vcp.conf): `port = 443`, absolute paths under `/usr/local/etc/vcp/`, ACME `enabled = true` (or ready-to-enable with clear CHANGE-ME), `public_origins` HTTPS only. OriginLayer is always enabled (`trust_origin` from `public_origins`).
 
 Validation rules:
 - Fail boot if any `public_origins` entry is `http://`
 - Fail production if ACME enabled with empty email/domains
-- Fail production if `dangerous_disable_origin_verification`
 
 Gitignore `certs/*.crt`, `certs/*.key`, account JSON; keep `certs/.gitkeep` + README note for mkcert/self-signed.
 

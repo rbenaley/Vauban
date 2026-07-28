@@ -165,6 +165,16 @@ if awk '
   fail "require_org_admin must not return forbidden (anti-enumeration)"
 fi
 
+# OriginLayer CSRF must stay enabled (no config / API bypass).
+if grep -REn --include='*.rs' --include='*.toml' --include='*.conf' \
+  -e 'dangerous_disable_origin_verification' \
+  src/ config/ >/dev/null 2>&1; then
+  fail "dangerous_disable_origin_verification must not appear in src/ or config/"
+fi
+if ! grep -n 'trust_origin' src/app.rs >/dev/null; then
+  fail "router must trust_origin from server.public_origins"
+fi
+
 # Login must always verify (dummy hash path) and use the rate limiter.
 if ! grep -n 'verify_login_password' src/app/login.rs >/dev/null; then
   fail "login must call verify_login_password (dummy Argon2 path)"
@@ -175,8 +185,12 @@ fi
 if ! grep -n 'LoginRateLimiter' src/app.rs >/dev/null; then
   fail "router must install LoginRateLimiter in app_context"
 fi
-grep -n 'max_attempts' config/default.toml >/dev/null || fail "config/default.toml must define [login] max_attempts"
-grep -n 'window_secs' config/default.toml >/dev/null || fail "config/default.toml must define [login] window_secs"
-grep -n 'lockout_secs' config/default.toml >/dev/null || fail "config/default.toml must define [login] lockout_secs"
+for f in config/default.toml config/development.toml config/vcp.conf; do
+  grep -n 'max_attempts' "$f" >/dev/null || fail "$f must define [login] max_attempts"
+  grep -n 'window_secs' "$f" >/dev/null || fail "$f must define [login] window_secs"
+  grep -n 'lockout_secs' "$f" >/dev/null || fail "$f must define [login] lockout_secs"
+done
+# Testing uses an elevated ceiling so suite login floods do not lock out.
+grep -n 'max_attempts' config/testing.toml >/dev/null || fail "config/testing.toml must define [login] max_attempts"
 
 echo "check_auth_tenant: OK"

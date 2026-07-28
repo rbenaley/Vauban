@@ -16,9 +16,9 @@ patterns over clever shortcuts.
 - **Validate all untrusted input** at trust boundaries (forms, query
   params, webhooks, uploaded files).
 - **CSRF protection** on cookie-based session mutations. With Topcoat
-  sessions, keep the built-in `OriginLayer` enabled and put mutations
-  on non-GET methods; do not call
-  `dangerous_disable_origin_verification` without a replacement.
+  sessions, keep the built-in `OriginLayer` enabled (trust
+  `server.public_origins`) and put mutations on non-GET methods. Do
+  not disable origin verification.
 - **Tenant isolation**: never leak another organization’s data via IDOR,
   search, export, or error messages. Authorize on every object access.
 - **Safe defaults for cookies**: `HttpOnly`, `Secure`, `SameSite` as

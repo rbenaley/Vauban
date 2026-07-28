@@ -32,10 +32,6 @@ url = "postgresql://localhost/vcp"
 model_path = "config/access/model.conf"
 policy_path = "config/access/default_policy.csv"
 
-[session]
-# Local smoke / curl without Origin. Never enable in vcp.conf.
-dangerous_disable_origin_verification = true
-
 [login]
 max_attempts = 10
 window_secs = 300

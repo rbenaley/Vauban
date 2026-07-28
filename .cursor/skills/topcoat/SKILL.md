@@ -283,9 +283,9 @@ or expired. Guard with `ok_or_redirect("/login")` / unauthorized helpers.
   browsers.
 - Requests with neither header pass (non-browser clients).
 - Trust extra origins via `SessionConfig::builder().trust_origin(...)`.
-- `dangerous_disable_origin_verification` only with a replacement CSRF design.
 
-**VCP:** keep OriginLayer on; mutations on POST (etc.); never
+**VCP:** OriginLayer is always on (`trust_origin` from
+`server.public_origins`); mutations on POST (etc.); never
 state-changing GET. Aligns with `portal-security.mdc`.
 
 Custom `TokenStore` can put the token in `Authorization: Bearer` for M2M

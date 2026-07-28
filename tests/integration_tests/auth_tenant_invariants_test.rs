@@ -164,9 +164,22 @@ fn inv_router_trusts_public_origins() {
         "router must trust configured public_origins"
     );
     assert!(
-        src.contains("dangerous_disable_origin_verification"),
-        "session Origin bypass must be explicit"
+        !src.contains("dangerous_disable_origin_verification"),
+        "OriginLayer must stay enabled (no CSRF bypass switch)"
     );
+    let conf = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/vcp.conf"));
+    let default = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/default.toml"));
+    let testing = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/testing.toml"));
+    for (label, body) in [
+        ("vcp.conf", conf),
+        ("default.toml", default),
+        ("testing.toml", testing),
+    ] {
+        assert!(
+            !body.contains("dangerous_disable_origin_verification"),
+            "{label} must not expose Origin verification bypass"
+        );
+    }
 }
 
 #[test]
