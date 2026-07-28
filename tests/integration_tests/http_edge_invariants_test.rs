@@ -76,6 +76,15 @@ fn inv_security_headers_layer_pins() {
         src.contains("contains_key(header::CACHE_CONTROL)"),
         "must not clobber Topcoat asset Cache-Control"
     );
+    assert!(
+        src.contains("error.into_response(cx)")
+            || src.contains("Err(error) => error.into_response"),
+        "security layer must convert handler Err(redirect/…) before applying headers"
+    );
+    assert!(
+        !src.contains("next.run(cx, body).await?"),
+        "security layer must not ?-propagate next.run Err (skips headers on redirects)"
+    );
 }
 
 #[test]

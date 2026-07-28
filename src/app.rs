@@ -139,7 +139,11 @@ async fn security_headers(cx: &mut CxBuilder, body: Body, next: Next<'_>) -> Res
     };
     let mut response = match redirect_to {
         Some(location) => redirect_permanent(&location).into_response(cx)?,
-        None => next.run(cx, body).await?,
+        None => match next.run(cx, body).await {
+            Ok(response) => response,
+            // Handler `Err(redirect/…)` must still get security headers — do not `?` out.
+            Err(error) => error.into_response(cx)?,
+        },
     };
 
     apply_security_headers(response.headers_mut(), enable_hsts);

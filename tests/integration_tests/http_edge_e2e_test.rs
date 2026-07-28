@@ -40,15 +40,11 @@ async fn e2e_root_redirect_also_sets_security_headers() {
     let _guard = db_lock().lock().await;
     let router = test_router().await;
     let resp = get(&router, "/", None).await;
-    assert!(
-        status(&resp).is_redirection(),
-        "expected redirect from /, got {}",
-        status(&resp)
-    );
-    assert_ne!(
+    assert_eq!(
         status(&resp),
-        StatusCode::PERMANENT_REDIRECT,
-        "root `/` must not use trailing-slash redirect_permanent"
+        StatusCode::TEMPORARY_REDIRECT,
+        "GET / must redirect (307); got {}",
+        status(&resp)
     );
     assert_eq!(header(&resp, "cache-control"), Some("no-store"));
     assert_eq!(header(&resp, "x-content-type-options"), Some("nosniff"));

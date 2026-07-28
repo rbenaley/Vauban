@@ -118,6 +118,9 @@ Trailing-slash canonicalization (VCP):
 
 In a `#[layer]`, convert with `IntoResponse` so security headers can still
 be applied to the redirect response before returning `Ok(response)`.
+Do **not** `?`-propagate `next.run(...).await` when the layer must decorate
+responses: handler `Err(redirect(...))` would skip header application.
+Convert `Err(error) => error.into_response(cx)?` first, then mutate headers.
 
 ## PRG vs client state
 

@@ -74,6 +74,12 @@ grep -n 'header::CACHE_CONTROL' "$APP" >/dev/null \
 # Must not overwrite asset immutable cache when already present.
 grep -n 'contains_key(header::CACHE_CONTROL)' "$APP" >/dev/null \
   || fail "$APP must only set no-store when Cache-Control is absent"
+# Handler Err(redirect) must become a Response in-layer so headers still apply.
+grep -n 'error.into_response(cx)' "$APP" >/dev/null \
+  || fail "$APP security layer must convert next.run Err via into_response"
+if grep -nE 'next\.run\(cx, body\)\.await\?' "$APP" >/dev/null; then
+  fail "$APP must not ?-propagate next.run Err (skips headers on redirects)"
+fi
 
 # TLS handshake failure coalescing (ops TRACE, not request CLF).
 SERVE="src/tls/serve.rs"
