@@ -38,7 +38,7 @@ async fn admin_layout(cx: &Cx, slot: Slot<'_>) -> Result {
 }
 
 /// Hub redirects to the first admin tool (Issues).
-/// Navigational GET → `redirect` (307), not `see_other` (303 PRG).
+/// Navigational GET -> `redirect` (307), not `see_other` (303 PRG).
 #[route(GET "/admin")]
 async fn admin_index(cx: &Cx) -> Result {
     let _staff = require_staff(cx).await?;

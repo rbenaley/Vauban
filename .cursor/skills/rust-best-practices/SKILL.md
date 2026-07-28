@@ -223,6 +223,13 @@ cargo install cargo-geiger && cargo geiger
 `include_bytes!` static registry or Capsicum sandbox unless the user
 explicitly asks for FreeBSD privsep-level isolation.
 
+**Narrow exception:** well-known icon probe routes
+(`/favicon.ico`, `/apple-touch-icon*.png`) may embed bytes with
+`include_bytes!` and return them via `Response::builder`. OS / browser
+probes hit fixed paths; hashed `asset!` URLs cannot. Layout `<link>`
+icons stay on `asset!`. Do not expand this to a general static registry
+(see `topcoat` skill §11 / `web-stack`).
+
 Asset hygiene that still applies:
 
 - Prefer declared assets over ad-hoc filesystem reads in request handlers

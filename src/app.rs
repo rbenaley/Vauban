@@ -31,6 +31,8 @@ const APPLE_TOUCH_ICON: Asset = asset!("assets/apple-touch-icon.png");
 /// First-party script: persist browser IANA zone as `vcp_tz` for SSR dates.
 const VCP_TZ_JS: Asset = asset!("assets/vcp_tz.js");
 
+/// Well-known OS/browser probe paths (fixed URLs; not content-hashed).
+/// Layout `<link rel="icon">` still uses `asset!` above — do not generalize.
 const FAVICON_ICO_BYTES: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/favicon.ico"));
 const APPLE_TOUCH_ICON_BYTES: &[u8] = include_bytes!(concat!(
@@ -173,7 +175,7 @@ fn apply_security_headers(headers: &mut http::HeaderMap, enable_hsts: bool) {
 }
 
 /// Entry: authenticated users land on their portal home; others go to login.
-/// Navigational GET → `redirect` (307), not `see_other` (303 PRG).
+/// Navigational GET -> `redirect` (307), not `see_other` (303 PRG).
 #[route(GET "/")]
 async fn root(cx: &Cx) -> Result {
     if let Some(user) = current_user(cx).await
@@ -184,7 +186,8 @@ async fn root(cx: &Cx) -> Result {
     Err(redirect("/login").into())
 }
 
-/// Browser / OS probes that otherwise spam CLF with 404s.
+/// Fixed-path icon probes (`/favicon.ico`, apple-touch). Outside `asset!`
+/// on purpose — hashed URLs cannot satisfy OS/browser probes.
 fn static_icon_response(content_type: &'static str, bytes: &'static [u8]) -> Result<Response> {
     Ok(Response::builder()
         .status(StatusCode::OK)

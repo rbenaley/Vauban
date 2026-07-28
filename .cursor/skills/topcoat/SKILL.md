@@ -381,6 +381,14 @@ the smoke runbook (no headless browser in the pyramid).
   (`topcoat ui …`). **Optional / out of scope for VCP** — keep Concept
   `vb-*` under `src/app/_components/`; do not vendor Topcoat UI defaults.
 
+**VCP exception — OS / browser icon probes:** hashed `asset!` URLs cannot
+satisfy fixed probes (`/favicon.ico`, `/apple-touch-icon.png`,
+`/apple-touch-icon-precomposed.png`). Those routes may use
+`include_bytes!` + `Response::builder` with a long `Cache-Control`.
+HTML `<link rel="icon">` / apple-touch in the root layout still use
+`asset!`. Do **not** generalize this pattern to other static files;
+do **not** redirect probes to hashed URLs.
+
 **VCP required idioms**
 
 | Idiom | Where |
@@ -471,7 +479,7 @@ clippy `-D warnings` + asset bundle + tests (`dev-validation-cycle.mdc` /
 | HTMX+Alpine as the default stack | Topcoat runtime / shards / PRG |
 | First-party JS for fetch/cURL tabs / countdown | Signals + `@` / `:` (see §10) |
 | `@click="navigator…; this.…"` (bind-time stmts) | `@click="(e) => { … }"` or `$()` |
-| Capsicum `include_bytes!` static registry | `asset!` pipeline |
+| Capsicum `include_bytes!` static registry | `asset!` pipeline (well-known icon **probes** only: §11) |
 | Bastion WebSocket dashboards | HTTP CRUD only |
 | Trusting procedure/shard args | Re-check session + Casbin + tenant |
 | Hardcoded download host constants | `server.public_origins` / `primary_public_origin()` |

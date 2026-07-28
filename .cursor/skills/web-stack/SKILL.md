@@ -297,7 +297,7 @@ UI (filters, expands) that still re-authorize.
 | Bastion pattern | VCP instead |
 |-----------------|-------------|
 | Askama + HTMX + Alpine as the default UI kit | Topcoat `view!` + signals / shards |
-| `include_bytes!` static registry for Capsicum | Topcoat `asset!` pipeline |
+| `include_bytes!` static registry for Capsicum | Topcoat `asset!` pipeline (sole exception: well-known favicon / apple-touch **probe** routes at site root — see Topcoat skill §11) |
 | gRPC mTLS / proxy / WebSocket viewers | Out of scope |
 | Bastion Casbin resource names | VCP catalogue only |
 | Bastion Diesel schemas / migrations | Toasty models + Postgres (VCP-owned) |

@@ -88,6 +88,14 @@ fn inv_login_and_root_layout_pins() {
     assert!(app.contains("GET \"/favicon.ico\""));
     assert!(app.contains("GET \"/apple-touch-icon.png\""));
     assert!(app.contains("GET \"/apple-touch-icon-precomposed.png\""));
+    assert!(
+        app.contains("include_bytes!") && app.contains("static_icon_response"),
+        "well-known icon probes must stay on include_bytes! + static_icon_response"
+    );
+    assert!(
+        app.contains("asset!(\"assets/favicon.svg\")"),
+        "layout favicon links must stay on asset!"
+    );
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for rel in [

@@ -64,6 +64,13 @@ grep -n 'GET "/apple-touch-icon.png"' src/app.rs >/dev/null \
   || fail "must serve /apple-touch-icon.png (browser probe)"
 grep -n 'GET "/apple-touch-icon-precomposed.png"' src/app.rs >/dev/null \
   || fail "must serve /apple-touch-icon-precomposed.png (browser probe)"
+# Well-known probes: fixed paths via include_bytes!; layout links stay on asset!.
+grep -n 'include_bytes!' src/app.rs >/dev/null \
+  || fail "icon probes must embed bytes with include_bytes!"
+grep -n 'fn static_icon_response' src/app.rs >/dev/null \
+  || fail "icon probes must use static_icon_response"
+grep -n 'asset!("assets/favicon.svg")' src/app.rs >/dev/null \
+  || fail "layout favicon links must use asset! (hashed)"
 test -f assets/favicon.svg \
   || fail "assets/favicon.svg must exist (SVG brand mark)"
 test -f assets/favicon.ico \
