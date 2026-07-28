@@ -198,11 +198,6 @@ a.vb-btn.outline, button.vb-btn.outline, span.vb-btn.outline {
 a.vb-btn.muted, button.vb-btn.muted, span.vb-btn.muted {
   background: #fff; color: #5a5f66; border: 1px solid #e0e2de;
 }
-.vb-btn-build {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 12px; font-weight: 500; padding: 9px 16px; border-radius: 4px;
-  line-height: 1.2;
-}
 a.vb-btn.danger, button.vb-btn.danger {
   background: #fff; color: #b5403a; border: 1px solid #eccfcc;
   padding: 6px 10px; font-size: 11px; line-height: 1; display: inline-flex;
@@ -514,6 +509,12 @@ a.vb-row:hover { background: #fafbfa; }
   font-family: 'Hanken Grotesk', system-ui, sans-serif;
 }
 span.vb-btn { cursor: default; }
+/* Same face as channel chips (All / LTS / …); must follow .vb-btn. */
+a.vb-btn.vb-btn-build, button.vb-btn.vb-btn-build, span.vb-btn.vb-btn-build {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px; font-weight: 500; padding: 9px 16px; border-radius: 4px;
+  line-height: 1.2;
+}
 .vb-btn.ghost {
   background: #fff; color: var(--text); border: 1px solid var(--border);
 }
