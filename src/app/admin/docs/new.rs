@@ -92,7 +92,9 @@ async fn admin_docs_new_page(cx: &Cx) -> Result {
                             "Publish article"
                         </button>
                         <button class="vb-btn muted" type="submit">"Save draft"</button>
-                        <a class="vb-link" href="/admin/docs" style="margin: 0;">"Cancel"</a>
+                        <a class="vb-link" href="/admin/docs" style="margin: 0;">
+                            "Cancel"
+                        </a>
                     </div>
                 </form>
             </div>

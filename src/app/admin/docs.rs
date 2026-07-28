@@ -59,9 +59,7 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                     "Write, version, publish or hide knowledge-base articles."
                 </p>
             </div>
-            <a class="vb-btn" href="/admin/docs/new">
-                "+ New article"
-            </a>
+            <a class="vb-btn" href="/admin/docs/new">"+ New article"</a>
         </div>
 
         <div class="vb-table-wrap">
@@ -86,8 +84,9 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                         for article in articles {
                             let edit_href = format!("/admin/docs/{}", article.id);
                             let publish_action = format!("/admin/docs/{}/publish", article.id);
-                            let unpublish_action =
-                                format!("/admin/docs/{}/unpublish", article.id);
+                            let unpublish_action = format!(
+                                "/admin/docs/{}/unpublish", article.id
+                            );
                             let delete_href = format!("/admin/docs?delete={}", article.id);
                             let is_published = article.status == DOC_STATUS_PUBLISHED;
                             let summary = if article.summary.trim().is_empty() {

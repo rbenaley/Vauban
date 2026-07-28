@@ -40,9 +40,7 @@ async fn admin_releases_page(cx: &Cx) -> Result {
                     "Publish signed builds that appear in the customer Builds list."
                 </p>
             </div>
-            <a class="vb-btn" href="/admin/releases/new">
-                "+ Publish release"
-            </a>
+            <a class="vb-btn" href="/admin/releases/new">"+ Publish release"</a>
         </div>
 
         <div class="vb-table-wrap">

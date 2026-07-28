@@ -153,7 +153,9 @@ async fn admin_docs_edit_page(cx: &Cx) -> Result {
                         style="display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; align-items: center;"
                     >
                         <button class="vb-btn" type="submit">(save_label)</button>
-                        <a class="vb-link" href="/admin/docs" style="margin: 0;">"Cancel"</a>
+                        <a class="vb-link" href="/admin/docs" style="margin: 0;">
+                            "Cancel"
+                        </a>
                     </div>
                 </form>
             </div>

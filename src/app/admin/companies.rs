@@ -45,9 +45,7 @@ async fn admin_companies_page(cx: &Cx) -> Result {
                     " user accounts per company."
                 </p>
             </div>
-            <a class="vb-btn" href="/admin/companies/new">
-                "+ Onboard company"
-            </a>
+            <a class="vb-btn" href="/admin/companies/new">"+ Onboard company"</a>
         </div>
 
         <div
@@ -101,9 +99,7 @@ async fn admin_companies_page(cx: &Cx) -> Result {
                             "Accounts · max "
                             (MAX_USERS_PER_COMPANY.to_string())
                         </div>
-                        <a class="vb-link" href="/admin/companies/new">
-                            "Edit"
-                        </a>
+                        <a class="vb-link" href="/admin/companies/new">"Edit"</a>
                     </div>
                 }
             }
