@@ -122,6 +122,9 @@ Vauban's security is built on defense in depth:
 ### Build
 
 ```bash
+# Full validation cycle (build + clippy + test)
+just validate
+
 # Build all crates (debug)
 just build
 

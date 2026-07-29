@@ -33,6 +33,9 @@ clippy *ARGS:
     cargo clippy --workspace {{ARGS}}
     cargo clippy {{rdp_manifest}} {{ARGS}}
 
+# Full validation cycle: build + clippy + test (stops on first failure)
+validate: build clippy test
+
 # Build release binaries
 release:
     cargo build --workspace --release
