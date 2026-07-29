@@ -201,11 +201,17 @@ runtime environment.
 
 ### Configuration Directory Lookup
 
-Both profiles search for the config directory in this order:
+Both profiles resolve the config directory in this order:
 
-1. `VAUBAN_CONFIG_DIR` environment variable (if set)
-2. Workspace root `config/` directory (via `CARGO_MANIFEST_DIR`)
-3. `/usr/local/etc/vauban/` (FreeBSD system path)
+1. `VAUBAN_CONFIG_DIR` environment variable (if set; must exist)
+2. `/usr/local/etc/vauban/` (FreeBSD package path) when present
+3. Workspace root `config/` -- **debug builds only**
+
+Release / packaged binaries never fall back to a compile-time workspace
+`config/` path. The FreeBSD rc.d script exports
+`VAUBAN_CONFIG_DIR=${vauban_config}` (default `/usr/local/etc/vauban`).
+`just run` and `just validate` export `VAUBAN_CONFIG_DIR` to the repo
+`config/` for local and staging use.
 
 ### Secret Key
 

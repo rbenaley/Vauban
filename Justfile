@@ -10,6 +10,9 @@
 rdp_path     := "--manifest-path vauban-proxy-rdp/Cargo.toml"
 rdp_manifest := rdp_path + " --target-dir target"
 
+# Workspace config/ for recipes that boot or load conf (not a global export).
+repo_config_dir := justfile_directory() / "config"
+
 # Build all crates (workspace + vauban-proxy-rdp)
 build *ARGS:
     cargo build --workspace {{ARGS}}
@@ -33,8 +36,16 @@ clippy *ARGS:
     cargo clippy --workspace {{ARGS}}
     cargo clippy {{rdp_manifest}} {{ARGS}}
 
-# Full validation cycle: build + clippy + test (stops on first failure)
-validate: build clippy test
+# Full validation cycle: build + clippy + test (stops on first failure).
+# Exports VAUBAN_CONFIG_DIR to the repo config/ for the duration (release
+# binaries do not fall back to compile-time workspace paths).
+validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export VAUBAN_CONFIG_DIR="{{repo_config_dir}}"
+    just build
+    just clippy
+    just test
 
 # Build release binaries
 release:
@@ -42,8 +53,12 @@ release:
     cargo build {{rdp_manifest}} --release
 
 # Examples: just run | just run --release | just run -- -- create-superuser
-# Run the supervisor (workspace default-members → vauban-supervisor)
+# Run the supervisor (workspace default-members → vauban-supervisor).
+# Always points VAUBAN_CONFIG_DIR at the repo config/ (staging / laptop).
 run *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export VAUBAN_CONFIG_DIR="{{repo_config_dir}}"
     cargo run {{ARGS}}
 
 # Prerequisite: just release (or just build --release). FreeBSD + pkg(8) required.

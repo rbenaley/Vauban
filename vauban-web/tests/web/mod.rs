@@ -34,6 +34,8 @@ pub mod bastion_watch_test;
 pub mod boot_smoke_test;
 pub mod casbin_handler_eradication_web_test;
 pub mod cdn_assets_lints_test;
+pub mod config_dir_battle_test;
+pub mod config_dir_invariants_test;
 pub mod dashboard_access_posture_test;
 pub mod dashboard_isolation_test;
 pub mod dashboard_pages_test;

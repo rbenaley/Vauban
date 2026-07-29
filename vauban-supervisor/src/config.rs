@@ -7,10 +7,13 @@
 //! - Development: All services run as current user
 //! - Production: Each service runs with dedicated UID/GID
 //!
-//! Configuration directory lookup order:
-//! 1. VAUBAN_CONFIG_DIR environment variable (if set)
-//! 2. Workspace root config/ directory (based on CARGO_MANIFEST_DIR)
-//! 3. /usr/local/etc/vauban/ (production on FreeBSD)
+//! Configuration directory lookup order (via [`shared::config_dir`]):
+//! 1. `VAUBAN_CONFIG_DIR` environment variable (if set; must exist)
+//! 2. `/usr/local/etc/vauban/` (FreeBSD package path) when present
+//! 3. Workspace root `config/` -- **debug builds only**
+//!
+//! Release / packaged binaries never fall back to a compile-time workspace
+//! path (issue #38).
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -1017,10 +1020,7 @@ impl SupervisorConfig {
 
     /// Load configuration from the centralized config directory.
     ///
-    /// Uses the same directory lookup as vauban-web:
-    /// 1. VAUBAN_CONFIG_DIR environment variable (if set)
-    /// 2. Workspace root config/ directory (based on CARGO_MANIFEST_DIR)
-    /// 3. /usr/local/etc/vauban/ (production on FreeBSD)
+    /// Uses [`shared::config_dir`] (same resolution as vauban-web).
     ///
     /// Loads configuration:
     /// - Production (default): vauban.conf only
@@ -1030,50 +1030,15 @@ impl SupervisorConfig {
         Self::load_from_dir(&config_dir)
     }
 
-    /// Find the configuration directory.
-    ///
-    /// Searches in the following order:
-    /// 1. VAUBAN_CONFIG_DIR environment variable (if set)
-    /// 2. Workspace root config/ directory (based on CARGO_MANIFEST_DIR)
-    /// 3. /usr/local/etc/vauban/ (production on FreeBSD)
+    /// Find the configuration directory via [`shared::config_dir::find_config_dir`].
     fn find_config_dir() -> Result<PathBuf> {
-        // 1. Check for explicit VAUBAN_CONFIG_DIR environment variable
-        if let Ok(path) = std::env::var("VAUBAN_CONFIG_DIR") {
-            let config_path = PathBuf::from(&path);
-            if config_path.exists() {
-                return Ok(config_path);
-            }
-            anyhow::bail!(
-                "VAUBAN_CONFIG_DIR points to non-existent directory: {}",
-                path
-            );
-        }
-
-        // 2. Check workspace root config/ directory (development)
-        // CARGO_MANIFEST_DIR is set at compile time to the crate's directory (vauban-supervisor/)
-        // We go up one level to reach the workspace root
+        // Compile-time workspace `config/` is only consulted under
+        // `ConfigDirProfile::Debug` (release packages never use it).
         let workspace_config = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .map(|p| p.join("config"));
-        if let Some(ref config_path) = workspace_config
-            && config_path.exists()
-        {
-            return Ok(config_path.clone());
-        }
-
-        // 3. Check system configuration directory (production on FreeBSD)
-        let system_config = Path::new("/usr/local/etc/vauban");
-        if system_config.exists() {
-            return Ok(system_config.to_path_buf());
-        }
-
-        // No configuration directory found, fall back to embedded default
-        anyhow::bail!(
-            "Configuration directory not found. Searched:\n\
-             - VAUBAN_CONFIG_DIR environment variable\n\
-             - Workspace root config/ directory\n\
-             - /usr/local/etc/vauban/"
-        )
+        shared::config_dir::find_config_dir(workspace_config)
+            .with_context(|| "Failed to resolve VAUBAN configuration directory")
     }
 
     /// Load configuration from a directory containing TOML files.

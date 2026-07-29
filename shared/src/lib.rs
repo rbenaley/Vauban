@@ -17,6 +17,7 @@
     )
 )]
 
+pub mod config_dir;
 pub mod ipc;
 pub mod messages;
 pub mod privdrop;

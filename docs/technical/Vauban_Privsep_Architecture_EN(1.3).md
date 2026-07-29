@@ -1090,10 +1090,16 @@ The supervisor is configured via TOML files, supporting two modes:
 | Development | All services run as current user | `privsep = false` |
 | Production | Each service has dedicated UID/GID | `privsep = true` (default) |
 
-Configuration directory lookup order:
-1. `VAUBAN_CONFIG_DIR` environment variable (if set)
-2. Workspace root `config/` directory (via `CARGO_MANIFEST_DIR`)
-3. `/usr/local/etc/vauban/` (FreeBSD system path)
+Configuration directory lookup order (`shared::config_dir`):
+1. `VAUBAN_CONFIG_DIR` environment variable (if set; must exist)
+2. `/usr/local/etc/vauban/` (FreeBSD package path) when present
+3. Workspace root `config/` -- **debug builds only** (never in `--release` / packaged binaries)
+
+The FreeBSD rc.d script exports `VAUBAN_CONFIG_DIR=${vauban_config}`
+(default `/usr/local/etc/vauban`) before starting the supervisor. `just run`
+and `just validate` export `VAUBAN_CONFIG_DIR` to the repository `config/`
+for local and staging runs. This prevents a leftover source-tree
+`config/vauban.conf` from shadowing the packaged file (issue #38).
 
 In development, files are layered: `default.toml` + `development.toml` (overrides). In production, `vauban.conf` is a single self-contained file.
 

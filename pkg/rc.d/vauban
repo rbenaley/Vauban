@@ -23,12 +23,15 @@ stop_postcmd="${name}_poststop"
 
 vauban_prestart()
 {
-    return 0
+	# Force the packaged config directory unless the operator overrides
+	# `vauban_config` in rc.conf. Release binaries do not fall back to a
+	# compile-time workspace `config/` (issue #38).
+	export VAUBAN_CONFIG_DIR="${vauban_config}"
 }
 
 vauban_poststop()
 {
-    rm -f "${pidfile}"
+	rm -f "${pidfile}"
 }
 
 run_rc_command "$1"
