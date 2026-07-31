@@ -9,7 +9,9 @@
 # Local configuration (secrets)
 **/config/local.toml
 
-# IDE (track `.cursor/` — private repo agent rules/skills/plans)
+# IDE — version all of `.cursor/` except design mockups (local only).
+.cursor/mockups/**
+!.cursor/mockups/.gitkeep
 .idea/
 .vscode/
 *.swp

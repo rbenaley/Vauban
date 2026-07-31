@@ -57,8 +57,8 @@ do not copy bastion-internal dashboard patterns blindly.
   **U.S. English** (see `markdown-us-english.mdc`, `git-workflow.mdc`).
 - Never commit or push without explicit user authorization.
 - Prefix diagnostic Shell commands with `rtk` (`rtk-proxy.mdc`).
-- Keep `.cursor/plans/` for implementation plans; `.cursor/audits/` for
-  reviews; `.cursor/mockups/` for design artifacts.
+- Version all of `.cursor/` (rules, skills, plans, audits) except
+  `.cursor/mockups/` (local design artifacts only; see `.gitignore`).
 - Stack conventions: `web-stack` skill; Topcoat framework knowledge:
   `topcoat` skill; authZ: `casbin-permissions.mdc`; dates:
   `timezone-localization.mdc`; tests: `vcp-test-pyramid.mdc`; TLS/PQ:

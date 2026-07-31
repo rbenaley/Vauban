@@ -69,8 +69,10 @@ api, db, ui, assets, config, tests, docs
 - Imperative mood: `add license download`, not `added` / `adds`.
 - Subject ≤72 chars; no trailing period.
 - Body explains **why**, not a file list.
-- **Always stage `.cursor/plans/`** with the related change (never omit
-  plans from the commit unless the user explicitly excludes them).
+- **Always stage related `.cursor/` updates** (plans, skills, rules,
+  audits) with the change. Version everything under `.cursor/` except
+  `.cursor/mockups/` (local design artifacts; only `.gitkeep` tracked).
+  Never omit those paths unless the user explicitly excludes them.
 
 ## Pull requests
 
