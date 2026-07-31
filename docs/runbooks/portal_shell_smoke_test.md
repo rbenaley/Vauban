@@ -5,7 +5,7 @@
 > [`auth_tenant_smoke_test.md`](auth_tenant_smoke_test.md).
 >
 > Audience: release / staging operators.
-> Severity: **BLOCKING** for shell/chrome changes. Do not ship without A–B.
+> Severity: **BLOCKING** for shell/chrome changes. Do not ship without A–C.
 
 Related:
 
@@ -50,3 +50,20 @@ Pass: login page shows branded splash, not a bare form on a blank page.
    rail block; Issues → `/{org}/issues`.
 
 Pass: staff sees ADMIN rail + Issues → `/admin/issues`; client has no ADMIN.
+
+## C -- UI polish
+
+Concept CSS polish on authenticated chrome (no Framer / client motion libs).
+
+1. On org home, open a page with a countdown or large figure (builds
+   ephemeral panel after generating a link, or dashboard stat values).
+   Digits must not jitter as values change (`tabular-nums`).
+2. Navigate between org sections (home → builds → docs). Expect **no**
+   full-screen fade on every page (`vb-screen` must not use `vbIn`).
+3. Press a primary `vb-btn` (link or button). Expect a slight press
+   scale (~0.96); disabled `span.vb-btn` should not scale.
+4. Open a docs article modal: close control must be easy to hit (≥40px).
+   On an active ephemeral panel, Revoke must likewise be easy to click.
+
+Pass: countdown digits stable; nav without full-page fade; button press
+scale; modal close / revoke easy to click.

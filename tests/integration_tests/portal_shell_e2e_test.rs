@@ -2,10 +2,11 @@
 
 use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
+use vcp::models::{RELEASE_GA_ORG_ID, Release};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, db_lock, get, post_form, status, test_db,
-    test_router, unique_email, unique_slug,
+    cleanup, cookie_header, create_org_with_membership, create_published_doc, db_lock, get,
+    post_form, status, test_db, test_router, unique_email, unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -122,8 +123,96 @@ async fn e2e_member_dashboard_shell_without_admin_rail() {
     assert!(html.contains("vb-rail"), "{html}");
     assert!(html.contains("vb-topbar"), "{html}");
     assert!(
+        html.contains("vb-stat-value"),
+        "dashboard polish hook: {html}"
+    );
+    assert!(
         !html.contains("vb-rail-admin"),
         "member must not see ADMIN rail marker"
+    );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_docs_modal_exposes_close_hit_target() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("shell-docs-modal");
+    let slug = unique_slug("shell-docs-modal");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let article = unique_slug("shell-article");
+    create_published_doc(&db, "Shell Polish Doc", "summary", "Guides", &article).await;
+
+    let form = format!("email={}&password=password", urlencoding_encode(&email));
+    let login = post_form(&router, "/login", None, &form).await;
+    let cookie = cookie_header(&login).expect("session cookie");
+
+    let modal = get(&router, &format!("/{slug}/docs/{article}"), Some(&cookie)).await;
+    assert_eq!(status(&modal), StatusCode::OK);
+    let html = body_text(modal).await;
+    assert!(
+        html.contains("vb-modal-close"),
+        "docs modal close hook: {html}"
+    );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_builds_ephemeral_exposes_countdown_class() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("shell-eph");
+    let slug = unique_slug("shell-eph");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let version = unique_slug("shell-rel");
+    {
+        let mut conn = db.clone();
+        let _ = toasty::create!(Release {
+            version: version.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-07-15".to_owned(),
+            size_mb: "2.0".to_owned(),
+            signature_prefix: "abc".to_owned(),
+            status: "PUBLISHED".to_owned(),
+            notes: "FIX: polish".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("release");
+    }
+
+    let form = format!("email={}&password=password", urlencoding_encode(&email));
+    let login = post_form(&router, "/login", None, &form).await;
+    let cookie = cookie_header(&login).expect("session cookie");
+
+    let gen_resp = post_form(
+        &router,
+        &format!("/{slug}/builds/{version}/ephemeral"),
+        Some(&cookie),
+        "",
+    )
+    .await;
+    assert!(
+        status(&gen_resp).is_redirection(),
+        "generate ephemeral must PRG: {:?}",
+        status(&gen_resp)
+    );
+
+    let detail = get(&router, &format!("/{slug}/builds/{version}"), Some(&cookie)).await;
+    assert_eq!(status(&detail), StatusCode::OK);
+    let html = body_text(detail).await;
+    assert!(
+        html.contains("vb-ephemeral-countdown"),
+        "ephemeral countdown polish hook: {html}"
     );
 
     cleanup(&db).await;

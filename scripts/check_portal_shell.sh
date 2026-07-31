@@ -113,4 +113,59 @@ if awk '
   fail "$STYLES must not use solid accent fill on active rail items"
 fi
 
+# UI polish (Concept CSS) — tabular nums, hit areas, motion restraint, press scale.
+grep -n 'font-variant-numeric: tabular-nums' "$STYLES" >/dev/null \
+  || fail "$STYLES must set tabular-nums for dynamic figures"
+grep -A3 '\.vb-ephemeral-countdown' "$STYLES" | grep -q 'tabular-nums' \
+  || fail "$STYLES .vb-ephemeral-countdown must use tabular-nums"
+grep -A4 '\.vb-stat-value {' "$STYLES" | grep -q 'tabular-nums' \
+  || fail "$STYLES .vb-stat-value must use tabular-nums"
+if grep -n '\.vb-screen' "$STYLES" | grep -q 'vbIn'; then
+  fail "$STYLES .vb-screen must not use vbIn (high-frequency nav)"
+fi
+grep -A6 '^\.vb-modal {' "$STYLES" | grep -q 'vbIn' \
+  || fail "$STYLES .vb-modal must keep vbIn entrance"
+grep -n 'scale(0.96)' "$STYLES" >/dev/null \
+  || fail "$STYLES must scale a.vb-btn/button.vb-btn to 0.96 on :active"
+grep -n 'min-width: 40px' "$STYLES" >/dev/null \
+  || fail "$STYLES must set 40px min hit area on compact controls"
+grep -A6 'a\.vb-modal-close' "$STYLES" | grep -q 'min-width: 40px' \
+  || fail "$STYLES .vb-modal-close must be at least 40px"
+grep -A8 '\.vb-ephemeral-revoke' "$STYLES" | grep -q 'min-height: 40px' \
+  || fail "$STYLES .vb-ephemeral-revoke must be at least 40px tall"
+grep -n 'antialiased' "$STYLES" >/dev/null \
+  || fail "$STYLES body must enable -webkit-font-smoothing: antialiased"
+grep -n 'text-wrap: balance' "$STYLES" >/dev/null \
+  || fail "$STYLES titles must use text-wrap: balance"
+grep -n 'text-wrap: pretty' "$STYLES" >/dev/null \
+  || fail "$STYLES leads/body must use text-wrap: pretty"
+grep -n '\.vb-eph-seg' "$STYLES" | head -1 >/dev/null
+grep -A2 '\.vb-eph-seg {' "$STYLES" | grep -q 'border-radius: 6px' \
+  || fail "$STYLES .vb-eph-seg outer radius must be 6px (4+2 concentric)"
+
+ICONS="src/app/_components/icons.rs"
+grep -n 'RAIL_STROKE' "$ICONS" >/dev/null || fail "$ICONS must define RAIL_STROKE"
+grep -n 'CONTROL_STROKE' "$ICONS" >/dev/null || fail "$ICONS must define CONTROL_STROKE"
+grep -n 'pub const RAIL_STROKE: &str = "1.6"' "$ICONS" >/dev/null \
+  || fail "$ICONS RAIL_STROKE must be 1.6"
+grep -n 'pub const CONTROL_STROKE: &str = "1.8"' "$ICONS" >/dev/null \
+  || fail "$ICONS CONTROL_STROKE must be 1.8"
+# ico_home / ico_issues must be stroke outlines (not fill="currentColor" SVGs).
+if awk '
+  /pub async fn ico_home/ { in_fn=1; next }
+  in_fn && /pub async fn / { exit }
+  in_fn && /fill="currentColor"/ { bad=1; exit }
+  END { exit !bad }
+' "$ICONS"; then
+  fail "$ICONS ico_home must not use fill=\"currentColor\""
+fi
+if awk '
+  /pub async fn ico_issues/ { in_fn=1; next }
+  in_fn && /pub async fn / { exit }
+  in_fn && /fill="currentColor"/ { bad=1; exit }
+  END { exit !bad }
+' "$ICONS"; then
+  fail "$ICONS ico_issues must not use fill=\"currentColor\""
+fi
+
 echo "check_portal_shell: OK"

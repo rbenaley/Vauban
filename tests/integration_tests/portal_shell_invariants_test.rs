@@ -116,3 +116,73 @@ fn inv_nav_from_path_exists() {
     assert!(nav.contains("pub fn nav_from_path"));
     assert!(nav.contains("pub fn nav_from_cx"));
 }
+
+#[test]
+fn inv_ui_polish_css_and_rail_icon_outlines() {
+    let css = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
+    assert!(
+        css.contains("font-variant-numeric: tabular-nums"),
+        "dynamic figures need tabular-nums"
+    );
+    let countdown = css
+        .split(".vb-ephemeral-countdown")
+        .nth(1)
+        .expect("countdown rule");
+    assert!(
+        countdown.contains("tabular-nums"),
+        "countdown must use tabular-nums"
+    );
+    let stat = css.split(".vb-stat-value {").nth(1).expect("stat-value");
+    assert!(
+        stat.contains("tabular-nums"),
+        "stat-value must use tabular-nums"
+    );
+    let screen = css
+        .lines()
+        .find(|l| l.contains(".vb-screen"))
+        .expect(".vb-screen");
+    assert!(
+        !screen.contains("vbIn"),
+        ".vb-screen must not animate with vbIn"
+    );
+    assert!(
+        css.contains(".vb-modal") && css.contains("vbIn"),
+        ".vb-modal must keep vbIn"
+    );
+    assert!(
+        css.contains("scale(0.96)"),
+        "buttons need active scale(0.96)"
+    );
+    assert!(
+        css.contains("antialiased"),
+        "body must enable font-smoothing antialiased"
+    );
+    assert!(css.contains("text-wrap: balance"));
+    assert!(css.contains("text-wrap: pretty"));
+    let seg = css.split(".vb-eph-seg {").nth(1).expect("eph-seg");
+    assert!(
+        seg.contains("border-radius: 6px"),
+        "eph-seg outer radius must be 6px"
+    );
+
+    let icons = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/_components/icons.rs"
+    ));
+    assert!(icons.contains("pub const RAIL_STROKE: &str = \"1.6\""));
+    assert!(icons.contains("pub const CONTROL_STROKE: &str = \"1.8\""));
+    let home = icons
+        .split("pub async fn ico_home")
+        .nth(1)
+        .and_then(|s| s.split("pub async fn ").next())
+        .expect("ico_home");
+    assert!(home.contains("fill=\"none\""));
+    assert!(!home.contains("fill=\"currentColor\""));
+    let issues = icons
+        .split("pub async fn ico_issues")
+        .nth(1)
+        .and_then(|s| s.split("pub async fn ").next())
+        .expect("ico_issues");
+    assert!(issues.contains("fill=\"none\""));
+    assert!(!issues.contains("fill=\"currentColor\""));
+}

@@ -2,6 +2,11 @@
 
 use topcoat::{Result, context::Cx, view::view};
 
+/// Stroke weight for rail / navigation icons (outline set).
+pub const RAIL_STROKE: &str = "1.6";
+/// Stroke weight for controls (close, chevrons, plus, check, …).
+pub const CONTROL_STROKE: &str = "1.8";
+
 fn box_style(size: u32) -> String {
     format!("width:{size}px;height:{size}px")
 }
@@ -9,10 +14,18 @@ fn box_style(size: u32) -> String {
 pub async fn ico_home(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = RAIL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
-            <svg width=(s.clone()) height=(s) viewBox="0 0 17 17" fill="currentColor">
+            <svg
+                width=(s.clone())
+                height=(s)
+                viewBox="0 0 17 17"
+                fill="none"
+                stroke="currentColor"
+                stroke-width=(stroke)
+            >
                 <rect x="2" y="2" width="5.5" height="5.5" rx="0.6"></rect>
                 <rect x="9.5" y="2" width="5.5" height="5.5" rx="0.6"></rect>
                 <rect x="2" y="9.5" width="5.5" height="5.5" rx="0.6"></rect>
@@ -25,6 +38,7 @@ pub async fn ico_home(cx: &Cx, size: u32) -> Result {
 pub async fn ico_docs(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = RAIL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -34,7 +48,7 @@ pub async fn ico_docs(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.6"
+                stroke-width=(stroke)
             >
                 <rect x="3.2" y="2.8" width="10.6" height="11.4" rx="1.2"></rect>
                 <path d="M10.2 2.8 V6.2 H13.8"></path>
@@ -46,6 +60,7 @@ pub async fn ico_docs(cx: &Cx, size: u32) -> Result {
 pub async fn ico_builds(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = RAIL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -55,7 +70,7 @@ pub async fn ico_builds(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.6"
+                stroke-width=(stroke)
                 stroke-linejoin="round"
             >
                 <path d="M8.5 2.2 L14.2 5.5 L14.2 11.5 L8.5 14.8 L2.8 11.5 L2.8 5.5 Z"></path>
@@ -67,20 +82,7 @@ pub async fn ico_builds(cx: &Cx, size: u32) -> Result {
 pub async fn ico_issues(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
-    view! {
-        cx =>
-        <span class="vb-ico" aria-hidden="true" style=(style)>
-            <svg width=(s.clone()) height=(s) viewBox="0 0 17 17" fill="currentColor">
-                <path d="M4.2 2.4 H5.6 V14.6 H4.2 Z"></path>
-                <path d="M5.6 2.6 H12.4 L10.8 5.6 L12.4 8.6 H5.6 Z"></path>
-            </svg>
-        </span>
-    }
-}
-
-pub async fn ico_edit(cx: &Cx, size: u32) -> Result {
-    let s = size.to_string();
-    let style = box_style(size);
+    let stroke = RAIL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -90,7 +92,30 @@ pub async fn ico_edit(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.6"
+                stroke-width=(stroke)
+                stroke-linejoin="round"
+            >
+                <path d="M4.9 2.4 V14.6"></path>
+                <path d="M4.9 2.6 H12.4 L10.8 5.6 L12.4 8.6 H4.9 Z"></path>
+            </svg>
+        </span>
+    }
+}
+
+pub async fn ico_edit(cx: &Cx, size: u32) -> Result {
+    let s = size.to_string();
+    let style = box_style(size);
+    let stroke = RAIL_STROKE;
+    view! {
+        cx =>
+        <span class="vb-ico" aria-hidden="true" style=(style)>
+            <svg
+                width=(s.clone())
+                height=(s)
+                viewBox="0 0 17 17"
+                fill="none"
+                stroke="currentColor"
+                stroke-width=(stroke)
                 stroke-linecap="round"
                 stroke-linejoin="round"
             >
@@ -104,19 +129,7 @@ pub async fn ico_edit(cx: &Cx, size: u32) -> Result {
 pub async fn ico_release(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
-    view! {
-        cx =>
-        <span class="vb-ico" aria-hidden="true" style=(style)>
-            <svg width=(s.clone()) height=(s) viewBox="0 0 17 17" fill="currentColor">
-                <path d="M8.5 2.2 L13.8 8.2 H10.6 V14.8 H6.4 V8.2 H3.2 Z"></path>
-            </svg>
-        </span>
-    }
-}
-
-pub async fn ico_orgs(cx: &Cx, size: u32) -> Result {
-    let s = size.to_string();
-    let style = box_style(size);
+    let stroke = RAIL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -126,7 +139,29 @@ pub async fn ico_orgs(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.6"
+                stroke-width=(stroke)
+                stroke-linejoin="round"
+            >
+                <path d="M8.5 2.2 L13.8 8.2 H10.6 V14.8 H6.4 V8.2 H3.2 Z"></path>
+            </svg>
+        </span>
+    }
+}
+
+pub async fn ico_orgs(cx: &Cx, size: u32) -> Result {
+    let s = size.to_string();
+    let style = box_style(size);
+    let stroke = RAIL_STROKE;
+    view! {
+        cx =>
+        <span class="vb-ico" aria-hidden="true" style=(style)>
+            <svg
+                width=(s.clone())
+                height=(s)
+                viewBox="0 0 17 17"
+                fill="none"
+                stroke="currentColor"
+                stroke-width=(stroke)
                 stroke-linejoin="round"
             >
                 <path d="M2.8 14.4 H14.2 V7.8 L8.5 2.8 L2.8 7.8 Z"></path>
@@ -139,6 +174,7 @@ pub async fn ico_orgs(cx: &Cx, size: u32) -> Result {
 pub async fn ico_arrow_down(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = CONTROL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -148,7 +184,7 @@ pub async fn ico_arrow_down(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.8"
+                stroke-width=(stroke)
                 stroke-linecap="round"
                 stroke-linejoin="round"
             >
@@ -162,6 +198,7 @@ pub async fn ico_arrow_down(cx: &Cx, size: u32) -> Result {
 pub async fn ico_chevron_right(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = CONTROL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -171,7 +208,7 @@ pub async fn ico_chevron_right(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.8"
+                stroke-width=(stroke)
                 stroke-linecap="round"
                 stroke-linejoin="round"
             >
@@ -184,6 +221,7 @@ pub async fn ico_chevron_right(cx: &Cx, size: u32) -> Result {
 pub async fn ico_chevron_down(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = CONTROL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -193,7 +231,7 @@ pub async fn ico_chevron_down(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.8"
+                stroke-width=(stroke)
                 stroke-linecap="round"
                 stroke-linejoin="round"
             >
@@ -206,6 +244,7 @@ pub async fn ico_chevron_down(cx: &Cx, size: u32) -> Result {
 pub async fn ico_close(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = CONTROL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -215,7 +254,7 @@ pub async fn ico_close(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.8"
+                stroke-width=(stroke)
                 stroke-linecap="round"
             >
                 <path d="M4 4 L13 13"></path>
@@ -228,6 +267,7 @@ pub async fn ico_close(cx: &Cx, size: u32) -> Result {
 pub async fn ico_plus(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = CONTROL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -237,7 +277,7 @@ pub async fn ico_plus(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.8"
+                stroke-width=(stroke)
                 stroke-linecap="round"
             >
                 <path d="M8.5 3.5 V13.5"></path>
@@ -250,6 +290,7 @@ pub async fn ico_plus(cx: &Cx, size: u32) -> Result {
 pub async fn ico_check(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = CONTROL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -259,7 +300,7 @@ pub async fn ico_check(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.8"
+                stroke-width=(stroke)
                 stroke-linecap="round"
                 stroke-linejoin="round"
             >
@@ -273,6 +314,7 @@ pub async fn ico_check(cx: &Cx, size: u32) -> Result {
 pub async fn ico_copy(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = CONTROL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -282,7 +324,7 @@ pub async fn ico_copy(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.6"
+                stroke-width=(stroke)
                 stroke-linejoin="round"
             >
                 <rect x="5.5" y="5.5" width="8" height="8" rx="1.2"></rect>
@@ -295,6 +337,7 @@ pub async fn ico_copy(cx: &Cx, size: u32) -> Result {
 pub async fn ico_hourglass(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = CONTROL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -304,7 +347,7 @@ pub async fn ico_hourglass(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.6"
+                stroke-width=(stroke)
                 stroke-linejoin="round"
             >
                 <path
@@ -318,6 +361,7 @@ pub async fn ico_hourglass(cx: &Cx, size: u32) -> Result {
 pub async fn ico_trash(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = CONTROL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -327,7 +371,7 @@ pub async fn ico_trash(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.6"
+                stroke-width=(stroke)
                 stroke-linecap="round"
                 stroke-linejoin="round"
             >
@@ -344,6 +388,7 @@ pub async fn ico_trash(cx: &Cx, size: u32) -> Result {
 pub async fn ico_paperclip(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);
+    let stroke = CONTROL_STROKE;
     view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
@@ -353,7 +398,7 @@ pub async fn ico_paperclip(cx: &Cx, size: u32) -> Result {
                 viewBox="0 0 17 17"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.6"
+                stroke-width=(stroke)
                 stroke-linecap="round"
                 stroke-linejoin="round"
             >
@@ -362,5 +407,41 @@ pub async fn ico_paperclip(cx: &Cx, size: u32) -> Result {
                 ></path>
             </svg>
         </span>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rail_stroke_is_thinner_than_control() {
+        assert_eq!(RAIL_STROKE, "1.6");
+        assert_eq!(CONTROL_STROKE, "1.8");
+        let rail: f64 = RAIL_STROKE.parse().unwrap();
+        let control: f64 = CONTROL_STROKE.parse().unwrap();
+        assert!(rail <= control);
+    }
+
+    #[test]
+    fn ico_home_and_issues_are_stroke_outlines() {
+        let src = include_str!("icons.rs");
+        let home = src
+            .split("pub async fn ico_home")
+            .nth(1)
+            .and_then(|s| s.split("pub async fn ").next())
+            .expect("ico_home");
+        assert!(home.contains("stroke=\"currentColor\"") || home.contains("stroke=(stroke)"));
+        assert!(home.contains("fill=\"none\""));
+        assert!(!home.contains("fill=\"currentColor\""));
+
+        let issues = src
+            .split("pub async fn ico_issues")
+            .nth(1)
+            .and_then(|s| s.split("pub async fn ").next())
+            .expect("ico_issues");
+        assert!(issues.contains("stroke=\"currentColor\"") || issues.contains("stroke=(stroke)"));
+        assert!(issues.contains("fill=\"none\""));
+        assert!(!issues.contains("fill=\"currentColor\""));
     }
 }

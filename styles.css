@@ -37,6 +37,8 @@ body {
   font-family: 'Hanken Grotesk', system-ui, sans-serif;
   background: var(--bg-app);
   color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 ::placeholder { color: #9aa0a6; }
 input:focus, textarea:focus, select:focus {
@@ -112,13 +114,14 @@ a.vb-rail-account {
   background: #d6d9d4; border-radius: 6px; border: 3px solid transparent;
   background-clip: padding-box;
 }
-.vb-screen { padding: 26px 30px; animation: vbIn .22s ease both; }
+.vb-screen { padding: 26px 30px; }
 @keyframes vbIn {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 h1.vb-title {
   font-size: 22px; font-weight: 800; margin: 0 0 6px; letter-spacing: -0.01em;
+  text-wrap: balance;
 }
 h1.vb-title.dash {
   font-size: 25px; margin: 0 0 22px; letter-spacing: -0.01em;
@@ -150,7 +153,8 @@ a.vb-modal-backdrop {
   gap: 16px; z-index: 2;
 }
 a.vb-modal-close {
-  flex: none; width: 34px; height: 34px; border-radius: 4px; border: 1px solid #e0e2de;
+  flex: none; width: 40px; height: 40px; min-width: 40px; min-height: 40px;
+  border-radius: 4px; border: 1px solid #e0e2de;
   display: flex; align-items: center; justify-content: center;
   font-size: 16px; color: #5a5f66; text-decoration: none; background: #fff;
 }
@@ -162,6 +166,7 @@ a.vb-modal-close:hover { background: #f5f6f4; }
 .vb-modal-body h3:first-child { margin-top: 0; }
 .vb-modal-body p {
   font-size: 15px; line-height: 1.7; color: #3a3f46; margin: 0 0 14px;
+  text-wrap: pretty;
 }
 .vb-modal-body ul { margin: 0 0 16px; padding-left: 0; list-style: none; }
 .vb-modal-body li {
@@ -266,7 +271,9 @@ a.vb-btn.compact, button.vb-btn.compact {
   font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px;
 }
 .vb-ephemeral-revoke {
-  background: none; border: 0; padding: 0; cursor: pointer;
+  background: none; border: 0; cursor: pointer;
+  min-width: 40px; min-height: 40px; padding: 0 8px;
+  display: inline-flex; align-items: center; justify-content: center;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 11px; color: #8a8f96;
 }
@@ -283,6 +290,9 @@ a.vb-btn.compact, button.vb-btn.compact {
 input.vb-ephemeral-url {
   width: 100%; box-sizing: border-box; outline: none;
 }
+.vb-ephemeral-countdown {
+  font-variant-numeric: tabular-nums;
+}
 .vb-ephemeral-countdown.warn { color: #b5403a; }
 .vb-ephemeral-dot.warn { background: #b5403a; }
 .vb-ephemeral-cmd-head {
@@ -293,7 +303,7 @@ input.vb-ephemeral-url {
   font-size: 10px; letter-spacing: 0.06em; color: #8a8f96;
 }
 .vb-eph-seg {
-  display: flex; gap: 2px; background: #eef0ed; border-radius: 5px; padding: 2px;
+  display: flex; gap: 2px; background: #eef0ed; border-radius: 6px; padding: 2px;
 }
 .vb-eph-seg-btn {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
@@ -379,7 +389,10 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
 .vb-company-card {
   border: 1px solid var(--border); border-radius: 4px; background: #fff; padding: 18px 20px;
 }
-.vb-lead { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+.vb-lead {
+  margin: 0 0 18px; color: var(--muted); font-size: 14px;
+  text-wrap: pretty;
+}
 .vb-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
 .vb-muted { color: var(--muted); font-size: 14px; }
 .vb-card {
@@ -402,6 +415,7 @@ a.vb-card:hover { border-color: var(--accent); transform: translateY(-2px); }
 .vb-stat-value {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 21px; font-weight: 700; margin-top: 5px;
+  font-variant-numeric: tabular-nums;
 }
 .vb-stat-value.warn { color: var(--warn); }
 .vb-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 26px; }
@@ -507,6 +521,14 @@ a.vb-row:hover { background: #fafbfa; }
   border-radius: 4px; padding: 10px 16px; text-decoration: none;
   font-size: 13px; border: 0; cursor: pointer; font-weight: 600;
   font-family: 'Hanken Grotesk', system-ui, sans-serif;
+}
+a.vb-btn, button.vb-btn {
+  transition-property: transform;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+a.vb-btn:active, button.vb-btn:active {
+  transform: scale(0.96);
 }
 span.vb-btn { cursor: default; }
 /* Same face as channel chips (All / LTS / …); must follow .vb-btn. */
