@@ -39,7 +39,7 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
     }
 
     view! {
-        <div style="max-width: 720px;">
+        <div>
             <a
                 class="vb-back"
                 href="/admin/companies"

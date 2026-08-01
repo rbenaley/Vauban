@@ -12,6 +12,12 @@ use crate::common::{
     test_router, unique_email, unique_slug, urlencoding_encode,
 };
 
+fn count_channel_badges(html: &str) -> usize {
+    html.matches("vb-badge chan-lts").count()
+        + html.matches("vb-badge chan-stable").count()
+        + html.matches("vb-badge chan-eol").count()
+}
+
 #[tokio::test]
 async fn battle_concurrent_release_creates() {
     let _guard = db_lock().lock().await;
@@ -129,12 +135,12 @@ async fn battle_parallel_admin_releases_page_pagination() {
         "toolbar under contention: {page1}"
     );
     assert_eq!(
-        page1.matches("vb-badge soft").count(),
+        count_channel_badges(&page1),
         10,
         "page1 rows: {page1}"
     );
     assert!(
-        (1..=10).contains(&page2.matches("vb-badge soft").count()),
+        (1..=10).contains(&count_channel_badges(&page2)),
         "page2 rows under contention: {page2}"
     );
 

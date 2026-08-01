@@ -115,10 +115,7 @@ async fn admin_issues_page(cx: &Cx) -> Result {
         <div style="margin-bottom: 6px;">
             <h1 class="vb-title" style="margin: 0;">"Issues"</h1>
         </div>
-        <p class="vb-lead" style="display: flex; align-items: center; gap: 8px;">
-            <span
-                style="width: 6px; height: 6px; border-radius: 50%; background: var(--warn); display: inline-block;"
-            ></span>
+        <p class="vb-lead">
             "Aggregated support queue across all organizations. SLA: initial analysis within "
             <strong style="color: var(--text); font-weight: 700;">
                 "2–5 business days"

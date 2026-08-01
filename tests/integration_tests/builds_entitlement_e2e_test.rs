@@ -373,6 +373,10 @@ async fn e2e_builds_list_opens_latest_with_concept_actions() {
         "list must order by version desc (ignore dates): {body}"
     );
     assert!(body.contains("5-minute download link"), "{body}");
+    assert!(
+        body.contains("vb-badge chan-lts"),
+        "LTS channel badge must use Concept green class: {body}"
+    );
     assert!(body.contains("Verify signature"), "{body}");
     assert!(
         body.contains("<button") && body.contains("Verify signature"),

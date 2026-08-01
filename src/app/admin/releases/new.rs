@@ -47,7 +47,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
     orgs.sort_by(|a, b| a.name.cmp(&b.name));
 
     view! {
-        <div style="max-width: 720px;">
+        <div>
             <a
                 class="vb-back"
                 href="/admin/releases"

@@ -388,13 +388,16 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
 .vb-status.open { background: #e7f6f2; color: var(--accent); }
 .vb-status.analysis { background: #f7f1e3; color: #8a6a1e; }
 .vb-status.resolved, .vb-status.closed { background: #eef0ed; color: #5a5f66; }
+/* auto-fit: org detail has 4 cells, admin has 5 (ORGANIZATION) — keep one row
+   at desktop width instead of dropping UPDATED alone onto a second line. */
 .vb-meta-grid {
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
   border: 1px solid var(--border); border-radius: 4px; background: #fff;
   overflow: hidden; margin-bottom: 16px;
 }
-.vb-meta-grid > div { padding: 12px 15px; border-right: 1px solid var(--border); }
+.vb-meta-grid > div { padding: 12px 15px; border-right: 1px solid var(--border); min-width: 0; }
 .vb-meta-grid > div:last-child { border-right: 0; }
+.vb-meta-grid time { white-space: nowrap; }
 @media (max-width: 800px) {
   .vb-meta-grid { grid-template-columns: 1fr 1fr; }
   .vb-build-row, .vb-build-head { grid-template-columns: 1fr 1fr; }

@@ -47,6 +47,10 @@ fn inv_issue_detail_renders_details() {
         src.contains("Vauban Support"),
         "support-side timeline must display Vauban Support"
     );
+    assert!(
+        !src.contains("max-width: 820px") && !src.contains("max-width: 720px"),
+        "issue detail must use full content width"
+    );
 }
 
 #[test]
@@ -68,6 +72,10 @@ fn inv_admin_issues_aggregate_surface() {
     assert!(detail.contains("Vauban Support"));
     assert!(detail.contains("ISSUE_ROLE_SUPPORT"));
     assert!(detail.contains("/admin/issues/"));
+    assert!(
+        !detail.contains("max-width: 820px") && !detail.contains("max-width: 720px"),
+        "admin issue detail must use full content width"
+    );
 }
 
 #[test]

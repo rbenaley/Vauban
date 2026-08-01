@@ -64,4 +64,13 @@ grep -nE '#\[route\(POST|/reply' "$ADMIN_DETAIL" >/dev/null \
 grep -n 'ISSUE_ROLE_SUPPORT' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL staff replies must use ISSUE_ROLE_SUPPORT"
 
+# Full-bleed content (same as lists / admin docs compose).
+if grep -nE 'max-width:\s*(720|820)px' "$DETAIL" "$NEW" "$ADMIN_DETAIL" >/dev/null 2>&1; then
+  fail "issue compose/detail must not constrain content width (Concept full width)"
+fi
+
+# Meta strip: admin has 5 cells (incl. ORGANIZATION); fixed 4-col grids orphan UPDATED.
+grep -A4 '\.vb-meta-grid {' styles.css | grep -q 'auto-fit' \
+  || fail "styles.css .vb-meta-grid must use auto-fit so UPDATED stays on one row"
+
 echo "check_portal_issues: OK"

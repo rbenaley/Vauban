@@ -23,6 +23,7 @@ use crate::{
     models::{RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release},
     perms::perms_for_user,
     release_pkg::{cmp_version_desc, package_file_name, sha256_cmd},
+    ui::channel_badge_class,
 };
 
 use self::ephemeral::{EphPanel, load_eph_for, panel_from_row};
@@ -207,6 +208,7 @@ pub(super) async fn render_builds(
                     let notes = parse_notes(&rel.notes);
                     let size_label = format!("{} MB", rel.size_mb);
                     let dl_label = format!("Download ({size_label})");
+                    let channel_badge = channel_badge_class(&rel.channel).to_owned();
                     let eph_action = format!("/{}/builds/{}/ephemeral", org, rel.version);
                     let revoke_action = format!(
                         "/{}/builds/{}/ephemeral/revoke", org, rel.version
@@ -219,7 +221,7 @@ pub(super) async fn render_builds(
                                 (rel.version.clone())
                             </div>
                             <div>
-                                <span class="vb-badge soft">(rel.channel.clone())</span>
+                                <span class=(channel_badge)>(rel.channel.clone())</span>
                             </div>
                             <div style="color: #5a5f66;">(rel.released_on.clone())</div>
                             <div

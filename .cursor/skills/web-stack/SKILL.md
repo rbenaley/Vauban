@@ -206,6 +206,20 @@ skill §10).
 - Org initials control links to `/{org}/account`.
 - **Do not** vendor `topcoat ui` for the portal shell.
 
+### Content width (mandatory)
+
+Authenticated portal pages use the **full** `.vb-screen` content column
+(rail + topbar chrome already reserve space). Do **not** wrap page bodies
+in `max-width: 720px` / `820px` (or similar) for lists, detail pages, or
+compose/edit forms.
+
+| Allowed narrow surfaces | Forbidden |
+|-------------------------|-----------|
+| Login card, modals, chat bubbles, single-field controls (`vb-search`) | Page-level `max-width` on issue detail, docs compose, releases/companies forms, builds, etc. |
+
+Pin via surface `scripts/check_*.sh` when touching those pages (see
+`check_admin_docs.sh` / `check_portal_issues.sh`).
+
 - HTML pages for humans; JSON under `/api/...` only for M2M / webhooks.
 - HTML forms MUST NOT post to machine JSON APIs as a substitute for
   page handlers.

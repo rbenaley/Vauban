@@ -87,7 +87,7 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
     let timeline = build_timeline_rows(&comments, &users, now, tz);
 
     view! {
-        <div style="max-width: 820px;">
+        <div>
             <a
                 class="vb-back"
                 href=(list_href)

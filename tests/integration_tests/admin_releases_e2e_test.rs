@@ -14,6 +14,12 @@ async fn body_text(resp: topcoat::router::Response) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+fn count_channel_badges(html: &str) -> usize {
+    html.matches("vb-badge chan-lts").count()
+        + html.matches("vb-badge chan-stable").count()
+        + html.matches("vb-badge chan-eol").count()
+}
+
 async fn login(router: &topcoat::router::Router, email: &str) -> Option<String> {
     let form = format!("email={}&password=password", urlencoding_encode(email));
     let login = post_form(router, "/login", None, &form).await;
@@ -142,8 +148,9 @@ async fn e2e_admin_releases_list_pagination() {
     let page1 = get(&router, "/admin/releases?page=1", cookie.as_deref()).await;
     assert_eq!(status(&page1), StatusCode::OK);
     let p1 = body_text(page1).await;
-    // Channel badge marks each data row (thead has none).
-    let rows_p1 = p1.matches("vb-badge soft").count();
+    // Channel badge marks each data row (thead has none). Seed + fixtures
+    // mix LTS/Stable/EOL, so count all Concept channel classes.
+    let rows_p1 = count_channel_badges(&p1);
     assert_eq!(rows_p1, 10, "page 1 must show 10 rows: {p1}");
     assert!(p1.contains("vb-pager"), "pager when >10: {p1}");
     assert!(
@@ -158,7 +165,7 @@ async fn e2e_admin_releases_list_pagination() {
     let page2 = get(&router, "/admin/releases?page=2", cookie.as_deref()).await;
     assert_eq!(status(&page2), StatusCode::OK);
     let p2 = body_text(page2).await;
-    let rows_p2 = p2.matches("vb-badge soft").count();
+    let rows_p2 = count_channel_badges(&p2);
     assert!(
         (1..=10).contains(&rows_p2),
         "page 2 row count: {rows_p2} in {p2}"

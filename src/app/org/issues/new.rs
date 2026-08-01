@@ -35,7 +35,7 @@ async fn new_issue_page(cx: &Cx) -> Result {
     let action = format!("/{slug}/issues");
 
     view! {
-        <div style="max-width: 720px;">
+        <div>
             <a
                 class="vb-back"
                 href=(list_href.clone())

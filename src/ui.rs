@@ -15,12 +15,12 @@ pub fn org_initials(name: &str) -> String {
     initials
 }
 
-/// Channel chip class for builds (soft fill + border, not solid accent).
+/// Channel badge class (Concept: LTS green, Stable blue, EOL muted).
 pub fn channel_badge_class(channel: &str) -> &'static str {
-    match channel {
-        "LTS" => "vb-badge chan-lts",
-        "Stable" => "vb-badge chan-stable",
-        "EOL" => "vb-badge chan-eol",
+    match channel.trim() {
+        c if c.eq_ignore_ascii_case("LTS") => "vb-badge chan-lts",
+        c if c.eq_ignore_ascii_case("Stable") => "vb-badge chan-stable",
+        c if c.eq_ignore_ascii_case("EOL") => "vb-badge chan-eol",
         _ => "vb-badge soft",
     }
 }
@@ -45,6 +45,8 @@ mod tests {
         assert_eq!(channel_badge_class("LTS"), "vb-badge chan-lts");
         assert_eq!(channel_badge_class("Stable"), "vb-badge chan-stable");
         assert_eq!(channel_badge_class("EOL"), "vb-badge chan-eol");
+        assert_eq!(channel_badge_class("lts"), "vb-badge chan-lts");
+        assert_eq!(channel_badge_class(" unknown "), "vb-badge soft");
     }
 
     #[test]

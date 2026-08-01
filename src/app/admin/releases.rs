@@ -18,6 +18,7 @@ use crate::{
     },
     models::{Organization, RELEASE_GA_ORG_ID, Release},
     perms::perms_for_user,
+    ui::channel_badge_class,
 };
 
 #[query_params]
@@ -98,10 +99,11 @@ async fn admin_releases_page(cx: &Cx) -> Result {
                                     .map(|o| o.slug.clone())
                                     .unwrap_or_else(|| format!("org#{}", rel.organization_id))
                             };
+                            let channel_badge = channel_badge_class(&rel.channel).to_owned();
                             <tr>
                                 <td style="font-weight: 700;">(rel.version.clone())</td>
                                 <td>
-                                    <span class="vb-badge soft">(rel.channel.clone())</span>
+                                    <span class=(channel_badge)>(rel.channel.clone())</span>
                                 </td>
                                 <td>
                                     <span class="vb-mono" style="font-size: 11px;">

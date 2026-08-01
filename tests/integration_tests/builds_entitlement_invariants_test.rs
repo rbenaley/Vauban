@@ -55,6 +55,15 @@ fn inv_builds_concept_ephemeral_server_side() {
         "/src/app/org/builds.rs"
     ));
     assert!(builds.contains("5-minute download link"));
+    assert!(
+        builds.contains("channel_badge_class"),
+        "builds list must color LTS/Stable/EOL via channel_badge_class"
+    );
+    assert!(
+        !builds.contains("vb-badge soft\">(rel.channel")
+            && !builds.contains("vb-badge soft\">(rel.channel.clone())"),
+        "builds must not hardcode soft badge on channel column"
+    );
     assert!(builds.contains("open=none"));
     assert!(builds.contains("vb-ephemeral"));
     assert!(builds.contains("EPHEMERAL DOWNLOAD LINK"));

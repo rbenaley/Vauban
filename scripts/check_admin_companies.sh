@@ -23,6 +23,9 @@ grep -n 'companies_manage' "$NEW" >/dev/null || fail "$NEW must gate on companie
 grep -n 'toasty::create!(Organization' "$NEW" >/dev/null || fail "$NEW must create Organization"
 grep -n 'MAX_USERS_PER_COMPANY' "$NEW" >/dev/null || fail "$NEW must surface seat limit"
 grep -n 'method="GET"' "$NEW" >/dev/null && fail "$NEW must not use method=GET"
+if grep -nE 'max-width:\s*(720|820)px' "$NEW" >/dev/null 2>&1; then
+  fail "$NEW must not constrain content width (Concept full width)"
+fi
 
 grep -n 'MAX_USERS_PER_COMPANY' "$MODELS" >/dev/null || fail "$MODELS must define MAX_USERS_PER_COMPANY"
 grep -n 'can_add_member' "$SEATS" >/dev/null || fail "$SEATS must define can_add_member"

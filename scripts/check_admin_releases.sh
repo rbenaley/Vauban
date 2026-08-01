@@ -20,6 +20,9 @@ grep -nE '#\[route\(POST' "$NEW" >/dev/null || fail "$NEW must define POST creat
 grep -n 'releases_manage' "$NEW" >/dev/null || fail "$NEW must gate on releases_manage"
 grep -n 'toasty::create!(Release' "$NEW" >/dev/null || fail "$NEW must create Release rows"
 grep -n 'method="GET"' "$NEW" >/dev/null && fail "$NEW must not use method=GET on compose form"
+if grep -nE 'max-width:\s*(720|820)px' "$NEW" >/dev/null 2>&1; then
+  fail "$NEW must not constrain content width (Concept full width)"
+fi
 
 if [[ -f "$LIST" ]]; then
   grep -n 'releases_manage\|admin_view' "$LIST" >/dev/null \
@@ -33,6 +36,11 @@ if [[ -f "$LIST" ]]; then
     || fail "$LIST AdminReleasesQuery must include page: Option<u32>"
   grep -n 'page_slice' "$LIST" >/dev/null \
     || fail "$LIST must slice rows with page_slice"
+  grep -n 'channel_badge_class' "$LIST" >/dev/null \
+    || fail "$LIST must color channel badges via channel_badge_class"
+  if grep -n 'vb-badge soft' "$LIST" | grep -q 'rel.channel'; then
+    fail "$LIST must not hardcode vb-badge soft on rel.channel"
+  fi
 fi
 
 echo "check_admin_releases: OK"

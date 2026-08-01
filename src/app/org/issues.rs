@@ -133,10 +133,7 @@ async fn issues_page(cx: &Cx) -> Result {
                 </a>
             }
         </div>
-        <p class="vb-lead" style="display: flex; align-items: center; gap: 8px;">
-            <span
-                style="width: 6px; height: 6px; border-radius: 50%; background: var(--warn); display: inline-block;"
-            ></span>
+        <p class="vb-lead">
             "SLA: initial analysis within "
             <strong style="color: var(--text); font-weight: 700;">
                 "2–5 business days"

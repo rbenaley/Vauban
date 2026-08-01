@@ -42,6 +42,15 @@ grep -n '5-minute download link' "$BUILDS" >/dev/null \
   || fail "$BUILDS must label Concept 5-minute download link"
 grep -n 'Verify signature' "$BUILDS" >/dev/null \
   || fail "$BUILDS must include Verify signature"
+grep -n 'channel_badge_class' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must color channel badges via channel_badge_class (Concept)"
+if grep -n 'vb-badge soft' "$BUILDS" | grep -q 'rel.channel'; then
+  fail "$BUILDS must not hardcode vb-badge soft on rel.channel"
+fi
+grep -n 'chan-lts' styles.css >/dev/null \
+  && grep -n 'chan-stable' styles.css >/dev/null \
+  && grep -n 'chan-eol' styles.css >/dev/null \
+  || fail "styles.css must define chan-lts / chan-stable / chan-eol"
 grep -n 'signal verify_open' "$BUILDS" >/dev/null \
   || fail "$BUILDS must toggle Verify via Topcoat signal verify_open"
 grep -n 'data-verify-signature-panel\|vb-verify' "$BUILDS" >/dev/null \
