@@ -64,6 +64,7 @@ proptest! {
         prop_assert!(body.contains(&org));
         // Empty q/cat still produce quoted empty strings.
         prop_assert_eq!(body.matches('"').count() % 2, 0);
-        prop_assert_eq!(body.matches(',').count(), 2);
+        prop_assert_eq!(body.matches(',').count(), 3);
+        prop_assert!(body.contains("\"1\""));
     }
 }

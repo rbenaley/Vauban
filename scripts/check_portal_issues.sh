@@ -22,6 +22,9 @@ grep -nE '#\[route\(POST' "$LIST" >/dev/null || fail "$LIST must define POST rep
 grep -n 'details' "$LIST" >/dev/null || fail "$LIST must persist form details"
 grep -n 'issues_write' "$LIST" >/dev/null || fail "$LIST must gate writes on issues_write"
 grep -n 'organization_id' "$LIST" >/dev/null || fail "$LIST must scope issues by organization_id"
+# Light SSR pagination pin (full pyramid lives on org_issues_search_shard).
+grep -n 'page: Option<u32>' "$LIST" >/dev/null || fail "$LIST IssuesQuery must include page: Option<u32>"
+grep -n 'filter_row' "$LIST" >/dev/null || fail "$LIST must use filter_row for chips + pager"
 
 grep -n 'method="POST"' "$NEW" >/dev/null || fail "$NEW must POST report form"
 grep -n 'name="details"' "$NEW" >/dev/null || fail "$NEW must include details field"

@@ -216,6 +216,30 @@ skill §10).
   not hand-roll `301`/`302` + `Location` when those helpers fit (see
   `topcoat` skill §6 + `references/RUNTIME.md`).
 
+## List pagination (mandatory)
+
+Every **list / index page** (client or admin) that can grow beyond a
+handful of rows MUST ship SSR pagination when the page is created — do
+not wait for a follow-up. Reference implementation helpers live in
+`src/list_page.rs` and `app/_components` (`filter_row`, `vb_pager`,
+`list_toolbar`).
+
+| Rule | Detail |
+|------|--------|
+| Page size | `LIST_PAGE_SIZE = 10` (`src/list_page.rs`) |
+| Query | `page: Option<u32>` (1-based); omit `page=1` from URLs |
+| Controls | `<a href>` only — no shards, signals, or first-party JS for the pager |
+| With chips | Pager on the **same** `vb-chip-row` (chips left / `vb-chip-group`, pager right via `margin-left: auto`); chip-height face (`padding: 6px 12px`) |
+| Without chips | `vb-list-toolbar` above the table/list, pager right-aligned |
+| Filters | Chip / filter hrefs **omit** `page` (reset to 1); pager keeps other query (`q`, `cat`, `status`, `org`, …) |
+| Slice | In-memory `page_slice` after existing filter/sort (DB `LIMIT/OFFSET` only if catalog size demands it later) |
+| Live shards | Shard args include `page`; when the live search signal changes, **reset page to 1** for the slice |
+| Pyramid | Full `vcp-test-pyramid` for the list surface (unit helpers, invariants on markup/CSS, proptest totals, battle parallel `?page=`, e2e ≥11 fixtures, runbook section) |
+
+Anti-patterns: client-only pagers, sticky `page=` on filter chips, pager
+below a default-open panel that jumps vertically, inventing a second
+page-size constant without reason.
+
 ## Rendering principles
 
 - **Server-first**: components may be async and talk to the DB directly.

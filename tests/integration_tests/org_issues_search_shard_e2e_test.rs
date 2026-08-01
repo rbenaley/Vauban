@@ -190,3 +190,68 @@ async fn e2e_org_issues_search_shard_missing_issues_read_is_404() {
 
     cleanup(&db).await;
 }
+
+#[tokio::test]
+async fn e2e_org_issues_list_pagination() {
+    let _guard = db_lock().lock().await;
+    let fx = member_issues_shard("org-iss-page", "org-iss-page").await;
+
+    let marker = unique_slug("isspage");
+    for i in 0..11u32 {
+        let key = format!("TEST-{}", unique_slug(&format!("ip{i}")).replace('-', ""));
+        create_test_issue(
+            &fx.db,
+            fx.org_id,
+            fx.user_id,
+            &key,
+            &format!("{marker} issue {i}"),
+            "Open",
+        )
+        .await;
+    }
+
+    let page1 = get(
+        &fx.router,
+        &format!("/{}/issues?q={marker}&page=1", fx.slug),
+        Some(&fx.cookie),
+    )
+    .await;
+    assert_eq!(status(&page1), StatusCode::OK);
+    let p1 = body_text(page1).await;
+    let rows_p1 = p1.matches("vb-row").count();
+    assert_eq!(rows_p1, 10, "page 1 must show 10 rows: {p1}");
+    assert!(p1.contains("vb-pager"), "pager when >10: {p1}");
+    assert!(
+        p1.contains(&format!("/{}/issues?q={marker}&page=2", fx.slug))
+            || p1.contains(&format!("q={marker}&amp;page=2")),
+        "next page link: {p1}"
+    );
+
+    let page2 = get(
+        &fx.router,
+        &format!("/{}/issues?q={marker}&page=2", fx.slug),
+        Some(&fx.cookie),
+    )
+    .await;
+    assert_eq!(status(&page2), StatusCode::OK);
+    let p2 = body_text(page2).await;
+    let rows_p2 = p2.matches("vb-row").count();
+    assert_eq!(rows_p2, 1, "page 2 remainder: {rows_p2} in {p2}");
+    assert!(p2.contains(&marker), "page 2 keeps marker: {p2}");
+
+    // Status chip from page 2 must drop page= (reset to page 1).
+    assert!(
+        p2.contains(&format!(
+            "href=\"/{}/issues?q={marker}&status=Open\"",
+            fx.slug
+        )) || p2.contains(&format!("/{}/issues?q={marker}&amp;status=Open\"", fx.slug))
+            || p2.contains("status=Open\""),
+        "Open chip must omit page: {p2}"
+    );
+    assert!(
+        !p2.contains("status=Open&page=") && !p2.contains("status=Open&amp;page="),
+        "status chips must not sticky page=: {p2}"
+    );
+
+    cleanup(&fx.db).await;
+}

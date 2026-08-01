@@ -21,6 +21,246 @@ use crate::models::{
     ISSUE_ROLE_SYSTEM, Issue, IssueComment, MEMBERSHIP_ROLE_ORG, Membership, Organization,
     PORTAL_ROLE_ADMIN, RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release, User,
 };
+use crate::release_pkg::size_mb_from_bytes;
+
+/// GA release catalog: (version, channel, released_on, bytes, sha256, notes).
+fn ga_release_catalog() -> Vec<(
+    &'static str,
+    &'static str,
+    &'static str,
+    u64,
+    &'static str,
+    &'static str,
+)> {
+    vec![
+        (
+            "v1.0.2",
+            "LTS",
+            "2026-07-11",
+            22_518_584,
+            "ccff72c653fc1ad3ea4bc41fe4e56df03daa990b914017c7ab3419315bca6657",
+            "FIX: LTS maintenance release",
+        ),
+        (
+            "v1.0.1",
+            "LTS",
+            "2026-07-10",
+            22_565_449,
+            "9fef561cfde2aa3634de40ff3530d55072bd75ad9ae531faaff01c3d786c8336",
+            "FIX: LTS maintenance release",
+        ),
+        (
+            "v1.0.0",
+            "LTS",
+            "2026-07-02",
+            22_419_122,
+            "c2b1f7dfa88ec9b77eb19dfaefe70ff25a75bb6877191f84609c637a75d2fc26",
+            "FIX: stop newsyslog rotation from killing daemon(8)\nFEAT: expand staff Casbin grants",
+        ),
+        (
+            "v0.9.35",
+            "Stable",
+            "2026-07-30",
+            23_384_585,
+            "f4845978eb3adeab48cf20111c32cca46d5bbdad3e81b182e20168d55c33f9b8",
+            "FIX: Stable channel updates",
+        ),
+        (
+            "v0.9.31",
+            "Stable",
+            "2026-07-24",
+            23_711_290,
+            "db1e937d4dccd708a4505367f7daaffafb83deb9c1c31b5b140b151e8517a2a3",
+            "FIX: Stable channel updates",
+        ),
+        (
+            "v0.9.29",
+            "Stable",
+            "2026-07-24",
+            23_707_797,
+            "809fdc120a32e6b906967d0c69f2dafc08ce9ac37962e30de8ff030f48b704f0",
+            "FIX: Stable channel updates",
+        ),
+        (
+            "v0.9.24",
+            "Stable",
+            "2026-07-22",
+            22_845_321,
+            "1779cf43e0b4c76d2c0e070a72685fcad6560fbfe1985da03685f183bc675fc2",
+            "FIX: Stable channel updates",
+        ),
+        (
+            "v0.9.20",
+            "Stable",
+            "2026-07-21",
+            22_801_871,
+            "41174fe54c62ebc6d68f0a3d021e7d0c70f5c0663dcb57d6e5b2749b8b37ebf7",
+            "FIX: Stable channel updates",
+        ),
+        (
+            "v0.9.12",
+            "Stable",
+            "2026-07-19",
+            23_404_786,
+            "c4d0b4567dfb54b9732c671b81c7bfff2e5fb40502484f9a962cf22d4beac951",
+            "FIX: Stable channel updates",
+        ),
+        (
+            "v0.9.4",
+            "Stable",
+            "2026-07-16",
+            23_157_411,
+            "1a6a9aaaab06775fdb7e2166bfa67b6d0e8f7b6ddd5516a04a44c82f070c46ec",
+            "FIX: Stable channel updates",
+        ),
+        (
+            "v0.8.7",
+            "EOL",
+            "2026-06-21",
+            22_174_281,
+            "0b63eb91c92807e729fb50d51f11c5e15d2b947093510c96243ec9a0b149541f",
+            "FIX: EOL maintenance",
+        ),
+        (
+            "v0.8.6",
+            "EOL",
+            "2026-06-18",
+            22_160_844,
+            "d896decde9ad8b2c280690e17339698f5a6d05dd63a175e050d17b76e8f6d04e",
+            "FIX: proxy reconnect under load\nFIX: audit seal clock skew",
+        ),
+        (
+            "v0.7.16",
+            "EOL",
+            "2026-05-22",
+            20_366_875,
+            "4af82df6b9c11bf1cbf98218b3f546b11e0fe0865cd790015f880ac010f28d1a",
+            "FIX: Stability and security fixes for the SSH proxy.\nRBAC: Support for nested groups in policies.",
+        ),
+        (
+            "v0.7.4",
+            "EOL",
+            "2026-05-05",
+            17_824_584,
+            "5ee0400cae292f52c0a5b6997aa1a1061cbeb40a195683bae5419b74a583a01b",
+            "FIX: EOL maintenance",
+        ),
+        (
+            "v0.7.2",
+            "EOL",
+            "2026-05-02",
+            17_794_160,
+            "cdcd9320d6f4580dfb014ac65737964a85c55be3fbb3412be05b1a1f1536987d",
+            "FIX: EOL maintenance",
+        ),
+        (
+            "v0.6.6",
+            "EOL",
+            "2026-04-16",
+            16_418_804,
+            "ff5c7a1ac6891b1ec21c2834195ff8dce87ce226f9fb2d55fe5b1ac27197c85f",
+            "FIX: EOL maintenance",
+        ),
+        (
+            "v0.6.3",
+            "EOL",
+            "2026-04-07",
+            15_998_560,
+            "1162337c51c098843e7d0d188070f97f342dfa3a3eb4c430af8e2a580264f3ac",
+            "FIX: EOL maintenance",
+        ),
+        (
+            "v0.6.2",
+            "EOL",
+            "2026-04-04",
+            16_341_114,
+            "89ad28ceec0e69d6d1aaaf9fdb33f6d5d83542824e11fc574700662e33aeef03",
+            "FIX: EOL maintenance",
+        ),
+        (
+            "v0.6.0",
+            "EOL",
+            "2026-03-31",
+            16_291_798,
+            "92003c333f95da1cbab7f0576a0e73f666819e76d14ca2391d52bd8691531f97",
+            "FIX: EOL maintenance",
+        ),
+        (
+            "v0.5.0",
+            "EOL",
+            "2026-03-24",
+            16_120_496,
+            "eb87260fb16ca749865ecc7ba2fdbe1be9d59a7489226d1b0a264bd7773605de",
+            "FIX: EOL maintenance",
+        ),
+        (
+            "v0.3.0",
+            "EOL",
+            "2026-03-15",
+            16_416_713,
+            "eeeca7b8b74230363a0ff4f0d72dbddf94c7ea0435bf233c8379fe42be04b531",
+            "FIX: EOL maintenance",
+        ),
+        (
+            "v0.2.1",
+            "EOL",
+            "2026-03-08",
+            15_570_229,
+            "8635616d7aeca08e7b3815a28c4bd56106b3e4897d7c2698da18dc6bc6f3b5d5",
+            "FIX: EOL maintenance",
+        ),
+        (
+            "v0.2.0",
+            "EOL",
+            "2026-03-06",
+            15_306_594,
+            "9c404b9a11a18dc7afed63acb87aff355cd53a6d3e1425ffc87d3f448aabe93e",
+            "FIX: EOL maintenance",
+        ),
+    ]
+}
+
+/// Invented 64-hex digest for the org-private Acme hotfix package.
+const ACME_PRIVATE_SHA256: &str =
+    "a11ce00000000000000000000000000000000000000000000000000000000001";
+
+async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
+    let existing = Release::all().exec(db).await?;
+    let mut by_ver: std::collections::HashMap<String, Release> = existing
+        .into_iter()
+        .filter(|r| r.organization_id == RELEASE_GA_ORG_ID)
+        .map(|r| (r.version.clone(), r))
+        .collect();
+
+    for (version, channel, date, bytes, sha, notes) in ga_release_catalog() {
+        let size = size_mb_from_bytes(bytes);
+        if let Some(mut rel) = by_ver.remove(version) {
+            rel.update()
+                .channel(channel.to_owned())
+                .released_on(date.to_owned())
+                .size_mb(size)
+                .sha256(sha.to_owned())
+                .status("PUBLISHED".to_owned())
+                .notes(notes.to_owned())
+                .exec(db)
+                .await?;
+        } else {
+            toasty::create!(Release {
+                version: version.to_owned(),
+                channel: channel.to_owned(),
+                released_on: date.to_owned(),
+                size_mb: size,
+                sha256: sha.to_owned(),
+                status: "PUBLISHED".to_owned(),
+                notes: notes.to_owned(),
+                organization_id: RELEASE_GA_ORG_ID,
+            })
+            .exec(db)
+            .await?;
+        }
+    }
+    Ok(())
+}
 
 /// Open a Toasty handle with VCP models registered (no schema changes).
 pub async fn open(database_url: &str) -> anyhow::Result<Db> {
@@ -220,40 +460,14 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         .await?;
     }
 
-    toasty::create!(Release {
-        version: "v1.0.0".to_owned(),
-        channel: "LTS".to_owned(),
-        released_on: "2026-06-23".to_owned(),
-        size_mb: "21.1".to_owned(),
-        signature_prefix: "48f1014".to_owned(),
-        status: "PUBLISHED".to_owned(),
-        notes:
-            "FIX: stop newsyslog rotation from killing daemon(8)\nFEAT: expand staff Casbin grants"
-                .to_owned(),
-        organization_id: RELEASE_GA_ORG_ID,
-    })
-    .exec(&mut db)
-    .await?;
-
-    toasty::create!(Release {
-        version: "v0.8.6".to_owned(),
-        channel: "LTS".to_owned(),
-        released_on: "2026-06-18".to_owned(),
-        size_mb: "20.4".to_owned(),
-        signature_prefix: "a91c002".to_owned(),
-        status: "PUBLISHED".to_owned(),
-        notes: "FIX: proxy reconnect under load\nFIX: audit seal clock skew".to_owned(),
-        organization_id: RELEASE_GA_ORG_ID,
-    })
-    .exec(&mut db)
-    .await?;
+    upsert_ga_releases(&mut db).await?;
 
     toasty::create!(Release {
         version: "v0.8.6-acme1".to_owned(),
-        channel: "LTS".to_owned(),
+        channel: "EOL".to_owned(),
         released_on: "2026-06-20".to_owned(),
         size_mb: "20.5".to_owned(),
-        signature_prefix: "b7e4d01".to_owned(),
+        sha256: ACME_PRIVATE_SHA256.to_owned(),
         status: "PUBLISHED".to_owned(),
         notes: "HOTFIX: Acme-only proxy backpressure patch".to_owned(),
         organization_id: org.id,
@@ -378,43 +592,7 @@ pub async fn ensure_demo_catalog(db: &Db) -> anyhow::Result<()> {
         .await?;
     }
 
-    let releases = Release::all().exec(&mut db).await?;
-    let have_ver: std::collections::HashSet<String> =
-        releases.into_iter().map(|r| r.version).collect();
-    for (version, channel, date, size, sig, notes) in [
-        (
-            "v0.8.6",
-            "Stable",
-            "2026-06-18",
-            "22.2",
-            "a3f9c1e",
-            "SECURITY: Self-heal CSRF on login after session expiry.",
-        ),
-        (
-            "v0.7.16",
-            "Stable",
-            "2026-05-22",
-            "20.4",
-            "7d2b80a",
-            "FIX: Stability and security fixes for the SSH proxy.\nRBAC: Support for nested groups in policies.",
-        ),
-    ] {
-        if have_ver.contains(version) {
-            continue;
-        }
-        toasty::create!(Release {
-            version: version.to_owned(),
-            channel: channel.to_owned(),
-            released_on: date.to_owned(),
-            size_mb: size.to_owned(),
-            signature_prefix: sig.to_owned(),
-            status: "PUBLISHED".to_owned(),
-            notes: notes.to_owned(),
-            organization_id: RELEASE_GA_ORG_ID,
-        })
-        .exec(&mut db)
-        .await?;
-    }
+    upsert_ga_releases(&mut db).await?;
 
     refresh_thin_doc_bodies(&mut db).await?;
     ensure_demo_issue_comments(&mut db).await?;

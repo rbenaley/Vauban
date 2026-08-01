@@ -59,6 +59,13 @@ Pass: staff issues live under `/admin/issues`; reserved org issues redirect.
 
 Pass: Casbin + tenant fail-closed.
 
+## D -- Pagination (brief)
+
+Client `/{org}/issues` uses the same SSR pager as the org issues search
+shard (10/page, status chips omit `page=`). See
+[`org_issues_search_shard_smoke_test.md`](org_issues_search_shard_smoke_test.md)
+§ C for the full checklist.
+
 ## Related automated coverage
 
 | Layer | Filter / artifact |

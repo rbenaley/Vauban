@@ -13,10 +13,14 @@ use topcoat::{
 };
 
 use crate::{
-    app::_components::chip_row,
+    app::_components::filter_row,
     app::org::Org,
     auth::{capability_denied, require_org},
     docs_search::{normalize_category, normalize_query, text_matches_query},
+    list_page::{
+        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
+        with_page_param,
+    },
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
 };
@@ -33,6 +37,21 @@ const CATEGORIES: &[&str] = &[
 struct DocsQuery {
     q: Option<String>,
     cat: Option<String>,
+    /// 1-based page index; omitted means page 1.
+    page: Option<u32>,
+}
+
+/// Shareable docs list URL (`page=1` and empty filters omitted).
+pub(super) fn docs_list_href(org: &str, q: &str, cat: &str, page: usize) -> String {
+    let mut parts = Vec::new();
+    if !q.is_empty() {
+        parts.push(format!("q={}", urlencoding_encode(q)));
+    }
+    if !cat.is_empty() {
+        parts.push(format!("cat={}", urlencoding_encode(cat)));
+    }
+    with_page_param(&mut parts, page);
+    href_with_query(&format!("/{org}/docs"), &parts)
 }
 
 #[page]
@@ -45,7 +64,8 @@ async fn docs_page(cx: &Cx) -> Result {
     }
 
     let filter = DocsFilter::from_cx(cx);
-    docs_list_view(cx, slug, &filter.q, &filter.cat).await
+    let page = DocsFilter::page_from_cx(cx);
+    docs_list_view(cx, slug, &filter.q, &filter.cat, page).await
 }
 
 pub(super) struct DocsFilter {
@@ -63,9 +83,14 @@ impl DocsFilter {
 
     pub(super) fn from_cx(cx: &Cx) -> Self {
         let query = query_params::<DocsQuery>(cx).ok();
-        let q = query.and_then(|q| q.q.as_deref()).unwrap_or("");
-        let cat = query.and_then(|q| q.cat.as_deref()).unwrap_or("");
+        let q = query.as_ref().and_then(|q| q.q.as_deref()).unwrap_or("");
+        let cat = query.as_ref().and_then(|q| q.cat.as_deref()).unwrap_or("");
         Self::normalized(q, cat)
+    }
+
+    pub(super) fn page_from_cx(cx: &Cx) -> usize {
+        let query = query_params::<DocsQuery>(cx).ok();
+        parse_page(query.and_then(|q| q.page))
     }
 }
 
@@ -88,29 +113,47 @@ pub(super) async fn load_filtered_docs(
     (filter.q.clone(), filter.cat.clone(), filtered)
 }
 
-pub(super) async fn docs_list_view(cx: &Cx, org_slug: &str, q: &str, cat: &str) -> Result {
-    let base = format!("/{org_slug}/docs");
+pub(super) async fn docs_list_view(
+    cx: &Cx,
+    org_slug: &str,
+    q: &str,
+    cat: &str,
+    page: usize,
+) -> Result {
+    let filter = DocsFilter::normalized(q, cat);
+    let (_, _, articles) = load_filtered_docs(cx, &filter).await;
+    let pages = page_count(articles.len(), LIST_PAGE_SIZE);
+    let page = clamp_page(page, pages);
+
     let q_value = q.to_owned();
     let cat_owned = cat.to_owned();
     let org = org_slug.to_owned();
+    let org_for_pager = org.clone();
+    let q_for_pager = q_value.clone();
+    let cat_for_pager = cat_owned.clone();
+    let pager = PagerLinks::from_hrefs(page, pages, |n| {
+        docs_list_href(&org_for_pager, &q_for_pager, &cat_for_pager, n)
+    });
+    let pager_opt = if pager.show() { Some(pager) } else { None };
+
+    let base = format!("/{org_slug}/docs");
+    // Chip hrefs omit `page` (reset). All clears filters; category chips keep q.
     let mut chips: Vec<(String, String, bool)> =
         vec![("All".to_owned(), base.clone(), cat.is_empty())];
     for c in CATEGORIES {
-        let href = if q.is_empty() {
-            format!("{base}?cat={}", urlencoding_encode(c))
-        } else {
-            format!(
-                "{base}?q={}&cat={}",
-                urlencoding_encode(q),
-                urlencoding_encode(c)
-            )
-        };
-        chips.push(((*c).to_owned(), href, cat.eq_ignore_ascii_case(c)));
+        chips.push((
+            (*c).to_owned(),
+            docs_list_href(&org, q, c, 1),
+            cat.eq_ignore_ascii_case(c),
+        ));
     }
+
+    let page_init = page.to_string();
 
     view! {
         cx =>
         signal query = q_value.clone();
+        signal page = page_init.clone();
 
         <h1 class="vb-title">"Documentation & knowledge base"</h1>
         <p class="vb-lead">"Operations, security, API, and deployment runbooks."</p>
@@ -123,19 +166,23 @@ pub(super) async fn docs_list_view(cx: &Cx, org_slug: &str, q: &str, cat: &str) 
                 name="q"
                 value=(q_value.clone())
                 placeholder="Search the documentation…"
-                @input=$(|e: topcoat::runtime::Event| query.set(e.target.value))
+                @input=$(|e: topcoat::runtime::Event| {
+                    page.set("1".to_owned());
+                    query.set(e.target.value);
+                })
             >
             if !cat_owned.is_empty() {
                 <input type="hidden" name="cat" value=(cat_owned.clone())>
             }
         </form>
 
-        chip_row(chips: &chips)
+        filter_row(chips: &chips, pager: &pager_opt)
 
         docs_search_results(
             org_slug: $(org.clone()),
             q: $(query.get()),
-            cat: $(cat_owned.clone())
+            cat: $(cat_owned.clone()),
+            page: $(page.get())
         )
     }
 }
@@ -152,4 +199,19 @@ fn urlencoding_encode(value: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod docs_list_href_tests {
+    use super::docs_list_href;
+
+    #[test]
+    fn docs_list_href_omits_page_one_and_empty_filters() {
+        assert_eq!(docs_list_href("acme", "", "", 1), "/acme/docs");
+        assert_eq!(docs_list_href("acme", "ssh", "", 1), "/acme/docs?q=ssh");
+        assert_eq!(
+            docs_list_href("acme", "ssh", "API", 2),
+            "/acme/docs?q=ssh&cat=API&page=2"
+        );
+    }
 }

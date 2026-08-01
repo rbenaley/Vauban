@@ -31,15 +31,22 @@ fi
 blank_line=$(grep -n 'normalize_org_slug(&org_slug)' "$SHARD" | head -1 | cut -d: -f1)
 org_line=$(grep -n 'require_org(cx' "$SHARD" | head -1 | cut -d: -f1)
 read_line=$(grep -n 'perms\.issues_read' "$SHARD" | head -1 | cut -d: -f1)
-load_line=$(grep -n 'Issue::all' "$SHARD" | head -1 | cut -d: -f1)
+load_line=$(grep -n 'load_filtered_issues(cx' "$SHARD" | head -1 | cut -d: -f1)
 [[ -n "$blank_line" && -n "$org_line" && -n "$read_line" && -n "$load_line" ]] \
   || fail "could not locate auth gate markers in $SHARD handler"
 if ! [[ "$blank_line" -lt "$org_line" && "$org_line" -lt "$read_line" && "$read_line" -lt "$load_line" ]]; then
-  fail "$SHARD gate order must be normalize_org_slug -> require_org -> issues_read -> Issue::all (got $blank_line/$org_line/$read_line/$load_line)"
+  fail "$SHARD gate order must be normalize_org_slug -> require_org -> issues_read -> load_filtered_issues (got $blank_line/$org_line/$read_line/$load_line)"
 fi
+grep -n 'page_slice\|LIST_PAGE_SIZE' "$SHARD" >/dev/null \
+  || fail "$SHARD must slice results with page_slice / LIST_PAGE_SIZE"
 
 grep -n 'issues_search_results' "$PAGE" >/dev/null || fail "$PAGE must invoke issues_search_results shard"
 grep -n 'org_slug:' "$PAGE" >/dev/null || fail "$PAGE must pass org_slug shard arg"
+grep -n 'page: Option<u32>' "$PAGE" >/dev/null || fail "$PAGE IssuesQuery must include page: Option<u32>"
+grep -n 'filter_row' "$PAGE" >/dev/null || fail "$PAGE must use filter_row for chips + pager"
+grep -n 'PagerLinks' "$PAGE" >/dev/null || fail "$PAGE must build PagerLinks"
+grep -n 'vb-pager' src/app/_components/pager.rs >/dev/null \
+  || fail "pager component must render vb-pager markup"
 # Progressive-enhancement filter form (not a mutation) — keep GET for ?q= URLs.
 grep -n 'method="GET"' "$PAGE" >/dev/null || fail "$PAGE search filter form must use method=GET"
 grep -n 'normalize_query' "$HELPERS" >/dev/null || fail "$HELPERS must define normalize_query"

@@ -3,9 +3,15 @@
 use proptest::prelude::*;
 use vcp::{
     docs_body::{self, Block},
+    list_page::LIST_PAGE_SIZE,
     models::{DOC_STATUS_DRAFT, DOC_STATUS_PUBLISHED},
     slug::slugify,
 };
+
+#[test]
+fn prop_list_page_size_is_ten() {
+    assert_eq!(LIST_PAGE_SIZE, 10);
+}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]

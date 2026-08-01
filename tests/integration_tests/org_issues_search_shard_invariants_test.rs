@@ -42,10 +42,16 @@ fn inv_shard_reauthorizes_before_loading_issues() {
         .expect("normalize_org_slug(&org_slug)");
     let require = src.find("require_org(cx").expect("require_org(cx");
     let issues_read = src.find("perms.issues_read").expect("perms.issues_read");
-    let load = src.find("Issue::all").expect("Issue::all");
+    let load = src
+        .find("load_filtered_issues(cx")
+        .expect("load_filtered_issues(cx");
     assert!(
         normalize < require && require < issues_read && issues_read < load,
         "gate order: normalize_org_slug -> require_org -> issues_read -> load"
+    );
+    assert!(
+        src.contains("page_slice") && src.contains("LIST_PAGE_SIZE"),
+        "shard must paginate with page_slice / LIST_PAGE_SIZE"
     );
 }
 
@@ -67,6 +73,14 @@ fn inv_page_passes_org_slug_shard_arg() {
     ));
     assert!(page.contains("issues_search_results"));
     assert!(page.contains("org_slug:"));
+    assert!(
+        page.contains("page: Option<u32>"),
+        "IssuesQuery must include page"
+    );
+    assert!(
+        page.contains("filter_row"),
+        "chips + pager must use filter_row"
+    );
 }
 
 #[test]

@@ -193,3 +193,65 @@ async fn e2e_docs_search_shard_missing_docs_read_is_404() {
 
     cleanup(&db).await;
 }
+
+#[tokio::test]
+async fn e2e_docs_list_pagination() {
+    let _guard = db_lock().lock().await;
+    let fx = member_docs_shard("docs-page", "docs-page-org").await;
+
+    let marker = unique_slug("pagefix");
+    for i in 0..11u32 {
+        let slug = unique_slug(&format!("pagefix-{i}"));
+        create_published_doc(
+            &fx.db,
+            &format!("{marker} article {i}"),
+            "pagination fixture",
+            "API",
+            &slug,
+        )
+        .await;
+    }
+
+    let page1 = get(
+        &fx.router,
+        &format!("/{}/docs?q={marker}&page=1", fx.slug),
+        Some(&fx.cookie),
+    )
+    .await;
+    assert_eq!(status(&page1), StatusCode::OK);
+    let p1 = body_text(page1).await;
+    let rows_p1 = p1.matches("vb-row").count();
+    assert_eq!(rows_p1, 10, "page 1 must show 10 rows: {p1}");
+    assert!(p1.contains("vb-pager"), "pager when >10: {p1}");
+    assert!(
+        p1.contains(&format!("/{}/docs?q={marker}&page=2", fx.slug))
+            || p1.contains(&format!("q={marker}&amp;page=2")),
+        "next page link: {p1}"
+    );
+
+    let page2 = get(
+        &fx.router,
+        &format!("/{}/docs?q={marker}&page=2", fx.slug),
+        Some(&fx.cookie),
+    )
+    .await;
+    assert_eq!(status(&page2), StatusCode::OK);
+    let p2 = body_text(page2).await;
+    let rows_p2 = p2.matches("vb-row").count();
+    assert_eq!(rows_p2, 1, "page 2 remainder: {rows_p2} in {p2}");
+    assert!(p2.contains(&marker), "page 2 keeps marker: {p2}");
+
+    // Category chip from page 2 must drop page= (reset to page 1).
+    assert!(
+        p2.contains(&format!("href=\"/{}/docs?q={marker}&cat=API\"", fx.slug))
+            || p2.contains(&format!("/{}/docs?q={marker}&amp;cat=API\"", fx.slug))
+            || p2.contains("cat=API\""),
+        "API chip must omit page: {p2}"
+    );
+    assert!(
+        !p2.contains("cat=API&page=") && !p2.contains("cat=API&amp;page="),
+        "category chips must not sticky page=: {p2}"
+    );
+
+    cleanup(&fx.db).await;
+}

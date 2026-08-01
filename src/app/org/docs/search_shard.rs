@@ -10,12 +10,19 @@ use crate::{
     app::_components::ico_chevron_right,
     auth::{capability_denied, require_org},
     docs_search::normalize_org_slug,
+    list_page::{LIST_PAGE_SIZE, page_slice, parse_page},
     perms::perms_for_user,
 };
 
 /// Shard args are attacker-controlled — always re-authorize.
 #[shard]
-pub async fn docs_search_results(cx: &Cx, org_slug: String, q: String, cat: String) -> Result {
+pub async fn docs_search_results(
+    cx: &Cx,
+    org_slug: String,
+    q: String,
+    cat: String,
+    page: String,
+) -> Result {
     let org = normalize_org_slug(&org_slug).ok_or_else(not_found)?;
     let ctx = require_org(cx, org).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -25,16 +32,18 @@ pub async fn docs_search_results(cx: &Cx, org_slug: String, q: String, cat: Stri
 
     let filter = DocsFilter::normalized(&q, &cat);
     let (_, _, filtered) = load_filtered_docs(cx, &filter).await;
+    let page = parse_page(page.parse().ok());
+    let page_items = page_slice(&filtered, page, LIST_PAGE_SIZE);
     // Links use the authorized org slug, never the raw shard arg.
     let org = ctx.org.slug.clone();
 
     view! {
         cx =>
         <div class="vb-list" data-docs-search-shard="1">
-            if filtered.is_empty() {
+            if page_items.is_empty() {
                 <div class="vb-empty">"No matching articles."</div>
             } else {
-                for article in filtered {
+                for article in page_items {
                     <a class="vb-row" href=(format!("/{}/docs/{}", org, article.slug))>
                         <div style="flex: 1; min-width: 0;">
                             <div style="font-weight: 700;">(article.title.clone())</div>

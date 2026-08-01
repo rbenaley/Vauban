@@ -58,6 +58,18 @@ Pass: shard POSTs stay 200; UI updates; no worker panics.
 
 Pass: forged tenant / anon / missing permission never leak issue HTML.
 
+## C -- Pagination
+
+SSR list paging (10 rows per page, shareable `?page=`).
+
+1. With **11+** matching issues for the org, open `/{org}/issues` — expect
+   at most **10** rows, pager on the **same row as the status chips**.
+2. Follow **Next** (or `?page=2`) — expect the remainder only.
+3. From page 2, click a **status** chip (or **All**) — URL must **not**
+   keep `page=` (reset to page 1).
+
+Pass: 10 max per page; chip-row pager; status chips omit `page=`.
+
 ## Related automated coverage
 
 | Layer | Filter / artifact |

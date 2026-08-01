@@ -13,6 +13,7 @@ use crate::{
         issue_matches_org, issue_matches_query, issue_matches_status, normalize_org_filter,
         normalize_query, normalize_status, resolve_org_filter,
     },
+    list_page::{LIST_PAGE_SIZE, page_slice, parse_page},
     models::{Issue, Organization, User},
     perms::perms_for_user,
     tz::{browser_tz, format_relative},
@@ -25,6 +26,7 @@ pub async fn admin_issues_search_results(
     q: String,
     org: String,
     status: String,
+    page: String,
 ) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -35,6 +37,7 @@ pub async fn admin_issues_search_results(
     let q = normalize_query(&q);
     let status = normalize_status(&status);
     let org_filter = normalize_org_filter(&org);
+    let page = parse_page(page.parse().ok());
 
     let mut database = crate::auth::db(cx);
     let mut issues = Issue::all().exec(&mut database).await.unwrap_or_default();
@@ -58,6 +61,7 @@ pub async fn admin_issues_search_results(
                 && issue_matches_query(&q, &i.key, &i.title)
         })
         .collect();
+    let page_issues = page_slice(&filtered, page, LIST_PAGE_SIZE);
 
     view! {
         cx =>
@@ -65,7 +69,7 @@ pub async fn admin_issues_search_results(
             if filtered.is_empty() {
                 <div class="vb-empty">"No matching issues."</div>
             } else {
-                for issue in filtered {
+                for issue in page_issues {
                     let opener = users
                         .iter()
                         .find(|u| u.id == issue.opened_by_user_id)

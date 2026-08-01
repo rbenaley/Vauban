@@ -42,6 +42,42 @@ grep -n '5-minute download link' "$BUILDS" >/dev/null \
   || fail "$BUILDS must label Concept 5-minute download link"
 grep -n 'Verify signature' "$BUILDS" >/dev/null \
   || fail "$BUILDS must include Verify signature"
+grep -n 'signal verify_open' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must toggle Verify via Topcoat signal verify_open"
+grep -n 'data-verify-signature-panel\|vb-verify' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must render verify signature panel (vb-verify)"
+grep -n 'PACKAGE SIGNATURE' "$BUILDS" >/dev/null \
+  || fail "$BUILDS verify panel must title PACKAGE SIGNATURE"
+if grep -A2 'Verify signature' "$BUILDS" | grep -q 'vb-btn muted'; then
+  fail "$BUILDS Verify signature must be a button, not muted span"
+fi
+# Verify panel body must not reintroduce ephemeral-only chrome.
+VERIFY_SRC="$BUILDS"
+awk '/data-verify-signature-panel|class="vb-ephemeral vb-verify"/,/ephemeral_link_panel|if let Some\(panel\)/' "$VERIFY_SRC" \
+  | grep -q 'use_curl' \
+  && fail "$BUILDS verify panel must not include fetch/cURL use_curl" || true
+if awk '/vb-ephemeral vb-verify/,/if let Some\(panel\) = eph_panel/' "$BUILDS" | grep -q 'vb-ephemeral-revoke\|vb-ephemeral-countdown\|use_curl'; then
+  fail "$BUILDS verify panel must not include countdown, revoke, or use_curl"
+fi
+grep -n 'pub sha256' src/models/mod.rs >/dev/null \
+  || fail "Release model must expose sha256"
+grep -n 'RENAME COLUMN "signature_prefix" TO "sha256"' toasty/migrations/0005_release_sha256.sql >/dev/null \
+  || fail "migration 0005 must rename signature_prefix to sha256"
+grep -n 'version_for_package\|strip_prefix' src/release_pkg.rs >/dev/null \
+  || fail "release_pkg must strip leading v for package names"
+grep -n 'cmp_version_desc' src/release_pkg.rs >/dev/null \
+  || fail "release_pkg must define cmp_version_desc"
+grep -n 'cmp_version_desc' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must sort releases with cmp_version_desc"
+if awk '/fn sort_releases/,/^}/' "$BUILDS" | grep -q 'released_on'; then
+  fail "$BUILDS sort_releases must not use released_on"
+fi
+grep -n 'cmp_version_desc' src/app/org.rs >/dev/null \
+  || fail "org dashboard must sort releases by version number"
+grep -n 'RESERVED_ORG_SLUG' "$BUILDS" >/dev/null \
+  || fail "$BUILDS release visibility must special-case RESERVED_ORG_SLUG"
+grep -n 'has_client_suffix' src/release_pkg.rs >/dev/null \
+  || fail "release_pkg must prefer X.Y.Z-client above plain X.Y.Z"
 if grep -n 'Collapse' "$BUILDS" >/dev/null; then
   fail "$BUILDS must not include Collapse (extra vs Concept)"
 fi
@@ -103,5 +139,45 @@ grep -n 'EphemeralDownload' src/models/mod.rs >/dev/null \
   || fail "src/models/mod.rs must define EphemeralDownload"
 grep -n 'EphemeralDownload' src/db.rs >/dev/null \
   || fail "src/db.rs must register EphemeralDownload"
+
+# SSR pagination (10 per page, shareable ?page=) via shared list_page + filter_row.
+LIST_PAGE="src/list_page.rs"
+CHIPS="src/app/_components/chips.rs"
+PAGER="src/app/_components/pager.rs"
+[[ -f "$LIST_PAGE" ]] || fail "missing $LIST_PAGE"
+grep -nE 'LIST_PAGE_SIZE:\s*usize\s*=\s*10' "$LIST_PAGE" >/dev/null \
+  || fail "$LIST_PAGE LIST_PAGE_SIZE must be 10"
+grep -n 'BUILDS_PAGE_SIZE' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must re-export BUILDS_PAGE_SIZE"
+grep -n 'pub page:' "$BUILDS" >/dev/null \
+  || fail "$BUILDS BuildsQuery must include page"
+grep -n 'filter_row\|PagerLinks' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must use filter_row / PagerLinks"
+grep -n 'vb-chip-group' "$CHIPS" >/dev/null \
+  || fail "$CHIPS must render vb-chip-group"
+grep -n 'vb-pager' "$PAGER" >/dev/null \
+  || fail "$PAGER must render vb-pager markup"
+grep -n 'vb-pager' styles.css >/dev/null \
+  || fail "styles.css must define .vb-pager"
+# filter_row before table in builds page body.
+FILTER_LINE="$(grep -n 'filter_row' "$BUILDS" | head -1 | cut -d: -f1)"
+TABLE_LINE="$(grep -n 'vb-table-wrap' "$BUILDS" | head -1 | cut -d: -f1)"
+[[ -n "$FILTER_LINE" && -n "$TABLE_LINE" && "$FILTER_LINE" -lt "$TABLE_LINE" ]] \
+  || fail "$BUILDS filter_row must sit before builds table"
+# Channel chip hrefs omit page= (builds_list_href for chips uses channel only).
+if grep -nE 'format!\("\{base\}\?channel=\{ch\}&page=|channel=\{ch\}&page=' "$BUILDS" >/dev/null; then
+  fail "$BUILDS channel chip hrefs must not sticky-bind page="
+fi
+# Right-align + chip-height face (same padding as .vb-chip).
+awk '/^\.vb-pager \{/,/^}/' styles.css | grep -qE 'margin:\s*0 0 0 auto|margin-left:\s*auto' \
+  || fail "styles.css .vb-pager must right-align (margin-left auto)"
+awk '/^a\.vb-pager-link \{/,/^}/' styles.css | grep -q 'padding: 6px 12px' \
+  || fail "styles.css a.vb-pager-link must use chip padding 6px 12px"
+if awk '/^a\.vb-pager-link \{/,/^}/' styles.css | grep -qE 'height:\s*40px|min-height:\s*40px'; then
+  fail "styles.css a.vb-pager-link must match chip height (no fixed 40px)"
+fi
+if grep -nE 'pager|page_slice|BUILDS_PAGE_SIZE' "$BUILDS" | grep -qiE 'localStorage|history\.pushState'; then
+  fail "$BUILDS must not use client JS for paging"
+fi
 
 echo "check_builds_entitlement: OK"

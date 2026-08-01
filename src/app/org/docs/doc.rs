@@ -47,7 +47,8 @@ async fn doc_article_page(cx: &Cx) -> Result {
     };
 
     let filter = DocsFilter::from_cx(cx);
-    let list = docs_list_view(cx, org_slug, &filter.q, &filter.cat).await;
+    let page = DocsFilter::page_from_cx(cx);
+    let list = docs_list_view(cx, org_slug, &filter.q, &filter.cat, page).await;
     let close_href = format!("/{org_slug}/docs");
     let title = article.title.clone();
     let category = article.category.clone();

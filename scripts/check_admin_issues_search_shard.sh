@@ -40,6 +40,10 @@ grep -n 'admin_issues_search_results' "$PAGE" >/dev/null || fail "$PAGE must inv
 grep -n 'org_query' "$PAGE" >/dev/null || fail "$PAGE must wire org_query signal"
 # Progressive-enhancement filter form (not a mutation) — keep GET for ?q= / ?org=.
 grep -n 'method="GET"' "$PAGE" >/dev/null || fail "$PAGE search filter form must use method=GET"
+grep -n 'page: Option<u32>' "$PAGE" >/dev/null || fail "$PAGE AdminIssuesQuery must include page: Option<u32>"
+grep -n 'filter_row' "$PAGE" >/dev/null || fail "$PAGE must use filter_row for chips + pager"
+grep -n 'page_slice\|LIST_PAGE_SIZE' "$SHARD" >/dev/null \
+  || fail "$SHARD must slice results with page_slice / LIST_PAGE_SIZE"
 grep -n 'resolve_org_filter' "$HELPERS" >/dev/null || fail "$HELPERS must define resolve_org_filter"
 
 echo "check_admin_issues_search_shard: OK"

@@ -24,6 +24,15 @@ grep -n 'method="GET"' "$NEW" >/dev/null && fail "$NEW must not use method=GET o
 if [[ -f "$LIST" ]]; then
   grep -n 'releases_manage\|admin_view' "$LIST" >/dev/null \
     || fail "$LIST must gate on releases_manage / admin_view"
+  # SSR list pagination (shared list_page + toolbar pager).
+  grep -nE 'LIST_PAGE_SIZE' "$LIST" >/dev/null \
+    || fail "$LIST must use LIST_PAGE_SIZE"
+  grep -n 'list_toolbar' "$LIST" >/dev/null \
+    || fail "$LIST must use list_toolbar for pager"
+  grep -n 'page: Option<u32>' "$LIST" >/dev/null \
+    || fail "$LIST AdminReleasesQuery must include page: Option<u32>"
+  grep -n 'page_slice' "$LIST" >/dev/null \
+    || fail "$LIST must slice rows with page_slice"
 fi
 
 echo "check_admin_releases: OK"

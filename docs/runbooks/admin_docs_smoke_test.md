@@ -50,6 +50,19 @@ Pass: surface behaves as in the focused E2E suite.
 
 Pass: Casbin + tenant fail-closed.
 
+## C -- Pagination
+
+SSR list paging (10 rows per page, shareable `?page=`).
+
+1. With **11+** articles in `/admin/docs`, expect at most **10** table
+   rows and a right-aligned **toolbar pager** above the table (no chip
+   row on this surface).
+2. Follow **Next** (or `?page=2`) — expect the remainder only.
+3. Confirm pager links stay on `/admin/docs?page=N` and do not sticky
+   `delete=` / `err=` overlay params.
+
+Pass: 10 max per page; toolbar pager; overlay query not sticky.
+
 ## Related automated coverage
 
 | Layer | Filter / artifact |

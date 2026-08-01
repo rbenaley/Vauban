@@ -50,6 +50,16 @@ Pass: surface behaves as in the focused E2E suite.
 
 Pass: Casbin + tenant fail-closed.
 
+## C -- Pagination
+
+SSR list paging (10 rows per page, shareable `?page=`).
+
+1. With **11+** releases in `/admin/releases`, expect at most **10** table
+   rows and a right-aligned **toolbar pager** above the table.
+2. Follow **Next** (or `?page=2`) — expect the remainder only.
+
+Pass: 10 max per page; toolbar pager.
+
 ## Related automated coverage
 
 | Layer | Filter / artifact |

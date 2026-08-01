@@ -2,13 +2,29 @@
 
 mod new;
 
-use topcoat::{Result, context::Cx, router::page, view::view};
+use topcoat::{
+    Result,
+    context::Cx,
+    router::{page, query_params},
+    view::view,
+};
 
 use crate::{
+    app::_components::list_toolbar,
     auth::{capability_denied, require_staff},
+    list_page::{
+        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_slice,
+        parse_page, with_page_param,
+    },
     models::{Organization, RELEASE_GA_ORG_ID, Release},
     perms::perms_for_user,
 };
+
+#[query_params]
+struct AdminReleasesQuery {
+    /// 1-based page index; omitted means page 1.
+    page: Option<u32>,
+}
 
 #[page]
 async fn admin_releases_page(cx: &Cx) -> Result {
@@ -25,7 +41,19 @@ async fn admin_releases_page(cx: &Cx) -> Result {
         .await
         .unwrap_or_default();
 
+    let q = query_params::<AdminReleasesQuery>(cx).ok();
+    let mut page = parse_page(q.as_ref().and_then(|q| q.page));
+    let pages = page_count(releases.len(), LIST_PAGE_SIZE);
+    page = clamp_page(page, pages);
+    let page_releases = page_slice(&releases, page, LIST_PAGE_SIZE);
+    let pager = PagerLinks::from_hrefs(page, pages, |n| {
+        let mut parts = Vec::new();
+        with_page_param(&mut parts, n);
+        href_with_query("/admin/releases", &parts)
+    });
+
     view! {
+        cx =>
         <div
             style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;"
         >
@@ -37,6 +65,8 @@ async fn admin_releases_page(cx: &Cx) -> Result {
             </div>
             <a class="vb-btn" href="/admin/releases/new">"+ Publish release"</a>
         </div>
+
+        list_toolbar(links: &pager)
 
         <div class="vb-table-wrap">
             <table class="vb-table">
@@ -59,7 +89,7 @@ async fn admin_releases_page(cx: &Cx) -> Result {
                             </td>
                         </tr>
                     } else {
-                        for rel in releases {
+                        for rel in page_releases {
                             let target = if rel.organization_id == RELEASE_GA_ORG_ID {
                                 "GA".to_owned()
                             } else {

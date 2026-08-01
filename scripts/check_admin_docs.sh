@@ -70,6 +70,15 @@ grep -n 'delete=' "$LIST" >/dev/null \
   || fail "$LIST Delete must open ?delete= confirm"
 grep -n 'ico_trash\|Delete permanently' "$LIST" >/dev/null \
   || fail "$LIST must include delete confirm UI"
+# SSR list pagination (shared list_page + toolbar pager).
+grep -nE 'LIST_PAGE_SIZE' "$LIST" >/dev/null \
+  || fail "$LIST must use LIST_PAGE_SIZE"
+grep -n 'list_toolbar' "$LIST" >/dev/null \
+  || fail "$LIST must use list_toolbar for pager"
+grep -n 'page: Option<u32>' "$LIST" >/dev/null \
+  || fail "$LIST AdminDocsQuery must include page: Option<u32>"
+grep -n 'page_slice' "$LIST" >/dev/null \
+  || fail "$LIST must slice rows with page_slice"
 grep -n 'sort_by_key' "$CLIENT" >/dev/null \
   || fail "$CLIENT load_filtered_docs must sort by updated_at"
 test -f src/docs_version.rs || fail "src/docs_version.rs must exist"

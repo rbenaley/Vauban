@@ -13,16 +13,22 @@ use topcoat::{
 
 use crate::{
     app::_components::{
-        ico_arrow_down, ico_check, ico_chevron_down, ico_chevron_right, ico_copy, ico_hourglass,
+        filter_row, ico_arrow_down, ico_check, ico_chevron_down, ico_chevron_right, ico_copy,
+        ico_hourglass,
     },
     app::org::Org,
     auth::{capability_denied, config, require_org},
     db::now_unix,
-    models::{RELEASE_GA_ORG_ID, Release},
+    list_page::{PagerLinks, href_with_query, with_page_param},
+    models::{RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release},
     perms::perms_for_user,
+    release_pkg::{cmp_version_desc, package_file_name, sha256_cmd},
 };
 
 use self::ephemeral::{EphPanel, load_eph_for, panel_from_row};
+
+/// Re-export shared pagination helpers for `builds_entitlement` / `vcp::app`.
+pub use crate::list_page::{BUILDS_PAGE_SIZE, clamp_page, page_count, page_slice, parse_page};
 
 const CHANNELS: &[&str] = &["LTS", "Stable", "EOL"];
 
@@ -31,6 +37,21 @@ pub(super) struct BuildsQuery {
     pub channel: Option<String>,
     /// When `none`, suppress default-open of the latest build (Concept collapse).
     pub open: Option<String>,
+    /// 1-based page index; omitted means page 1.
+    pub page: Option<u32>,
+}
+
+/// Shareable builds list URL (`page=1` and empty channel omitted).
+pub fn builds_list_href(org: &str, channel: &str, page: usize, open_none: bool) -> String {
+    let mut parts = Vec::new();
+    if !channel.is_empty() {
+        parts.push(format!("channel={channel}"));
+    }
+    with_page_param(&mut parts, page);
+    if open_none {
+        parts.push("open=none".to_owned());
+    }
+    href_with_query(&format!("/{org}/builds"), &parts)
 }
 
 #[page]
@@ -52,24 +73,30 @@ async fn builds_page(cx: &Cx) -> Result {
         .as_ref()
         .and_then(|q| q.open.as_deref())
         .is_some_and(|v| v.eq_ignore_ascii_case("none"));
+    let mut page = parse_page(q.as_ref().and_then(|q| q.page));
 
-    let mut releases = load_releases_for_org(cx, ctx.org.id, channel).await;
+    let mut releases = load_releases_for_org(cx, ctx.org.id, slug, channel).await;
     sort_releases(&mut releases);
-    let open_version = if collapse {
+    let pages = page_count(releases.len(), BUILDS_PAGE_SIZE);
+    page = clamp_page(page, pages);
+    let page_releases = page_slice(&releases, page, BUILDS_PAGE_SIZE);
+    let open_version = if collapse || page != 1 {
         None
     } else {
-        releases.first().map(|r| r.version.as_str())
+        page_releases.first().map(|r| r.version.as_str())
     };
 
     render_builds(
         cx,
         slug,
         channel,
-        &releases,
+        page_releases,
         open_version,
         perms.builds_download,
         ctx.user.id,
         ctx.org.id,
+        page,
+        pages,
     )
     .await
 }
@@ -84,20 +111,29 @@ pub(super) async fn render_builds(
     can_download: bool,
     user_id: u64,
     org_id: u64,
+    page: usize,
+    page_count: usize,
 ) -> Result {
-    let all_class = if channel.is_empty() {
-        "vb-chip active"
-    } else {
-        "vb-chip"
-    };
     let base = format!("/{org_slug}/builds");
     let org = org_slug.to_owned();
     let channel_owned = channel.to_owned();
-    let collapse_href = if channel_owned.is_empty() {
-        format!("{base}?open=none")
-    } else {
-        format!("{base}?channel={channel_owned}&open=none")
-    };
+    let collapse_href = builds_list_href(&org, &channel_owned, page, true);
+    let org_for_pager = org.clone();
+    let channel_for_pager = channel_owned.clone();
+    let pager = PagerLinks::from_hrefs(page, page_count, |n| {
+        builds_list_href(&org_for_pager, &channel_for_pager, n, false)
+    });
+    let pager_opt = if pager.show() { Some(pager) } else { None };
+
+    let mut chips: Vec<(String, String, bool)> = Vec::with_capacity(1 + CHANNELS.len());
+    chips.push(("All".to_owned(), base.clone(), channel.is_empty()));
+    for ch in CHANNELS {
+        chips.push((
+            (*ch).to_owned(),
+            format!("{base}?channel={ch}"),
+            channel.eq_ignore_ascii_case(ch),
+        ));
+    }
 
     let public_origin = config(cx).primary_public_origin().to_owned();
     let eph_model: Option<EphPanel> = if let Some(ver) = open_version {
@@ -138,18 +174,7 @@ pub(super) async fn render_builds(
             "Signed and verified binaries. Click a version for its changelog."
         </p>
 
-        <div class="vb-chip-row">
-            <a class=(all_class) href=(base.clone())>"All"</a>
-            for ch in CHANNELS {
-                let href = format!("{base}?channel={ch}");
-                let class = if channel.eq_ignore_ascii_case(ch) {
-                    "vb-chip active"
-                } else {
-                    "vb-chip"
-                };
-                <a class=(class) href=(href)>(*ch)</a>
-            }
-        </div>
+        filter_row(chips: &chips, pager: &pager_opt)
 
         <div class="vb-table-wrap">
             <div class="vb-build-head">
@@ -202,7 +227,7 @@ pub(super) async fn render_builds(
                             >
                                 (ico_check(cx, 12).await?)
                                 <span style="color: #8a8f96;">
-                                    (rel.signature_prefix.clone())
+                                    (rel.sha256.chars().take(7).collect::<String>())
                                     "…"
                                 </span>
                             </div>
@@ -235,49 +260,20 @@ pub(super) async fn render_builds(
                                     </div>
                                 }
                                 if can_download {
-                                    let dl_action = format!(
-                                        "/{}/builds/{}/download", org, rel.version
-                                    );
-                                    <div class="vb-btn-row">
-                                        <form method="POST" action=(dl_action)>
-                                            <button
-                                                class="vb-btn vb-btn-ico vb-btn-build"
-                                                type="submit"
-                                            >
-                                                (ico_arrow_down(cx, 14).await?)
-                                                <span>(dl_label.clone())</span>
-                                            </button>
-                                        </form>
-                                        <form method="POST" action=(eph_action.clone())>
-                                            if !channel_owned.is_empty() {
-                                                <input
-                                                    type="hidden"
-                                                    name="channel"
-                                                    value=(channel_owned.clone())
-                                                />
-                                            }
-                                            <button
-                                                type="submit"
-                                                class="vb-btn outline vb-btn-ico vb-btn-build"
-                                            >
-                                                (ico_hourglass(cx, 14).await?)
-                                                <span>(gen_label)</span>
-                                            </button>
-                                        </form>
-                                        <span class="vb-btn muted vb-btn-build">
-                                            "Verify signature"
-                                        </span>
-                                    </div>
-                                    if let Some(panel) = open_panel.clone() {
-                                        ephemeral_link_panel(
-                                            panel: panel,
-                                            chrome: EphPanelChrome {
-                                                eph_action: eph_action.clone(),
-                                                revoke_action: revoke_action.clone(),
-                                                channel: channel_owned.clone(),
-                                            },
-                                        )
-                                    }
+                                    build_download_actions(
+                                        actions: BuildDownloadActions {
+                                            org: org.clone(),
+                                            version: rel.version.clone(),
+                                            release_channel: rel.channel.clone(),
+                                            sha256: rel.sha256.clone(),
+                                            dl_label: dl_label.clone(),
+                                            gen_label: gen_label.to_owned(),
+                                            eph_action: eph_action.clone(),
+                                            revoke_action: revoke_action.clone(),
+                                            list_channel: channel_owned.clone(),
+                                            eph_panel: open_panel.clone(),
+                                        },
+                                    )
                                 }
                             </div>
                         }
@@ -292,6 +288,128 @@ struct EphPanelChrome {
     eph_action: String,
     revoke_action: String,
     channel: String,
+}
+
+struct BuildDownloadActions {
+    org: String,
+    version: String,
+    release_channel: String,
+    sha256: String,
+    dl_label: String,
+    gen_label: String,
+    eph_action: String,
+    revoke_action: String,
+    list_channel: String,
+    eph_panel: Option<EphPanel>,
+}
+
+/// Download / regenerate / verify controls + optional ephemeral panel.
+/// Verify uses a client-only Topcoat signal (no POST).
+#[component]
+async fn build_download_actions(cx: &Cx, actions: BuildDownloadActions) -> Result {
+    let BuildDownloadActions {
+        org,
+        version,
+        release_channel,
+        sha256,
+        dl_label,
+        gen_label,
+        eph_action,
+        revoke_action,
+        list_channel,
+        eph_panel,
+    } = actions;
+    let dl_action = format!("/{org}/builds/{version}/download");
+    let package_name = package_file_name(&version, &release_channel);
+    let verify_cmd = sha256_cmd(&package_name);
+    let sha_copy = sha256.clone();
+    let cmd_copy = verify_cmd.clone();
+
+    view! {
+        cx =>
+        signal verify_open = false;
+
+        <div class="vb-btn-row">
+            <form method="POST" action=(dl_action)>
+                <button class="vb-btn vb-btn-ico vb-btn-build" type="submit">
+                    (ico_arrow_down(cx, 14).await?)
+                    <span>(dl_label)</span>
+                </button>
+            </form>
+            <form method="POST" action=(eph_action.clone())>
+                if !list_channel.is_empty() {
+                    <input type="hidden" name="channel" value=(list_channel.clone()) />
+                }
+                <button type="submit" class="vb-btn outline vb-btn-ico vb-btn-build">
+                    (ico_hourglass(cx, 14).await?)
+                    <span>(gen_label)</span>
+                </button>
+            </form>
+            <button
+                type="button"
+                class="vb-btn outline vb-btn-build"
+                @click=$(|_e| verify_open.set(!verify_open.get()))
+            >
+                "Verify signature"
+            </button>
+        </div>
+
+        <div
+            class="vb-ephemeral vb-verify"
+            data-verify-signature-panel=""
+            :style=$(if verify_open.get() { "" } else { "display:none" })
+        >
+            <div class="vb-ephemeral-bar">
+                <div class="vb-ephemeral-title">"PACKAGE SIGNATURE"</div>
+            </div>
+            <div class="vb-ephemeral-body">
+                <div class="vb-ephemeral-url-row">
+                    <div class="vb-ephemeral-url vb-mono">(sha_copy.clone())</div>
+                    <button
+                        type="button"
+                        class="vb-btn vb-btn-build"
+                        data-copy=(sha_copy.clone())
+                        @click="(e) => { const el = e.current_target.inner; navigator.clipboard.writeText(el.getAttribute('data-copy')); el.textContent = 'Copied'; }"
+                    >
+                        "Copy"
+                    </button>
+                </div>
+                <div class="vb-ephemeral-cmd-head">
+                    <div class="vb-mono vb-ephemeral-run-label">
+                        "VERIFY ON YOUR SERVER"
+                    </div>
+                </div>
+                <div class="vb-ephemeral-cmd">
+                    <span class="vb-ephemeral-prompt">"$"</span>
+                    " "
+                    <span class="vb-ephemeral-cmd-bin">"sha256"</span>
+                    " "
+                    <span class="vb-ephemeral-cmd-url">(package_name.clone())</span>
+                    <button
+                        type="button"
+                        class="vb-ephemeral-cmd-copy"
+                        title="Copy command"
+                        aria-label="Copy command"
+                        data-copy=(cmd_copy.clone())
+                        @click="(e) => { const el = e.current_target.inner; navigator.clipboard.writeText(el.getAttribute('data-copy')); el.classList.add('copied'); }"
+                    >
+                        (ico_copy(cx, 14).await?)
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        if let Some(panel) = eph_panel {
+            ephemeral_link_panel(
+                panel: panel,
+                chrome: EphPanelChrome {
+                    eph_action: eph_action.clone(),
+                    revoke_action: revoke_action.clone(),
+                    channel: list_channel.clone(),
+                },
+            )
+        }
+    }
 }
 
 #[component]
@@ -499,20 +617,26 @@ pub(super) fn parse_notes(notes: &str) -> Vec<(String, &'static str, String)> {
         .collect()
 }
 
-/// Releases visible to an org: GA (`organization_id == 0`) or targeted at that org.
-pub(super) fn release_visible_to_org(release: &Release, org_id: u64) -> bool {
+/// Releases visible to an org: GA (`organization_id == 0`) or targeted at that
+/// org. The reserved staff tenant `vauban` sees every release (including all
+/// `X.Y.Z-client` private builds).
+pub(super) fn release_visible_to_org(release: &Release, org_id: u64, org_slug: &str) -> bool {
+    if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+        return true;
+    }
     release.organization_id == RELEASE_GA_ORG_ID || release.organization_id == org_id
 }
 
 pub(super) fn sort_releases(releases: &mut [Release]) {
-    releases.sort_by(|a, b| {
-        b.released_on
-            .cmp(&a.released_on)
-            .then_with(|| b.version.cmp(&a.version))
-    });
+    releases.sort_by(|a, b| cmp_version_desc(&a.version, &b.version));
 }
 
-pub(super) async fn load_releases_for_org(cx: &Cx, org_id: u64, channel: &str) -> Vec<Release> {
+pub(super) async fn load_releases_for_org(
+    cx: &Cx,
+    org_id: u64,
+    org_slug: &str,
+    channel: &str,
+) -> Vec<Release> {
     let mut database = crate::auth::db(cx);
     let all = if channel.is_empty() {
         Release::all().exec(&mut database).await.unwrap_or_default()
@@ -526,8 +650,30 @@ pub(super) async fn load_releases_for_org(cx: &Cx, org_id: u64, channel: &str) -
     };
     let mut filtered: Vec<_> = all
         .into_iter()
-        .filter(|r| release_visible_to_org(r, org_id))
+        .filter(|r| release_visible_to_org(r, org_id, org_slug))
         .collect();
     sort_releases(&mut filtered);
     filtered
+}
+
+#[cfg(test)]
+mod builds_entitlement_page_tests {
+    use super::builds_list_href;
+
+    #[test]
+    fn builds_entitlement_builds_list_href_omits_page_one() {
+        assert_eq!(builds_list_href("acme", "", 1, false), "/acme/builds");
+        assert_eq!(
+            builds_list_href("acme", "LTS", 1, false),
+            "/acme/builds?channel=LTS"
+        );
+        assert_eq!(
+            builds_list_href("acme", "LTS", 2, false),
+            "/acme/builds?channel=LTS&page=2"
+        );
+        assert_eq!(
+            builds_list_href("acme", "", 2, true),
+            "/acme/builds?page=2&open=none"
+        );
+    }
 }

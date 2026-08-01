@@ -40,7 +40,9 @@ is planned._
 | P0-P3 Topcoat campaign | [`p0-p3_topcoat_campaign_d0d5c3c6.plan.md`](p0-p3_topcoat_campaign_d0d5c3c6.plan.md) | Done |
 | Pyramid compliance backfill | [`pyramid_compliance_backfill_c0557c49.plan.md`](pyramid_compliance_backfill_c0557c49.plan.md) | Done |
 | Topcoat idiomatic adoption | [`topcoat_idiomatic_adoption_820f64e6.plan.md`](topcoat_idiomatic_adoption_820f64e6.plan.md) | Done |
+| UI polish CSS pyramid | [`ui_polish_css_pyramid_40fa6ffc.plan.md`](ui_polish_css_pyramid_40fa6ffc.plan.md) | Done |
 | VCP HTTPS TLS ACME | [`vcp_https_tls_acme_b5efb33c.plan.md`](vcp_https_tls_acme_b5efb33c.plan.md) | Done |
 | VCP test pyramid | [`vcp_test_pyramid_c64572e6.plan.md`](vcp_test_pyramid_c64572e6.plan.md) | Done |
 | VCP Topcoat Scaffold | [`vcp_topcoat_scaffold_8eafdb31.plan.md`](vcp_topcoat_scaffold_8eafdb31.plan.md) | Done |
+| Verify signature panel | [`verify_signature_panel_0ed518c3.plan.md`](verify_signature_panel_0ed518c3.plan.md) | Done |
 <!-- AUTO-CATALOG:END -->

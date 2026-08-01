@@ -37,7 +37,10 @@ async fn builds_download(cx: &Cx) -> Result<(StatusCode, &'static str)> {
         .exec(&mut database)
         .await
         .unwrap_or_default();
-    if !found.iter().any(|r| release_visible_to_org(r, ctx.org.id)) {
+    if !found
+        .iter()
+        .any(|r| release_visible_to_org(r, ctx.org.id, org_slug))
+    {
         return Err(not_found().into());
     }
 

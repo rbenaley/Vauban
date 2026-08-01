@@ -11,8 +11,12 @@ use topcoat::{
 };
 
 use crate::{
-    app::_components::ico_trash,
+    app::_components::{ico_trash, list_toolbar},
     auth::{capability_denied, require_staff},
+    list_page::{
+        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_slice,
+        parse_page, with_page_param,
+    },
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
 };
@@ -21,6 +25,8 @@ use crate::{
 struct AdminDocsQuery {
     delete: Option<String>,
     err: Option<String>,
+    /// 1-based page index; omitted means page 1.
+    page: Option<u32>,
 }
 
 #[page]
@@ -47,9 +53,22 @@ async fn admin_docs_page(cx: &Cx) -> Result {
         .as_ref()
         .and_then(|q| q.err.as_deref())
         .is_some_and(|e| e == "confirm");
+    // Resolve delete target against the full list (before page slice).
     let delete_target = delete_id.and_then(|id| articles.iter().find(|a| a.id == id).cloned());
 
+    let mut page = parse_page(q.as_ref().and_then(|q| q.page));
+    let pages = page_count(articles.len(), LIST_PAGE_SIZE);
+    page = clamp_page(page, pages);
+    let page_articles = page_slice(&articles, page, LIST_PAGE_SIZE);
+    // Pager keeps only `page` — never sticky `delete` / `err` (overlay query).
+    let pager = PagerLinks::from_hrefs(page, pages, |n| {
+        let mut parts = Vec::new();
+        with_page_param(&mut parts, n);
+        href_with_query("/admin/docs", &parts)
+    });
+
     view! {
+        cx =>
         <div
             style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;"
         >
@@ -61,6 +80,8 @@ async fn admin_docs_page(cx: &Cx) -> Result {
             </div>
             <a class="vb-btn" href="/admin/docs/new">"+ New article"</a>
         </div>
+
+        list_toolbar(links: &pager)
 
         <div class="vb-table-wrap">
             <table class="vb-table">
@@ -81,7 +102,7 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                             </td>
                         </tr>
                     } else {
-                        for article in articles {
+                        for article in page_articles {
                             let edit_href = format!("/admin/docs/{}", article.id);
                             let publish_action = format!("/admin/docs/{}/publish", article.id);
                             let unpublish_action = format!(

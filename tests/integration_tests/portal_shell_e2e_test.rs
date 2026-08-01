@@ -180,7 +180,7 @@ async fn e2e_builds_ephemeral_exposes_countdown_class() {
             channel: "LTS".to_owned(),
             released_on: "2026-07-15".to_owned(),
             size_mb: "2.0".to_owned(),
-            signature_prefix: "abc".to_owned(),
+            sha256: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: polish".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,

@@ -254,3 +254,7 @@ Interactive elements should prefer a 44×44px hit area for touch or mobile conte
 ### Collision Rule
 
 If the extended hit area overlaps another interactive element, shrink the pseudo-element — but make it as large as possible without colliding. Two interactive elements should never have overlapping hit areas.
+
+## List pager (VCP)
+
+Portal list pagers use the same face as channel/status chips (`padding: 6px 12px`, mono 12px, chip-height). When filter chips exist, put the pager on the **same row** (chips left, pager right) so controls do not jump when result panels open. Without chips, right-align the pager in a toolbar above the table. Prefer fixed geometry shared by enabled and disabled controls (same element type). Full rules: `web-stack` § List pagination.

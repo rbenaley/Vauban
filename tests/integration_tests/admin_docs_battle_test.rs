@@ -2,10 +2,15 @@
 
 use std::sync::Arc;
 
+use http_body_util::BodyExt;
 use tokio::sync::Barrier;
+use topcoat::router::StatusCode;
 use vcp::{db::now_unix, models::DocArticle};
 
-use crate::common::{cleanup, db_lock, test_db, unique_slug};
+use crate::common::{
+    cleanup, cookie_header, create_org_with_membership, create_published_doc, db_lock, get,
+    post_form, status, test_db, test_router, unique_email, unique_slug, urlencoding_encode,
+};
 
 #[tokio::test]
 async fn battle_concurrent_doc_article_creates() {
@@ -236,4 +241,76 @@ Need RAM.
     for h in handles {
         h.await.expect("join");
     }
+}
+
+#[tokio::test]
+async fn battle_parallel_admin_docs_page_pagination() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-adoc-page");
+    let slug = unique_slug("battle-adoc-page");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+
+    let marker = unique_slug("badocpage");
+    for i in 0..11u32 {
+        let doc_slug = unique_slug(&format!("badoc-pf-{i}"));
+        create_published_doc(
+            &db,
+            &format!("{marker} article {i}"),
+            "battle admin pagination",
+            "API",
+            &doc_slug,
+        )
+        .await;
+    }
+
+    let router = Arc::new(test_router().await);
+    let form = format!("email={}&password=password", urlencoding_encode(&email));
+    let login = post_form(router.as_ref(), "/login", None, &form).await;
+    let cookie = cookie_header(&login).expect("cookie");
+
+    let barrier = Arc::new(Barrier::new(2));
+    let cookie_a = cookie.clone();
+    let cookie_b = cookie;
+    let router_a = router.clone();
+    let router_b = router;
+    let barrier_a = barrier.clone();
+    let barrier_b = barrier;
+    let marker_a = marker.clone();
+    let marker_b = marker;
+
+    let h1 = tokio::spawn(async move {
+        barrier_a.wait().await;
+        let resp = get(router_a.as_ref(), "/admin/docs?page=1", Some(&cookie_a)).await;
+        assert_eq!(status(&resp), StatusCode::OK);
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+        let html = String::from_utf8_lossy(&body).into_owned();
+        assert!(html.contains(&marker_a), "page1 marker: {html}");
+        html
+    });
+    let h2 = tokio::spawn(async move {
+        barrier_b.wait().await;
+        let resp = get(router_b.as_ref(), "/admin/docs?page=2", Some(&cookie_b)).await;
+        assert_eq!(status(&resp), StatusCode::OK);
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+        let html = String::from_utf8_lossy(&body).into_owned();
+        assert!(html.contains(&marker_b), "page2 marker: {html}");
+        html
+    });
+
+    let page1 = h1.await.expect("join page1");
+    let page2 = h2.await.expect("join page2");
+    assert!(page1.contains("vb-pager"), "page1 pager: {page1}");
+    assert!(
+        page1.contains("vb-list-toolbar"),
+        "toolbar under contention: {page1}"
+    );
+    assert!(
+        (1..=10).contains(&page2.matches("vb-title-main").count()),
+        "page2 rows under contention: {page2}"
+    );
+
+    cleanup(&db).await;
 }

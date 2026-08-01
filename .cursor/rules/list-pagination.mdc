@@ -1,0 +1,17 @@
+---
+description: >-
+  SSR list pagination is mandatory for new/changed list pages — chip-row
+  or toolbar pager, LIST_PAGE_SIZE=10. See web-stack skill.
+alwaysApply: false
+---
+
+# List pagination (VCP)
+
+When adding or changing a **list / index** page:
+
+1. Use `LIST_PAGE_SIZE` / helpers from `src/list_page.rs` (`?page=`, 1-based).
+2. With filter chips: pager on the same `vb-chip-row` (right). Chip hrefs omit `page`.
+3. Without chips: `vb-list-toolbar` above the table, pager right.
+4. Pager = SSR `<a href>` only — no client JS pager.
+5. Live-search shards take `page` and reset to 1 when the query signal changes.
+6. Ship the full test pyramid for that surface (see `web-stack` § List pagination).

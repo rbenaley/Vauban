@@ -4,15 +4,17 @@ mod badges;
 mod chips;
 mod icons;
 mod modal;
+mod pager;
 mod rail;
 mod topbar;
 
 pub use badges::{severity_badge, status_badge};
-pub use chips::chip_row;
+pub use chips::filter_row;
 pub use icons::{
     ico_arrow_down, ico_builds, ico_check, ico_chevron_down, ico_chevron_right, ico_copy, ico_docs,
     ico_hourglass, ico_issues, ico_paperclip, ico_plus, ico_trash,
 };
 pub use modal::article_modal_shell;
+pub use pager::list_toolbar;
 pub use rail::vb_rail;
 pub use topbar::vb_topbar;

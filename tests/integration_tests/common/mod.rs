@@ -209,6 +209,38 @@ pub async fn create_org_with_membership(
     (user, org)
 }
 
+/// Versions upserted by `db::seed` / GA catalog — must survive test cleanup.
+fn is_seed_release_version(version: &str) -> bool {
+    matches!(
+        version,
+        "v1.0.2"
+            | "v1.0.1"
+            | "v1.0.0"
+            | "v0.9.35"
+            | "v0.9.31"
+            | "v0.9.29"
+            | "v0.9.24"
+            | "v0.9.20"
+            | "v0.9.12"
+            | "v0.9.4"
+            | "v0.8.7"
+            | "v0.8.6"
+            | "v0.8.6-acme1"
+            | "v0.7.16"
+            | "v0.7.4"
+            | "v0.7.2"
+            | "v0.6.6"
+            | "v0.6.3"
+            | "v0.6.2"
+            | "v0.6.0"
+            | "v0.5.0"
+            | "v0.3.0"
+            | "v0.2.1"
+            | "v0.2.0"
+            | "v1"
+    )
+}
+
 pub async fn cleanup(db: &Db) {
     let mut db = db.clone();
 
@@ -257,7 +289,9 @@ pub async fn cleanup(db: &Db) {
 
     let releases = Release::all().exec(&mut db).await.unwrap_or_default();
     for rel in releases {
-        if rel.version.starts_with("test-") {
+        // Keep seed / catalog rows; drop every fixture release (including
+        // pagination versions like `v99.0.N` that must sort numerically).
+        if !is_seed_release_version(&rel.version) {
             let _ = Release::delete_by_id(&mut db, rel.id).await;
         }
     }
@@ -356,13 +390,19 @@ pub fn shard_path_from_html(html: &str) -> Option<String> {
     Some(rest[..end].replace("\\/", "/"))
 }
 
-/// JSON body for `docs_search_results(org_slug, q, cat)`.
+/// JSON body for `docs_search_results(org_slug, q, cat, page)`.
 pub fn docs_search_shard_body(org_slug: &str, q: &str, cat: &str) -> String {
+    docs_search_shard_body_page(org_slug, q, cat, "1")
+}
+
+/// JSON body for `docs_search_results` with an explicit page.
+pub fn docs_search_shard_body_page(org_slug: &str, q: &str, cat: &str, page: &str) -> String {
     format!(
-        "[{},{},{}]",
+        "[{},{},{},{}]",
         json_string(org_slug),
         json_string(q),
-        json_string(cat)
+        json_string(cat),
+        json_string(page)
     )
 }
 
@@ -408,23 +448,40 @@ pub async fn create_published_doc(
     .expect("create published doc")
 }
 
-/// JSON body for `issues_search_results(org_slug, q, status)`.
+/// JSON body for `issues_search_results(org_slug, q, status, page)`.
 pub fn org_issues_search_shard_body(org_slug: &str, q: &str, status: &str) -> String {
+    org_issues_search_shard_body_page(org_slug, q, status, "1")
+}
+
+/// JSON body for `issues_search_results` with an explicit page.
+pub fn org_issues_search_shard_body_page(
+    org_slug: &str,
+    q: &str,
+    status: &str,
+    page: &str,
+) -> String {
     format!(
-        "[{},{},{}]",
+        "[{},{},{},{}]",
         json_string(org_slug),
         json_string(q),
-        json_string(status)
+        json_string(status),
+        json_string(page)
     )
 }
 
-/// JSON body for `admin_issues_search_results(q, org, status)`.
+/// JSON body for `admin_issues_search_results(q, org, status, page)`.
 pub fn admin_issues_search_shard_body(q: &str, org: &str, status: &str) -> String {
+    admin_issues_search_shard_body_page(q, org, status, "1")
+}
+
+/// JSON body for `admin_issues_search_results` with an explicit page.
+pub fn admin_issues_search_shard_body_page(q: &str, org: &str, status: &str, page: &str) -> String {
     format!(
-        "[{},{},{}]",
+        "[{},{},{},{}]",
         json_string(q),
         json_string(org),
-        json_string(status)
+        json_string(status),
+        json_string(page)
     )
 }
 

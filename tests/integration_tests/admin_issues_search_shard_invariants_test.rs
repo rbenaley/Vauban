@@ -48,6 +48,26 @@ fn inv_page_wires_query_and_org_signals() {
     assert!(page.contains("admin_issues_search_results"));
     assert!(page.contains("org_query"));
     assert!(page.contains("normalize_org_filter") || page.contains("normalize_query"));
+    assert!(
+        page.contains("page: Option<u32>"),
+        "AdminIssuesQuery must include page"
+    );
+    assert!(
+        page.contains("filter_row"),
+        "chips + pager must use filter_row"
+    );
+}
+
+#[test]
+fn inv_shard_paginates_with_page_slice() {
+    let src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/issues/search_shard.rs"
+    ));
+    assert!(
+        src.contains("page_slice") && src.contains("LIST_PAGE_SIZE"),
+        "shard must paginate with page_slice / LIST_PAGE_SIZE"
+    );
 }
 
 #[test]

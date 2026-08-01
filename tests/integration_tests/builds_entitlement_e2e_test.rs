@@ -44,7 +44,7 @@ async fn e2e_authorized_download_returns_501() {
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
             size_mb: "1.0".to_owned(),
-            signature_prefix: "abc".to_owned(),
+            sha256: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -88,7 +88,7 @@ async fn e2e_download_wrong_org_is_404() {
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
             size_mb: "1.0".to_owned(),
-            signature_prefix: "abc".to_owned(),
+            sha256: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -126,7 +126,7 @@ async fn e2e_download_anonymous_denied() {
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
             size_mb: "1.0".to_owned(),
-            signature_prefix: "abc".to_owned(),
+            sha256: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -174,8 +174,9 @@ async fn e2e_org_private_release_hidden_from_other_org() {
     let (_user_b, _org_b) =
         create_org_with_membership(&db, &email_b, "password", &slug_b, "org").await;
 
-    let private_ver = unique_slug("priv-rel");
-    let ga_ver = unique_slug("ga-rel");
+    // High versions so both rows land on page 1 above the seed catalog.
+    let private_ver = "v97.0.1-acme".to_owned();
+    let ga_ver = "v97.0.0".to_owned();
     {
         let mut conn = db.clone();
         let _ = toasty::create!(Release {
@@ -183,7 +184,7 @@ async fn e2e_org_private_release_hidden_from_other_org() {
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
             size_mb: "1.0".to_owned(),
-            signature_prefix: "abc".to_owned(),
+            sha256: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "HOTFIX: private".to_owned(),
             organization_id: org_a.id,
@@ -196,7 +197,7 @@ async fn e2e_org_private_release_hidden_from_other_org() {
             channel: "LTS".to_owned(),
             released_on: "2026-07-02".to_owned(),
             size_mb: "1.0".to_owned(),
-            signature_prefix: "def".to_owned(),
+            sha256: "def".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "GA".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -247,6 +248,79 @@ async fn e2e_org_private_release_hidden_from_other_org() {
 }
 
 #[tokio::test]
+async fn e2e_reserved_vauban_org_sees_all_client_private_releases() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let staff_email = unique_email("staff-see-priv");
+    // Admin helper also attaches membership on reserved `vauban`.
+    let (_staff, _home) = create_org_with_membership(
+        &db,
+        &staff_email,
+        "password",
+        &unique_slug("staff-home"),
+        "admin",
+    )
+    .await;
+
+    let client_email = unique_email("client-priv");
+    let client_slug = unique_slug("client-priv");
+    let (_client, client_org) =
+        create_org_with_membership(&db, &client_email, "password", &client_slug, "member").await;
+
+    // High shared core so the three rows share page 1 above the seed catalog.
+    let private_ver = "v96.0.0-acme1".to_owned();
+    let other_client_ver = "v96.0.0-zenith".to_owned();
+    let plain = "v96.0.0".to_owned();
+    {
+        let mut conn = db.clone();
+        for (ver, org_id) in [
+            (private_ver.as_str(), client_org.id),
+            (other_client_ver.as_str(), client_org.id),
+            (plain.as_str(), RELEASE_GA_ORG_ID),
+        ] {
+            let _ = toasty::create!(Release {
+                version: ver.to_owned(),
+                channel: "EOL".to_owned(),
+                released_on: "2026-06-18".to_owned(),
+                size_mb: "1.0".to_owned(),
+                sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_owned(),
+                status: "PUBLISHED".to_owned(),
+                notes: "FIX: visibility".to_owned(),
+                organization_id: org_id,
+            })
+            .exec(&mut conn)
+            .await
+            .expect("release");
+        }
+    }
+
+    let cookie = login(&router, &staff_email).await;
+    let list = get(&router, "/vauban/builds", cookie.as_deref()).await;
+    assert!(status(&list).is_success());
+    let body = body_text(list).await;
+    assert!(body.contains(&private_ver), "staff must see acme1: {body}");
+    assert!(
+        body.contains(&other_client_ver),
+        "staff must see zenith: {body}"
+    );
+    assert!(body.contains(&plain), "staff must see GA plain: {body}");
+    // Exact version cell text — avoid substring hits inside `v96.0.0-acme1`.
+    let acme_pos = body.find(">v96.0.0-acme1<").expect("acme1 cell");
+    let zenith_pos = body.find(">v96.0.0-zenith<").expect("zenith cell");
+    let plain_pos = body.find(">v96.0.0<").expect("plain cell");
+    assert!(
+        acme_pos < zenith_pos && zenith_pos < plain_pos,
+        "client variants A→Z above plain: {body}"
+    );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
 async fn e2e_builds_list_opens_latest_with_concept_actions() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
@@ -256,17 +330,20 @@ async fn e2e_builds_list_opens_latest_with_concept_actions() {
     let email = unique_email("builds-ui");
     let slug = unique_slug("builds-ui");
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "org").await;
-    let older = unique_slug("old-rel");
-    let newer = unique_slug("new-rel");
+    // Higher version must win even when its released_on is older.
+    // Use v98.* so fixtures sort above the seed GA catalog and stay on page 1.
+    let higher = "v98.0.1".to_owned();
+    let lower = "v98.0.0".to_owned();
+    let digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     {
         let mut conn = db.clone();
-        for (ver, date) in [(&older, "2026-06-01"), (&newer, "2026-07-15")] {
+        for (ver, date) in [(&higher, "2026-01-01"), (&lower, "2026-12-31")] {
             let _ = toasty::create!(Release {
                 version: ver.clone(),
                 channel: "LTS".to_owned(),
                 released_on: date.to_owned(),
                 size_mb: "2.0".to_owned(),
-                signature_prefix: "abc".to_owned(),
+                sha256: digest.to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: concept".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
@@ -282,15 +359,39 @@ async fn e2e_builds_list_opens_latest_with_concept_actions() {
     assert!(status(&list).is_success());
     let body = body_text(list).await;
     assert!(
-        body.contains(&format!("RELEASE NOTES · {newer}")),
-        "latest build panel must be open by default: {body}"
+        body.contains(&format!("RELEASE NOTES · {higher}")),
+        "highest version must open by default (not newest date): {body}"
     );
     assert!(
-        !body.contains(&format!("RELEASE NOTES · {older}")),
-        "older build must not be open by default"
+        !body.contains(&format!("RELEASE NOTES · {lower}")),
+        "lower version must not be open by default: {body}"
+    );
+    let higher_pos = body.find(&higher).expect("higher version in list");
+    let lower_pos = body.find(&lower).expect("lower version in list");
+    assert!(
+        higher_pos < lower_pos,
+        "list must order by version desc (ignore dates): {body}"
     );
     assert!(body.contains("5-minute download link"), "{body}");
     assert!(body.contains("Verify signature"), "{body}");
+    assert!(
+        body.contains("<button") && body.contains("Verify signature"),
+        "Verify must be a button: {body}"
+    );
+    assert!(
+        body.contains("vb-verify") || body.contains("data-verify-signature-panel"),
+        "verify panel hook: {body}"
+    );
+    assert!(body.contains(digest), "full sha256 in page: {body}");
+    let verify_cmd = format!(
+        "sha256 {}",
+        vcp::release_pkg::package_file_name(&higher, "LTS")
+    );
+    assert!(
+        body.contains(&verify_cmd),
+        "verify cmd copy target: {verify_cmd} not in {body}"
+    );
+    assert!(body.contains("PACKAGE SIGNATURE"), "{body}");
     assert!(!body.contains("Collapse"), "Collapse must not appear");
     assert!(!body.contains("vcp_builds_eph"), "no client ephemeral JS");
     assert!(
@@ -300,7 +401,7 @@ async fn e2e_builds_list_opens_latest_with_concept_actions() {
 
     let gen_resp = post_form(
         &router,
-        &format!("/{slug}/builds/{newer}/ephemeral"),
+        &format!("/{slug}/builds/{higher}/ephemeral"),
         cookie.as_deref(),
         "",
     )
@@ -313,7 +414,7 @@ async fn e2e_builds_list_opens_latest_with_concept_actions() {
 
     let detail = get(
         &router,
-        &format!("/{slug}/builds/{newer}"),
+        &format!("/{slug}/builds/{higher}"),
         cookie.as_deref(),
     )
     .await;
@@ -388,7 +489,7 @@ async fn e2e_builds_list_opens_latest_with_concept_actions() {
 
     let revoke = post_form(
         &router,
-        &format!("/{slug}/builds/{newer}/ephemeral/revoke"),
+        &format!("/{slug}/builds/{higher}/ephemeral/revoke"),
         cookie.as_deref(),
         "",
     )
@@ -396,7 +497,7 @@ async fn e2e_builds_list_opens_latest_with_concept_actions() {
     assert!(status(&revoke).is_redirection());
     let after_revoke = get(
         &router,
-        &format!("/{slug}/builds/{newer}"),
+        &format!("/{slug}/builds/{higher}"),
         cookie.as_deref(),
     )
     .await;
@@ -444,7 +545,7 @@ async fn e2e_ephemeral_expired_offers_generate_new_link() {
             channel: "LTS".to_owned(),
             released_on: "2026-07-20".to_owned(),
             size_mb: "1.5".to_owned(),
-            signature_prefix: "abc".to_owned(),
+            sha256: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: expired".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -481,6 +582,134 @@ async fn e2e_ephemeral_expired_offers_generate_new_link() {
     assert!(
         body.contains("Generate new link"),
         "expired panel must offer regenerate: {body}"
+    );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_builds_list_pagination() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("builds-page");
+    let slug = unique_slug("builds-page");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "org").await;
+    {
+        let mut conn = db.clone();
+        for i in 0..11u32 {
+            let version = format!("v99.0.{i}");
+            let _ = toasty::create!(Release {
+                version,
+                channel: "LTS".to_owned(),
+                released_on: "2026-07-01".to_owned(),
+                size_mb: "1.0".to_owned(),
+                sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_owned(),
+                status: "PUBLISHED".to_owned(),
+                notes: "FIX: pagination".to_owned(),
+                organization_id: RELEASE_GA_ORG_ID,
+            })
+            .exec(&mut conn)
+            .await
+            .expect("release");
+        }
+    }
+
+    let cookie = login(&router, &email).await;
+    let page1 = get(
+        &router,
+        &format!("/{slug}/builds?page=1"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert!(status(&page1).is_success());
+    let p1 = body_text(page1).await;
+    let rows_p1 = p1.matches("vb-build-row").count();
+    assert_eq!(rows_p1, 10, "page 1 must show 10 rows: {p1}");
+    assert!(
+        p1.contains("RELEASE NOTES · v99.0.10"),
+        "page 1 default-open highest: {p1}"
+    );
+    assert!(p1.contains("vb-pager"), "pager when >10: {p1}");
+    assert!(p1.contains(&format!("/{slug}/builds?page=2")), "{p1}");
+    // Layout: pager shares the chip row (chips left, pager right), before table.
+    let chip_row = p1
+        .find("vb-chip-row")
+        .and_then(|i| {
+            let rest = &p1[i..];
+            rest.find("vb-table-wrap").map(|j| &rest[..j])
+        })
+        .expect("chip row before table");
+    assert!(
+        chip_row.contains("vb-chip-group"),
+        "chip group in row: {chip_row}"
+    );
+    assert!(
+        chip_row.contains("vb-pager"),
+        "pager in chip row: {chip_row}"
+    );
+    let group_at = chip_row.find("vb-chip-group").expect("group");
+    let pager_at = chip_row.find("vb-pager").expect("pager");
+    assert!(group_at < pager_at, "chips before pager in row: {chip_row}");
+
+    let page2 = get(
+        &router,
+        &format!("/{slug}/builds?page=2"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert!(status(&page2).is_success());
+    let p2 = body_text(page2).await;
+    let rows_p2 = p2.matches("vb-build-row").count();
+    // Seed catalog may add further pages; page 2 must include the remainder marker.
+    assert!(
+        (1..=10).contains(&rows_p2),
+        "page 2 row count: {rows_p2} in {p2}"
+    );
+    assert!(p2.contains(">v99.0.0<") || p2.contains("v99.0.0"), "{p2}");
+    assert!(
+        !p2.contains("RELEASE NOTES ·"),
+        "page 2 must not default-open: {p2}"
+    );
+    assert!(
+        !p2.contains(">v99.0.10<"),
+        "page 2 must not list page-1 highest: {p2}"
+    );
+
+    // Channel chip from page 2 must drop page= (reset to page 1).
+    assert!(
+        p2.contains(&format!("href=\"/{slug}/builds?channel=LTS\""))
+            || p2.contains(&format!("/{slug}/builds?channel=LTS\"")),
+        "LTS chip must omit page: {p2}"
+    );
+    assert!(
+        !p2.contains("channel=LTS&page=") && !p2.contains("channel=LTS&amp;page="),
+        "channel chips must not sticky page=: {p2}"
+    );
+
+    let deep = get(
+        &router,
+        &format!("/{slug}/builds/v99.0.0"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert!(status(&deep).is_success());
+    let deep_body = body_text(deep).await;
+    assert!(
+        deep_body.contains("RELEASE NOTES · v99.0.0"),
+        "deep-link must open page-2 version: {deep_body}"
+    );
+    assert!(
+        (deep_body.contains("vb-pager-link active") && deep_body.contains(">2<"))
+            || deep_body.contains("page=2"),
+        "deep-link must land on page 2: {deep_body}"
+    );
+    assert!(
+        !deep_body.contains(">v99.0.10<"),
+        "open build must stay on its page slice: {deep_body}"
     );
 
     cleanup(&db).await;

@@ -5,20 +5,28 @@
 
 use topcoat::{Result, context::Cx, router::not_found, runtime::shard, view::view};
 
+use super::load_filtered_issues;
 use crate::{
     app::_components::{severity_badge, status_badge},
     auth::{capability_denied, require_org},
     db::now_unix,
     docs_search::normalize_org_slug,
-    issues_search::{issue_matches_query, issue_matches_status, normalize_query, normalize_status},
-    models::{Issue, User},
+    issues_search::{normalize_query, normalize_status},
+    list_page::{LIST_PAGE_SIZE, page_slice, parse_page},
+    models::User,
     perms::perms_for_user,
     tz::{browser_tz, format_relative},
 };
 
 /// Shard args are attacker-controlled — always re-authorize.
 #[shard]
-pub async fn issues_search_results(cx: &Cx, org_slug: String, q: String, status: String) -> Result {
+pub async fn issues_search_results(
+    cx: &Cx,
+    org_slug: String,
+    q: String,
+    status: String,
+    page: String,
+) -> Result {
     let org = normalize_org_slug(&org_slug).ok_or_else(not_found)?;
     let ctx = require_org(cx, org).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -28,23 +36,14 @@ pub async fn issues_search_results(cx: &Cx, org_slug: String, q: String, status:
 
     let q = normalize_query(&q);
     let status = normalize_status(&status);
+    let filtered = load_filtered_issues(cx, ctx.org.id, &q, &status).await;
+    let page = parse_page(page.parse().ok());
+    let page_items = page_slice(&filtered, page, LIST_PAGE_SIZE);
 
     let mut database = crate::auth::db(cx);
-    let mut issues = Issue::all()
-        .filter(Issue::fields().organization_id().eq(ctx.org.id))
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    issues.sort_by_key(|i| std::cmp::Reverse(i.updated_at));
     let users = User::all().exec(&mut database).await.unwrap_or_default();
     let tz = browser_tz(cx);
     let now = now_unix();
-    let filtered: Vec<_> = issues
-        .into_iter()
-        .filter(|i| {
-            issue_matches_status(&status, &i.status) && issue_matches_query(&q, &i.key, &i.title)
-        })
-        .collect();
 
     // Links use the authorized org slug, never the raw shard arg.
     let org = ctx.org.slug.clone();
@@ -52,10 +51,10 @@ pub async fn issues_search_results(cx: &Cx, org_slug: String, q: String, status:
     view! {
         cx =>
         <div class="vb-list" data-issues-search-shard="1">
-            if filtered.is_empty() {
+            if page_items.is_empty() {
                 <div class="vb-empty">"No matching issues."</div>
             } else {
-                for issue in filtered {
+                for issue in page_items {
                     let opener = users
                         .iter()
                         .find(|u| u.id == issue.opened_by_user_id)

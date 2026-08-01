@@ -5,6 +5,8 @@ mod builds;
 mod docs;
 mod issues;
 
+pub use builds::builds_list_href;
+
 use topcoat::{
     Result,
     context::Cx,
@@ -15,9 +17,7 @@ use topcoat::{
 use crate::{
     auth::require_org,
     db::now_unix,
-    models::{
-        DOC_STATUS_PUBLISHED, DocArticle, Issue, RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release,
-    },
+    models::{DOC_STATUS_PUBLISHED, DocArticle, Issue, RESERVED_ORG_SLUG, Release},
     nav::nav_from_cx,
     tz::{browser_tz, format_relative, format_unix_local},
     ui::{channel_badge_class, note_tag_color},
@@ -59,9 +59,9 @@ async fn dashboard(cx: &Cx) -> Result {
         .await
         .unwrap_or_default()
         .into_iter()
-        .filter(|r| r.organization_id == RELEASE_GA_ORG_ID || r.organization_id == ctx.org.id)
+        .filter(|r| builds::release_visible_to_org(r, ctx.org.id, slug))
         .collect::<Vec<_>>();
-    releases.sort_by(|a, b| b.released_on.cmp(&a.released_on));
+    releases.sort_by(|a, b| crate::release_pkg::cmp_version_desc(&a.version, &b.version));
     let mut issues = Issue::all()
         .filter(Issue::fields().organization_id().eq(ctx.org.id))
         .exec(&mut database)

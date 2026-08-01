@@ -45,6 +45,13 @@ grep -n 'docs_search_results' "$DOCS" >/dev/null || fail "$DOCS must invoke docs
 grep -n 'org_slug:' "$DOCS" >/dev/null || fail "$DOCS must pass org_slug shard arg"
 grep -n 'DocsFilter::normalized\|normalize_query' "$DOCS" >/dev/null \
   || fail "$DOCS must share filter normalization with the shard"
+grep -n 'page: Option<u32>' "$DOCS" >/dev/null || fail "$DOCS DocsQuery must include page: Option<u32>"
+grep -n 'filter_row' "$DOCS" >/dev/null || fail "$DOCS must use filter_row for chips + pager"
+grep -n 'PagerLinks' "$DOCS" >/dev/null || fail "$DOCS must build PagerLinks"
+grep -n 'vb-pager' src/app/_components/pager.rs >/dev/null \
+  || fail "pager component must render vb-pager markup"
+grep -n 'page_slice\|LIST_PAGE_SIZE' "$SHARD" >/dev/null \
+  || fail "$SHARD must slice results with page_slice / LIST_PAGE_SIZE"
 # Progressive-enhancement filter form (not a mutation) — keep GET for ?q= URLs.
 grep -n 'method="GET"' "$DOCS" >/dev/null || fail "$DOCS search filter form must use method=GET"
 grep -n 'normalize_org_slug' "$HELPERS" >/dev/null || fail "$HELPERS must define normalize_org_slug"

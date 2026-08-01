@@ -62,6 +62,20 @@ Replay a captured shard POST (or use the in-process E2E as the oracle):
 
 Pass: forged tenant / anon / missing permission never leak docs HTML.
 
+## C -- Pagination
+
+SSR list paging (10 rows per page, shareable `?page=`).
+
+1. With **11+** matching articles (or a search that yields 11+), open
+   `/{org}/docs` — expect at most **10** rows, pager on the **same row as
+   the category chips** (chips left, pager right).
+2. Follow **Next** (or `?page=2`) — expect the remainder only.
+3. From page 2, click a **category** chip (or **All**) — URL must **not**
+   keep `page=` (reset to page 1). Live search keystrokes also reset to
+   page 1.
+
+Pass: 10 max per page; chip-row pager; filter chips omit `page=`.
+
 ## Related automated coverage
 
 | Layer | Filter / artifact |

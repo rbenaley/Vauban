@@ -320,6 +320,12 @@ beside the live shard. That is a filter, not a mutation — OriginLayer
 does not apply, and converting these to POST would break shareable
 query URLs. Compose / report / reply forms stay `method="POST"`.
 
+**VCP list pagination:** list paging is **SSR GET** (`?page=`, shareable
+`<a href>`). Do **not** invent a client/JS pager. Live-search `#[shard]`s
+receive `page` as an arg and slice after filter/sort; when the search
+signal updates, reset to page 1. Placement and helpers: `web-stack`
+skill § List pagination (`LIST_PAGE_SIZE`, `filter_row` / `vb_pager`).
+
 ### Non-negotiable: `@click` bind contract (0.4)
 
 Runtime attaches handlers as:

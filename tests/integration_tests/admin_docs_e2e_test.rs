@@ -5,8 +5,8 @@ use topcoat::router::StatusCode;
 use vcp::{db::now_unix, models::DocArticle};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, db_lock, get, post_form, status, test_db,
-    test_router, unique_email, unique_slug, urlencoding_encode,
+    cleanup, cookie_header, create_org_with_membership, create_published_doc, db_lock, get,
+    post_form, status, test_db, test_router, unique_email, unique_slug, urlencoding_encode,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -587,6 +587,61 @@ async fn e2e_publish_new_version_unpublishes_previous() {
         v2_pos < v1_pos,
         "newer version should appear first in admin list"
     );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_admin_docs_list_pagination() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("adoc-page");
+    let slug = unique_slug("adoc-page-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let marker = unique_slug("adoc-pagefix");
+    for i in 0..11u32 {
+        let article_slug = unique_slug(&format!("adoc-pf-{i}"));
+        create_published_doc(
+            &db,
+            &format!("{marker} article {i}"),
+            "admin pagination fixture",
+            "API",
+            &article_slug,
+        )
+        .await;
+    }
+
+    let page1 = get(&router, "/admin/docs?page=1", cookie.as_deref()).await;
+    assert_eq!(status(&page1), StatusCode::OK);
+    let p1 = body_text(page1).await;
+    let rows_p1 = p1.matches("vb-title-main").count();
+    assert_eq!(rows_p1, 10, "page 1 must show 10 rows: {p1}");
+    assert!(p1.contains("vb-pager"), "pager when >10: {p1}");
+    assert!(
+        p1.contains("vb-list-toolbar"),
+        "toolbar pager (no chips): {p1}"
+    );
+    assert!(
+        p1.contains("/admin/docs?page=2") || p1.contains("href=\"/admin/docs?page=2\""),
+        "next page link: {p1}"
+    );
+    assert!(p1.contains(&marker), "page 1 shows newest fixtures: {p1}");
+
+    let page2 = get(&router, "/admin/docs?page=2", cookie.as_deref()).await;
+    assert_eq!(status(&page2), StatusCode::OK);
+    let p2 = body_text(page2).await;
+    let rows_p2 = p2.matches("vb-title-main").count();
+    // Seed catalog may add further pages; page 2 must include the remainder.
+    assert!(
+        (1..=10).contains(&rows_p2),
+        "page 2 row count: {rows_p2} in {p2}"
+    );
+    assert!(p2.contains(&marker), "page 2 keeps fixture remainder: {p2}");
 
     cleanup(&db).await;
 }

@@ -6,7 +6,10 @@ use topcoat::{
     router::{page, path_param, query_params},
 };
 
-use super::{BuildsQuery, load_releases_for_org, release_visible_to_org, render_builds};
+use super::{
+    BUILDS_PAGE_SIZE, BuildsQuery, clamp_page, load_releases_for_org, page_count, page_slice,
+    release_visible_to_org, render_builds, sort_releases,
+};
 use crate::{
     app::org::Org,
     auth::{capability_denied, require_org},
@@ -43,26 +46,35 @@ async fn build_detail_page(cx: &Cx) -> Result {
         .unwrap_or_default();
     let Some(matched) = matched
         .into_iter()
-        .find(|r| release_visible_to_org(r, ctx.org.id))
+        .find(|r| release_visible_to_org(r, ctx.org.id, org_slug))
     else {
         return Err(topcoat::router::not_found().into());
     };
 
-    let mut releases = load_releases_for_org(cx, ctx.org.id, channel).await;
+    let mut releases = load_releases_for_org(cx, ctx.org.id, org_slug, channel).await;
     // Ensure the open version is visible even if channel filter would hide it.
     if !releases.iter().any(|r| r.version == *ver) {
         releases.insert(0, matched);
     }
+    sort_releases(&mut releases);
+
+    let idx = releases.iter().position(|r| r.version == *ver).unwrap_or(0);
+    let pages = page_count(releases.len(), BUILDS_PAGE_SIZE);
+    // Prefer page derived from version so deep-links stay consistent.
+    let page = clamp_page(idx / BUILDS_PAGE_SIZE + 1, pages);
+    let page_releases = page_slice(&releases, page, BUILDS_PAGE_SIZE);
 
     render_builds(
         cx,
         org_slug,
         channel,
-        &releases,
+        page_releases,
         Some(ver),
         perms.builds_download,
         ctx.user.id,
         ctx.org.id,
+        page,
+        pages,
     )
     .await
 }

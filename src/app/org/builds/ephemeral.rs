@@ -33,13 +33,7 @@ pub(super) struct EphPanel {
     pub remaining_secs: f64,
 }
 
-pub(super) fn package_file_name(version: &str, channel: &str) -> String {
-    if channel.eq_ignore_ascii_case("LTS") {
-        format!("vauban-{version}+LTS.pkg")
-    } else {
-        format!("vauban-{version}.pkg")
-    }
-}
+pub(super) use crate::release_pkg::package_file_name;
 
 pub(super) fn eph_public_url(
     public_origin: &str,
@@ -142,7 +136,7 @@ async fn require_downloadable_release(
         .unwrap_or_default();
     let Some(release) = found
         .into_iter()
-        .find(|r| release_visible_to_org(r, ctx.org.id))
+        .find(|r| release_visible_to_org(r, ctx.org.id, org_slug))
     else {
         return Err(not_found().into());
     };
@@ -208,14 +202,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn package_name_adds_lts_suffix() {
-        assert_eq!(package_file_name("1.2.3", "LTS"), "vauban-1.2.3+LTS.pkg");
-        assert_eq!(package_file_name("1.2.3", "Stable"), "vauban-1.2.3.pkg");
-    }
-
-    #[test]
-    fn public_url_shape() {
-        let url = eph_public_url("https://access.vauban.sh", "tok-1", "1.0.0", "LTS");
+    fn public_url_shape_strips_v() {
+        let url = eph_public_url("https://access.vauban.sh", "tok-1", "v1.0.0", "LTS");
         assert_eq!(
             url,
             "https://access.vauban.sh/releases/tok-1/vauban-1.0.0+LTS.pkg"

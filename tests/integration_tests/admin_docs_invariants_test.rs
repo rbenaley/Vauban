@@ -117,6 +117,30 @@ fn inv_admin_list_uses_id_and_sorts() {
 }
 
 #[test]
+fn inv_admin_docs_list_paginates() {
+    let src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/docs.rs"
+    ));
+    assert!(
+        src.contains("LIST_PAGE_SIZE"),
+        "admin docs must use LIST_PAGE_SIZE"
+    );
+    assert!(
+        src.contains("list_toolbar"),
+        "admin docs must use list_toolbar pager"
+    );
+    assert!(
+        src.contains("page: Option<u32>"),
+        "AdminDocsQuery must include page"
+    );
+    assert!(
+        src.contains("page_slice"),
+        "admin docs must page_slice rows"
+    );
+}
+
+#[test]
 fn inv_admin_compose_full_width_concept_layout() {
     let new = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

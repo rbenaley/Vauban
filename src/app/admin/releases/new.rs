@@ -166,7 +166,7 @@ async fn admin_releases_create(cx: &Cx, Form(form): Form<CreateReleaseForm>) -> 
         channel,
         released_on,
         size_mb: "0.0".to_owned(),
-        signature_prefix: "pending".to_owned(),
+        sha256: "pending".to_owned(),
         status: "PUBLISHED".to_owned(),
         notes,
         organization_id,

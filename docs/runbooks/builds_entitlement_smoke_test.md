@@ -8,7 +8,7 @@
 > denial paths.
 >
 > Audience: release / staging operators.
-> Severity: **BLOCKING** for this surface. Do not ship without A–D.
+> Severity: **BLOCKING** for this surface. Do not ship without A–F.
 
 Related:
 
@@ -40,8 +40,10 @@ rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=
 ## A -- Happy path + Concept chrome
 
 1. Sign in as `l.martin@acme.example` / `password`.
-2. Open `/acme-infrastructure/builds` — expect the **latest** build panel
-   open by default (release notes visible).
+2. Open `/acme-infrastructure/builds` — expect the **highest version**
+   panel open by default (release notes visible). Order is by version
+   number descending (ignore release dates). For the same `X.Y.Z`,
+   `X.Y.Z-client` rows sit above plain `X.Y.Z`, A→Z by client name.
 3. Action row: **Download (size)**, **5-minute download link**,
    **Verify signature** (no Collapse).
 4. Submit **5-minute download link** — server issues a UUID token and
@@ -56,6 +58,8 @@ rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=
    **Generate new link** (no custom JS asset — Topcoat runtime only).
 7. Download POST on a visible version returns **501**
    (`download not configured`) until artifact storage ships.
+8. As `support@vauban.sh` on `/vauban/builds`, confirm **all**
+   `X.Y.Z-client` private builds are visible (not only GA).
 
 Pass: Concept chrome + server ephemeral tokens; download remains 501.
 
@@ -83,6 +87,41 @@ Pass: Concept-style collapse works with default-open.
 3. Anonymous / expired session must not leak tenant data.
 
 Pass: Casbin + tenant fail-closed.
+
+## E -- Verify signature
+
+Client-only Topcoat panel (no POST / no countdown / no Revoke).
+
+1. On an open build with download entitlement, click **Verify signature**.
+2. Expect a panel titled **PACKAGE SIGNATURE** (same body chrome as the
+   ephemeral zone): full SHA-256 + Copy, and `$ sha256 vauban-…pkg` +
+   command copy. LTS packages use `+LTS`; Stable/EOL omit it. DB versions
+   keep a leading `v`; package names do not.
+3. Confirm there is **no** fetch/cURL segment, countdown, or Revoke in
+   this panel.
+4. Click **Verify signature** again — panel collapses.
+
+Pass: verify panel toggles locally with hash + `sha256` command only.
+
+## F -- Pagination
+
+SSR list paging (10 rows per page, shareable `?page=`).
+
+1. With **11+** visible builds for the org, open `/{org}/builds` — expect
+   at most **10** rows, pager (**Prev** / page numbers / **Next**) on the
+   **same row as the channel chips** (chips left, pager right; same chip
+   height), and the highest version open by default on page 1.
+2. Follow **Next** (or `?page=2`) — expect the remainder only; no
+   default-open panel on page 2. Pager stays on the chip row (does not
+   jump with the open panel).
+3. From page 2, click a **channel** chip (or **All**) — URL must **not**
+   keep `page=` (reset to page 1).
+4. Deep-link `/{org}/builds/{version}` for a version that sits on page 2
+   — expect that version open on the correct page (not missing from the
+   slice).
+
+Pass: 10 max per page; chip-row pager; next/prev; channel resets page;
+deep-link keeps the open build on-page.
 
 ## Related automated coverage
 

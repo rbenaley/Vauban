@@ -15,11 +15,15 @@ use topcoat::{
 };
 
 use crate::{
-    app::_components::ico_plus,
+    app::_components::{filter_row, ico_plus},
     app::org::Org,
     auth::{capability_denied, db, require_org},
     db::now_unix,
-    issues_search::{normalize_query, normalize_status},
+    issues_search::{issue_matches_query, issue_matches_status, normalize_query, normalize_status},
+    list_page::{
+        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
+        with_page_param,
+    },
     models::{Issue, RESERVED_ORG_SLUG},
     perms::perms_for_user,
 };
@@ -30,6 +34,21 @@ const STATUSES: &[&str] = &["Open", "In analysis", "Resolved", "Closed"];
 struct IssuesQuery {
     q: Option<String>,
     status: Option<String>,
+    /// 1-based page index; omitted means page 1.
+    page: Option<u32>,
+}
+
+/// Shareable issues list URL (`page=1` and empty filters omitted).
+pub(super) fn issues_list_href(org: &str, q: &str, status: &str, page: usize) -> String {
+    let mut parts = Vec::new();
+    if !q.is_empty() {
+        parts.push(format!("q={}", urlencoding_encode(q)));
+    }
+    if !status.is_empty() {
+        parts.push(format!("status={}", urlencoding_encode(status)));
+    }
+    with_page_param(&mut parts, page);
+    href_with_query(&format!("/{org}/issues"), &parts)
 }
 
 #[route(GET "/vauban/issues")]
@@ -56,22 +75,48 @@ async fn issues_page(cx: &Cx) -> Result {
     }
 
     let query = query_params::<IssuesQuery>(cx).ok();
-    let q = normalize_query(query.and_then(|q| q.q.as_deref()).unwrap_or(""));
-    let status = normalize_status(query.and_then(|q| q.status.as_deref()).unwrap_or(""));
+    let q = normalize_query(query.as_ref().and_then(|q| q.q.as_deref()).unwrap_or(""));
+    let status = normalize_status(
+        query
+            .as_ref()
+            .and_then(|q| q.status.as_deref())
+            .unwrap_or(""),
+    );
+    let mut page = parse_page(query.as_ref().and_then(|q| q.page));
+
+    let filtered = load_filtered_issues(cx, ctx.org.id, &q, &status).await;
+    let pages = page_count(filtered.len(), LIST_PAGE_SIZE);
+    page = clamp_page(page, pages);
 
     let base = format!("/{}/issues", slug);
-    let all_class = if status.is_empty() {
-        "vb-chip active"
-    } else {
-        "vb-chip"
-    };
-    let q_value = query.and_then(|q| q.q.clone()).unwrap_or_default();
+    let q_value = query.as_ref().and_then(|q| q.q.clone()).unwrap_or_default();
     let org = slug.to_owned();
     let status_owned = status.clone();
+    let org_for_pager = org.clone();
+    let q_for_pager = q.clone();
+    let status_for_pager = status_owned.clone();
+    let pager = PagerLinks::from_hrefs(page, pages, |n| {
+        issues_list_href(&org_for_pager, &q_for_pager, &status_for_pager, n)
+    });
+    let pager_opt = if pager.show() { Some(pager) } else { None };
+
+    // Chip hrefs omit `page` (reset). All clears filters; status chips keep q.
+    let mut chips: Vec<(String, String, bool)> =
+        vec![("All".to_owned(), base.clone(), status.is_empty())];
+    for s in STATUSES {
+        chips.push((
+            (*s).to_owned(),
+            issues_list_href(&org, &q, s, 1),
+            status.eq_ignore_ascii_case(s),
+        ));
+    }
+
+    let page_init = page.to_string();
 
     view! {
         cx =>
         signal query = q_value.clone();
+        signal page = page_init.clone();
 
         <div
             style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 6px;"
@@ -108,40 +153,47 @@ async fn issues_page(cx: &Cx) -> Result {
                 name="q"
                 value=(q_value.clone())
                 placeholder="Search (ID, title)…"
-                @input=$(|e: topcoat::runtime::Event| query.set(e.target.value))
+                @input=$(|e: topcoat::runtime::Event| {
+                    page.set("1".to_owned());
+                    query.set(e.target.value);
+                })
             >
             if !status_owned.is_empty() {
                 <input type="hidden" name="status" value=(status_owned.clone())>
             }
         </form>
 
-        <div class="vb-chip-row">
-            <a class=(all_class) href=(base.clone())>"All"</a>
-            for s in STATUSES {
-                let href = if q.is_empty() {
-                    format!("{base}?status={}", urlencoding_encode(s))
-                } else {
-                    format!(
-                        "{base}?q={}&status={}",
-                        urlencoding_encode(&q),
-                        urlencoding_encode(s)
-                    )
-                };
-                let class = if status.eq_ignore_ascii_case(s) {
-                    "vb-chip active"
-                } else {
-                    "vb-chip"
-                };
-                <a class=(class) href=(href)>(*s)</a>
-            }
-        </div>
+        filter_row(chips: &chips, pager: &pager_opt)
 
         issues_search_results(
             org_slug: $(org.clone()),
             q: $(query.get()),
-            status: $(status_owned.clone())
+            status: $(status_owned.clone()),
+            page: $(page.get())
         )
     }
+}
+
+/// Load org issues matching `q` / `status`, newest first.
+pub(super) async fn load_filtered_issues(
+    cx: &Cx,
+    org_id: u64,
+    q: &str,
+    status: &str,
+) -> Vec<Issue> {
+    let mut database = db(cx);
+    let mut issues = Issue::all()
+        .filter(Issue::fields().organization_id().eq(org_id))
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    issues.sort_by_key(|i| std::cmp::Reverse(i.updated_at));
+    issues
+        .into_iter()
+        .filter(|i| {
+            issue_matches_status(status, &i.status) && issue_matches_query(q, &i.key, &i.title)
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -213,4 +265,19 @@ fn urlencoding_encode(value: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod issues_list_href_tests {
+    use super::issues_list_href;
+
+    #[test]
+    fn issues_list_href_omits_page_one_and_empty_filters() {
+        assert_eq!(issues_list_href("acme", "", "", 1), "/acme/issues");
+        assert_eq!(issues_list_href("acme", "ssh", "", 1), "/acme/issues?q=ssh");
+        assert_eq!(
+            issues_list_href("acme", "ssh", "Open", 2),
+            "/acme/issues?q=ssh&status=Open&page=2"
+        );
+    }
 }

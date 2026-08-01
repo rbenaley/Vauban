@@ -145,7 +145,8 @@ pub struct Release {
 
     pub size_mb: String,
 
-    pub signature_prefix: String,
+    /// Full package SHA-256 hex digest (or `"pending"` before publish artifacts exist).
+    pub sha256: String,
 
     pub status: String,
 

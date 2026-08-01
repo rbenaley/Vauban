@@ -6,7 +6,7 @@ use vcp::issues_search::{
     resolve_org_filter,
 };
 
-use crate::common::admin_issues_search_shard_body;
+use crate::common::admin_issues_search_shard_body_page;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
@@ -42,8 +42,9 @@ proptest! {
         if !nq.is_empty() {
             prop_assert!(issue_matches_query(&nq, &nq.to_uppercase(), "x"));
         }
-        let body = admin_issues_search_shard_body(&q, &org, &status);
+        let body = admin_issues_search_shard_body_page(&q, &org, &status, "1");
         prop_assert!(body.starts_with('['));
-        prop_assert_eq!(body.matches(',').count(), 2);
+        // q, org, status, page
+        prop_assert_eq!(body.matches(',').count(), 3);
     }
 }

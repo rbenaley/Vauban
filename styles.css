@@ -456,12 +456,51 @@ a.vb-card:hover { border-color: var(--accent); transform: translateY(-2px); }
 .vb-btn-ico {
   display: inline-flex; align-items: center; gap: 0.45em;
 }
-.vb-chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.vb-chip-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  margin-bottom: 14px;
+}
+.vb-chip-group {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+.vb-list-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+  gap: 8px; margin-bottom: 14px; min-height: 0;
+}
+.vb-pager {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 0 0 0 auto;
+}
+/* Match channel chip face (same padding / type); always <a> for SSR. */
+a.vb-pager-link {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px; font-variant-numeric: tabular-nums; line-height: 1;
+  padding: 6px 12px; border-radius: 4px;
+  border: 1px solid var(--border); color: var(--text); background: #fff;
+  text-decoration: none; box-sizing: border-box;
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition-property: transform, border-color, color, background-color;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+a.vb-pager-link:active:not(.disabled) { transform: scale(0.96); }
+a.vb-pager-link:hover:not(.disabled):not(.active) {
+  border-color: var(--accent); color: var(--accent);
+}
+a.vb-pager-link.active {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+a.vb-pager-link.disabled {
+  color: #9aa0a6; background: #f6f7f8; cursor: default;
+  pointer-events: none;
+}
 a.vb-chip, span.vb-chip, button.vb-chip {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 12px; padding: 6px 12px; border-radius: 4px;
+  font-size: 12px; line-height: 1; padding: 6px 12px; border-radius: 4px;
   border: 1px solid var(--border); color: var(--text); background: #fff;
-  text-decoration: none; display: inline-block;
+  text-decoration: none; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 a.vb-chip.active, span.vb-chip.active, button.vb-chip.active {
   background: var(--accent); color: #fff; border-color: var(--accent);

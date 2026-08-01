@@ -65,6 +65,10 @@ fn inv_shard_links_use_authorized_context_slug() {
         src.contains("DocsFilter::normalized"),
         "shard must share filter normalization with the page"
     );
+    assert!(
+        src.contains("page_slice") && src.contains("LIST_PAGE_SIZE"),
+        "shard must paginate with page_slice / LIST_PAGE_SIZE"
+    );
 }
 
 #[test]
@@ -75,6 +79,14 @@ fn inv_page_passes_org_slug_shard_arg() {
     assert!(
         docs.contains("DocsFilter::normalized") || docs.contains("normalize_query"),
         "page filter must share docs_search helpers"
+    );
+    assert!(
+        docs.contains("page: Option<u32>"),
+        "DocsQuery must include page"
+    );
+    assert!(
+        docs.contains("filter_row"),
+        "chips + pager must use filter_row"
     );
 }
 

@@ -45,6 +45,7 @@ proptest! {
         prop_assert!(body.starts_with('['));
         prop_assert!(body.ends_with(']'));
         prop_assert!(body.contains(&org));
-        prop_assert_eq!(body.matches(',').count(), 2);
+        prop_assert_eq!(body.matches(',').count(), 3);
+        prop_assert!(body.contains("\"1\""));
     }
 }

@@ -131,6 +131,10 @@ Happy-path-only tests are insufficient for those seams.
 - [ ] Focused tests executed and green after the above
 - [ ] Pyramid layers required by `vcp-test-pyramid.mdc` present (or
       explicit cosmetic exception)
+- [ ] **List / index pages:** SSR pagination present (`LIST_PAGE_SIZE`,
+      `?page=`, chip-row or toolbar pager, filter chips omit `page`);
+      pyramid pins helpers + markup + e2e with ≥11 fixtures (see
+      `web-stack` § List pagination) — do not ship a bare unpaged list
 - [ ] No secrets or customer PII in the repo
 - [ ] Docs / plans updated if behavior or public contracts changed
 

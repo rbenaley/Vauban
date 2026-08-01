@@ -28,3 +28,27 @@ fn inv_admin_releases_create_is_post_and_gated() {
     assert!(src.contains("releases_manage"));
     assert!(src.contains("toasty::create!(Release"));
 }
+
+#[test]
+fn inv_admin_releases_list_paginates() {
+    let src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/releases.rs"
+    ));
+    assert!(
+        src.contains("LIST_PAGE_SIZE"),
+        "admin releases must use LIST_PAGE_SIZE"
+    );
+    assert!(
+        src.contains("list_toolbar"),
+        "admin releases must use list_toolbar pager"
+    );
+    assert!(
+        src.contains("page: Option<u32>"),
+        "AdminReleasesQuery must include page"
+    );
+    assert!(
+        src.contains("page_slice"),
+        "admin releases must page_slice rows"
+    );
+}

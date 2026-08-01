@@ -5,6 +5,11 @@ mod admin;
 mod login;
 mod org;
 
+pub use crate::list_page::{
+    BUILDS_PAGE_SIZE, LIST_PAGE_SIZE, clamp_page, page_count, page_slice, parse_page,
+};
+pub use org::builds_list_href;
+
 use std::sync::Arc;
 
 use toasty::Db;

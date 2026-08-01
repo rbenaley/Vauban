@@ -114,3 +114,20 @@ Recommended structure:
 Rules:
 - keep filters understandable; avoid internal categories.
 - show what filters are active.
+
+## Filterable list (VCP portal)
+Goal: scan, filter, and page long catalogs without layout jump.
+
+Recommended structure:
+1. Title (+ primary action if needed).
+2. Optional search (`GET` / live shard).
+3. **Chip row + pager on one line** when filters exist (chips left, pager
+   right; same chip height). Without chips: toolbar row with pager right.
+4. Results (`vb-list` / `vb-table`) — at most one page of rows (10).
+5. Empty state copy when the filter/page slice is empty.
+
+Rules (VCP):
+- SSR `?page=` links; filter chips omit `page` (reset).
+- Do not put the pager under a collapsing open row (it jumps).
+- Ship the test pyramid with the list page — see `web-stack` § List
+  pagination.
