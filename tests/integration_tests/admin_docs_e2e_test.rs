@@ -311,7 +311,20 @@ async fn e2e_admin_list_shows_concept_actions() {
         })
         .exec(&mut conn)
         .await
-        .expect("create");
+        .expect("create published");
+        let _ = toasty::create!(DocArticle {
+            title: "Draft Fixture".to_owned(),
+            summary: "draft excerpt".to_owned(),
+            category: "API".to_owned(),
+            slug: unique_slug("actions-draft"),
+            version: "v1".to_owned(),
+            status: "DRAFT".to_owned(),
+            body: "draft body".to_owned(),
+            updated_at: now_unix(),
+        })
+        .exec(&mut conn)
+        .await
+        .expect("create draft");
     }
 
     let list = get(&router, "/admin/docs", cookie.as_deref()).await;
@@ -323,6 +336,14 @@ async fn e2e_admin_list_shows_concept_actions() {
     assert!(
         html.contains("excerpt line"),
         "title cell must show summary: {html}"
+    );
+    assert!(
+        html.contains("vb-badge status-published"),
+        "PUBLISHED badge: {html}"
+    );
+    assert!(
+        html.contains("vb-badge status-hidden"),
+        "DRAFT uses unpublished amber badge: {html}"
     );
     assert!(
         html.contains("Write, version, publish or hide"),

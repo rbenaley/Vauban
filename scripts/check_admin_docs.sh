@@ -66,6 +66,13 @@ grep -n 'Unpublish' "$LIST" >/dev/null \
   || fail "$LIST must expose Unpublish action"
 grep -n 'Publish' "$LIST" >/dev/null \
   || fail "$LIST must expose Publish action"
+grep -n 'doc_status_badge_class' "$LIST" >/dev/null \
+  || fail "$LIST must color STATUS via doc_status_badge_class"
+if grep -n 'vb-badge soft' "$LIST" | grep -q 'article.status'; then
+  fail "$LIST must not hardcode vb-badge soft on article.status"
+fi
+grep -n 'fn doc_status_badge_class' src/ui.rs >/dev/null \
+  || fail "src/ui.rs must define doc_status_badge_class"
 grep -n 'delete=' "$LIST" >/dev/null \
   || fail "$LIST Delete must open ?delete= confirm"
 grep -n 'ico_trash\|Delete permanently' "$LIST" >/dev/null \

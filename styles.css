@@ -177,20 +177,41 @@ a.vb-modal-close:hover { background: #f5f6f4; }
   content: ""; position: absolute; left: 4px; top: 0.55em;
   width: 5px; height: 5px; border-radius: 1px; background: var(--accent);
 }
-/* Builds expand panel (Concept table accordion) */
+/* Builds expand panel (Concept table accordion).
+   Shared tracks + equal column-gap so VERSION…SIZE spacing reads evenly;
+   signature track fits a full 64-hex digest. */
+.vb-build-row,
+.vb-build-head {
+  --vb-build-cols:
+    minmax(5.5rem, 0.9fr)
+    minmax(4.5rem, 0.55fr)
+    minmax(5.75rem, 0.7fr)
+    minmax(36ch, 2.4fr)
+    minmax(3.75rem, 0.5fr)
+    1.75rem;
+  display: grid;
+  grid-template-columns: var(--vb-build-cols);
+  column-gap: 1.25rem;
+  row-gap: 0;
+  align-items: center;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
 .vb-build-row {
-  display: grid; grid-template-columns: 150px 90px 130px 1fr 70px 40px;
-  gap: 12px; padding: 14px 18px; border-bottom: 1px solid #f0f1ee;
-  align-items: center; font-family: 'JetBrains Mono', ui-monospace, monospace;
+  padding: 14px 18px; border-bottom: 1px solid #f0f1ee;
   font-size: 12.5px; color: inherit; text-decoration: none;
 }
 .vb-build-row:hover { background: #fafbfa; }
 .vb-build-row.open { background: #fbfcfb; }
 .vb-build-head {
-  display: grid; grid-template-columns: 150px 90px 130px 1fr 70px 40px;
-  gap: 12px; padding: 11px 18px; border-bottom: 1px solid var(--border);
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  padding: 11px 18px; border-bottom: 1px solid var(--border);
   font-size: 10px; letter-spacing: 0.06em; color: var(--muted-2); background: #fbfcfb;
+}
+.vb-build-sig {
+  color: var(--ok); font-size: 11.5px; display: flex; align-items: center; gap: 6px;
+  min-width: 0;
+}
+.vb-build-sig-hash {
+  color: #5a5f66; overflow-wrap: anywhere; word-break: break-all;
 }
 .vb-build-panel {
   padding: 18px 22px 22px; background: #fbfcfb; border-bottom: 1px solid #f0f1ee;
@@ -213,9 +234,21 @@ a.vb-btn.compact, button.vb-btn.compact {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 .vb-row-actions {
-  display: flex; gap: 6px; justify-content: flex-end; align-items: center; flex-wrap: wrap;
+  display: inline-flex;
+  gap: 6px;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: nowrap;
 }
-.vb-row-actions form { margin: 0; }
+.vb-row-actions form { margin: 0; display: inline-flex; flex-shrink: 0; }
+.vb-row-actions > a,
+.vb-row-actions > button { flex-shrink: 0; }
+/* Publish / Unpublish share one width so the toggle does not jump the row. */
+.vb-row-actions .vb-btn.outline.compact {
+  min-width: 6.75rem;
+  justify-content: center;
+  box-sizing: border-box;
+}
 .vb-confirm-root {
   position: fixed; inset: 0; z-index: 60; display: flex; align-items: center;
   justify-content: center; padding: 24px; background: rgba(20,23,28,.55);
@@ -400,7 +433,10 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
 .vb-meta-grid time { white-space: nowrap; }
 @media (max-width: 800px) {
   .vb-meta-grid { grid-template-columns: 1fr 1fr; }
-  .vb-build-row, .vb-build-head { grid-template-columns: 1fr 1fr; }
+  .vb-build-row, .vb-build-head {
+    --vb-build-cols: 1fr 1fr;
+    column-gap: 1rem;
+  }
 }
 .vb-bubble {
   max-width: 78%; border-radius: 6px; padding: 13px 15px; background: #f5f6f4; border: 1px solid #e8ebe6;
@@ -555,6 +591,15 @@ a.vb-row:hover { background: #fafbfa; }
   padding: 14px 18px; border-bottom: 1px solid #f0f1ee;
   font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px;
 }
+/* ACTIONS hugs the control row (single line). Extra table width goes to
+   earlier columns — not into a tall wrapped stack of buttons. */
+.vb-table th.vb-col-actions,
+.vb-table td.vb-col-actions {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+  vertical-align: middle;
+}
 .vb-table tr:last-child td { border-bottom: 0; }
 .vb-table a { color: inherit; text-decoration: none; }
 .vb-table a:hover { color: var(--accent); }
@@ -573,6 +618,13 @@ a.vb-row:hover { background: #fafbfa; }
 }
 .vb-badge.chan-eol {
   color: #8a7a52; background: #efece2; border-color: #e0d8c6; font-weight: 500;
+}
+.vb-badge.status-published {
+  color: #2f7d52; background: #e8f1ea; border-color: #cfe2d6; font-weight: 500;
+}
+/* Amber — more striking than muted gray so unpublished rows read at a glance. */
+.vb-badge.status-hidden {
+  color: #a65c12; background: #f8efe0; border-color: #e8d4b0; font-weight: 600;
 }
 .vb-btn {
   display: inline-flex; align-items: center; gap: 0.45em;

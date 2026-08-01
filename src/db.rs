@@ -221,8 +221,12 @@ fn ga_release_catalog() -> Vec<(
 }
 
 /// Invented 64-hex digest for the org-private Acme hotfix package.
+/// Keeps the legacy `b7e4d01` prefix from the old signature_prefix seed.
 const ACME_PRIVATE_SHA256: &str =
-    "a11ce00000000000000000000000000000000000000000000000000000000001";
+    "b7e4d01c9e2a4f8b1d6c0e5a3f7b9d2e4c8a1f0b6d5e3c9a7f2b8d4e0c1a6953";
+
+const ACME_PRIVATE_VERSION: &str = "v0.8.6-acme1";
+const ACME_ORG_SLUG: &str = "acme-infrastructure";
 
 async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
     let existing = Release::all().exec(db).await?;
@@ -258,6 +262,49 @@ async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
             .exec(db)
             .await?;
         }
+    }
+    Ok(())
+}
+
+/// Upsert the Acme-private hotfix so existing demo DBs replace the legacy
+/// 7-char `signature_prefix` with a full SHA-256 digest.
+async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
+    let orgs = Organization::all().exec(db).await?;
+    let Some(org) = orgs
+        .into_iter()
+        .find(|o| o.slug.eq_ignore_ascii_case(ACME_ORG_SLUG))
+    else {
+        return Ok(());
+    };
+
+    let existing = Release::all().exec(db).await?;
+    if let Some(mut rel) = existing
+        .into_iter()
+        .find(|r| r.version == ACME_PRIVATE_VERSION)
+    {
+        rel.update()
+            .channel("EOL".to_owned())
+            .released_on("2026-06-20".to_owned())
+            .size_mb("20.5".to_owned())
+            .sha256(ACME_PRIVATE_SHA256.to_owned())
+            .status("PUBLISHED".to_owned())
+            .notes("HOTFIX: Acme-only proxy backpressure patch".to_owned())
+            .organization_id(org.id)
+            .exec(db)
+            .await?;
+    } else {
+        toasty::create!(Release {
+            version: ACME_PRIVATE_VERSION.to_owned(),
+            channel: "EOL".to_owned(),
+            released_on: "2026-06-20".to_owned(),
+            size_mb: "20.5".to_owned(),
+            sha256: ACME_PRIVATE_SHA256.to_owned(),
+            status: "PUBLISHED".to_owned(),
+            notes: "HOTFIX: Acme-only proxy backpressure patch".to_owned(),
+            organization_id: org.id,
+        })
+        .exec(db)
+        .await?;
     }
     Ok(())
 }
@@ -461,19 +508,7 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
     }
 
     upsert_ga_releases(&mut db).await?;
-
-    toasty::create!(Release {
-        version: "v0.8.6-acme1".to_owned(),
-        channel: "EOL".to_owned(),
-        released_on: "2026-06-20".to_owned(),
-        size_mb: "20.5".to_owned(),
-        sha256: ACME_PRIVATE_SHA256.to_owned(),
-        status: "PUBLISHED".to_owned(),
-        notes: "HOTFIX: Acme-only proxy backpressure patch".to_owned(),
-        organization_id: org.id,
-    })
-    .exec(&mut db)
-    .await?;
+    upsert_acme_private_release(&mut db).await?;
 
     let now = now_unix();
     let issue_214 = toasty::create!(Issue {
@@ -593,10 +628,29 @@ pub async fn ensure_demo_catalog(db: &Db) -> anyhow::Result<()> {
     }
 
     upsert_ga_releases(&mut db).await?;
+    upsert_acme_private_release(&mut db).await?;
 
     refresh_thin_doc_bodies(&mut db).await?;
     ensure_demo_issue_comments(&mut db).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod seed_digest_tests {
+    use super::ACME_PRIVATE_SHA256;
+
+    #[test]
+    fn acme_private_sha256_is_full_digest() {
+        assert_eq!(ACME_PRIVATE_SHA256.len(), 64);
+        assert!(
+            ACME_PRIVATE_SHA256.chars().all(|c| c.is_ascii_hexdigit()),
+            "must be hex: {ACME_PRIVATE_SHA256}"
+        );
+        assert!(
+            ACME_PRIVATE_SHA256.starts_with("b7e4d01"),
+            "keep legacy signature_prefix seed prefix"
+        );
+    }
 }
 
 /// Backfill demo discussion rows for seeded issues that have none yet.

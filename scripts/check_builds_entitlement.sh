@@ -57,6 +57,14 @@ grep -n 'data-verify-signature-panel\|vb-verify' "$BUILDS" >/dev/null \
   || fail "$BUILDS must render verify signature panel (vb-verify)"
 grep -n 'PACKAGE SIGNATURE' "$BUILDS" >/dev/null \
   || fail "$BUILDS verify panel must title PACKAGE SIGNATURE"
+# List shows the full digest (not a 7-char prefix + ellipsis).
+if grep -nE 'take\(7\)' "$BUILDS" >/dev/null 2>&1; then
+  fail "$BUILDS must not truncate sha256 with take(7)"
+fi
+grep -n 'vb-build-sig-hash' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must render full digest via vb-build-sig-hash"
+grep -n -- '--vb-build-cols' styles.css >/dev/null \
+  || fail "styles.css must share --vb-build-cols for uniform column tracks"
 if grep -A2 'Verify signature' "$BUILDS" | grep -q 'vb-btn muted'; then
   fail "$BUILDS Verify signature must be a button, not muted span"
 fi
@@ -83,6 +91,10 @@ grep -n 'pub sha256' src/models/mod.rs >/dev/null \
   || fail "Release model must expose sha256"
 grep -n 'RENAME COLUMN "signature_prefix" TO "sha256"' toasty/migrations/0005_release_sha256.sql >/dev/null \
   || fail "migration 0005 must rename signature_prefix to sha256"
+grep -n 'upsert_acme_private_release' src/db.rs >/dev/null \
+  || fail "src/db.rs must upsert Acme private hotfix (refresh legacy 7-char prefix)"
+grep -nE '"b7e4d01[0-9a-fA-F]{57}"' src/db.rs >/dev/null \
+  || fail "ACME_PRIVATE_SHA256 must be a 64-hex digest (legacy b7e4d01 prefix)"
 grep -n 'version_for_package\|strip_prefix' src/release_pkg.rs >/dev/null \
   || fail "release_pkg must strip leading v for package names"
 grep -n 'cmp_version_desc' src/release_pkg.rs >/dev/null \

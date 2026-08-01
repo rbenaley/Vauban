@@ -111,6 +111,14 @@ fn inv_admin_list_uses_id_and_sorts() {
     assert!(src.contains("ico_trash"));
     assert!(src.contains("Delete permanently"));
     assert!(
+        src.contains("doc_status_badge_class"),
+        "STATUS must use doc_status_badge_class"
+    );
+    assert!(
+        !src.contains("vb-badge soft\">(article.status"),
+        "must not hardcode soft badge on status"
+    );
+    assert!(
         !src.contains("UPDATED"),
         "Concept list has no UPDATED column"
     );

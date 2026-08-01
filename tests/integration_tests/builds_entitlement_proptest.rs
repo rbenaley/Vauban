@@ -16,7 +16,7 @@ const PACKAGE_CASES: &[(&str, &str, &str)] = &[
     ("1.2.3", "LTS", "vauban-1.2.3+LTS.pkg"),
 ];
 
-/// Full SHA-256 digests from the GA catalog (must stay 64 hex).
+/// Full SHA-256 digests from the GA catalog + Acme private hotfix (64 hex).
 const GA_SHA256: &[&str] = &[
     "ccff72c653fc1ad3ea4bc41fe4e56df03daa990b914017c7ab3419315bca6657",
     "9fef561cfde2aa3634de40ff3530d55072bd75ad9ae531faaff01c3d786c8336",
@@ -24,6 +24,8 @@ const GA_SHA256: &[&str] = &[
     "f4845978eb3adeab48cf20111c32cca46d5bbdad3e81b182e20168d55c33f9b8",
     "d896decde9ad8b2c280690e17339698f5a6d05dd63a175e050d17b76e8f6d04e",
     "9c404b9a11a18dc7afed63acb87aff355cd53a6d3e1425ffc87d3f448aabe93e",
+    // Acme private hotfix (src/db.rs ACME_PRIVATE_SHA256)
+    "b7e4d01c9e2a4f8b1d6c0e5a3f7b9d2e4c8a1f0b6d5e3c9a7f2b8d4e0c1a6953",
 ];
 
 proptest! {

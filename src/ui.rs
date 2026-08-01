@@ -25,6 +25,24 @@ pub fn channel_badge_class(channel: &str) -> &'static str {
     }
 }
 
+/// Release STATUS badge (PUBLISHED green, HIDDEN amber).
+pub fn release_status_badge_class(status: &str) -> &'static str {
+    match status.trim() {
+        c if c.eq_ignore_ascii_case("PUBLISHED") => "vb-badge status-published",
+        c if c.eq_ignore_ascii_case("HIDDEN") => "vb-badge status-hidden",
+        _ => "vb-badge soft",
+    }
+}
+
+/// Doc STATUS badge (PUBLISHED green, DRAFT amber — same unpublished look as HIDDEN).
+pub fn doc_status_badge_class(status: &str) -> &'static str {
+    match status.trim() {
+        c if c.eq_ignore_ascii_case("PUBLISHED") => "vb-badge status-published",
+        c if c.eq_ignore_ascii_case("DRAFT") => "vb-badge status-hidden",
+        _ => "vb-badge soft",
+    }
+}
+
 /// Changelog / release-note tag color.
 pub fn note_tag_color(tag: &str) -> &'static str {
     match tag.to_ascii_uppercase().as_str() {
@@ -54,5 +72,33 @@ mod tests {
         assert_eq!(note_tag_color("FIX"), "#2f7d52");
         assert_eq!(note_tag_color("feat"), "#117a6b");
         assert_eq!(note_tag_color("SECURITY"), "#b5403a");
+    }
+
+    #[test]
+    fn release_status_badge_classes() {
+        assert_eq!(
+            release_status_badge_class("PUBLISHED"),
+            "vb-badge status-published"
+        );
+        assert_eq!(
+            release_status_badge_class("HIDDEN"),
+            "vb-badge status-hidden"
+        );
+        assert_eq!(
+            release_status_badge_class("published"),
+            "vb-badge status-published"
+        );
+        assert_eq!(release_status_badge_class("DRAFT"), "vb-badge soft");
+    }
+
+    #[test]
+    fn doc_status_badge_classes() {
+        assert_eq!(
+            doc_status_badge_class("PUBLISHED"),
+            "vb-badge status-published"
+        );
+        assert_eq!(doc_status_badge_class("DRAFT"), "vb-badge status-hidden");
+        assert_eq!(doc_status_badge_class("draft"), "vb-badge status-hidden");
+        assert_eq!(doc_status_badge_class("HIDDEN"), "vb-badge soft");
     }
 }

@@ -20,7 +20,7 @@ use crate::{
     auth::{capability_denied, config, require_org},
     db::now_unix,
     list_page::{PagerLinks, href_with_query, with_page_param},
-    models::{RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release},
+    models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, RESERVED_ORG_SLUG, Release},
     perms::perms_for_user,
     release_pkg::{cmp_version_desc, package_file_name, sha256_cmd},
     ui::channel_badge_class,
@@ -224,18 +224,9 @@ pub(super) async fn render_builds(
                                 <span class=(channel_badge)>(rel.channel.clone())</span>
                             </div>
                             <div style="color: #5a5f66;">(rel.released_on.clone())</div>
-                            <div
-                                style="color: var(--ok); font-size: 11.5px; display: flex; align-items: center; gap: 6px;"
-                            >
+                            <div class="vb-build-sig">
                                 (ico_check(cx, 12).await?)
-                                <span style="color: #8a8f96;">
-                                    (rel
-                                        .sha256
-                                        .chars()
-                                        .take(7)
-                                        .collect::<String>())
-                                    "…"
-                                </span>
+                                <span class="vb-build-sig-hash">(rel.sha256.clone())</span>
                             </div>
                             <div style="color: #5a5f66;">(size_label.clone())</div>
                             <div
@@ -630,10 +621,14 @@ pub(super) fn parse_notes(notes: &str) -> Vec<(String, &'static str, String)> {
         .collect()
 }
 
-/// Releases visible to an org: GA (`organization_id == 0`) or targeted at that
-/// org. The reserved staff tenant `vauban` sees every release (including all
-/// `X.Y.Z-client` private builds).
+/// Releases visible on org Builds / dashboard: must be `PUBLISHED`, then either
+/// GA (`organization_id == 0`) or targeted at that org. The reserved staff
+/// tenant `vauban` still sees every **published** private client build; `HIDDEN`
+/// rows stay on `/admin/releases` only (Unpublish removes them from chrome).
 pub(super) fn release_visible_to_org(release: &Release, org_id: u64, org_slug: &str) -> bool {
+    if release.status != RELEASE_STATUS_PUBLISHED {
+        return false;
+    }
     if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
         return true;
     }
@@ -671,7 +666,24 @@ pub(super) async fn load_releases_for_org(
 
 #[cfg(test)]
 mod builds_entitlement_page_tests {
-    use super::builds_list_href;
+    use super::{builds_list_href, release_visible_to_org};
+    use crate::models::{
+        RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED, Release,
+    };
+
+    fn sample_release(status: &str, organization_id: u64) -> Release {
+        Release {
+            id: 1,
+            version: "v1.0.0".to_owned(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            size_mb: "1.0".to_owned(),
+            sha256: "pending".to_owned(),
+            status: status.to_owned(),
+            notes: "FIX: test".to_owned(),
+            organization_id,
+        }
+    }
 
     #[test]
     fn builds_entitlement_builds_list_href_omits_page_one() {
@@ -688,5 +700,36 @@ mod builds_entitlement_page_tests {
             builds_list_href("acme", "", 2, true),
             "/acme/builds?page=2&open=none"
         );
+    }
+
+    #[test]
+    fn release_visible_published_ga_for_client() {
+        let rel = sample_release(RELEASE_STATUS_PUBLISHED, RELEASE_GA_ORG_ID);
+        assert!(release_visible_to_org(&rel, 42, "acme"));
+    }
+
+    #[test]
+    fn release_visible_hidden_ga_hidden_from_client() {
+        let rel = sample_release(RELEASE_STATUS_HIDDEN, RELEASE_GA_ORG_ID);
+        assert!(!release_visible_to_org(&rel, 42, "acme"));
+    }
+
+    #[test]
+    fn release_visible_hidden_hidden_from_reserved_too() {
+        let rel = sample_release(RELEASE_STATUS_HIDDEN, RELEASE_GA_ORG_ID);
+        assert!(!release_visible_to_org(&rel, 1, "vauban"));
+    }
+
+    #[test]
+    fn release_visible_reserved_still_sees_published_private() {
+        let rel = sample_release(RELEASE_STATUS_PUBLISHED, 42);
+        assert!(release_visible_to_org(&rel, 1, "vauban"));
+    }
+
+    #[test]
+    fn release_visible_published_private_for_target_org_only() {
+        let rel = sample_release(RELEASE_STATUS_PUBLISHED, 42);
+        assert!(release_visible_to_org(&rel, 42, "acme"));
+        assert!(!release_visible_to_org(&rel, 99, "other"));
     }
 }

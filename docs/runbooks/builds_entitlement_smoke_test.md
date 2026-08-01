@@ -44,6 +44,8 @@ rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=
    panel open by default (release notes visible). Order is by version
    number descending (ignore release dates). For the same `X.Y.Z`,
    `X.Y.Z-client` rows sit above plain `X.Y.Z`, A→Z by client name.
+   SIGNATURE column shows the **full** 64-hex SHA-256 (not a 7-char
+   prefix). Column gaps look even across VERSION…SIZE.
 3. Action row: **Download (size)**, **5-minute download link**,
    **Verify signature** (no Collapse).
 4. Submit **5-minute download link** — server issues a UUID token and
@@ -58,8 +60,9 @@ rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=
    **Generate new link** (no custom JS asset — Topcoat runtime only).
 7. Download POST on a visible version returns **501**
    (`download not configured`) until artifact storage ships.
-8. As `support@vauban.sh` on `/vauban/builds`, confirm **all**
-   `X.Y.Z-client` private builds are visible (not only GA).
+8. As `support@vauban.sh` on `/vauban/builds`, confirm **all published**
+   `X.Y.Z-client` private builds are visible (not only GA). `HIDDEN` rows stay
+   off the Builds list (admin-only).
 
 Pass: Concept chrome + server ephemeral tokens; download remains 501.
 

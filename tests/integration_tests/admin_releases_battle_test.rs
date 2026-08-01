@@ -142,3 +142,97 @@ async fn battle_parallel_admin_releases_page_pagination() {
 
     cleanup(&db).await;
 }
+
+#[tokio::test]
+async fn battle_parallel_publish_unpublish_under_list_reads() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-rel-status");
+    let slug = unique_slug("battle-rel-status");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+
+    let release_id = {
+        let mut conn = db.clone();
+        toasty::create!(Release {
+            version: "v95.battle.status".to_owned(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            size_mb: "1.0".to_owned(),
+            sha256: "pending".to_owned(),
+            status: "PUBLISHED".to_owned(),
+            notes: "FIX: battle status".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("release")
+        .id
+    };
+
+    let router = Arc::new(test_router().await);
+    let form = format!("email={}&password=password", urlencoding_encode(&email));
+    let login = post_form(router.as_ref(), "/login", None, &form).await;
+    let cookie = cookie_header(&login).expect("cookie");
+
+    let barrier = Arc::new(Barrier::new(3));
+    let cookie_a = cookie.clone();
+    let cookie_b = cookie.clone();
+    let cookie_c = cookie;
+    let router_a = router.clone();
+    let router_b = router.clone();
+    let router_c = router;
+    let barrier_a = barrier.clone();
+    let barrier_b = barrier.clone();
+    let barrier_c = barrier;
+
+    let h_list = tokio::spawn(async move {
+        barrier_a.wait().await;
+        let resp = get(router_a.as_ref(), "/admin/releases", Some(&cookie_a)).await;
+        assert_eq!(status(&resp), StatusCode::OK);
+    });
+    let h_unpub = tokio::spawn(async move {
+        barrier_b.wait().await;
+        let resp = post_form(
+            router_b.as_ref(),
+            &format!("/admin/releases/{release_id}/unpublish"),
+            Some(&cookie_b),
+            "",
+        )
+        .await;
+        assert!(status(&resp).is_redirection() || status(&resp) == StatusCode::OK);
+    });
+    let h_pub = tokio::spawn(async move {
+        barrier_c.wait().await;
+        let resp = post_form(
+            router_c.as_ref(),
+            &format!("/admin/releases/{release_id}/publish"),
+            Some(&cookie_c),
+            "",
+        )
+        .await;
+        assert!(status(&resp).is_redirection() || status(&resp) == StatusCode::OK);
+    });
+
+    h_list.await.expect("list join");
+    h_unpub.await.expect("unpub join");
+    h_pub.await.expect("pub join");
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all()
+            .filter(Release::fields().id().eq(release_id))
+            .exec(&mut conn)
+            .await
+            .expect("lookup");
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].status == "PUBLISHED" || rows[0].status == "HIDDEN",
+            "status must remain a known value: {}",
+            rows[0].status
+        );
+    }
+
+    cleanup(&db).await;
+}

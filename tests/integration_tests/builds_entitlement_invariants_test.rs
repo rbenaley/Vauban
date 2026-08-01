@@ -92,6 +92,14 @@ fn inv_builds_concept_ephemeral_server_side() {
     assert!(builds.contains("vb-verify") || builds.contains("data-verify-signature-panel"));
     assert!(builds.contains("PACKAGE SIGNATURE"));
     assert!(
+        builds.contains("vb-build-sig-hash"),
+        "list must show full sha256 (not truncated prefix)"
+    );
+    assert!(
+        !builds.contains("take(7)"),
+        "list must not truncate sha256 with take(7)"
+    );
+    assert!(
         !builds.contains("vb-btn muted vb-btn-build\">\n                                            \"Verify signature\""),
         "Verify signature must not be a muted span"
     );
@@ -148,6 +156,16 @@ fn inv_builds_concept_ephemeral_server_side() {
         "/toasty/migrations/0005_release_sha256.sql"
     ));
     assert!(mig.contains("RENAME COLUMN \"signature_prefix\" TO \"sha256\""));
+
+    let seed = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/db.rs"));
+    assert!(
+        seed.contains("upsert_acme_private_release"),
+        "demo catalog must refresh Acme private sha256"
+    );
+    assert!(
+        seed.contains("b7e4d01c9e2a4f8b1d6c0e5a3f7b9d2e4c8a1f0b6d5e3c9a7f2b8d4e0c1a6953"),
+        "Acme private digest must be full 64-hex SHA-256"
+    );
 
     let pkg = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/release_pkg.rs"));
     assert!(pkg.contains("version_for_package"));

@@ -19,6 +19,7 @@ use crate::{
     },
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
+    ui::doc_status_badge_class,
 };
 
 #[query_params]
@@ -91,7 +92,7 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                         <th>"CATEGORY"</th>
                         <th>"VER."</th>
                         <th>"STATUS"</th>
-                        <th style="text-align: right;">"ACTIONS"</th>
+                        <th class="vb-col-actions">"ACTIONS"</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -110,6 +111,8 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                             );
                             let delete_href = format!("/admin/docs?delete={}", article.id);
                             let is_published = article.status == DOC_STATUS_PUBLISHED;
+                            let status_badge = doc_status_badge_class(&article.status)
+                                .to_owned();
                             let summary = if article.summary.trim().is_empty() {
                                 "—".to_owned()
                             } else {
@@ -135,9 +138,9 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                                     (article.version.clone())
                                 </td>
                                 <td>
-                                    <span class="vb-badge soft">(article.status.clone())</span>
+                                    <span class=(status_badge)>(article.status.clone())</span>
                                 </td>
-                                <td>
+                                <td class="vb-col-actions">
                                     <div class="vb-row-actions">
                                         <a class="vb-btn muted compact" href=(edit_href)>"Edit"</a>
                                         if is_published {

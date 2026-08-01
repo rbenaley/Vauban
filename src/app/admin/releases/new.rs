@@ -14,7 +14,7 @@ use topcoat::{
 
 use crate::{
     auth::{capability_denied, db, require_staff},
-    models::{Organization, RELEASE_GA_ORG_ID, Release},
+    models::{Organization, RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release},
     perms::perms_for_user,
 };
 
@@ -171,7 +171,7 @@ async fn admin_releases_create(cx: &Cx, Form(form): Form<CreateReleaseForm>) -> 
         released_on,
         size_mb: "0.0".to_owned(),
         sha256: "pending".to_owned(),
-        status: "PUBLISHED".to_owned(),
+        status: RELEASE_STATUS_PUBLISHED.to_owned(),
         notes,
         organization_id,
     })

@@ -4,7 +4,10 @@ use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
 use vcp::{
     db::now_unix,
-    models::{EphemeralDownload, RELEASE_GA_ORG_ID, Release},
+    models::{
+        EphemeralDownload, RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED,
+        Release,
+    },
 };
 
 use crate::common::{
@@ -316,6 +319,73 @@ async fn e2e_reserved_vauban_org_sees_all_client_private_releases() {
         acme_pos < zenith_pos && zenith_pos < plain_pos,
         "client variants A→Z above plain: {body}"
     );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_hidden_ga_release_absent_from_client_builds() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("hidden-ga");
+    let slug = unique_slug("hidden-ga");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "org").await;
+
+    let hidden_ver = "v94.hidden.0".to_owned();
+    let published_ver = "v94.pub.0".to_owned();
+    {
+        let mut conn = db.clone();
+        let _ = toasty::create!(Release {
+            version: hidden_ver.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            size_mb: "1.0".to_owned(),
+            sha256: "abc".to_owned(),
+            status: RELEASE_STATUS_HIDDEN.to_owned(),
+            notes: "FIX: hidden".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("hidden");
+        let _ = toasty::create!(Release {
+            version: published_ver.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-07-02".to_owned(),
+            size_mb: "1.0".to_owned(),
+            sha256: "def".to_owned(),
+            status: RELEASE_STATUS_PUBLISHED.to_owned(),
+            notes: "FIX: published".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("published");
+    }
+
+    let cookie = login(&router, &email).await;
+    let list = get(&router, &format!("/{slug}/builds"), cookie.as_deref()).await;
+    assert!(status(&list).is_success());
+    let body = body_text(list).await;
+    assert!(
+        !body.contains(&hidden_ver),
+        "client must not see HIDDEN GA: {body}"
+    );
+    assert!(
+        body.contains(&published_ver),
+        "client must see PUBLISHED GA: {body}"
+    );
+
+    let detail = get(
+        &router,
+        &format!("/{slug}/builds/{hidden_ver}"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&detail), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
 }

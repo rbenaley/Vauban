@@ -20,6 +20,11 @@ pub const RELEASE_GA_ORG_ID: u64 = 0;
 pub const DOC_STATUS_DRAFT: &str = "DRAFT";
 pub const DOC_STATUS_PUBLISHED: &str = "PUBLISHED";
 
+/// `Release.status` when the build is visible on customer Builds lists.
+pub const RELEASE_STATUS_PUBLISHED: &str = "PUBLISHED";
+/// `Release.status` when unpublished (admin-only; hidden from customers).
+pub const RELEASE_STATUS_HIDDEN: &str = "HIDDEN";
+
 /// Category options for admin compose (Concept select).
 pub const DOC_CATEGORIES: &[&str] = &[
     "Getting started",

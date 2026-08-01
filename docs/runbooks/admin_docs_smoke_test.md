@@ -35,7 +35,7 @@ rtk cargo test --test integration_tests -- admin_docs -- --test-threads=1
 ## A -- Happy path
 
 1. Sign in as `support@vauban.sh` / `password` (or member where appropriate).
-2. Open `/acme-infrastructure/admin/docs` — list ACTIONS must show **Edit**, **Unpublish**/**Publish**, and trash **Delete** (no UPDATED column). Title rows show excerpt under the title.
+2. Open `/admin/docs` — list ACTIONS must show **Edit**, **Unpublish**/**Publish**, and trash **Delete** (no UPDATED column). STATUS badges: green **PUBLISHED**, amber **DRAFT** (same unpublished look as releases HIDDEN). Title rows show excerpt under the title.
 3. Open compose (`+ New article` or Edit): form is **full width**, titled **Compose article**, with Category|Excerpt on one row and a tall Content field.
 4. Click Delete on a disposable row → type `delete` → **Delete permanently**; article disappears from admin list and client KB if it was published.
 5. Edit a **published** article: change the body, click **Publish new version** — expect redirect to the admin list, a new `vN+1` PUBLISHED row, previous version DRAFT, client `/docs/{slug}` showing the new body.
