@@ -4,7 +4,11 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::{Cx, app_context},
-    router::{Form, SeeOther, Slot, layout, page, redirect, route, see_other},
+    router::{
+        content::Form,
+        error::{SeeOther, redirect, see_other},
+        layout, page, route,
+    },
     session,
     view::view,
 };
@@ -16,7 +20,7 @@ use crate::{
 };
 
 #[layout]
-async fn login_layout(slot: Slot<'_>) -> Result {
+async fn login_layout(slot: Result) -> Result {
     view! {
         <div class="vb-login-body">
             <div class="vb-login-wrap">
@@ -39,7 +43,7 @@ async fn login_layout(slot: Slot<'_>) -> Result {
                     <h1>"VAUBAN"</h1>
                     <p>"CUSTOMER PORTAL"</p>
                 </div>
-                <div class="vb-login-panel">(slot.await?)</div>
+                <div class="vb-login-panel">(slot?)</div>
             </div>
         </div>
     }

@@ -3,7 +3,7 @@
 use topcoat::{
     Result,
     context::Cx,
-    router::{not_found, page, path_param},
+    router::{error::not_found, page, path_param},
     view::view,
 };
 

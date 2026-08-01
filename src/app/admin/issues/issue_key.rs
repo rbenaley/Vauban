@@ -4,7 +4,11 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, page, path_param, query_params, route, see_other},
+    router::{
+        content::Form,
+        error::{SeeOther, not_found, see_other},
+        page, path_param, query_params, route,
+    },
     view::view,
 };
 
@@ -49,7 +53,7 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
         .unwrap_or_default();
     let issues = Issue::all().exec(&mut database).await.unwrap_or_default();
     let Some(issue) = pick_issue_by_key(&issues, &orgs, key, &org_hint) else {
-        return Err(topcoat::router::not_found().into());
+        return Err(not_found().into());
     };
 
     let mut comments = IssueComment::all()

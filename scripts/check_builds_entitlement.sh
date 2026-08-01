@@ -59,6 +59,17 @@ awk '/data-verify-signature-panel|class="vb-ephemeral vb-verify"/,/ephemeral_lin
 if awk '/vb-ephemeral vb-verify/,/if let Some\(panel\) = eph_panel/' "$BUILDS" | grep -q 'vb-ephemeral-revoke\|vb-ephemeral-countdown\|use_curl'; then
   fail "$BUILDS verify panel must not include countdown, revoke, or use_curl"
 fi
+# Verify and ephemeral share one slot: opening Verify hides EPHEMERAL DOWNLOAD LINK.
+grep -n 'data-ephemeral-panel-host' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must wrap ephemeral_link_panel in data-ephemeral-panel-host"
+EPH_HOST=$(awk '/if let Some\(panel\) = eph_panel/,/async fn ephemeral_link_panel/' "$BUILDS")
+echo "$EPH_HOST" | grep -q 'verify_open.get()' \
+  || fail "$BUILDS ephemeral host must gate visibility on verify_open"
+echo "$EPH_HOST" | grep -q 'display:none' \
+  || fail "$BUILDS ephemeral host must use display:none while verify is open"
+# Inverted vs verify panel: verify shows when open; ephemeral hides when open.
+echo "$EPH_HOST" | grep -q '{ "display:none" } else { "" }' \
+  || fail "$BUILDS ephemeral host must hide when verify_open (not show)"
 grep -n 'pub sha256' src/models/mod.rs >/dev/null \
   || fail "Release model must expose sha256"
 grep -n 'RENAME COLUMN "signature_prefix" TO "sha256"' toasty/migrations/0005_release_sha256.sql >/dev/null \

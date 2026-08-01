@@ -4,7 +4,11 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, forbidden, not_found, path_param, route, see_other},
+    router::{
+        content::Form,
+        error::{SeeOther, forbidden, not_found, see_other},
+        path_param, route,
+    },
 };
 use uuid::Uuid;
 

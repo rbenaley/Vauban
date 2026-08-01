@@ -17,7 +17,8 @@ Companion hard gates:
 A task is **not done** until format, clippy, relevant structural lints,
 and tests all pass on the touched scope.
 
-1. **Format** — `just fmt` (`cargo fmt` + `topcoat fmt`; signal files skipped)
+1. **Format** — `just fmt` (`cargo fmt` + `topcoat fmt` over all
+   `src/**/*.rs`, including `signal` decls)
 2. **Clippy** — warnings as errors on touched crates
 3. **Structural lints** — matching `scripts/check_*.sh` only
 4. **Focused tests** — change + denial paths; then widen before hand-off

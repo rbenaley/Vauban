@@ -254,28 +254,41 @@ a.vb-btn.compact, button.vb-btn.compact {
   position: relative;
   margin-top: 16px; border: 1px solid #d7e3df; border-radius: 6px; background: #fff; overflow: hidden;
 }
+/* Shared chrome for PACKAGE SIGNATURE + EPHEMERAL DOWNLOAD LINK: same bar
+   height, title metrics, and body rhythm so Verify toggle does not jump. */
 .vb-ephemeral-bar {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  position: relative;
+  display: flex; align-items: center;
   padding: 10px 16px; background: #f1f7f5; border-bottom: 1px solid #e2ece9;
+  box-sizing: border-box;
+  /* Title line only — actions are out-of-flow (see bar-actions). */
+  min-height: calc(10px + 11px + 10px);
 }
 .vb-ephemeral-title {
-  display: flex; align-items: center; gap: 9px;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 11px; letter-spacing: 0.04em; color: var(--accent);
+  font-size: 11px; line-height: 1; letter-spacing: 0.04em; color: var(--accent);
+  margin: 0; padding: 0;
 }
-.vb-ephemeral-dot {
-  width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none;
+.vb-ephemeral-bar:has(.vb-ephemeral-bar-actions) .vb-ephemeral-title {
+  /* Keep title clear of absolutely positioned countdown + Revoke. */
+  padding-right: 12.5rem;
 }
 .vb-ephemeral-bar-actions {
-  display: flex; align-items: center; gap: 14px;
-  font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px;
+  position: absolute; right: 16px; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; gap: 12px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px; line-height: 1; letter-spacing: 0.04em;
+}
+.vb-ephemeral-bar-actions form {
+  display: contents;
 }
 .vb-ephemeral-revoke {
   background: none; border: 0; cursor: pointer;
-  min-width: 40px; min-height: 40px; padding: 0 8px;
+  /* ≥40px hit target; absolute actions keep the shared bar title-sized. */
+  min-width: 40px; min-height: 40px; padding: 0 8px; margin: 0;
   display: inline-flex; align-items: center; justify-content: center;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 11px; color: #8a8f96;
+  font-size: 11px; line-height: 1; letter-spacing: 0.04em; color: #8a8f96;
 }
 .vb-ephemeral-revoke:hover { color: #5a5f66; }
 .vb-ephemeral-body { padding: 14px 16px; }
@@ -283,7 +296,7 @@ a.vb-btn.compact, button.vb-btn.compact {
   display: flex; gap: 8px; align-items: stretch; margin-bottom: 12px;
 }
 .vb-ephemeral-url {
-  flex: 1; min-width: 0; font-size: 12px; color: #14171c;
+  flex: 1; min-width: 0; font-size: 12px; line-height: 1.4; color: #14171c;
   background: #f7f8f6; border: 1px solid #e8eae6; border-radius: 4px;
   padding: 10px 12px; overflow-x: auto; white-space: nowrap;
 }
@@ -292,22 +305,29 @@ input.vb-ephemeral-url {
 }
 .vb-ephemeral-countdown {
   font-variant-numeric: tabular-nums;
+  font-size: 11px; line-height: 1; letter-spacing: 0.04em;
 }
 .vb-ephemeral-countdown.warn { color: #b5403a; }
-.vb-ephemeral-dot.warn { background: #b5403a; }
 .vb-ephemeral-cmd-head {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; flex-wrap: wrap; margin-bottom: 8px;
+  position: relative;
+  display: flex; align-items: center;
+  /* Same slot height with or without fetch/cURL so the cmd box aligns. */
+  min-height: 28px; margin-bottom: 8px;
 }
 .vb-ephemeral-run-label {
-  font-size: 10px; letter-spacing: 0.06em; color: #8a8f96;
+  font-size: 10px; line-height: 1; letter-spacing: 0.06em; color: #8a8f96;
+  margin: 0; padding: 0;
+}
+.vb-ephemeral-cmd-head:has(.vb-eph-seg) .vb-ephemeral-run-label {
+  padding-right: 9.5rem;
 }
 .vb-eph-seg {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
   display: flex; gap: 2px; background: #eef0ed; border-radius: 6px; padding: 2px;
 }
 .vb-eph-seg-btn {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 11px; padding: 5px 13px; border-radius: 4px; cursor: pointer;
+  font-size: 11px; line-height: 1; padding: 5px 13px; border-radius: 4px; cursor: pointer;
   border: 0; background: transparent; color: #5a5f66;
   text-decoration: none; display: inline-block;
 }
@@ -343,9 +363,6 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
 @keyframes vb-eph-tick {
   from { transform: translateX(0); }
   to { transform: translateX(0.01px); }
-}
-.vb-ephemeral-help {
-  font-size: 12px; color: #8a8f96; margin-top: 10px; line-height: 1.5;
 }
 .vb-ephemeral-expired {
   padding: 16px; display: flex; align-items: center; justify-content: space-between;

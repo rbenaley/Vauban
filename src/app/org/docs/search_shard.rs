@@ -3,7 +3,7 @@
 //! Shard POSTs hit `/_topcoat/shards/{id}` — there is no `{org}` path
 //! segment. Tenant must come from the shard argument (re-authorized below).
 
-use topcoat::{Result, context::Cx, router::not_found, runtime::shard, view::view};
+use topcoat::{Result, context::Cx, router::error::not_found, runtime::shard, view::view};
 
 use super::{DocsFilter, load_filtered_docs};
 use crate::{

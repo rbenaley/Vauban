@@ -14,7 +14,7 @@ use toasty::Db;
 use topcoat::{
     Result,
     context::{Cx, app_context, memoize},
-    router::{NotFoundError, RouterErrorExt, UnauthorizedError, not_found},
+    router::error::{NotFoundError, RouterErrorExt, UnauthorizedError, not_found},
     session::{self, TokenHash},
 };
 

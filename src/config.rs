@@ -48,12 +48,9 @@ impl Environment {
     }
 
     /// Default `RUST_LOG` filter when the env var is unset.
-    ///
-    /// Development enables `vcp=debug` so local self-signed TLS noise and
-    /// other crate debug lines are visible without flooding dependency crates.
     pub const fn default_log_filter(self) -> &'static str {
         match self {
-            Self::Development => "info,vcp=debug",
+            Self::Development => "debug",
             Self::Testing | Self::Production => "info",
         }
     }
@@ -459,11 +456,9 @@ mod tests {
     }
 
     #[test]
-    fn development_default_log_filter_enables_crate_debug() {
-        assert_eq!(
-            Environment::Development.default_log_filter(),
-            "info,vcp=debug"
-        );
+    fn development_default_log_filter_enables_global_debug() {
+        assert_eq!(Environment::Development.default_log_filter(), "debug");
+        assert_eq!(Environment::Testing.default_log_filter(), "info");
         assert_eq!(Environment::Production.default_log_filter(), "info");
     }
 }

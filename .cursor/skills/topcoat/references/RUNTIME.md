@@ -1,18 +1,20 @@
 # Topcoat runtime playbook (VCP)
 
-Companion to `topcoat` skill §10. Pin: **0.4.x**. Re-verify against
-`topcoat-runtime` browser bundle when upgrading.
+Companion to `topcoat` skill §10. VCP pins Topcoat **0.5.0**; re-verify
+the browser bundle when bumping the facade. Historical 0.4→0.5 notes:
+`UPGRADE-0.5.md`.
 
 ## Mental model
 
 1. Server renders HTML + comment markers (`::topcoat::signal`,
    `::topcoat::expr::start/end`) and `data-topcoat-*` attributes.
-2. `topcoat::runtime::script()` (ES module) walks `document.body` in
-   **document order** and wires signals / binds / listeners.
+2. `topcoat::runtime::script()` (ES module asset, renamed `topcoat` in
+   the bundle) walks `document.body` in **document order** and wires
+   signals / binds / listeners.
 3. Client expressions are a Rust subset lowered to JS surrogates
    (`cx.hydrate(...)`, `Signal.get/set`, bool `.dehydrate()` for `if`).
 
-No WASM. No separate SPA. Prefer this over first-party UI JS.
+No WASM on the client. No separate SPA. Prefer this over first-party UI JS.
 
 ## `@click` / `@*` bind contract (critical)
 
@@ -42,10 +44,11 @@ countdown (earlier in DOM) works; fetch/cURL tabs (later) do nothing.
 
 - Handler receives Topcoat `Event` wrapper (`current_target` → element
   surrogate with `.inner` = real `Element`).
-- Do **not** use `this` (not the DOM node when the runtime invokes `s(e)`).
+- Do not use `this` (not the DOM node when the runtime invokes `s(e)`).
 
-Upstream docs showing `@click="alert('hi')"` are misleading for 0.4:
-that form alerts at **bind** time, not on click.
+Upstream examples that use bare statements in `@click` (e.g.
+`alert('hi')`) are misleading: that form runs at **bind** time, not on
+click.
 
 ## Signals
 
@@ -72,6 +75,9 @@ view! { cx =>
   on later signal changes.
 - `:attr=$(...)` always applies on first client run (including `:class`,
   `:style`, `:data-copy`).
+- **0.5+ shorthands:** `bool` → `toggle()`; `f64` → `increment()` /
+  `decrement()`; `String` → `push_str(...)`. Prefer these over
+  `set(get() ± 1)`.
 
 ### Show/hide vs class toggles
 
@@ -102,6 +108,8 @@ relevant Casbin check) inside the `#[shard]` before loading data.
 
 Prefer Topcoat helpers — do not hand-roll status + `Location` unless a
 helper truly cannot express the need (document why if so).
+
+Import helpers from `topcoat::router::error::{…}`.
 
 | Helper | Status | Pattern |
 |--------|--------|---------|
@@ -163,8 +171,9 @@ the project explicitly adds a browser runner.
 ## Tooling notes
 
 - `just bundle` / `just run` before tests that need `/_topcoat/assets/…`.
-- `topcoat fmt` (0.4) **panics** on files that declare `signal` —
-  `just topcoat-fmt` skips them.
+- **`topcoat fmt`:** formats `signal` declarations; `--stdin` exits
+  non-zero on format failure. `just topcoat-fmt` covers all `src` Rust
+  files. `topcoat dev` reports cargo stderr on build failures.
 - Dev HMR (`just dev` / `topcoat dev`) does not use VCP’s custom TLS
   path; prefer `just run` for HTTPS fidelity.
 

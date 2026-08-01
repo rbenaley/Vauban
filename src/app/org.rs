@@ -10,7 +10,7 @@ pub use builds::builds_list_href;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Slot, layout, page, path_param},
+    router::{layout, page, path_param},
     view::view,
 };
 
@@ -29,7 +29,7 @@ use super::_components::{ico_builds, ico_docs, ico_issues, vb_rail, vb_topbar};
 pub struct Org(str);
 
 #[layout]
-async fn org_layout(cx: &Cx, slot: Slot<'_>) -> Result {
+async fn org_layout(cx: &Cx, slot: Result) -> Result {
     let slug = path_param::<Org>(cx);
     // Membership gate (memoized; rail/topbar re-use the same lookup).
     let _ctx = require_org(cx, slug).await?;
@@ -42,7 +42,7 @@ async fn org_layout(cx: &Cx, slot: Slot<'_>) -> Result {
             vb_rail(org_slug: &org_slug, section: section)
             <div class="vb-main">
                 vb_topbar(org_slug: &org_slug, crumb: &crumb)
-                <div class="vb-scroll"><div class="vb-screen">(slot.await?)</div></div>
+                <div class="vb-scroll"><div class="vb-screen">(slot?)</div></div>
             </div>
         </div>
     }

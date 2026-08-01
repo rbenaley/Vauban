@@ -15,15 +15,17 @@ use std::sync::Arc;
 use toasty::Db;
 use topcoat::{
     Result,
-    asset::{Asset, AssetBundle, RouterBuilderAssetExt, asset},
+    asset::{Asset, AssetBundle, AssetConfig, RouterBuilderAssetExt, asset},
     context::{Cx, CxBuilder, try_app_context},
     cookie::RouterBuilderCookieExt,
     font,
     router::{
-        Body, HeaderValue, IntoResponse, Next, Response, Router, RouterBuilderDiscoverExt, Slot,
-        StatusCode, header, layer, layout, method, redirect, redirect_permanent, route, uri,
+        Body, HeaderValue, IntoResponse, Next, Response, Router, RouterBuilderDiscoverExt,
+        StatusCode,
+        error::{redirect, redirect_permanent},
+        header, layer, layout, method, route, uri,
     },
-    session::{Config as SessionConfig, RouterBuilderSessionExt},
+    session::{RouterBuilderSessionExt, SessionConfig},
     tailwind,
     view::view,
 };
@@ -86,25 +88,56 @@ pub fn router(db: Db, policy: Arc<PolicyStore>, cfg: &Config) -> Router {
         .build()
 }
 
-fn load_assets(env: Environment) -> AssetBundle {
-    match AssetBundle::load() {
+fn load_assets(env: Environment) -> AssetConfig {
+    let bundle = match AssetBundle::load() {
         Ok(bundle) => bundle,
         Err(err) => {
-            if env.is_production() {
-                panic!("asset bundle required in production: {err}");
-            }
-            tracing::warn!(
-                error = %err,
-                "asset bundle missing; run `topcoat asset bundle` after `cargo build` \
-                 (or use `just run` / `just test`)"
+            panic!(
+                "asset bundle missing ({err}); run `just bundle` or `just run` after \
+                 `cargo build` (bare `cargo run` skips bundling)"
             );
-            AssetBundle::empty()
+        }
+    };
+    let config = AssetConfig::serve(bundle);
+    // Tailwind's asset! path includes OUT_DIR, so a rebuild without rebundle
+    // leaves stale IDs in target/assets/manifest.toml and panics on first HTML
+    // render. Fail at boot with an actionable message instead.
+    require_catalog_assets(
+        &config,
+        env,
+        &[
+            ("favicon.svg", FAVICON_SVG),
+            ("favicon-16", FAVICON_16),
+            ("favicon-32", FAVICON_32),
+            ("apple-touch-icon", APPLE_TOUCH_ICON),
+            ("vcp_tz.js", VCP_TZ_JS),
+            ("tailwind stylesheet", tailwind::stylesheet!()),
+            ("topcoat runtime script", topcoat::runtime::SCRIPT),
+        ],
+    );
+    config
+}
+
+fn require_catalog_assets(config: &AssetConfig, env: Environment, assets: &[(&str, Asset)]) {
+    let mut missing = Vec::new();
+    for (label, asset) in assets {
+        if config.get(*asset).is_none() {
+            missing.push(*label);
         }
     }
+    if missing.is_empty() {
+        return;
+    }
+    panic!(
+        "asset catalog is stale or incomplete (missing: {}); \
+         rebuild the bundle with `just bundle` or `just run` so binary AssetIds \
+         match target/assets (environment={env:?})",
+        missing.join(", "),
+    );
 }
 
 #[layout]
-async fn root_layout(slot: Slot<'_>) -> Result {
+async fn root_layout(slot: Result) -> Result {
     view! {
         <!DOCTYPE html>
         <html lang="en">
@@ -123,7 +156,7 @@ async fn root_layout(slot: Slot<'_>) -> Result {
                 topcoat::runtime::script()
                 topcoat::dev::script()
             </head>
-            <body>(slot.await?)</body>
+            <body>(slot?)</body>
         </html>
     }
 }

@@ -90,18 +90,22 @@ Pass: Casbin + tenant fail-closed.
 
 ## E -- Verify signature
 
-Client-only Topcoat panel (no POST / no countdown / no Revoke).
+Client-only Topcoat panel (no POST / no countdown / no Revoke). Verify and
+the live ephemeral panel share **one** slot (mutually exclusive).
 
-1. On an open build with download entitlement, click **Verify signature**.
-2. Expect a panel titled **PACKAGE SIGNATURE** (same body chrome as the
+1. On an open build with download entitlement, generate a 5-minute link so
+   **EPHEMERAL DOWNLOAD LINK** is visible.
+2. Click **Verify signature**.
+3. Expect **only** **PACKAGE SIGNATURE** (same body chrome as the
    ephemeral zone): full SHA-256 + Copy, and `$ sha256 vauban-…pkg` +
    command copy. LTS packages use `+LTS`; Stable/EOL omit it. DB versions
    keep a leading `v`; package names do not.
-3. Confirm there is **no** fetch/cURL segment, countdown, or Revoke in
-   this panel.
-4. Click **Verify signature** again — panel collapses.
+4. Confirm **EPHEMERAL DOWNLOAD LINK** is **not** visible at the same time
+   (no fetch/cURL, countdown, or Revoke while Verify is open).
+5. Click **Verify signature** again — PACKAGE SIGNATURE collapses and the
+   ephemeral panel reappears if the token is still live.
 
-Pass: verify panel toggles locally with hash + `sha256` command only.
+Pass: verify toggles locally; never stacked with the ephemeral panel.
 
 ## F -- Pagination
 

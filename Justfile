@@ -20,7 +20,7 @@ cargo_home := env_var_or_default("CARGO_HOME", env_var("HOME") + "/.cargo")
 export PATH := cargo_home + "/bin:" + env_var("PATH")
 
 # Keep in sync with README / topcoat facade pin in Cargo.toml.
-topcoat_cli_version := "0.4.0"
+topcoat_cli_version := "0.5.0"
 
 # Match config/testing.toml (user/password/db host).
 vcp_test_url := "postgresql://vcp_test:vcp_test@localhost/vcp_test"
@@ -64,16 +64,47 @@ ensure-vcp-test:
     fi
     echo "vcp_test ready" >&2
 
-# Build the binary
-build *ARGS:
+# cargo build only (no asset step). Prefer `just build` for local work.
+[private]
+cargo-build *ARGS:
     cargo build {{ARGS}}
 
-# Bundle Topcoat assets into target/assets.
-# Builds first: the bundler scans the compiled binary for asset! decls
-# (Tailwind OUT_DIR CSS, fonts, etc.). Safe to call without a prior validate.
-# Profile must match the binary: `just bundle` | `just bundle --release`.
-bundle *ARGS: ensure-topcoat (build ARGS)
+# Refresh target/assets when missing or older than the vcp binary.
+# Topcoat 0.5 Tailwind AssetIds embed OUT_DIR — a rebuild without rebundle
+# leaves a stale manifest and panics on first HTML render.
+[private]
+ensure-asset-bundle *ARGS: ensure-topcoat
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile=debug
+    for arg in {{ARGS}}; do
+      if [[ "$arg" == "--release" ]]; then
+        profile=release
+      fi
+    done
+    bin="target/${profile}/vcp"
+    manifest="target/assets/manifest.toml"
+    if [[ ! -f "$bin" ]]; then
+      echo "error: missing ${bin}; build the binary before bundling assets" >&2
+      exit 1
+    fi
+    if [[ -f "$manifest" && ! "$bin" -nt "$manifest" ]]; then
+      echo "ensure-asset-bundle: up to date (${manifest})" >&2
+      exit 0
+    fi
+    echo "ensure-asset-bundle: bundling assets for ${bin}…" >&2
     # Explicit --bin: the package also ships `vcp-cli` (Toasty migrations).
+    topcoat asset bundle --bin vcp {{ARGS}}
+
+# Build the binary and refresh assets when the binary is newer than the
+# manifest (or the manifest is missing).
+build *ARGS: (cargo-build ARGS) (ensure-asset-bundle ARGS)
+
+# Force-bundle Topcoat assets into target/assets (always runs the bundler).
+# Builds first: the bundler scans the compiled binary for asset! decls
+# (Tailwind OUT_DIR CSS, fonts, etc.). Profile must match the binary:
+# `just bundle` | `just bundle --release`.
+bundle *ARGS: ensure-topcoat (cargo-build ARGS)
     topcoat asset bundle --bin vcp {{ARGS}}
 
 # Check without producing binaries
@@ -81,30 +112,24 @@ check *ARGS:
     cargo check {{ARGS}}
 
 # Format Rust sources + Topcoat view! macros
-# Note: topcoat-cli 0.4 panics on `signal` declarations — those files are skipped.
 fmt: ensure-topcoat
     cargo fmt --all
     just topcoat-fmt
 
-# topcoat fmt over src, skipping files that declare runtime signals.
-# topcoat-cli 0.4 panics on `signal` (unimplemented in the formatter).
-# Use grep (not rg) so this works outside Cursor's PATH.
+# topcoat fmt over all src Rust files (0.5 formats signal decls and mail!).
 topcoat-fmt: ensure-topcoat
     #!/usr/bin/env bash
     set -euo pipefail
     files=()
     while IFS= read -r f; do
       [[ -f "$f" ]] || continue
-      if grep -E -q '^[[:space:]]*signal[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$f"; then
-        continue
-      fi
       files+=("$f")
     done < <(git ls-files 'src/*.rs' 'src/**/*.rs')
     if ((${#files[@]} == 0)); then
       echo "topcoat-fmt: no eligible files" >&2
       exit 0
     fi
-    echo "topcoat-fmt: formatting ${#files[@]} files (signal decls skipped)" >&2
+    echo "topcoat-fmt: formatting ${#files[@]} files" >&2
     topcoat fmt "${files[@]}"
 
 # Format check (CI): rustfmt --check, then topcoat fmt must be a no-op
@@ -144,11 +169,9 @@ release: ensure-topcoat
 # Run the portal over HTTPS (defaults to development config, port 3000)
 # Examples: just run | just run --release
 # Smoke: curl -k https://127.0.0.1:3000/login
-# Bundles assets so Concept CSS / Fontsource / runtime script resolve.
-# Forwards ARGS to build + topcoat asset bundle so release binaries match
-# the asset IDs in target/assets (avoids Topcoat resolve panics).
-# Does not require a prior `just validate` — installs CLI + builds + bundles.
-run *ARGS: (bundle ARGS)
+# Builds then refreshes assets when needed (see ensure-asset-bundle) so
+# binary AssetIds match target/assets. Prefer this over bare `cargo run`.
+run *ARGS: (build ARGS)
     cargo run {{ARGS}}
 
 # Hot-reload via Topcoat CLI (auto-installs topcoat-cli if missing)

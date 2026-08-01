@@ -25,11 +25,9 @@ pub async fn vb_pager(cx: &Cx, links: &PagerLinks) -> Result {
             if let Some(href) = prev {
                 <a class="vb-pager-link" href=(href)>"Prev"</a>
             } else {
-                <a
-                    class="vb-pager-link disabled"
-                    aria-disabled="true"
-                    tabindex="-1"
-                >"Prev"</a>
+                <a class="vb-pager-link disabled" aria-disabled="true" tabindex="-1">
+                    "Prev"
+                </a>
             }
             for (n, href) in pages {
                 let class = if n == page {
@@ -42,11 +40,9 @@ pub async fn vb_pager(cx: &Cx, links: &PagerLinks) -> Result {
             if let Some(href) = next {
                 <a class="vb-pager-link" href=(href)>"Next"</a>
             } else {
-                <a
-                    class="vb-pager-link disabled"
-                    aria-disabled="true"
-                    tabindex="-1"
-                >"Next"</a>
+                <a class="vb-pager-link disabled" aria-disabled="true" tabindex="-1">
+                    "Next"
+                </a>
             }
         </nav>
     }
@@ -60,9 +56,7 @@ pub async fn list_toolbar(cx: &Cx, links: &PagerLinks) -> Result {
     view! {
         cx =>
         if show {
-            <div class="vb-list-toolbar">
-                vb_pager(links: &links)
-            </div>
+            <div class="vb-list-toolbar">vb_pager(links: &links)</div>
         }
     }
 }

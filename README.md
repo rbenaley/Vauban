@@ -4,7 +4,7 @@ Authenticated customer portal for Vauban.
 
 ## Stack
 
-- [Topcoat](https://github.com/tokio-rs/topcoat) 0.4 (SSR, module router, sessions, Tailwind)
+- [Topcoat](https://github.com/tokio-rs/topcoat) 0.5 (SSR, module router, sessions, Tailwind)
 - [Toasty](https://github.com/tokio-rs/toasty) 0.9 + PostgreSQL
 - Casbin-format policy file under `config/access/` (custom loader; tenant gate on `{org}`)
 - TOML configuration under `config/` (same layering model as Vauban)
@@ -74,15 +74,16 @@ cp config/local.toml.example config/local.toml
 ## Run
 
 ```bash
-just run              # build + asset bundle + HTTPS on https://127.0.0.1:3000
+just build            # cargo build + rebundle assets if binary newer than manifest
+just run              # just build + HTTPS on https://127.0.0.1:3000
 just run --release    # same with release binary + matching asset bundle
-just release          # cargo build --release + matching asset bundle (no run)
-just validate         # fmt-check + clippy + ensure-vcp-test + bundle + tests
-just test             # ensure-vcp-test + bundle + cargo test (--test-threads=1)
+just release          # cargo build --release + force asset bundle (no run)
+just validate         # fmt-check + clippy + ensure-vcp-test + force bundle + tests
+just test             # ensure-vcp-test + force bundle + cargo test (--test-threads=1)
 just fmt              # cargo fmt + topcoat fmt
 just clippy           # clippy with warnings as errors
-just bundle           # cargo build + topcoat asset bundle → target/assets
-just bundle --release # release binary + matching asset bundle
+just bundle           # cargo build + force topcoat asset bundle → target/assets
+just bundle --release # release binary + force asset bundle
 just dev              # topcoat HMR (no custom TLS); prefer just run for HTTPS
 just db-migrate       # apply pending Toasty migrations (dev DB)
 just db-reset         # drop/recreate local `vcp` + migrate (destructive)
@@ -91,15 +92,20 @@ just db-reset-test    # drop/recreate `vcp_test` (destructive)
 
 Recipes that need the Topcoat CLI (`run`, `bundle`, `release`, `fmt`,
 `validate`, `dev`, …) call `ensure-topcoat`, which installs the pinned
-`topcoat-cli` 0.4.0 on first use when `topcoat` is missing from `PATH` /
+`topcoat-cli` 0.5.0 on first use when `topcoat` is missing from `PATH` /
 `$CARGO_HOME/bin`. No manual `cargo install` and no prior `just validate`
 are required before `just run`.
 
-`just run` keeps VCP’s custom TLS 1.3 serve path. `topcoat dev` / `just
-dev` is for UI HMR only; it does not replace HTTPS. Production fails
-closed if the asset bundle is missing (`AssetBundle::load()`). Pass
-`--release` through `just run` / `just bundle` so binary and asset IDs
-stay matched (a profile mismatch panics at request time).
+`just run` / `just build` keep the asset catalog in sync: they rebundle
+only when `target/{debug,release}/vcp` is newer than
+`target/assets/manifest.toml` (or the manifest is missing). Use
+`just bundle` to force a refresh. Prefer these over bare `cargo run` /
+`cargo build`: Topcoat 0.5 Tailwind AssetIds embed `OUT_DIR`, so a
+rebuild without a matching manifest panics when resolving CSS / icons /
+the runtime script. Boot also fails closed if the catalog is stale.
+Pass `--release` through `just run` / `just build` / `just bundle` so
+binary and asset IDs stay matched. `just run` keeps VCP’s custom TLS 1.3
+serve path; `topcoat dev` / `just dev` is UI HMR only.
 
 Smoke against a self-signed cert:
 

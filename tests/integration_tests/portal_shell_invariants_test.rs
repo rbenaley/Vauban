@@ -71,6 +71,37 @@ fn inv_org_layout_chrome_pins() {
 }
 
 #[test]
+fn inv_layouts_use_topcoat_05_slot_result() {
+    for (name, src) in [
+        (
+            "app.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs")),
+        ),
+        (
+            "login.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/login.rs")),
+        ),
+        (
+            "org.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs")),
+        ),
+        (
+            "admin.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/admin.rs")),
+        ),
+    ] {
+        assert!(
+            src.contains("slot: Result"),
+            "{name} layout must take slot: Result (Topcoat 0.5+)"
+        );
+        assert!(
+            !src.contains("Slot<") && !src.contains("slot.await"),
+            "{name} must not use Slot<'_> / slot.await"
+        );
+    }
+}
+
+#[test]
 fn inv_login_and_root_layout_pins() {
     let login = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/login.rs"));
     assert!(login.contains("#[layout]"));
@@ -80,6 +111,10 @@ fn inv_login_and_root_layout_pins() {
     assert!(app.contains("#[layout]"));
     assert!(app.contains("runtime::script"));
     assert!(app.contains("stylesheet!"));
+    assert!(
+        app.contains("require_catalog_assets") && app.contains("just bundle"),
+        "load_assets must fail closed on stale/missing Topcoat 0.5 asset catalog"
+    );
     assert!(app.contains("rel=\"icon\""));
     assert!(app.contains("apple-touch-icon"));
     assert!(app.contains("assets/favicon.svg"));

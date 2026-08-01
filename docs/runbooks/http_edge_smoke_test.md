@@ -29,7 +29,7 @@ rtk cargo test --test integration_tests -- http_edge -- --test-threads=1
 
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
 - `curl -k` (accept local self-signed cert).
-- Terminal showing process logs (`vcp=debug` or default development filter).
+- Terminal showing process logs (default development filter `debug`).
 
 ## A -- Security headers on a dynamic page
 
@@ -89,7 +89,7 @@ Pass: dynamic pages are `no-store`; hashed assets remain cacheable.
 
 ## D -- Coalesced TLS handshake failures
 
-With `VCP_ENVIRONMENT=development` and default filter (`info,vcp=debug`), flood
+With `VCP_ENVIRONMENT=development` and default filter (`debug`), flood
 incompatible TLS clients (TLS 1.2-only or empty cipher suite), e.g.:
 
 ```bash
@@ -99,8 +99,9 @@ done
 sleep 0.3
 ```
 
-With default filter (`vcp=debug`), these lines are hidden. With `vcp=trace`,
-expect **one** (or few) `TRACE vcp::tls::serve:` line shaped like:
+With the default development filter (`debug`), these TRACE lines stay hidden.
+With `RUST_LOG=trace` (or `vcp=trace`), expect **one** (or few)
+`TRACE vcp::tls::serve:` line shaped like:
 
 ```text
 TLS handshake failed error=… count=N
@@ -109,8 +110,8 @@ TLS handshake failed error=… count=N
 with `N > 1` after the idle window (~150 ms quiet), **not** one line per failed
 handshake.
 
-Pass: coalesced `count=N` appears under `vcp=trace`; no DEBUG flood under the
-default filter.
+Pass: coalesced `count=N` appears under `RUST_LOG=trace` / `vcp=trace`; no
+DEBUG flood of per-handshake lines under the default filter.
 
 ## E -- Trailing-slash canonical `redirect_permanent` (308)
 

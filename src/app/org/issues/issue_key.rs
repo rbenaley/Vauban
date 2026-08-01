@@ -4,7 +4,11 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, page, path_param, redirect, route, see_other},
+    router::{
+        content::Form,
+        error::{SeeOther, not_found, redirect, see_other},
+        page, path_param, route,
+    },
     view::view,
 };
 
@@ -44,7 +48,7 @@ async fn issue_detail_page(cx: &Cx) -> Result {
         .await
         .unwrap_or_default();
     let Some(issue) = issues.into_iter().find(|i| i.key == *key) else {
-        return Err(topcoat::router::not_found().into());
+        return Err(not_found().into());
     };
 
     let mut comments = IssueComment::all()
@@ -253,9 +257,7 @@ async fn reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOther> {
     if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
         return Ok(see_other(&format!("/admin/issues/{key}")));
     }
-    let ctx = require_org(cx, org_slug)
-        .await
-        .map_err(|_| topcoat::router::not_found())?;
+    let ctx = require_org(cx, org_slug).await.map_err(|_| not_found())?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.issues_write {
         return Err(capability_denied().into());

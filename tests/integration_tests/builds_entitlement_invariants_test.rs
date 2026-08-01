@@ -103,6 +103,27 @@ fn inv_builds_concept_ephemeral_server_side() {
         !verify_slice.contains("vb-ephemeral-countdown"),
         "verify panel must not include countdown"
     );
+
+    // Verify open must hide the live ephemeral panel (one slot).
+    let eph_host = builds
+        .split("if let Some(panel) = eph_panel")
+        .nth(1)
+        .and_then(|s| s.split("async fn ephemeral_link_panel").next())
+        .expect("ephemeral host after verify");
+    assert!(
+        eph_host.contains("data-ephemeral-panel-host"),
+        "ephemeral panel must wrap in data-ephemeral-panel-host for exclusivity"
+    );
+    assert!(
+        eph_host.contains("verify_open.get()")
+            && eph_host.contains("display:none")
+            && eph_host.contains(r#"{ "display:none" } else { "" })"#),
+        "ephemeral host must hide with display:none while verify_open: {eph_host}"
+    );
+    assert!(
+        !eph_host.contains(r#"{ "" } else { "display:none" }"#),
+        "ephemeral host visibility must be inverted vs the verify panel"
+    );
     assert!(!builds.contains("?tool="));
     assert!(!builds.contains("Collapse"));
     assert!(!builds.contains("t=demo"));

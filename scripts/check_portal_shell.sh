@@ -28,6 +28,15 @@ grep -n '#\[layout\]' src/app/org.rs >/dev/null \
 grep -n '#\[layout\]' src/app/admin.rs >/dev/null \
   || fail "src/app/admin.rs must define admin #[layout]"
 
+# Topcoat 0.5+: layouts take rendered `slot: Result`, not `Slot<'_>`.
+for f in src/app.rs src/app/login.rs src/app/org.rs src/app/admin.rs; do
+  grep -E -n 'slot:[[:space:]]*Result' "$f" >/dev/null \
+    || fail "$f layout must take slot: Result (Topcoat 0.5+)"
+  if grep -n 'Slot<' "$f" >/dev/null || grep -n 'slot.await' "$f" >/dev/null; then
+    fail "$f must not use Slot<'_> / slot.await (Topcoat 0.4 API)"
+  fi
+done
+
 grep -n 'vb_rail' src/app/org.rs >/dev/null \
   || fail "org_layout must render vb_rail"
 grep -n 'vb_topbar' src/app/org.rs >/dev/null \
@@ -52,6 +61,10 @@ grep -n 'vb-login-body' src/app/login.rs >/dev/null \
 
 grep -n 'runtime::script' src/app.rs >/dev/null \
   || fail "root_layout must include topcoat::runtime::script"
+grep -n 'require_catalog_assets' src/app.rs >/dev/null \
+  || fail "load_assets must require_catalog_assets (stale OUT_DIR bundle guard)"
+grep -n 'just bundle' src/app.rs >/dev/null \
+  || fail "load_assets panic message must mention just bundle"
 grep -n 'stylesheet!' src/app.rs >/dev/null \
   || fail "root_layout must include tailwind stylesheet!"
 grep -n 'rel="icon"' src/app.rs >/dev/null \
@@ -131,8 +144,16 @@ grep -n 'min-width: 40px' "$STYLES" >/dev/null \
   || fail "$STYLES must set 40px min hit area on compact controls"
 grep -A6 'a\.vb-modal-close' "$STYLES" | grep -q 'min-width: 40px' \
   || fail "$STYLES .vb-modal-close must be at least 40px"
-grep -A8 '\.vb-ephemeral-revoke' "$STYLES" | grep -q 'min-height: 40px' \
+grep -A12 '\.vb-ephemeral-revoke' "$STYLES" | grep -q 'min-height: 40px' \
   || fail "$STYLES .vb-ephemeral-revoke must be at least 40px tall"
+grep -A12 '\.vb-ephemeral-bar-actions {' "$STYLES" | grep -q 'position: absolute' \
+  || fail "$STYLES .vb-ephemeral-bar-actions must be absolute so bar matches verify"
+grep -A10 '\.vb-ephemeral-bar {' "$STYLES" | grep -q 'min-height:' \
+  || fail "$STYLES .vb-ephemeral-bar must pin a shared min-height for verify/ephemeral"
+grep -A8 '\.vb-ephemeral-title {' "$STYLES" | grep -q 'letter-spacing: 0.04em' \
+  || fail "$STYLES .vb-ephemeral-title must pin letter-spacing with countdown"
+grep -A8 '\.vb-ephemeral-cmd-head {' "$STYLES" | grep -q 'min-height: 28px' \
+  || fail "$STYLES .vb-ephemeral-cmd-head must reserve seg height for verify align"
 grep -n 'antialiased' "$STYLES" >/dev/null \
   || fail "$STYLES body must enable -webkit-font-smoothing: antialiased"
 grep -n 'text-wrap: balance' "$STYLES" >/dev/null \

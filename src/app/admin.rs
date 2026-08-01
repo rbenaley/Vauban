@@ -8,7 +8,7 @@ mod releases;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Slot, layout, redirect, route},
+    router::{error::redirect, layout, route},
     view::view,
 };
 
@@ -20,7 +20,7 @@ use crate::{
 };
 
 #[layout]
-async fn admin_layout(cx: &Cx, slot: Slot<'_>) -> Result {
+async fn admin_layout(cx: &Cx, slot: Result) -> Result {
     let _staff = require_staff(cx).await?;
     let (section, crumb) = nav_from_cx(cx);
     let org_slug = RESERVED_ORG_SLUG.to_owned();
@@ -31,7 +31,7 @@ async fn admin_layout(cx: &Cx, slot: Slot<'_>) -> Result {
             vb_rail(org_slug: &org_slug, section: section)
             <div class="vb-main">
                 vb_topbar(org_slug: &org_slug, crumb: &crumb)
-                <div class="vb-scroll"><div class="vb-screen">(slot.await?)</div></div>
+                <div class="vb-scroll"><div class="vb-screen">(slot?)</div></div>
             </div>
         </div>
     }

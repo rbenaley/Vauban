@@ -15,17 +15,20 @@ product conventions on top of that base.
 Upstream orientation (keep in sync with `topcoat` skill):
 
 - [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat)
+- [Topcoat v0.5.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0)
 - [Toasty 0.6.0 — what is new?](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
   (VCP pins **toasty 0.9** — confirm APIs against `Cargo.toml` / lock)
 
 VCP is a **Topcoat** application ([tokio-rs/topcoat](https://github.com/tokio-rs/topcoat)).
 Depend on the facade crate `topcoat` only (internal crates are
-implementation details). Workspace status as of study: **~0.4.x**,
-edition **2024**, MSRV **1.95**, `unsafe_code = deny`. Early-stage —
-expect breaking changes; pin versions. Topcoat and Axum are
-**complementary** (Topcoat for the HTML portal; Axum only if a raw
-HTTP API seam is explicitly needed — do not rebuild the portal in
-Axum+Askama).
+implementation details).
+
+**Pin:** Topcoat facade + CLI **0.5.0** (`Cargo.toml` / `Justfile`;
+edition **2024**, MSRV **1.95**, `unsafe_code = deny`). Framework detail
+lives in the `topcoat` skill. Early-stage — expect breaking changes.
+Topcoat and Axum are **complementary** (Topcoat for the HTML portal;
+Axum only if a raw HTTP API seam is explicitly needed — do not rebuild
+the portal in Axum+Askama).
 
 **Product shape:** Internet CRUD portal over HTTPS request/response.
 Do **not** enable Topcoat’s optional `websocket` feature. Prefer pages

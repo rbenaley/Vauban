@@ -4,7 +4,7 @@ use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
 use topcoat::{
     context::{Cx, app_context, memoize},
-    router::{ForbiddenError, RouterErrorExt},
+    router::error::{ForbiddenError, RouterErrorExt},
 };
 
 use crate::auth::AuthUser;

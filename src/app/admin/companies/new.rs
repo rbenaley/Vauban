@@ -4,7 +4,11 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, page, route, see_other},
+    router::{
+        content::Form,
+        error::{SeeOther, see_other},
+        page, route,
+    },
     view::view,
 };
 

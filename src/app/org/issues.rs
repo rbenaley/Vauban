@@ -10,7 +10,11 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{Form, SeeOther, page, path_param, query_params, redirect, route, see_other},
+    router::{
+        content::Form,
+        error::{SeeOther, not_found, redirect, see_other},
+        page, path_param, query_params, route,
+    },
     view::view,
 };
 
@@ -210,9 +214,7 @@ async fn report_issue(cx: &Cx, Form(form): Form<ReportForm>) -> Result<SeeOther>
     if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
         return Ok(see_other("/admin/issues"));
     }
-    let ctx = require_org(cx, slug)
-        .await
-        .map_err(|_| topcoat::router::not_found())?;
+    let ctx = require_org(cx, slug).await.map_err(|_| not_found())?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.issues_write {
         return Ok(see_other(&format!("/{slug}/issues")));

@@ -227,7 +227,11 @@ pub(super) async fn render_builds(
                             >
                                 (ico_check(cx, 12).await?)
                                 <span style="color: #8a8f96;">
-                                    (rel.sha256.chars().take(7).collect::<String>())
+                                    (rel
+                                        .sha256
+                                        .chars()
+                                        .take(7)
+                                        .collect::<String>())
                                     "…"
                                 </span>
                             </div>
@@ -272,7 +276,7 @@ pub(super) async fn render_builds(
                                             revoke_action: revoke_action.clone(),
                                             list_channel: channel_owned.clone(),
                                             eph_panel: open_panel.clone(),
-                                        },
+                                        }
                                     )
                                 }
                             </div>
@@ -399,15 +403,23 @@ async fn build_download_actions(cx: &Cx, actions: BuildDownloadActions) -> Resul
             </div>
         </div>
 
+        // Mutual exclusivity: Verify and the live ephemeral panel share one
+        // slot. Opening Verify must hide EPHEMERAL DOWNLOAD LINK (and closing
+        // Verify restores it when a token is still live).
         if let Some(panel) = eph_panel {
-            ephemeral_link_panel(
-                panel: panel,
-                chrome: EphPanelChrome {
-                    eph_action: eph_action.clone(),
-                    revoke_action: revoke_action.clone(),
-                    channel: list_channel.clone(),
-                },
-            )
+            <div
+                data-ephemeral-panel-host=""
+                :style=$(if verify_open.get() { "display:none" } else { "" })
+            >
+                ephemeral_link_panel(
+                    panel: panel,
+                    chrome: EphPanelChrome {
+                        eph_action: eph_action.clone(),
+                        revoke_action: revoke_action.clone(),
+                        channel: list_channel.clone(),
+                    }
+                )
+            </div>
         }
     }
 }
@@ -441,17 +453,7 @@ async fn ephemeral_link_panel(cx: &Cx, panel: EphPanel, chrome: EphPanelChrome) 
 
         <div class="vb-ephemeral">
             <div class="vb-ephemeral-bar">
-                <div class="vb-ephemeral-title">
-                    <span
-                        class="vb-ephemeral-dot"
-                        :style=$(if live.get() {
-                            if warn.get() { "background:#b5403a" } else { "background:var(--ok)" }
-                        } else {
-                            "background:#b5403a"
-                        })
-                    ></span>
-                    "EPHEMERAL DOWNLOAD LINK"
-                </div>
+                <div class="vb-ephemeral-title">"EPHEMERAL DOWNLOAD LINK"</div>
                 <div class="vb-ephemeral-bar-actions">
                     <span
                         class="vb-mono vb-ephemeral-countdown"
@@ -473,9 +475,15 @@ async fn ephemeral_link_panel(cx: &Cx, panel: EphPanel, chrome: EphPanelChrome) 
                     </span>
                     <form method="POST" action=(revoke_action.clone())>
                         if !channel.is_empty() {
-                            <input type="hidden" name="channel" value=(channel.clone()) />
+                            <input
+                                type="hidden"
+                                name="channel"
+                                value=(channel.clone())
+                            />
                         }
-                        <button type="submit" class="vb-ephemeral-revoke">"Revoke"</button>
+                        <button type="submit" class="vb-ephemeral-revoke">
+                            "Revoke"
+                        </button>
                     </form>
                 </div>
             </div>
@@ -509,7 +517,10 @@ async fn ephemeral_link_panel(cx: &Cx, panel: EphPanel, chrome: EphPanelChrome) 
                 })
             ></span>
 
-            <div class="vb-ephemeral-body" :style=$(if live.get() { "" } else { "display:none" })>
+            <div
+                class="vb-ephemeral-body"
+                :style=$(if live.get() { "" } else { "display:none" })
+            >
                 <div class="vb-ephemeral-url-row">
                     <div class="vb-ephemeral-url vb-mono">(url.clone())</div>
                     <button
@@ -573,12 +584,12 @@ async fn ephemeral_link_panel(cx: &Cx, panel: EphPanel, chrome: EphPanelChrome) 
                         (ico_copy(cx, 14).await?)
                     </button>
                 </div>
-                <div class="vb-ephemeral-help">
-                    "Valid for 5 minutes, single binary, no authentication. After expiry the token is rejected -- generate a new link."
-                </div>
             </div>
 
-            <div class="vb-ephemeral-expired" :style=$(if live.get() { "display:none" } else { "" })>
+            <div
+                class="vb-ephemeral-expired"
+                :style=$(if live.get() { "display:none" } else { "" })
+            >
                 <div class="vb-ephemeral-expired-copy">
                     "This link has expired. Tokens are valid for 5 minutes only."
                 </div>

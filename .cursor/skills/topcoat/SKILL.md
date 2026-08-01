@@ -17,6 +17,8 @@ Announcement / orientation (read when refreshing mental model):
 
 - [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat)
   (2026-07-22, Carl Lerche & Julien Scholz)
+- [Release v0.5.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0)
+  (2026-07-27) — WS / SSE / Datastar / mail / WASM / UDS; breaking API moves
 - Sibling ORM: [Toasty 0.6.0 — what is new?](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
   (field select / deferred / `Vec` scalars; VCP pins a newer 0.x — see
   `Cargo.toml`)
@@ -26,10 +28,15 @@ VCP product constraints that override framework capabilities are marked
 **VCP**. Broader conventions live in the `web-stack` skill and the
 `.cursor/rules/*.mdc` set.
 
-**Last studied:** 2026-07-28 against upstream ~**0.4.0** (edition **2024**,
-MSRV **1.95**) plus VCP builds ephemeral UI (signals, `@click` bind
-contract). Re-check crates.io / GitHub before scaffold if months have
-passed — the framework is early-stage.
+**Last studied:** 2026-08-01 against upstream tag **v0.5.0** (edition
+**2024**, MSRV **1.95**, workspace `unsafe_code = deny`). Source map:
+[tokio-rs/topcoat@v0.5.0](https://github.com/tokio-rs/topcoat/tree/v0.5.0).
+
+**VCP pin:** facade + `topcoat-cli` are **0.5.0** (`Cargo.toml` /
+`Justfile`). Write against 0.5 APIs (`slot: Result`,
+`router::error` / `router::content`, `SessionConfig`). Historical
+0.4→0.5 steps: [`references/UPGRADE-0.5.md`](references/UPGRADE-0.5.md).
+Re-check crates.io / GitHub if months have passed — early-stage.
 
 Community: Tokio Discord `#topcoat` (and `#toasty` for the ORM).
 
@@ -48,9 +55,14 @@ Community: Tokio Discord `#topcoat` (and `#toasty` for the ORM).
   (`unsafe_code = deny` in the upstream workspace).
 - Explicitly **early-stage / experimental** — expect breaking changes.
   Pin versions in VCP.
-- Ecosystem story (upstream): **Toasty** (ORM, ready since 2026-04) then
-  **Topcoat** (web). Roadmap mentions tighter Toasty integration,
-  validations, email — wire today’s APIs; do not wait for future sugar.
+- Ecosystem story (upstream): **Toasty** (ORM) then **Topcoat** (web).
+  **0.5.0** ships first-party **mail** (`topcoat-mail`); roadmap still
+  lists tighter Toasty forms/validations, streaming SSR, auth helpers —
+  wire today’s APIs; do not wait for future sugar.
+- Serving is separable: feature `serve` (default on) owns hyper/tokio
+  accept; apps can call `Router::handle(request)` without a listener
+  (WASM / serverless). On Unix, `serve` accepts `UnixListener` via the
+  `Listener` trait (TCP or UDS behind a reverse proxy).
 
 ### Topcoat vs Axum (upstream guidance)
 
@@ -71,19 +83,21 @@ Custom serve path: `src/tls/serve.rs` (not `topcoat::start`).
 
 | Crate | Role |
 |-------|------|
-| `topcoat` | Facade / re-exports |
-| `topcoat-core` | `Error`/`Result`, `Cx`, app/request context, `#[memoize]` |
-| `topcoat-view` | `view!`, `attributes!`, `class!`, `#[component]` |
-| `topcoat-router` | `Router`, `#[page]`/`#[layout]`/`#[route]`, `module_router!`, tower/WS bridges |
-| `topcoat-runtime` | Signals, `$(...)` / `expr!`, `#[procedure]`, `#[shard]`, browser script |
-| `topcoat-asset` | `asset!`, `AssetBundle`, content-hashed URLs |
+| `topcoat` | Facade / re-exports; `serve` / `start` / `serve_until` behind `serve` |
+| `topcoat-core` | `Error`/`Result`, `Cx`, app/request context, `#[memoize]`, `BaseUrl` |
+| `topcoat-view` | `view!`, `attributes!`, `class!`, `#[component]` (`boxed` for recursion) |
+| `topcoat-router` | `Router` / `Router::handle`, pages/layouts/layers, `module_router!`, `content` / `error` / `tower` |
+| `topcoat-runtime` | Signals, `$(...)` / `expr!`, `#[procedure]`, `#[shard]`, browser script asset |
+| `topcoat-asset` | `asset!` → `Asset` **handle** + `AssetId`; `AssetBundle`; `hosted_at` + manifest |
 | `topcoat-cookie` | Cookie jar, `cookie!`, signed/private jars, `CookieStore<T>` |
-| `topcoat-session` | BYO-storage sessions, token/hash model, `OriginLayer` |
+| `topcoat-session` | BYO-storage sessions; `SessionConfig` / `SessionConfigBuilder`; `OriginLayer` |
+| `topcoat-mail` | `mail!` + `send`; SMTP / file / memory transports (**0.5+**) |
+| `topcoat-datastar` | Datastar SSE patches (`datastar` feature ⇒ `sse`) (**0.5+**) |
 | `topcoat-font` / `topcoat-icon` | Web fonts, Iconify |
 | `topcoat-tailwind` | Standalone Tailwind CLI via build script |
 | `topcoat-ui` | Registry for `topcoat ui` (copy components into the app) |
 | `topcoat-htmx` / `topcoat-alpine-ajax` | Optional header helpers |
-| `topcoat-cli` | `topcoat` binary: `dev`, `fmt`, `ui`, asset bundling |
+| `topcoat-cli` | `topcoat` binary: `dev`, `fmt`, `ui`, `asset bundle` (scans cdylib too) |
 
 Macro crates usually come as **trio**: runtime types + `grammar/` + `macro/`.
 
@@ -91,13 +105,27 @@ Macro crates usually come as **trio**: runtime types + `grammar/` + `macro/`.
 
 ## 3. Features (facade)
 
-**Default** includes roughly: `asset`, `compression`, `cookie`, `font`,
-`icon`, `router`, `runtime`, `serve`, `session`, `view`, `discover`.
+**Default** (0.5): `asset`, `compression`, `cookie`, `font`, `icon`,
+`router`, `runtime`, `serve`, `session`, `view`, `discover`.
 
-Notable optional: `tailwind`, `ui`, `htmx`, `alpine-ajax`, `tower`,
-`multipart`, `websocket`, Fontsource/Iconify extras.
+**`full`** also pulls: `alpine-ajax`, `datastar`, `font-fontsource`,
+`htmx`, `icon-iconify`, `mail`, `mail-smtp`, `multipart`, `sse`,
+`tailwind`, `tower`, `ui`, `websocket`.
 
-**VCP:** leave `websocket` off. Enable `tailwind` / `ui` when scaffolding UI.
+Notable optionals:
+
+| Feature | Notes |
+|---------|--------|
+| `serve` | Default on; required for `topcoat::serve` / `start` and for `websocket` |
+| `sse` | Server-sent events (`content::sse`) |
+| `websocket` | Needs `serve`; `content::websocket` |
+| `datastar` | Implies `sse` |
+| `mail` / `mail-smtp` | `topcoat-mail` |
+| `tower` | `TowerLayer` + `TowerRoute` |
+| `tailwind` / `ui` / `htmx` / `alpine-ajax` | As before |
+
+**VCP:** leave `websocket` / `datastar` / `sse` off unless a product
+slice needs them. Keep `tailwind` + `font-fontsource`. Do not vendor `ui`.
 
 ---
 
@@ -149,7 +177,12 @@ rebundle). Override bind with `HOST` / `PORT`. Format macros with
   interpolation `(expr)`, conditional attributes.
 - `#[component]`: async functions as components; props; optional child
   content; optional `cx: &Cx`.
+- `#[component(boxed)]` (**0.5+**): break async future cycles for
+  recursive components (comment threads, trees).
 - `attributes!` / `class!` / `props!`: attribute fragments and class lists.
+- Boolean attrs render as `disabled=""` when true (**0.5+**; was
+  `disabled="true"`). `false` still omits the attribute. Update HTML
+  snapshot asserts accordingly.
 - Components may be async and talk to the DB directly — no mandatory
   separate JSON API for HTML.
 
@@ -165,13 +198,51 @@ Upstream guides: `topcoat-view/macro/docs/view.md`, `component.md`, etc.
   (kebab segments; `_prefix` layouts without a URL segment;
   `segment!` overrides).
 - Path/query: `#[path_param]`, `#[query_params]`.
-- Layouts nest by path prefix.
-- Errors: router status helpers; `RouterErrorExt` (`ok_or_redirect`,
-  `ok_or_unauthorized`, `ok_or_forbidden`, …).
-- Tower: `TowerRoute` / `TowerLayer` behind `tower` feature — for
-  **transport** concerns, not app auth.
+- Layouts nest by path prefix (least-specific outermost).
+- Methods (**0.5+**): `#[route([GET, POST] "/…")]`, `#[route(* "/…")]`,
+  `#[page(POST "/…")]`. Specific-method routes beat `*` at the same path.
+- Dispatch entry: `Router::handle(Request) -> Response` (used by serve,
+  tests, and listener-less runtimes).
+- `RouterBuilder::base_url("https://…")` (**0.5+**): absolute public URL
+  for mail / feeds / sitemaps (`base_url(cx)`).
+- Errors / bodies: see §6.1 (module moves in **0.5**).
+- Tower: `router::tower::{TowerLayer, TowerRoute}` behind `tower` —
+  **transport** concerns, not app auth. `TowerRoute` mounts an Axum /
+  hyper service under a catch-all path for incremental migration.
 
 **VCP:** prefer module-based routing + discover for the portal tree.
+
+### 6.1 Module layout (0.5 breaking)
+
+Imports moved out of the router root. Prefer these paths on **0.5+**:
+
+| Kind | Path |
+|------|------|
+| Status helpers / types | `topcoat::router::error::{not_found, see_other, forbidden, SeeOther, RouterErrorExt, …}` |
+| Bodies / extractors | `topcoat::router::content::{Form, Html, Json, Css, RawForm, …}` |
+| Multipart | `topcoat::router::content::multipart::Multipart` |
+| SSE | `topcoat::router::content::sse::{Sse, Event, KeepAlive, last_event_id}` |
+| WebSocket | `topcoat::router::content::websocket::{WebSocketUpgrade, Message}` |
+| Tower | `topcoat::router::tower::{TowerLayer, TowerRoute}` |
+| Unchanged at root | `StatusCode`, `Method`, `Body`, `Bytes`, `FromRequest`, `IntoResponse`, … |
+
+Guides: `crates/topcoat-router/docs/error.md`, `content.md`, `tower.md`.
+
+### 6.2 Layouts: `Slot` → rendered `Result` (0.5 breaking)
+
+| | 0.4 | 0.5+ |
+|---|-----|------|
+| Param | `slot: Slot<'_>` | `slot: Result` (already-rendered child) |
+| Embed | `(slot.await?)` | `(slot?)` |
+| Type | `topcoat::router::Slot` | **removed** |
+
+Layouts can `downcast_ref` child errors (e.g. branded 404) before wrapping
+chrome — see upstream error guide. Trade-off: the page finishes rendering
+before any layout body runs (matters for a future streaming SSR design).
+
+**VCP (0.5):** every `#[layout]` uses `slot: Result` / `(slot?)`. Do not
+reintroduce `Slot` / `slot.await` (pinned by `check_portal_shell` +
+`portal_shell_invariants`).
 
 ### Redirects (prefer Topcoat helpers)
 
@@ -271,6 +342,9 @@ Router::builder()
     // ...
 ```
 
+**Naming:** import `session::SessionConfig` directly (0.5 renamed the
+old `session::Config` type).
+
 Resolve user: `token_hash(cx)` → lookup in your DB → `None` if missing
 or expired. Guard with `ok_or_redirect("/login")` / unauthorized helpers.
 
@@ -326,7 +400,7 @@ receive `page` as an arg and slice after filter/sort; when the search
 signal updates, reset to page 1. Placement and helpers: `web-stack`
 skill § List pagination (`LIST_PAGE_SIZE`, `filter_row` / `vb_pager`).
 
-### Non-negotiable: `@click` bind contract (0.4)
+### Non-negotiable: `@click` bind contract
 
 Runtime attaches handlers as:
 
@@ -368,12 +442,16 @@ the smoke runbook (no headless browser in the pyramid).
   `:data-copy` — never `?tool=` round-trips.
 - **Config in handlers:** put `Arc<Config>` in `app_context`; read via
   `auth::config(cx)` (absolute URLs → `primary_public_origin()`).
-- **`topcoat fmt`:** 0.4 panics on `signal` decls — `just fmt` skips
-  those files (`Justfile` `topcoat-fmt`).
+- **Signal shorthands (0.5+):** `toggle()` on `bool`, `increment` /
+  `decrement` on `f64`, `push_str` on `String` (prefer over
+  `set(get() ± 1)`).
+- **`topcoat fmt`:** formats `signal` decls and `mail!` bodies;
+  `--stdin` fails non-zero on format errors. `just topcoat-fmt` runs
+  over all `src/**/*.rs`.
 
 ### Mechanics checklist
 
-- `topcoat::runtime::script()` in root layout + `AssetBundle` on router
+- `topcoat::runtime::script()` in root layout + `AssetConfig` on router
   (`just bundle` / `just run`).
 - `$(...)`: dual Rust + JS; text nodes skip first DOM patch (SSR text
   stays until the signal changes).
@@ -386,6 +464,15 @@ the smoke runbook (no headless browser in the pyramid).
 
 - `const X: Asset = asset!("./file.png");` → content-hashed URL; serve via
   bundle from `topcoat` CLI / `AssetBundle::load()`.
+- **0.5 handle model:** `asset!` returns an `Asset` handle (keeps the
+  embedded declaration alive). Bundle lookup uses `AssetId` via
+  `handle.id()`. An unused handle can be optimized out — **use every
+  declared asset** or the bundler will not see it. Bundle entries expose
+  a relative `name()` under `bundle.dir()` (not an absolute path).
+- **Hosted assets (0.5):** `AssetConfig::hosted_at(base_url, manifest)` —
+  arg order is **URL first**, then manifest/bundle. For WASM / CDN:
+  embed `manifest.toml` with `include_str!` when there is no on-disk
+  bundle directory.
 - Tailwind: feature `tailwind`, `topcoat::tailwind::stylesheet!()` —
   standalone CLI, no Node required for that path. VCP input CSS is
   `styles.css` (`@import "tailwindcss"`, `@source`, Concept `@theme`).
@@ -407,10 +494,10 @@ do **not** redirect probes to hashed URLs.
 
 | Idiom | Where |
 |-------|--------|
-| `#[layout]` + `Slot` | Root (`app.rs`), login splash, org chrome |
+| `#[layout]` + `slot: Result` | Root (`app.rs`), login splash, org chrome |
 | `#[component]` | `app/_components/*` (rail, topbar, modal, chips, badges) |
 | `stylesheet!()` + `runtime::script()` + `dev::script()` | Root layout `<head>` |
-| `AssetBundle::load()` | Fail closed in production; warn + empty only in dev/test |
+| `AssetBundle::load()` → `AssetConfig` | Fail closed if missing/stale; boot checks favicons, Tailwind, runtime script resolve (0.5 Tailwind IDs embed `OUT_DIR` — always `just bundle` / `just run`, never bare `cargo run` after rebuild) |
 | `just bundle` / `topcoat asset bundle` | After build so CSS/runtime assets resolve |
 
 **VCP:** brand toward Concept / `vauban.sh`, not bastion dark admin chrome
@@ -423,8 +510,27 @@ or Topcoat UI purple defaults. Responsive: `responsive-ui.mdc`.
 | Feature | Use when |
 |---------|----------|
 | `htmx` / `alpine-ajax` | Partial HTML swaps via those libs’ headers |
-| `tower` | Bridge tower services/layers |
-| `websocket` | **VCP: do not enable** |
+| `tower` | Bridge tower services/layers (`TowerRoute` for legacy subtrees) |
+| `sse` | Long-lived `text/event-stream` (`KeepAlive`, `Last-Event-ID`) |
+| `datastar` | Backend-driven patches (`Signals`, `PatchElements` / `PatchSignals`) |
+| `mail` / `mail-smtp` | Transactional email via `mail!` + `send` + `MailConfig` |
+| `websocket` | **VCP: do not enable** unless product explicitly needs it |
+
+Mail sketch (0.5+, not used in VCP yet):
+
+```rust
+let mail = mail! {
+    from: ("VCP", "noreply@example.com"),
+    to: "ada@example.com",
+    subject: "Welcome",
+    html: { <p>"Ready."</p> },
+}?;
+send(cx, mail).await?;
+```
+
+Register a transport on the router (`SmtpTransport` / `FileTransport` /
+`MemoryTransport` for tests). Pair with `.base_url(...)` for absolute
+links in message bodies.
 
 ### ORM (VCP locked): Toasty + PostgreSQL
 
@@ -435,10 +541,12 @@ or Topcoat UI purple defaults. Responsive: `responsive-ui.mdc`.
 - Orientation: [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
   (capabilities below landed by 0.6; VCP pins a newer 0.x in
   `Cargo.toml` — confirm APIs against the locked version).
-- **Topcoat roadmap** mentions deeper Toasty integration (forms /
+- **Topcoat roadmap** still mentions deeper Toasty integration (forms /
   validations); do not wait — wire via `app_context` + `db(cx)` today
-  (`web-stack`).
-- Pin exact **0.x** versions; expect churn (0.4→0.6 shipped quickly).
+  (`web-stack`). Mail landed in Topcoat 0.5 separately from that work.
+- Pin exact **0.x** versions; expect churn. Topcoat itself jumped
+  **0.4 → 0.5** with breaking API moves (see
+  [`references/UPGRADE-0.5.md`](references/UPGRADE-0.5.md)).
 - Escape hatch: narrow `sqlx` only when Toasty cannot express a query —
   not a second data model (`web-stack` § Database / ORM).
 
@@ -503,13 +611,17 @@ clippy `-D warnings` + asset bundle + tests (`dev-validation-cycle.mdc` /
 
 ## 15. Upstream doc index (refresh when needed)
 
+Prefer docs at tag **v0.5.0** (or newer release) over stale memory:
+
 | Source | Use for |
 |--------|---------|
 | [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat) | Motivation, locality, reactivity vs WASM, Axum split, roadmap |
+| [v0.5.0 release notes](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0) | Breaking changes, WS/SSE/Datastar/mail/WASM/UDS |
 | [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0) | Deferred / select / `Vec` scalars / collection ops |
-| `crates/topcoat/docs/` on GitHub | Getting started, router, context, cookies, sessions, runtime, assets, Tailwind, UI, htmx, alpine-ajax |
-| `crates/topcoat-router/docs/module_router.md` | Module router conventions |
+| `crates/topcoat/docs/` | Getting started, app context, mail, Datastar, UI, … |
+| `crates/topcoat-router/docs/{error,content,tower,module_router}.md` + `content/{sse,websocket,multipart}.md` | Router surface after 0.5 split |
 | `crates/topcoat-*/macro/docs/` | Macro-specific guides |
+| Upstream `AGENTS.md` / `.agents/skills` | Maintainer agent map |
 | [Toasty guide](https://tokio-rs.github.io/toasty/nightly/guide/) | ORM details beyond the blog |
 
 When behavior is unclear, **fetch the current upstream guide** rather
@@ -522,6 +634,7 @@ than guessing from memory of older releases.
 | Artifact | Role |
 |----------|------|
 | `references/RUNTIME.md` | Signals / `@click` pitfalls / test contracts |
+| `references/UPGRADE-0.5.md` | 0.4 → 0.5 migration checklist for VCP |
 | `web-stack` skill | VCP conventions (incl. Toasty + Postgres) |
 | `casbin-permissions.mdc` | AuthZ gates |
 | `portal-security.mdc` | Tenancy, CSRF, secrets |

@@ -424,6 +424,21 @@ async fn e2e_builds_list_opens_latest_with_concept_actions() {
         detail_body.contains("EPHEMERAL DOWNLOAD LINK"),
         "SSR panel after generate: {detail_body}"
     );
+    assert!(
+        detail_body.contains("data-ephemeral-panel-host"),
+        "ephemeral must be host-wrapped so Verify can hide it: {detail_body}"
+    );
+    // Mutual exclusivity is client-side (verify_open → display:none on host).
+    // Pin the Topcoat :style bind on the host so CI catches a missing gate.
+    let host_idx = detail_body
+        .find("data-ephemeral-panel-host")
+        .expect("ephemeral host attr");
+    let host_window =
+        &detail_body[host_idx.saturating_sub(80)..detail_body.len().min(host_idx + 500)];
+    assert!(
+        host_window.contains("data-topcoat-bind:style"),
+        "ephemeral host must emit data-topcoat-bind:style (verify_open exclusivity): {host_window}"
+    );
     let public_origin = test_config().await.primary_public_origin().to_owned();
     assert!(
         detail_body.contains(&format!("{public_origin}/releases/")),

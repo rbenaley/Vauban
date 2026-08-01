@@ -25,7 +25,8 @@ pub async fn article_modal_shell(
     let close = close_href.to_owned();
     let close2 = close.clone();
 
-    view! { cx =>
+    view! {
+        cx =>
         signal open = true;
 
         <div
@@ -47,12 +48,17 @@ pub async fn article_modal_shell(
             <div class="vb-modal">
                 <div class="vb-modal-head">
                     <div>
-                        <div class="vb-mono" style="font-size: 10px; color: var(--accent); letter-spacing: 0.06em; margin-bottom: 8px;">
+                        <div
+                            class="vb-mono"
+                            style="font-size: 10px; color: var(--accent); letter-spacing: 0.06em; margin-bottom: 8px;"
+                        >
                             (category)
                             " · Updated "
                             (version)
                         </div>
-                        <h2 style="font-size: 23px; font-weight: 800; margin: 0; line-height: 1.25;">
+                        <h2
+                            style="font-size: 23px; font-weight: 800; margin: 0; line-height: 1.25;"
+                        >
                             (title)
                         </h2>
                     </div>
@@ -64,11 +70,11 @@ pub async fn article_modal_shell(
                             e.prevent_default();
                             open.set(false);
                         })
-                    >(ico_close(cx, 14).await?)</a>
+                    >
+                        (ico_close(cx, 14).await?)
+                    </a>
                 </div>
-                <div class="vb-modal-body">
-                    (body?)
-                </div>
+                <div class="vb-modal-body">(body?)</div>
             </div>
         </div>
     }

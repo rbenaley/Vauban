@@ -3,7 +3,7 @@
 use topcoat::{
     Result,
     context::Cx,
-    router::{page, path_param, query_params},
+    router::{error::not_found, page, path_param, query_params},
 };
 
 use super::{
@@ -48,7 +48,7 @@ async fn build_detail_page(cx: &Cx) -> Result {
         .into_iter()
         .find(|r| release_visible_to_org(r, ctx.org.id, org_slug))
     else {
-        return Err(topcoat::router::not_found().into());
+        return Err(not_found().into());
     };
 
     let mut releases = load_releases_for_org(cx, ctx.org.id, org_slug, channel).await;
