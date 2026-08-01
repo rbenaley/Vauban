@@ -15,25 +15,39 @@ Companion hard gates:
 ## 0. Validation cycle (every significant change)
 
 A task is **not done** until format, clippy, relevant structural lints,
-and tests all pass on the touched scope.
+and tests all pass on the touched scope. Hard gate:
+`.cursor/rules/dev-validation-cycle.mdc`.
 
-1. **Format** — `just fmt` (`cargo fmt` + `topcoat fmt` over all
-   `src/**/*.rs`, including `signal` decls)
+1. **Format** — apply **and** verify (both required):
+   - Apply: `just fmt` (`cargo fmt` + `topcoat fmt`, including `signal`)
+   - Verify: `rtk cargo fmt --all -- --check` (`just fmt-check`)
 2. **Clippy** — warnings as errors on touched crates
 3. **Structural lints** — matching `scripts/check_*.sh` only
 4. **Focused tests** — change + denial paths; then widen before hand-off
 
 ```text
+just fmt
 rtk cargo fmt --all -- --check
 rtk cargo clippy -p <crate> --all-targets -- -D warnings
 # optional: bash scripts/check_<surface>.sh
 rtk cargo test -p <crate> -- <filter> -- --test-threads=1
+# before commit / "done": just fmt-check  (or just validate)
 ```
+
+### Commit gate
+
+Do **not** propose a commit message, declare hand-off, or run
+`git commit` (when authorized) until `just fmt-check` is green.
+Prefer `just validate` when the change is commit-bound or spans
+multiple surfaces. Tests and clippy **do not** catch rustfmt drift;
+`just validate` fails on style-only diffs.
 
 ### Symmetric process failures
 
 | Failure | Why |
 |---------|-----|
+| Skip fmt because clippy/tests are green | Fails `just validate` / CI on style-only diffs |
+| Propose commit with dirty rustfmt | Hand-off rejects at `fmt-check` |
 | Skip clippy because it compiles | Misses `-D warnings` CI denials |
 | Skip tests because clippy is green | Misses behavioral regressions |
 | Clippy + a few unit tests, skip pyramid | Misses drift, races, staging gaps |

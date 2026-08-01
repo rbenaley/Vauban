@@ -134,11 +134,7 @@ async fn battle_parallel_admin_releases_page_pagination() {
         page1.contains("vb-list-toolbar"),
         "toolbar under contention: {page1}"
     );
-    assert_eq!(
-        count_channel_badges(&page1),
-        10,
-        "page1 rows: {page1}"
-    );
+    assert_eq!(count_channel_badges(&page1), 10, "page1 rows: {page1}");
     assert!(
         (1..=10).contains(&count_channel_badges(&page2)),
         "page2 rows under contention: {page2}"

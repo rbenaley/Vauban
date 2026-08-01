@@ -95,8 +95,13 @@ Suggested PR checklist:
 
 - [ ] Tests added/updated (pyramid layers when behavioral)
 - [ ] Docs / plans updated if contracts changed
-- [ ] Clippy / fmt clean locally
+- [ ] `just fmt-check` green (apply with `just fmt` first if needed)
+- [ ] Clippy clean locally (`-D warnings`)
+- [ ] Prefer `just validate` before commit when multi-surface
 - [ ] No secrets or customer PII
+
+Before drafting a commit message: confirm `just fmt-check` (see
+`dev-validation-cycle.mdc` commit gate). Tests alone are not enough.
 
 ## Secrets
 

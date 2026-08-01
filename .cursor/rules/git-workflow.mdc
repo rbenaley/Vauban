@@ -13,10 +13,15 @@ from the user.**
 ### Expected behavior
 
 1. Make the requested code changes.
-2. Inform the user that the changes are ready.
-3. **Wait** for the user to explicitly request a commit or a push.
-4. Prepare the commit message and submit it for approval.
-5. Run the commit / push only after confirmation.
+2. Run the validation cycle (`dev-validation-cycle.mdc`): at minimum
+   `just fmt-check` green; prefer `just validate` when commit-bound.
+3. Inform the user that the changes are ready.
+4. **Wait** for the user to explicitly request a commit or a push.
+5. Prepare the commit message and submit it for approval.
+6. Run the commit / push only after confirmation.
+
+Do **not** propose a commit while `cargo fmt --check` / `just fmt-check`
+is red — even if tests and clippy passed.
 
 ### Examples of explicit authorization
 
