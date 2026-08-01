@@ -43,6 +43,24 @@ fn inv_issue_detail_renders_details() {
         "detail must load IssueComment from DB"
     );
     assert!(src.contains("/reply"), "detail must expose reply POST path");
+    assert!(src.contains("/close"), "detail must expose close POST path");
+    assert!(
+        src.contains("/reopen"),
+        "detail must expose reopen POST path"
+    );
+    assert!(
+        src.contains("issue_is_closed"),
+        "detail must use shared issue_is_closed helper"
+    );
+    assert!(
+        src.contains("close_issue_status") && src.contains("reopen_issue_status"),
+        "detail must call close/reopen status helpers"
+    );
+    assert!(
+        !src.contains("<span class=\"vb-btn muted\">\"Close issue\"</span>")
+            && !src.contains("<span class=\"vb-btn outline\">\"Reopen issue\"</span>"),
+        "Close/Reopen must not remain stub spans"
+    );
     assert!(
         src.contains("Vauban Support"),
         "support-side timeline must display Vauban Support"
@@ -51,6 +69,18 @@ fn inv_issue_detail_renders_details() {
         !src.contains("max-width: 820px") && !src.contains("max-width: 720px"),
         "issue detail must use full content width"
     );
+}
+
+#[test]
+fn inv_issue_status_helpers_exist() {
+    let models = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/models/mod.rs"));
+    let status = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/issue_status.rs"));
+    assert!(models.contains("ISSUE_STATUS_OPEN"));
+    assert!(models.contains("ISSUE_STATUS_CLOSED"));
+    assert!(models.contains("ISSUE_COMMENT_KIND_STATUS"));
+    assert!(status.contains("fn issue_is_closed"));
+    assert!(status.contains("ISSUE_TIMELINE_CLOSED"));
+    assert!(status.contains("ISSUE_TIMELINE_REOPENED"));
 }
 
 #[test]
@@ -72,6 +102,14 @@ fn inv_admin_issues_aggregate_surface() {
     assert!(detail.contains("Vauban Support"));
     assert!(detail.contains("ISSUE_ROLE_SUPPORT"));
     assert!(detail.contains("/admin/issues/"));
+    assert!(detail.contains("/close"));
+    assert!(detail.contains("/reopen"));
+    assert!(detail.contains("issue_is_closed"));
+    assert!(
+        !detail.contains("<span class=\"vb-btn muted\">\"Close issue\"</span>")
+            && !detail.contains("<span class=\"vb-btn outline\">\"Reopen issue\"</span>"),
+        "admin Close/Reopen must not remain stub spans"
+    );
     assert!(
         !detail.contains("max-width: 820px") && !detail.contains("max-width: 720px"),
         "admin issue detail must use full content width"

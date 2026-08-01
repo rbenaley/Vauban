@@ -16,6 +16,7 @@ use crate::{
     app::_components::{ico_check, ico_hourglass, ico_paperclip, severity_badge, status_badge},
     auth::{capability_denied, db, require_staff},
     db::now_unix,
+    issue_status::{close_issue_status, issue_is_closed, reopen_issue_status},
     models::{
         ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_REPORTER,
         ISSUE_ROLE_SUPPORT, ISSUE_ROLE_SYSTEM, Issue, IssueComment, Organization, User,
@@ -79,10 +80,16 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
     let updated_rfc = unix_rfc3339(issue.updated_at);
     let opener_created = format_relative(issue.created_at, now, tz);
 
+    let org_slug_for_q = orgs
+        .iter()
+        .find(|o| o.id == issue.organization_id)
+        .map(|o| o.slug.as_str())
+        .unwrap_or("");
     let list_href = "/admin/issues".to_owned();
-    let reply_action = format!("/admin/issues/{}/reply", issue.key);
-    let closed = issue.status.eq_ignore_ascii_case("Closed")
-        || issue.status.eq_ignore_ascii_case("Resolved");
+    let reply_action = admin_issue_action(&issue.key, "reply", org_slug_for_q);
+    let close_action = admin_issue_action(&issue.key, "close", org_slug_for_q);
+    let reopen_action = admin_issue_action(&issue.key, "reopen", org_slug_for_q);
+    let closed = issue_is_closed(&issue.status);
 
     let timeline = build_timeline_rows(&comments, &users, now, tz);
 
@@ -220,30 +227,42 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
                             "This issue is closed. Reopen it to add a comment."
                         </div>
                     </div>
-                    <span class="vb-btn outline">"Reopen issue"</span>
+                    if perms.issues_write {
+                        <form method="POST" action=(reopen_action)>
+                            <button class="vb-btn outline" type="submit">
+                                "Reopen issue"
+                            </button>
+                        </form>
+                    }
                 </div>
             } else if perms.issues_write {
                 <div class="vb-panel" style="padding: 14px;">
-                    <form method="POST" action=(reply_action)>
+                    <form method="POST" action=(reply_action) id="issue-reply">
                         <textarea
                             name="body"
                             required=""
                             placeholder="Add a support reply…"
                             style="width: 100%; min-height: 76px; font-size: 14px; padding: 10px 12px; border: 1px solid #e0e2de; border-radius: 4px; background: #fbfcfb; resize: vertical; font-family: 'Hanken Grotesk', sans-serif; line-height: 1.5; margin-bottom: 12px;"
                         ></textarea>
-                        <div
-                            style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;"
-                        >
-                            <span class="vb-btn muted vb-btn-ico">
-                                (ico_paperclip(cx, 13).await?)
-                                <span>"Attach screenshot"</span>
-                            </span>
-                            <div style="display: flex; gap: 10px;">
-                                <span class="vb-btn muted">"Close issue"</span>
-                                <button class="vb-btn" type="submit">"Reply"</button>
-                            </div>
-                        </div>
                     </form>
+                    <div
+                        style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;"
+                    >
+                        <span class="vb-btn muted vb-btn-ico">
+                            (ico_paperclip(cx, 13).await?)
+                            <span>"Attach screenshot"</span>
+                        </span>
+                        <div style="display: flex; gap: 10px;">
+                            <form method="POST" action=(close_action)>
+                                <button class="vb-btn muted" type="submit">
+                                    "Close issue"
+                                </button>
+                            </form>
+                            <button class="vb-btn" type="submit" form="issue-reply">
+                                "Reply"
+                            </button>
+                        </div>
+                    </div>
                 </div>
             }
         </div>
@@ -260,19 +279,19 @@ async fn admin_reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOt
     let key = path_param::<IssueKey>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
-    if !perms.issues_write {
-        return Ok(see_other(&format!("/admin/issues/{key}")));
-    }
-
-    let body = form.body.trim().to_owned();
-    if body.is_empty() {
-        return Ok(see_other(&format!("/admin/issues/{key}")));
-    }
-
     let org_hint = query_params::<AdminIssueDetailQuery>(cx)
         .ok()
         .and_then(|q| q.org.clone())
         .unwrap_or_default();
+    let detail = admin_issue_detail_href(key, &org_hint);
+    if !perms.issues_write {
+        return Ok(see_other(&detail));
+    }
+
+    let body = form.body.trim().to_owned();
+    if body.is_empty() {
+        return Ok(see_other(&detail));
+    }
 
     let mut database = db(cx);
     let orgs = Organization::all()
@@ -284,10 +303,8 @@ async fn admin_reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOt
         return Ok(see_other("/admin/issues"));
     };
 
-    let closed = issue.status.eq_ignore_ascii_case("Closed")
-        || issue.status.eq_ignore_ascii_case("Resolved");
-    if closed {
-        return Ok(see_other(&format!("/admin/issues/{key}")));
+    if issue_is_closed(&issue.status) {
+        return Ok(see_other(&detail));
     }
 
     let now = now_unix();
@@ -304,7 +321,81 @@ async fn admin_reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOt
 
     let _ = issue.update().updated_at(now).exec(&mut database).await;
 
-    Ok(see_other(&format!("/admin/issues/{key}")))
+    Ok(see_other(&detail))
+}
+
+#[route(POST "/admin/issues/{issue_key}/close")]
+async fn admin_close_issue(cx: &Cx) -> Result<SeeOther> {
+    let key = path_param::<IssueKey>(cx);
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    let org_hint = query_params::<AdminIssueDetailQuery>(cx)
+        .ok()
+        .and_then(|q| q.org.clone())
+        .unwrap_or_default();
+    let detail = admin_issue_detail_href(key, &org_hint);
+    if !perms.issues_write {
+        return Ok(see_other(&detail));
+    }
+
+    let mut database = db(cx);
+    let orgs = Organization::all()
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    let issues = Issue::all().exec(&mut database).await.unwrap_or_default();
+    let Some(mut issue) = pick_issue_by_key(&issues, &orgs, key, &org_hint) else {
+        return Ok(see_other("/admin/issues"));
+    };
+
+    let _ = close_issue_status(&mut database, &mut issue).await;
+
+    Ok(see_other(&detail))
+}
+
+#[route(POST "/admin/issues/{issue_key}/reopen")]
+async fn admin_reopen_issue(cx: &Cx) -> Result<SeeOther> {
+    let key = path_param::<IssueKey>(cx);
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    let org_hint = query_params::<AdminIssueDetailQuery>(cx)
+        .ok()
+        .and_then(|q| q.org.clone())
+        .unwrap_or_default();
+    let detail = admin_issue_detail_href(key, &org_hint);
+    if !perms.issues_write {
+        return Ok(see_other(&detail));
+    }
+
+    let mut database = db(cx);
+    let orgs = Organization::all()
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    let issues = Issue::all().exec(&mut database).await.unwrap_or_default();
+    let Some(mut issue) = pick_issue_by_key(&issues, &orgs, key, &org_hint) else {
+        return Ok(see_other("/admin/issues"));
+    };
+
+    let _ = reopen_issue_status(&mut database, &mut issue).await;
+
+    Ok(see_other(&detail))
+}
+
+fn admin_issue_action(key: &str, action: &str, org_slug: &str) -> String {
+    if org_slug.is_empty() {
+        format!("/admin/issues/{key}/{action}")
+    } else {
+        format!("/admin/issues/{key}/{action}?org={org_slug}")
+    }
+}
+
+fn admin_issue_detail_href(key: &str, org_hint: &str) -> String {
+    if org_hint.is_empty() {
+        format!("/admin/issues/{key}")
+    } else {
+        format!("/admin/issues/{key}?org={org_hint}")
+    }
 }
 
 fn pick_issue_by_key(

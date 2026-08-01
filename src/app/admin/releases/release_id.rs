@@ -119,17 +119,29 @@ async fn admin_releases_edit_page(cx: &Cx) -> Result {
                             <label for="channel">"Channel"</label>
                             <select id="channel" name="channel">
                                 <option
-                                    selected=(if channel == "LTS" { "selected" } else { "" })
+                                    selected=(if channel == "LTS" {
+                                        "selected"
+                                    } else {
+                                        ""
+                                    })
                                 >
                                     "LTS"
                                 </option>
                                 <option
-                                    selected=(if channel == "Stable" { "selected" } else { "" })
+                                    selected=(if channel == "Stable" {
+                                        "selected"
+                                    } else {
+                                        ""
+                                    })
                                 >
                                     "Stable"
                                 </option>
                                 <option
-                                    selected=(if channel == "EOL" { "selected" } else { "" })
+                                    selected=(if channel == "EOL" {
+                                        "selected"
+                                    } else {
+                                        ""
+                                    })
                                 >
                                     "EOL"
                                 </option>
@@ -169,11 +181,9 @@ async fn admin_releases_edit_page(cx: &Cx) -> Result {
                         "Leave empty for a GA build visible to every organization. Pick an org for a private hotfix."
                     </p>
                     <label for="notes">"Release notes (TAG: text)"</label>
-                    <textarea
-                        id="notes"
-                        name="notes"
-                        style="min-height: 120px;"
-                    >(rel.notes.clone())</textarea>
+                    <textarea id="notes" name="notes" style="min-height: 120px;">
+                        (rel.notes.clone())
+                    </textarea>
                     <div style="display: flex; gap: 12px; margin-top: 18px;">
                         <button class="vb-btn" type="submit">"Save"</button>
                         <a

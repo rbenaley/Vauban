@@ -3,7 +3,8 @@
 use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
 use vcp::models::{
-    ISSUE_COMMENT_KIND_COMMENT, ISSUE_ROLE_SUPPORT, Issue, IssueComment, RESERVED_ORG_SLUG,
+    ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_SUPPORT, ISSUE_STATUS_CLOSED,
+    ISSUE_STATUS_OPEN, Issue, IssueComment, RESERVED_ORG_SLUG,
 };
 
 use crate::common::{
@@ -256,6 +257,267 @@ async fn e2e_admin_issues_aggregate_and_reserved_redirect() {
     let member_cookie = login(&router, &member_email).await;
     let denied = get(&router, "/admin/issues", member_cookie.as_deref()).await;
     assert_eq!(status(&denied), StatusCode::NOT_FOUND);
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_member_close_blocks_reply_and_reopen_restores() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("iss-close");
+    let slug = unique_slug("iss-close-org");
+    let (user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let cookie = login(&router, &email).await;
+
+    let now = vcp::db::now_unix();
+    let key = format!("VBN-{}", unique_slug("cl").replace('-', ""));
+    let issue_id = {
+        let mut conn = db.clone();
+        let issue = toasty::create!(Issue {
+            key: key.clone(),
+            title: "Close e2e".to_owned(),
+            component: "Portal".to_owned(),
+            severity: "Major".to_owned(),
+            status: ISSUE_STATUS_OPEN.to_owned(),
+            organization_id: org.id,
+            details: "Please close me".to_owned(),
+            opened_by_user_id: user.id,
+            created_at: now,
+            updated_at: now,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("issue");
+        issue.id
+    };
+
+    let closed = post_form(
+        &router,
+        &format!("/{slug}/issues/{key}/close"),
+        cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert!(
+        status(&closed).is_redirection(),
+        "close should PRG, got {}",
+        status(&closed)
+    );
+
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().id().eq(issue_id))
+            .exec(&mut conn)
+            .await
+            .expect("issue");
+        assert_eq!(rows[0].status, ISSUE_STATUS_CLOSED);
+        let comments = IssueComment::all()
+            .filter(IssueComment::fields().issue_id().eq(issue_id))
+            .exec(&mut conn)
+            .await
+            .expect("comments");
+        assert!(
+            comments.iter().any(|c| {
+                c.kind == ISSUE_COMMENT_KIND_STATUS && c.body.eq_ignore_ascii_case("Closed")
+            }),
+            "timeline must include Closed status_change"
+        );
+    }
+
+    let detail = get(&router, &format!("/{slug}/issues/{key}"), cookie.as_deref()).await;
+    assert_eq!(status(&detail), StatusCode::OK);
+    let html = body_text(detail).await;
+    assert!(
+        html.contains("This issue is closed"),
+        "closed panel missing: {html}"
+    );
+    assert!(
+        html.contains("Reopen issue"),
+        "reopen control missing: {html}"
+    );
+    assert!(!html.contains("Add a reply"), "reply form must be hidden");
+
+    let blocked = post_form(
+        &router,
+        &format!("/{slug}/issues/{key}/reply"),
+        cookie.as_deref(),
+        &format!("body={}", urlencoding_encode("should not persist")),
+    )
+    .await;
+    assert!(status(&blocked).is_redirection());
+    {
+        let mut conn = db.clone();
+        let comments = IssueComment::all()
+            .filter(IssueComment::fields().issue_id().eq(issue_id))
+            .exec(&mut conn)
+            .await
+            .expect("comments");
+        assert!(
+            !comments
+                .iter()
+                .any(|c| c.kind == ISSUE_COMMENT_KIND_COMMENT && c.body.contains("should not")),
+            "reply must not insert while closed"
+        );
+    }
+
+    let reopened = post_form(
+        &router,
+        &format!("/{slug}/issues/{key}/reopen"),
+        cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert!(status(&reopened).is_redirection());
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().id().eq(issue_id))
+            .exec(&mut conn)
+            .await
+            .expect("issue");
+        assert_eq!(rows[0].status, ISSUE_STATUS_OPEN);
+    }
+
+    let reply = "Back in business.";
+    let posted = post_form(
+        &router,
+        &format!("/{slug}/issues/{key}/reply"),
+        cookie.as_deref(),
+        &format!("body={}", urlencoding_encode(reply)),
+    )
+    .await;
+    assert!(status(&posted).is_redirection());
+    let after = get(&router, &format!("/{slug}/issues/{key}"), cookie.as_deref()).await;
+    assert_eq!(status(&after), StatusCode::OK);
+    let html = body_text(after).await;
+    assert!(html.contains(reply), "reply after reopen missing: {html}");
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_admin_close_reopen_and_member_denied_admin_close() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+    let _vauban = ensure_reserved_org(&db).await;
+
+    let staff_email = unique_email("iss-adm-cl");
+    let client_slug = unique_slug("iss-adm-cl-org");
+    let (user, org) =
+        create_org_with_membership(&db, &staff_email, "password", &client_slug, "admin").await;
+    let staff_cookie = login(&router, &staff_email).await;
+
+    let now = vcp::db::now_unix();
+    let key = format!("VBN-{}", unique_slug("acl").replace('-', ""));
+    let issue_id = {
+        let mut conn = db.clone();
+        let issue = toasty::create!(Issue {
+            key: key.clone(),
+            title: "Admin close e2e".to_owned(),
+            component: "Portal".to_owned(),
+            severity: "Minor".to_owned(),
+            status: ISSUE_STATUS_OPEN.to_owned(),
+            organization_id: org.id,
+            details: "staff closes".to_owned(),
+            opened_by_user_id: user.id,
+            created_at: now,
+            updated_at: now,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("issue");
+        issue.id
+    };
+
+    let closed = post_form(
+        &router,
+        &format!("/admin/issues/{key}/close?org={client_slug}"),
+        staff_cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert!(status(&closed).is_redirection());
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().id().eq(issue_id))
+            .exec(&mut conn)
+            .await
+            .expect("issue");
+        assert_eq!(rows[0].status, ISSUE_STATUS_CLOSED);
+    }
+
+    let reopened = post_form(
+        &router,
+        &format!("/admin/issues/{key}/reopen?org={client_slug}"),
+        staff_cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert!(status(&reopened).is_redirection());
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().id().eq(issue_id))
+            .exec(&mut conn)
+            .await
+            .expect("issue");
+        assert_eq!(rows[0].status, ISSUE_STATUS_OPEN);
+    }
+
+    let member_email = unique_email("iss-mem-cl");
+    let member_slug = unique_slug("iss-mem-cl-org");
+    let (_mu, _mo) =
+        create_org_with_membership(&db, &member_email, "password", &member_slug, "member").await;
+    let member_cookie = login(&router, &member_email).await;
+    let denied = post_form(
+        &router,
+        &format!("/admin/issues/{key}/close"),
+        member_cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert_eq!(status(&denied), StatusCode::NOT_FOUND);
+
+    // Wrong-org close must not mutate another tenant's issue.
+    let other_email = unique_email("iss-wo-cl");
+    let other_slug = unique_slug("iss-wo-cl-org");
+    let (_ou, _oo) =
+        create_org_with_membership(&db, &other_email, "password", &other_slug, "member").await;
+    let other_cookie = login(&router, &other_email).await;
+    let wrong = post_form(
+        &router,
+        &format!("/{other_slug}/issues/{key}/close"),
+        other_cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert!(
+        status(&wrong) == StatusCode::NOT_FOUND
+            || status(&wrong) == StatusCode::FORBIDDEN
+            || status(&wrong).is_redirection(),
+        "wrong-org close must fail closed, got {}",
+        status(&wrong)
+    );
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().id().eq(issue_id))
+            .exec(&mut conn)
+            .await
+            .expect("issue");
+        assert_eq!(
+            rows[0].status, ISSUE_STATUS_OPEN,
+            "wrong-org close must not change status"
+        );
+    }
 
     cleanup(&db).await;
 }

@@ -17,6 +17,7 @@ use crate::{
     app::org::Org,
     auth::{capability_denied, db, require_org},
     db::now_unix,
+    issue_status::{close_issue_status, issue_is_closed, reopen_issue_status},
     models::{
         ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_REPORTER,
         ISSUE_ROLE_SUPPORT, ISSUE_ROLE_SYSTEM, Issue, IssueComment, RESERVED_ORG_SLUG, User,
@@ -71,8 +72,9 @@ async fn issue_detail_page(cx: &Cx) -> Result {
 
     let list_href = format!("/{org_slug}/issues");
     let reply_action = format!("/{org_slug}/issues/{}/reply", issue.key);
-    let closed = issue.status.eq_ignore_ascii_case("Closed")
-        || issue.status.eq_ignore_ascii_case("Resolved");
+    let close_action = format!("/{org_slug}/issues/{}/close", issue.key);
+    let reopen_action = format!("/{org_slug}/issues/{}/reopen", issue.key);
+    let closed = issue_is_closed(&issue.status);
 
     let timeline = build_timeline_rows(&issue, &comments, &users, now, tz);
 
@@ -202,30 +204,42 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                             "This issue is closed. Reopen it to add a comment."
                         </div>
                     </div>
-                    <span class="vb-btn outline">"Reopen issue"</span>
+                    if perms.issues_write {
+                        <form method="POST" action=(reopen_action)>
+                            <button class="vb-btn outline" type="submit">
+                                "Reopen issue"
+                            </button>
+                        </form>
+                    }
                 </div>
             } else if perms.issues_write {
                 <div class="vb-panel" style="padding: 14px;">
-                    <form method="POST" action=(reply_action)>
+                    <form method="POST" action=(reply_action) id="issue-reply">
                         <textarea
                             name="body"
                             required=""
                             placeholder="Add a reply…"
                             style="width: 100%; min-height: 76px; font-size: 14px; padding: 10px 12px; border: 1px solid #e0e2de; border-radius: 4px; background: #fbfcfb; resize: vertical; font-family: 'Hanken Grotesk', sans-serif; line-height: 1.5; margin-bottom: 12px;"
                         ></textarea>
-                        <div
-                            style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;"
-                        >
-                            <span class="vb-btn muted vb-btn-ico">
-                                (ico_paperclip(cx, 13).await?)
-                                <span>"Attach screenshot"</span>
-                            </span>
-                            <div style="display: flex; gap: 10px;">
-                                <span class="vb-btn muted">"Close issue"</span>
-                                <button class="vb-btn" type="submit">"Reply"</button>
-                            </div>
-                        </div>
                     </form>
+                    <div
+                        style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;"
+                    >
+                        <span class="vb-btn muted vb-btn-ico">
+                            (ico_paperclip(cx, 13).await?)
+                            <span>"Attach screenshot"</span>
+                        </span>
+                        <div style="display: flex; gap: 10px;">
+                            <form method="POST" action=(close_action)>
+                                <button class="vb-btn muted" type="submit">
+                                    "Close issue"
+                                </button>
+                            </form>
+                            <button class="vb-btn" type="submit" form="issue-reply">
+                                "Reply"
+                            </button>
+                        </div>
+                    </div>
                 </div>
             }
         </div>
@@ -246,6 +260,18 @@ async fn redirect_reserved_issue_detail(cx: &Cx) -> Result {
 /// POST alias: keep `see_other` (303) so the follow-up is GET, not a re-POST.
 #[route(POST "/vauban/issues/{issue_key}/reply")]
 async fn redirect_reserved_issue_reply(cx: &Cx) -> Result<SeeOther> {
+    let key = path_param::<IssueKey>(cx);
+    Ok(see_other(&format!("/admin/issues/{key}")))
+}
+
+#[route(POST "/vauban/issues/{issue_key}/close")]
+async fn redirect_reserved_issue_close(cx: &Cx) -> Result<SeeOther> {
+    let key = path_param::<IssueKey>(cx);
+    Ok(see_other(&format!("/admin/issues/{key}")))
+}
+
+#[route(POST "/vauban/issues/{issue_key}/reopen")]
+async fn redirect_reserved_issue_reopen(cx: &Cx) -> Result<SeeOther> {
     let key = path_param::<IssueKey>(cx);
     Ok(see_other(&format!("/admin/issues/{key}")))
 }
@@ -279,9 +305,7 @@ async fn reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOther> {
         return Err(capability_denied().into());
     };
 
-    let closed = issue.status.eq_ignore_ascii_case("Closed")
-        || issue.status.eq_ignore_ascii_case("Resolved");
-    if closed {
+    if issue_is_closed(&issue.status) {
         return Ok(see_other(&format!("/{org_slug}/issues/{key}")));
     }
 
@@ -304,6 +328,62 @@ async fn reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOther> {
     .await;
 
     let _ = issue.update().updated_at(now).exec(&mut database).await;
+
+    Ok(see_other(&format!("/{org_slug}/issues/{key}")))
+}
+
+#[route(POST "/{org}/issues/{issue_key}/close")]
+async fn close_issue(cx: &Cx) -> Result<SeeOther> {
+    let org_slug = path_param::<Org>(cx);
+    let key = path_param::<IssueKey>(cx);
+    if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+        return Ok(see_other(&format!("/admin/issues/{key}")));
+    }
+    let ctx = require_org(cx, org_slug).await.map_err(|_| not_found())?;
+    let perms = perms_for_user(cx, &ctx.user).await;
+    if !perms.issues_write {
+        return Err(capability_denied().into());
+    }
+
+    let mut database = db(cx);
+    let issues = Issue::all()
+        .filter(Issue::fields().organization_id().eq(ctx.org.id))
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    let Some(mut issue) = issues.into_iter().find(|i| i.key == *key) else {
+        return Err(capability_denied().into());
+    };
+
+    let _ = close_issue_status(&mut database, &mut issue).await;
+
+    Ok(see_other(&format!("/{org_slug}/issues/{key}")))
+}
+
+#[route(POST "/{org}/issues/{issue_key}/reopen")]
+async fn reopen_issue(cx: &Cx) -> Result<SeeOther> {
+    let org_slug = path_param::<Org>(cx);
+    let key = path_param::<IssueKey>(cx);
+    if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+        return Ok(see_other(&format!("/admin/issues/{key}")));
+    }
+    let ctx = require_org(cx, org_slug).await.map_err(|_| not_found())?;
+    let perms = perms_for_user(cx, &ctx.user).await;
+    if !perms.issues_write {
+        return Err(capability_denied().into());
+    }
+
+    let mut database = db(cx);
+    let issues = Issue::all()
+        .filter(Issue::fields().organization_id().eq(ctx.org.id))
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    let Some(mut issue) = issues.into_iter().find(|i| i.key == *key) else {
+        return Err(capability_denied().into());
+    };
+
+    let _ = reopen_issue_status(&mut database, &mut issue).await;
 
     Ok(see_other(&format!("/{org_slug}/issues/{key}")))
 }

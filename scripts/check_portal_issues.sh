@@ -37,10 +37,30 @@ grep -n 'IssueComment' "$DETAIL" >/dev/null \
   || fail "$DETAIL must load IssueComment timeline from DB"
 grep -nE '#\[route\(POST|/reply' "$DETAIL" >/dev/null \
   || fail "$DETAIL must expose POST reply route"
+grep -nE '#\[route\(POST "/\{org\}/issues/\{issue_key\}/close"\)' "$DETAIL" >/dev/null \
+  || fail "$DETAIL must expose POST close route"
+grep -nE '#\[route\(POST "/\{org\}/issues/\{issue_key\}/reopen"\)' "$DETAIL" >/dev/null \
+  || fail "$DETAIL must expose POST reopen route"
+grep -n 'issue_is_closed' "$DETAIL" >/dev/null \
+  || fail "$DETAIL must use issue_is_closed"
+grep -n 'close_issue_status\|reopen_issue_status' "$DETAIL" >/dev/null \
+  || fail "$DETAIL must call close/reopen helpers"
+# Close/Reopen must be real forms, not Concept stub spans.
+if grep -nE '<span class="vb-btn[^"]*">"Close issue"|<span class="vb-btn[^"]*">"Reopen issue"' "$DETAIL" >/dev/null 2>&1; then
+  fail "$DETAIL must not stub Close/Reopen as non-submitting spans"
+fi
 grep -n 'opened_by_user_id' "$LIST" >/dev/null \
   || fail "$LIST must persist opened_by_user_id on create"
 grep -n 'struct IssueComment' src/models/mod.rs >/dev/null \
   || fail "models must define IssueComment"
+grep -n 'ISSUE_STATUS_CLOSED' src/models/mod.rs >/dev/null \
+  || fail "models must define ISSUE_STATUS_CLOSED"
+grep -n 'ISSUE_STATUS_OPEN' src/models/mod.rs >/dev/null \
+  || fail "models must define ISSUE_STATUS_OPEN"
+grep -n 'fn issue_is_closed' src/issue_status.rs >/dev/null \
+  || fail "issue_status.rs must define issue_is_closed"
+grep -n 'ISSUE_COMMENT_KIND_STATUS' src/issue_status.rs >/dev/null \
+  || fail "close/reopen must write ISSUE_COMMENT_KIND_STATUS timeline rows"
 
 # Support-side timeline authors must display as Vauban Support.
 grep -n 'Vauban Support' "$DETAIL" >/dev/null \
@@ -61,8 +81,17 @@ grep -n 'Vauban Support' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL must label support-side authors as Vauban Support"
 grep -nE '#\[route\(POST|/reply' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL must expose POST reply route"
+grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/close"\)' "$ADMIN_DETAIL" >/dev/null \
+  || fail "$ADMIN_DETAIL must expose POST close route"
+grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/reopen"\)' "$ADMIN_DETAIL" >/dev/null \
+  || fail "$ADMIN_DETAIL must expose POST reopen route"
+grep -n 'issue_is_closed' "$ADMIN_DETAIL" >/dev/null \
+  || fail "$ADMIN_DETAIL must use issue_is_closed"
 grep -n 'ISSUE_ROLE_SUPPORT' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL staff replies must use ISSUE_ROLE_SUPPORT"
+if grep -nE '<span class="vb-btn[^"]*">"Close issue"|<span class="vb-btn[^"]*">"Reopen issue"' "$ADMIN_DETAIL" >/dev/null 2>&1; then
+  fail "$ADMIN_DETAIL must not stub Close/Reopen as non-submitting spans"
+fi
 
 # Full-bleed content (same as lists / admin docs compose).
 if grep -nE 'max-width:\s*(720|820)px' "$DETAIL" "$NEW" "$ADMIN_DETAIL" >/dev/null 2>&1; then

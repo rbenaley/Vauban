@@ -1,9 +1,11 @@
 //! Property tests for issue details bounds / key shaping / comment roles.
 
 use proptest::prelude::*;
+use vcp::issue_status::issue_is_closed;
 use vcp::models::{
     ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_REPORTER, ISSUE_ROLE_SUPPORT,
-    ISSUE_ROLE_SYSTEM,
+    ISSUE_ROLE_SYSTEM, ISSUE_STATUS_CLOSED, ISSUE_STATUS_IN_ANALYSIS, ISSUE_STATUS_OPEN,
+    ISSUE_STATUS_RESOLVED,
 };
 
 proptest! {
@@ -49,5 +51,31 @@ proptest! {
             "reporter" | "support" | "system"
         ));
         prop_assert!(matches!(kind, "comment" | "status_change"));
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    #[test]
+    fn prop_issue_closed_catalogue(
+        status in prop_oneof![
+            Just(ISSUE_STATUS_OPEN),
+            Just(ISSUE_STATUS_IN_ANALYSIS),
+            Just(ISSUE_STATUS_RESOLVED),
+            Just(ISSUE_STATUS_CLOSED),
+            Just("closed"),
+            Just("RESOLVED"),
+            Just("open")
+        ]
+    ) {
+        let closed = issue_is_closed(status);
+        let expect = status.eq_ignore_ascii_case(ISSUE_STATUS_CLOSED)
+            || status.eq_ignore_ascii_case(ISSUE_STATUS_RESOLVED);
+        prop_assert_eq!(closed, expect);
+        if !closed {
+            // Reopen target is always Open.
+            prop_assert_eq!(ISSUE_STATUS_OPEN, "Open");
+        }
     }
 }

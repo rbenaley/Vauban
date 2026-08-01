@@ -104,7 +104,10 @@ fn inv_admin_list_uses_id_and_sorts() {
         "/src/app/admin/docs.rs"
     ));
     assert!(src.contains("article.id"));
-    assert!(src.contains("sort_by_key"));
+    assert!(
+        src.contains("sort_by") && src.contains("updated_at") && src.contains("cmp_version_desc"),
+        "list must sort by updated_at with version tie-break"
+    );
     assert!(src.contains("Unpublish"));
     assert!(src.contains("Publish"));
     assert!(src.contains("delete="));

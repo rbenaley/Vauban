@@ -60,8 +60,17 @@ grep -n 'Publish new version' "$DOC" >/dev/null \
   || fail "$DOC must label published save as Publish new version"
 grep -n 'article.id' "$LIST" >/dev/null \
   || fail "$LIST Edit links must use article id"
-grep -n 'sort_by_key' "$LIST" >/dev/null \
+grep -nE 'sort_by(_key)?' "$LIST" >/dev/null \
   || fail "$LIST must sort by updated_at"
+grep -n 'updated_at' "$LIST" >/dev/null \
+  || fail "$LIST sort must use updated_at"
+grep -n 'cmp_version_desc' "$LIST" >/dev/null \
+  || fail "$LIST must tie-break sort with cmp_version_desc"
+# Exclusivity demotion must not stamp timestamps (keeps new version above old).
+if grep -A20 'pub async fn unpublish_other_published' src/docs_version.rs \
+  | grep -v '^[[:space:]]*//' | grep -v '^[[:space:]]*\*' | grep -q 'updated_at'; then
+  fail "unpublish_other_published must not bump updated_at"
+fi
 grep -n 'Unpublish' "$LIST" >/dev/null \
   || fail "$LIST must expose Unpublish action"
 grep -n 'Publish' "$LIST" >/dev/null \

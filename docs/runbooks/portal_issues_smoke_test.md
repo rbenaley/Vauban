@@ -39,23 +39,33 @@ rtk cargo test --test integration_tests -- portal_issues -- --test-threads=1
    comments / status dividers come from the DB.
 3. Confirm support replies display as **Vauban Support**.
 4. Post a reply; confirm it persists after reload.
+5. On an open issue, click **Close issue** — status becomes Closed, a
+   timeline divider `Closed` appears, and the reply form is replaced by
+   the closed panel.
+6. Attempting a reply while closed must not add a comment (no reply form;
+   forged POST must not persist).
+7. Click **Reopen issue** — status returns to Open; post a reply and
+   confirm it persists.
 
-Pass: client issue timeline and replies work under the org slug.
+Pass: client issue timeline, replies, close, and reopen work under the org slug.
 
 ## B -- Staff aggregate
 
 1. Sign in as `support@vauban.sh` / `password`.
 2. Open `/admin/issues` — expect aggregated list (optional org filter).
 3. Open an issue detail under `/admin/issues/{key}` and post a staff reply.
-4. Open `/vauban/issues` — expect redirect to `/admin/issues`.
+4. Close the issue from admin, confirm Closed + blocked reply, then Reopen.
+5. Open `/vauban/issues` — expect redirect to `/admin/issues`.
 
-Pass: staff issues live under `/admin/issues`; reserved org issues redirect.
+Pass: staff issues live under `/admin/issues`; reserved org issues redirect;
+staff close/reopen works.
 
 ## C -- Denial paths
 
 1. As `l.martin@acme.example`, GET `/admin/issues` — expect **404**.
-2. While authenticated, open a non-member org slug — expect **404**.
-3. Anonymous / expired session must not leak tenant data.
+2. As the same client member, POST `/admin/issues/{key}/close` — expect **404**.
+3. While authenticated, open a non-member org slug — expect **404**.
+4. Anonymous / expired session must not leak tenant data.
 
 Pass: Casbin + tenant fail-closed.
 

@@ -599,14 +599,20 @@ async fn e2e_publish_new_version_unpublishes_previous() {
     let admin_list = get(&router, "/admin/docs", cookie.as_deref()).await;
     assert_eq!(status(&admin_list), StatusCode::OK);
     let list_html = body_text(admin_list).await;
-    let v2_pos = list_html.find("v2").expect("v2 in admin list");
+    // Prefer version cell text; avoid matching incidental substrings.
+    let v2_pos = list_html
+        .find(">v2<")
+        .or_else(|| list_html.find("\nv2\n"))
+        .or_else(|| list_html.find("v2"))
+        .expect("v2 in admin list");
     let v1_pos = list_html
         .find(">v1<")
+        .or_else(|| list_html.find("\nv1\n"))
         .or_else(|| list_html.find("v1"))
         .expect("v1 in admin list");
     assert!(
         v2_pos < v1_pos,
-        "newer version should appear first in admin list"
+        "newer version should appear first in admin list (v2@{v2_pos} v1@{v1_pos})"
     );
 
     cleanup(&db).await;

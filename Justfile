@@ -69,9 +69,10 @@ ensure-vcp-test:
 cargo-build *ARGS:
     cargo build {{ARGS}}
 
-# Refresh target/assets when missing or older than the vcp binary.
-# Topcoat 0.5 Tailwind AssetIds embed OUT_DIR — a rebuild without rebundle
-# leaves a stale manifest and panics on first HTML render.
+# Refresh target/assets when missing, older than the vcp binary, or built for
+# a different Cargo profile. Topcoat 0.5 Tailwind AssetIds embed OUT_DIR — a
+# rebuild without rebundle (or a test-profile bundle left behind after
+# `just test`) leaves a stale manifest and panics on first HTML render.
 [private]
 ensure-asset-bundle *ARGS: ensure-topcoat
     #!/usr/bin/env bash
@@ -84,20 +85,31 @@ ensure-asset-bundle *ARGS: ensure-topcoat
     done
     bin="target/${profile}/vcp"
     manifest="target/assets/manifest.toml"
+    stamp="target/assets/.bundle-profile"
     if [[ ! -f "$bin" ]]; then
       echo "error: missing ${bin}; build the binary before bundling assets" >&2
       exit 1
     fi
-    if [[ -f "$manifest" && ! "$bin" -nt "$manifest" ]]; then
-      echo "ensure-asset-bundle: up to date (${manifest})" >&2
+    need=0
+    if [[ ! -f "$manifest" ]]; then
+      need=1
+    elif [[ ! -f "$stamp" ]] || [[ "$(cat "$stamp")" != "$profile" ]]; then
+      need=1
+    elif [[ "$bin" -nt "$manifest" ]]; then
+      need=1
+    fi
+    if [[ "$need" -eq 0 ]]; then
+      echo "ensure-asset-bundle: up to date (${manifest}, profile=${profile})" >&2
       exit 0
     fi
-    echo "ensure-asset-bundle: bundling assets for ${bin}…" >&2
+    echo "ensure-asset-bundle: bundling assets for ${bin} (profile=${profile})…" >&2
     # Explicit --bin: the package also ships `vcp-cli` (Toasty migrations).
     topcoat asset bundle --bin vcp {{ARGS}}
+    mkdir -p target/assets
+    printf '%s\n' "$profile" >"$stamp"
 
 # Build the binary and refresh assets when the binary is newer than the
-# manifest (or the manifest is missing).
+# manifest (or the manifest is missing / wrong profile).
 build *ARGS: (cargo-build ARGS) (ensure-asset-bundle ARGS)
 
 # Force-bundle Topcoat assets into target/assets (always runs the bundler).
@@ -105,7 +117,17 @@ build *ARGS: (cargo-build ARGS) (ensure-asset-bundle ARGS)
 # (Tailwind OUT_DIR CSS, fonts, etc.). Profile must match the binary:
 # `just bundle` | `just bundle --release`.
 bundle *ARGS: ensure-topcoat (cargo-build ARGS)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile=debug
+    for arg in {{ARGS}}; do
+      if [[ "$arg" == "--release" ]]; then
+        profile=release
+      fi
+    done
     topcoat asset bundle --bin vcp {{ARGS}}
+    mkdir -p target/assets
+    printf '%s\n' "$profile" >target/assets/.bundle-profile
 
 # Check without producing binaries
 check *ARGS:
@@ -132,12 +154,12 @@ topcoat-fmt: ensure-topcoat
     echo "topcoat-fmt: formatting ${#files[@]} files" >&2
     topcoat fmt "${files[@]}"
 
-# Format check (CI): rustfmt --check, then topcoat fmt must be a no-op
+# Format check (pure): rustfmt --check, then topcoat fmt must be a no-op.
+# Does not assume a prior `just fmt`. Prefer `just validate` locally.
 fmt-check: ensure-topcoat
     #!/usr/bin/env bash
     set -euo pipefail
     cargo fmt --all -- --check
-    # Compare file digests before/after so uncommitted WIP does not false-fail.
     before=$(mktemp)
     after=$(mktemp)
     trap 'rm -f "$before" "$after"' EXIT
@@ -150,21 +172,46 @@ fmt-check: ensure-topcoat
       exit 1
     fi
 
-# Run tests (single-threaded). Ensures vcp_test + asset bundle first.
-test *ARGS: ensure-vcp-test bundle
+# After `just fmt`: rustfmt --check only (topcoat already applied; no 2nd pass).
+[private]
+verify-fmt:
+    cargo fmt --all -- --check
+
+# Compile tests, then bundle assets from the Cargo *test* profile.
+# Integration tests link the test-profile lib; a debug-profile bundle (from
+# `just bundle` / `just run`) does not match Tailwind AssetIds and panics in
+# `load_assets`. Stamp the profile so a later `just run` rebundles debug.
+[private]
+ensure-test-asset-bundle *ARGS: ensure-topcoat
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "ensure-test-asset-bundle: cargo test --no-run…" >&2
+    cargo test --no-run {{ARGS}}
+    echo "ensure-test-asset-bundle: bundling assets (profile=test)…" >&2
+    topcoat asset bundle --bin vcp --profile test
+    mkdir -p target/assets
+    printf '%s\n' "test" >target/assets/.bundle-profile
+
+# Run tests (single-threaded). Ensures vcp_test + test-profile asset bundle.
+test *ARGS: ensure-vcp-test (ensure-test-asset-bundle ARGS)
     cargo test {{ARGS}} -- --test-threads=1
 
 # Clippy with warnings as errors
 clippy *ARGS:
     cargo clippy --all-targets {{ARGS}} -- -D warnings
 
-# Full validation cycle: fmt check + clippy + ensure vcp_test + asset bundle + tests
-validate: fmt-check clippy test
+# Full validation cycle: apply fmt once, rustfmt --check, clippy, then tests.
+# Uses `verify-fmt` (not `fmt-check`) so topcoat fmt does not run twice.
+validate: fmt verify-fmt clippy test
 
 # Build release binary + asset bundle
 release: ensure-topcoat
+    #!/usr/bin/env bash
+    set -euo pipefail
     cargo build --release
     topcoat asset bundle --bin vcp --release
+    mkdir -p target/assets
+    printf '%s\n' "release" >target/assets/.bundle-profile
 
 # Run the portal over HTTPS (defaults to development config, port 3000)
 # Examples: just run | just run --release

@@ -3,10 +3,15 @@
 use std::sync::Arc;
 
 use tokio::sync::Barrier;
-use vcp::models::{ISSUE_COMMENT_KIND_COMMENT, ISSUE_ROLE_REPORTER, Issue, IssueComment};
+use topcoat::router::StatusCode;
+use vcp::models::{
+    ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_REPORTER,
+    ISSUE_STATUS_CLOSED, ISSUE_STATUS_OPEN, Issue, IssueComment,
+};
 
 use crate::common::{
-    cleanup, create_org_with_membership, db_lock, test_db, unique_email, unique_slug,
+    cleanup, cookie_header, create_org_with_membership, db_lock, get, post_form, status, test_db,
+    test_router, unique_email, unique_slug, urlencoding_encode,
 };
 
 #[tokio::test]
@@ -147,6 +152,120 @@ async fn battle_concurrent_issue_comment_creates() {
             .await
             .expect("list");
         assert_eq!(rows.len(), n);
+    }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn battle_parallel_close_reopen_under_detail_reads() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = Arc::new(test_router().await);
+
+    let email = unique_email("battle-close");
+    let slug = unique_slug("battle-close-org");
+    let (user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let now = vcp::db::now_unix();
+    let key = format!("TEST-{}", unique_slug("clr"));
+    {
+        let mut conn = db.clone();
+        let _ = toasty::create!(Issue {
+            key: key.clone(),
+            title: "Close battle".to_owned(),
+            component: "Portal".to_owned(),
+            severity: "Minor".to_owned(),
+            status: ISSUE_STATUS_OPEN.to_owned(),
+            organization_id: org.id,
+            details: "opener".to_owned(),
+            opened_by_user_id: user.id,
+            created_at: now,
+            updated_at: now,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("issue");
+    }
+
+    let form = format!("email={}&password=password", urlencoding_encode(&email));
+    let login = post_form(router.as_ref(), "/login", None, &form).await;
+    let cookie = cookie_header(&login).expect("cookie");
+
+    let barrier = Arc::new(Barrier::new(3));
+    let close_path = format!("/{slug}/issues/{key}/close");
+    let reopen_path = format!("/{slug}/issues/{key}/reopen");
+    let detail_path = format!("/{slug}/issues/{key}");
+
+    let cookie_a = cookie.clone();
+    let cookie_b = cookie.clone();
+    let cookie_c = cookie;
+    let router_a = router.clone();
+    let router_b = router.clone();
+    let router_c = router;
+    let barrier_a = barrier.clone();
+    let barrier_b = barrier.clone();
+    let barrier_c = barrier;
+    let close_path_a = close_path;
+    let reopen_path_b = reopen_path;
+    let detail_path_c = detail_path;
+
+    let h1 = tokio::spawn(async move {
+        barrier_a.wait().await;
+        let resp = post_form(router_a.as_ref(), &close_path_a, Some(&cookie_a), "").await;
+        assert!(
+            status(&resp).is_redirection() || status(&resp) == StatusCode::OK,
+            "close got {}",
+            status(&resp)
+        );
+    });
+    let h2 = tokio::spawn(async move {
+        barrier_b.wait().await;
+        let resp = post_form(router_b.as_ref(), &reopen_path_b, Some(&cookie_b), "").await;
+        assert!(
+            status(&resp).is_redirection() || status(&resp) == StatusCode::OK,
+            "reopen got {}",
+            status(&resp)
+        );
+    });
+    let h3 = tokio::spawn(async move {
+        barrier_c.wait().await;
+        let resp = get(router_c.as_ref(), &detail_path_c, Some(&cookie_c)).await;
+        assert_eq!(status(&resp), StatusCode::OK);
+    });
+
+    h1.await.expect("close join");
+    h2.await.expect("reopen join");
+    h3.await.expect("detail join");
+
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().organization_id().eq(org.id))
+            .exec(&mut conn)
+            .await
+            .expect("list");
+        let ours: Vec<_> = rows.into_iter().filter(|i| i.key == key).collect();
+        assert_eq!(ours.len(), 1, "exactly one issue row");
+        assert!(
+            ours[0].status == ISSUE_STATUS_OPEN || ours[0].status == ISSUE_STATUS_CLOSED,
+            "final status must be Open or Closed, got {}",
+            ours[0].status
+        );
+        let comments = IssueComment::all()
+            .filter(IssueComment::fields().issue_id().eq(ours[0].id))
+            .exec(&mut conn)
+            .await
+            .expect("comments");
+        let status_rows = comments
+            .iter()
+            .filter(|c| c.kind == ISSUE_COMMENT_KIND_STATUS)
+            .count();
+        assert!(
+            status_rows <= 2,
+            "at most one close + one reopen status_change under race, got {status_rows}"
+        );
     }
 
     cleanup(&db).await;

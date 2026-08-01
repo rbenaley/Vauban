@@ -167,6 +167,12 @@ pub const ISSUE_ROLE_REPORTER: &str = "reporter";
 pub const ISSUE_ROLE_SUPPORT: &str = "support";
 pub const ISSUE_ROLE_SYSTEM: &str = "system";
 
+/// Issue lifecycle statuses (free-text in DB; keep UI chips aligned).
+pub const ISSUE_STATUS_OPEN: &str = "Open";
+pub const ISSUE_STATUS_IN_ANALYSIS: &str = "In analysis";
+pub const ISSUE_STATUS_RESOLVED: &str = "Resolved";
+pub const ISSUE_STATUS_CLOSED: &str = "Closed";
+
 #[derive(Debug, Clone, Model)]
 pub struct Issue {
     #[key]

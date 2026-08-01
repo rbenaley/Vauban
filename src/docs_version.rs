@@ -23,6 +23,10 @@ pub fn bump_version(current: &str) -> String {
 }
 
 /// Set every PUBLISHED article with `slug` to DRAFT, except `except_id`.
+///
+/// Status-only update: do not touch the row timestamp. Exclusivity demotion is
+/// not an editorial edit; stamping the same second as the new published row
+/// made newest-first list order unstable (v1 could appear above v2).
 pub async fn unpublish_other_published(
     db: &mut Db,
     slug: &str,
@@ -32,7 +36,6 @@ pub async fn unpublish_other_published(
         .filter(DocArticle::fields().slug().eq(slug))
         .exec(db)
         .await?;
-    let now = crate::db::now_unix();
     for mut article in rows {
         if article.id == except_id || article.status != DOC_STATUS_PUBLISHED {
             continue;
@@ -40,7 +43,6 @@ pub async fn unpublish_other_published(
         article
             .update()
             .status(DOC_STATUS_DRAFT.to_owned())
-            .updated_at(now)
             .exec(db)
             .await?;
     }

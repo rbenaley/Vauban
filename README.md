@@ -74,13 +74,14 @@ cp config/local.toml.example config/local.toml
 ## Run
 
 ```bash
-just build            # cargo build + rebundle assets if binary newer than manifest
+just build            # cargo build + rebundle assets if needed (profile-aware)
 just run              # just build + HTTPS on https://127.0.0.1:3000
 just run --release    # same with release binary + matching asset bundle
 just release          # cargo build --release + force asset bundle (no run)
-just validate         # fmt-check + clippy + ensure-vcp-test + force bundle + tests
-just test             # ensure-vcp-test + force bundle + cargo test (--test-threads=1)
+just validate         # fmt + rustfmt --check + clippy + ensure-vcp-test + tests
+just test             # ensure-vcp-test + test-profile asset bundle + cargo test
 just fmt              # cargo fmt + topcoat fmt
+just fmt-check        # pure check (rewrites nothing if already clean)
 just clippy           # clippy with warnings as errors
 just bundle           # cargo build + force topcoat asset bundle → target/assets
 just bundle --release # release binary + force asset bundle
@@ -97,15 +98,19 @@ Recipes that need the Topcoat CLI (`run`, `bundle`, `release`, `fmt`,
 are required before `just run`.
 
 `just run` / `just build` keep the asset catalog in sync: they rebundle
-only when `target/{debug,release}/vcp` is newer than
-`target/assets/manifest.toml` (or the manifest is missing). Use
-`just bundle` to force a refresh. Prefer these over bare `cargo run` /
-`cargo build`: Topcoat 0.5 Tailwind AssetIds embed `OUT_DIR`, so a
-rebuild without a matching manifest panics when resolving CSS / icons /
-the runtime script. Boot also fails closed if the catalog is stale.
-Pass `--release` through `just run` / `just build` / `just bundle` so
-binary and asset IDs stay matched. `just run` keeps VCP’s custom TLS 1.3
-serve path; `topcoat dev` / `just dev` is UI HMR only.
+when `target/{debug,release}/vcp` is newer than
+`target/assets/manifest.toml`, the manifest is missing, or the last bundle
+was for another Cargo profile (stamp `target/assets/.bundle-profile`).
+`just test` / `just validate` always bundle from the Cargo **test**
+profile so integration-test AssetIds match; a later `just run` detects
+the profile change and rebundles debug/release. Use `just bundle` to
+force a refresh. Prefer these over bare `cargo run` / `cargo build`:
+Topcoat 0.5 Tailwind AssetIds embed `OUT_DIR`, so a rebuild without a
+matching manifest panics when resolving CSS / icons / the runtime
+script. Boot also fails closed if the catalog is stale. Pass `--release`
+through `just run` / `just build` / `just bundle` so binary and asset IDs
+stay matched. `just run` keeps VCP’s custom TLS 1.3 serve path;
+`topcoat dev` / `just dev` is UI HMR only.
 
 Smoke against a self-signed cert:
 
@@ -147,8 +152,10 @@ Wrong org slug → **404** (no cross-tenant leak). `/admin/*` requires Vauban Su
 ## Validate
 
 ```bash
-just validate         # ensure-vcp-test + fmt-check + clippy + bundle + tests
+just validate         # fmt + rustfmt --check + clippy + ensure-vcp-test + tests
 ```
+
+
 
 Structural lints (also exercised via `*_invariants_test`):
 

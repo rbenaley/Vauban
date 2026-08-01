@@ -39,8 +39,11 @@ rtk cargo test -p <crate> -- <filter> -- --test-threads=1
 Do **not** propose a commit message, declare hand-off, or run
 `git commit` (when authorized) until `just fmt-check` is green.
 Prefer `just validate` when the change is commit-bound or spans
-multiple surfaces. Tests and clippy **do not** catch rustfmt drift;
-`just validate` fails on style-only diffs.
+multiple surfaces. `just validate` runs `just fmt` then rustfmt
+`--check` (topcoat fmt once, not twice), so local gates do not fail on
+style drift; commit the resulting formatting diffs. Use bare
+`just fmt-check` for a pure no-rewrite check (includes a topcoat no-op
+pass).
 
 ### Symmetric process failures
 

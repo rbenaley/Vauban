@@ -19,6 +19,7 @@ use crate::{
     },
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
+    release_pkg::cmp_version_desc,
     ui::doc_status_badge_class,
 };
 
@@ -43,7 +44,13 @@ async fn admin_docs_page(cx: &Cx) -> Result {
         .exec(&mut database)
         .await
         .unwrap_or_default();
-    articles.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
+    // Newest edit first; version then id break same-second ties.
+    articles.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| cmp_version_desc(&a.version, &b.version))
+            .then_with(|| b.id.cmp(&a.id))
+    });
 
     let q = query_params::<AdminDocsQuery>(cx).ok();
     let delete_id = q
