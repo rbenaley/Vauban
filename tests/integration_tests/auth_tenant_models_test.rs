@@ -3,7 +3,7 @@
 use vcp::{
     auth::{load_user_for_token_hex, persist_session_record, session_is_expired},
     db::now_unix,
-    models::{AuthSession, DocArticle, Issue, Release, User},
+    models::{AuthSession, DocArticle, Issue, PORTAL_ROLE_ORG, Release, User},
 };
 
 use crate::common::{
@@ -49,11 +49,38 @@ async fn models_reject_duplicate_email() {
         email: email.clone(),
         display_name: "Dup".to_owned(),
         password_hash: "x".to_owned(),
-        portal_role: String::new(),
+        portal_role: PORTAL_ROLE_ORG.to_owned(),
     })
     .exec(&mut conn)
     .await;
     assert!(err.is_err(), "duplicate email must fail");
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn models_portal_role_check_rejects_unknown() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("badrole");
+    let mut conn = db.clone();
+    let err = toasty::create!(User {
+        email: email.clone(),
+        display_name: "Bad".to_owned(),
+        password_hash: "x".to_owned(),
+        portal_role: "member".to_owned(),
+    })
+    .exec(&mut conn)
+    .await;
+    assert!(
+        err.is_err(),
+        "portal_role CHECK must reject values outside admin|org"
+    );
+
+    let ok = create_test_user(&db, &email, "password").await;
+    assert_eq!(ok.portal_role, PORTAL_ROLE_ORG);
 
     cleanup(&db).await;
 }

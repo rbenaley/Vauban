@@ -8,6 +8,7 @@
 //! - `cargo test --test integration_tests -- portal_issues -- --test-threads=1`
 //! - `cargo test --test integration_tests -- admin_releases -- --test-threads=1`
 //! - `cargo test --test integration_tests -- admin_companies -- --test-threads=1`
+//! - `cargo test --test integration_tests -- org_account -- --test-threads=1`
 //! - `cargo test --test integration_tests -- builds_entitlement -- --test-threads=1`
 //! - `cargo test --test integration_tests -- toasty_filters -- --test-threads=1`
 //! - `cargo test --test integration_tests -- request_sql_dedup -- --test-threads=1`
@@ -65,6 +66,10 @@ mod http_edge_battle_test;
 mod http_edge_e2e_test;
 mod http_edge_invariants_test;
 mod http_edge_proptest;
+mod org_account_battle_test;
+mod org_account_e2e_test;
+mod org_account_invariants_test;
+mod org_account_proptest;
 mod org_issues_search_shard_battle_test;
 mod org_issues_search_shard_e2e_test;
 mod org_issues_search_shard_invariants_test;

@@ -81,7 +81,7 @@ async fn login_page(cx: &Cx) -> Result {
             <button type="submit">"Sign in"</button>
         </form>
         <p class="vb-muted" style="margin-top: 16px; font-size: 12px;">
-            "Seed: support@vauban.sh / password"
+            "Seed: support@vauban.sh / password · company accounts use password until magic links"
         </p>
     }
 }
@@ -122,13 +122,18 @@ async fn login(cx: &Cx, Form(form): Form<LoginForm>) -> Result<SeeOther> {
     let session = session::start(cx).await?;
     persist_session(cx, session, user.id).await?;
 
-    let slug = home_org_slug(cx, &user).await?.unwrap_or_else(|| {
-        if user.portal_role == PORTAL_ROLE_ADMIN {
-            RESERVED_ORG_SLUG.to_owned()
-        } else {
-            "acme-infrastructure".to_owned()
+    // Land on the user's real home org — never invent a client slug (e.g. Acme).
+    let slug = match home_org_slug(cx, &user).await? {
+        Some(slug) => slug,
+        None if user.portal_role == PORTAL_ROLE_ADMIN => RESERVED_ORG_SLUG.to_owned(),
+        None => {
+            // Authenticated but no tenant membership: clear session and stay on login.
+            if let Some(hash) = session::stop(cx).await? {
+                delete_session_hash(cx, &hash).await?;
+            }
+            return Ok(see_other("/login"));
         }
-    });
+    };
     Ok(see_other(&format!("/{slug}")))
 }
 

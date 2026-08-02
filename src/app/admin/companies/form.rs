@@ -20,8 +20,11 @@ pub struct CompanyFormView {
     pub contact_email: String,
     pub vat: String,
     pub address: String,
+    pub lts_subscriptions: i32,
+    pub industrial_lts_subscriptions: i32,
     pub emails: Vec<String>,
     pub max_accounts: usize,
+    pub max_lts: usize,
     pub error: Option<String>,
 }
 
@@ -29,9 +32,12 @@ pub struct CompanyFormView {
 pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
     let max = state.max_accounts;
     let max_label = max.to_string();
+    let max_lts_label = state.max_lts.to_string();
     let emails = ensure_email_rows(&state.emails, max);
     let can_add_row = emails.len() < max;
     let rows_label = emails.len().to_string();
+    let lts_label = state.lts_subscriptions.to_string();
+    let ind_label = state.industrial_lts_subscriptions.to_string();
 
     view! {
         cx =>
@@ -47,7 +53,9 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
             <p class="vb-lead">
                 "Seat limit: "
                 (max_label.clone())
-                " user accounts per company."
+                " user accounts per company. LTS counters max "
+                (max_lts_label.clone())
+                "."
             </p>
             if let Some(err) = state.error.clone() {
                 <p style="color: #b5403a; margin-bottom: 14px;">(err)</p>
@@ -55,6 +63,16 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
             <div class="vb-panel" style="padding: 24px;">
                 <form class="vb-form" method="POST" action=(state.action.clone())>
                     <input type="hidden" name="account_rows" value=(rows_label)>
+                    <input
+                        type="hidden"
+                        name="lts_subscriptions"
+                        value=(lts_label.clone())
+                    >
+                    <input
+                        type="hidden"
+                        name="industrial_lts_subscriptions"
+                        value=(ind_label.clone())
+                    >
                     <label for="name">"Company name *"</label>
                     <input id="name" name="name" required="" value=(state.name.clone())>
                     <label for="contact_name">"Technical contact — full name"</label>
@@ -79,6 +97,88 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
                     <textarea id="address" name="address">
                         (state.address.clone())
                     </textarea>
+
+                    <div class="vb-section-label" style="margin: 22px 0 12px;">
+                        "SUBSCRIPTION"
+                    </div>
+                    <div
+                        style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 8px;"
+                    >
+                        <div
+                            style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;"
+                        >
+                            <span style="font-size: 14px;">
+                                "Vauban LTS subscriptions"
+                            </span>
+                            <div
+                                class="vb-lts-stepper"
+                                style="display: flex; align-items: center; gap: 8px;"
+                            >
+                                <button
+                                    class="vb-btn muted compact"
+                                    type="submit"
+                                    name="compose_action"
+                                    value="lts_dec"
+                                    aria-label="Decrease Vauban LTS subscriptions"
+                                >
+                                    "-"
+                                </button>
+                                <span
+                                    class="vb-mono"
+                                    data-lts-subscriptions=(lts_label.clone())
+                                    style="min-width: 2ch; text-align: center; font-size: 16px; font-weight: 700;"
+                                >
+                                    (lts_label.clone())
+                                </span>
+                                <button
+                                    class="vb-btn muted compact"
+                                    type="submit"
+                                    name="compose_action"
+                                    value="lts_inc"
+                                    aria-label="Increase Vauban LTS subscriptions"
+                                >
+                                    "+"
+                                </button>
+                            </div>
+                        </div>
+                        <div
+                            style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;"
+                        >
+                            <span style="font-size: 14px;">
+                                "Vauban Industrial LTS subscriptions"
+                            </span>
+                            <div
+                                class="vb-lts-stepper"
+                                style="display: flex; align-items: center; gap: 8px;"
+                            >
+                                <button
+                                    class="vb-btn muted compact"
+                                    type="submit"
+                                    name="compose_action"
+                                    value="ind_dec"
+                                    aria-label="Decrease Vauban Industrial LTS subscriptions"
+                                >
+                                    "-"
+                                </button>
+                                <span
+                                    class="vb-mono"
+                                    data-industrial-lts-subscriptions=(ind_label.clone())
+                                    style="min-width: 2ch; text-align: center; font-size: 16px; font-weight: 700;"
+                                >
+                                    (ind_label.clone())
+                                </span>
+                                <button
+                                    class="vb-btn muted compact"
+                                    type="submit"
+                                    name="compose_action"
+                                    value="ind_inc"
+                                    aria-label="Increase Vauban Industrial LTS subscriptions"
+                                >
+                                    "+"
+                                </button>
+                            </div>
+                        </div>
+                    </div>
 
                     <div
                         style="display: flex; justify-content: space-between; align-items: center; margin: 22px 0 12px; gap: 12px; flex-wrap: wrap;"

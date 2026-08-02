@@ -24,6 +24,10 @@ fn inv_history_lists_initial_migration() {
         history.contains("0000_initial.sql"),
         "history.toml must record 0000_initial.sql"
     );
+    assert!(
+        history.contains("0007_portal_role_org_check.sql"),
+        "history.toml must record 0007_portal_role_org_check.sql"
+    );
 }
 
 #[test]

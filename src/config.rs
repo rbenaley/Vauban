@@ -216,18 +216,26 @@ pub struct OrgConfig {
     /// Max portal user accounts (memberships) per client company.
     #[serde(default = "default_max_accounts_per_org")]
     pub max_accounts_per_org: usize,
+    /// Max value for LTS / Industrial LTS subscription steppers (0..=N).
+    #[serde(default = "default_max_lts_subscriptions")]
+    pub max_lts_subscriptions: usize,
 }
 
 impl Default for OrgConfig {
     fn default() -> Self {
         Self {
             max_accounts_per_org: default_max_accounts_per_org(),
+            max_lts_subscriptions: default_max_lts_subscriptions(),
         }
     }
 }
 
 fn default_max_accounts_per_org() -> usize {
     crate::models::MAX_USERS_PER_COMPANY
+}
+
+fn default_max_lts_subscriptions() -> usize {
+    crate::models::MAX_LTS_SUBSCRIPTIONS_DEFAULT
 }
 
 impl Config {
@@ -426,6 +434,7 @@ mod tests {
         assert_eq!(cfg.login.window_secs, 300);
         assert_eq!(cfg.login.lockout_secs, 900);
         assert_eq!(cfg.org.max_accounts_per_org, 5);
+        assert_eq!(cfg.org.max_lts_subscriptions, 99);
     }
 
     #[test]
@@ -441,6 +450,7 @@ mod tests {
         assert_eq!(cfg.login.window_secs, 300);
         assert_eq!(cfg.login.lockout_secs, 900);
         assert_eq!(cfg.org.max_accounts_per_org, 5);
+        assert_eq!(cfg.org.max_lts_subscriptions, 99);
     }
 
     #[test]
@@ -460,6 +470,7 @@ mod tests {
         assert_eq!(cfg.login.max_attempts, 1000);
         assert_eq!(cfg.login.lockout_secs, 1);
         assert_eq!(cfg.org.max_accounts_per_org, 5);
+        assert_eq!(cfg.org.max_lts_subscriptions, 99);
     }
 
     #[test]

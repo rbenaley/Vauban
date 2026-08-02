@@ -6,7 +6,9 @@ use std::thread;
 use http_body_util::BodyExt;
 use tokio::sync::Barrier;
 use topcoat::router::StatusCode;
-use vcp::companies_accounts::{normalize_contact_email, normalize_emails};
+use vcp::companies_accounts::{
+    apply_lts_compose_action, clamp_lts_count, normalize_contact_email, normalize_emails,
+};
 use vcp::seats::{can_add_member, membership_count};
 
 use crate::common::{
@@ -174,6 +176,67 @@ async fn battle_parallel_admin_companies_page_pagination() {
         (1..=3).contains(&page2.matches("class=\"vb-company-card\"").count()),
         "page2 cards under contention: {page2}"
     );
+
+    cleanup(&db).await;
+}
+
+#[test]
+fn battle_parallel_lts_clamp_and_steppers() {
+    let n = 8usize;
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        handles.push(thread::spawn(move || {
+            let max = 99usize;
+            let base = (i as i32) * 10;
+            let clamped = clamp_lts_count(base, max);
+            assert!((0..=99).contains(&clamped));
+            let (lts, ind) = apply_lts_compose_action(clamped, 0, "lts_inc", max).expect("step");
+            assert!((0..=99).contains(&lts));
+            assert_eq!(ind, 0);
+        }));
+    }
+    for h in handles {
+        h.join().expect("join");
+    }
+}
+
+#[tokio::test]
+async fn battle_parallel_company_create_with_lts_counters() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-lts-create");
+    let slug = unique_slug("battle-lts-create");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let router = test_router().await;
+    let form = format!("email={}&password=password", urlencoding_encode(&email));
+    let login = post_form(&router, "/login", None, &form).await;
+    let cookie = cookie_header(&login).expect("cookie");
+
+    let n = 4usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let cookie = cookie.clone();
+        let barrier = barrier.clone();
+        let router = test_router().await;
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let name = format!("Battle LTS {i} {}", unique_slug("blts"));
+            let member = unique_email(&format!("blts-m-{i}"));
+            let body = format!(
+                "name={}&contact_name=Ops&contact_email=ops%40example.com&vat=FR1&address=1+St&lts_subscriptions=2&industrial_lts_subscriptions=1&account_rows=1&compose_action=save&email_0={}",
+                urlencoding_encode(&name),
+                urlencoding_encode(&member)
+            );
+            let resp = post_form(&router, "/admin/companies/new", Some(&cookie), &body).await;
+            assert_eq!(status(&resp), StatusCode::SEE_OTHER);
+        }));
+    }
+    for h in handles {
+        h.await.expect("join");
+    }
 
     cleanup(&db).await;
 }

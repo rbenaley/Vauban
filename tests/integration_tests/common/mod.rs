@@ -21,8 +21,8 @@ use vcp::{
     db::{self, hash_password, now_unix},
     models::{
         AuthSession, DOC_STATUS_PUBLISHED, DocArticle, EphemeralDownload, Issue,
-        MEMBERSHIP_ROLE_ORG, Membership, Organization, PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG,
-        Release, User,
+        MEMBERSHIP_ROLE_ORG, Membership, Organization, PORTAL_ROLE_ADMIN, PORTAL_ROLE_ORG,
+        RESERVED_ORG_SLUG, Release, User,
     },
     perms::PolicyStore,
 };
@@ -117,7 +117,7 @@ pub fn unique_slug(prefix: &str) -> String {
 }
 
 pub async fn create_test_user(db: &Db, email: &str, password: &str) -> User {
-    create_test_user_with_portal_role(db, email, password, "").await
+    create_test_user_with_portal_role(db, email, password, PORTAL_ROLE_ORG).await
 }
 
 pub async fn create_test_user_with_portal_role(

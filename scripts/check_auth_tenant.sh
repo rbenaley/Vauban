@@ -194,4 +194,22 @@ done
 # Testing uses an elevated ceiling so suite login floods do not lock out.
 grep -n 'max_attempts' config/testing.toml >/dev/null || fail "config/testing.toml must define [login] max_attempts"
 
+# Closed User.portal_role catalogue: admin | org (never empty string).
+grep -n 'PORTAL_ROLE_ORG' src/models/mod.rs >/dev/null \
+  || fail "src/models/mod.rs must define PORTAL_ROLE_ORG"
+grep -n 'fn is_allowed_portal_role' src/models/mod.rs >/dev/null \
+  || fail "src/models/mod.rs must expose is_allowed_portal_role"
+if grep -REn --include='*.rs' -e 'portal_role: String::new\(\)' src/ >/dev/null 2>&1; then
+  grep -REn --include='*.rs' -e 'portal_role: String::new\(\)' src/ >&2 || true
+  fail "User.portal_role must use PORTAL_ROLE_ORG|ADMIN, not empty string"
+fi
+[[ -f toasty/migrations/0007_portal_role_org_check.sql ]] \
+  || fail "missing toasty/migrations/0007_portal_role_org_check.sql"
+grep -n "portal_role.*=.*'org'" toasty/migrations/0007_portal_role_org_check.sql >/dev/null \
+  || fail "0007 must normalize empty portal_role to org"
+grep -n 'users_portal_role_check' toasty/migrations/0007_portal_role_org_check.sql >/dev/null \
+  || fail "0007 must add users_portal_role_check"
+grep -n '0007_portal_role_org_check.sql' toasty/history.toml >/dev/null \
+  || fail "history.toml must list 0007_portal_role_org_check.sql"
+
 echo "check_auth_tenant: OK"

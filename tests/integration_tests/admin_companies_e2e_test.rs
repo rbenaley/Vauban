@@ -23,6 +23,11 @@ async fn login(router: &topcoat::router::Router, email: &str) -> Option<String> 
     cookie_header(&login)
 }
 
+struct ComposeLts {
+    lts: i32,
+    industrial: i32,
+}
+
 fn company_compose_form(
     name: &str,
     contact_name: &str,
@@ -31,12 +36,37 @@ fn company_compose_form(
     address: &str,
     emails: &[&str],
 ) -> String {
+    company_compose_form_with_lts(
+        name,
+        contact_name,
+        contact_email,
+        vat,
+        address,
+        emails,
+        ComposeLts {
+            lts: 0,
+            industrial: 0,
+        },
+    )
+}
+
+fn company_compose_form_with_lts(
+    name: &str,
+    contact_name: &str,
+    contact_email: &str,
+    vat: &str,
+    address: &str,
+    emails: &[&str],
+    counts: ComposeLts,
+) -> String {
     let mut parts = vec![
         format!("name={}", urlencoding_encode(name)),
         format!("contact_name={}", urlencoding_encode(contact_name)),
         format!("contact_email={}", urlencoding_encode(contact_email)),
         format!("vat={}", urlencoding_encode(vat)),
         format!("address={}", urlencoding_encode(address)),
+        format!("lts_subscriptions={}", counts.lts),
+        format!("industrial_lts_subscriptions={}", counts.industrial),
         format!("account_rows={}", emails.len().max(1)),
         "compose_action=save".to_owned(),
     ];
@@ -605,6 +635,213 @@ async fn e2e_admin_companies_list_pagination() {
         !pager_hrefs_contain_delete(&p2),
         "page 2 pager hrefs must omit delete=: {p2}"
     );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_admin_lts_counters_persist_and_fiche_user_can_login() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let admin_email = unique_email("lts-admin");
+    let admin_slug = unique_slug("lts-admin-org");
+    let (_admin, _aorg) =
+        create_org_with_membership(&db, &admin_email, "password", &admin_slug, "admin").await;
+    let admin_cookie = login(&router, &admin_email).await;
+
+    let name = format!("LTS Co {}", unique_slug("ltsname"));
+    let member_email = unique_email("lts-member");
+    let address = "9 Rue des Compteurs";
+    let vat = "FR998877665";
+    let form = company_compose_form_with_lts(
+        &name,
+        "LTS Contact",
+        "lts-ops@example.com",
+        vat,
+        address,
+        &[&member_email],
+        ComposeLts {
+            lts: 2,
+            industrial: 1,
+        },
+    );
+    let create = post_form(
+        &router,
+        "/admin/companies/new",
+        admin_cookie.as_deref(),
+        &form,
+    )
+    .await;
+    assert_eq!(status(&create), StatusCode::SEE_OTHER);
+
+    let org = {
+        let mut conn = db.clone();
+        Organization::all()
+            .exec(&mut conn)
+            .await
+            .expect("orgs")
+            .into_iter()
+            .find(|o| o.name == name)
+            .expect("created org")
+    };
+    assert_eq!(org.lts_subscriptions, 2);
+    assert_eq!(org.industrial_lts_subscriptions, 1);
+    assert_eq!(org.address, address);
+    assert_eq!(org.vat, vat);
+
+    let list = get(
+        &router,
+        &format!("/admin/companies?q={}", urlencoding_encode(&name)),
+        admin_cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&list), StatusCode::OK);
+    let list_html = body_text(list).await;
+    assert!(
+        list_html.contains("SUBSCRIPTIONS (VAUBAN LTS / VAUBAN INDUSTRIAL LTS)"),
+        "list card LTS meta label: {list_html}"
+    );
+    assert!(
+        list_html.contains("vb-company-meta-col subs")
+            || list_html.contains("data-company-subscriptions=\"2/1\""),
+        "list card must show subscriptions meta column: {list_html}"
+    );
+    assert!(
+        list_html.contains("data-company-subscriptions=\"2/1\"") || list_html.contains("2/1"),
+        "list card must show LTS ratio 2/1: {list_html}"
+    );
+    assert!(list_html.contains(&member_email), "{list_html}");
+
+    let edit = get(
+        &router,
+        &format!("/admin/companies/{}", org.id),
+        admin_cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&edit), StatusCode::OK);
+    let edit_html = body_text(edit).await;
+    assert!(
+        edit_html.contains("data-lts-subscriptions=\"2\"") || edit_html.contains(">2<"),
+        "edit form must show LTS=2: {edit_html}"
+    );
+    assert!(
+        edit_html.contains("data-industrial-lts-subscriptions=\"1\"")
+            || edit_html.contains("ind_inc"),
+        "edit form must show industrial stepper: {edit_html}"
+    );
+
+    // Sign out staff; login as fiche-provisioned member with bootstrap password.
+    let _ = post_form(&router, "/logout", admin_cookie.as_deref(), "").await;
+    let member_login_form = format!(
+        "email={}&password=password",
+        urlencoding_encode(&member_email)
+    );
+    let member_login = post_form(&router, "/login", None, &member_login_form).await;
+    assert!(
+        status(&member_login).is_redirection(),
+        "fiche user login must redirect"
+    );
+    let location = member_login
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        location,
+        format!("/{}", org.slug),
+        "login must land on the company org, not a hardcoded Acme slug"
+    );
+    let member_cookie = cookie_header(&member_login);
+    assert!(
+        member_cookie.is_some(),
+        "fiche user must login with bootstrap password"
+    );
+
+    let home = get(&router, &format!("/{}", org.slug), member_cookie.as_deref()).await;
+    assert_eq!(
+        status(&home),
+        StatusCode::OK,
+        "new org home must be accessible after company create"
+    );
+
+    let account = get(
+        &router,
+        &format!("/{}/account", org.slug),
+        member_cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&account), StatusCode::OK);
+    let account_html = body_text(account).await;
+    assert!(
+        account_html.contains(address),
+        "account must show company address: {account_html}"
+    );
+    assert!(
+        account_html.contains(vat),
+        "account must show company VAT: {account_html}"
+    );
+    assert!(
+        account_html.contains("data-account-lts=\"2\"") || account_html.contains(">2<"),
+        "account LTS=2: {account_html}"
+    );
+    assert!(
+        account_html.contains("data-account-industrial-lts=\"1\"")
+            || account_html.contains("Industrial"),
+        "account industrial LTS: {account_html}"
+    );
+    assert!(
+        account_html.contains(&member_email),
+        "account must list member email: {account_html}"
+    );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_admin_rejects_out_of_range_lts_count() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("lts-oob");
+    let slug = unique_slug("lts-oob");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let name = format!("OOB Co {}", unique_slug("oob"));
+    let form = company_compose_form_with_lts(
+        &name,
+        "Ops",
+        "ops@example.com",
+        "FR1",
+        "1 St",
+        &[],
+        ComposeLts {
+            lts: 100,
+            industrial: 0,
+        },
+    );
+    let create = post_form(&router, "/admin/companies/new", cookie.as_deref(), &form).await;
+    assert_eq!(status(&create), StatusCode::OK);
+    let html = body_text(create).await;
+    assert!(
+        html.contains("must be between 0 and"),
+        "out-of-range LTS must error: {html}"
+    );
+    {
+        let mut conn = db.clone();
+        let found = Organization::all()
+            .exec(&mut conn)
+            .await
+            .expect("orgs")
+            .into_iter()
+            .any(|o| o.name == name);
+        assert!(!found, "org must not be created on OOB LTS");
+    }
 
     cleanup(&db).await;
 }

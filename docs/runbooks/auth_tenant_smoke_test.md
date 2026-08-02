@@ -36,7 +36,9 @@ rtk cargo test --test integration_tests -- auth_tenant -- --test-threads=1
 - Browser or `curl -k` willing to accept the local self-signed cert.
 - Seed users (empty DB): `support@vauban.sh` / `password` (Vauban Support,
   `portal_role=admin`, reserved org `vauban`),
-  `l.martin@acme.example` / `password` (`role:org` on `acme-infrastructure`).
+  `l.martin@acme.example` / `password` (`portal_role=org`, membership
+  `role:org` on `acme-infrastructure`).
+- `users.portal_role` is closed: only `admin` | `org` (CHECK + app helpers).
 
 ## A -- Login calm
 

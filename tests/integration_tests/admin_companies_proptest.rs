@@ -2,10 +2,11 @@
 
 use proptest::prelude::*;
 use vcp::companies_accounts::{
-    format_technical_contact, normalize_contact_email, normalize_emails,
+    apply_lts_compose_action, clamp_lts_count, format_technical_contact, normalize_contact_email,
+    normalize_emails, parse_lts_subscriptions,
 };
 use vcp::list_page::{COMPANIES_PAGE_SIZE, LIST_PAGE_SIZE};
-use vcp::models::MAX_USERS_PER_COMPANY;
+use vcp::models::{MAX_LTS_SUBSCRIPTIONS_DEFAULT, MAX_USERS_PER_COMPANY};
 use vcp::seats::under_seat_cap;
 use vcp::slug::slugify;
 
@@ -114,5 +115,43 @@ proptest! {
         if name.trim().is_empty() && email.trim().is_empty() {
             prop_assert_eq!(line, "—");
         }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    #[test]
+    fn prop_clamp_lts_stays_in_range(value in -50i32..200, max in 0usize..=99) {
+        let clamped = clamp_lts_count(value, max);
+        prop_assert!(clamped >= 0);
+        let max_i = i32::try_from(max).unwrap_or(i32::MAX);
+        prop_assert!(clamped <= max_i);
+        prop_assert_eq!(MAX_LTS_SUBSCRIPTIONS_DEFAULT, 99);
+    }
+
+    #[test]
+    fn prop_parse_lts_accepts_in_range(value in 0i32..=99) {
+        let raw = value.to_string();
+        let parsed = parse_lts_subscriptions(&raw, 99, "Vauban LTS subscriptions")
+            .expect("in-range");
+        prop_assert_eq!(parsed, value);
+    }
+
+    #[test]
+    fn prop_stepper_actions_stay_clamped(
+        lts in 0i32..=99,
+        industrial in 0i32..=99,
+        action in prop_oneof![
+            Just("lts_inc"),
+            Just("lts_dec"),
+            Just("ind_inc"),
+            Just("ind_dec")
+        ]
+    ) {
+        let (next_lts, next_ind) =
+            apply_lts_compose_action(lts, industrial, action, 99).expect("step");
+        prop_assert!((0..=99).contains(&next_lts));
+        prop_assert!((0..=99).contains(&next_ind));
     }
 }

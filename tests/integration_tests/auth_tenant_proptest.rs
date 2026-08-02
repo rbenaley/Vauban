@@ -6,7 +6,7 @@ use vcp::{
     config::LoginConfig,
     db::{hash_password, verify_password},
     login_limit::{LoginRateLimiter, verify_login_password},
-    models::{PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG},
+    models::{PORTAL_ROLE_ADMIN, PORTAL_ROLE_ORG, RESERVED_ORG_SLUG, is_allowed_portal_role},
     perms::PolicyStore,
 };
 
@@ -63,10 +63,14 @@ proptest! {
     fn prop_resolve_home_org_slug_member_uses_client_or_none(
         client in prop::option::of("[a-z][a-z0-9-]{2,20}")
     ) {
-        let landed = resolve_home_org_slug("", client.clone());
-        prop_assert_eq!(landed, client.clone());
-        let not_staff = resolve_home_org_slug("org", client.clone());
-        prop_assert_eq!(not_staff, client);
+        let landed = resolve_home_org_slug(PORTAL_ROLE_ORG, client.clone());
+        prop_assert_eq!(landed, client);
+    }
+
+    #[test]
+    fn prop_portal_role_catalogue_rejects_noise(role in "[a-z]{1,16}") {
+        prop_assume!(role != PORTAL_ROLE_ADMIN && role != PORTAL_ROLE_ORG);
+        prop_assert!(!is_allowed_portal_role(&role));
     }
 }
 

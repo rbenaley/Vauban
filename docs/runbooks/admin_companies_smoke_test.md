@@ -2,10 +2,12 @@
 
 > Manual validation after shipping **Concept companies** (list/edit,
 > email-only accounts, dual technical contact name + Mailbox-validated email,
-> configurable `org.max_accounts_per_org`, default 5), **card pagination
-> (3/page)**, and **live search shard**. CI covers unit / invariants /
-> proptest / battle / in-process E2E against `vcp_test`; staging proves browser
-> HTTPS and denial paths.
+> configurable `org.max_accounts_per_org`, default 5; 
+> `org.max_lts_subscriptions`, default 99), **LTS steppers**, **bootstrap
+> login password** for fiche accounts, **card pagination (3/page)**, and
+> **live search shard**. CI covers unit / invariants / proptest / battle /
+> in-process E2E against `vcp_test`; staging proves browser HTTPS and
+> denial paths.
 >
 > Audience: release / staging operators.
 > Severity: **BLOCKING** for this surface. Do not ship without A–D.
@@ -44,14 +46,22 @@ just test --test integration_tests -- admin_companies -- --test-threads=1
 2. Open `/admin/companies` — expect Concept cards (contact, ADDRESS/VAT,
    USER ACCOUNTS pills, Edit + trash). No reserved `vauban` card.
 3. Click **+ New company**; fill **Technical contact — full name** and
-   **Technical contact — email** (two fields), plus up to N email-only
-   USER ACCOUNTS (no password fields). Save.
-4. Confirm list shows `Name · email` (or either alone) and account pills;
-   open Edit; confirm both contact fields; add/remove an account email; Save.
-5. Delete via trash + type `delete`.
-6. Confirm slug/name `Vauban` is rejected on create.
+   **Technical contact — email** (two fields), set **Vauban LTS** /
+   **Industrial LTS** steppers (0..N, start at 0), plus up to seat-cap
+   email-only USER ACCOUNTS (no password fields). Save.
+4. Confirm list meta row has ADDRESS / VAT / SUBSCRIPTIONS columns; the
+   subscriptions column label is
+   `SUBSCRIPTIONS (VAUBAN LTS / VAUBAN INDUSTRIAL LTS)` with ratio `2/1`
+   below in the same mono style as VAT; open Edit; confirm steppers +
+   contact fields; add/remove an account email; Save.
+5. Sign out; sign in as a fiche account email with password `password`;
+   open `/{org}` and `/{org}/account` — expect address, VAT, LTS counts,
+   and user-account pills from the company fiche.
+6. Delete via trash + type `delete`.
+7. Confirm slug/name `Vauban` is rejected on create.
 
-Pass: surface matches Concept; seat cap comes from config (default 5).
+Pass: surface matches Concept; seat + LTS caps from config; fiche users
+reach `/{org}` with bootstrap password.
 
 ## B -- Denial paths
 

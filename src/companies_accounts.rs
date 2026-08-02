@@ -7,11 +7,59 @@ use topcoat::mail::Mailbox;
 
 use crate::{
     db::hash_password,
-    models::{MEMBERSHIP_ROLE_ORG, Membership, User},
+    models::{MEMBERSHIP_ROLE_ORG, Membership, PORTAL_ROLE_ORG, User, is_portal_org},
 };
 
 /// Max compose rows we accept from the form (hard ceiling above config cap).
 pub const MAX_EMAIL_FORM_SLOTS: usize = 32;
+
+/// Interim login password for newly provisioned company accounts.
+///
+/// Replaced later by magic links; do not log this value.
+pub const BOOTSTRAP_LOGIN_PASSWORD: &str = "password";
+
+/// Clamp a subscription count into `0..=max`.
+pub fn clamp_lts_count(value: i32, max: usize) -> i32 {
+    let max_i = i32::try_from(max).unwrap_or(i32::MAX).max(0);
+    value.clamp(0, max_i)
+}
+
+/// Parse a form field as an LTS count (empty -> 0). `None` if not an integer.
+pub fn parse_lts_field(raw: &str) -> Option<i32> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Some(0);
+    }
+    t.parse().ok()
+}
+
+/// Parse and reject out-of-range values (tampered POST defense).
+pub fn parse_lts_subscriptions(raw: &str, max: usize, label: &str) -> Result<i32, String> {
+    let Some(v) = parse_lts_field(raw) else {
+        return Err(format!("Invalid {label} count."));
+    };
+    let max_i = i32::try_from(max).unwrap_or(i32::MAX);
+    if v < 0 || v > max_i {
+        return Err(format!("{label} must be between 0 and {max}."));
+    }
+    Ok(v)
+}
+
+/// Apply a compose stepper action; returns updated (lts, industrial) counts.
+pub fn apply_lts_compose_action(
+    lts: i32,
+    industrial: i32,
+    action: &str,
+    max: usize,
+) -> Option<(i32, i32)> {
+    match action {
+        "lts_inc" => Some((clamp_lts_count(lts.saturating_add(1), max), industrial)),
+        "lts_dec" => Some((clamp_lts_count(lts.saturating_sub(1), max), industrial)),
+        "ind_inc" => Some((lts, clamp_lts_count(industrial.saturating_add(1), max))),
+        "ind_dec" => Some((lts, clamp_lts_count(industrial.saturating_sub(1), max))),
+        _ => None,
+    }
+}
 
 /// Read `email_0` … `email_{n-1}` style fields from a key/value map.
 pub fn emails_from_indexed_map(map: &HashMap<String, String>, rows: usize) -> Vec<String> {
@@ -95,14 +143,6 @@ fn display_name_from_email(email: &str) -> String {
         .to_owned()
 }
 
-fn unusable_password_hash() -> anyhow::Result<String> {
-    use argon2::password_hash::rand_core::{OsRng, RngCore};
-    let mut buf = [0u8; 32];
-    OsRng.fill_bytes(&mut buf);
-    let secret = format!("vcp-unusable-{}", hex::encode(buf));
-    hash_password(&secret)
-}
-
 /// Sync org memberships to exactly `emails` (already normalized), capped at `max`.
 pub async fn sync_org_accounts(
     db: &mut Db,
@@ -151,21 +191,34 @@ pub async fn sync_org_accounts(
             .filter(Membership::fields().user_id().eq(user.id))
             .exec(db)
             .await?;
-        if remaining.is_empty() && user.portal_role.is_empty() {
+        if remaining.is_empty() && is_portal_org(&user.portal_role) {
             let _ = user.clone().delete().exec(db).await;
         }
     }
 
     for email in emails {
         let user = if let Some(existing) = user_by_email.get(email) {
-            existing.clone()
+            let mut existing = existing.clone();
+            // Interim until magic links: client fiche accounts always use the
+            // bootstrap password (heals rows created with unusable hashes).
+            // Staff (`portal_role=admin`) hashes are never rewritten here.
+            if is_portal_org(&existing.portal_role) {
+                let password_hash = hash_password(BOOTSTRAP_LOGIN_PASSWORD)?;
+                existing
+                    .update()
+                    .password_hash(password_hash.clone())
+                    .exec(db)
+                    .await?;
+                existing.password_hash = password_hash;
+            }
+            existing
         } else {
-            let password_hash = unusable_password_hash()?;
+            let password_hash = hash_password(BOOTSTRAP_LOGIN_PASSWORD)?;
             toasty::create!(User {
                 email: email.clone(),
                 display_name: display_name_from_email(email),
                 password_hash,
-                portal_role: String::new(),
+                portal_role: PORTAL_ROLE_ORG.to_owned(),
             })
             .exec(db)
             .await?
@@ -210,7 +263,7 @@ pub async fn delete_org_with_accounts(db: &mut Db, org_id: u64) -> anyhow::Resul
                 .filter(Membership::fields().user_id().eq(user.id))
                 .exec(db)
                 .await?;
-            if remaining.is_empty() && user.portal_role.is_empty() {
+            if remaining.is_empty() && is_portal_org(&user.portal_role) {
                 let _ = user.delete().exec(db).await;
             }
         }
@@ -313,5 +366,48 @@ mod tests {
             emails_from_indexed_map(&map, 2),
             vec!["a@x.test".to_owned(), "b@x.test".to_owned()]
         );
+    }
+
+    #[test]
+    fn clamp_lts_count_bounds() {
+        assert_eq!(clamp_lts_count(-3, 99), 0);
+        assert_eq!(clamp_lts_count(0, 99), 0);
+        assert_eq!(clamp_lts_count(50, 99), 50);
+        assert_eq!(clamp_lts_count(99, 99), 99);
+        assert_eq!(clamp_lts_count(100, 99), 99);
+        assert_eq!(clamp_lts_count(5, 0), 0);
+    }
+
+    #[test]
+    fn parse_lts_subscriptions_accepts_range() {
+        assert_eq!(
+            parse_lts_subscriptions("2", 99, "Vauban LTS subscriptions").unwrap(),
+            2
+        );
+        assert_eq!(
+            parse_lts_subscriptions("", 99, "Vauban LTS subscriptions").unwrap(),
+            0
+        );
+        assert!(parse_lts_subscriptions("100", 99, "Vauban LTS subscriptions").is_err());
+        assert!(parse_lts_subscriptions("-1", 99, "Vauban LTS subscriptions").is_err());
+        assert!(parse_lts_subscriptions("x", 99, "Vauban LTS subscriptions").is_err());
+    }
+
+    #[test]
+    fn apply_lts_compose_action_steps() {
+        assert_eq!(apply_lts_compose_action(0, 0, "lts_inc", 99), Some((1, 0)));
+        assert_eq!(apply_lts_compose_action(1, 0, "lts_dec", 99), Some((0, 0)));
+        assert_eq!(apply_lts_compose_action(0, 0, "lts_dec", 99), Some((0, 0)));
+        assert_eq!(
+            apply_lts_compose_action(99, 0, "lts_inc", 99),
+            Some((99, 0))
+        );
+        assert_eq!(apply_lts_compose_action(0, 1, "ind_inc", 99), Some((0, 2)));
+        assert_eq!(apply_lts_compose_action(0, 0, "save", 99), None);
+    }
+
+    #[test]
+    fn bootstrap_login_password_is_password() {
+        assert_eq!(BOOTSTRAP_LOGIN_PASSWORD, "password");
     }
 }

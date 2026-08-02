@@ -19,7 +19,7 @@ use crate::docs_body;
 use crate::models::{
     DocArticle, ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_SUPPORT,
     ISSUE_ROLE_SYSTEM, Issue, IssueComment, MEMBERSHIP_ROLE_ORG, Membership, Organization,
-    PORTAL_ROLE_ADMIN, RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release, User,
+    PORTAL_ROLE_ADMIN, PORTAL_ROLE_ORG, RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release, User,
 };
 use crate::release_pkg::size_mb_from_bytes;
 
@@ -398,7 +398,7 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         email: "l.martin@acme.example".to_owned(),
         display_name: "L. Martin".to_owned(),
         password_hash,
-        portal_role: String::new(),
+        portal_role: PORTAL_ROLE_ORG.to_owned(),
     })
     .exec(&mut db)
     .await?;

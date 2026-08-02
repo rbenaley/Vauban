@@ -61,6 +61,7 @@ Notable knobs (see TOML / `vcp.conf`):
 | Key | Role |
 |-----|------|
 | `[org] max_accounts_per_org` | Seat cap for client company portal accounts (default **5**) |
+| `[org] max_lts_subscriptions` | Cap for LTS / Industrial LTS steppers on admin companies (default **99**) |
 
 ### TLS
 
@@ -134,7 +135,7 @@ On first boot with an empty `users` table the app seeds:
 | Email | Password | Notes |
 |-------|----------|--------|
 | `support@vauban.sh` | `password` | Vauban Support (`portal_role=admin`); membership on reserved org `vauban`; lands on `/vauban` |
-| `l.martin@acme.example` | `password` | Client user (`role:org`) on `acme-infrastructure` only (org technical contact) |
+| `l.martin@acme.example` | `password` | Client user (`portal_role=org`, membership `role:org`) on `acme-infrastructure` only (org technical contact) |
 
 Slug **`vauban`** is reserved (not a billable client). Client companies cannot create or rename to that slug.
 
@@ -153,7 +154,7 @@ Slug **`vauban`** is reserved (not a billable client). Client companies cannot c
 | `/admin/docs` | Documentation editor |
 | `/admin/releases` | Release manager (GA or org-targeted) |
 | `/admin/companies` | Client companies: list / new / edit / delete (excludes reserved `vauban`) |
-| `/admin/companies/new` | Onboard org + provision email-only accounts (Mailbox syntax check; unusable password until magic links) |
+| `/admin/companies/new` | Onboard org + provision email-only accounts (Mailbox syntax check; bootstrap password `password` until magic links) |
 | `/admin/companies/{id}` | Edit company + sync accounts under `org.max_accounts_per_org` |
 
 Wrong org slug → **404** (no cross-tenant leak). `/admin/*` requires Vauban Support (`portal_role=admin` + Casbin `admin:view`). Direct `/vauban/issues*` redirects to `/admin/issues`.
@@ -177,6 +178,7 @@ bash scripts/check_admin_docs.sh
 bash scripts/check_portal_issues.sh
 bash scripts/check_admin_releases.sh
 bash scripts/check_admin_companies.sh
+bash scripts/check_org_account.sh
 bash scripts/check_builds_entitlement.sh
 bash scripts/check_toasty_filters.sh
 bash scripts/check_request_sql_dedup.sh

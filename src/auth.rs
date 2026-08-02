@@ -34,7 +34,7 @@ pub struct AuthUser {
     pub display_name: String,
     /// Casbin role for this request (`org` or `admin`).
     pub role: String,
-    /// Persisted `User.portal_role` (`admin` for Vauban Support, else empty).
+    /// Persisted `User.portal_role` (`admin` or `org`).
     pub portal_role: String,
 }
 
@@ -261,11 +261,19 @@ pub async fn first_client_org_slug(cx: &Cx, user_id: u64) -> Result<Option<Strin
         .exec(&mut database)
         .await
         .unwrap_or_default();
+    if memberships.is_empty() {
+        return Ok(None);
+    }
+    let org_ids: Vec<u64> = memberships.iter().map(|m| m.organization_id).collect();
+    let orgs = crate::id_lookups::orgs_by_ids(&mut database, &org_ids)
+        .await
+        .unwrap_or_default();
+    // Preserve membership order so "first" client org is stable.
     for m in memberships {
-        if let Ok(org) = Organization::get_by_id(&mut database, m.organization_id).await
+        if let Some(org) = orgs.iter().find(|o| o.id == m.organization_id)
             && !org.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG)
         {
-            return Ok(Some(org.slug));
+            return Ok(Some(org.slug.clone()));
         }
     }
     Ok(None)
@@ -323,10 +331,17 @@ mod tests {
     #[test]
     fn auth_tenant_resolve_home_org_slug_member_uses_client() {
         assert_eq!(
-            resolve_home_org_slug("", Some("acme-infrastructure".to_owned())).as_deref(),
+            resolve_home_org_slug(
+                crate::models::PORTAL_ROLE_ORG,
+                Some("acme-infrastructure".to_owned())
+            )
+            .as_deref(),
             Some("acme-infrastructure")
         );
-        assert_eq!(resolve_home_org_slug("", None), None);
+        assert_eq!(
+            resolve_home_org_slug(crate::models::PORTAL_ROLE_ORG, None),
+            None
+        );
     }
 
     #[test]

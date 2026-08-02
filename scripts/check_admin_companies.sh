@@ -34,6 +34,16 @@ grep -n 'companies_manage' "$NEW" >/dev/null || fail "$NEW must gate on companie
 grep -n 'toasty::create!(Organization' "$NEW" >/dev/null || fail "$NEW must create Organization"
 grep -n 'max_accounts_per_org\|sync_org_accounts' "$NEW" >/dev/null \
   || fail "$NEW must use configurable seat cap / sync accounts"
+grep -n 'parse_lts_subscriptions\|lts_subscriptions:' "$NEW" >/dev/null \
+  || fail "$NEW must persist LTS subscription counts"
+grep -n 'apply_lts_compose_action' "$NEW" >/dev/null \
+  || fail "$NEW must handle LTS stepper compose actions"
+grep -n 'lts_subscriptions(' "$EDIT" >/dev/null \
+  || fail "$EDIT must update lts_subscriptions"
+grep -n 'industrial_lts_subscriptions(' "$EDIT" >/dev/null \
+  || fail "$EDIT must update industrial_lts_subscriptions"
+grep -n 'apply_lts_compose_action' "$EDIT" >/dev/null \
+  || fail "$EDIT must handle LTS stepper compose actions"
 grep -n 'see_other' "$NEW" >/dev/null || fail "$NEW save must use see_other (303 PRG)"
 grep -nE 'Err\(redirect\(' "$NEW" >/dev/null \
   && fail "$NEW must not Err(redirect) on POST (307 re-POSTs / empties download)"
@@ -54,6 +64,16 @@ grep -n 'see_other' "$EDIT" >/dev/null || fail "$EDIT save/delete must use see_o
 grep -nE 'Err\(redirect\(' "$EDIT" >/dev/null \
   && fail "$EDIT must not Err(redirect) on POST (307 re-POSTs / empties download)"
 grep -n 'USER ACCOUNTS' "$FORM" >/dev/null || fail "$FORM must show USER ACCOUNTS section"
+grep -n 'Vauban LTS subscriptions' "$FORM" >/dev/null \
+  || fail "$FORM must show Vauban LTS subscriptions stepper"
+grep -n 'Vauban Industrial LTS subscriptions' "$FORM" >/dev/null \
+  || fail "$FORM must show Industrial LTS stepper"
+grep -n 'lts_inc\|lts_dec\|ind_inc\|ind_dec' "$FORM" >/dev/null \
+  || fail "$FORM must expose LTS compose_action steppers"
+grep -n 'name="lts_subscriptions"' "$FORM" >/dev/null \
+  || fail "$FORM must post lts_subscriptions"
+grep -n 'name="industrial_lts_subscriptions"' "$FORM" >/dev/null \
+  || fail "$FORM must post industrial_lts_subscriptions"
 grep -n 'fn company_form_response' "$FORM" >/dev/null \
   || fail "$FORM must wrap POST re-renders via company_form_response"
 grep -n 'fn render_admin_page' src/app/admin.rs >/dev/null \
@@ -72,6 +92,14 @@ grep -n 'admin_companies_search_results' "$LIST" >/dev/null \
   || fail "$LIST must invoke live search shard"
 grep -n 'type="search"' "$LIST" >/dev/null || fail "$LIST must expose search input"
 grep -n 'USER ACCOUNTS' "$SHARD" >/dev/null || fail "$SHARD cards must show USER ACCOUNTS"
+grep -n 'SUBSCRIPTIONS (VAUBAN LTS / VAUBAN INDUSTRIAL LTS)' "$SHARD" >/dev/null \
+  || fail "$SHARD cards must show SUBSCRIPTIONS meta label"
+grep -n 'vb-company-meta-col subs' "$SHARD" >/dev/null \
+  || fail "$SHARD must place subscriptions in a meta column beside VAT"
+grep -n 'data-company-subscriptions' "$SHARD" >/dev/null \
+  || fail "$SHARD must expose subscription ratio on the meta value"
+grep -n 'lts_subscriptions' "$SHARD" >/dev/null \
+  || fail "$SHARD must render org.lts_subscriptions"
 grep -n 'vb-account-pill' "$SHARD" >/dev/null || fail "$SHARD must render account pills"
 grep -n '/admin/companies/{}' "$SHARD" >/dev/null \
   || fail "$SHARD Edit links must use company id"
@@ -111,6 +139,19 @@ grep -n 'Mailbox::new' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must validate v
 grep -n 'Result<Vec<String>, String>' "$ACCOUNTS" >/dev/null \
   || fail "$ACCOUNTS normalize_emails must return Result (fail-closed)"
 grep -n 'fn sync_org_accounts' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must define sync_org_accounts"
+grep -n 'BOOTSTRAP_LOGIN_PASSWORD' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS must define BOOTSTRAP_LOGIN_PASSWORD"
+grep -n 'hash_password(BOOTSTRAP_LOGIN_PASSWORD)' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS must hash bootstrap password for new users"
+grep -n 'unusable_password_hash' "$ACCOUNTS" >/dev/null \
+  && fail "$ACCOUNTS must not use unusable_password_hash for new users"
+grep -n 'fn clamp_lts_count' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must define clamp_lts_count"
+grep -n 'fn parse_lts_subscriptions' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS must define parse_lts_subscriptions"
+grep -n 'MAX_LTS_SUBSCRIPTIONS_DEFAULT' "$MODELS" >/dev/null \
+  || fail "$MODELS must define MAX_LTS_SUBSCRIPTIONS_DEFAULT"
+grep -n 'max_lts_subscriptions' "$CONFIG" >/dev/null \
+  || fail "$CONFIG must define max_lts_subscriptions"
 grep -n 'normalize_emails(emails_raw)?' "$NEW" >/dev/null \
   || fail "$NEW must propagate normalize_emails errors"
 grep -n 'normalize_emails(emails_raw)?' "$EDIT" >/dev/null \
@@ -142,8 +183,12 @@ grep -n 'DROP COLUMN "technical_contact"' toasty/migrations/0006_technical_conta
 
 grep -n 'max_accounts_per_org' config/default.toml >/dev/null \
   || fail "config/default.toml must set org.max_accounts_per_org"
+grep -n 'max_lts_subscriptions' config/default.toml >/dev/null \
+  || fail "config/default.toml must set org.max_lts_subscriptions"
 grep -n 'max_accounts_per_org' config/vcp.conf >/dev/null \
   || fail "config/vcp.conf must set org.max_accounts_per_org"
+grep -n 'max_lts_subscriptions' config/vcp.conf >/dev/null \
+  || fail "config/vcp.conf must set org.max_lts_subscriptions"
 grep -nE 'features\s*=\s*\[.*"mail"' Cargo.toml >/dev/null \
   || fail "Cargo.toml must enable topcoat mail feature"
 grep -n 'FileTransport' src/app.rs >/dev/null || fail "src/app.rs must register FileTransport MailConfig"

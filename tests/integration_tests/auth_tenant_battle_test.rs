@@ -7,7 +7,7 @@ use topcoat::router::StatusCode;
 use vcp::{
     auth::{load_user_for_token_hex, persist_session_record, resolve_home_org_slug},
     db::now_unix,
-    models::{Membership, PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG},
+    models::{Membership, PORTAL_ROLE_ADMIN, PORTAL_ROLE_ORG, RESERVED_ORG_SLUG},
 };
 
 use crate::common::{
@@ -195,8 +195,11 @@ async fn battle_parallel_session_root_redirects() {
                 .expect("location");
             assert_eq!(loc, expected);
             assert_eq!(
-                resolve_home_org_slug("", Some(expected.trim_start_matches('/').to_owned()))
-                    .as_deref(),
+                resolve_home_org_slug(
+                    PORTAL_ROLE_ORG,
+                    Some(expected.trim_start_matches('/').to_owned())
+                )
+                .as_deref(),
                 Some(expected.trim_start_matches('/'))
             );
             assert_eq!(

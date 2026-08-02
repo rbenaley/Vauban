@@ -107,6 +107,23 @@ fn inv_reserved_org_staff_only_in_org_context() {
 }
 
 #[test]
+fn inv_portal_role_closed_catalogue() {
+    let models = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/models/mod.rs"));
+    assert!(models.contains("PORTAL_ROLE_ORG"));
+    assert!(models.contains("fn is_allowed_portal_role"));
+    assert!(
+        !models.contains("Empty for client"),
+        "client portal_role must be org, not empty string docs"
+    );
+    let mig = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/toasty/migrations/0007_portal_role_org_check.sql"
+    ));
+    assert!(mig.contains("users_portal_role_check"));
+    assert!(mig.contains("'admin'") && mig.contains("'org'"));
+}
+
+#[test]
 fn inv_login_uses_verify_login_password_and_limiter() {
     let login = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/login.rs"));
     assert!(login.contains("verify_login_password"));

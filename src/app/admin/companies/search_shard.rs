@@ -65,6 +65,10 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
                         &card.org.technical_contact_email,
                     );
                     let emails = card.emails.clone();
+                    let subs_ratio = format!(
+                        "{}/{}", card.org.lts_subscriptions, card.org
+                        .industrial_lts_subscriptions
+                    );
                     <div class="vb-company-card">
                         <div class="vb-company-card-head">
                             <div style="min-width: 0;">
@@ -103,6 +107,17 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
                                 <div class="vb-company-meta-label">"VAT"</div>
                                 <div class="vb-company-meta-value mono">
                                     (card.org.vat.clone())
+                                </div>
+                            </div>
+                            <div class="vb-company-meta-col subs">
+                                <div class="vb-company-meta-label">
+                                    "SUBSCRIPTIONS (VAUBAN LTS / VAUBAN INDUSTRIAL LTS)"
+                                </div>
+                                <div
+                                    class="vb-company-meta-value mono"
+                                    data-company-subscriptions=(subs_ratio.clone())
+                                >
+                                    (subs_ratio.clone())
                                 </div>
                             </div>
                         </div>

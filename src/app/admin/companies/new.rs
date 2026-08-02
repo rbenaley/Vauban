@@ -13,7 +13,8 @@ use super::form::{CompanyFormView, company_form_response, render_company_form};
 use crate::{
     auth::{capability_denied, config, db, require_staff},
     companies_accounts::{
-        emails_from_indexed_map, normalize_contact_email, normalize_emails, sync_org_accounts,
+        apply_lts_compose_action, emails_from_indexed_map, normalize_contact_email,
+        normalize_emails, parse_lts_field, parse_lts_subscriptions, sync_org_accounts,
     },
     models::{Organization, RESERVED_ORG_SLUG},
     perms::perms_for_user,
@@ -32,6 +33,10 @@ struct CompanyComposeForm {
     #[serde(default)]
     address: String,
     #[serde(default)]
+    lts_subscriptions: String,
+    #[serde(default)]
+    industrial_lts_subscriptions: String,
+    #[serde(default)]
     account_rows: String,
     #[serde(default)]
     compose_action: String,
@@ -44,12 +49,25 @@ impl CompanyComposeForm {
         let rows = self.account_rows.parse::<usize>().unwrap_or(1).max(1);
         emails_from_indexed_map(&self.extra, rows)
     }
+
+    fn lts_counts(&self, max_lts: usize) -> (i32, i32) {
+        let lts = parse_lts_field(&self.lts_subscriptions)
+            .map(|v| crate::companies_accounts::clamp_lts_count(v, max_lts))
+            .unwrap_or(0);
+        let industrial = parse_lts_field(&self.industrial_lts_subscriptions)
+            .map(|v| crate::companies_accounts::clamp_lts_count(v, max_lts))
+            .unwrap_or(0);
+        (lts, industrial)
+    }
 }
 
 fn form_view(
     form: &CompanyComposeForm,
     emails: Vec<String>,
+    lts: i32,
+    industrial: i32,
     max: usize,
+    max_lts: usize,
     error: Option<String>,
 ) -> CompanyFormView {
     CompanyFormView {
@@ -61,8 +79,11 @@ fn form_view(
         contact_email: form.contact_email.clone(),
         vat: form.vat.clone(),
         address: form.address.clone(),
+        lts_subscriptions: lts,
+        industrial_lts_subscriptions: industrial,
         emails,
         max_accounts: max,
+        max_lts,
         error,
     }
 }
@@ -74,7 +95,9 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
     if !perms.companies_manage {
         return Err(capability_denied().into());
     }
-    let max = config(cx).org.max_accounts_per_org;
+    let cfg = config(cx);
+    let max = cfg.org.max_accounts_per_org;
+    let max_lts = cfg.org.max_lts_subscriptions;
     render_company_form(
         cx,
         CompanyFormView {
@@ -86,8 +109,11 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
             contact_email: String::new(),
             vat: String::new(),
             address: String::new(),
+            lts_subscriptions: 0,
+            industrial_lts_subscriptions: 0,
             emails: vec![String::new()],
             max_accounts: max,
+            max_lts,
             error: None,
         },
     )
@@ -102,9 +128,20 @@ async fn admin_companies_create(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
         return Err(capability_denied().into());
     }
 
-    let max = config(cx).org.max_accounts_per_org;
+    let cfg = config(cx);
+    let max = cfg.org.max_accounts_per_org;
+    let max_lts = cfg.org.max_lts_subscriptions;
     let mut emails = form.emails();
+    let (lts, industrial) = form.lts_counts(max_lts);
     let action = form.compose_action.trim();
+
+    if let Some((next_lts, next_ind)) = apply_lts_compose_action(lts, industrial, action, max_lts) {
+        return company_form_response(
+            cx,
+            form_view(&form, emails, next_lts, next_ind, max, max_lts, None),
+        )
+        .await;
+    }
 
     if let Some(idx) = action.strip_prefix("remove:")
         && let Ok(i) = idx.parse::<usize>()
@@ -113,21 +150,37 @@ async fn admin_companies_create(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
         emails.remove(i);
     }
     if action.starts_with("remove:") {
-        return company_form_response(cx, form_view(&form, emails, max, None)).await;
+        return company_form_response(
+            cx,
+            form_view(&form, emails, lts, industrial, max, max_lts, None),
+        )
+        .await;
     }
 
     if action == "add_row" {
         if emails.len() < max {
             emails.push(String::new());
         }
-        return company_form_response(cx, form_view(&form, emails, max, None)).await;
+        return company_form_response(
+            cx,
+            form_view(&form, emails, lts, industrial, max, max_lts, None),
+        )
+        .await;
     }
 
-    match save_new_company(cx, &form, &emails, max).await {
+    match save_new_company(cx, &form, &emails, max, max_lts).await {
         // 303 See Other (PRG). Do not use redirect()/307 — it re-POSTs to the
         // list URL and browsers download an empty "companies" file.
         Ok(()) => see_other("/admin/companies").into_response(cx),
-        Err(msg) => company_form_response(cx, form_view(&form, emails, max, Some(msg))).await,
+        Err(msg) => {
+            // Re-read counts after failed save attempt (may be invalid).
+            let (lts, industrial) = form.lts_counts(max_lts);
+            company_form_response(
+                cx,
+                form_view(&form, emails, lts, industrial, max, max_lts, Some(msg)),
+            )
+            .await
+        }
     }
 }
 
@@ -136,6 +189,7 @@ async fn save_new_company(
     form: &CompanyComposeForm,
     emails_raw: &[String],
     max: usize,
+    max_lts: usize,
 ) -> std::result::Result<(), String> {
     let name = form.name.trim().to_owned();
     if name.is_empty() {
@@ -146,6 +200,13 @@ async fn save_new_company(
     if emails.len() > max {
         return Err(format!("At most {max} user accounts are allowed."));
     }
+    let lts =
+        parse_lts_subscriptions(&form.lts_subscriptions, max_lts, "Vauban LTS subscriptions")?;
+    let industrial = parse_lts_subscriptions(
+        &form.industrial_lts_subscriptions,
+        max_lts,
+        "Vauban Industrial LTS subscriptions",
+    )?;
 
     let base_slug = slugify(&name);
     if base_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
@@ -180,8 +241,8 @@ async fn save_new_company(
         vat: form.vat.trim().to_owned(),
         plan_label: "Standard".to_owned(),
         supported_builds: "LTS".to_owned(),
-        lts_subscriptions: 0,
-        industrial_lts_subscriptions: 0,
+        lts_subscriptions: lts,
+        industrial_lts_subscriptions: industrial,
         technical_contact_name: form.contact_name.trim().to_owned(),
         technical_contact_email: contact_email,
         status: "ACTIVE".to_owned(),

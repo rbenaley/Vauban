@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-use vcp::models::MAX_USERS_PER_COMPANY;
+use vcp::models::{MAX_LTS_SUBSCRIPTIONS_DEFAULT, MAX_USERS_PER_COMPANY};
 
 #[test]
 fn inv_check_admin_companies_script() {
@@ -28,6 +28,41 @@ fn inv_seat_cap_default_is_five() {
     let cfg = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config.rs"));
     assert!(cfg.contains("max_accounts_per_org"));
     assert!(cfg.contains("struct OrgConfig"));
+}
+
+#[test]
+fn inv_lts_subscription_cap_and_steppers() {
+    assert_eq!(MAX_LTS_SUBSCRIPTIONS_DEFAULT, 99);
+    let cfg = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config.rs"));
+    assert!(cfg.contains("max_lts_subscriptions"));
+    let form = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/form.rs"
+    ));
+    assert!(form.contains("lts_inc"));
+    assert!(form.contains("lts_dec"));
+    assert!(form.contains("ind_inc"));
+    assert!(form.contains("ind_dec"));
+    assert!(form.contains("Vauban LTS subscriptions"));
+    assert!(form.contains("name=\"lts_subscriptions\""));
+    let accounts = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/companies_accounts.rs"
+    ));
+    assert!(accounts.contains("BOOTSTRAP_LOGIN_PASSWORD"));
+    assert!(accounts.contains("hash_password(BOOTSTRAP_LOGIN_PASSWORD)"));
+    assert!(!accounts.contains("unusable_password_hash"));
+    let new = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/new.rs"
+    ));
+    assert!(new.contains("parse_lts_subscriptions"));
+    let edit = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/company_id.rs"
+    ));
+    assert!(edit.contains(".lts_subscriptions("));
+    assert!(edit.contains(".industrial_lts_subscriptions("));
 }
 
 #[test]

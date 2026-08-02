@@ -39,3 +39,4 @@ lockout_secs = 900
 
 [org]
 max_accounts_per_org = 5
+max_lts_subscriptions = 99

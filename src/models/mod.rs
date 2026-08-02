@@ -5,14 +5,38 @@ use toasty::{Deferred, Model};
 /// Default maximum user accounts per client company (`org.max_accounts_per_org`).
 pub const MAX_USERS_PER_COMPANY: usize = 5;
 
+/// Default max for LTS / Industrial LTS subscription counters
+/// (`org.max_lts_subscriptions`).
+pub const MAX_LTS_SUBSCRIPTIONS_DEFAULT: usize = 99;
+
 /// Reserved org slug for Vauban Support client-preview chrome (not a billable tenant).
 pub const RESERVED_ORG_SLUG: &str = "vauban";
 
 /// `User.portal_role` for Vauban Support staff (Casbin `role:admin`).
 pub const PORTAL_ROLE_ADMIN: &str = "admin";
 
+/// `User.portal_role` for client accounts (Casbin subject uses membership
+/// `role:org`; distinct from staff even when both strings are `"org"` in
+/// different columns).
+pub const PORTAL_ROLE_ORG: &str = "org";
+
 /// `Membership.role` for every org membership (Casbin `role:org`).
 pub const MEMBERSHIP_ROLE_ORG: &str = "org";
+
+/// Closed catalogue for [`User::portal_role`].
+pub fn is_allowed_portal_role(portal_role: &str) -> bool {
+    portal_role == PORTAL_ROLE_ADMIN || portal_role == PORTAL_ROLE_ORG
+}
+
+/// Vauban Support staff class (`portal_role = admin`).
+pub fn is_portal_admin(portal_role: &str) -> bool {
+    portal_role == PORTAL_ROLE_ADMIN
+}
+
+/// Client account class (`portal_role = org`).
+pub fn is_portal_org(portal_role: &str) -> bool {
+    portal_role == PORTAL_ROLE_ORG
+}
 
 /// `Release.organization_id` sentinel: generally available to all orgs.
 pub const RELEASE_GA_ORG_ID: u64 = 0;
@@ -47,7 +71,7 @@ pub struct User {
 
     pub password_hash: String,
 
-    /// Empty for client users; [`PORTAL_ROLE_ADMIN`] for Vauban Support staff.
+    /// [`PORTAL_ROLE_ORG`] for clients; [`PORTAL_ROLE_ADMIN`] for Vauban Support.
     pub portal_role: String,
 }
 
@@ -261,4 +285,22 @@ pub struct EphemeralDownload {
 
     /// Unix timestamp (seconds) when the token was issued.
     pub created_at: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portal_role_catalogue_is_closed() {
+        assert!(is_allowed_portal_role(PORTAL_ROLE_ADMIN));
+        assert!(is_allowed_portal_role(PORTAL_ROLE_ORG));
+        assert!(!is_allowed_portal_role(""));
+        assert!(!is_allowed_portal_role("member"));
+        assert!(!is_allowed_portal_role("staff"));
+        assert!(is_portal_admin(PORTAL_ROLE_ADMIN));
+        assert!(!is_portal_admin(PORTAL_ROLE_ORG));
+        assert!(is_portal_org(PORTAL_ROLE_ORG));
+        assert!(!is_portal_org(PORTAL_ROLE_ADMIN));
+    }
 }

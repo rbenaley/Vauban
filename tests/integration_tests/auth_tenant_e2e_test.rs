@@ -3,7 +3,7 @@
 use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
 use vcp::db::now_unix;
-use vcp::models::{AuthSession, RESERVED_ORG_SLUG};
+use vcp::models::{AuthSession, PORTAL_ROLE_ORG, RESERVED_ORG_SLUG};
 
 use crate::common::{
     cleanup, cookie_header, create_org_with_membership, create_test_org, db_lock,
@@ -68,7 +68,11 @@ async fn e2e_wrong_org_slug_is_404() {
 
     let email = unique_email("e2e-member");
     let slug = unique_slug("e2e-home");
-    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let (user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    assert_eq!(
+        user.portal_role, PORTAL_ROLE_ORG,
+        "client fixtures must persist portal_role=org"
+    );
     let _other = create_test_org(&db, &unique_slug("e2e-other")).await;
 
     let form = format!("email={}&password=password", urlencoding_encode(&email));

@@ -31,8 +31,10 @@ WebSocket product surface). Product IA is defined by
 
 - **Documentation editor** — write / publish / unpublish articles
 - **Release manager** — publish binaries that appear in Builds
-- **Client companies** — onboard orgs (`org.max_accounts_per_org`, default 5);
-  account emails syntax-validated via Topcoat `Mailbox`
+- **Client companies** — onboard orgs (`org.max_accounts_per_org`, default 5;
+ `org.max_lts_subscriptions`, default 99); account emails syntax-validated via
+ Topcoat `Mailbox`; new accounts bootstrap-login with password `password`
+ until magic links
 
 Security bar on the wire matches the bastion for **TLS 1.3** and
 **post-quantum hybrid readiness** (`tls-post-quantum.mdc`), without

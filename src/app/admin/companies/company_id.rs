@@ -18,8 +18,9 @@ use super::form::{CompanyFormView, company_form_response, render_company_form};
 use crate::{
     auth::{capability_denied, config, db, require_staff},
     companies_accounts::{
-        delete_org_with_accounts, emails_from_indexed_map, normalize_contact_email,
-        normalize_emails, sync_org_accounts,
+        apply_lts_compose_action, clamp_lts_count, delete_org_with_accounts,
+        emails_from_indexed_map, normalize_contact_email, normalize_emails, parse_lts_field,
+        parse_lts_subscriptions, sync_org_accounts,
     },
     docs_version::is_delete_confirm,
     models::{Membership, Organization, RESERVED_ORG_SLUG},
@@ -41,6 +42,10 @@ struct CompanyComposeForm {
     #[serde(default)]
     address: String,
     #[serde(default)]
+    lts_subscriptions: String,
+    #[serde(default)]
+    industrial_lts_subscriptions: String,
+    #[serde(default)]
     account_rows: String,
     #[serde(default)]
     compose_action: String,
@@ -52,6 +57,16 @@ impl CompanyComposeForm {
     fn emails(&self) -> Vec<String> {
         let rows = self.account_rows.parse::<usize>().unwrap_or(1).max(1);
         emails_from_indexed_map(&self.extra, rows)
+    }
+
+    fn lts_counts(&self, max_lts: usize) -> (i32, i32) {
+        let lts = parse_lts_field(&self.lts_subscriptions)
+            .map(|v| clamp_lts_count(v, max_lts))
+            .unwrap_or(0);
+        let industrial = parse_lts_field(&self.industrial_lts_subscriptions)
+            .map(|v| clamp_lts_count(v, max_lts))
+            .unwrap_or(0);
+        (lts, industrial)
     }
 }
 
@@ -96,6 +111,38 @@ async fn load_org_emails(cx: &Cx, org_id: u64) -> Vec<String> {
     emails
 }
 
+struct EditFormState {
+    lts: i32,
+    industrial: i32,
+    max_accounts: usize,
+    max_lts: usize,
+    error: Option<String>,
+}
+
+fn edit_view(
+    id: u64,
+    form: &CompanyComposeForm,
+    emails: Vec<String>,
+    state: EditFormState,
+) -> CompanyFormView {
+    CompanyFormView {
+        action: format!("/admin/companies/{id}"),
+        title: "Edit client company".to_owned(),
+        submit_label: "Save changes".to_owned(),
+        name: form.name.clone(),
+        contact_name: form.contact_name.clone(),
+        contact_email: form.contact_email.clone(),
+        vat: form.vat.clone(),
+        address: form.address.clone(),
+        lts_subscriptions: state.lts,
+        industrial_lts_subscriptions: state.industrial,
+        emails,
+        max_accounts: state.max_accounts,
+        max_lts: state.max_lts,
+        error: state.error,
+    }
+}
+
 #[page]
 async fn admin_companies_edit_page(cx: &Cx) -> Result {
     let raw = path_param::<CompanyId>(cx);
@@ -110,7 +157,9 @@ async fn admin_companies_edit_page(cx: &Cx) -> Result {
     let Some(org) = load_company(cx, id).await else {
         return Err(not_found().into());
     };
-    let max = config(cx).org.max_accounts_per_org;
+    let cfg = config(cx);
+    let max = cfg.org.max_accounts_per_org;
+    let max_lts = cfg.org.max_lts_subscriptions;
     let emails = load_org_emails(cx, org.id).await;
     render_company_form(
         cx,
@@ -123,8 +172,11 @@ async fn admin_companies_edit_page(cx: &Cx) -> Result {
             contact_email: org.technical_contact_email,
             vat: org.vat,
             address: org.address,
+            lts_subscriptions: org.lts_subscriptions,
+            industrial_lts_subscriptions: org.industrial_lts_subscriptions,
             emails,
             max_accounts: max,
+            max_lts,
             error: None,
         },
     )
@@ -146,10 +198,31 @@ async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
         return Err(not_found().into());
     };
 
-    let max = config(cx).org.max_accounts_per_org;
-    let action_url = format!("/admin/companies/{id}");
+    let cfg = config(cx);
+    let max = cfg.org.max_accounts_per_org;
+    let max_lts = cfg.org.max_lts_subscriptions;
     let mut emails = form.emails();
+    let (lts, industrial) = form.lts_counts(max_lts);
     let action = form.compose_action.trim();
+
+    if let Some((next_lts, next_ind)) = apply_lts_compose_action(lts, industrial, action, max_lts) {
+        return company_form_response(
+            cx,
+            edit_view(
+                id,
+                &form,
+                emails,
+                EditFormState {
+                    lts: next_lts,
+                    industrial: next_ind,
+                    max_accounts: max,
+                    max_lts,
+                    error: None,
+                },
+            ),
+        )
+        .await;
+    }
 
     if let Some(idx) = action.strip_prefix("remove:")
         && let Ok(i) = idx.parse::<usize>()
@@ -160,19 +233,18 @@ async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
     if action.starts_with("remove:") {
         return company_form_response(
             cx,
-            CompanyFormView {
-                action: action_url,
-                title: "Edit client company".to_owned(),
-                submit_label: "Save changes".to_owned(),
-                name: form.name,
-                contact_name: form.contact_name,
-                contact_email: form.contact_email,
-                vat: form.vat,
-                address: form.address,
+            edit_view(
+                id,
+                &form,
                 emails,
-                max_accounts: max,
-                error: None,
-            },
+                EditFormState {
+                    lts,
+                    industrial,
+                    max_accounts: max,
+                    max_lts,
+                    error: None,
+                },
+            ),
         )
         .await;
     }
@@ -183,50 +255,51 @@ async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
         }
         return company_form_response(
             cx,
-            CompanyFormView {
-                action: action_url,
-                title: "Edit client company".to_owned(),
-                submit_label: "Save changes".to_owned(),
-                name: form.name,
-                contact_name: form.contact_name,
-                contact_email: form.contact_email,
-                vat: form.vat,
-                address: form.address,
+            edit_view(
+                id,
+                &form,
                 emails,
-                max_accounts: max,
-                error: None,
-            },
+                EditFormState {
+                    lts,
+                    industrial,
+                    max_accounts: max,
+                    max_lts,
+                    error: None,
+                },
+            ),
         )
         .await;
     }
 
     let fields = CompanyFields {
-        name: form.name,
-        contact_name: form.contact_name,
-        contact_email: form.contact_email,
-        vat: form.vat,
-        address: form.address,
+        name: form.name.clone(),
+        contact_name: form.contact_name.clone(),
+        contact_email: form.contact_email.clone(),
+        vat: form.vat.clone(),
+        address: form.address.clone(),
+        lts_subscriptions: form.lts_subscriptions.clone(),
+        industrial_lts_subscriptions: form.industrial_lts_subscriptions.clone(),
     };
-    match save_edit(cx, org, &fields, &emails, max).await {
+    match save_edit(cx, org, &fields, &emails, max, max_lts).await {
         // 303 See Other (PRG). Do not use redirect()/307 — it re-POSTs to the
         // list URL and browsers download an empty "companies" file.
         Ok(()) => see_other("/admin/companies").into_response(cx),
         Err(msg) => {
+            let (lts, industrial) = form.lts_counts(max_lts);
             company_form_response(
                 cx,
-                CompanyFormView {
-                    action: action_url,
-                    title: "Edit client company".to_owned(),
-                    submit_label: "Save changes".to_owned(),
-                    name: fields.name,
-                    contact_name: fields.contact_name,
-                    contact_email: fields.contact_email,
-                    vat: fields.vat,
-                    address: fields.address,
+                edit_view(
+                    id,
+                    &form,
                     emails,
-                    max_accounts: max,
-                    error: Some(msg),
-                },
+                    EditFormState {
+                        lts,
+                        industrial,
+                        max_accounts: max,
+                        max_lts,
+                        error: Some(msg),
+                    },
+                ),
             )
             .await
         }
@@ -239,6 +312,8 @@ struct CompanyFields {
     contact_email: String,
     vat: String,
     address: String,
+    lts_subscriptions: String,
+    industrial_lts_subscriptions: String,
 }
 
 async fn save_edit(
@@ -247,6 +322,7 @@ async fn save_edit(
     fields: &CompanyFields,
     emails_raw: &[String],
     max: usize,
+    max_lts: usize,
 ) -> std::result::Result<(), String> {
     let name = fields.name.trim().to_owned();
     if name.is_empty() {
@@ -257,6 +333,16 @@ async fn save_edit(
     if emails.len() > max {
         return Err(format!("At most {max} user accounts are allowed."));
     }
+    let lts = parse_lts_subscriptions(
+        &fields.lts_subscriptions,
+        max_lts,
+        "Vauban LTS subscriptions",
+    )?;
+    let industrial = parse_lts_subscriptions(
+        &fields.industrial_lts_subscriptions,
+        max_lts,
+        "Vauban Industrial LTS subscriptions",
+    )?;
 
     let mut database = db(cx);
     org.update()
@@ -265,6 +351,8 @@ async fn save_edit(
         .technical_contact_email(contact_email)
         .vat(fields.vat.trim().to_owned())
         .address(fields.address.trim().to_owned())
+        .lts_subscriptions(lts)
+        .industrial_lts_subscriptions(industrial)
         .exec(&mut database)
         .await
         .map_err(|_| "Could not update company.".to_owned())?;
