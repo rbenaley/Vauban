@@ -179,6 +179,8 @@ bash scripts/check_admin_releases.sh
 bash scripts/check_admin_companies.sh
 bash scripts/check_builds_entitlement.sh
 bash scripts/check_toasty_filters.sh
+bash scripts/check_request_sql_dedup.sh
+bash scripts/check_dashboard_stats.sh
 bash scripts/check_docs_search_shard.sh
 bash scripts/check_display_tz.sh
 ```

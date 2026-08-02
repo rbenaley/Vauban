@@ -26,8 +26,8 @@ grep -n 'admin_companies_search_results' "$SHARD" >/dev/null \
 grep -n 'require_staff' "$SHARD" >/dev/null \
   || fail "$SHARD must re-check require_staff (layout does not run on shard POST)"
 grep -n 'companies_manage' "$SHARD" >/dev/null || fail "$SHARD must re-check companies_manage"
-grep -n 'load_company_cards_page' "$SHARD" >/dev/null \
-  || fail "$SHARD must load via load_company_cards_page"
+grep -n 'company_cards_page' "$SHARD" >/dev/null \
+  || fail "$SHARD must load via company_cards_page"
 grep -n 'data-admin-companies-search-shard' "$SHARD" >/dev/null \
   || fail "$SHARD must mark results container"
 if grep -nE 'path_param' "$SHARD" >/dev/null; then
@@ -36,12 +36,12 @@ fi
 
 staff_line=$(grep -n 'require_staff(cx)' "$SHARD" | head -1 | cut -d: -f1)
 manage_line=$(grep -n 'perms\.companies_manage' "$SHARD" | head -1 | cut -d: -f1)
-# Prefer the call site (skip `use … load_company_cards_page` import).
-load_line=$(grep -n 'load_company_cards_page(' "$SHARD" | head -1 | cut -d: -f1)
+# Prefer the call site (skip `use … company_cards_page` import).
+load_line=$(grep -n 'company_cards_page(' "$SHARD" | head -1 | cut -d: -f1)
 [[ -n "$staff_line" && -n "$manage_line" && -n "$load_line" ]] \
   || fail "could not locate auth gate markers in $SHARD handler"
 if ! [[ "$staff_line" -lt "$manage_line" && "$manage_line" -lt "$load_line" ]]; then
-  fail "$SHARD gate order must be require_staff -> companies_manage -> load_company_cards_page (got $staff_line/$manage_line/$load_line)"
+  fail "$SHARD gate order must be require_staff -> companies_manage -> company_cards_page (got $staff_line/$manage_line/$load_line)"
 fi
 
 grep -n 'ilike_with_escape' "$LOAD" >/dev/null \

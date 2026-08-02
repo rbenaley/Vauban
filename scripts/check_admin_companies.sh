@@ -77,13 +77,15 @@ grep -n '/admin/companies/{}' "$SHARD" >/dev/null \
   || fail "$SHARD Edit links must use company id"
 grep -n 'delete=' "$SHARD" >/dev/null || fail "$SHARD must open delete confirm"
 grep -n 'ico_trash' "$SHARD" >/dev/null || fail "$SHARD must use ico_trash"
-grep -n 'load_company_cards_page' "$SHARD" >/dev/null \
-  || fail "$SHARD must page via load_company_cards_page (SQL limit/offset)"
+grep -n 'company_cards_page' "$SHARD" >/dev/null \
+  || fail "$SHARD must page via company_cards_page (memoized SQL load)"
 LOAD="src/app/admin/companies/load.rs"
 grep -n 'COMPANIES_PAGE_SIZE' "$LOAD" >/dev/null \
   || fail "$LOAD must use COMPANIES_PAGE_SIZE"
 grep -nE 'limit\(|offset\(' "$LOAD" >/dev/null \
   || fail "$LOAD must SQL page with limit/offset"
+grep -n 'company_cards_page_memo\|#\[memoize\]' "$LOAD" >/dev/null \
+  || fail "$LOAD must memoize company_cards_page"
 if grep -nE '@click|::bind' "$LIST" >/dev/null 2>&1; then
   fail "$LIST must not use @click / :bind for pagination"
 fi

@@ -1,0 +1,60 @@
+//! Source-shape invariants for org dashboard issue stats aggregation.
+
+use std::process::Command;
+
+#[test]
+fn inv_check_dashboard_stats_script() {
+    let output = Command::new("bash")
+        .arg("scripts/check_dashboard_stats.sh")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run check_dashboard_stats.sh");
+    assert!(
+        output.status.success(),
+        "scripts/check_dashboard_stats.sh failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn inv_dashboard_uses_single_issue_load_and_summarize() {
+    let dash = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
+    assert!(dash.contains("summarize_issue_stats"));
+    assert!(dash.contains("DASHBOARD_ISSUES_CAP"));
+    assert!(dash.contains("latest_issue_by_updated_at"));
+    assert_eq!(
+        dash.matches("Issue::all()").count(),
+        1,
+        "dashboard must call Issue::all() exactly once"
+    );
+    assert!(
+        !dash.contains("ISSUE_STATUS_RESOLVED") && !dash.contains("ISSUE_STATUS_CLOSED"),
+        "dashboard must not multi-COUNT by status constants"
+    );
+}
+
+#[test]
+fn inv_dashboard_stats_module_exported() {
+    let lib = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
+    assert!(lib.contains("pub mod dashboard_stats"));
+    let helpers = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/dashboard_stats.rs"
+    ));
+    assert!(helpers.contains("pub const DASHBOARD_ISSUES_CAP"));
+    assert!(helpers.contains("pub fn summarize_issue_stats"));
+    assert!(helpers.contains("pub fn latest_issue_by_updated_at"));
+}
+
+#[test]
+fn inv_toasty_filters_pins_dashboard_single_load() {
+    let script = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/scripts/check_toasty_filters.sh"
+    ));
+    assert!(
+        script.contains("summarize_issue_stats") || script.contains("DASHBOARD_ISSUES_CAP"),
+        "check_toasty_filters must pin dashboard_stats aggregation"
+    );
+}

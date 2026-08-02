@@ -137,8 +137,8 @@ fn inv_admin_companies_list_concept_and_edit_delete() {
     assert!(shard.contains("ico_trash"));
     assert!(shard.contains("delete="));
     assert!(
-        shard.contains("load_company_cards_page"),
-        "shard must page via load_company_cards_page"
+        shard.contains("company_cards_page"),
+        "shard must page via company_cards_page"
     );
     let load = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

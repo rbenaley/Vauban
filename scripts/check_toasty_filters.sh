@@ -105,11 +105,22 @@ fi
 grep -n 'users_by_ids\|email().in_list\|id().in_list' "$COMPANIES_SYNC" >/dev/null \
   || fail "$COMPANIES_SYNC must look up users via in_list / users_by_ids"
 
-# Dashboard: issue/doc counts via .count(), releases via entitlement loader.
+# Dashboard: one org-scoped issues load + Rust stats; docs COUNT; releases loader.
 grep -n 'load_releases_for_org' "$ORG_DASH" >/dev/null \
   || fail "$ORG_DASH must load releases via load_releases_for_org"
+grep -n 'summarize_issue_stats\|DASHBOARD_ISSUES_CAP' "$ORG_DASH" >/dev/null \
+  || fail "$ORG_DASH must summarize issues via dashboard_stats (not multi COUNT)"
+grep -n 'organization_id().eq' "$ORG_DASH" >/dev/null \
+  || fail "$ORG_DASH must filter issues by organization_id"
+# Docs tile still uses SQL COUNT(*); issue tiles must not multi-count.
+issue_count_hits=$(grep -c 'Issue::all()' "$ORG_DASH" || true)
+if [[ "$issue_count_hits" -gt 1 ]]; then
+  fail "$ORG_DASH must load Issue::all() at most once for dashboard stats"
+fi
+grep -n 'DocArticle::all()' "$ORG_DASH" >/dev/null \
+  || fail "$ORG_DASH must still load DocArticle for docs tile"
 grep -n '\.count()' "$ORG_DASH" >/dev/null \
-  || fail "$ORG_DASH must use .count() for dashboard counters"
+  || fail "$ORG_DASH must use .count() for published docs counter"
 
 # Guard against unfiltered DocArticle::all() as the primary list path without status.
 if grep -n 'DocArticle::all()' "$DOCS" >/dev/null; then

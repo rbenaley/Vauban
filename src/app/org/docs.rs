@@ -7,7 +7,7 @@ pub(super) use search_shard::docs_search_results;
 
 use topcoat::{
     Result,
-    context::Cx,
+    context::{Cx, memoize},
     router::{page, path_param, query_params},
     view::view,
 };
@@ -116,14 +116,24 @@ macro_rules! docs_filtered_query {
     }};
 }
 
-/// Count matching published docs (SQL).
-pub(super) async fn count_filtered_docs(cx: &Cx, filter: &DocsFilter) -> usize {
+/// Request-scoped COUNT so list page + embedded shard share one SQL round-trip.
+#[memoize]
+async fn count_filtered_docs_memo(cx: &Cx, q: &str, cat: &str) -> usize {
+    let filter = DocsFilter {
+        q: q.to_owned(),
+        cat: cat.to_owned(),
+    };
     let mut database = crate::auth::db(cx);
-    docs_filtered_query!(filter)
+    docs_filtered_query!(&filter)
         .count()
         .exec(&mut database)
         .await
         .unwrap_or(0) as usize
+}
+
+/// Count matching published docs (SQL; memoized per request).
+pub(super) async fn count_filtered_docs(cx: &Cx, filter: &DocsFilter) -> usize {
+    *count_filtered_docs_memo(cx, &filter.q, &filter.cat).await
 }
 
 /// One page of matching docs (SQL `ORDER BY updated_at DESC` + limit/offset).

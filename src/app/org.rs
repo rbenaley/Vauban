@@ -16,11 +16,9 @@ use topcoat::{
 
 use crate::{
     auth::require_org,
+    dashboard_stats::{DASHBOARD_ISSUES_CAP, latest_issue_by_updated_at, summarize_issue_stats},
     db::now_unix,
-    models::{
-        DOC_STATUS_PUBLISHED, DocArticle, ISSUE_STATUS_CLOSED, ISSUE_STATUS_IN_ANALYSIS,
-        ISSUE_STATUS_RESOLVED, Issue, RESERVED_ORG_SLUG,
-    },
+    models::{DOC_STATUS_PUBLISHED, DocArticle, Issue, RESERVED_ORG_SLUG},
     nav::nav_from_cx,
     tz::{browser_tz, format_relative, format_unix_local},
     ui::{channel_badge_class, note_tag_color},
@@ -59,51 +57,19 @@ async fn dashboard(cx: &Cx) -> Result {
     let releases = builds::load_releases_for_org(cx, ctx.org.id, slug, "").await;
     let mut database = crate::auth::db(cx);
     let org_id = ctx.org.id;
-    let issue_total = Issue::all()
-        .filter(Issue::fields().organization_id().eq(org_id))
-        .count()
-        .exec(&mut database)
-        .await
-        .unwrap_or(0) as usize;
-    let issue_resolved = Issue::all()
-        .filter(Issue::fields().organization_id().eq(org_id))
-        .filter(
-            Issue::fields()
-                .status()
-                .eq(ISSUE_STATUS_RESOLVED.to_owned()),
-        )
-        .count()
-        .exec(&mut database)
-        .await
-        .unwrap_or(0) as usize;
-    let issue_closed = Issue::all()
-        .filter(Issue::fields().organization_id().eq(org_id))
-        .filter(Issue::fields().status().eq(ISSUE_STATUS_CLOSED.to_owned()))
-        .count()
-        .exec(&mut database)
-        .await
-        .unwrap_or(0) as usize;
-    let open_count = issue_total.saturating_sub(issue_resolved + issue_closed);
-    let in_analysis = Issue::all()
-        .filter(Issue::fields().organization_id().eq(org_id))
-        .filter(
-            Issue::fields()
-                .status()
-                .eq(ISSUE_STATUS_IN_ANALYSIS.to_owned()),
-        )
-        .count()
-        .exec(&mut database)
-        .await
-        .unwrap_or(0) as usize;
-    let latest_issue = Issue::all()
+    // Typical orgs have tens of issues — one org-scoped load + Rust stats
+    // beats multiple SQL COUNT round-trips (capacity audit dashboard fan-out).
+    let org_issues = Issue::all()
         .filter(Issue::fields().organization_id().eq(org_id))
         .order_by(Issue::fields().updated_at().desc())
-        .limit(1)
+        .limit(DASHBOARD_ISSUES_CAP)
         .exec(&mut database)
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .next();
+        .unwrap_or_default();
+    let issue_stats = summarize_issue_stats(&org_issues);
+    let open_count = issue_stats.open_count;
+    let in_analysis = issue_stats.in_analysis_count;
+    let latest_issue = latest_issue_by_updated_at(&org_issues).cloned();
     let article_count = DocArticle::all()
         .filter(DocArticle::fields().status().eq(DOC_STATUS_PUBLISHED))
         .count()

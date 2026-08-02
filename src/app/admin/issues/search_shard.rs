@@ -3,7 +3,12 @@
 //! Shard POSTs hit `/_topcoat/shards/{id}` — admin layout does not run.
 //! Always re-authorize with `require_staff` before loading data.
 
-use topcoat::{Result, context::Cx, runtime::shard, view::view};
+use topcoat::{
+    Result,
+    context::{Cx, memoize},
+    runtime::shard,
+    view::view,
+};
 
 use crate::{
     app::_components::{severity_badge, status_badge},
@@ -37,6 +42,17 @@ async fn resolve_org_id_sql(db: &mut toasty::Db, raw: &str) -> Option<u64> {
         .into_iter()
         .next()
         .map(|o| o.id)
+}
+
+/// Request-scoped org hint resolve (page pager + shard share one lookup).
+#[memoize]
+async fn resolve_org_id_memo(cx: &Cx, raw: &str) -> Option<u64> {
+    let mut database = crate::auth::db(cx);
+    resolve_org_id_sql(&mut database, raw).await
+}
+
+async fn resolve_org_id(cx: &Cx, raw: &str) -> Option<u64> {
+    resolve_org_id_memo(cx, raw).await.copied()
 }
 
 macro_rules! admin_issues_filtered_query {
@@ -83,8 +99,7 @@ pub async fn admin_issues_search_results(
     let org_filter = normalize_org_filter(&org);
     let page = parse_page(page.parse().ok());
 
-    let mut database = crate::auth::db(cx);
-    let org_id = resolve_org_id_sql(&mut database, &org_filter).await;
+    let org_id = resolve_org_id(cx, &org_filter).await;
     // Unknown slug filter -> empty result (same as no match).
     if !org_filter.is_empty() && org_id.is_none() {
         return view! {
@@ -95,13 +110,10 @@ pub async fn admin_issues_search_results(
         };
     }
 
-    let total = admin_issues_filtered_query!(org_id, &q, &status)
-        .count()
-        .exec(&mut database)
-        .await
-        .unwrap_or(0) as usize;
+    let total = *count_admin_filtered_issues_memo(cx, &q, &org_filter, &status).await;
     let pages = page_count(total, LIST_PAGE_SIZE);
     let page = clamp_page(page, pages);
+    let mut database = crate::auth::db(cx);
     let page_issues = admin_issues_filtered_query!(org_id, &q, &status)
         .order_by(Issue::fields().updated_at().desc())
         .limit(LIST_PAGE_SIZE)
@@ -173,21 +185,32 @@ pub async fn admin_issues_search_results(
     }
 }
 
-/// Count matching admin issues (shared with list pager).
+/// Request-scoped COUNT so list page + embedded shard share one SQL round-trip.
+#[memoize]
+async fn count_admin_filtered_issues_memo(
+    cx: &Cx,
+    q: &str,
+    org_filter: &str,
+    status: &str,
+) -> usize {
+    let org_id = resolve_org_id(cx, org_filter).await;
+    if !org_filter.is_empty() && org_id.is_none() {
+        return 0;
+    }
+    let mut database = crate::auth::db(cx);
+    admin_issues_filtered_query!(org_id, q, status)
+        .count()
+        .exec(&mut database)
+        .await
+        .unwrap_or(0) as usize
+}
+
+/// Count matching admin issues (shared with list pager; memoized per request).
 pub(super) async fn count_admin_filtered_issues(
     cx: &Cx,
     q: &str,
     org_filter: &str,
     status: &str,
 ) -> usize {
-    let mut database = crate::auth::db(cx);
-    let org_id = resolve_org_id_sql(&mut database, org_filter).await;
-    if !org_filter.is_empty() && org_id.is_none() {
-        return 0;
-    }
-    admin_issues_filtered_query!(org_id, q, status)
-        .count()
-        .exec(&mut database)
-        .await
-        .unwrap_or(0) as usize
+    *count_admin_filtered_issues_memo(cx, q, org_filter, status).await
 }

@@ -10,6 +10,8 @@
 //! - `cargo test --test integration_tests -- admin_companies -- --test-threads=1`
 //! - `cargo test --test integration_tests -- builds_entitlement -- --test-threads=1`
 //! - `cargo test --test integration_tests -- toasty_filters -- --test-threads=1`
+//! - `cargo test --test integration_tests -- request_sql_dedup -- --test-threads=1`
+//! - `cargo test --test integration_tests -- dashboard_stats -- --test-threads=1`
 //! - `cargo test --test integration_tests -- toasty_migrations -- --test-threads=1`
 //! - `cargo test --test integration_tests -- docs_search_shard -- --test-threads=1`
 //! - `cargo test --test integration_tests -- org_issues_search_shard -- --test-threads=1`
@@ -47,6 +49,10 @@ mod builds_entitlement_e2e_test;
 mod builds_entitlement_invariants_test;
 mod builds_entitlement_proptest;
 mod common;
+mod dashboard_stats_battle_test;
+mod dashboard_stats_e2e_test;
+mod dashboard_stats_invariants_test;
+mod dashboard_stats_proptest;
 mod display_tz_battle_test;
 mod display_tz_e2e_test;
 mod display_tz_invariants_test;
@@ -71,6 +77,10 @@ mod portal_shell_battle_test;
 mod portal_shell_e2e_test;
 mod portal_shell_invariants_test;
 mod portal_shell_proptest;
+mod request_sql_dedup_battle_test;
+mod request_sql_dedup_e2e_test;
+mod request_sql_dedup_invariants_test;
+mod request_sql_dedup_proptest;
 mod toasty_filters_battle_test;
 mod toasty_filters_e2e_test;
 mod toasty_filters_invariants_test;

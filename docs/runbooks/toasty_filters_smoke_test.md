@@ -24,7 +24,9 @@ bash scripts/setup_test_db.sh   # or: just db-create-test
 rtk cargo fmt --all -- --check
 rtk cargo clippy --all-targets -- -D warnings
 bash scripts/check_toasty_filters.sh
+bash scripts/check_request_sql_dedup.sh
 rtk cargo test --test integration_tests -- toasty_filters -- --test-threads=1
+rtk cargo test --test integration_tests -- request_sql_dedup -- --test-threads=1
 ```
 
 ## Lab prerequisites
@@ -63,6 +65,14 @@ Pass: Casbin + tenant fail-closed.
    `COUNT(*)`.
 4. Release version order remains Rust `cmp_version_desc` after the
    SQL-bounded set (intentional semver exception).
+5. List GET (docs / issues / admin companies) with DEBUG: **one** COUNT
+   (or one companies hydrate) per filter key for page+embedded shard —
+   not two. Shard-only POSTs to `/_topcoat/shards/…` still re-auth and
+   query (separate request). Lint: `scripts/check_request_sql_dedup.sh`.
+6. Org dashboard (`/{org}`): **one** org-scoped issues SELECT (not four
+   issue `COUNT(*)`); docs tile may still `COUNT` published articles.
+   Lint: `scripts/check_dashboard_stats.sh`. See
+   [`dashboard_stats_smoke_test.md`](dashboard_stats_smoke_test.md).
 
 Pass: no cross-tenant rows; search/paging match automated pyramid.
 

@@ -11,6 +11,7 @@ pub mod auth;
 pub mod companies_accounts;
 pub mod companies_search;
 pub mod config;
+pub mod dashboard_stats;
 pub mod db;
 pub mod docs_body;
 pub mod docs_search;

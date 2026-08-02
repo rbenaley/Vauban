@@ -5,7 +5,7 @@
 
 use topcoat::{Result, context::Cx, runtime::shard, view::view};
 
-use super::load::load_company_cards_page;
+use super::load::company_cards_page;
 use crate::{
     app::_components::ico_trash,
     auth::{capability_denied, require_staff},
@@ -27,10 +27,7 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
     let q = normalize_query(&q);
     let page = parse_page(page.parse().ok());
 
-    let mut database = crate::auth::db(cx);
-    let (page_cards, total) = load_company_cards_page(&mut database, &q, page)
-        .await
-        .unwrap_or_else(|_| (Vec::new(), 0));
+    let (page_cards, total) = company_cards_page(cx, &q, page).await;
     let empty_label = if q.is_empty() {
         "No companies."
     } else {

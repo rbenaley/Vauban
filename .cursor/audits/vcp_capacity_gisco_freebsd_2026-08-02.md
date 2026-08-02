@@ -59,16 +59,27 @@ not the primary limiter** for a single user; **request fan-out and CPU** are.
 
 ### 3.2 Duplicate queries (amplification)
 
-The same session repeatedly showed **identical statements twice** inside one
-request window, for example:
+**Update (request SQL dedup):** list page + embedded search shard COUNTs /
+company card hydrates are now request-memoized (`#[memoize]` on domain
+loaders — see `scripts/check_request_sql_dedup.sh`). A list GET should show
+**one** matching COUNT (or one `company_cards_page` hydrate) per filter key
+in DEBUG, not two. Shard-only POSTs remain separate requests (re-auth +
+query).
+
+Historical Safari DEBUG still showed identical statements twice inside one
+request window (before that wave), for example:
 
 - `DocArticle` filtered by `(PUBLISHED, category)` executed twice  
 - `DocArticle` `status = PUBLISHED` executed twice on list/detail paths  
-- `Issue` / `Organization` / `User` full scans duplicated on admin issues chrome  
+- Admin issues/companies page+shard recount / rehydrate  
 
-Some lookups are already request-memoized (`require_org`, session helpers in
-`src/auth.rs`). Domain loaders are **not** fully deduplicated across layout +
-page + components, so one click can pay **~1.5–2×** the necessary SQL.
+Auth lookups were already request-memoized (`require_org`, session helpers in
+`src/auth.rs`). **Update (dashboard issue stats):** org home no longer runs
+four issue `COUNT(*)` + latest `LIMIT 1` — one org-scoped `Issue` load
+(capped) + Rust `summarize_issue_stats` / `latest_issue_by_updated_at`
+(`src/dashboard_stats.rs`, `scripts/check_dashboard_stats.sh`). Docs tile
+still uses a published-docs `COUNT(*)`. Remaining open: any non-list
+component duplication outside the memoized helpers.
 
 ### 3.3 TLS / HTTP/2 vs “session reopen”
 
@@ -228,7 +239,7 @@ problem, not a single mid-range workstation problem.
 
 | Change | Effect on capacity |
 |--------|--------------------|
-| Fix duplicate SQL (docs/issues) | **+20–40%** effective headroom |
+| Fix duplicate SQL (docs/issues) | **+20–40%** effective headroom (list page+shard COUNT/hydrate dedup + dashboard single-load issue stats landed) |
 | Request-scoped cache for session/user/org (already partial) | Helps every page |
 | Long-cache / CDN for `/_topcoat` assets | Cuts TLS churn from Safari |
 | `DEBUG` logs in production | **Avoid** — burns CPU/I/O |

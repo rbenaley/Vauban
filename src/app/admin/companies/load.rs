@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use toasty::Db;
+use topcoat::context::{Cx, memoize};
 
 use crate::{
     id_lookups::users_by_ids,
@@ -110,7 +111,21 @@ async fn search_org_ids(db: &mut Db, q: &str) -> anyhow::Result<Vec<u64>> {
         .collect())
 }
 
-/// Count + one page of company cards for admin list/shard.
+/// Request-scoped page load so list pager + embedded shard share one hydrate.
+#[memoize]
+async fn company_cards_page_memo(cx: &Cx, q: &str, page: usize) -> (Vec<CompanyCard>, usize) {
+    let mut database = crate::auth::db(cx);
+    load_company_cards_page(&mut database, q, page)
+        .await
+        .unwrap_or_else(|_| (Vec::new(), 0))
+}
+
+/// Count + one page of company cards (memoized per request via [`company_cards_page`]).
+pub(super) async fn company_cards_page(cx: &Cx, q: &str, page: usize) -> (Vec<CompanyCard>, usize) {
+    company_cards_page_memo(cx, q, page).await.clone()
+}
+
+/// Count + one page of company cards for admin list/shard (SQL core).
 pub(super) async fn load_company_cards_page(
     db: &mut Db,
     q: &str,

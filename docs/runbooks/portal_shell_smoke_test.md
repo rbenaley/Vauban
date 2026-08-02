@@ -14,6 +14,7 @@ Related:
 - Pyramid: `.cursor/rules/vcp-test-pyramid.mdc`
 - Filter: `cargo test --test integration_tests -- portal_shell -- --test-threads=1`
 - Auth denials: [`auth_tenant_smoke_test.md`](auth_tenant_smoke_test.md)
+- Dashboard issue tiles: [`dashboard_stats_smoke_test.md`](dashboard_stats_smoke_test.md)
 
 ## Automated prerequisites
 

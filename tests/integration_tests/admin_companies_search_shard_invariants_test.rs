@@ -35,8 +35,8 @@ fn inv_shard_rechecks_staff_before_loading() {
         .find("perms.companies_manage")
         .expect("perms.companies_manage");
     let load = src
-        .find("load_company_cards_page(")
-        .expect("load_company_cards_page(");
+        .find("company_cards_page(")
+        .expect("company_cards_page(");
     assert!(
         staff < manage && manage < load,
         "gate order: require_staff -> companies_manage -> load"
@@ -67,8 +67,8 @@ fn inv_shard_paginates_with_companies_page_size() {
         "/src/app/admin/companies/search_shard.rs"
     ));
     assert!(
-        shard.contains("load_company_cards_page"),
-        "shard must page via load_company_cards_page"
+        shard.contains("company_cards_page"),
+        "shard must page via company_cards_page"
     );
     let load = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

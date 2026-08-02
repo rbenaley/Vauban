@@ -26,7 +26,7 @@ use crate::{
     perms::perms_for_user,
 };
 
-use self::load::{load_company_card_by_id, load_company_cards_page};
+use self::load::{company_cards_page, load_company_card_by_id};
 
 #[query_params]
 struct AdminCompaniesQuery {
@@ -70,9 +70,7 @@ async fn admin_companies_page(cx: &Cx) -> Result {
     };
 
     let mut page = parse_page(query.as_ref().and_then(|q| q.page));
-    let (_, filtered_total) = load_company_cards_page(&mut database, &q, page)
-        .await
-        .unwrap_or_else(|_| (Vec::new(), 0));
+    let (_, filtered_total) = company_cards_page(cx, &q, page).await;
     let pages = page_count(filtered_total, COMPANIES_PAGE_SIZE);
     page = clamp_page(page, pages);
     let page_init = page.to_string();

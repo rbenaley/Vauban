@@ -9,7 +9,7 @@ pub(super) use search_shard::issues_search_results;
 use serde::Deserialize;
 use topcoat::{
     Result,
-    context::Cx,
+    context::{Cx, memoize},
     router::{
         content::Form,
         error::{SeeOther, not_found, redirect, see_other},
@@ -198,14 +198,20 @@ macro_rules! org_issues_filtered_query {
     }};
 }
 
-/// Count org issues matching `q` / `status` (SQL).
-pub(super) async fn count_filtered_issues(cx: &Cx, org_id: u64, q: &str, status: &str) -> usize {
+/// Request-scoped COUNT so list page + embedded shard share one SQL round-trip.
+#[memoize]
+async fn count_filtered_issues_memo(cx: &Cx, org_id: u64, q: &str, status: &str) -> usize {
     let mut database = db(cx);
     org_issues_filtered_query!(org_id, q, status)
         .count()
         .exec(&mut database)
         .await
         .unwrap_or(0) as usize
+}
+
+/// Count org issues matching `q` / `status` (SQL; memoized per request).
+pub(super) async fn count_filtered_issues(cx: &Cx, org_id: u64, q: &str, status: &str) -> usize {
+    *count_filtered_issues_memo(cx, org_id, q, status).await
 }
 
 /// One page of org issues matching `q` / `status` (SQL order + limit/offset).
