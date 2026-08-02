@@ -75,11 +75,24 @@ grep -n 'struct OrgConfig' "$CONFIG" >/dev/null || fail "$CONFIG must define Org
 grep -n 'can_add_member' "$SEATS" >/dev/null || fail "$SEATS must define can_add_member"
 grep -n 'membership_count' "$SEATS" >/dev/null || fail "$SEATS must define membership_count"
 grep -n 'fn normalize_emails' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must define normalize_emails"
+grep -n 'fn parse_portal_email' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must define parse_portal_email"
+grep -n 'Mailbox::new' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must validate via Mailbox::new"
+grep -n 'Result<Vec<String>, String>' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS normalize_emails must return Result (fail-closed)"
 grep -n 'fn sync_org_accounts' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must define sync_org_accounts"
+grep -n 'normalize_emails(emails_raw)?' "$NEW" >/dev/null \
+  || fail "$NEW must propagate normalize_emails errors"
+grep -n 'normalize_emails(emails_raw)?' "$EDIT" >/dev/null \
+  || fail "$EDIT must propagate normalize_emails errors"
 
 grep -n 'max_accounts_per_org' config/default.toml >/dev/null \
   || fail "config/default.toml must set org.max_accounts_per_org"
 grep -n 'max_accounts_per_org' config/vcp.conf >/dev/null \
   || fail "config/vcp.conf must set org.max_accounts_per_org"
+grep -nE 'features\s*=\s*\[.*"mail"' Cargo.toml >/dev/null \
+  || fail "Cargo.toml must enable topcoat mail feature"
+grep -n 'FileTransport' src/app.rs >/dev/null || fail "src/app.rs must register FileTransport MailConfig"
+grep -n 'RouterBuilderMailExt\|\.mail(' src/app.rs >/dev/null \
+  || fail "src/app.rs must wire .mail(MailConfig…)"
 
 echo "check_admin_companies: OK"

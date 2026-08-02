@@ -250,6 +250,111 @@ async fn e2e_seat_helper_respects_max_users() {
 }
 
 #[tokio::test]
+async fn e2e_create_rejects_invalid_email() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("co-badmail");
+    let slug = unique_slug("co-badmail-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let before = {
+        let mut conn = db.clone();
+        Organization::all()
+            .exec(&mut conn)
+            .await
+            .expect("orgs")
+            .len()
+    };
+
+    let name = format!("Bad Mail Co {}", unique_slug("bad"));
+    let form = company_compose_form(&name, "", "", "", &["not-an-email"]);
+    let create = post_form(&router, "/admin/companies/new", cookie.as_deref(), &form).await;
+    assert_eq!(status(&create), StatusCode::OK);
+    let html = body_text(create).await;
+    assert!(
+        html.contains("Invalid email address") && html.contains("not-an-email"),
+        "expected Mailbox validation error: {html}"
+    );
+
+    let after = {
+        let mut conn = db.clone();
+        Organization::all()
+            .exec(&mut conn)
+            .await
+            .expect("orgs")
+            .len()
+    };
+    assert_eq!(before, after, "invalid email must not create a company");
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_edit_rejects_invalid_email_without_mutating_memberships() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("co-edit-bad");
+    let slug = unique_slug("co-edit-bad-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let name = format!("Edit Bad {}", unique_slug("eb"));
+    let good = unique_email("edit-good");
+    let create = post_form(
+        &router,
+        "/admin/companies/new",
+        cookie.as_deref(),
+        &company_compose_form(&name, "c@x.test", "V", "A", &[&good]),
+    )
+    .await;
+    assert_eq!(status(&create), StatusCode::SEE_OTHER);
+
+    let org_id = {
+        let mut conn = db.clone();
+        Organization::all()
+            .exec(&mut conn)
+            .await
+            .expect("orgs")
+            .into_iter()
+            .find(|o| o.name == name)
+            .expect("org")
+            .id
+    };
+    {
+        let mut conn = db.clone();
+        assert_eq!(membership_count(&mut conn, org_id).await.unwrap(), 1);
+    }
+
+    let save = post_form(
+        &router,
+        &format!("/admin/companies/{org_id}"),
+        cookie.as_deref(),
+        &company_compose_form(&name, "c@x.test", "V", "A", &[&good, "not-an-email"]),
+    )
+    .await;
+    assert_eq!(status(&save), StatusCode::OK);
+    let html = body_text(save).await;
+    assert!(html.contains("Invalid email address"));
+    {
+        let mut conn = db.clone();
+        assert_eq!(
+            membership_count(&mut conn, org_id).await.unwrap(),
+            1,
+            "invalid edit must not change memberships"
+        );
+    }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
 async fn e2e_create_rejects_over_cap() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;

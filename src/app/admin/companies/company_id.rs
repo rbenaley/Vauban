@@ -240,7 +240,7 @@ async fn save_edit(
     if name.is_empty() {
         return Err("Company name is required.".to_owned());
     }
-    let emails = normalize_emails(emails_raw);
+    let emails = normalize_emails(emails_raw)?;
     if emails.len() > max {
         return Err(format!("At most {max} user accounts are allowed."));
     }

@@ -27,7 +27,7 @@ is planned._
 <!-- AUTO-CATALOG:BEGIN -->
 | Plan | File | Status |
 |------|------|--------|
-| Admin companies Concept | [`admin_companies_concept_9287ef37.plan.md`](admin_companies_concept_9287ef37.plan.md) | Open |
+| Admin companies Concept | [`admin_companies_concept_9287ef37.plan.md`](admin_companies_concept_9287ef37.plan.md) | Done |
 | Admin docs Concept fidelity | [`admin_docs_concept_fidelity_45eb6145.plan.md`](admin_docs_concept_fidelity_45eb6145.plan.md) | Done |
 | Admin docs status badges | [`admin_docs_status_badges_298bcc86.plan.md`](admin_docs_status_badges_298bcc86.plan.md) | Done |
 | Admin docs versioning UX | [`admin_docs_versioning_ux_029c7b2d.plan.md`](admin_docs_versioning_ux_029c7b2d.plan.md) | Done |
@@ -41,6 +41,7 @@ is planned._
 | Issue close reopen | [`issue_close_reopen_954c4a67.plan.md`](issue_close_reopen_954c4a67.plan.md) | Done |
 | Issues live search shards | [`issues_live_search_shards_d44946a2.plan.md`](issues_live_search_shards_d44946a2.plan.md) | Done |
 | List pagination standard | [`list_pagination_standard_4c1f389a.plan.md`](list_pagination_standard_4c1f389a.plan.md) | Done |
+| Mailbox email validation | [`mailbox_email_validation_57513d5f.plan.md`](mailbox_email_validation_57513d5f.plan.md) | Open |
 | Mockup visual fidelity | [`mockup_visual_fidelity_eea72dae.plan.md`](mockup_visual_fidelity_eea72dae.plan.md) | Done |
 | ORM Toasty Postgres | [`orm_toasty_postgres_3e00d8ac.plan.md`](orm_toasty_postgres_3e00d8ac.plan.md) | Done |
 | P0-P3 Topcoat campaign | [`p0-p3_topcoat_campaign_d0d5c3c6.plan.md`](p0-p3_topcoat_campaign_d0d5c3c6.plan.md) | Done |

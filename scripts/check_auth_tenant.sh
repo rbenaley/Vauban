@@ -46,10 +46,11 @@ if ! grep -n 'org_context(cx, slug)' src/auth.rs >/dev/null; then
 fi
 
 # Admin compose forms must POST (OriginLayer / PRG), not GET stubs.
+# Companies compose markup lives in form.rs (shared by new + edit).
 for f in \
   src/app/admin/docs/new.rs \
   src/app/admin/releases/new.rs \
-  src/app/admin/companies/new.rs
+  src/app/admin/companies/form.rs
 do
   if grep -n 'method="GET"' "$f" >/dev/null 2>&1; then
     fail "$f must not use method=GET on compose forms"

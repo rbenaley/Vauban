@@ -55,22 +55,15 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
                 <form class="vb-form" method="POST" action=(state.action.clone())>
                     <input type="hidden" name="account_rows" value=(rows_label)>
                     <label for="name">"Company name *"</label>
-                    <input
-                        id="name"
-                        name="name"
-                        required=""
-                        value=(state.name.clone())
-                    >
+                    <input id="name" name="name" required="" value=(state.name.clone())>
                     <label for="contact">"Contact point"</label>
-                    <input
-                        id="contact"
-                        name="contact"
-                        value=(state.contact.clone())
-                    >
+                    <input id="contact" name="contact" value=(state.contact.clone())>
                     <label for="vat">"VAT number"</label>
                     <input id="vat" name="vat" value=(state.vat.clone())>
                     <label for="address">"Company address"</label>
-                    <textarea id="address" name="address">(state.address.clone())</textarea>
+                    <textarea id="address" name="address">
+                        (state.address.clone())
+                    </textarea>
 
                     <div
                         style="display: flex; justify-content: space-between; align-items: center; margin: 22px 0 12px; gap: 12px; flex-wrap: wrap;"

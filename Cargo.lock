@@ -3333,6 +3333,7 @@ dependencies = [
  "topcoat-icon",
  "topcoat-icon-macro",
  "topcoat-mail",
+ "topcoat-mail-macro",
  "topcoat-router",
  "topcoat-router-macro",
  "topcoat-runtime",
@@ -3506,6 +3507,31 @@ dependencies = [
  "topcoat-core",
  "topcoat-router",
  "topcoat-view",
+]
+
+[[package]]
+name = "topcoat-mail-grammar"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16f48dc761ad85b3dfe73f9dcaf519dd167f1d80ff7e3b343a0a3d574a46d2e8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "topcoat-core-grammar",
+ "topcoat-mail",
+ "topcoat-view-grammar",
+]
+
+[[package]]
+name = "topcoat-mail-macro"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18cfe9d54bb498ea310843bd40b0a434eeaa9276e212f8c48eb765efc40ddc92"
+dependencies = [
+ "quote",
+ "syn 2.0.119",
+ "topcoat-mail-grammar",
 ]
 
 [[package]]

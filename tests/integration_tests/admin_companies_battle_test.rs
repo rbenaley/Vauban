@@ -1,8 +1,10 @@
-//! Contention tests for parallel membership_count / can_add_member.
+//! Contention tests for parallel membership_count / can_add_member / email normalize.
 
 use std::sync::Arc;
+use std::thread;
 
 use tokio::sync::Barrier;
+use vcp::companies_accounts::normalize_emails;
 use vcp::seats::{can_add_member, membership_count};
 
 use crate::common::{
@@ -51,4 +53,34 @@ async fn battle_parallel_seat_helper_reads() {
     }
 
     cleanup(&db).await;
+}
+
+#[test]
+fn battle_parallel_normalize_emails_mixed_corpus() {
+    let valid = [
+        "a@example.com".to_owned(),
+        "B@X.TEST".to_owned(),
+        "".to_owned(),
+    ];
+    let invalid = ["not-an-email".to_owned(), "a@".to_owned()];
+    let n = 8usize;
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let valid = valid.clone();
+        let invalid = invalid.clone();
+        handles.push(thread::spawn(move || {
+            if i % 2 == 0 {
+                let out = normalize_emails(&valid).expect("valid corpus");
+                assert_eq!(out.len(), 2);
+                assert_eq!(out[0], "a@example.com");
+                assert_eq!(out[1], "b@x.test");
+            } else {
+                let err = normalize_emails(&invalid).expect_err("invalid corpus");
+                assert!(err.contains("Invalid email address"));
+            }
+        }));
+    }
+    for h in handles {
+        h.join().expect("join");
+    }
 }

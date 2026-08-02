@@ -32,14 +32,30 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
 
     #[test]
-    fn prop_normalize_emails_lowercases(
+    fn prop_normalize_emails_lowercases_valid(
         local in "[a-zA-Z]{2,8}",
         domain in "[a-zA-Z]{2,8}"
     ) {
         let raw = format!("  {local}@{domain}.COM ");
-        let out = normalize_emails(&[raw]);
+        let out = normalize_emails(std::slice::from_ref(&raw)).expect("valid address");
         prop_assert_eq!(out.len(), 1);
         prop_assert!(out[0].chars().all(|c| !c.is_ascii_uppercase()));
         prop_assert!(out[0].contains('@'));
+        let again = normalize_emails(&out).expect("idempotent");
+        prop_assert_eq!(out, again);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn prop_normalize_emails_rejects_garbage_without_at(
+        s in "[A-Za-z0-9 ._!-]{3,24}"
+    ) {
+        prop_assume!(!s.contains('@'));
+        prop_assume!(!s.trim().is_empty());
+        let err = normalize_emails(&[s]).expect_err("no @ must fail");
+        prop_assert!(err.contains("Invalid email address"));
     }
 }

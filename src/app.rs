@@ -19,6 +19,7 @@ use topcoat::{
     context::{Cx, CxBuilder, try_app_context},
     cookie::RouterBuilderCookieExt,
     font,
+    mail::{FileTransport, MailConfig, RouterBuilderMailExt},
     router::{
         Body, HeaderValue, IntoResponse, Next, Response, Router, RouterBuilderDiscoverExt,
         StatusCode,
@@ -79,6 +80,11 @@ pub fn router(db: Db, policy: Arc<PolicyStore>, cfg: &Config) -> Router {
         .cookies()
         .sessions(sessions)
         .assets(assets)
+        .mail(
+            MailConfig::builder()
+                .transport(FileTransport::new("target/mail"))
+                .build(),
+        )
         .app_context(db)
         .app_context(policy)
         .app_context(Arc::new(cfg.clone()))

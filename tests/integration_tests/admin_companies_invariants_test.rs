@@ -41,8 +41,25 @@ fn inv_admin_companies_create_is_post_and_gated() {
     assert!(src.contains("toasty::create!(Organization"));
     assert!(src.contains("sync_org_accounts"));
     assert!(src.contains("see_other"));
+    assert!(src.contains("normalize_emails(emails_raw)?"));
     assert!(!src.contains("Err(redirect("));
     assert!(!src.contains("type=\"password\""));
+}
+
+#[test]
+fn inv_mailbox_email_validation_wired() {
+    let accounts = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/companies_accounts.rs"
+    ));
+    let cargo = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+    let app = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
+    assert!(accounts.contains("fn parse_portal_email"));
+    assert!(accounts.contains("Mailbox::new"));
+    assert!(accounts.contains("Result<Vec<String>, String>"));
+    assert!(cargo.contains("\"mail\""));
+    assert!(app.contains("FileTransport"));
+    assert!(app.contains(".mail("));
 }
 
 #[test]

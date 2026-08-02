@@ -51,8 +51,10 @@ Pass: surface matches Concept; seat cap comes from config (default 5).
 1. As `l.martin@acme.example`, confirm `/admin/companies` returns **404**.
 2. While authenticated, open a non-member org slug — expect **404**.
 3. Anonymous / expired session must not leak tenant data.
+4. On **+ New company**, enter a USER ACCOUNTS value like `not-an-email`
+   and Save — expect form error `Invalid email address`, no new card.
 
-Pass: Casbin + tenant fail-closed.
+Pass: Casbin + tenant fail-closed; Mailbox syntax validation fail-closed.
 
 ## Related automated coverage
 

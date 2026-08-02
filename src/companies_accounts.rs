@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use toasty::Db;
+use topcoat::mail::Mailbox;
 
 use crate::{
     db::hash_password,
@@ -23,18 +24,35 @@ pub fn emails_from_indexed_map(map: &HashMap<String, String>, rows: usize) -> Ve
     out
 }
 
-/// Trim, lowercase, drop empties, dedupe (first wins). Does not enforce cap.
-pub fn normalize_emails(raw: &[String]) -> Vec<String> {
+/// Trim, lowercase, and validate a single portal email via Topcoat `Mailbox`.
+///
+/// Empty / whitespace-only input returns `Ok(None)` so compose slots can be blank.
+pub fn parse_portal_email(raw: &str) -> Result<Option<String>, String> {
+    let email = raw.trim().to_ascii_lowercase();
+    if email.is_empty() {
+        return Ok(None);
+    }
+    Mailbox::new(&email)
+        .map(|m| Some(m.address().to_owned()))
+        .map_err(|_| format!("Invalid email address: {email}"))
+}
+
+/// Trim, lowercase, drop empties, validate via `Mailbox`, dedupe (first wins).
+///
+/// Fail-closed: the first non-empty invalid address returns `Err` (never dropped).
+pub fn normalize_emails(raw: &[String]) -> Result<Vec<String>, String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for e in raw {
-        let email = e.trim().to_ascii_lowercase();
-        if email.is_empty() || !seen.insert(email.clone()) {
+        let Some(email) = parse_portal_email(e)? else {
+            continue;
+        };
+        if !seen.insert(email.clone()) {
             continue;
         }
         out.push(email);
     }
-    out
+    Ok(out)
 }
 
 /// Ensure row count for the compose form (at least one empty slot when empty).
@@ -184,6 +202,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_portal_email_happy_and_empty() {
+        assert_eq!(
+            parse_portal_email("  A@Example.COM ").unwrap().as_deref(),
+            Some("a@example.com")
+        );
+        assert_eq!(parse_portal_email("   ").unwrap(), None);
+        assert_eq!(parse_portal_email("").unwrap(), None);
+    }
+
+    #[test]
+    fn parse_portal_email_rejects_invalid() {
+        let err = parse_portal_email("not-an-email").unwrap_err();
+        assert!(err.contains("Invalid email address"));
+        assert!(err.contains("not-an-email"));
+        assert!(parse_portal_email("a@").is_err());
+    }
+
+    #[test]
     fn normalize_emails_trims_lowercases_dedupes() {
         let raw = vec![
             "  A@Example.COM ".to_owned(),
@@ -192,9 +228,16 @@ mod tests {
             "b@x.test".to_owned(),
         ];
         assert_eq!(
-            normalize_emails(&raw),
+            normalize_emails(&raw).unwrap(),
             vec!["a@example.com".to_owned(), "b@x.test".to_owned()]
         );
+    }
+
+    #[test]
+    fn normalize_emails_fail_closed_on_invalid() {
+        let raw = vec!["ok@example.com".to_owned(), "not-an-email".to_owned()];
+        let err = normalize_emails(&raw).unwrap_err();
+        assert!(err.contains("not-an-email"));
     }
 
     #[test]

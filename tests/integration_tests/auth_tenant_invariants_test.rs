@@ -57,7 +57,7 @@ fn inv_admin_compose_forms_use_post() {
     for rel in [
         "src/app/admin/docs/new.rs",
         "src/app/admin/releases/new.rs",
-        "src/app/admin/companies/new.rs",
+        "src/app/admin/companies/form.rs",
     ] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
         let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
