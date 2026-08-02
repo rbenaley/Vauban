@@ -7,13 +7,12 @@ use topcoat::{
 };
 
 use super::{
-    BUILDS_PAGE_SIZE, BuildsQuery, clamp_page, load_releases_for_org, page_count, page_slice,
-    release_visible_to_org, render_builds, sort_releases,
+    BUILDS_PAGE_SIZE, BuildsQuery, clamp_page, find_visible_release_by_version,
+    load_releases_for_org, page_count, page_slice, render_builds, sort_releases,
 };
 use crate::{
     app::org::Org,
     auth::{capability_denied, require_org},
-    models::Release,
     perms::perms_for_user,
 };
 
@@ -39,14 +38,8 @@ async fn build_detail_page(cx: &Cx) -> Result {
 
     let mut database = crate::auth::db(cx);
     let ver_key = ver.to_string();
-    let matched = Release::all()
-        .filter(Release::fields().version().eq(&ver_key))
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let Some(matched) = matched
-        .into_iter()
-        .find(|r| release_visible_to_org(r, ctx.org.id, org_slug))
+    let Some(matched) =
+        find_visible_release_by_version(&mut database, &ver_key, ctx.org.id, org_slug).await
     else {
         return Err(not_found().into());
     };

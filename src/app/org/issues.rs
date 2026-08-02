@@ -23,13 +23,14 @@ use crate::{
     app::org::Org,
     auth::{capability_denied, db, require_org},
     db::now_unix,
-    issues_search::{issue_matches_query, issue_matches_status, normalize_query, normalize_status},
+    issues_search::{normalize_query, normalize_status},
     list_page::{
-        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
-        with_page_param,
+        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_offset,
+        parse_page, with_page_param,
     },
     models::{Issue, RESERVED_ORG_SLUG},
     perms::perms_for_user,
+    sql_search::ilike_contains,
 };
 
 const STATUSES: &[&str] = &["Open", "In analysis", "Resolved", "Closed"];
@@ -88,8 +89,8 @@ async fn issues_page(cx: &Cx) -> Result {
     );
     let mut page = parse_page(query.as_ref().and_then(|q| q.page));
 
-    let filtered = load_filtered_issues(cx, ctx.org.id, &q, &status).await;
-    let pages = page_count(filtered.len(), LIST_PAGE_SIZE);
+    let total = count_filtered_issues(cx, ctx.org.id, &q, &status).await;
+    let pages = page_count(total, LIST_PAGE_SIZE);
     page = clamp_page(page, pages);
 
     let base = format!("/{}/issues", slug);
@@ -175,26 +176,57 @@ async fn issues_page(cx: &Cx) -> Result {
     }
 }
 
-/// Load org issues matching `q` / `status`, newest first.
-pub(super) async fn load_filtered_issues(
+/// Shared org-scoped issue query (tenant + optional status / search).
+macro_rules! org_issues_filtered_query {
+    ($org_id:expr, $q:expr, $status:expr) => {{
+        let org_id = $org_id;
+        let q = $q;
+        let status = $status;
+        let mut query = Issue::all().filter(Issue::fields().organization_id().eq(org_id));
+        if !status.is_empty() {
+            query = query.filter(Issue::fields().status().eq(status.to_owned()));
+        }
+        if let Some(pat) = ilike_contains(q) {
+            query = query.filter(
+                Issue::fields()
+                    .key()
+                    .ilike_with_escape(pat.clone(), '\\')
+                    .or(Issue::fields().title().ilike_with_escape(pat, '\\')),
+            );
+        }
+        query
+    }};
+}
+
+/// Count org issues matching `q` / `status` (SQL).
+pub(super) async fn count_filtered_issues(cx: &Cx, org_id: u64, q: &str, status: &str) -> usize {
+    let mut database = db(cx);
+    org_issues_filtered_query!(org_id, q, status)
+        .count()
+        .exec(&mut database)
+        .await
+        .unwrap_or(0) as usize
+}
+
+/// One page of org issues matching `q` / `status` (SQL order + limit/offset).
+pub(super) async fn load_filtered_issues_page(
     cx: &Cx,
     org_id: u64,
     q: &str,
     status: &str,
+    page: usize,
 ) -> Vec<Issue> {
+    let total = count_filtered_issues(cx, org_id, q, status).await;
+    let pages = page_count(total, LIST_PAGE_SIZE);
+    let page = clamp_page(page, pages);
     let mut database = db(cx);
-    let mut issues = Issue::all()
-        .filter(Issue::fields().organization_id().eq(org_id))
+    org_issues_filtered_query!(org_id, q, status)
+        .order_by(Issue::fields().updated_at().desc())
+        .limit(LIST_PAGE_SIZE)
+        .offset(page_offset(page, LIST_PAGE_SIZE))
         .exec(&mut database)
         .await
-        .unwrap_or_default();
-    issues.sort_by_key(|i| std::cmp::Reverse(i.updated_at));
-    issues
-        .into_iter()
-        .filter(|i| {
-            issue_matches_status(status, &i.status) && issue_matches_query(q, &i.key, &i.title)
-        })
-        .collect()
+        .unwrap_or_default()
 }
 
 #[derive(Deserialize)]

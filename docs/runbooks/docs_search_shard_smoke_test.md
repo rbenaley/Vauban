@@ -48,6 +48,8 @@ just test -- docs_search_shard
 8. Clear the field — full published list returns.
 
 Pass: shard POSTs stay 200; UI updates; no worker panics.
+Published (+ category) filter, title/summary `ilike`, and pager
+`limit`/`offset`/`count` run in SQL.
 
 ## B -- Denial paths (fail-closed)
 

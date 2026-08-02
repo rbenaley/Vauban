@@ -105,8 +105,8 @@ fn inv_admin_list_uses_id_and_sorts() {
     ));
     assert!(src.contains("article.id"));
     assert!(
-        src.contains("sort_by") && src.contains("updated_at") && src.contains("cmp_version_desc"),
-        "list must sort by updated_at with version tie-break"
+        src.contains("order_by(DocArticle::fields().updated_at()") && src.contains("updated_at"),
+        "list must SQL order_by updated_at"
     );
     assert!(src.contains("Unpublish"));
     assert!(src.contains("Publish"));
@@ -146,8 +146,8 @@ fn inv_admin_docs_list_paginates() {
         "AdminDocsQuery must include page"
     );
     assert!(
-        src.contains("page_slice"),
-        "admin docs must page_slice rows"
+        src.contains(".limit(") && src.contains(".offset(") && src.contains(".count()"),
+        "admin docs must SQL page with limit/offset/count"
     );
 }
 

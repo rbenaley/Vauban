@@ -43,12 +43,17 @@ async fn issue_detail_page(cx: &Cx) -> Result {
     }
 
     let mut database = db(cx);
-    let issues = Issue::all()
+    let key_owned = key.to_owned();
+    let issue = Issue::all()
         .filter(Issue::fields().organization_id().eq(ctx.org.id))
+        .filter(Issue::fields().key().eq(key_owned))
+        .limit(1)
         .exec(&mut database)
         .await
-        .unwrap_or_default();
-    let Some(issue) = issues.into_iter().find(|i| i.key == *key) else {
+        .unwrap_or_default()
+        .into_iter()
+        .next();
+    let Some(issue) = issue else {
         return Err(not_found().into());
     };
 
@@ -59,7 +64,11 @@ async fn issue_detail_page(cx: &Cx) -> Result {
         .unwrap_or_default();
     comments.sort_by_key(|c| c.created_at);
 
-    let users = User::all().exec(&mut database).await.unwrap_or_default();
+    let mut user_ids: Vec<u64> = comments.iter().map(|c| c.author_user_id).collect();
+    user_ids.push(issue.opened_by_user_id);
+    let users = crate::id_lookups::users_by_ids(&mut database, &user_ids)
+        .await
+        .unwrap_or_default();
     let opener_name = user_display(&users, issue.opened_by_user_id);
 
     let tz = browser_tz(cx);
@@ -295,12 +304,17 @@ async fn reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOther> {
     }
 
     let mut database = db(cx);
-    let issues = Issue::all()
+    let key_owned = key.to_owned();
+    let issue = Issue::all()
         .filter(Issue::fields().organization_id().eq(ctx.org.id))
+        .filter(Issue::fields().key().eq(key_owned))
+        .limit(1)
         .exec(&mut database)
         .await
-        .unwrap_or_default();
-    let Some(mut issue) = issues.into_iter().find(|i| i.key == *key) else {
+        .unwrap_or_default()
+        .into_iter()
+        .next();
+    let Some(mut issue) = issue else {
         // Same 404 as missing write — do not confirm the key via redirect.
         return Err(capability_denied().into());
     };
@@ -346,12 +360,17 @@ async fn close_issue(cx: &Cx) -> Result<SeeOther> {
     }
 
     let mut database = db(cx);
-    let issues = Issue::all()
+    let key_owned = key.to_owned();
+    let issue = Issue::all()
         .filter(Issue::fields().organization_id().eq(ctx.org.id))
+        .filter(Issue::fields().key().eq(key_owned))
+        .limit(1)
         .exec(&mut database)
         .await
-        .unwrap_or_default();
-    let Some(mut issue) = issues.into_iter().find(|i| i.key == *key) else {
+        .unwrap_or_default()
+        .into_iter()
+        .next();
+    let Some(mut issue) = issue else {
         return Err(capability_denied().into());
     };
 
@@ -374,12 +393,17 @@ async fn reopen_issue(cx: &Cx) -> Result<SeeOther> {
     }
 
     let mut database = db(cx);
-    let issues = Issue::all()
+    let key_owned = key.to_owned();
+    let issue = Issue::all()
         .filter(Issue::fields().organization_id().eq(ctx.org.id))
+        .filter(Issue::fields().key().eq(key_owned))
+        .limit(1)
         .exec(&mut database)
         .await
-        .unwrap_or_default();
-    let Some(mut issue) = issues.into_iter().find(|i| i.key == *key) else {
+        .unwrap_or_default()
+        .into_iter()
+        .next();
+    let Some(mut issue) = issue else {
         return Err(capability_denied().into());
     };
 

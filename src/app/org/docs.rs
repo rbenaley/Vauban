@@ -16,13 +16,14 @@ use crate::{
     app::_components::filter_row,
     app::org::Org,
     auth::{capability_denied, require_org},
-    docs_search::{normalize_category, normalize_query, text_matches_query},
+    docs_search::{normalize_category, normalize_query},
     list_page::{
-        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
-        with_page_param,
+        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_offset,
+        parse_page, with_page_param,
     },
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
+    sql_search::ilike_contains,
 };
 
 const CATEGORIES: &[&str] = &[
@@ -94,23 +95,54 @@ impl DocsFilter {
     }
 }
 
-pub(super) async fn load_filtered_docs(
+/// Build the shared published (+ category / search) docs query.
+macro_rules! docs_filtered_query {
+    ($filter:expr) => {{
+        let filter = $filter;
+        let mut query =
+            DocArticle::all().filter(DocArticle::fields().status().eq(DOC_STATUS_PUBLISHED));
+        if !filter.cat.is_empty() {
+            query = query.filter(DocArticle::fields().category().eq(filter.cat.clone()));
+        }
+        if let Some(pat) = ilike_contains(&filter.q) {
+            query = query.filter(
+                DocArticle::fields()
+                    .title()
+                    .ilike_with_escape(pat.clone(), '\\')
+                    .or(DocArticle::fields().summary().ilike_with_escape(pat, '\\')),
+            );
+        }
+        query
+    }};
+}
+
+/// Count matching published docs (SQL).
+pub(super) async fn count_filtered_docs(cx: &Cx, filter: &DocsFilter) -> usize {
+    let mut database = crate::auth::db(cx);
+    docs_filtered_query!(filter)
+        .count()
+        .exec(&mut database)
+        .await
+        .unwrap_or(0) as usize
+}
+
+/// One page of matching docs (SQL `ORDER BY updated_at DESC` + limit/offset).
+pub(super) async fn load_filtered_docs_page(
     cx: &Cx,
     filter: &DocsFilter,
-) -> (String, String, Vec<DocArticle>) {
+    page: usize,
+) -> Vec<DocArticle> {
+    let total = count_filtered_docs(cx, filter).await;
+    let pages = page_count(total, LIST_PAGE_SIZE);
+    let page = clamp_page(page, pages);
     let mut database = crate::auth::db(cx);
-    let mut query =
-        DocArticle::all().filter(DocArticle::fields().status().eq(DOC_STATUS_PUBLISHED));
-    if !filter.cat.is_empty() {
-        query = query.filter(DocArticle::fields().category().eq(&filter.cat));
-    }
-    let articles = query.exec(&mut database).await.unwrap_or_default();
-    let mut filtered: Vec<_> = articles
-        .into_iter()
-        .filter(|a| text_matches_query(&filter.q, &a.title, &a.summary))
-        .collect();
-    filtered.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
-    (filter.q.clone(), filter.cat.clone(), filtered)
+    docs_filtered_query!(filter)
+        .order_by(DocArticle::fields().updated_at().desc())
+        .limit(LIST_PAGE_SIZE)
+        .offset(page_offset(page, LIST_PAGE_SIZE))
+        .exec(&mut database)
+        .await
+        .unwrap_or_default()
 }
 
 pub(super) async fn docs_list_view(
@@ -121,8 +153,8 @@ pub(super) async fn docs_list_view(
     page: usize,
 ) -> Result {
     let filter = DocsFilter::normalized(q, cat);
-    let (_, _, articles) = load_filtered_docs(cx, &filter).await;
-    let pages = page_count(articles.len(), LIST_PAGE_SIZE);
+    let total = count_filtered_docs(cx, &filter).await;
+    let pages = page_count(total, LIST_PAGE_SIZE);
     let page = clamp_page(page, pages);
 
     let q_value = q.to_owned();

@@ -48,6 +48,8 @@ just test -- admin_issues_search_shard
 7. Clear both fields — aggregated list returns.
 
 Pass: shard POSTs stay 200; both filters update live; no panics.
+Org chip resolves slug→id in SQL; status/`q`/`limit`/`offset`/`count`
+are pushed into Toasty (not full-table Rust match).
 
 ## B -- Denial paths (fail-closed)
 

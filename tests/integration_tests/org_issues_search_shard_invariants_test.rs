@@ -43,15 +43,23 @@ fn inv_shard_reauthorizes_before_loading_issues() {
     let require = src.find("require_org(cx").expect("require_org(cx");
     let issues_read = src.find("perms.issues_read").expect("perms.issues_read");
     let load = src
-        .find("load_filtered_issues(cx")
-        .expect("load_filtered_issues(cx");
+        .find("load_filtered_issues_page(cx")
+        .expect("load_filtered_issues_page(cx");
     assert!(
         normalize < require && require < issues_read && issues_read < load,
         "gate order: normalize_org_slug -> require_org -> issues_read -> load"
     );
     assert!(
-        src.contains("page_slice") && src.contains("LIST_PAGE_SIZE"),
-        "shard must paginate with page_slice / LIST_PAGE_SIZE"
+        src.contains("load_filtered_issues_page"),
+        "shard must page via load_filtered_issues_page"
+    );
+    let page = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/issues.rs"
+    ));
+    assert!(
+        page.contains("LIST_PAGE_SIZE") && page.contains(".limit(") && page.contains(".offset("),
+        "issues loader must SQL page with limit/offset"
     );
 }
 

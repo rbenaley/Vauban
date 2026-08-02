@@ -32,10 +32,17 @@ fn inv_shard_rechecks_staff_before_loading() {
 
     let staff = src.find("require_staff(cx)").expect("require_staff(cx)");
     let read = src.find("perms.issues_read").expect("perms.issues_read");
-    let load = src.find("Issue::all").expect("Issue::all");
+    let load = src[staff..]
+        .find("admin_issues_filtered_query!")
+        .map(|i| staff + i)
+        .expect("admin_issues_filtered_query! after staff gate");
     assert!(
         staff < read && read < load,
         "gate order: require_staff -> issues_read -> load"
+    );
+    assert!(
+        src.contains("resolve_org_id_sql"),
+        "shard must resolve org filter in SQL"
     );
 }
 
@@ -65,8 +72,15 @@ fn inv_shard_paginates_with_page_slice() {
         "/src/app/admin/issues/search_shard.rs"
     ));
     assert!(
-        src.contains("page_slice") && src.contains("LIST_PAGE_SIZE"),
-        "shard must paginate with page_slice / LIST_PAGE_SIZE"
+        src.contains("LIST_PAGE_SIZE")
+            && src.contains(".limit(")
+            && src.contains(".offset(")
+            && src.contains(".count()"),
+        "shard must SQL page with limit/offset/count"
+    );
+    assert!(
+        src.contains("ilike_with_escape") || src.contains("ilike_contains"),
+        "shard must use SQL ilike for search"
     );
 }
 

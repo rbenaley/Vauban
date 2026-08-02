@@ -621,47 +621,88 @@ pub(super) fn parse_notes(notes: &str) -> Vec<(String, &'static str, String)> {
         .collect()
 }
 
+/// Whether a release row matches the SQL visibility net (status + org).
+///
+/// Used as the unit/proptest oracle for the Toasty filters in
+/// [`load_releases_for_org`] / [`find_visible_release_by_version`].
+pub fn release_matches_sql_visibility(
+    status: &str,
+    release_org_id: u64,
+    viewer_org_id: u64,
+    viewer_slug: &str,
+) -> bool {
+    if status != RELEASE_STATUS_PUBLISHED {
+        return false;
+    }
+    if viewer_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+        return true;
+    }
+    release_org_id == RELEASE_GA_ORG_ID || release_org_id == viewer_org_id
+}
+
 /// Releases visible on org Builds / dashboard: must be `PUBLISHED`, then either
 /// GA (`organization_id == 0`) or targeted at that org. The reserved staff
 /// tenant `vauban` still sees every **published** private client build; `HIDDEN`
 /// rows stay on `/admin/releases` only (Unpublish removes them from chrome).
 pub(super) fn release_visible_to_org(release: &Release, org_id: u64, org_slug: &str) -> bool {
-    if release.status != RELEASE_STATUS_PUBLISHED {
-        return false;
-    }
-    if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return true;
-    }
-    release.organization_id == RELEASE_GA_ORG_ID || release.organization_id == org_id
+    release_matches_sql_visibility(&release.status, release.organization_id, org_id, org_slug)
 }
 
 pub(super) fn sort_releases(releases: &mut [Release]) {
     releases.sort_by(|a, b| cmp_version_desc(&a.version, &b.version));
 }
 
-pub(super) async fn load_releases_for_org(
+/// Load published releases visible to `org_id` / `org_slug` (SQL tenant net).
+///
+/// Semver ordering stays in Rust ([`sort_releases`]) after the SQL-bounded set.
+pub(crate) async fn load_releases_for_org(
     cx: &Cx,
     org_id: u64,
     org_slug: &str,
     channel: &str,
 ) -> Vec<Release> {
     let mut database = crate::auth::db(cx);
-    let all = if channel.is_empty() {
-        Release::all().exec(&mut database).await.unwrap_or_default()
-    } else {
+    let mut q = Release::all().filter(Release::fields().status().eq(RELEASE_STATUS_PUBLISHED));
+    if !org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+        q = q.filter(
+            Release::fields()
+                .organization_id()
+                .in_list([RELEASE_GA_ORG_ID, org_id]),
+        );
+    }
+    if !channel.is_empty() {
         let channel_owned = channel.to_owned();
-        Release::all()
-            .filter(Release::fields().channel().eq(&channel_owned))
-            .exec(&mut database)
-            .await
-            .unwrap_or_default()
-    };
-    let mut filtered: Vec<_> = all
-        .into_iter()
-        .filter(|r| release_visible_to_org(r, org_id, org_slug))
-        .collect();
+        q = q.filter(Release::fields().channel().eq(channel_owned));
+    }
+    let mut filtered = q.exec(&mut database).await.unwrap_or_default();
+    // Defense in depth — SQL already applied the same net.
+    filtered.retain(|r| release_visible_to_org(r, org_id, org_slug));
     sort_releases(&mut filtered);
     filtered
+}
+
+/// Version lookup with the same SQL visibility net as the builds list.
+pub(super) async fn find_visible_release_by_version(
+    db: &mut toasty::Db,
+    version: &str,
+    org_id: u64,
+    org_slug: &str,
+) -> Option<Release> {
+    let ver_key = version.to_owned();
+    let mut q = Release::all()
+        .filter(Release::fields().version().eq(ver_key))
+        .filter(Release::fields().status().eq(RELEASE_STATUS_PUBLISHED));
+    if !org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+        q = q.filter(
+            Release::fields()
+                .organization_id()
+                .in_list([RELEASE_GA_ORG_ID, org_id]),
+        );
+    }
+    let found = q.exec(db).await.unwrap_or_default();
+    found
+        .into_iter()
+        .find(|r| release_visible_to_org(r, org_id, org_slug))
 }
 
 #[cfg(test)]
@@ -731,5 +772,42 @@ mod builds_entitlement_page_tests {
         let rel = sample_release(RELEASE_STATUS_PUBLISHED, 42);
         assert!(release_visible_to_org(&rel, 42, "acme"));
         assert!(!release_visible_to_org(&rel, 99, "other"));
+    }
+}
+
+#[cfg(test)]
+mod builds_entitlement_sql_prop {
+    use super::release_matches_sql_visibility;
+    use crate::models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED};
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        #[test]
+        fn prop_sql_visibility_matches_oracle(
+            viewer_org in 1u64..200,
+            release_org in 0u64..200,
+            reserved in proptest::bool::ANY,
+            published in proptest::bool::ANY,
+        ) {
+            let status = if published {
+                RELEASE_STATUS_PUBLISHED
+            } else {
+                RELEASE_STATUS_HIDDEN
+            };
+            let slug = if reserved { "vauban" } else { "acme" };
+            let ok = release_matches_sql_visibility(status, release_org, viewer_org, slug);
+            if !published {
+                prop_assert!(!ok);
+            } else if reserved {
+                prop_assert!(ok);
+            } else {
+                prop_assert_eq!(
+                    ok,
+                    release_org == RELEASE_GA_ORG_ID || release_org == viewer_org
+                );
+            }
+        }
     }
 }

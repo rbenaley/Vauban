@@ -47,6 +47,8 @@ just test -- org_issues_search_shard
 8. Clear the field — full org issue list returns.
 
 Pass: shard POSTs stay 200; UI updates; no worker panics.
+Search/paging push `organization_id`, status, and `ilike` into SQL with
+`limit`/`offset`/`count` (not full-table Rust match + `page_slice`).
 
 ## B -- Denial paths (fail-closed)
 

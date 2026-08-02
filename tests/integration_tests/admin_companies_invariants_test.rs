@@ -137,8 +137,16 @@ fn inv_admin_companies_list_concept_and_edit_delete() {
     assert!(shard.contains("ico_trash"));
     assert!(shard.contains("delete="));
     assert!(
-        shard.contains("page_slice") && shard.contains("COMPANIES_PAGE_SIZE"),
-        "shard must page_slice with COMPANIES_PAGE_SIZE"
+        shard.contains("load_company_cards_page"),
+        "shard must page via load_company_cards_page"
+    );
+    let load = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/load.rs"
+    ));
+    assert!(
+        load.contains("COMPANIES_PAGE_SIZE") && load.contains(".limit("),
+        "companies load must SQL page with COMPANIES_PAGE_SIZE"
     );
     assert!(edit.contains("/delete"));
     assert!(edit.contains("sync_org_accounts"));

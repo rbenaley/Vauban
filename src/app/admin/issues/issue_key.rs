@@ -16,12 +16,14 @@ use crate::{
     app::_components::{ico_check, ico_hourglass, ico_paperclip, severity_badge, status_badge},
     auth::{capability_denied, db, require_staff},
     db::now_unix,
+    id_lookups::{orgs_by_ids, users_by_ids},
     issue_status::{close_issue_status, issue_is_closed, reopen_issue_status},
     models::{
         ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_REPORTER,
         ISSUE_ROLE_SUPPORT, ISSUE_ROLE_SYSTEM, Issue, IssueComment, Organization, User,
     },
     perms::perms_for_user,
+    sql_search::escape_ilike_literal,
     tz::{browser_tz, format_relative, format_unix_local, unix_rfc3339},
 };
 
@@ -48,14 +50,18 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
         .unwrap_or_default();
 
     let mut database = db(cx);
-    let orgs = Organization::all()
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let issues = Issue::all().exec(&mut database).await.unwrap_or_default();
-    let Some(issue) = pick_issue_by_key(&issues, &orgs, key, &org_hint) else {
+    let Some(issue) = load_admin_issue_by_key(&mut database, key, &org_hint).await else {
         return Err(not_found().into());
     };
+
+    let orgs = orgs_by_ids(&mut database, &[issue.organization_id])
+        .await
+        .unwrap_or_default();
+    let org = orgs.iter().find(|o| o.id == issue.organization_id);
+    let org_label = org
+        .map(|o| format!("{} ({})", o.name, o.slug))
+        .unwrap_or_else(|| format!("org#{}", issue.organization_id));
+    let org_slug_for_q = org.map(|o| o.slug.as_str()).unwrap_or("");
 
     let mut comments = IssueComment::all()
         .filter(IssueComment::fields().issue_id().eq(issue.id))
@@ -64,13 +70,12 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
         .unwrap_or_default();
     comments.sort_by_key(|c| c.created_at);
 
-    let users = User::all().exec(&mut database).await.unwrap_or_default();
+    let mut user_ids: Vec<u64> = comments.iter().map(|c| c.author_user_id).collect();
+    user_ids.push(issue.opened_by_user_id);
+    let users = users_by_ids(&mut database, &user_ids)
+        .await
+        .unwrap_or_default();
     let opener_name = user_display(&users, issue.opened_by_user_id);
-    let org_label = orgs
-        .iter()
-        .find(|o| o.id == issue.organization_id)
-        .map(|o| format!("{} ({})", o.name, o.slug))
-        .unwrap_or_else(|| format!("org#{}", issue.organization_id));
 
     let tz = browser_tz(cx);
     let now = now_unix();
@@ -80,11 +85,6 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
     let updated_rfc = unix_rfc3339(issue.updated_at);
     let opener_created = format_relative(issue.created_at, now, tz);
 
-    let org_slug_for_q = orgs
-        .iter()
-        .find(|o| o.id == issue.organization_id)
-        .map(|o| o.slug.as_str())
-        .unwrap_or("");
     let list_href = "/admin/issues".to_owned();
     let reply_action = admin_issue_action(&issue.key, "reply", org_slug_for_q);
     let close_action = admin_issue_action(&issue.key, "close", org_slug_for_q);
@@ -294,12 +294,7 @@ async fn admin_reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOt
     }
 
     let mut database = db(cx);
-    let orgs = Organization::all()
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let issues = Issue::all().exec(&mut database).await.unwrap_or_default();
-    let Some(mut issue) = pick_issue_by_key(&issues, &orgs, key, &org_hint) else {
+    let Some(mut issue) = load_admin_issue_by_key(&mut database, key, &org_hint).await else {
         return Ok(see_other("/admin/issues"));
     };
 
@@ -339,12 +334,7 @@ async fn admin_close_issue(cx: &Cx) -> Result<SeeOther> {
     }
 
     let mut database = db(cx);
-    let orgs = Organization::all()
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let issues = Issue::all().exec(&mut database).await.unwrap_or_default();
-    let Some(mut issue) = pick_issue_by_key(&issues, &orgs, key, &org_hint) else {
+    let Some(mut issue) = load_admin_issue_by_key(&mut database, key, &org_hint).await else {
         return Ok(see_other("/admin/issues"));
     };
 
@@ -368,12 +358,7 @@ async fn admin_reopen_issue(cx: &Cx) -> Result<SeeOther> {
     }
 
     let mut database = db(cx);
-    let orgs = Organization::all()
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let issues = Issue::all().exec(&mut database).await.unwrap_or_default();
-    let Some(mut issue) = pick_issue_by_key(&issues, &orgs, key, &org_hint) else {
+    let Some(mut issue) = load_admin_issue_by_key(&mut database, key, &org_hint).await else {
         return Ok(see_other("/admin/issues"));
     };
 
@@ -398,6 +383,68 @@ fn admin_issue_detail_href(key: &str, org_hint: &str) -> String {
     }
 }
 
+/// Resolve `?org=` hint to an organization id (numeric id or case-insensitive slug).
+async fn resolve_org_hint(db: &mut toasty::Db, org_hint: &str) -> Option<u64> {
+    let raw = org_hint.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Ok(id) = raw.parse::<u64>() {
+        return Organization::all()
+            .filter(Organization::fields().id().eq(id))
+            .limit(1)
+            .exec(db)
+            .await
+            .ok()?
+            .into_iter()
+            .next()
+            .map(|o| o.id);
+    }
+    let pat = escape_ilike_literal(raw);
+    Organization::all()
+        .filter(Organization::fields().slug().ilike_with_escape(pat, '\\'))
+        .limit(1)
+        .exec(db)
+        .await
+        .ok()?
+        .into_iter()
+        .next()
+        .map(|o| o.id)
+}
+
+/// Load a single admin issue by key, optionally disambiguated by `?org=` hint.
+///
+/// Without a resolvable hint: SQL `key` filter + `limit(2)`, prefer first.
+/// With a resolvable hint: also filter `organization_id` (missing -> None).
+/// Unresolvable non-empty hint falls through to the no-hint path (legacy).
+async fn load_admin_issue_by_key(db: &mut toasty::Db, key: &str, org_hint: &str) -> Option<Issue> {
+    let key_owned = key.to_owned();
+    let query = Issue::all().filter(Issue::fields().key().eq(key_owned));
+
+    if !org_hint.is_empty()
+        && let Some(org_id) = resolve_org_hint(db, org_hint).await
+    {
+        return query
+            .filter(Issue::fields().organization_id().eq(org_id))
+            .limit(1)
+            .exec(db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .next();
+    }
+
+    query
+        .limit(2)
+        .exec(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .next()
+}
+
+/// In-memory selection oracle kept for unit tests of key / org-hint policy.
+#[cfg(test)]
 fn pick_issue_by_key(
     issues: &[Issue],
     orgs: &[Organization],
@@ -532,4 +579,73 @@ fn user_display(users: &[User], id: u64) -> String {
         .find(|u| u.id == id)
         .map(|u| u.display_name.clone())
         .unwrap_or_else(|| "Unknown".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_org(id: u64, slug: &str) -> Organization {
+        Organization {
+            id,
+            slug: slug.to_owned(),
+            name: slug.to_owned(),
+            address: String::new(),
+            vat: String::new(),
+            plan_label: String::new(),
+            supported_builds: String::new(),
+            lts_subscriptions: 0,
+            industrial_lts_subscriptions: 0,
+            technical_contact_name: String::new(),
+            technical_contact_email: String::new(),
+            status: "active".to_owned(),
+        }
+    }
+
+    fn sample_issue(id: u64, key: &str, organization_id: u64) -> Issue {
+        Issue {
+            id,
+            key: key.to_owned(),
+            title: "t".to_owned(),
+            component: "c".to_owned(),
+            severity: "Low".to_owned(),
+            status: "Open".to_owned(),
+            organization_id,
+            details: String::new(),
+            opened_by_user_id: 1,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn pick_issue_by_key_prefers_first_without_hint() {
+        let orgs = [sample_org(1, "acme"), sample_org(2, "beta")];
+        let issues = [sample_issue(10, "ISS-1", 1), sample_issue(11, "ISS-1", 2)];
+        let picked = pick_issue_by_key(&issues, &orgs, "ISS-1", "").unwrap();
+        assert_eq!(picked.id, 10);
+    }
+
+    #[test]
+    fn pick_issue_by_key_disambiguates_by_slug_hint() {
+        let orgs = [sample_org(1, "acme"), sample_org(2, "beta")];
+        let issues = [sample_issue(10, "ISS-1", 1), sample_issue(11, "ISS-1", 2)];
+        let picked = pick_issue_by_key(&issues, &orgs, "ISS-1", "BETA").unwrap();
+        assert_eq!(picked.id, 11);
+    }
+
+    #[test]
+    fn pick_issue_by_key_resolved_org_without_issue_is_none() {
+        let orgs = [sample_org(1, "acme"), sample_org(2, "beta")];
+        let issues = [sample_issue(10, "ISS-1", 1)];
+        assert!(pick_issue_by_key(&issues, &orgs, "ISS-1", "beta").is_none());
+    }
+
+    #[test]
+    fn pick_issue_by_key_unresolvable_hint_falls_through() {
+        let orgs = [sample_org(1, "acme")];
+        let issues = [sample_issue(10, "ISS-1", 1)];
+        let picked = pick_issue_by_key(&issues, &orgs, "ISS-1", "missing").unwrap();
+        assert_eq!(picked.id, 10);
+    }
 }

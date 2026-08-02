@@ -94,6 +94,10 @@ Pass: 3 max per page; toolbar pager; overlay query not sticky.
    without leaking company names.
 
 Pass: shard POSTs stay 200 for staff; fail-closed for anon / member.
+Search is **SQL two-phase** (org-field `ilike` OR membership/user email
+`ilike` → union of org ids → page hydration via `in_list`). Seat checks
+use SQL `COUNT(*)` (`membership_count`), not `rows.len()` after a full
+membership load.
 
 ## Related automated coverage
 

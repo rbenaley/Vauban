@@ -77,8 +77,13 @@ grep -n '/admin/companies/{}' "$SHARD" >/dev/null \
   || fail "$SHARD Edit links must use company id"
 grep -n 'delete=' "$SHARD" >/dev/null || fail "$SHARD must open delete confirm"
 grep -n 'ico_trash' "$SHARD" >/dev/null || fail "$SHARD must use ico_trash"
-grep -n 'page_slice' "$SHARD" >/dev/null || fail "$SHARD must page_slice cards"
-grep -n 'COMPANIES_PAGE_SIZE' "$SHARD" >/dev/null || fail "$SHARD must use COMPANIES_PAGE_SIZE"
+grep -n 'load_company_cards_page' "$SHARD" >/dev/null \
+  || fail "$SHARD must page via load_company_cards_page (SQL limit/offset)"
+LOAD="src/app/admin/companies/load.rs"
+grep -n 'COMPANIES_PAGE_SIZE' "$LOAD" >/dev/null \
+  || fail "$LOAD must use COMPANIES_PAGE_SIZE"
+grep -nE 'limit\(|offset\(' "$LOAD" >/dev/null \
+  || fail "$LOAD must SQL page with limit/offset"
 if grep -nE '@click|::bind' "$LIST" >/dev/null 2>&1; then
   fail "$LIST must not use @click / :bind for pagination"
 fi
@@ -89,6 +94,11 @@ grep -n 'max_accounts_per_org' "$CONFIG" >/dev/null || fail "$CONFIG must define
 grep -n 'struct OrgConfig' "$CONFIG" >/dev/null || fail "$CONFIG must define OrgConfig"
 grep -n 'can_add_member' "$SEATS" >/dev/null || fail "$SEATS must define can_add_member"
 grep -n 'membership_count' "$SEATS" >/dev/null || fail "$SEATS must define membership_count"
+grep -n '\.count()' "$SEATS" >/dev/null \
+  || fail "$SEATS membership_count must use Toasty .count()"
+if grep -n 'rows\.len()' "$SEATS" >/dev/null; then
+  fail "$SEATS must not use rows.len() for membership_count"
+fi
 grep -n 'fn normalize_emails' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must define normalize_emails"
 grep -n 'fn parse_portal_email' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must define parse_portal_email"
 grep -n 'fn normalize_contact_email' "$ACCOUNTS" >/dev/null \

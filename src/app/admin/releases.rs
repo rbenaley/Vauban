@@ -17,7 +17,7 @@ use crate::{
         LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_slice,
         parse_page, with_page_param,
     },
-    models::{Organization, RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release},
+    models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release},
     perms::perms_for_user,
     release_pkg::cmp_version_desc,
     ui::{channel_badge_class, release_status_badge_class},
@@ -43,11 +43,8 @@ async fn admin_releases_page(cx: &Cx) -> Result {
     let mut releases = Release::all().exec(&mut database).await.unwrap_or_default();
     // Stable version order (numeric + client suffix) — status toggles must not
     // reshuffle rows when the DB returns a different natural order.
+    // Semver sort stays in Rust after the staff catalogue load (see toasty skill).
     releases.sort_by(|a, b| cmp_version_desc(&a.version, &b.version));
-    let orgs = Organization::all()
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
 
     let q = query_params::<AdminReleasesQuery>(cx).ok();
     let delete_id = q
@@ -64,6 +61,14 @@ async fn admin_releases_page(cx: &Cx) -> Result {
     let pages = page_count(releases.len(), LIST_PAGE_SIZE);
     page = clamp_page(page, pages);
     let page_releases = page_slice(&releases, page, LIST_PAGE_SIZE);
+    let org_ids: Vec<u64> = page_releases
+        .iter()
+        .map(|r| r.organization_id)
+        .filter(|id| *id != RELEASE_GA_ORG_ID)
+        .collect();
+    let orgs = crate::id_lookups::orgs_by_ids(&mut database, &org_ids)
+        .await
+        .unwrap_or_default();
     // Pager keeps only `page` — never sticky `delete` / `err` (overlay query).
     let pager = PagerLinks::from_hrefs(page, pages, |n| {
         let mut parts = Vec::new();

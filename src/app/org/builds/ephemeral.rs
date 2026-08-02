@@ -12,7 +12,7 @@ use topcoat::{
 };
 use uuid::Uuid;
 
-use super::release_visible_to_org;
+use super::find_visible_release_by_version;
 use crate::{
     app::org::Org,
     auth::{db, require_org},
@@ -133,14 +133,8 @@ async fn require_downloadable_release(
 
     let ver_key = ver.to_owned();
     let mut database = db(cx);
-    let found = Release::all()
-        .filter(Release::fields().version().eq(&ver_key))
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let Some(release) = found
-        .into_iter()
-        .find(|r| release_visible_to_org(r, ctx.org.id, org_slug))
+    let Some(release) =
+        find_visible_release_by_version(&mut database, &ver_key, ctx.org.id, org_slug).await
     else {
         return Err(not_found().into());
     };

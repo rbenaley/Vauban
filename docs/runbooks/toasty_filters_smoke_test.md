@@ -1,11 +1,13 @@
 # Runbook -- Toasty filtered queries
 
-> Manual validation after shipping **published/channel filters + deferred body**. CI covers unit /
-> invariants / proptest / battle / in-process E2E against `vcp_test`;
-> staging proves browser HTTPS and denial paths.
+> Manual validation after shipping **SQL-backed list/search/entitlement
+> paths** (status/channel/org `in_list`, `ilike` search, `limit`/`offset`/
+> `count`, seats `.count()`, companies two-phase search) plus **deferred
+> body**. CI covers unit / invariants / proptest / battle / in-process E2E
+> against `vcp_test`; staging proves browser HTTPS and denial paths.
 >
 > Audience: release / staging operators.
-> Severity: **BLOCKING** for this surface. Do not ship without A–B.
+> Severity: **BLOCKING** for this surface. Do not ship without A–C.
 
 Related:
 
@@ -37,6 +39,8 @@ rtk cargo test --test integration_tests -- toasty_filters -- --test-threads=1
 1. Sign in as `support@vauban.sh` / `password` (or member where appropriate).
 2. Exercise the surface on `/acme-infrastructure/…` per product IA.
 3. Confirm expected success status / visible data.
+4. Spot-check lists (docs, issues, builds, admin companies) page and
+   search without full-table Rust filtering regressions.
 
 Pass: surface behaves as in the focused E2E suite.
 
@@ -47,6 +51,20 @@ Pass: surface behaves as in the focused E2E suite.
 3. Anonymous / expired session must not leak tenant data.
 
 Pass: Casbin + tenant fail-closed.
+
+## C -- SQL-path smoke notes
+
+1. Builds list: only GA + own-org **published** rows (SQL tenant net);
+   foreign private versions 404 on detail/download.
+2. Issues/docs search: `q` with `%` / `_` still matches literally
+   (escaped `ilike`); pager uses SQL `limit`/`offset`.
+3. Admin companies: empty `q` pages in SQL; non-empty `q` finds by
+   org fields **or** account email (two-phase); seat count is SQL
+   `COUNT(*)`.
+4. Release version order remains Rust `cmp_version_desc` after the
+   SQL-bounded set (intentional semver exception).
+
+Pass: no cross-tenant rows; search/paging match automated pyramid.
 
 ## Related automated coverage
 

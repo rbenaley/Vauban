@@ -74,6 +74,10 @@ Pass: Concept chrome + server ephemeral tokens; download remains 501.
 3. Direct detail/download URL for a foreign private version → **404**.
 
 Pass: `organization_id` targeting is enforced on list/detail/download.
+The list/detail/download loaders apply a **SQL** net
+(`status = published` + `organization_id in (GA, org)` for client orgs;
+published-only for reserved `vauban`) before Rust defense-in-depth
+`release_visible_to_org`.
 
 ## C -- Collapse without re-open loop
 

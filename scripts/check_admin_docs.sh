@@ -60,12 +60,12 @@ grep -n 'Publish new version' "$DOC" >/dev/null \
   || fail "$DOC must label published save as Publish new version"
 grep -n 'article.id' "$LIST" >/dev/null \
   || fail "$LIST Edit links must use article id"
-grep -nE 'sort_by(_key)?' "$LIST" >/dev/null \
-  || fail "$LIST must sort by updated_at"
+grep -n 'order_by(DocArticle::fields().updated_at()' "$LIST" >/dev/null \
+  || fail "$LIST must SQL order_by updated_at"
 grep -n 'updated_at' "$LIST" >/dev/null \
   || fail "$LIST sort must use updated_at"
-grep -n 'cmp_version_desc' "$LIST" >/dev/null \
-  || fail "$LIST must tie-break sort with cmp_version_desc"
+grep -n '\.count()' "$LIST" >/dev/null \
+  || fail "$LIST must use .count() for pager totals"
 # Exclusivity demotion must not stamp timestamps (keeps new version above old).
 if grep -A20 'pub async fn unpublish_other_published' src/docs_version.rs \
   | grep -v '^[[:space:]]*//' | grep -v '^[[:space:]]*\*' | grep -q 'updated_at'; then
@@ -93,10 +93,10 @@ grep -n 'list_toolbar' "$LIST" >/dev/null \
   || fail "$LIST must use list_toolbar for pager"
 grep -n 'page: Option<u32>' "$LIST" >/dev/null \
   || fail "$LIST AdminDocsQuery must include page: Option<u32>"
-grep -n 'page_slice' "$LIST" >/dev/null \
-  || fail "$LIST must slice rows with page_slice"
-grep -n 'sort_by_key' "$CLIENT" >/dev/null \
-  || fail "$CLIENT load_filtered_docs must sort by updated_at"
+grep -nE 'limit\(|page_offset|LIST_PAGE_SIZE' "$LIST" >/dev/null \
+  || fail "$LIST must page with SQL limit/offset (or LIST_PAGE_SIZE)"
+grep -nE 'ilike_with_escape|ilike_contains|order_by' "$CLIENT" >/dev/null \
+  || fail "$CLIENT load_filtered_docs must use SQL search/order"
 test -f src/docs_version.rs || fail "src/docs_version.rs must exist"
 grep -n 'pub fn bump_version' src/docs_version.rs >/dev/null \
   || fail "docs_version.rs must export bump_version"

@@ -10,11 +10,10 @@ use topcoat::{
     },
 };
 
-use super::release_visible_to_org;
+use super::find_visible_release_by_version;
 use crate::{
     app::org::Org,
     auth::{db, require_org},
-    models::Release,
     perms::perms_for_user,
 };
 
@@ -36,14 +35,9 @@ async fn builds_download(cx: &Cx) -> Result<(StatusCode, &'static str)> {
 
     let ver_key = ver.to_string();
     let mut database = db(cx);
-    let found = Release::all()
-        .filter(Release::fields().version().eq(&ver_key))
-        .exec(&mut database)
+    if find_visible_release_by_version(&mut database, &ver_key, ctx.org.id, org_slug)
         .await
-        .unwrap_or_default();
-    if !found
-        .iter()
-        .any(|r| release_visible_to_org(r, ctx.org.id, org_slug))
+        .is_none()
     {
         return Err(not_found().into());
     }

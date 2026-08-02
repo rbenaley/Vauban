@@ -34,7 +34,9 @@ fn inv_shard_rechecks_staff_before_loading() {
     let manage = src
         .find("perms.companies_manage")
         .expect("perms.companies_manage");
-    let load = src.find("Organization::all").expect("Organization::all");
+    let load = src
+        .find("load_company_cards_page(")
+        .expect("load_company_cards_page(");
     assert!(
         staff < manage && manage < load,
         "gate order: require_staff -> companies_manage -> load"
@@ -60,13 +62,23 @@ fn inv_page_wires_query_signal_and_shard() {
 
 #[test]
 fn inv_shard_paginates_with_companies_page_size() {
-    let src = include_str!(concat!(
+    let shard = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/app/admin/companies/search_shard.rs"
     ));
     assert!(
-        src.contains("page_slice") && src.contains("COMPANIES_PAGE_SIZE"),
-        "shard must paginate with page_slice / COMPANIES_PAGE_SIZE"
+        shard.contains("load_company_cards_page"),
+        "shard must page via load_company_cards_page"
+    );
+    let load = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/load.rs"
+    ));
+    assert!(
+        load.contains("COMPANIES_PAGE_SIZE")
+            && load.contains(".limit(")
+            && load.contains(".offset("),
+        "companies load must SQL page with limit/offset"
     );
 }
 

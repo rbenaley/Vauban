@@ -4,13 +4,14 @@ use toasty::Db;
 
 use crate::models::Membership;
 
-/// Count memberships for an organization.
+/// Count memberships for an organization (`COUNT(*)` via Toasty).
 pub async fn membership_count(db: &mut Db, organization_id: u64) -> anyhow::Result<usize> {
-    let rows = Membership::all()
+    let n = Membership::all()
         .filter(Membership::fields().organization_id().eq(organization_id))
+        .count()
         .exec(db)
         .await?;
-    Ok(rows.len())
+    Ok(n as usize)
 }
 
 /// True when another user account may be added under `max` seats.

@@ -134,6 +134,11 @@ count into Toasty SQL:
 `sort_by_key` / `page_slice` for product listings. `page_slice` is for
 in-memory leftovers only, not a Postgres paging strategy.
 
+**Exception — release version order:** after a SQL-bounded visible set
+(published + entitlement, or staff catalogue), keep Rust
+`cmp_version_desc` (+ `page_slice` on that set). SQL `ORDER BY version`
+is not semver-aware; a future `sort_key` column may retire this.
+
 Also: `Vec` scalar arrays (`.intersects` / `.contains` on **arrays** —
 not substring on `String`), collection updates
 (`toasty::stmt::extend`), deferred / select. Document/JSON(B) storage is

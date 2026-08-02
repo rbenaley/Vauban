@@ -40,11 +40,16 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
     }
 
     let mut database = db(cx);
-    let mut orgs = Organization::all()
+    let orgs = Organization::all()
+        .filter(
+            Organization::fields()
+                .slug()
+                .ne(crate::models::RESERVED_ORG_SLUG.to_owned()),
+        )
+        .order_by(Organization::fields().name().asc())
         .exec(&mut database)
         .await
         .unwrap_or_default();
-    orgs.sort_by(|a, b| a.name.cmp(&b.name));
 
     view! {
         <div>

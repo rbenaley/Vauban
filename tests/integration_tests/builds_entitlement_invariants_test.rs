@@ -176,7 +176,7 @@ fn inv_builds_concept_ephemeral_server_side() {
     let sort_fn = builds
         .split("fn sort_releases")
         .nth(1)
-        .and_then(|s| s.split("pub(super) async fn load_releases").next())
+        .and_then(|s| s.split("async fn load_releases_for_org").next())
         .expect("sort_releases");
     assert!(
         sort_fn.contains("cmp_version_desc"),
@@ -189,8 +189,8 @@ fn inv_builds_concept_ephemeral_server_side() {
 
     let org = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
     assert!(
-        org.contains("cmp_version_desc"),
-        "dashboard latest build must use version order"
+        org.contains("load_releases_for_org"),
+        "dashboard latest build must use load_releases_for_org (version-sorted)"
     );
     assert!(
         builds.contains("RESERVED_ORG_SLUG"),

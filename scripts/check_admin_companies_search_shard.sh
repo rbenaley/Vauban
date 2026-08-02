@@ -12,11 +12,13 @@ fail() {
 
 SHARD="src/app/admin/companies/search_shard.rs"
 PAGE="src/app/admin/companies.rs"
+LOAD="src/app/admin/companies/load.rs"
 HELPERS="src/companies_search.rs"
 LIST_PAGE="src/list_page.rs"
 
 [[ -f "$SHARD" ]] || fail "missing $SHARD"
 [[ -f "$HELPERS" ]] || fail "missing $HELPERS"
+[[ -f "$LOAD" ]] || fail "missing $LOAD"
 
 grep -nE '#\[shard\]' "$SHARD" >/dev/null || fail "$SHARD must define #[shard]"
 grep -n 'admin_companies_search_results' "$SHARD" >/dev/null \
@@ -24,25 +26,32 @@ grep -n 'admin_companies_search_results' "$SHARD" >/dev/null \
 grep -n 'require_staff' "$SHARD" >/dev/null \
   || fail "$SHARD must re-check require_staff (layout does not run on shard POST)"
 grep -n 'companies_manage' "$SHARD" >/dev/null || fail "$SHARD must re-check companies_manage"
-grep -n 'COMPANIES_PAGE_SIZE' "$SHARD" >/dev/null \
-  || fail "$SHARD must slice with COMPANIES_PAGE_SIZE"
-grep -n 'page_slice' "$SHARD" >/dev/null || fail "$SHARD must use page_slice"
+grep -n 'load_company_cards_page' "$SHARD" >/dev/null \
+  || fail "$SHARD must load via load_company_cards_page"
 grep -n 'data-admin-companies-search-shard' "$SHARD" >/dev/null \
   || fail "$SHARD must mark results container"
-grep -n 'company_matches_query' "$SHARD" >/dev/null \
-  || fail "$SHARD must use company_matches_query"
 if grep -nE 'path_param' "$SHARD" >/dev/null; then
   fail "$SHARD must not call path_param"
 fi
 
 staff_line=$(grep -n 'require_staff(cx)' "$SHARD" | head -1 | cut -d: -f1)
 manage_line=$(grep -n 'perms\.companies_manage' "$SHARD" | head -1 | cut -d: -f1)
-load_line=$(grep -n 'Organization::all' "$SHARD" | head -1 | cut -d: -f1)
+# Prefer the call site (skip `use … load_company_cards_page` import).
+load_line=$(grep -n 'load_company_cards_page(' "$SHARD" | head -1 | cut -d: -f1)
 [[ -n "$staff_line" && -n "$manage_line" && -n "$load_line" ]] \
   || fail "could not locate auth gate markers in $SHARD handler"
 if ! [[ "$staff_line" -lt "$manage_line" && "$manage_line" -lt "$load_line" ]]; then
-  fail "$SHARD gate order must be require_staff -> companies_manage -> Organization::all (got $staff_line/$manage_line/$load_line)"
+  fail "$SHARD gate order must be require_staff -> companies_manage -> load_company_cards_page (got $staff_line/$manage_line/$load_line)"
 fi
+
+grep -n 'ilike_with_escape' "$LOAD" >/dev/null \
+  || fail "$LOAD must use ilike_with_escape for company search"
+grep -n 'in_list' "$LOAD" >/dev/null \
+  || fail "$LOAD must hydrate via in_list"
+grep -n 'COMPANIES_PAGE_SIZE' "$LOAD" >/dev/null \
+  || fail "$LOAD must use COMPANIES_PAGE_SIZE"
+grep -nE 'limit\(|offset\(' "$LOAD" >/dev/null \
+  || fail "$LOAD must SQL page with limit/offset"
 
 grep -n 'admin_companies_search_results' "$PAGE" >/dev/null \
   || fail "$PAGE must invoke admin_companies_search_results shard"

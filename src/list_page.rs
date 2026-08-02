@@ -26,7 +26,23 @@ pub fn clamp_page(page: usize, pages: usize) -> usize {
     page.clamp(1, pages.max(1))
 }
 
+/// 0-based row offset for Toasty `.limit(page_size).offset(...)`.
+///
+/// `page` is 1-based (clamped to at least 1). Requires a prior `.limit` on the
+/// same query (Toasty panics otherwise).
+pub fn page_offset(page: usize, page_size: usize) -> usize {
+    let page = page.max(1);
+    if page_size == 0 {
+        return 0;
+    }
+    (page - 1) * page_size
+}
+
 /// Slice of `items` for a 1-based `page` (clamped).
+///
+/// Prefer SQL `.limit` / `.offset` for Postgres-backed lists; use this for
+/// already-bounded in-memory vecs (e.g. semver-sorted releases after SQL
+/// entitlement filter).
 pub fn page_slice<T>(items: &[T], page: usize, page_size: usize) -> &[T] {
     if items.is_empty() || page_size == 0 {
         return items;
@@ -118,6 +134,14 @@ mod list_page_tests {
         assert_eq!(page_count(11, LIST_PAGE_SIZE), 2);
         assert_eq!(page_count(20, LIST_PAGE_SIZE), 2);
         assert_eq!(page_count(21, LIST_PAGE_SIZE), 3);
+    }
+
+    #[test]
+    fn list_page_page_offset_is_zero_based() {
+        assert_eq!(page_offset(1, LIST_PAGE_SIZE), 0);
+        assert_eq!(page_offset(2, LIST_PAGE_SIZE), 10);
+        assert_eq!(page_offset(0, LIST_PAGE_SIZE), 0);
+        assert_eq!(page_offset(3, 3), 6);
     }
 
     #[test]

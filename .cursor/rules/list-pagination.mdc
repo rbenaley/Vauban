@@ -18,4 +18,8 @@ When adding or changing a **list / index** page:
 5. Live-search shards take `page` and reset to 1 when the query signal changes.
 6. Prefer Toasty SQL `.limit` / `.offset` / `.count` / filters — not
    `Model::all()` then `page_slice` (`toasty` skill).
-7. Ship the full test pyramid for that surface (see `web-stack` § List pagination).
+7. **Exception — release catalogues:** after a SQL-bounded set (published
+   + entitlement, or staff global catalogue), keep Rust
+   `cmp_version_desc` + `page_slice`. Full SQL `ORDER BY version` breaks
+   semver / client-suffix ordering until a `sort_key` column exists.
+8. Ship the full test pyramid for that surface (see `web-stack` § List pagination).

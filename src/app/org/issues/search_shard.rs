@@ -5,15 +5,15 @@
 
 use topcoat::{Result, context::Cx, router::error::not_found, runtime::shard, view::view};
 
-use super::load_filtered_issues;
+use super::load_filtered_issues_page;
 use crate::{
     app::_components::{severity_badge, status_badge},
     auth::{capability_denied, require_org},
     db::now_unix,
     docs_search::normalize_org_slug,
+    id_lookups::users_by_ids,
     issues_search::{normalize_query, normalize_status},
-    list_page::{LIST_PAGE_SIZE, page_slice, parse_page},
-    models::User,
+    list_page::parse_page,
     perms::perms_for_user,
     tz::{browser_tz, format_relative},
 };
@@ -36,12 +36,14 @@ pub async fn issues_search_results(
 
     let q = normalize_query(&q);
     let status = normalize_status(&status);
-    let filtered = load_filtered_issues(cx, ctx.org.id, &q, &status).await;
     let page = parse_page(page.parse().ok());
-    let page_items = page_slice(&filtered, page, LIST_PAGE_SIZE);
+    let page_items = load_filtered_issues_page(cx, ctx.org.id, &q, &status, page).await;
 
+    let opener_ids: Vec<u64> = page_items.iter().map(|i| i.opened_by_user_id).collect();
     let mut database = crate::auth::db(cx);
-    let users = User::all().exec(&mut database).await.unwrap_or_default();
+    let users = users_by_ids(&mut database, &opener_ids)
+        .await
+        .unwrap_or_default();
     let tz = browser_tz(cx);
     let now = now_unix();
 

@@ -4,6 +4,7 @@ mod issue_key;
 mod search_shard;
 
 pub(super) use search_shard::admin_issues_search_results;
+use search_shard::count_admin_filtered_issues;
 
 use topcoat::{
     Result,
@@ -15,15 +16,11 @@ use topcoat::{
 use crate::{
     app::_components::filter_row,
     auth::{capability_denied, require_staff},
-    issues_search::{
-        issue_matches_org, issue_matches_query, issue_matches_status, normalize_org_filter,
-        normalize_query, normalize_status, resolve_org_filter,
-    },
+    issues_search::{normalize_org_filter, normalize_query, normalize_status},
     list_page::{
         LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
         with_page_param,
     },
-    models::{Issue, Organization},
     perms::perms_for_user,
 };
 
@@ -58,23 +55,7 @@ async fn admin_issues_page(cx: &Cx) -> Result {
         normalize_org_filter(query.as_ref().and_then(|q| q.org.as_deref()).unwrap_or(""));
     let raw_page = query.as_ref().and_then(|q| q.page);
 
-    let mut database = crate::auth::db(cx);
-    let mut issues = Issue::all().exec(&mut database).await.unwrap_or_default();
-    issues.sort_by_key(|i| std::cmp::Reverse(i.updated_at));
-    let orgs = Organization::all()
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let org_id_filter =
-        resolve_org_filter(orgs.iter().map(|o| (o.id, o.slug.as_str())), &org_filter);
-    let filtered_total = issues
-        .iter()
-        .filter(|i| {
-            issue_matches_org(&org_filter, org_id_filter, i.organization_id)
-                && issue_matches_status(&status, &i.status)
-                && issue_matches_query(&q, &i.key, &i.title)
-        })
-        .count();
+    let filtered_total = count_admin_filtered_issues(cx, &q, &org_filter, &status).await;
     let pages = page_count(filtered_total, LIST_PAGE_SIZE);
     let page = clamp_page(parse_page(raw_page), pages);
     let page_init = page.to_string();

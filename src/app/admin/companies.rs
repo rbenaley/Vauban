@@ -2,12 +2,11 @@
 
 mod company_id;
 mod form;
+mod load;
 mod new;
 mod search_shard;
 
 pub(super) use search_shard::admin_companies_search_results;
-
-use std::collections::HashMap;
 
 use topcoat::{
     Result,
@@ -19,14 +18,15 @@ use topcoat::{
 use crate::{
     app::_components::list_toolbar,
     auth::{capability_denied, config, require_staff},
-    companies_search::{CompanyMatchFields, company_matches_query, normalize_query},
+    companies_search::normalize_query,
     list_page::{
         COMPANIES_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
         with_page_param,
     },
-    models::{Membership, Organization, RESERVED_ORG_SLUG, User},
     perms::perms_for_user,
 };
+
+use self::load::{load_company_card_by_id, load_company_cards_page};
 
 #[query_params]
 struct AdminCompaniesQuery {
@@ -35,12 +35,6 @@ struct AdminCompaniesQuery {
     err: Option<String>,
     /// 1-based page index; omitted means page 1.
     page: Option<u32>,
-}
-
-#[derive(Clone)]
-struct CompanyCard {
-    org: Organization,
-    emails: Vec<String>,
 }
 
 #[page]
@@ -54,36 +48,6 @@ async fn admin_companies_page(cx: &Cx) -> Result {
     let max = config(cx).org.max_accounts_per_org;
     let max_label = max.to_string();
 
-    let mut database = crate::auth::db(cx);
-    let companies: Vec<_> = Organization::all()
-        .exec(&mut database)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|c| !c.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG))
-        .collect();
-
-    let memberships = Membership::all()
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let users = User::all().exec(&mut database).await.unwrap_or_default();
-    let user_by_id: HashMap<u64, &User> = users.iter().map(|u| (u.id, u)).collect();
-
-    let mut cards: Vec<CompanyCard> = companies
-        .into_iter()
-        .map(|org| {
-            let mut emails: Vec<String> = memberships
-                .iter()
-                .filter(|m| m.organization_id == org.id)
-                .filter_map(|m| user_by_id.get(&m.user_id).map(|u| u.email.clone()))
-                .collect();
-            emails.sort();
-            CompanyCard { org, emails }
-        })
-        .collect();
-    cards.sort_by_key(|c| c.org.name.to_lowercase());
-
     let query = query_params::<AdminCompaniesQuery>(cx).ok();
     let q = normalize_query(query.as_ref().and_then(|q| q.q.as_deref()).unwrap_or(""));
     let delete_id = query
@@ -94,27 +58,21 @@ async fn admin_companies_page(cx: &Cx) -> Result {
         .as_ref()
         .and_then(|q| q.err.as_deref())
         .is_some_and(|e| e == "confirm");
-    // Resolve delete target against the full list (before filter / page slice).
-    let delete_target = delete_id.and_then(|id| cards.iter().find(|c| c.org.id == id).cloned());
 
-    let filtered_total = cards
-        .iter()
-        .filter(|c| {
-            company_matches_query(
-                &q,
-                &CompanyMatchFields {
-                    name: &c.org.name,
-                    slug: &c.org.slug,
-                    contact_name: &c.org.technical_contact_name,
-                    contact_email: &c.org.technical_contact_email,
-                    vat: &c.org.vat,
-                    address: &c.org.address,
-                    emails: &c.emails,
-                },
-            )
-        })
-        .count();
+    let mut database = crate::auth::db(cx);
+    let delete_target = if let Some(id) = delete_id {
+        load_company_card_by_id(&mut database, id)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+
     let mut page = parse_page(query.as_ref().and_then(|q| q.page));
+    let (_, filtered_total) = load_company_cards_page(&mut database, &q, page)
+        .await
+        .unwrap_or_else(|_| (Vec::new(), 0));
     let pages = page_count(filtered_total, COMPANIES_PAGE_SIZE);
     page = clamp_page(page, pages);
     let page_init = page.to_string();

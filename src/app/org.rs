@@ -17,7 +17,10 @@ use topcoat::{
 use crate::{
     auth::require_org,
     db::now_unix,
-    models::{DOC_STATUS_PUBLISHED, DocArticle, Issue, RESERVED_ORG_SLUG, Release},
+    models::{
+        DOC_STATUS_PUBLISHED, DocArticle, ISSUE_STATUS_CLOSED, ISSUE_STATUS_IN_ANALYSIS,
+        ISSUE_STATUS_RESOLVED, Issue, RESERVED_ORG_SLUG,
+    },
     nav::nav_from_cx,
     tz::{browser_tz, format_relative, format_unix_local},
     ui::{channel_badge_class, note_tag_color},
@@ -53,25 +56,69 @@ async fn dashboard(cx: &Cx) -> Result {
     let slug = path_param::<Org>(cx);
     let ctx = require_org(cx, slug).await?;
 
+    let releases = builds::load_releases_for_org(cx, ctx.org.id, slug, "").await;
     let mut database = crate::auth::db(cx);
-    let mut releases = Release::all()
+    let org_id = ctx.org.id;
+    let issue_total = Issue::all()
+        .filter(Issue::fields().organization_id().eq(org_id))
+        .count()
+        .exec(&mut database)
+        .await
+        .unwrap_or(0) as usize;
+    let issue_resolved = Issue::all()
+        .filter(Issue::fields().organization_id().eq(org_id))
+        .filter(
+            Issue::fields()
+                .status()
+                .eq(ISSUE_STATUS_RESOLVED.to_owned()),
+        )
+        .count()
+        .exec(&mut database)
+        .await
+        .unwrap_or(0) as usize;
+    let issue_closed = Issue::all()
+        .filter(Issue::fields().organization_id().eq(org_id))
+        .filter(Issue::fields().status().eq(ISSUE_STATUS_CLOSED.to_owned()))
+        .count()
+        .exec(&mut database)
+        .await
+        .unwrap_or(0) as usize;
+    let open_count = issue_total.saturating_sub(issue_resolved + issue_closed);
+    let in_analysis = Issue::all()
+        .filter(Issue::fields().organization_id().eq(org_id))
+        .filter(
+            Issue::fields()
+                .status()
+                .eq(ISSUE_STATUS_IN_ANALYSIS.to_owned()),
+        )
+        .count()
+        .exec(&mut database)
+        .await
+        .unwrap_or(0) as usize;
+    let latest_issue = Issue::all()
+        .filter(Issue::fields().organization_id().eq(org_id))
+        .order_by(Issue::fields().updated_at().desc())
+        .limit(1)
         .exec(&mut database)
         .await
         .unwrap_or_default()
         .into_iter()
-        .filter(|r| builds::release_visible_to_org(r, ctx.org.id, slug))
-        .collect::<Vec<_>>();
-    releases.sort_by(|a, b| crate::release_pkg::cmp_version_desc(&a.version, &b.version));
-    let mut issues = Issue::all()
-        .filter(Issue::fields().organization_id().eq(ctx.org.id))
+        .next();
+    let article_count = DocArticle::all()
+        .filter(DocArticle::fields().status().eq(DOC_STATUS_PUBLISHED))
+        .count()
         .exec(&mut database)
         .await
-        .unwrap_or_default();
-    issues.sort_by_key(|i| std::cmp::Reverse(i.updated_at));
-    let articles = DocArticle::all()
+        .unwrap_or(0) as usize;
+    let latest_doc_row = DocArticle::all()
+        .filter(DocArticle::fields().status().eq(DOC_STATUS_PUBLISHED))
+        .order_by(DocArticle::fields().updated_at().desc())
+        .limit(1)
         .exec(&mut database)
         .await
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .next();
 
     let issues_href = if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
         "/admin/issues".to_owned()
@@ -90,15 +137,6 @@ async fn dashboard(cx: &Cx) -> Result {
     let build_released_on = latest_release
         .map(|r| r.released_on.clone())
         .unwrap_or_default();
-    let open_count = issues
-        .iter()
-        .filter(|i| i.status != "Resolved" && i.status != "Closed")
-        .count();
-    let in_analysis = issues.iter().filter(|i| i.status == "In analysis").count();
-    let article_count = articles
-        .iter()
-        .filter(|a| a.status == DOC_STATUS_PUBLISHED)
-        .count();
 
     let note_lines: Vec<(String, String, &'static str)> = build_notes
         .lines()
@@ -121,7 +159,6 @@ async fn dashboard(cx: &Cx) -> Result {
 
     let tz = browser_tz(cx);
     let now = now_unix();
-    let latest_issue = issues.first().cloned();
     let issue_activity = latest_issue.as_ref().map(|issue| {
         let copy = if issue.status.eq_ignore_ascii_case("In analysis") {
             " moved to analysis"
@@ -138,10 +175,8 @@ async fn dashboard(cx: &Cx) -> Result {
             format_relative(issue.updated_at, now, tz),
         )
     });
-    let latest_doc = articles
-        .iter()
-        .filter(|a| a.status == DOC_STATUS_PUBLISHED)
-        .max_by_key(|a| a.updated_at)
+    let latest_doc = latest_doc_row
+        .as_ref()
         .map(|a| (a.title.clone(), format_unix_local(a.updated_at, tz)));
 
     view! {

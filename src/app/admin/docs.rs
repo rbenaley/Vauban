@@ -14,12 +14,11 @@ use crate::{
     app::_components::{ico_trash, list_toolbar},
     auth::{capability_denied, require_staff},
     list_page::{
-        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_slice,
-        parse_page, with_page_param,
+        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
+        with_page_param,
     },
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
-    release_pkg::cmp_version_desc,
     ui::doc_status_badge_class,
 };
 
@@ -40,17 +39,11 @@ async fn admin_docs_page(cx: &Cx) -> Result {
     }
 
     let mut database = crate::auth::db(cx);
-    let mut articles = DocArticle::all()
+    let total = DocArticle::all()
+        .count()
         .exec(&mut database)
         .await
-        .unwrap_or_default();
-    // Newest edit first; version then id break same-second ties.
-    articles.sort_by(|a, b| {
-        b.updated_at
-            .cmp(&a.updated_at)
-            .then_with(|| cmp_version_desc(&a.version, &b.version))
-            .then_with(|| b.id.cmp(&a.id))
-    });
+        .unwrap_or(0) as usize;
 
     let q = query_params::<AdminDocsQuery>(cx).ok();
     let delete_id = q
@@ -61,13 +54,31 @@ async fn admin_docs_page(cx: &Cx) -> Result {
         .as_ref()
         .and_then(|q| q.err.as_deref())
         .is_some_and(|e| e == "confirm");
-    // Resolve delete target against the full list (before page slice).
-    let delete_target = delete_id.and_then(|id| articles.iter().find(|a| a.id == id).cloned());
+    // Resolve delete target by id (not via a full-table scan).
+    let delete_target = if let Some(id) = delete_id {
+        DocArticle::all()
+            .filter(DocArticle::fields().id().eq(id))
+            .limit(1)
+            .exec(&mut database)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .next()
+    } else {
+        None
+    };
 
     let mut page = parse_page(q.as_ref().and_then(|q| q.page));
-    let pages = page_count(articles.len(), LIST_PAGE_SIZE);
+    let pages = page_count(total, LIST_PAGE_SIZE);
     page = clamp_page(page, pages);
-    let page_articles = page_slice(&articles, page, LIST_PAGE_SIZE);
+    // Newest edit first (SQL). Version/id tie-break stays approximate vs prior Rust sort.
+    let page_articles = DocArticle::all()
+        .order_by(DocArticle::fields().updated_at().desc())
+        .limit(LIST_PAGE_SIZE)
+        .offset(crate::list_page::page_offset(page, LIST_PAGE_SIZE))
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
     // Pager keeps only `page` — never sticky `delete` / `err` (overlay query).
     let pager = PagerLinks::from_hrefs(page, pages, |n| {
         let mut parts = Vec::new();
@@ -103,7 +114,7 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                     </tr>
                 </thead>
                 <tbody>
-                    if articles.is_empty() {
+                    if total == 0 {
                         <tr>
                             <td colspan="5">
                                 <div class="vb-empty">"No articles yet."</div>

@@ -118,12 +118,22 @@ pub async fn sync_org_accounts(
         .filter(Membership::fields().organization_id().eq(organization_id))
         .exec(db)
         .await?;
-    let users = User::all().exec(db).await?;
-    let user_by_id: HashMap<u64, User> = users.iter().map(|u| (u.id, u.clone())).collect();
-    let user_by_email: HashMap<String, User> = users
-        .iter()
-        .map(|u| (u.email.to_ascii_lowercase(), u.clone()))
-        .collect();
+    let member_ids: Vec<u64> = memberships.iter().map(|m| m.user_id).collect();
+    let member_users = crate::id_lookups::users_by_ids(db, &member_ids).await?;
+    let email_users = if emails.is_empty() {
+        Vec::new()
+    } else {
+        User::all()
+            .filter(User::fields().email().in_list(emails.to_vec()))
+            .exec(db)
+            .await?
+    };
+    let mut user_by_id: HashMap<u64, User> = HashMap::new();
+    let mut user_by_email: HashMap<String, User> = HashMap::new();
+    for u in member_users.into_iter().chain(email_users) {
+        user_by_email.insert(u.email.to_ascii_lowercase(), u.clone());
+        user_by_id.insert(u.id, u);
+    }
 
     let desired: HashSet<String> = emails.iter().cloned().collect();
 

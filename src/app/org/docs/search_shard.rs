@@ -5,12 +5,12 @@
 
 use topcoat::{Result, context::Cx, router::error::not_found, runtime::shard, view::view};
 
-use super::{DocsFilter, load_filtered_docs};
+use super::{DocsFilter, load_filtered_docs_page};
 use crate::{
     app::_components::ico_chevron_right,
     auth::{capability_denied, require_org},
     docs_search::normalize_org_slug,
-    list_page::{LIST_PAGE_SIZE, page_slice, parse_page},
+    list_page::parse_page,
     perms::perms_for_user,
 };
 
@@ -31,9 +31,8 @@ pub async fn docs_search_results(
     }
 
     let filter = DocsFilter::normalized(&q, &cat);
-    let (_, _, filtered) = load_filtered_docs(cx, &filter).await;
     let page = parse_page(page.parse().ok());
-    let page_items = page_slice(&filtered, page, LIST_PAGE_SIZE);
+    let page_items = load_filtered_docs_page(cx, &filter, page).await;
     // Links use the authorized org slug, never the raw shard arg.
     let org = ctx.org.slug.clone();
 

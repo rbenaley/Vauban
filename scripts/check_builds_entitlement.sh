@@ -32,8 +32,14 @@ grep -n 'release_visible_to_org\|load_releases_for_org' "$BUILDS" >/dev/null \
   || fail "$BUILDS must filter releases by org (GA or targeted)"
 grep -n 'RELEASE_GA_ORG_ID\|organization_id' "$BUILDS" >/dev/null \
   || fail "$BUILDS must reference GA / organization_id targeting"
-grep -n 'release_visible_to_org' "$DL" >/dev/null \
-  || fail "$DL must enforce release_visible_to_org before 501"
+grep -n 'in_list' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must push organization_id.in_list SQL tenant net"
+grep -n 'status().eq\|RELEASE_STATUS_PUBLISHED' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must filter PUBLISHED status in SQL"
+grep -n 'find_visible_release_by_version' "$DL" >/dev/null \
+  || fail "$DL must use find_visible_release_by_version (SQL tenant net) before 501"
+grep -n 'find_visible_release_by_version' "$EPH" >/dev/null \
+  || fail "$EPH must use find_visible_release_by_version (SQL tenant net)"
 
 # Concept fidelity: default-open + server mint + Topcoat signals (countdown/copy).
 grep -n 'open=none' "$BUILDS" >/dev/null \
@@ -104,8 +110,9 @@ grep -n 'cmp_version_desc' "$BUILDS" >/dev/null \
 if awk '/fn sort_releases/,/^}/' "$BUILDS" | grep -q 'released_on'; then
   fail "$BUILDS sort_releases must not use released_on"
 fi
-grep -n 'cmp_version_desc' src/app/org.rs >/dev/null \
-  || fail "org dashboard must sort releases by version number"
+# Dashboard uses the shared loader (SQL entitlement + sort_releases inside).
+grep -n 'load_releases_for_org' src/app/org.rs >/dev/null \
+  || fail "org dashboard must load releases via load_releases_for_org (version-sorted)"
 grep -n 'RESERVED_ORG_SLUG' "$BUILDS" >/dev/null \
   || fail "$BUILDS release visibility must special-case RESERVED_ORG_SLUG"
 grep -n 'has_client_suffix' src/release_pkg.rs >/dev/null \

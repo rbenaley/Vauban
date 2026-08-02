@@ -3,25 +3,17 @@
 //! Shard POSTs hit `/_topcoat/shards/{id}` — admin layout does not run.
 //! Always re-authorize with `require_staff` before loading data.
 
-use std::collections::HashMap;
-
 use topcoat::{Result, context::Cx, runtime::shard, view::view};
 
+use super::load::load_company_cards_page;
 use crate::{
     app::_components::ico_trash,
     auth::{capability_denied, require_staff},
     companies_accounts::format_technical_contact,
-    companies_search::{CompanyMatchFields, company_matches_query, normalize_query},
-    list_page::{COMPANIES_PAGE_SIZE, page_slice, parse_page},
-    models::{Membership, Organization, RESERVED_ORG_SLUG, User},
+    companies_search::normalize_query,
+    list_page::parse_page,
     perms::perms_for_user,
 };
-
-#[derive(Clone)]
-struct CompanyCard {
-    org: Organization,
-    emails: Vec<String>,
-}
 
 /// Shard args are attacker-controlled — always re-authorize.
 #[shard]
@@ -36,50 +28,9 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
     let page = parse_page(page.parse().ok());
 
     let mut database = crate::auth::db(cx);
-    let companies: Vec<_> = Organization::all()
-        .exec(&mut database)
+    let (page_cards, total) = load_company_cards_page(&mut database, &q, page)
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|c| !c.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG))
-        .collect();
-
-    let memberships = Membership::all()
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let users = User::all().exec(&mut database).await.unwrap_or_default();
-    let user_by_id: HashMap<u64, &User> = users.iter().map(|u| (u.id, u)).collect();
-
-    let mut cards: Vec<CompanyCard> = companies
-        .into_iter()
-        .map(|org| {
-            let mut emails: Vec<String> = memberships
-                .iter()
-                .filter(|m| m.organization_id == org.id)
-                .filter_map(|m| user_by_id.get(&m.user_id).map(|u| u.email.clone()))
-                .collect();
-            emails.sort();
-            CompanyCard { org, emails }
-        })
-        .filter(|c| {
-            company_matches_query(
-                &q,
-                &CompanyMatchFields {
-                    name: &c.org.name,
-                    slug: &c.org.slug,
-                    contact_name: &c.org.technical_contact_name,
-                    contact_email: &c.org.technical_contact_email,
-                    vat: &c.org.vat,
-                    address: &c.org.address,
-                    emails: &c.emails,
-                },
-            )
-        })
-        .collect();
-    cards.sort_by_key(|c| c.org.name.to_lowercase());
-
-    let page_cards = page_slice(&cards, page, COMPANIES_PAGE_SIZE);
+        .unwrap_or_else(|_| (Vec::new(), 0));
     let empty_label = if q.is_empty() {
         "No companies."
     } else {
@@ -93,7 +44,7 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
             data-admin-companies-search-shard="1"
             style="display: flex; flex-direction: column; gap: 16px; width: 100%;"
         >
-            if cards.is_empty() {
+            if total == 0 {
                 <div class="vb-empty">(empty_label)</div>
             } else {
                 for card in page_cards {
@@ -102,8 +53,7 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
                         format!("/admin/companies?delete={}", card.org.id)
                     } else {
                         format!(
-                            "/admin/companies?q={}&delete={}",
-                            urlencoding_encode(&q),
+                            "/admin/companies?q={}&delete={}", urlencoding_encode(& q),
                             card.org.id
                         )
                     };

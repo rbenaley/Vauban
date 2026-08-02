@@ -43,8 +43,8 @@ fn inv_shard_reauthorizes_before_loading_docs() {
     let require = src.find("require_org(cx").expect("require_org(cx");
     let docs_read = src.find("perms.docs_read").expect("perms.docs_read");
     let load = src
-        .find("load_filtered_docs(cx")
-        .expect("load_filtered_docs(cx");
+        .find("load_filtered_docs_page(cx")
+        .expect("load_filtered_docs_page(cx");
     assert!(
         normalize < require && require < docs_read && docs_read < load,
         "gate order: normalize_org_slug -> require_org -> docs_read -> load"
@@ -66,8 +66,13 @@ fn inv_shard_links_use_authorized_context_slug() {
         "shard must share filter normalization with the page"
     );
     assert!(
-        src.contains("page_slice") && src.contains("LIST_PAGE_SIZE"),
-        "shard must paginate with page_slice / LIST_PAGE_SIZE"
+        src.contains("load_filtered_docs_page"),
+        "shard must page via load_filtered_docs_page"
+    );
+    let docs = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org/docs.rs"));
+    assert!(
+        docs.contains("LIST_PAGE_SIZE") && docs.contains(".limit(") && docs.contains(".offset("),
+        "docs loader must SQL page with limit/offset"
     );
 }
 

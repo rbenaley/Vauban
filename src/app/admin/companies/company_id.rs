@@ -22,7 +22,7 @@ use crate::{
         normalize_emails, sync_org_accounts,
     },
     docs_version::is_delete_confirm,
-    models::{Membership, Organization, RESERVED_ORG_SLUG, User},
+    models::{Membership, Organization, RESERVED_ORG_SLUG},
     perms::perms_for_user,
 };
 
@@ -82,7 +82,10 @@ async fn load_org_emails(cx: &Cx, org_id: u64) -> Vec<String> {
         .exec(&mut database)
         .await
         .unwrap_or_default();
-    let users = User::all().exec(&mut database).await.unwrap_or_default();
+    let user_ids: Vec<u64> = memberships.iter().map(|m| m.user_id).collect();
+    let users = crate::id_lookups::users_by_ids(&mut database, &user_ids)
+        .await
+        .unwrap_or_default();
     let mut emails = Vec::new();
     for m in memberships {
         if let Some(u) = users.iter().find(|u| u.id == m.user_id) {
