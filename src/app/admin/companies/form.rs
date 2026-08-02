@@ -16,7 +16,8 @@ pub struct CompanyFormView {
     pub title: String,
     pub submit_label: String,
     pub name: String,
-    pub contact: String,
+    pub contact_name: String,
+    pub contact_email: String,
     pub vat: String,
     pub address: String,
     pub emails: Vec<String>,
@@ -56,8 +57,22 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
                     <input type="hidden" name="account_rows" value=(rows_label)>
                     <label for="name">"Company name *"</label>
                     <input id="name" name="name" required="" value=(state.name.clone())>
-                    <label for="contact">"Contact point"</label>
-                    <input id="contact" name="contact" value=(state.contact.clone())>
+                    <label for="contact_name">"Technical contact — full name"</label>
+                    <input
+                        id="contact_name"
+                        name="contact_name"
+                        value=(state.contact_name.clone())
+                        autocomplete="name"
+                    >
+                    <label for="contact_email">"Technical contact — email"</label>
+                    <input
+                        id="contact_email"
+                        name="contact_email"
+                        type="email"
+                        value=(state.contact_email.clone())
+                        placeholder="contact@example.com"
+                        autocomplete="email"
+                    >
                     <label for="vat">"VAT number"</label>
                     <input id="vat" name="vat" value=(state.vat.clone())>
                     <label for="address">"Company address"</label>

@@ -88,7 +88,11 @@ pub struct Organization {
 
     pub industrial_lts_subscriptions: i32,
 
-    pub technical_contact: String,
+    /// Full name of the technical contact person.
+    pub technical_contact_name: String,
+
+    /// Email of the technical contact (Mailbox-validated when non-empty).
+    pub technical_contact_email: String,
 
     pub status: String,
 }

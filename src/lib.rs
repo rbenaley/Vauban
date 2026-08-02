@@ -9,6 +9,7 @@ pub mod acme;
 pub mod app;
 pub mod auth;
 pub mod companies_accounts;
+pub mod companies_search;
 pub mod config;
 pub mod db;
 pub mod docs_body;

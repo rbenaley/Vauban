@@ -3,6 +3,9 @@
 mod company_id;
 mod form;
 mod new;
+mod search_shard;
+
+pub(super) use search_shard::admin_companies_search_results;
 
 use std::collections::HashMap;
 
@@ -14,16 +17,24 @@ use topcoat::{
 };
 
 use crate::{
-    app::_components::ico_trash,
+    app::_components::list_toolbar,
     auth::{capability_denied, config, require_staff},
+    companies_search::{CompanyMatchFields, company_matches_query, normalize_query},
+    list_page::{
+        COMPANIES_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
+        with_page_param,
+    },
     models::{Membership, Organization, RESERVED_ORG_SLUG, User},
     perms::perms_for_user,
 };
 
 #[query_params]
 struct AdminCompaniesQuery {
+    q: Option<String>,
     delete: Option<String>,
     err: Option<String>,
+    /// 1-based page index; omitted means page 1.
+    page: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -73,18 +84,57 @@ async fn admin_companies_page(cx: &Cx) -> Result {
         .collect();
     cards.sort_by_key(|c| c.org.name.to_lowercase());
 
-    let q = query_params::<AdminCompaniesQuery>(cx).ok();
-    let delete_id = q
+    let query = query_params::<AdminCompaniesQuery>(cx).ok();
+    let q = normalize_query(query.as_ref().and_then(|q| q.q.as_deref()).unwrap_or(""));
+    let delete_id = query
         .as_ref()
         .and_then(|q| q.delete.as_deref())
         .and_then(|s| s.parse::<u64>().ok());
-    let delete_err = q
+    let delete_err = query
         .as_ref()
         .and_then(|q| q.err.as_deref())
         .is_some_and(|e| e == "confirm");
+    // Resolve delete target against the full list (before filter / page slice).
     let delete_target = delete_id.and_then(|id| cards.iter().find(|c| c.org.id == id).cloned());
 
+    let filtered_total = cards
+        .iter()
+        .filter(|c| {
+            company_matches_query(
+                &q,
+                &CompanyMatchFields {
+                    name: &c.org.name,
+                    slug: &c.org.slug,
+                    contact_name: &c.org.technical_contact_name,
+                    contact_email: &c.org.technical_contact_email,
+                    vat: &c.org.vat,
+                    address: &c.org.address,
+                    emails: &c.emails,
+                },
+            )
+        })
+        .count();
+    let mut page = parse_page(query.as_ref().and_then(|q| q.page));
+    let pages = page_count(filtered_total, COMPANIES_PAGE_SIZE);
+    page = clamp_page(page, pages);
+    let page_init = page.to_string();
+    let q_value = query.and_then(|q| q.q.clone()).unwrap_or_default();
+
+    // Pager keeps `q` + `page` — never sticky `delete` / `err` (overlay query).
+    let q_for_pager = q.clone();
+    let pager = PagerLinks::from_hrefs(page, pages, |n| list_href(&q_for_pager, n));
+
+    let cancel = if q.is_empty() {
+        "/admin/companies".to_owned()
+    } else {
+        format!("/admin/companies?q={}", urlencoding_encode(&q))
+    };
+
     view! {
+        cx =>
+        signal query = q_value.clone();
+        signal page = page_init.clone();
+
         <div
             style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;"
         >
@@ -99,90 +149,26 @@ async fn admin_companies_page(cx: &Cx) -> Result {
             <a class="vb-btn" href="/admin/companies/new">"+ New company"</a>
         </div>
 
-        <div
-            class="vb-company-list"
-            style="display: flex; flex-direction: column; gap: 16px; width: 100%;"
-        >
-            if cards.is_empty() {
-                <div class="vb-empty">"No companies."</div>
-            } else {
-                for card in cards {
-                    let edit_href = format!("/admin/companies/{}", card.org.id);
-                    let delete_href = format!("/admin/companies?delete={}", card.org.id);
-                    let count = card.emails.len();
-                    let count_label = if count == 1 {
-                        "1 account".to_owned()
-                    } else {
-                        format!("{count} accounts")
-                    };
-                    let contact = if card.org.technical_contact.trim().is_empty() {
-                        "—".to_owned()
-                    } else {
-                        card.org.technical_contact.clone()
-                    };
-                    <div class="vb-company-card">
-                        <div class="vb-company-card-head">
-                            <div style="min-width: 0;">
-                                <div style="font-weight: 700; font-size: 16px;">
-                                    (card.org.name.clone())
-                                </div>
-                                <div
-                                    style="font-size: 13px; color: #5a5f66; margin-top: 4px;"
-                                >
-                                    (contact)
-                                </div>
-                            </div>
-                            <div
-                                style="display: flex; align-items: center; gap: 8px; flex: none;"
-                            >
-                                <span class="vb-badge soft">(count_label)</span>
-                                <a class="vb-btn muted compact" href=(edit_href)>"Edit"</a>
-                                <a
-                                    class="vb-btn muted compact vb-btn-ico"
-                                    href=(delete_href)
-                                    aria-label="Delete company"
-                                >
-                                    (ico_trash(cx, 14).await?)
-                                </a>
-                            </div>
-                        </div>
+        // Filter only (shareable ?q=); live results use the shard. Not a mutation.
+        <form method="GET" action="/admin/companies" style="margin-bottom: 16px;">
+            <input
+                class="vb-search"
+                type="search"
+                name="q"
+                value=(q_value.clone())
+                placeholder="Search companies…"
+                @input=$(|e: topcoat::runtime::Event| {
+                    page.set("1".to_owned());
+                    query.set(e.target.value);
+                })
+            >
+        </form>
 
-                        <div class="vb-company-meta">
-                            <div class="vb-company-meta-col">
-                                <div class="vb-company-meta-label">"ADDRESS"</div>
-                                <div class="vb-company-meta-value">
-                                    (card.org.address.clone())
-                                </div>
-                            </div>
-                            <div class="vb-company-meta-col vat">
-                                <div class="vb-company-meta-label">"VAT"</div>
-                                <div class="vb-company-meta-value mono">
-                                    (card.org.vat.clone())
-                                </div>
-                            </div>
-                        </div>
+        list_toolbar(links: &pager)
 
-                        <div class="vb-company-meta-label" style="margin-bottom: 8px;">
-                            "USER ACCOUNTS"
-                        </div>
-                        <div class="vb-account-pills">
-                            if card.emails.is_empty() {
-                                <span style="font-size: 13px; color: #8a8f96;">
-                                    "None"
-                                </span>
-                            } else {
-                                for email in card.emails {
-                                    <span class="vb-account-pill">(email)</span>
-                                }
-                            }
-                        </div>
-                    </div>
-                }
-            }
-        </div>
+        admin_companies_search_results(q: $(query.get()), page: $(page.get()))
 
         if let Some(target) = delete_target {
-            let cancel = "/admin/companies".to_owned();
             let action = format!("/admin/companies/{}/delete", target.org.id);
             <div
                 class="vb-confirm-root"
@@ -216,7 +202,9 @@ async fn admin_companies_page(cx: &Cx) -> Result {
                             autocomplete="off"
                         >
                         <div class="vb-confirm-actions">
-                            <a class="vb-btn muted compact" href=(cancel)>"Cancel"</a>
+                            <a class="vb-btn muted compact" href=(cancel.clone())>
+                                "Cancel"
+                            </a>
                             <button
                                 class="vb-btn danger"
                                 type="submit"
@@ -230,4 +218,27 @@ async fn admin_companies_page(cx: &Cx) -> Result {
             </div>
         }
     }
+}
+
+fn list_href(q: &str, page: usize) -> String {
+    let mut parts = Vec::new();
+    if !q.is_empty() {
+        parts.push(format!("q={}", urlencoding_encode(q)));
+    }
+    with_page_param(&mut parts, page);
+    href_with_query("/admin/companies", &parts)
+}
+
+fn urlencoding_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }

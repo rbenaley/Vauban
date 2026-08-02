@@ -1,7 +1,8 @@
 ---
 description: >-
   SSR list pagination is mandatory for new/changed list pages — chip-row
-  or toolbar pager, LIST_PAGE_SIZE=10. See web-stack skill.
+  or toolbar pager, LIST_PAGE_SIZE=10 (COMPANIES_PAGE_SIZE=3 for
+  admin company cards). See web-stack skill.
 alwaysApply: false
 ---
 
@@ -9,7 +10,8 @@ alwaysApply: false
 
 When adding or changing a **list / index** page:
 
-1. Use `LIST_PAGE_SIZE` / helpers from `src/list_page.rs` (`?page=`, 1-based).
+1. Use `LIST_PAGE_SIZE` (tables/rows) or `COMPANIES_PAGE_SIZE` (admin
+   company cards) + helpers from `src/list_page.rs` (`?page=`, 1-based).
 2. With filter chips: pager on the same `vb-chip-row` (right). Chip hrefs omit `page`.
 3. Without chips: `vb-list-toolbar` above the table, pager right.
 4. Pager = SSR `<a href>` only — no client JS pager.

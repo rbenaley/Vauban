@@ -12,7 +12,9 @@ use topcoat::{
 use super::form::{CompanyFormView, company_form_response, render_company_form};
 use crate::{
     auth::{capability_denied, config, db, require_staff},
-    companies_accounts::{emails_from_indexed_map, normalize_emails, sync_org_accounts},
+    companies_accounts::{
+        emails_from_indexed_map, normalize_contact_email, normalize_emails, sync_org_accounts,
+    },
     models::{Organization, RESERVED_ORG_SLUG},
     perms::perms_for_user,
     slug::slugify,
@@ -22,7 +24,9 @@ use crate::{
 struct CompanyComposeForm {
     name: String,
     #[serde(default)]
-    contact: String,
+    contact_name: String,
+    #[serde(default)]
+    contact_email: String,
     #[serde(default)]
     vat: String,
     #[serde(default)]
@@ -42,6 +46,27 @@ impl CompanyComposeForm {
     }
 }
 
+fn form_view(
+    form: &CompanyComposeForm,
+    emails: Vec<String>,
+    max: usize,
+    error: Option<String>,
+) -> CompanyFormView {
+    CompanyFormView {
+        action: "/admin/companies/new".to_owned(),
+        title: "New client company".to_owned(),
+        submit_label: "Create company".to_owned(),
+        name: form.name.clone(),
+        contact_name: form.contact_name.clone(),
+        contact_email: form.contact_email.clone(),
+        vat: form.vat.clone(),
+        address: form.address.clone(),
+        emails,
+        max_accounts: max,
+        error,
+    }
+}
+
 #[page]
 async fn admin_companies_new_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
@@ -57,7 +82,8 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
             title: "New client company".to_owned(),
             submit_label: "Create company".to_owned(),
             name: String::new(),
-            contact: String::new(),
+            contact_name: String::new(),
+            contact_email: String::new(),
             vat: String::new(),
             address: String::new(),
             emails: vec![String::new()],
@@ -87,94 +113,35 @@ async fn admin_companies_create(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
         emails.remove(i);
     }
     if action.starts_with("remove:") {
-        return company_form_response(
-            cx,
-            CompanyFormView {
-                action: "/admin/companies/new".to_owned(),
-                title: "New client company".to_owned(),
-                submit_label: "Create company".to_owned(),
-                name: form.name,
-                contact: form.contact,
-                vat: form.vat,
-                address: form.address,
-                emails,
-                max_accounts: max,
-                error: None,
-            },
-        )
-        .await;
+        return company_form_response(cx, form_view(&form, emails, max, None)).await;
     }
 
     if action == "add_row" {
         if emails.len() < max {
             emails.push(String::new());
         }
-        return company_form_response(
-            cx,
-            CompanyFormView {
-                action: "/admin/companies/new".to_owned(),
-                title: "New client company".to_owned(),
-                submit_label: "Create company".to_owned(),
-                name: form.name,
-                contact: form.contact,
-                vat: form.vat,
-                address: form.address,
-                emails,
-                max_accounts: max,
-                error: None,
-            },
-        )
-        .await;
+        return company_form_response(cx, form_view(&form, emails, max, None)).await;
     }
 
-    match save_new_company(
-        cx,
-        &form.name,
-        &form.contact,
-        &form.vat,
-        &form.address,
-        &emails,
-        max,
-    )
-    .await
-    {
+    match save_new_company(cx, &form, &emails, max).await {
         // 303 See Other (PRG). Do not use redirect()/307 — it re-POSTs to the
         // list URL and browsers download an empty "companies" file.
         Ok(()) => see_other("/admin/companies").into_response(cx),
-        Err(msg) => {
-            company_form_response(
-                cx,
-                CompanyFormView {
-                    action: "/admin/companies/new".to_owned(),
-                    title: "New client company".to_owned(),
-                    submit_label: "Create company".to_owned(),
-                    name: form.name,
-                    contact: form.contact,
-                    vat: form.vat,
-                    address: form.address,
-                    emails,
-                    max_accounts: max,
-                    error: Some(msg),
-                },
-            )
-            .await
-        }
+        Err(msg) => company_form_response(cx, form_view(&form, emails, max, Some(msg))).await,
     }
 }
 
 async fn save_new_company(
     cx: &Cx,
-    name: &str,
-    contact: &str,
-    vat: &str,
-    address: &str,
+    form: &CompanyComposeForm,
     emails_raw: &[String],
     max: usize,
 ) -> std::result::Result<(), String> {
-    let name = name.trim().to_owned();
+    let name = form.name.trim().to_owned();
     if name.is_empty() {
         return Err("Company name is required.".to_owned());
     }
+    let contact_email = normalize_contact_email(&form.contact_email)?;
     let emails = normalize_emails(emails_raw)?;
     if emails.len() > max {
         return Err(format!("At most {max} user accounts are allowed."));
@@ -209,13 +176,14 @@ async fn save_new_company(
     let created = toasty::create!(Organization {
         slug: org_slug,
         name,
-        address: address.trim().to_owned(),
-        vat: vat.trim().to_owned(),
+        address: form.address.trim().to_owned(),
+        vat: form.vat.trim().to_owned(),
         plan_label: "Standard".to_owned(),
         supported_builds: "LTS".to_owned(),
         lts_subscriptions: 0,
         industrial_lts_subscriptions: 0,
-        technical_contact: contact.trim().to_owned(),
+        technical_contact_name: form.contact_name.trim().to_owned(),
+        technical_contact_email: contact_email,
         status: "ACTIVE".to_owned(),
     })
     .exec(&mut database)

@@ -55,6 +55,8 @@ fn inv_mailbox_email_validation_wired() {
     let cargo = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
     let app = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
     assert!(accounts.contains("fn parse_portal_email"));
+    assert!(accounts.contains("fn normalize_contact_email"));
+    assert!(accounts.contains("fn format_technical_contact"));
     assert!(accounts.contains("Mailbox::new"));
     assert!(accounts.contains("Result<Vec<String>, String>"));
     assert!(cargo.contains("\"mail\""));
@@ -63,10 +65,49 @@ fn inv_mailbox_email_validation_wired() {
 }
 
 #[test]
+fn inv_technical_contact_is_name_and_email() {
+    let models = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/models/mod.rs"));
+    let form = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/form.rs"
+    ));
+    let new = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/new.rs"
+    ));
+    let edit = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/company_id.rs"
+    ));
+    let migration = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/toasty/migrations/0006_technical_contact_name_email.sql"
+    ));
+    assert!(models.contains("technical_contact_name"));
+    assert!(models.contains("technical_contact_email"));
+    assert!(!models.contains("pub technical_contact:"));
+    assert!(form.contains("name=\"contact_name\""));
+    assert!(form.contains("name=\"contact_email\""));
+    assert!(!form.contains("name=\"contact\""));
+    assert!(new.contains("normalize_contact_email"));
+    assert!(edit.contains("normalize_contact_email"));
+    assert!(migration.contains("technical_contact_name"));
+    assert!(migration.contains("technical_contact_email"));
+    assert!(
+        migration.contains("RENAME COLUMN"),
+        "migration must rename legacy technical_contact to preserve data"
+    );
+}
+
+#[test]
 fn inv_admin_companies_list_concept_and_edit_delete() {
     let list = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/app/admin/companies.rs"
+    ));
+    let shard = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/search_shard.rs"
     ));
     let edit = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -77,10 +118,28 @@ fn inv_admin_companies_list_concept_and_edit_delete() {
         "/src/app/admin/companies/form.rs"
     ));
     assert!(list.contains("+ New company"));
-    assert!(list.contains("USER ACCOUNTS"));
-    assert!(list.contains("vb-account-pill"));
-    assert!(list.contains("ico_trash"));
-    assert!(list.contains("delete="));
+    assert!(list.contains("admin_companies_search_results"));
+    assert!(list.contains("type=\"search\""));
+    assert!(
+        list.contains("COMPANIES_PAGE_SIZE"),
+        "admin companies must use COMPANIES_PAGE_SIZE"
+    );
+    assert!(
+        list.contains("list_toolbar"),
+        "admin companies must use list_toolbar pager"
+    );
+    assert!(
+        list.contains("page: Option<u32>"),
+        "AdminCompaniesQuery must include page"
+    );
+    assert!(shard.contains("USER ACCOUNTS"));
+    assert!(shard.contains("vb-account-pill"));
+    assert!(shard.contains("ico_trash"));
+    assert!(shard.contains("delete="));
+    assert!(
+        shard.contains("page_slice") && shard.contains("COMPANIES_PAGE_SIZE"),
+        "shard must page_slice with COMPANIES_PAGE_SIZE"
+    );
     assert!(edit.contains("/delete"));
     assert!(edit.contains("sync_org_accounts"));
     assert!(edit.contains("see_other"));
@@ -89,5 +148,7 @@ fn inv_admin_companies_list_concept_and_edit_delete() {
     assert!(form.contains("account_rows"));
     assert!(form.contains("compose_action"));
     assert!(form.contains("email_"));
+    assert!(form.contains("contact_name"));
+    assert!(form.contains("contact_email"));
     assert!(!form.contains("type=\"password\""));
 }

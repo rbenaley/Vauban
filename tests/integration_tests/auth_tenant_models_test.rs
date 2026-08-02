@@ -76,7 +76,8 @@ async fn models_reject_duplicate_org_slug() {
         supported_builds: "x".to_owned(),
         lts_subscriptions: 0,
         industrial_lts_subscriptions: 0,
-        technical_contact: "x".to_owned(),
+        technical_contact_name: "x".to_owned(),
+        technical_contact_email: "x@example.com".to_owned(),
         status: "ACTIVE".to_owned(),
     })
     .exec(&mut conn)

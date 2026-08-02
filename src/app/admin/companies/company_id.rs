@@ -18,7 +18,8 @@ use super::form::{CompanyFormView, company_form_response, render_company_form};
 use crate::{
     auth::{capability_denied, config, db, require_staff},
     companies_accounts::{
-        delete_org_with_accounts, emails_from_indexed_map, normalize_emails, sync_org_accounts,
+        delete_org_with_accounts, emails_from_indexed_map, normalize_contact_email,
+        normalize_emails, sync_org_accounts,
     },
     docs_version::is_delete_confirm,
     models::{Membership, Organization, RESERVED_ORG_SLUG, User},
@@ -32,7 +33,9 @@ struct CompanyId(str);
 struct CompanyComposeForm {
     name: String,
     #[serde(default)]
-    contact: String,
+    contact_name: String,
+    #[serde(default)]
+    contact_email: String,
     #[serde(default)]
     vat: String,
     #[serde(default)]
@@ -113,7 +116,8 @@ async fn admin_companies_edit_page(cx: &Cx) -> Result {
             title: "Edit client company".to_owned(),
             submit_label: "Save changes".to_owned(),
             name: org.name,
-            contact: org.technical_contact,
+            contact_name: org.technical_contact_name,
+            contact_email: org.technical_contact_email,
             vat: org.vat,
             address: org.address,
             emails,
@@ -158,7 +162,8 @@ async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
                 title: "Edit client company".to_owned(),
                 submit_label: "Save changes".to_owned(),
                 name: form.name,
-                contact: form.contact,
+                contact_name: form.contact_name,
+                contact_email: form.contact_email,
                 vat: form.vat,
                 address: form.address,
                 emails,
@@ -180,7 +185,8 @@ async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
                 title: "Edit client company".to_owned(),
                 submit_label: "Save changes".to_owned(),
                 name: form.name,
-                contact: form.contact,
+                contact_name: form.contact_name,
+                contact_email: form.contact_email,
                 vat: form.vat,
                 address: form.address,
                 emails,
@@ -193,7 +199,8 @@ async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
 
     let fields = CompanyFields {
         name: form.name,
-        contact: form.contact,
+        contact_name: form.contact_name,
+        contact_email: form.contact_email,
         vat: form.vat,
         address: form.address,
     };
@@ -209,7 +216,8 @@ async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
                     title: "Edit client company".to_owned(),
                     submit_label: "Save changes".to_owned(),
                     name: fields.name,
-                    contact: fields.contact,
+                    contact_name: fields.contact_name,
+                    contact_email: fields.contact_email,
                     vat: fields.vat,
                     address: fields.address,
                     emails,
@@ -224,7 +232,8 @@ async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
 
 struct CompanyFields {
     name: String,
-    contact: String,
+    contact_name: String,
+    contact_email: String,
     vat: String,
     address: String,
 }
@@ -240,6 +249,7 @@ async fn save_edit(
     if name.is_empty() {
         return Err("Company name is required.".to_owned());
     }
+    let contact_email = normalize_contact_email(&fields.contact_email)?;
     let emails = normalize_emails(emails_raw)?;
     if emails.len() > max {
         return Err(format!("At most {max} user accounts are allowed."));
@@ -248,7 +258,8 @@ async fn save_edit(
     let mut database = db(cx);
     org.update()
         .name(name)
-        .technical_contact(fields.contact.trim().to_owned())
+        .technical_contact_name(fields.contact_name.trim().to_owned())
+        .technical_contact_email(contact_email)
         .vat(fields.vat.trim().to_owned())
         .address(fields.address.trim().to_owned())
         .exec(&mut database)

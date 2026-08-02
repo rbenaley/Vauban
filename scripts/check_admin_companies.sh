@@ -11,6 +11,7 @@ fail() {
 }
 
 LIST="src/app/admin/companies.rs"
+SHARD="src/app/admin/companies/search_shard.rs"
 NEW="src/app/admin/companies/new.rs"
 EDIT="src/app/admin/companies/company_id.rs"
 FORM="src/app/admin/companies/form.rs"
@@ -20,6 +21,7 @@ MODELS="src/models/mod.rs"
 CONFIG="src/config.rs"
 
 [[ -f "$LIST" ]] || fail "missing $LIST"
+[[ -f "$SHARD" ]] || fail "missing $SHARD"
 [[ -f "$NEW" ]] || fail "missing $NEW"
 [[ -f "$EDIT" ]] || fail "missing $EDIT"
 [[ -f "$FORM" ]] || fail "missing $FORM"
@@ -61,13 +63,26 @@ grep -n 'account_rows' "$FORM" >/dev/null || fail "$FORM must send account_rows"
 grep -n 'compose_action' "$FORM" >/dev/null || fail "$FORM must use compose_action"
 
 grep -n '\+ New company' "$LIST" >/dev/null || fail "$LIST CTA must be + New company"
-grep -n 'USER ACCOUNTS' "$LIST" >/dev/null || fail "$LIST cards must show USER ACCOUNTS"
-grep -n 'vb-account-pill' "$LIST" >/dev/null || fail "$LIST must render account pills"
-grep -n '/admin/companies/{}' "$LIST" >/dev/null \
-  || fail "$LIST Edit links must use company id"
-grep -n 'delete=' "$LIST" >/dev/null || fail "$LIST must open delete confirm"
-grep -n 'ico_trash' "$LIST" >/dev/null || fail "$LIST must use ico_trash"
 grep -n 'max_accounts_per_org' "$LIST" >/dev/null || fail "$LIST must read max_accounts_per_org"
+grep -n 'COMPANIES_PAGE_SIZE' "$LIST" >/dev/null || fail "$LIST must use COMPANIES_PAGE_SIZE"
+grep -n 'list_toolbar' "$LIST" >/dev/null || fail "$LIST must use list_toolbar pager"
+grep -n 'page: Option<u32>' "$LIST" >/dev/null || fail "$LIST AdminCompaniesQuery must include page"
+grep -n 'with_page_param' "$LIST" >/dev/null || fail "$LIST pager must use with_page_param"
+grep -n 'admin_companies_search_results' "$LIST" >/dev/null \
+  || fail "$LIST must invoke live search shard"
+grep -n 'type="search"' "$LIST" >/dev/null || fail "$LIST must expose search input"
+grep -n 'USER ACCOUNTS' "$SHARD" >/dev/null || fail "$SHARD cards must show USER ACCOUNTS"
+grep -n 'vb-account-pill' "$SHARD" >/dev/null || fail "$SHARD must render account pills"
+grep -n '/admin/companies/{}' "$SHARD" >/dev/null \
+  || fail "$SHARD Edit links must use company id"
+grep -n 'delete=' "$SHARD" >/dev/null || fail "$SHARD must open delete confirm"
+grep -n 'ico_trash' "$SHARD" >/dev/null || fail "$SHARD must use ico_trash"
+grep -n 'page_slice' "$SHARD" >/dev/null || fail "$SHARD must page_slice cards"
+grep -n 'COMPANIES_PAGE_SIZE' "$SHARD" >/dev/null || fail "$SHARD must use COMPANIES_PAGE_SIZE"
+if grep -nE '@click|::bind' "$LIST" >/dev/null 2>&1; then
+  fail "$LIST must not use @click / :bind for pagination"
+fi
+bash scripts/check_admin_companies_search_shard.sh
 
 grep -n 'MAX_USERS_PER_COMPANY' "$MODELS" >/dev/null || fail "$MODELS must define MAX_USERS_PER_COMPANY"
 grep -n 'max_accounts_per_org' "$CONFIG" >/dev/null || fail "$CONFIG must define max_accounts_per_org"
@@ -76,6 +91,10 @@ grep -n 'can_add_member' "$SEATS" >/dev/null || fail "$SEATS must define can_add
 grep -n 'membership_count' "$SEATS" >/dev/null || fail "$SEATS must define membership_count"
 grep -n 'fn normalize_emails' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must define normalize_emails"
 grep -n 'fn parse_portal_email' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must define parse_portal_email"
+grep -n 'fn normalize_contact_email' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS must define normalize_contact_email"
+grep -n 'fn format_technical_contact' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS must define format_technical_contact"
 grep -n 'Mailbox::new' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must validate via Mailbox::new"
 grep -n 'Result<Vec<String>, String>' "$ACCOUNTS" >/dev/null \
   || fail "$ACCOUNTS normalize_emails must return Result (fail-closed)"
@@ -84,6 +103,30 @@ grep -n 'normalize_emails(emails_raw)?' "$NEW" >/dev/null \
   || fail "$NEW must propagate normalize_emails errors"
 grep -n 'normalize_emails(emails_raw)?' "$EDIT" >/dev/null \
   || fail "$EDIT must propagate normalize_emails errors"
+grep -n 'normalize_contact_email' "$NEW" >/dev/null \
+  || fail "$NEW must validate contact email via normalize_contact_email"
+grep -n 'normalize_contact_email' "$EDIT" >/dev/null \
+  || fail "$EDIT must validate contact email via normalize_contact_email"
+grep -n 'name="contact_name"' "$FORM" >/dev/null \
+  || fail "$FORM must expose contact_name field"
+grep -n 'name="contact_email"' "$FORM" >/dev/null \
+  || fail "$FORM must expose contact_email field"
+grep -n 'name="contact"' "$FORM" >/dev/null \
+  && fail "$FORM must not use legacy single contact field"
+grep -n 'technical_contact_name' "$MODELS" >/dev/null \
+  || fail "$MODELS must define technical_contact_name"
+grep -n 'technical_contact_email' "$MODELS" >/dev/null \
+  || fail "$MODELS must define technical_contact_email"
+grep -n 'technical_contact:' "$MODELS" >/dev/null \
+  && fail "$MODELS must not keep legacy technical_contact field"
+[[ -f toasty/migrations/0006_technical_contact_name_email.sql ]] \
+  || fail "missing toasty/migrations/0006_technical_contact_name_email.sql"
+grep -n 'technical_contact_name' toasty/migrations/0006_technical_contact_name_email.sql >/dev/null \
+  || fail "migration 0006 must introduce technical_contact_name"
+grep -n 'technical_contact_email' toasty/migrations/0006_technical_contact_name_email.sql >/dev/null \
+  || fail "migration 0006 must introduce technical_contact_email"
+grep -n 'DROP COLUMN "technical_contact"' toasty/migrations/0006_technical_contact_name_email.sql \
+  >/dev/null && fail "migration 0006 must not drop technical_contact without rename"
 
 grep -n 'max_accounts_per_org' config/default.toml >/dev/null \
   || fail "config/default.toml must set org.max_accounts_per_org"

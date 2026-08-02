@@ -243,7 +243,7 @@ not wait for a follow-up. Reference implementation helpers live in
 
 | Rule | Detail |
 |------|--------|
-| Page size | `LIST_PAGE_SIZE = 10` (`src/list_page.rs`) |
+| Page size | `LIST_PAGE_SIZE = 10` (`src/list_page.rs`) for table/row lists. **Exception:** admin companies cards use `COMPANIES_PAGE_SIZE = 3` (dense Concept cards). |
 | Query | `page: Option<u32>` (1-based); omit `page=1` from URLs |
 | Controls | `<a href>` only — no shards, signals, or first-party JS for the pager |
 | With chips | Pager on the **same** `vb-chip-row` (chips left / `vb-chip-group`, pager right via `margin-left: auto`); chip-height face (`padding: 6px 12px`) |

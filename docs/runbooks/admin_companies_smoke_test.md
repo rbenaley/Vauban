@@ -1,19 +1,22 @@
 # Runbook -- Admin client companies
 
 > Manual validation after shipping **Concept companies** (list/edit,
-> email-only accounts, configurable `org.max_accounts_per_org`, default 5).
-> CI covers unit / invariants / proptest / battle / in-process E2E against
-> `vcp_test`; staging proves browser HTTPS and denial paths.
+> email-only accounts, dual technical contact name + Mailbox-validated email,
+> configurable `org.max_accounts_per_org`, default 5), **card pagination
+> (3/page)**, and **live search shard**. CI covers unit / invariants /
+> proptest / battle / in-process E2E against `vcp_test`; staging proves browser
+> HTTPS and denial paths.
 >
 > Audience: release / staging operators.
-> Severity: **BLOCKING** for this surface. Do not ship without A–B.
+> Severity: **BLOCKING** for this surface. Do not ship without A–D.
 
 Related:
 
 - [README](../../README.md) (seed login, route map)
-- Lint: `scripts/check_admin_companies.sh`
+- Lint: `scripts/check_admin_companies.sh`,
+  `scripts/check_admin_companies_search_shard.sh`
 - Pyramid: `.cursor/rules/vcp-test-pyramid.mdc`
-- Filter: `cargo test --test integration_tests -- admin_companies -- --test-threads=1`
+- Filter: `just test --test integration_tests -- admin_companies -- --test-threads=1`
 - Auth denials: [`auth_tenant_smoke_test.md`](auth_tenant_smoke_test.md)
 
 ## Automated prerequisites
@@ -23,13 +26,15 @@ bash scripts/setup_test_db.sh   # or: just db-create-test
 rtk cargo fmt --all -- --check
 rtk cargo clippy --all-targets -- -D warnings
 bash scripts/check_admin_companies.sh
-rtk cargo test --test integration_tests -- admin_companies -- --test-threads=1
+bash scripts/check_admin_companies_search_shard.sh
+just test --test integration_tests -- admin_companies -- --test-threads=1
 ```
 
 ## Lab prerequisites
 
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
 - Browser or `curl -k` willing to accept the local self-signed cert.
+- Browser DevTools Network panel (filter `shards`) for live search checks.
 - Seed users: staff `support@vauban.sh` / `password` (lands on `/vauban`);
   client `l.martin@acme.example` / `password` on `acme-infrastructure`.
 
@@ -38,9 +43,11 @@ rtk cargo test --test integration_tests -- admin_companies -- --test-threads=1
 1. Sign in as `support@vauban.sh` / `password`.
 2. Open `/admin/companies` — expect Concept cards (contact, ADDRESS/VAT,
    USER ACCOUNTS pills, Edit + trash). No reserved `vauban` card.
-3. Click **+ New company**; add company fields and up to N email-only
-   accounts (no password fields). Save.
-4. Confirm list shows email pills; open Edit; add/remove an email; Save.
+3. Click **+ New company**; fill **Technical contact — full name** and
+   **Technical contact — email** (two fields), plus up to N email-only
+   USER ACCOUNTS (no password fields). Save.
+4. Confirm list shows `Name · email` (or either alone) and account pills;
+   open Edit; confirm both contact fields; add/remove an account email; Save.
 5. Delete via trash + type `delete`.
 6. Confirm slug/name `Vauban` is rejected on create.
 
@@ -53,14 +60,47 @@ Pass: surface matches Concept; seat cap comes from config (default 5).
 3. Anonymous / expired session must not leak tenant data.
 4. On **+ New company**, enter a USER ACCOUNTS value like `not-an-email`
    and Save — expect form error `Invalid email address`, no new card.
+5. On **+ New company**, set a valid account email but technical contact
+   email `not-an-email` — expect the same Mailbox error, no new card.
 
-Pass: Casbin + tenant fail-closed; Mailbox syntax validation fail-closed.
+Pass: Casbin + tenant fail-closed; Mailbox syntax validation fail-closed
+for USER ACCOUNTS and technical contact email.
+
+## C -- Pagination
+
+SSR list paging (**3** cards per page via `COMPANIES_PAGE_SIZE`, shareable
+`?page=`).
+
+1. With **4+** matching client companies on `/admin/companies`, expect at
+   most **3** `vb-company-card` rows and a right-aligned **toolbar pager**
+   above the list (no chip row on this surface).
+2. Follow **Next** (or `?page=2`) — expect the remainder only.
+3. Confirm pager links keep `q=` when searching, stay on
+   `/admin/companies?…&page=N`, and do not sticky `delete=` / `err=`
+   overlay params.
+
+Pass: 3 max per page; toolbar pager; overlay query not sticky.
+
+## D -- Live search shard
+
+1. Open DevTools → Network; filter on `/_topcoat/shards`.
+2. Type into **Search companies…** — confirm POSTs return **200** and
+   the card list filters without a full reload (name, slug, contact, VAT,
+   address, or account email).
+3. Clear the field — broader list returns.
+4. Confirm server logs show no shard / path-param panics.
+5. Same shard POST without cookie → **404**.
+6. As `l.martin@acme.example`, POST to a captured shard path → **404**
+   without leaking company names.
+
+Pass: shard POSTs stay 200 for staff; fail-closed for anon / member.
 
 ## Related automated coverage
 
 | Layer | Filter / artifact |
 |-------|-------------------|
-| Invariants | `inv_`, `scripts/check_admin_companies.sh` |
+| Unit | `companies_search_*` in `src/companies_search.rs` |
+| Invariants | `inv_`, `scripts/check_admin_companies.sh`, `scripts/check_admin_companies_search_shard.sh` |
 | Proptest | `prop_` |
 | Battle | `battle_` |
 | E2E | `e2e_` (`--test integration_tests`) |

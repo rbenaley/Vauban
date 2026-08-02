@@ -8,6 +8,7 @@ use topcoat::{
 use crate::{
     app::org::Org,
     auth::{capability_denied, require_org},
+    companies_accounts::format_technical_contact,
     perms::perms_for_user,
 };
 
@@ -23,6 +24,8 @@ async fn account_page(cx: &Cx) -> Result {
     let org = ctx.org.clone();
     let user_name = ctx.user.display_name.clone();
     let user_email = ctx.user.email.clone();
+    let technical_contact =
+        format_technical_contact(&org.technical_contact_name, &org.technical_contact_email);
 
     view! {
         <h1 class="vb-title">"Account & subscription"</h1>
@@ -57,7 +60,7 @@ async fn account_page(cx: &Cx) -> Result {
             </div>
             <div class="vb-kv">
                 <span class="vb-muted">"Technical contact"</span>
-                <span>(org.technical_contact.clone())</span>
+                <span>(technical_contact)</span>
             </div>
         </div>
 

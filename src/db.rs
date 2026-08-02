@@ -412,7 +412,8 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         supported_builds: "LTS".to_owned(),
         lts_subscriptions: 0,
         industrial_lts_subscriptions: 0,
-        technical_contact: "support@vauban.sh".to_owned(),
+        technical_contact_name: "Vauban Support".to_owned(),
+        technical_contact_email: "support@vauban.sh".to_owned(),
         status: "INTERNAL".to_owned(),
     })
     .exec(&mut db)
@@ -427,7 +428,8 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         supported_builds: "LTS 0.8.x".to_owned(),
         lts_subscriptions: 2,
         industrial_lts_subscriptions: 1,
-        technical_contact: "l.martin@acme.example".to_owned(),
+        technical_contact_name: "L. Martin".to_owned(),
+        technical_contact_email: "l.martin@acme.example".to_owned(),
         status: "ACTIVE".to_owned(),
     })
     .exec(&mut db)

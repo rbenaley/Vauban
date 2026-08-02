@@ -29,3 +29,8 @@ snapshot_name = "0004_snapshot.toml"
 id = 6614829037152048591
 name = "0005_release_sha256.sql"
 snapshot_name = "0005_snapshot.toml"
+
+[[migrations]]
+id = 8493785153761862168
+name = "0006_technical_contact_name_email.sql"
+snapshot_name = "0006_snapshot.toml"

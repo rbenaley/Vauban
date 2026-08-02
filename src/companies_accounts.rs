@@ -37,6 +37,25 @@ pub fn parse_portal_email(raw: &str) -> Result<Option<String>, String> {
         .map_err(|_| format!("Invalid email address: {email}"))
 }
 
+/// Normalize optional technical-contact email (same Mailbox rules as accounts).
+///
+/// Empty input → `Ok("")`. Non-empty invalid → `Err`.
+pub fn normalize_contact_email(raw: &str) -> Result<String, String> {
+    Ok(parse_portal_email(raw)?.unwrap_or_default())
+}
+
+/// Display line for company technical contact (name and/or email).
+pub fn format_technical_contact(name: &str, email: &str) -> String {
+    let name = name.trim();
+    let email = email.trim();
+    match (name.is_empty(), email.is_empty()) {
+        (true, true) => "—".to_owned(),
+        (false, true) => name.to_owned(),
+        (true, false) => email.to_owned(),
+        (false, false) => format!("{name} · {email}"),
+    }
+}
+
 /// Trim, lowercase, drop empties, validate via `Mailbox`, dedupe (first wins).
 ///
 /// Fail-closed: the first non-empty invalid address returns `Err` (never dropped).
@@ -238,6 +257,34 @@ mod tests {
         let raw = vec!["ok@example.com".to_owned(), "not-an-email".to_owned()];
         let err = normalize_emails(&raw).unwrap_err();
         assert!(err.contains("not-an-email"));
+    }
+
+    #[test]
+    fn normalize_contact_email_empty_and_valid() {
+        assert_eq!(normalize_contact_email("").unwrap(), "");
+        assert_eq!(normalize_contact_email("   ").unwrap(), "");
+        assert_eq!(
+            normalize_contact_email("  Ops@Example.COM ").unwrap(),
+            "ops@example.com"
+        );
+    }
+
+    #[test]
+    fn normalize_contact_email_rejects_invalid() {
+        let err = normalize_contact_email("not-an-email").unwrap_err();
+        assert!(err.contains("Invalid email address"));
+        assert!(err.contains("not-an-email"));
+    }
+
+    #[test]
+    fn format_technical_contact_variants() {
+        assert_eq!(format_technical_contact("", ""), "—");
+        assert_eq!(format_technical_contact("  Ada  ", ""), "Ada");
+        assert_eq!(format_technical_contact("", " a@x.test "), "a@x.test");
+        assert_eq!(
+            format_technical_contact("Ada Lovelace", "ada@x.test"),
+            "Ada Lovelace · ada@x.test"
+        );
     }
 
     #[test]

@@ -6,6 +6,9 @@ pub const LIST_PAGE_SIZE: usize = 10;
 /// Builds list page size (alias — keep `builds_entitlement` pins stable).
 pub const BUILDS_PAGE_SIZE: usize = LIST_PAGE_SIZE;
 
+/// Admin companies card list — denser cards than table rows.
+pub const COMPANIES_PAGE_SIZE: usize = 3;
+
 /// Parse 1-based page query (default 1, minimum 1).
 pub fn parse_page(raw: Option<u32>) -> usize {
     raw.map(|p| p.max(1) as usize).unwrap_or(1)

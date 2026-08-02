@@ -3,13 +3,16 @@
 use std::sync::Arc;
 use std::thread;
 
+use http_body_util::BodyExt;
 use tokio::sync::Barrier;
-use vcp::companies_accounts::normalize_emails;
+use topcoat::router::StatusCode;
+use vcp::companies_accounts::{normalize_contact_email, normalize_emails};
 use vcp::seats::{can_add_member, membership_count};
 
 use crate::common::{
-    cleanup, create_membership, create_org_with_membership, create_test_user, db_lock, test_db,
-    unique_email, unique_slug,
+    cleanup, cookie_header, create_membership, create_org_with_membership, create_test_org,
+    create_test_user, db_lock, get, post_form, status, test_db, test_router, unique_email,
+    unique_slug, urlencoding_encode,
 };
 
 #[tokio::test]
@@ -83,4 +86,94 @@ fn battle_parallel_normalize_emails_mixed_corpus() {
     for h in handles {
         h.join().expect("join");
     }
+}
+
+#[test]
+fn battle_parallel_normalize_contact_email_mixed_corpus() {
+    let n = 8usize;
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        handles.push(thread::spawn(move || {
+            if i % 2 == 0 {
+                assert_eq!(
+                    normalize_contact_email("  Ops@Example.COM ").expect("valid"),
+                    "ops@example.com"
+                );
+                assert_eq!(normalize_contact_email("").expect("empty"), "");
+            } else {
+                let err = normalize_contact_email("not-an-email").expect_err("invalid");
+                assert!(err.contains("Invalid email address"));
+            }
+        }));
+    }
+    for h in handles {
+        h.join().expect("join");
+    }
+}
+
+#[tokio::test]
+async fn battle_parallel_admin_companies_page_pagination() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-co-page");
+    let slug = unique_slug("battle-co-page");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+
+    let marker = unique_slug("bacopage");
+    for i in 0..4u32 {
+        let org_slug = unique_slug(&format!("{marker}-{i}"));
+        create_test_org(&db, &org_slug).await;
+    }
+
+    let router = Arc::new(test_router().await);
+    let form = format!("email={}&password=password", urlencoding_encode(&email));
+    let login = post_form(router.as_ref(), "/login", None, &form).await;
+    let cookie = cookie_header(&login).expect("cookie");
+
+    let barrier = Arc::new(Barrier::new(2));
+    let cookie_a = cookie.clone();
+    let cookie_b = cookie;
+    let router_a = router.clone();
+    let router_b = router;
+    let barrier_a = barrier.clone();
+    let barrier_b = barrier;
+    let marker_a = marker.clone();
+    let marker_b = marker;
+
+    let path1 = format!("/admin/companies?q={marker_a}&page=1");
+    let path2 = format!("/admin/companies?q={marker_b}&page=2");
+    let h1 = tokio::spawn(async move {
+        barrier_a.wait().await;
+        let resp = get(router_a.as_ref(), &path1, Some(&cookie_a)).await;
+        assert_eq!(status(&resp), StatusCode::OK);
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+        let html = String::from_utf8_lossy(&body).into_owned();
+        assert!(html.contains(&marker_a), "page1 marker: {html}");
+        html
+    });
+    let h2 = tokio::spawn(async move {
+        barrier_b.wait().await;
+        let resp = get(router_b.as_ref(), &path2, Some(&cookie_b)).await;
+        assert_eq!(status(&resp), StatusCode::OK);
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+        let html = String::from_utf8_lossy(&body).into_owned();
+        assert!(html.contains(&marker_b), "page2 marker: {html}");
+        html
+    });
+
+    let page1 = h1.await.expect("join page1");
+    let page2 = h2.await.expect("join page2");
+    assert!(page1.contains("vb-pager"), "page1 pager: {page1}");
+    assert!(
+        page1.contains("vb-list-toolbar"),
+        "toolbar under contention: {page1}"
+    );
+    assert!(
+        (1..=3).contains(&page2.matches("class=\"vb-company-card\"").count()),
+        "page2 cards under contention: {page2}"
+    );
+
+    cleanup(&db).await;
 }

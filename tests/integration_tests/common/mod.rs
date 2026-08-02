@@ -166,7 +166,8 @@ pub async fn create_test_org(db: &Db, slug: &str) -> Organization {
         supported_builds: "LTS".to_owned(),
         lts_subscriptions: 1,
         industrial_lts_subscriptions: 0,
-        technical_contact: "ops@example.com".to_owned(),
+        technical_contact_name: "Ops Contact".to_owned(),
+        technical_contact_email: "ops@example.com".to_owned(),
         status: "ACTIVE".to_owned(),
     })
     .exec(&mut db)
@@ -483,6 +484,16 @@ pub fn admin_issues_search_shard_body_page(q: &str, org: &str, status: &str, pag
         json_string(status),
         json_string(page)
     )
+}
+
+/// JSON body for `admin_companies_search_results(q, page)`.
+pub fn admin_companies_search_shard_body(q: &str) -> String {
+    admin_companies_search_shard_body_page(q, "1")
+}
+
+/// JSON body for `admin_companies_search_results` with an explicit page.
+pub fn admin_companies_search_shard_body_page(q: &str, page: &str) -> String {
+    format!("[{},{}]", json_string(q), json_string(page))
 }
 
 /// Create an open issue for search fixtures (cleaned via test org id).
