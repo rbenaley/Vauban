@@ -61,19 +61,21 @@ do not copy bastion-internal dashboard patterns blindly.
 - Version all of `.cursor/` (rules, skills, plans, audits) except
   `.cursor/mockups/` (local design artifacts only; see `.gitignore`).
 - Stack conventions: `web-stack` skill; Topcoat framework knowledge:
-  `topcoat` skill; authZ: `casbin-permissions.mdc`; dates:
-  `timezone-localization.mdc`; tests: `vcp-test-pyramid.mdc`; TLS/PQ:
-  `tls-post-quantum.mdc`.
+  `topcoat` skill; ORM queries/migrations: `toasty` skill; authZ:
+  `casbin-permissions.mdc`; dates: `timezone-localization.mdc`; tests:
+  `vcp-test-pyramid.mdc`; TLS/PQ: `tls-post-quantum.mdc`.
 
 ## Stack status
 
 **Topcoat** ([tokio-rs/topcoat](https://github.com/tokio-rs/topcoat)) —
 Rust full-stack, server-rendered `view!`, optional signals / shards /
-procedures, Tailwind + Topcoat UI. Early-stage: expect upstream breaking
+procedures, Tailwind + Topcoat UI. Early-stage: expect breaking
 changes; pin versions and prefer thin vertical slices.
 
-**ORM / DB:** [Toasty](https://github.com/tokio-rs/toasty) +
-**PostgreSQL** (pinned 0.x; see `web-stack` skill). Binary crate: `vcp`.
+**ORM / DB:** [Toasty](https://github.com/tokio-rs/toasty) **0.9** +
+**PostgreSQL** (see `toasty` + `web-stack` skills). Prefer SQL-side
+`filter` / `limit` / `count` / `ilike` — not full-table `all()` + Rust
+paging. Binary crate: `vcp`.
 
 **Config:** TOML under `config/` (Vauban-style layering). No application
 `.env`. Production is self-contained `config/vcp.conf` (deployed as

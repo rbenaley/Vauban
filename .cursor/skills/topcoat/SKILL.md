@@ -534,41 +534,24 @@ links in message bodies.
 
 ### ORM (VCP locked): Toasty + PostgreSQL
 
-- **ORM:** [Toasty](https://github.com/tokio-rs/toasty) — async ORM,
-  ease-of-use first; SQL + NoSQL (DynamoDB today on NoSQL). Topcoat
-  example: `examples/toasty-todo` (SQLite there; **VCP uses PostgreSQL**).
+- **ORM skill (read this):** project skill **`toasty`** — query API
+  (`filter` / `limit`+`offset` / `count` / `order_by` / `ilike` /
+  `in_list` / `.or`), migrations, and the ban on full-table
+  `Model::all()` + Rust filter/sort/page. Pin **0.9.0** + Postgres.
+- **ORM:** [Toasty](https://github.com/tokio-rs/toasty). Topcoat example:
+  `examples/toasty-todo` (SQLite there; **VCP uses PostgreSQL**).
 - **Guide:** [Toasty guide](https://tokio-rs.github.io/toasty/nightly/guide/).
 - Orientation: [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
-  (capabilities below landed by 0.6; VCP pins a newer 0.x in
-  `Cargo.toml` — confirm APIs against the locked version).
-- **Topcoat roadmap** still mentions deeper Toasty integration (forms /
-  validations); do not wait — wire via `app_context` + `db(cx)` today
-  (`web-stack`). Mail landed in Topcoat 0.5 separately from that work.
-- Pin exact **0.x** versions; expect churn. Topcoat itself jumped
-  **0.4 → 0.5** with breaking API moves (see
-  [`references/UPGRADE-0.5.md`](references/UPGRADE-0.5.md)).
-- Escape hatch: narrow `sqlx` only when Toasty cannot express a query —
-  not a second data model (`web-stack` § Database / ORM).
+  (deferred / select / `Vec` scalars; confirm against 0.9).
+- Wire via `app_context` + `db(cx)` today (`web-stack`). Escape hatch:
+  narrow `sqlx` only after the `toasty` skill’s SQL APIs are exhausted —
+  not a second data model.
+- Debt tracker:
+  `.cursor/audits/vcp_architecture_toasty_query_debt_2026-08-02.md`.
 
-**Useful Toasty capabilities (prefer before inventing raw SQL):**
-
-| Capability | Shape | When |
-|------------|-------|------|
-| Deferred fields | `#[deferred] body: Deferred<String>` + `.include(Model::fields().body())` | Omit large columns on list queries; load on demand |
-| Field `select()` | `.select(Model::fields().title())` → scalars / tuples, **not** full model | Index pages, projections |
-| `Vec` of scalars | e.g. `tags: Vec<String>` | Postgres **arrays**; other SQL → JSON; DynamoDB lists |
-| Collection updates | `.tags(toasty::stmt::extend([...]))` | Append / mutate without rewriting whole vec blindly |
-| Array filters | `.tags().intersects([...])` (and related) | Tag / set membership queries |
-
-Also called out upstream (use when needed): richer query expressions,
-db-native enums, optimistic version control, TLS for DB clients.
-Document/JSON(B)-style storage is on the Toasty roadmap — do not invent
-a parallel document layer in VCP until Toasty exposes it.
-
-Scaffolded in the `vcp` binary: `User`, `AuthSession` (token hash hex +
-expiry), `Organization`, `Membership`, plus stub `DocArticle` /
-`Release` / `Issue`. Client routes follow `/{org}/…`; staff tools live
-under `/admin/…` (see `web-stack`).
+Scaffolded models: `User`, `AuthSession`, `Organization`, `Membership`,
+`DocArticle` / `Release` / `Issue`, … Client routes `/{org}/…`; staff
+under `/admin/…` (`web-stack`).
 
 ---
 
@@ -618,6 +601,7 @@ Prefer docs at tag **v0.5.0** (or newer release) over stale memory:
 | [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat) | Motivation, locality, reactivity vs WASM, Axum split, roadmap |
 | [v0.5.0 release notes](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0) | Breaking changes, WS/SSE/Datastar/mail/WASM/UDS |
 | [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0) | Deferred / select / `Vec` scalars / collection ops |
+| Project **`toasty` skill** | VCP ORM conventions + query anti-patterns |
 | `crates/topcoat/docs/` | Getting started, app context, mail, Datastar, UI, … |
 | `crates/topcoat-router/docs/{error,content,tower,module_router}.md` + `content/{sse,websocket,multipart}.md` | Router surface after 0.5 split |
 | `crates/topcoat-*/macro/docs/` | Macro-specific guides |
@@ -635,7 +619,8 @@ than guessing from memory of older releases.
 |----------|------|
 | `references/RUNTIME.md` | Signals / `@click` pitfalls / test contracts |
 | `references/UPGRADE-0.5.md` | 0.4 → 0.5 migration checklist for VCP |
-| `web-stack` skill | VCP conventions (incl. Toasty + Postgres) |
+| `web-stack` skill | VCP conventions (routing, `db(cx)`, page sizes) |
+| `toasty` skill | Toasty 0.9 query / migration playbook |
 | `casbin-permissions.mdc` | AuthZ gates |
 | `portal-security.mdc` | Tenancy, CSRF, secrets |
 | `tls-post-quantum.mdc` | HTTPS edge / PQ |

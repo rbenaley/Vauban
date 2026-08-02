@@ -18,6 +18,9 @@ Upstream orientation (keep in sync with `topcoat` skill):
 - [Topcoat v0.5.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0)
 - [Toasty 0.6.0 — what is new?](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
   (VCP pins **toasty 0.9** — confirm APIs against `Cargo.toml` / lock)
+- **ORM detail:** read the **`toasty` skill** before writing list /
+  search / entitlement queries (do not assume `Model::all()` + Rust
+  pagination is required).
 
 VCP is a **Topcoat** application ([tokio-rs/topcoat](https://github.com/tokio-rs/topcoat)).
 Depend on the facade crate `topcoat` only (internal crates are
@@ -72,18 +75,21 @@ Toasty is an async ORM (ease-of-use first; SQL + NoSQL). VCP uses the
 **PostgreSQL** driver only. Topcoat’s roadmap mentions tighter Toasty
 integration later — wire `app_context` + `db(cx)` today.
 
+**Read the `toasty` skill** for query API, migrations, and the ban on
+full-table load + Rust filter/sort/page. Architecture debt summary:
+`.cursor/audits/vcp_architecture_toasty_query_debt_2026-08-02.md`.
+
 ### Pinning
 
-- Toasty is **0.x** — expect breaking changes (0.4→0.6 shipped quickly;
-  VCP currently pins **0.9.0**). Pin **exact** versions in `Cargo.toml`
-  / `Cargo.lock`; bump deliberately after reading the changelog. Do not
-  track git `main` ad hoc.
+- Toasty is **0.x** — expect breaking changes (VCP pins **0.9.0**). Pin
+  **exact** versions in `Cargo.toml` / `Cargo.lock`; bump deliberately
+  after reading the changelog. Do not track git `main` ad hoc.
 - Enable the **PostgreSQL** driver feature (not SQLite) for the app
   default. See Topcoat’s `examples/toasty-todo` for a minimal wiring
   pattern (that example uses SQLite — VCP uses Postgres instead).
 - Guide: [Toasty guide](https://tokio-rs.github.io/toasty/nightly/guide/).
 - Orientation: [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
-  (deferred / select / `Vec` scalars landed by 0.6; verify against 0.9).
+  (deferred / select / `Vec` scalars; verify against 0.9 + `toasty` skill).
 
 ### Access pattern
 
@@ -96,9 +102,9 @@ Router .app_context(db)
 - Register the Toasty DB / pool on the router with `.app_context(...)`.
 - Expose `fn db(cx: &Cx) -> …` (clone or pool handle). Prefer
   `#[memoize]` for hot per-request lookups.
-- Models: `#[derive(toasty::Model)]` under `src/models/` (or
-  `src/db/models/`). Keep a thin `src/db.rs` (or `src/db/mod.rs`) for
-  connect / schema helpers — not a heavy repository layer unless needed.
+- Models: `#[derive(toasty::Model)]` under `src/models/`. Keep a thin
+  `src/db.rs` for connect / seed / migrations — not a heavy repository
+  layer unless needed.
 - Prefer **locality of behavior**: components/pages fetch what they need
   via `cx` helpers rather than always prop-drilling full graphs from
   parents (`topcoat` skill §7).
@@ -108,22 +114,30 @@ Router .app_context(db)
 - Automated tests: `vcp_test` via `just test` / `just validate`
   (`ensure-vcp-test`); URL in `config/testing.toml`.
 
-### Query capabilities (prefer before inventing raw SQL)
+### Query policy (summary — details in `toasty` skill)
 
-Capabilities from Toasty ≥0.6 (confirm names against the locked crate):
+Hot paths (pages, shards, procedures) MUST push filter / sort / page /
+count into Toasty SQL:
 
-| Capability | Shape | When |
-|------------|-------|------|
-| Deferred fields | `#[deferred] body: Deferred<T>` + `.include(Model::fields().body())` | Omit large columns on list/index queries; load on demand |
-| Field `select()` | `.select(Model::fields().title())` → scalars / tuples, **not** full model | Projections, lightweight lists |
-| `Vec` of scalars | e.g. `tags: Vec<String>` | Postgres **arrays** (other SQL → JSON; DynamoDB lists) |
-| Collection updates | `.tags(toasty::stmt::extend([...]))` | Append / mutate without blind full rewrite |
-| Array filters | `.tags().intersects([...])` (and related) | Tag / set membership |
+| Need | Prefer |
+|------|--------|
+| Tenant / entitlement | `.filter(...eq/in_list/or...)` — never load every tenant’s rows |
+| Text | `.ilike("%…%")` (Postgres); escape wildcards on untrusted input |
+| Sort | `.order_by(field.asc()|.desc())` |
+| Page | `.limit(PAGE).offset((page-1)*PAGE)` — `offset` requires `limit` |
+| Totals | `.count()` |
+| Display lookups | `.filter(id.in_list(ids_on_page))` after the page is known |
+| Large columns | `#[deferred]` + `.include` on detail only |
+| Projections | `.select(fields…)` when a full model is unnecessary |
 
-Also available upstream when needed: richer query expressions, db-native
-enums, optimistic version control, TLS for DB clients. Document/JSON(B)
-storage is on Toasty’s roadmap — do **not** invent a parallel document
-layer in VCP until Toasty exposes it cleanly.
+**Forbidden default:** `Model::all().exec()` then Rust `.filter` /
+`sort_by_key` / `page_slice` for product listings. `page_slice` is for
+in-memory leftovers only, not a Postgres paging strategy.
+
+Also: `Vec` scalar arrays (`.intersects` / `.contains` on **arrays** —
+not substring on `String`), collection updates
+(`toasty::stmt::extend`), deferred / select. Document/JSON(B) storage is
+on Toasty’s roadmap — do **not** invent a parallel document layer.
 
 ### Sessions and tenancy
 
@@ -131,15 +145,17 @@ layer in VCP until Toasty exposes it cleanly.
   id** (and any VCP extras). Never store or log the raw session token.
 - Every org-scoped query MUST filter on the active organization resolved
   from membership — Casbin alone is not enough (`portal-security.mdc`,
-  `casbin-permissions.mdc`).
+  `casbin-permissions.mdc`). Prefer that filter **in SQL**, not only in
+  Rust after a full scan (`toasty` skill).
 
 ### Escape hatch
 
-If Toasty cannot express a query cleanly **after** checking deferred /
-`select` / collection APIs, a **narrow** `sqlx` (or equivalent) module
-is allowed for that seam only. Do **not** grow a second full data model
-or duplicate entities in both ORMs. Document the escape in a short
-comment or module docs at the call site.
+If Toasty cannot express a query cleanly **after** checking the `toasty`
+skill (filter / limit / count / ilike / in_list / deferred / select), a
+**narrow** `sqlx` (or equivalent) module is allowed for that seam only.
+Do **not** grow a second full data model. Document the escape at the
+call site. “We always loaded `all()` historically” is **not** a valid
+reason for `sqlx`.
 
 ### App scaffold checklist (when creating the binary)
 
@@ -249,13 +265,15 @@ not wait for a follow-up. Reference implementation helpers live in
 | With chips | Pager on the **same** `vb-chip-row` (chips left / `vb-chip-group`, pager right via `margin-left: auto`); chip-height face (`padding: 6px 12px`) |
 | Without chips | `vb-list-toolbar` above the table/list, pager right-aligned |
 | Filters | Chip / filter hrefs **omit** `page` (reset to 1); pager keeps other query (`q`, `cat`, `status`, `org`, …) |
-| Slice | In-memory `page_slice` after existing filter/sort (DB `LIMIT/OFFSET` only if catalog size demands it later) |
-| Live shards | Shard args include `page`; when the live search signal changes, **reset page to 1** for the slice |
+| Slice | Prefer Toasty `.limit(PAGE).offset((page-1)*PAGE)` after SQL filters (`toasty` skill). `page_slice` is only for already-bounded in-memory vecs — not a full-table load strategy |
+| Totals | Prefer `.count()` (or equivalent SQL) for pager page counts |
+| Live shards | Shard args include `page`; when the live search signal changes, **reset page to 1**; push search predicates into SQL |
 | Pyramid | Full `vcp-test-pyramid` for the list surface (unit helpers, invariants on markup/CSS, proptest totals, battle parallel `?page=`, e2e ≥11 fixtures, runbook section) |
 
 Anti-patterns: client-only pagers, sticky `page=` on filter chips, pager
 below a default-open panel that jumps vertically, inventing a second
-page-size constant without reason.
+page-size constant without reason, `Model::all()` + Rust `page_slice`
+for growing catalogs.
 
 ## Rendering principles
 

@@ -16,4 +16,6 @@ When adding or changing a **list / index** page:
 3. Without chips: `vb-list-toolbar` above the table, pager right.
 4. Pager = SSR `<a href>` only — no client JS pager.
 5. Live-search shards take `page` and reset to 1 when the query signal changes.
-6. Ship the full test pyramid for that surface (see `web-stack` § List pagination).
+6. Prefer Toasty SQL `.limit` / `.offset` / `.count` / filters — not
+   `Model::all()` then `page_slice` (`toasty` skill).
+7. Ship the full test pyramid for that surface (see `web-stack` § List pagination).

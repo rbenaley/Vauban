@@ -172,7 +172,8 @@ Happy-path-only tests are insufficient for those seams.
 
 ### Database tests (Toasty + PostgreSQL)
 
-- ORM is **Toasty**; database is **PostgreSQL** (see `web-stack`).
+- ORM is **Toasty**; database is **PostgreSQL** (see `web-stack` +
+  **`toasty` skill**).
 - Integration / E2E tests that touch persistence need a real Postgres
   (CI service, docker compose, or testcontainers) — do not default to
   SQLite for VCP app tests unless a one-off local smoke is explicitly
@@ -184,6 +185,10 @@ Happy-path-only tests are insufficient for those seams.
   expired session hash, missing membership), not only happy-path CRUD.
 - Prefer testing through production `db(cx)` / model helpers over a
   parallel Diesel-style harness copied from the bastion.
+- When fixing full-table load debt (`Model::all()` + Rust page/filter),
+  add denial + pagination/search coverage that would fail if the SQL
+  tenant / `limit` predicates were dropped (`toasty` skill;
+  audit `.cursor/audits/vcp_architecture_toasty_query_debt_2026-08-02.md`).
 
 ### Scaffold smoke targets
 
