@@ -4,11 +4,12 @@ Authenticated customer portal for Vauban.
 
 ## Stack
 
-- [Topcoat](https://github.com/tokio-rs/topcoat) 0.5 (SSR, module router, sessions, Tailwind)
+- [Topcoat](https://github.com/tokio-rs/topcoat) 0.5 (SSR, module router, sessions, Tailwind, `mail`)
 - [Toasty](https://github.com/tokio-rs/toasty) 0.9 + PostgreSQL
 - Casbin-format policy file under `config/access/` (custom loader; tenant gate on `{org}`)
 - TOML configuration under `config/` (same layering model as Vauban)
 - **HTTPS only** — TLS 1.3 via rustls; optional ACME TLS-ALPN-01 (no HTTP listener)
+- Dev mail sink: Topcoat `FileTransport` writes `.eml` under `target/mail` (no SMTP yet)
 
 ## Prerequisites
 
@@ -54,6 +55,12 @@ Config directory lookup:
 3. `/usr/local/etc/vcp`
 
 Production install path: `/usr/local/etc/vcp/vcp.conf` (plus `access/` policies and TLS material).
+
+Notable knobs (see TOML / `vcp.conf`):
+
+| Key | Role |
+|-----|------|
+| `[org] max_accounts_per_org` | Seat cap for client company portal accounts (default **5**) |
 
 ### TLS
 
@@ -145,7 +152,9 @@ Slug **`vauban`** is reserved (not a billable client). Client companies cannot c
 | `/admin/issues` | Aggregated issues (staff; optional org filter) |
 | `/admin/docs` | Documentation editor |
 | `/admin/releases` | Release manager (GA or org-targeted) |
-| `/admin/companies` | Client companies (excludes reserved `vauban`) |
+| `/admin/companies` | Client companies: list / new / edit / delete (excludes reserved `vauban`) |
+| `/admin/companies/new` | Onboard org + provision email-only accounts (Mailbox syntax check; unusable password until magic links) |
+| `/admin/companies/{id}` | Edit company + sync accounts under `org.max_accounts_per_org` |
 
 Wrong org slug → **404** (no cross-tenant leak). `/admin/*` requires Vauban Support (`portal_role=admin` + Casbin `admin:view`). Direct `/vauban/issues*` redirects to `/admin/issues`.
 
