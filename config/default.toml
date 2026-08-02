@@ -36,3 +36,6 @@ policy_path = "config/access/default_policy.csv"
 max_attempts = 10
 window_secs = 300
 lockout_secs = 900
+
+[org]
+max_accounts_per_org = 5

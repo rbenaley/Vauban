@@ -41,7 +41,7 @@ async fn battle_parallel_seat_helper_reads() {
             let mut conn = db.clone();
             let count = membership_count(&mut conn, org_id).await.expect("count");
             assert_eq!(count, 3);
-            let can = can_add_member(&mut conn, org_id).await.expect("can");
+            let can = can_add_member(&mut conn, org_id, 5).await.expect("can");
             assert!(can);
         }));
     }

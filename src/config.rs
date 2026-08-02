@@ -67,6 +67,9 @@ pub struct Config {
 
     #[serde(default)]
     pub login: LoginConfig,
+
+    #[serde(default)]
+    pub org: OrgConfig,
 }
 
 fn default_environment() -> Environment {
@@ -205,6 +208,26 @@ fn default_login_window_secs() -> u64 {
 
 fn default_login_lockout_secs() -> u64 {
     900
+}
+
+/// Organization / tenant provisioning limits.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OrgConfig {
+    /// Max portal user accounts (memberships) per client company.
+    #[serde(default = "default_max_accounts_per_org")]
+    pub max_accounts_per_org: usize,
+}
+
+impl Default for OrgConfig {
+    fn default() -> Self {
+        Self {
+            max_accounts_per_org: default_max_accounts_per_org(),
+        }
+    }
+}
+
+fn default_max_accounts_per_org() -> usize {
+    crate::models::MAX_USERS_PER_COMPANY
 }
 
 impl Config {
@@ -402,6 +425,7 @@ mod tests {
         assert_eq!(cfg.login.max_attempts, 10);
         assert_eq!(cfg.login.window_secs, 300);
         assert_eq!(cfg.login.lockout_secs, 900);
+        assert_eq!(cfg.org.max_accounts_per_org, 5);
     }
 
     #[test]
@@ -416,6 +440,7 @@ mod tests {
         assert_eq!(cfg.login.max_attempts, 10);
         assert_eq!(cfg.login.window_secs, 300);
         assert_eq!(cfg.login.lockout_secs, 900);
+        assert_eq!(cfg.org.max_accounts_per_org, 5);
     }
 
     #[test]
@@ -434,6 +459,7 @@ mod tests {
         // Elevated ceiling so suite login floods do not lock out.
         assert_eq!(cfg.login.max_attempts, 1000);
         assert_eq!(cfg.login.lockout_secs, 1);
+        assert_eq!(cfg.org.max_accounts_per_org, 5);
     }
 
     #[test]

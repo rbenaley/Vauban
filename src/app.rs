@@ -137,7 +137,7 @@ fn require_catalog_assets(config: &AssetConfig, env: Environment, assets: &[(&st
 }
 
 #[layout]
-async fn root_layout(slot: Result) -> Result {
+pub(crate) async fn root_layout(slot: Result) -> Result {
     view! {
         <!DOCTYPE html>
         <html lang="en">

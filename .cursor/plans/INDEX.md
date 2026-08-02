@@ -27,18 +27,25 @@ is planned._
 <!-- AUTO-CATALOG:BEGIN -->
 | Plan | File | Status |
 |------|------|--------|
+| Admin companies Concept | [`admin_companies_concept_9287ef37.plan.md`](admin_companies_concept_9287ef37.plan.md) | Open |
 | Admin docs Concept fidelity | [`admin_docs_concept_fidelity_45eb6145.plan.md`](admin_docs_concept_fidelity_45eb6145.plan.md) | Done |
+| Admin docs status badges | [`admin_docs_status_badges_298bcc86.plan.md`](admin_docs_status_badges_298bcc86.plan.md) | Done |
 | Admin docs versioning UX | [`admin_docs_versioning_ux_029c7b2d.plan.md`](admin_docs_versioning_ux_029c7b2d.plan.md) | Done |
 | Admin global route remap | [`admin_global_route_remap_07c8ba5f.plan.md`](admin_global_route_remap_07c8ba5f.plan.md) | Done |
+| Admin releases Concept actions | [`admin_releases_concept_actions_6c93a837.plan.md`](admin_releases_concept_actions_6c93a837.plan.md) | Done |
 | Anti-enumeration hardening | [`anti-enumeration_hardening_5f20daaa.plan.md`](anti-enumeration_hardening_5f20daaa.plan.md) | Done |
 | Browser tz cookie setter | [`browser_tz_cookie_setter_6e36a7f6.plan.md`](browser_tz_cookie_setter_6e36a7f6.plan.md) | Done |
 | Builds Concept fidelity | [`builds_concept_fidelity_ffcc480f.plan.md`](builds_concept_fidelity_ffcc480f.plan.md) | Done |
+| Builds list pagination | [`builds_list_pagination_f79222c2.plan.md`](builds_list_pagination_f79222c2.plan.md) | Done |
 | DB-backed editorial content | [`db-backed_editorial_content_b6911b21.plan.md`](db-backed_editorial_content_b6911b21.plan.md) | Done |
+| Issue close reopen | [`issue_close_reopen_954c4a67.plan.md`](issue_close_reopen_954c4a67.plan.md) | Done |
 | Issues live search shards | [`issues_live_search_shards_d44946a2.plan.md`](issues_live_search_shards_d44946a2.plan.md) | Done |
+| List pagination standard | [`list_pagination_standard_4c1f389a.plan.md`](list_pagination_standard_4c1f389a.plan.md) | Done |
 | Mockup visual fidelity | [`mockup_visual_fidelity_eea72dae.plan.md`](mockup_visual_fidelity_eea72dae.plan.md) | Done |
 | ORM Toasty Postgres | [`orm_toasty_postgres_3e00d8ac.plan.md`](orm_toasty_postgres_3e00d8ac.plan.md) | Done |
 | P0-P3 Topcoat campaign | [`p0-p3_topcoat_campaign_d0d5c3c6.plan.md`](p0-p3_topcoat_campaign_d0d5c3c6.plan.md) | Done |
 | Pyramid compliance backfill | [`pyramid_compliance_backfill_c0557c49.plan.md`](pyramid_compliance_backfill_c0557c49.plan.md) | Done |
+| Topcoat 0.5 migration | [`topcoat_0.5_migration_60d77b42.plan.md`](topcoat_0.5_migration_60d77b42.plan.md) | Done |
 | Topcoat idiomatic adoption | [`topcoat_idiomatic_adoption_820f64e6.plan.md`](topcoat_idiomatic_adoption_820f64e6.plan.md) | Done |
 | UI polish CSS pyramid | [`ui_polish_css_pyramid_40fa6ffc.plan.md`](ui_polish_css_pyramid_40fa6ffc.plan.md) | Done |
 | VCP HTTPS TLS ACME | [`vcp_https_tls_acme_b5efb33c.plan.md`](vcp_https_tls_acme_b5efb33c.plan.md) | Done |

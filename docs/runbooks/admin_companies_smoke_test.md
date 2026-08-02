@@ -1,8 +1,9 @@
 # Runbook -- Admin client companies
 
-> Manual validation after shipping **org create + seat helper MAX_USERS=5**. CI covers unit /
-> invariants / proptest / battle / in-process E2E against `vcp_test`;
-> staging proves browser HTTPS and denial paths.
+> Manual validation after shipping **Concept companies** (list/edit,
+> email-only accounts, configurable `org.max_accounts_per_org`, default 5).
+> CI covers unit / invariants / proptest / battle / in-process E2E against
+> `vcp_test`; staging proves browser HTTPS and denial paths.
 >
 > Audience: release / staging operators.
 > Severity: **BLOCKING** for this surface. Do not ship without A–B.
@@ -35,11 +36,15 @@ rtk cargo test --test integration_tests -- admin_companies -- --test-threads=1
 ## A -- Happy path
 
 1. Sign in as `support@vauban.sh` / `password`.
-2. Open `/admin/companies` — expect client companies only (no reserved
-   `vauban` card).
-3. Onboard a company; confirm slug `vauban` is rejected.
+2. Open `/admin/companies` — expect Concept cards (contact, ADDRESS/VAT,
+   USER ACCOUNTS pills, Edit + trash). No reserved `vauban` card.
+3. Click **+ New company**; add company fields and up to N email-only
+   accounts (no password fields). Save.
+4. Confirm list shows email pills; open Edit; add/remove an email; Save.
+5. Delete via trash + type `delete`.
+6. Confirm slug/name `Vauban` is rejected on create.
 
-Pass: surface behaves as in the focused E2E suite.
+Pass: surface matches Concept; seat cap comes from config (default 5).
 
 ## B -- Denial paths
 

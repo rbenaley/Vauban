@@ -58,6 +58,11 @@ pub fn nav_from_path(path: &str) -> (NavSection, String) {
                         NavSection::AdminCompanies,
                         "admin / companies / new".to_owned(),
                     )
+                } else if rest.get(1).is_some() {
+                    (
+                        NavSection::AdminCompanies,
+                        "admin / companies / edit".to_owned(),
+                    )
                 } else {
                     (NavSection::AdminCompanies, "admin / companies".to_owned())
                 }

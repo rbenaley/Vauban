@@ -24,3 +24,6 @@ url = "postgresql://vcp_test:vcp_test@localhost/vcp_test"
 max_attempts = 1000
 window_secs = 300
 lockout_secs = 1
+
+[org]
+max_accounts_per_org = 5

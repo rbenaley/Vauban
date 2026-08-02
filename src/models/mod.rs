@@ -2,7 +2,7 @@
 
 use toasty::{Deferred, Model};
 
-/// Maximum user accounts provisioned per client company (mockup rule).
+/// Default maximum user accounts per client company (`org.max_accounts_per_org`).
 pub const MAX_USERS_PER_COMPANY: usize = 5;
 
 /// Reserved org slug for Vauban Support client-preview chrome (not a billable tenant).

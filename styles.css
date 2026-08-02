@@ -442,8 +442,52 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
   max-width: 78%; border-radius: 6px; padding: 13px 15px; background: #f5f6f4; border: 1px solid #e8ebe6;
 }
 .vb-bubble.support { background: #eef7f4; border-color: #d7e3df; }
+.vb-company-list {
+  width: 100%;
+}
 .vb-company-card {
+  display: block; width: 100%; box-sizing: border-box;
   border: 1px solid var(--border); border-radius: 4px; background: #fff; padding: 18px 20px;
+}
+.vb-company-card-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 12px; padding-bottom: 14px; margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.vb-company-meta {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+  padding-bottom: 14px; margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.vb-company-meta-col {
+  min-width: 0;
+}
+.vb-company-meta-col.vat {
+  text-align: left;
+}
+.vb-company-meta-label {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px; letter-spacing: 0.08em; color: #8a8f96; margin-bottom: 4px;
+}
+.vb-company-meta-value {
+  font-size: 13px; color: #5a5f66; line-height: 1.5;
+}
+.vb-company-meta-value.mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: #14171c;
+}
+@media (max-width: 720px) {
+  .vb-company-meta { grid-template-columns: 1fr; gap: 12px; }
+}
+.vb-account-pills {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.vb-account-pill {
+  display: inline-flex; align-items: center;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px; color: #3a3f46;
+  background: #f3f5f2; border: 1px solid #e4e7e2;
+  border-radius: 999px; padding: 3px 10px;
 }
 .vb-lead {
   margin: 0 0 18px; color: var(--muted); font-size: 14px;

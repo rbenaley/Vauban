@@ -13,7 +13,10 @@ use topcoat::{
 };
 
 use crate::{
-    app::_components::{vb_rail, vb_topbar},
+    app::{
+        _components::{vb_rail, vb_topbar},
+        root_layout,
+    },
     auth::require_staff,
     models::RESERVED_ORG_SLUG,
     nav::nav_from_cx,
@@ -35,6 +38,13 @@ async fn admin_layout(cx: &Cx, slot: Result) -> Result {
             </div>
         </div>
     }
+}
+
+/// Full HTML document for admin POST re-renders (`#[route]` skips layouts).
+pub(crate) async fn render_admin_page(cx: &Cx, slot: Result) -> Result {
+    let body = slot?;
+    let shelled = view! { cx => admin_layout(slot: Ok(body)) }?;
+    view! { cx => root_layout(slot: Ok(shelled)) }
 }
 
 /// Hub redirects to the first admin tool (Issues).
