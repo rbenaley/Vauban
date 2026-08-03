@@ -8,7 +8,7 @@ use vcp::docs_search::{
 use crate::common::docs_search_shard_body;
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::prop_config(48))]
 
     #[test]
     fn prop_query_trim_lowercase_idempotent(raw in " *[A-Za-z0-9 ]{0,40} *") {

@@ -50,7 +50,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(32))]
+        #![proptest_config(crate::proptest_util::cases(32))]
 
         #[test]
         fn prop_ilike_contains_none_iff_blank(s in ".*") {

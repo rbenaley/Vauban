@@ -10,7 +10,7 @@ use vcp::models::{
 };
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_details_trim_preserves_nonempty(raw in "[a-zA-Z0-9 .]{1,200}") {
@@ -22,7 +22,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_issue_key_shape(n in 200u32..500) {
@@ -34,7 +34,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_next_issue_key_strictly_above_max_vbn(
@@ -55,7 +55,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_comment_role_and_kind_are_catalogued(
@@ -78,7 +78,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_issue_closed_catalogue(

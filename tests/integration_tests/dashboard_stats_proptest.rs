@@ -27,7 +27,7 @@ fn sample(id: u64, status: &str, updated_at: i64) -> Issue {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(crate::common::prop_config(64))]
 
     #[test]
     fn prop_in_analysis_subset_of_open(

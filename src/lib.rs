@@ -36,3 +36,6 @@ pub mod sql_search;
 pub mod tls;
 pub mod tz;
 pub mod ui;
+
+#[cfg(test)]
+pub mod proptest_util;

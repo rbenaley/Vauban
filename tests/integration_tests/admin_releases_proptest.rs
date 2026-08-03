@@ -8,7 +8,7 @@ use vcp::{
 };
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_release_version_trim(raw in " *test-[a-z0-9.]{1,24} *") {
@@ -20,7 +20,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(16))]
+    #![proptest_config(crate::common::prop_config(16))]
 
     #[test]
     fn prop_channel_is_known(channel in prop_oneof!["LTS", "Stable", "EOL"]) {
@@ -29,7 +29,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_status_badge_mapping(
@@ -53,7 +53,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_delete_confirm_only_exact_delete(

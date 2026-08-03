@@ -6,7 +6,7 @@ use proptest::prelude::*;
 use vcp::tz::format_local;
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_format_local_contains_date_parts(hour in 0u32..24) {
@@ -18,7 +18,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(16))]
+    #![proptest_config(crate::common::prop_config(16))]
 
     #[test]
     fn prop_paris_differs_from_utc_outside_overlap(hour in 10u32..20) {

@@ -283,6 +283,8 @@ mod proptest_tests {
     use proptest::prelude::*;
 
     proptest! {
+        #![proptest_config(crate::proptest_util::default_config())]
+
         fn hash_token_unique_for_distinct_inputs(a in "[0-9a-f]{8,64}", b in "[0-9a-f]{8,64}") {
             prop_assume!(a != b);
             prop_assert_ne!(hash_token(&a), hash_token(&b));
@@ -290,6 +292,8 @@ mod proptest_tests {
     }
 
     proptest! {
+        #![proptest_config(crate::proptest_util::default_config())]
+
         fn generate_raw_token_always_64_hex(_ in 0u8..32) {
             let (raw, hash) = generate_raw_token();
             prop_assert_eq!(raw.len(), 64);
@@ -299,6 +303,8 @@ mod proptest_tests {
     }
 
     proptest! {
+        #![proptest_config(crate::proptest_util::default_config())]
+
         fn purge_cutoff_is_now_minus_retention_days(now in 0i64..=10_000_000, days in 0u64..=365) {
             let cutoff = purge_cutoff(now, days);
             let expected = now.saturating_sub((days.saturating_mul(86_400)) as i64);

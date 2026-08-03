@@ -837,7 +837,7 @@ mod builds_entitlement_sql_prop {
     use proptest::prelude::*;
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(48))]
+        #![proptest_config(crate::proptest_util::cases(48))]
 
         #[test]
         fn prop_sql_visibility_matches_oracle(

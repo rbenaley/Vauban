@@ -17,7 +17,7 @@ fn peer(octets: (u8, u8, u8, u8)) -> SocketAddr {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::prop_config(48))]
 
     #[test]
     fn prop_clf_contains_status_method_and_host(
@@ -49,7 +49,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_clf_neutralizes_embedded_quotes(status in 200u16..500) {
@@ -70,7 +70,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::prop_config(48))]
 
     #[test]
     fn prop_trailing_slash_location_is_origin_relative(
@@ -94,7 +94,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_handshake_coalesce_preserves_total_count(

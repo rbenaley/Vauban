@@ -12,7 +12,7 @@ fn prop_companies_page_size_is_three() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::prop_config(48))]
 
     #[test]
     fn prop_query_match_and_body(q in "[A-Za-z0-9 ]{0,20}", page in "1|2|3") {

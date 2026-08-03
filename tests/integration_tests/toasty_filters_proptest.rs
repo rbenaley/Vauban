@@ -19,7 +19,7 @@ fn apply_filters(docs: &[FakeDoc], q: &str, cat: &str) -> Vec<FakeDoc> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_filters_return_subset(

@@ -76,7 +76,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(48))]
+        #![proptest_config(crate::proptest_util::cases(48))]
 
         #[test]
         fn http_edge_prop_trailing_slash_strips_to_nonempty_path(

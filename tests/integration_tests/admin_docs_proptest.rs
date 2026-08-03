@@ -14,7 +14,7 @@ fn prop_list_page_size_is_ten() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_slugify_is_url_safe(title in "[A-Za-z0-9 _-]{1,48}") {
@@ -27,7 +27,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(16))]
+    #![proptest_config(crate::common::prop_config(16))]
 
     #[test]
     fn prop_publish_flag_maps_status(publish in proptest::bool::ANY) {
@@ -42,7 +42,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_bump_version_increments(n in 1u32..200) {
@@ -53,7 +53,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::prop_config(48))]
 
     #[test]
     fn prop_delete_confirm_only_exact_delete(
@@ -65,7 +65,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(40))]
+    #![proptest_config(crate::common::prop_config(40))]
 
     #[test]
     fn prop_docs_body_escape_neutralizes_angle_brackets(

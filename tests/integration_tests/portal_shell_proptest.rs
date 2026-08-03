@@ -16,7 +16,7 @@ const UI_POLISH_CSS_PINS: &[&str] = &[
 ];
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::prop_config(48))]
 
     #[test]
     fn prop_nav_from_path_never_panics_and_crumb_non_empty(
@@ -34,7 +34,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_unknown_member_section_maps_home(seg in "[a-z]{3,12}") {
@@ -50,7 +50,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(crate::common::prop_config(64))]
 
     #[test]
     fn prop_ui_polish_css_pins_present(pin in prop::sample::select(UI_POLISH_CSS_PINS)) {

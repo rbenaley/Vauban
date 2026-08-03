@@ -12,6 +12,8 @@ use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use http_body_util::BodyExt;
+use proptest::prelude::*;
+use proptest::test_runner::FileFailurePersistence;
 use toasty::Db;
 use tokio::sync::Mutex;
 use topcoat::mail::MemoryTransport;
@@ -668,4 +670,19 @@ pub fn urlencoding_encode(value: &str) -> String {
         }
     }
     out
+}
+
+/// Proptest config that persists failure seeds under `target/proptest-regressions/`.
+///
+/// The integration harness crate root is `tests/integration_tests/` (has
+/// `main.rs`). Default `SourceParallel("proptest-regressions")` therefore lands
+/// in `tests/proptest-regressions/`. Using `../target/…` redirects into the
+/// Cargo `target/` tree (already gitignored).
+pub fn prop_config(cases: u32) -> ProptestConfig {
+    ProptestConfig {
+        failure_persistence: Some(Box::new(FileFailurePersistence::SourceParallel(
+            "../target/proptest-regressions",
+        ))),
+        ..ProptestConfig::with_cases(cases)
+    }
 }

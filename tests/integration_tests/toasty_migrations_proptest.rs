@@ -4,7 +4,7 @@ use proptest::prelude::*;
 use toasty::migration::{History, HistoryEntry};
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::prop_config(48))]
 
     #[test]
     fn prop_history_ids_and_names_unique(

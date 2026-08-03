@@ -31,7 +31,7 @@ const GA_SHA256: &[&str] = &[
 ];
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_download_message_is_stable(_n in 0u8..32) {

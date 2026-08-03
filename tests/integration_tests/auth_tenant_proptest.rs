@@ -11,7 +11,7 @@ use vcp::{
 };
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_unknown_roles_lack_admin_view(role in "[a-z]{3,12}") {
@@ -25,7 +25,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_test_email_prefix_isolation(suffix in "[a-z0-9]{4,12}") {
@@ -38,7 +38,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_resolve_home_org_slug_staff_always_vauban(
@@ -82,7 +82,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_login_rate_decide(failures in 0u32..20, max in 1u32..10) {

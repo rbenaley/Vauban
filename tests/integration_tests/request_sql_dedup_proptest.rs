@@ -10,7 +10,7 @@ use vcp::{
 };
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::prop_config(48))]
 
     #[test]
     fn prop_docs_filter_key_idempotent_after_normalize(q in ".*", cat in ".*") {

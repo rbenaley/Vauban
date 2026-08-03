@@ -394,6 +394,8 @@ mod tests {
     }
 
     proptest! {
+        #![proptest_config(crate::proptest_util::default_config())]
+
         #[test]
         fn cooldown_mm_ss_props(total in 0u64..=10_000) {
             let (mins, secs) = cooldown_mm_ss(total);

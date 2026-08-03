@@ -58,7 +58,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(48))]
+        #![proptest_config(crate::proptest_util::cases(48))]
 
         #[test]
         fn docs_search_shard_prop_query_normalization_idempotent(

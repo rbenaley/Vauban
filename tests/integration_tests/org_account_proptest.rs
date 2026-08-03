@@ -4,7 +4,7 @@ use proptest::prelude::*;
 use vcp::nav::{NavSection, nav_from_path};
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_account_path_maps_to_account_section(

@@ -21,7 +21,7 @@ fn prop_companies_page_size_is_three() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_seat_boundary_respects_max(n in 0usize..=12, max in 1usize..=8) {
@@ -32,7 +32,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_company_slug_from_name(name in "Test [A-Za-z0-9 ]{2,32}") {
@@ -43,7 +43,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_normalize_emails_lowercases_valid(
@@ -61,7 +61,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
     fn prop_normalize_emails_rejects_garbage_without_at(
@@ -75,7 +75,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::prop_config(24))]
 
     #[test]
     fn prop_normalize_contact_email_lowercases_valid(
@@ -119,7 +119,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::prop_config(48))]
 
     #[test]
     fn prop_clamp_lts_stays_in_range(value in -50i32..200, max in 0usize..=99) {

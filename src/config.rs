@@ -704,6 +704,8 @@ mod proptest_tests {
     use proptest::prelude::*;
 
     proptest! {
+        #![proptest_config(crate::proptest_util::default_config())]
+
         fn smtp_encryption_unknown_strings_reject(s in "[a-zA-Z0-9_]{0,32}") {
             let known = matches!(
                 s.to_ascii_lowercase().as_str(),
@@ -714,6 +716,8 @@ mod proptest_tests {
     }
 
     proptest! {
+        #![proptest_config(crate::proptest_util::default_config())]
+
         fn token_ttl_positive_validates(ttl in 1u64..10_000) {
             let mut cfg = Config::load_with_environment(
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
@@ -726,6 +730,8 @@ mod proptest_tests {
     }
 
     proptest! {
+        #![proptest_config(crate::proptest_util::default_config())]
+
         fn retention_secs_is_days_times_86400(days in 0u64..=365) {
             let mut cfg = Config::load_with_environment(
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
@@ -738,6 +744,8 @@ mod proptest_tests {
     }
 
     proptest! {
+        #![proptest_config(crate::proptest_util::default_config())]
+
         fn purge_interval_minutes_to_duration(mins in 1u64..=10_000) {
             let mut cfg = Config::load_with_environment(
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),

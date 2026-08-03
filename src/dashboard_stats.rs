@@ -102,7 +102,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(48))]
+        #![proptest_config(crate::proptest_util::cases(48))]
 
         #[test]
         fn prop_open_plus_closed_equals_len(
