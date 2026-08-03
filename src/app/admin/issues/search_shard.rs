@@ -146,17 +146,26 @@ pub async fn admin_issues_search_results(
                         .find(|u| u.id == issue.opened_by_user_id)
                         .map(|u| u.display_name.clone())
                         .unwrap_or_else(|| "Unknown".to_owned());
+                    let org_slug = orgs
+                        .iter()
+                        .find(|o| o.id == issue.organization_id)
+                        .map(|o| o.slug.as_str())
+                        .unwrap_or("");
                     let org_label = orgs
                         .iter()
                         .find(|o| o.id == issue.organization_id)
                         .map(|o| format!("{} ({})", o.name, o.slug))
                         .unwrap_or_else(|| format!("org#{}", issue.organization_id));
+                    let href = super::issue_key::admin_issue_detail_href(
+                        &issue.key,
+                        org_slug,
+                    );
                     let updated = format_relative(issue.updated_at, now, tz);
                     let meta = format!(
                         "{} · {} · opened by {} · updated {}", org_label, issue
                         .component, opener, updated
                     );
-                    <a class="vb-row" href=(format!("/admin/issues/{}", issue.key))>
+                    <a class="vb-row" href=(href)>
                         <div
                             class="vb-mono"
                             style="color: var(--accent); font-size: 12px; font-weight: 700; width: 76px; flex: none;"

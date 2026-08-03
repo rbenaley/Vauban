@@ -53,6 +53,12 @@ grep -nE 'limit\(|offset\(|LIST_PAGE_SIZE' "$SHARD" >/dev/null \
   || fail "$SHARD must use SQL limit/offset or LIST_PAGE_SIZE"
 grep -n 'ilike_with_escape\|ilike_contains' "$SHARD" >/dev/null \
   || fail "$SHARD must use SQL ilike for search"
+# Org-scoped keys collide across tenants — list rows must link with ?org=.
+grep -n 'admin_issue_detail_href' "$SHARD" >/dev/null \
+  || fail "$SHARD must use admin_issue_detail_href (?org=) for row links"
+DETAIL="src/app/admin/issues/issue_key.rs"
+grep -n 'pub(super) fn admin_issue_detail_href' "$DETAIL" >/dev/null \
+  || fail "$DETAIL must expose admin_issue_detail_href"
 # Pure helper kept as unit oracle for id/slug resolution.
 grep -n 'resolve_org_filter' "$HELPERS" >/dev/null || fail "$HELPERS must define resolve_org_filter"
 

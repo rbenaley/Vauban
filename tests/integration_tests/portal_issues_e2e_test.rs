@@ -266,7 +266,17 @@ async fn e2e_admin_issues_aggregate_and_reserved_redirect() {
         "aggregate list should show org or title: {html}"
     );
 
-    let detail = get(&router, &format!("/admin/issues/{key}"), cookie.as_deref()).await;
+    assert!(
+        html.contains(&format!("/admin/issues/{key}?org={client_slug}")),
+        "aggregate list must link with ?org=; {html}"
+    );
+
+    let detail = get(
+        &router,
+        &format!("/admin/issues/{key}?org={client_slug}"),
+        cookie.as_deref(),
+    )
+    .await;
     assert_eq!(status(&detail), StatusCode::OK);
     let html = body_text(detail).await;
     assert!(html.contains("Cross-org queue body"), "detail missing body");

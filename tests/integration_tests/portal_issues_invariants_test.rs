@@ -137,9 +137,19 @@ fn inv_admin_issues_aggregate_surface() {
     assert!(detail.contains("Vauban Support"));
     assert!(detail.contains("ISSUE_ROLE_SUPPORT"));
     assert!(detail.contains("/admin/issues/"));
+    assert!(detail.contains("admin_issue_detail_href"));
+    assert!(detail.contains("?org="));
     assert!(detail.contains("/close"));
     assert!(detail.contains("/reopen"));
     assert!(detail.contains("issue_is_closed"));
+    let shard = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/issues/search_shard.rs"
+    ));
+    assert!(
+        shard.contains("admin_issue_detail_href"),
+        "admin list shard must use org-disambiguated detail hrefs"
+    );
     assert!(
         !detail.contains("<span class=\"vb-btn muted\">\"Close issue\"</span>")
             && !detail.contains("<span class=\"vb-btn outline\">\"Reopen issue\"</span>"),

@@ -34,7 +34,7 @@ async fn issue_detail_page(cx: &Cx) -> Result {
     let org_slug = path_param::<Org>(cx);
     let key = path_param::<IssueKey>(cx);
     if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Err(redirect(&format!("/admin/issues/{key}")).into());
+        return Err(redirect(&format!("/admin/issues/{key}?org={RESERVED_ORG_SLUG}")).into());
     }
     let ctx = require_org(cx, org_slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -263,26 +263,32 @@ struct ReplyForm {
 #[route(GET "/vauban/issues/{issue_key}")]
 async fn redirect_reserved_issue_detail(cx: &Cx) -> Result {
     let key = path_param::<IssueKey>(cx);
-    Err(redirect(&format!("/admin/issues/{key}")).into())
+    Err(redirect(&format!("/admin/issues/{key}?org={RESERVED_ORG_SLUG}")).into())
 }
 
 /// POST alias: keep `see_other` (303) so the follow-up is GET, not a re-POST.
 #[route(POST "/vauban/issues/{issue_key}/reply")]
 async fn redirect_reserved_issue_reply(cx: &Cx) -> Result<SeeOther> {
     let key = path_param::<IssueKey>(cx);
-    Ok(see_other(&format!("/admin/issues/{key}")))
+    Ok(see_other(&format!(
+        "/admin/issues/{key}?org={RESERVED_ORG_SLUG}"
+    )))
 }
 
 #[route(POST "/vauban/issues/{issue_key}/close")]
 async fn redirect_reserved_issue_close(cx: &Cx) -> Result<SeeOther> {
     let key = path_param::<IssueKey>(cx);
-    Ok(see_other(&format!("/admin/issues/{key}")))
+    Ok(see_other(&format!(
+        "/admin/issues/{key}?org={RESERVED_ORG_SLUG}"
+    )))
 }
 
 #[route(POST "/vauban/issues/{issue_key}/reopen")]
 async fn redirect_reserved_issue_reopen(cx: &Cx) -> Result<SeeOther> {
     let key = path_param::<IssueKey>(cx);
-    Ok(see_other(&format!("/admin/issues/{key}")))
+    Ok(see_other(&format!(
+        "/admin/issues/{key}?org={RESERVED_ORG_SLUG}"
+    )))
 }
 
 #[route(POST "/{org}/issues/{issue_key}/reply")]
@@ -290,7 +296,9 @@ async fn reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOther> {
     let org_slug = path_param::<Org>(cx);
     let key = path_param::<IssueKey>(cx);
     if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Ok(see_other(&format!("/admin/issues/{key}")));
+        return Ok(see_other(&format!(
+            "/admin/issues/{key}?org={RESERVED_ORG_SLUG}"
+        )));
     }
     let ctx = require_org(cx, org_slug).await.map_err(|_| not_found())?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -351,7 +359,9 @@ async fn close_issue(cx: &Cx) -> Result<SeeOther> {
     let org_slug = path_param::<Org>(cx);
     let key = path_param::<IssueKey>(cx);
     if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Ok(see_other(&format!("/admin/issues/{key}")));
+        return Ok(see_other(&format!(
+            "/admin/issues/{key}?org={RESERVED_ORG_SLUG}"
+        )));
     }
     let ctx = require_org(cx, org_slug).await.map_err(|_| not_found())?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -384,7 +394,9 @@ async fn reopen_issue(cx: &Cx) -> Result<SeeOther> {
     let org_slug = path_param::<Org>(cx);
     let key = path_param::<IssueKey>(cx);
     if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Ok(see_other(&format!("/admin/issues/{key}")));
+        return Ok(see_other(&format!(
+            "/admin/issues/{key}?org={RESERVED_ORG_SLUG}"
+        )));
     }
     let ctx = require_org(cx, org_slug).await.map_err(|_| not_found())?;
     let perms = perms_for_user(cx, &ctx.user).await;

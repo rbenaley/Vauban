@@ -375,7 +375,9 @@ fn admin_issue_action(key: &str, action: &str, org_slug: &str) -> String {
     }
 }
 
-fn admin_issue_detail_href(key: &str, org_hint: &str) -> String {
+/// Detail URL for an admin issue. Always include `?org=` when known so
+/// org-scoped keys like `VBN-200` cannot open the wrong tenant's ticket.
+pub(super) fn admin_issue_detail_href(key: &str, org_hint: &str) -> String {
     if org_hint.is_empty() {
         format!("/admin/issues/{key}")
     } else {
@@ -414,9 +416,9 @@ async fn resolve_org_hint(db: &mut toasty::Db, org_hint: &str) -> Option<u64> {
 
 /// Load a single admin issue by key, optionally disambiguated by `?org=` hint.
 ///
-/// Without a resolvable hint: SQL `key` filter + `limit(2)`, prefer first.
-/// With a resolvable hint: also filter `organization_id` (missing -> None).
-/// Unresolvable non-empty hint falls through to the no-hint path (legacy).
+/// With a resolvable hint: filter `organization_id` (missing -> None).
+/// Without a resolvable hint: return the issue only when the key is unique
+/// across orgs; multiple matches -> None (fail closed, no arbitrary first).
 async fn load_admin_issue_by_key(db: &mut toasty::Db, key: &str, org_hint: &str) -> Option<Issue> {
     let key_owned = key.to_owned();
     let query = Issue::all().filter(Issue::fields().key().eq(key_owned));
@@ -434,13 +436,12 @@ async fn load_admin_issue_by_key(db: &mut toasty::Db, key: &str, org_hint: &str)
             .next();
     }
 
-    query
-        .limit(2)
-        .exec(db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .next()
+    let rows = query.limit(2).exec(db).await.unwrap_or_default();
+    if rows.len() == 1 {
+        rows.into_iter().next()
+    } else {
+        None
+    }
 }
 
 /// In-memory selection oracle kept for unit tests of key / org-hint policy.
@@ -470,7 +471,11 @@ fn pick_issue_by_key(
             return None;
         }
     }
-    matches.into_iter().next()
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
+    }
 }
 
 struct TimelineRow {
@@ -619,11 +624,30 @@ mod tests {
     }
 
     #[test]
-    fn pick_issue_by_key_prefers_first_without_hint() {
+    fn pick_issue_by_key_ambiguous_without_hint_is_none() {
         let orgs = [sample_org(1, "acme"), sample_org(2, "beta")];
         let issues = [sample_issue(10, "ISS-1", 1), sample_issue(11, "ISS-1", 2)];
+        assert!(pick_issue_by_key(&issues, &orgs, "ISS-1", "").is_none());
+    }
+
+    #[test]
+    fn pick_issue_by_key_unique_without_hint_ok() {
+        let orgs = [sample_org(1, "acme")];
+        let issues = [sample_issue(10, "ISS-1", 1)];
         let picked = pick_issue_by_key(&issues, &orgs, "ISS-1", "").unwrap();
         assert_eq!(picked.id, 10);
+    }
+
+    #[test]
+    fn admin_issue_detail_href_includes_org_query() {
+        assert_eq!(
+            admin_issue_detail_href("VBN-200", "acme-infrastructure"),
+            "/admin/issues/VBN-200?org=acme-infrastructure"
+        );
+        assert_eq!(
+            admin_issue_detail_href("VBN-200", ""),
+            "/admin/issues/VBN-200"
+        );
     }
 
     #[test]
