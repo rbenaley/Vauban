@@ -159,7 +159,10 @@ org issue volume makes full key-list allocation hot (not required now).
 
 Not tracked as ORM debt here; product / ops follow-ups only:
 
-- In-process login rate limiter (multi-instance)
+- ~~In-process login rate limiter (multi-instance)~~ — **Decided** in
+  [`docs/adr/001-login-rate-limit-multi-instance.md`](../../docs/adr/001-login-rate-limit-multi-instance.md)
+  (single-process Accepted; Postgres shared store when active-active;
+  implementation deferred)
 - ~~Real mail + magic links (onboarding)~~ — **Done** (passwordless SMTP magic links, soft-delete accounts, invite/revoke mails)
 - `unwrap()` triage outside tests
 - Young 0.x Topcoat / Toasty churn risk (API capability confirmed below)
@@ -211,5 +214,6 @@ lookups, request memoization, and structural lint / runbook locks.
 
 Cross-tenant release risk (§3.1) is closed; the semver list exception (§3.4)
 and issue-key races (§3.10) are closed. Shard search debounce (#6) remains
-open without first-party JS. Product/ops items (shared login store, magic
-links, unwrap triage) stay out of Toasty scope.
+open without first-party JS. Product/ops: shared login rate-limit store is
+decided in ADR 001 (Postgres when active-active; deferred); magic links
+done; unwrap triage stays out of Toasty scope.
