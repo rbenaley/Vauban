@@ -240,6 +240,7 @@ async fn admin_releases_update(cx: &Cx, Form(form): Form<UpdateReleaseForm>) -> 
         }
     };
 
+    let sort = crate::release_pkg::version_sort_fields(&version);
     let mut database = db(cx);
     let _ = rel
         .update()
@@ -248,6 +249,11 @@ async fn admin_releases_update(cx: &Cx, Form(form): Form<UpdateReleaseForm>) -> 
         .released_on(released_on)
         .notes(notes)
         .organization_id(organization_id)
+        .v_major(sort.v_major)
+        .v_minor(sort.v_minor)
+        .v_patch(sort.v_patch)
+        .has_client_suffix(sort.has_client_suffix)
+        .client_suffix(sort.client_suffix)
         .exec(&mut database)
         .await;
 

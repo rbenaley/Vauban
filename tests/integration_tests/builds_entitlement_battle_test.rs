@@ -34,6 +34,11 @@ async fn battle_parallel_download_posts() {
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -94,6 +99,11 @@ async fn battle_parallel_ephemeral_generate() {
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -152,6 +162,11 @@ async fn battle_parallel_builds_page_keeps_verify_hooks() {
             status: "PUBLISHED".to_owned(),
             notes: "FIX: verify battle".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -222,6 +237,12 @@ async fn battle_parallel_builds_page_pagination() {
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: page battle".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
+                v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
+                    .has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
             })
             .exec(&mut conn)
             .await

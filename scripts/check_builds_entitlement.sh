@@ -105,18 +105,31 @@ grep -n 'version_for_package\|strip_prefix' src/release_pkg.rs >/dev/null \
   || fail "release_pkg must strip leading v for package names"
 grep -n 'cmp_version_desc' src/release_pkg.rs >/dev/null \
   || fail "release_pkg must define cmp_version_desc"
-grep -n 'cmp_version_desc' "$BUILDS" >/dev/null \
-  || fail "$BUILDS must sort releases with cmp_version_desc"
-if awk '/fn sort_releases/,/^}/' "$BUILDS" | grep -q 'released_on'; then
-  fail "$BUILDS sort_releases must not use released_on"
+grep -n 'fn version_sort_fields' src/release_pkg.rs >/dev/null \
+  || fail "release_pkg must define version_sort_fields for SQL columns"
+grep -n 'v_major().desc()' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must ORDER BY v_major.desc (SQL semver)"
+grep -n 'load_releases_page_for_org' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must page via load_releases_page_for_org"
+grep -n 'page_offset' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must use page_offset for SQL limit/offset"
+if grep -nE 'fn sort_releases|cmp_version_desc\(' "$BUILDS" >/dev/null; then
+  fail "$BUILDS must not Rust-sort releases on the hot path (SQL ORDER BY)"
 fi
-# Dashboard uses the shared loader (SQL entitlement + sort_releases inside).
+if grep -n 'page_slice(' "$BUILDS" >/dev/null; then
+  fail "$BUILDS list must not page_slice (use SQL limit/offset)"
+fi
+# Dashboard uses the shared ordered loader.
 grep -n 'load_releases_for_org' src/app/org.rs >/dev/null \
-  || fail "org dashboard must load releases via load_releases_for_org (version-sorted)"
+  || fail "org dashboard must load releases via load_releases_for_org (SQL-ordered)"
 grep -n 'RESERVED_ORG_SLUG' "$BUILDS" >/dev/null \
   || fail "$BUILDS release visibility must special-case RESERVED_ORG_SLUG"
 grep -n 'has_client_suffix' src/release_pkg.rs >/dev/null \
   || fail "release_pkg must prefer X.Y.Z-client above plain X.Y.Z"
+grep -n '0008_release_version_sort.sql' toasty/history.toml >/dev/null \
+  || fail "history.toml must list 0008_release_version_sort.sql"
+grep -n 'resync_release_sort_keys' src/db.rs >/dev/null \
+  || fail "db::connect must resync_release_sort_keys after migrations"
 if grep -n 'Collapse' "$BUILDS" >/dev/null; then
   fail "$BUILDS must not include Collapse (extra vs Concept)"
 fi

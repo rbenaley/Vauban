@@ -99,6 +99,11 @@ async fn battle_parallel_channel_release_filters() {
                 status: "PUBLISHED".to_owned(),
                 notes: "n".to_owned(),
                 organization_id: 0,
+                v_major: vcp::release_pkg::version_sort_fields(ver).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(ver).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(ver).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(ver).has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(ver).client_suffix,
             })
             .exec(&mut conn)
             .await

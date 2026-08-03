@@ -184,6 +184,11 @@ async fn e2e_builds_ephemeral_exposes_countdown_class() {
             status: "PUBLISHED".to_owned(),
             notes: "FIX: polish".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
         })
         .exec(&mut conn)
         .await

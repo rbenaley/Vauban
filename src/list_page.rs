@@ -41,8 +41,7 @@ pub fn page_offset(page: usize, page_size: usize) -> usize {
 /// Slice of `items` for a 1-based `page` (clamped).
 ///
 /// Prefer SQL `.limit` / `.offset` for Postgres-backed lists; use this for
-/// already-bounded in-memory vecs (e.g. semver-sorted releases after SQL
-/// entitlement filter).
+/// already-bounded in-memory vecs (tests, tiny fixed slices).
 pub fn page_slice<T>(items: &[T], page: usize, page_size: usize) -> &[T] {
     if items.is_empty() || page_size == 0 {
         return items;

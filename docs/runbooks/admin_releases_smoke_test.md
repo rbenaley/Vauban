@@ -44,6 +44,8 @@ rtk cargo test --test integration_tests -- builds_entitlement_ -- --test-threads
 5. Click **Unpublish** — STATUS becomes amber **HIDDEN**. Confirm the version is
    absent under `/{org}/builds`, `/vauban/builds`, and the dashboard latest-build
    card on `/vauban` (and `/{org}`). Manage HIDDEN rows only on `/admin/releases`.
+   List order is SQL semver (`ORDER BY` sort columns) — publish toggle must not
+   reshuffle relative version order among remaining rows.
 6. Click **Publish** — builds + dashboard show the version again.
 7. Open **Edit** (`/admin/releases/{id}`), change notes/channel, Save — list
    reflects the update.

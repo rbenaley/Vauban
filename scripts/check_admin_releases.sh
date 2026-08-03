@@ -60,14 +60,17 @@ if [[ -f "$LIST" ]]; then
     || fail "$LIST must use list_toolbar for pager"
   grep -n 'page: Option<u32>' "$LIST" >/dev/null \
     || fail "$LIST AdminReleasesQuery must include page: Option<u32>"
-  grep -n 'page_slice' "$LIST" >/dev/null \
-    || fail "$LIST must slice rows with page_slice"
+  grep -n 'page_offset' "$LIST" >/dev/null \
+    || fail "$LIST must use page_offset for SQL limit/offset"
+  grep -n 'v_major().desc()' "$LIST" >/dev/null \
+    || fail "$LIST must ORDER BY v_major.desc (SQL semver; status toggles must not reshuffle)"
+  if grep -nE 'page_slice|cmp_version_desc' "$LIST" >/dev/null; then
+    fail "$LIST must not page_slice or cmp_version_desc (SQL ORDER BY + limit/offset)"
+  fi
   grep -n 'channel_badge_class' "$LIST" >/dev/null \
     || fail "$LIST must color channel badges via channel_badge_class"
   grep -n 'release_status_badge_class' "$LIST" >/dev/null \
     || fail "$LIST must color STATUS via release_status_badge_class"
-  grep -n 'cmp_version_desc' "$LIST" >/dev/null \
-    || fail "$LIST must sort with cmp_version_desc (status toggles must not reshuffle)"
   grep -n 'vb-row-actions' "$LIST" >/dev/null \
     || fail "$LIST must use vb-row-actions"
   grep -n 'vb-col-actions' "$LIST" >/dev/null \

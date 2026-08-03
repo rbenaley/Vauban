@@ -169,6 +169,7 @@ async fn admin_releases_create(cx: &Cx, Form(form): Form<CreateReleaseForm>) -> 
         }
     };
 
+    let sort = crate::release_pkg::version_sort_fields(&version);
     let mut database = db(cx);
     let _ = toasty::create!(Release {
         version,
@@ -179,6 +180,11 @@ async fn admin_releases_create(cx: &Cx, Form(form): Form<CreateReleaseForm>) -> 
         status: RELEASE_STATUS_PUBLISHED.to_owned(),
         notes,
         organization_id,
+        v_major: sort.v_major,
+        v_minor: sort.v_minor,
+        v_patch: sort.v_patch,
+        has_client_suffix: sort.has_client_suffix,
+        client_suffix: sort.client_suffix,
     })
     .exec(&mut database)
     .await;

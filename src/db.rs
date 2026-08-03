@@ -21,7 +21,7 @@ use crate::models::{
     ISSUE_ROLE_SYSTEM, Issue, IssueComment, MEMBERSHIP_ROLE_ORG, Membership, Organization,
     PORTAL_ROLE_ADMIN, PORTAL_ROLE_ORG, RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release, User,
 };
-use crate::release_pkg::size_mb_from_bytes;
+use crate::release_pkg::{size_mb_from_bytes, version_sort_fields};
 
 /// GA release catalog: (version, channel, released_on, bytes, sha256, notes).
 fn ga_release_catalog() -> Vec<(
@@ -238,6 +238,7 @@ async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
 
     for (version, channel, date, bytes, sha, notes) in ga_release_catalog() {
         let size = size_mb_from_bytes(bytes);
+        let sort = version_sort_fields(version);
         if let Some(mut rel) = by_ver.remove(version) {
             rel.update()
                 .channel(channel.to_owned())
@@ -246,6 +247,11 @@ async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
                 .sha256(sha.to_owned())
                 .status("PUBLISHED".to_owned())
                 .notes(notes.to_owned())
+                .v_major(sort.v_major)
+                .v_minor(sort.v_minor)
+                .v_patch(sort.v_patch)
+                .has_client_suffix(sort.has_client_suffix)
+                .client_suffix(sort.client_suffix.clone())
                 .exec(db)
                 .await?;
         } else {
@@ -258,6 +264,11 @@ async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
                 status: "PUBLISHED".to_owned(),
                 notes: notes.to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
+                v_major: sort.v_major,
+                v_minor: sort.v_minor,
+                v_patch: sort.v_patch,
+                has_client_suffix: sort.has_client_suffix,
+                client_suffix: sort.client_suffix,
             })
             .exec(db)
             .await?;
@@ -278,6 +289,7 @@ async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
     };
 
     let existing = Release::all().exec(db).await?;
+    let sort = version_sort_fields(ACME_PRIVATE_VERSION);
     if let Some(mut rel) = existing
         .into_iter()
         .find(|r| r.version == ACME_PRIVATE_VERSION)
@@ -290,6 +302,11 @@ async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
             .status("PUBLISHED".to_owned())
             .notes("HOTFIX: Acme-only proxy backpressure patch".to_owned())
             .organization_id(org.id)
+            .v_major(sort.v_major)
+            .v_minor(sort.v_minor)
+            .v_patch(sort.v_patch)
+            .has_client_suffix(sort.has_client_suffix)
+            .client_suffix(sort.client_suffix.clone())
             .exec(db)
             .await?;
     } else {
@@ -302,9 +319,40 @@ async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
             status: "PUBLISHED".to_owned(),
             notes: "HOTFIX: Acme-only proxy backpressure patch".to_owned(),
             organization_id: org.id,
+            v_major: sort.v_major,
+            v_minor: sort.v_minor,
+            v_patch: sort.v_patch,
+            has_client_suffix: sort.has_client_suffix,
+            client_suffix: sort.client_suffix,
         })
         .exec(db)
         .await?;
+    }
+    Ok(())
+}
+
+/// Recompute `v_*` / `client_suffix` from `version` for every release row.
+pub async fn resync_release_sort_keys(db: &Db) -> anyhow::Result<()> {
+    let mut conn = db.clone();
+    let releases = Release::all().exec(&mut conn).await?;
+    for mut rel in releases {
+        let sort = version_sort_fields(&rel.version);
+        if rel.v_major == sort.v_major
+            && rel.v_minor == sort.v_minor
+            && rel.v_patch == sort.v_patch
+            && rel.has_client_suffix == sort.has_client_suffix
+            && rel.client_suffix == sort.client_suffix
+        {
+            continue;
+        }
+        rel.update()
+            .v_major(sort.v_major)
+            .v_minor(sort.v_minor)
+            .v_patch(sort.v_patch)
+            .has_client_suffix(sort.has_client_suffix)
+            .client_suffix(sort.client_suffix)
+            .exec(&mut conn)
+            .await?;
     }
     Ok(())
 }
@@ -331,6 +379,7 @@ pub async fn open(database_url: &str) -> anyhow::Result<Db> {
 pub async fn connect(database_url: &str) -> anyhow::Result<Db> {
     let db = open(database_url).await?;
     apply_pending_migrations(&db).await?;
+    resync_release_sort_keys(&db).await?;
     Ok(db)
 }
 

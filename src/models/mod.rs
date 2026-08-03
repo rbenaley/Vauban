@@ -187,6 +187,14 @@ pub struct Release {
 
     /// [`RELEASE_GA_ORG_ID`] for GA; otherwise the target organization id.
     pub organization_id: u64,
+
+    /// Semver sort components (see `release_pkg::version_sort_fields`).
+    pub v_major: u64,
+    pub v_minor: u64,
+    pub v_patch: u64,
+    /// `1` when `version` has a `-client` suffix; else `0`.
+    pub has_client_suffix: u64,
+    pub client_suffix: String,
 }
 
 pub const ISSUE_COMMENT_KIND_COMMENT: &str = "comment";

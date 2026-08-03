@@ -46,6 +46,33 @@ filter in Rust have **no DB-side tenant net**. Prefer
 slices (tests, tiny fixed vecs). It is **not** a substitute for SQL
 pagination on Postgres-backed listings.
 
+### Release semver order (SQL)
+
+`Release` stores materialized sort columns written from
+`release_pkg::version_sort_fields(version)` on every create/update
+(and `db::resync_release_sort_keys` after migrations):
+
+`v_major`, `v_minor`, `v_patch`, `has_client_suffix` (`0`/`1`),
+`client_suffix`.
+
+Org Builds and `/admin/releases` MUST order with a Toasty tuple and page
+in SQL:
+
+```rust
+.order_by((
+    Release::fields().v_major().desc(),
+    Release::fields().v_minor().desc(),
+    Release::fields().v_patch().desc(),
+    Release::fields().has_client_suffix().desc(),
+    Release::fields().client_suffix().asc(),
+))
+.limit(PAGE)
+.offset(page_offset(page, PAGE))
+```
+
+Do **not** `cmp_version_desc` / `page_slice` on those list hot paths.
+`cmp_version_desc` remains the pure-order contract for unit/proptest.
+
 ## Query shape (typed)
 
 `Query<T>`’s type parameter is the **returning** shape:

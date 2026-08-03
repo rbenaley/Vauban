@@ -28,6 +28,10 @@ fn inv_history_lists_initial_migration() {
         history.contains("0007_portal_role_org_check.sql"),
         "history.toml must record 0007_portal_role_org_check.sql"
     );
+    assert!(
+        history.contains("0008_release_version_sort.sql"),
+        "history.toml must record 0008_release_version_sort.sql"
+    );
 }
 
 #[test]

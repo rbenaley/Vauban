@@ -50,6 +50,7 @@ is planned._
 | P0-P3 Topcoat campaign | [`p0-p3_topcoat_campaign_d0d5c3c6.plan.md`](p0-p3_topcoat_campaign_d0d5c3c6.plan.md) | Done |
 | Pyramid compliance backfill | [`pyramid_compliance_backfill_c0557c49.plan.md`](pyramid_compliance_backfill_c0557c49.plan.md) | Done |
 | Request SQL dedup | [`request_sql_dedup_46a6151e.plan.md`](request_sql_dedup_46a6151e.plan.md) | Done |
+| Release semver SQL sort | [`release_semver_sql_sort_29d7d2b8.plan.md`](release_semver_sql_sort_29d7d2b8.plan.md) | Done |
 | Toasty query debt fix | [`toasty_query_debt_fix_d9c552ec.plan.md`](toasty_query_debt_fix_d9c552ec.plan.md) | Done |
 | Topcoat 0.5 migration | [`topcoat_0.5_migration_60d77b42.plan.md`](topcoat_0.5_migration_60d77b42.plan.md) | Done |
 | Topcoat idiomatic adoption | [`topcoat_idiomatic_adoption_820f64e6.plan.md`](topcoat_idiomatic_adoption_820f64e6.plan.md) | Done |

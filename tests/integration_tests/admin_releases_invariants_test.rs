@@ -52,7 +52,8 @@ fn inv_admin_releases_list_actions_and_badges() {
         "/src/app/admin/releases.rs"
     ));
     assert!(src.contains("release_status_badge_class"));
-    assert!(src.contains("cmp_version_desc"));
+    assert!(src.contains("v_major().desc()"));
+    assert!(!src.contains("cmp_version_desc"));
     assert!(src.contains("vb-row-actions"));
     assert!(src.contains("vb-col-actions"));
     assert!(src.contains("delete="));
@@ -99,8 +100,12 @@ fn inv_admin_releases_list_paginates() {
         "AdminReleasesQuery must include page"
     );
     assert!(
-        src.contains("page_slice"),
-        "admin releases must page_slice rows"
+        src.contains("page_offset"),
+        "admin releases must use SQL page_offset"
+    );
+    assert!(
+        !src.contains("page_slice"),
+        "admin releases must not page_slice"
     );
 }
 

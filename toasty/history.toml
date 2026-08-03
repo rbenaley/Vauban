@@ -39,3 +39,9 @@ snapshot_name = "0006_snapshot.toml"
 id = 1130756734522445485
 name = "0007_portal_role_org_check.sql"
 snapshot_name = "0007_snapshot.toml"
+
+[[migrations]]
+id = 1657256991217527841
+name = "0008_release_version_sort.sql"
+snapshot_name = "0008_snapshot.toml"
+

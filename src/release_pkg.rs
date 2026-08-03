@@ -13,11 +13,23 @@ pub fn version_for_package(version: &str) -> &str {
 /// Parsed release version for ordering (numeric core + optional client suffix).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionSortKey {
-    nums: Vec<u64>,
+    /// Exactly three components (pad / truncate) — matches SQL columns.
+    nums: [u64; 3],
     /// `true` when version is `X.Y.Z-client_name` (org-private hotfix).
     has_client_suffix: bool,
     /// Client suffix (`acme1`, …); empty for plain GA versions.
     suffix: String,
+}
+
+/// DB columns for SQL `ORDER BY` matching [`cmp_version_desc`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionSortFields {
+    pub v_major: u64,
+    pub v_minor: u64,
+    pub v_patch: u64,
+    /// `1` when a client suffix is present; else `0`.
+    pub has_client_suffix: u64,
+    pub client_suffix: String,
 }
 
 /// Parse a DB version (`v1.0.2`, `v0.8.6-acme1`) into a comparable key.
@@ -27,16 +39,18 @@ pub fn version_sort_key(version: &str) -> VersionSortKey {
         Some((c, s)) => (c, s.to_owned()),
         None => (ver, String::new()),
     };
-    let mut nums: Vec<u64> = core
+    let mut parts: Vec<u64> = core
         .split('.')
         .map(|part| {
             let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
             digits.parse().unwrap_or(0)
         })
         .collect();
-    while nums.len() < 3 {
-        nums.push(0);
+    while parts.len() < 3 {
+        parts.push(0);
     }
+    parts.truncate(3);
+    let nums = [parts[0], parts[1], parts[2]];
     let has_client_suffix = !suffix.is_empty();
     VersionSortKey {
         nums,
@@ -45,16 +59,36 @@ pub fn version_sort_key(version: &str) -> VersionSortKey {
     }
 }
 
+/// Materialize sort columns from a version string (write path + resync).
+pub fn version_sort_fields(version: &str) -> VersionSortFields {
+    let key = version_sort_key(version);
+    VersionSortFields {
+        v_major: key.nums[0],
+        v_minor: key.nums[1],
+        v_patch: key.nums[2],
+        has_client_suffix: u64::from(key.has_client_suffix),
+        client_suffix: key.suffix,
+    }
+}
+
 /// List order: higher numeric version first; for the same `X.Y.Z`,
 /// `X.Y.Z-client` rows sit above plain `X.Y.Z`, sorted A→Z by client name.
-/// Ignores release dates.
+/// Ignores release dates. Must match SQL
+/// `ORDER BY v_major DESC, v_minor DESC, v_patch DESC, has_client_suffix DESC, client_suffix ASC`.
 pub fn cmp_version_desc(a: &str, b: &str) -> Ordering {
-    let ka = version_sort_key(a);
-    let kb = version_sort_key(b);
-    kb.nums
-        .cmp(&ka.nums)
-        .then_with(|| kb.has_client_suffix.cmp(&ka.has_client_suffix))
-        .then_with(|| ka.suffix.cmp(&kb.suffix))
+    let fa = version_sort_fields(a);
+    let fb = version_sort_fields(b);
+    cmp_sort_fields_desc(&fa, &fb)
+}
+
+/// Compare materialized sort fields (same order as SQL / [`cmp_version_desc`]).
+pub fn cmp_sort_fields_desc(a: &VersionSortFields, b: &VersionSortFields) -> Ordering {
+    b.v_major
+        .cmp(&a.v_major)
+        .then_with(|| b.v_minor.cmp(&a.v_minor))
+        .then_with(|| b.v_patch.cmp(&a.v_patch))
+        .then_with(|| b.has_client_suffix.cmp(&a.has_client_suffix))
+        .then_with(|| a.client_suffix.cmp(&b.client_suffix))
 }
 
 /// Artifact basename: LTS → `vauban-{ver}+LTS.pkg`, else `vauban-{ver}.pkg`.
@@ -138,5 +172,26 @@ mod tests {
             version_sort_key("v1.0.0").nums
         );
         assert!(version_sort_key("v1.0.1").nums > version_sort_key("v1.0").nums);
+    }
+
+    #[test]
+    fn version_sort_fields_match_cmp_and_truncate_extra_components() {
+        let f = version_sort_fields("v1.2.3.9-acme");
+        assert_eq!(f.v_major, 1);
+        assert_eq!(f.v_minor, 2);
+        assert_eq!(f.v_patch, 3);
+        assert_eq!(f.has_client_suffix, 1);
+        assert_eq!(f.client_suffix, "acme");
+        assert_eq!(
+            cmp_version_desc("v1.2.3.9-acme", "v1.2.3-acme"),
+            Ordering::Equal
+        );
+        assert_eq!(
+            cmp_sort_fields_desc(
+                &version_sort_fields("v0.8.6-acme1"),
+                &version_sort_fields("v0.8.6")
+            ),
+            Ordering::Less
+        );
     }
 }

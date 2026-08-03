@@ -129,7 +129,7 @@ async fn e2e_admin_releases_list_pagination() {
         for i in 0..11u32 {
             let version = format!("v99.page.{i}");
             let _ = toasty::create!(Release {
-                version,
+                version: version.clone(),
                 channel: "LTS".to_owned(),
                 released_on: "2026-07-01".to_owned(),
                 size_mb: "1.0".to_owned(),
@@ -138,6 +138,12 @@ async fn e2e_admin_releases_list_pagination() {
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: admin pagination".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
+                v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
+                    .has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
             })
             .exec(&mut conn)
             .await
@@ -201,6 +207,11 @@ async fn e2e_admin_releases_list_shows_status_badges_and_actions() {
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: ui".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields("v95.ui.1").v_major,
+            v_minor: vcp::release_pkg::version_sort_fields("v95.ui.1").v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields("v95.ui.1").v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields("v95.ui.1").has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields("v95.ui.1").client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -258,6 +269,11 @@ async fn e2e_admin_releases_order_stable_across_unpublish() {
                 status: RELEASE_STATUS_PUBLISHED.to_owned(),
                 notes: "FIX: order".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
+                v_major: vcp::release_pkg::version_sort_fields(ver).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(ver).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(ver).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(ver).has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(ver).client_suffix,
             })
             .exec(&mut conn)
             .await
@@ -342,6 +358,11 @@ async fn e2e_unpublish_hides_from_client_builds_publish_restores() {
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: visibility toggle".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -464,6 +485,11 @@ async fn e2e_admin_releases_delete_with_confirm() {
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: delete me".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -562,6 +588,11 @@ async fn e2e_member_denied_admin_releases_mutations() {
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: member denied".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields("v95.mem.0").v_major,
+            v_minor: vcp::release_pkg::version_sort_fields("v95.mem.0").v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields("v95.mem.0").v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields("v95.mem.0").has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields("v95.mem.0").client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -615,6 +646,12 @@ async fn e2e_admin_releases_edit_updates_row() {
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: before".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields("v95.edit.0").v_major,
+            v_minor: vcp::release_pkg::version_sort_fields("v95.edit.0").v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields("v95.edit.0").v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields("v95.edit.0")
+                .has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields("v95.edit.0").client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -656,7 +693,60 @@ async fn e2e_admin_releases_edit_updates_row() {
         assert_eq!(rows[0].version, "v95.edit.1");
         assert_eq!(rows[0].channel, "Stable");
         assert_eq!(rows[0].notes, "FEAT: after");
+        assert_eq!(rows[0].v_major, 95);
+        assert_eq!(rows[0].v_minor, 0);
+        assert_eq!(rows[0].v_patch, 1);
     }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_admin_releases_sql_semver_order_and_sort_columns() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("adm-semver");
+    let slug = unique_slug("adm-semver");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let versions = ["v0.9.0", "v0.10.0", "v0.9.0-acme"];
+    {
+        let mut conn = db.clone();
+        for version in versions {
+            let _ = toasty::create!(Release {
+                version: version.to_owned(),
+                channel: "Stable".to_owned(),
+                released_on: "2026-07-01".to_owned(),
+                size_mb: "1.0".to_owned(),
+                sha256: "pending".to_owned(),
+                status: "PUBLISHED".to_owned(),
+                notes: "FIX: admin order".to_owned(),
+                organization_id: RELEASE_GA_ORG_ID,
+                v_major: vcp::release_pkg::version_sort_fields(version).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(version).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(version).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(version).has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(version).client_suffix,
+            })
+            .exec(&mut conn)
+            .await
+            .expect("release");
+        }
+    }
+
+    let list = get(&router, "/admin/releases", cookie.as_deref()).await;
+    assert_eq!(status(&list), StatusCode::OK);
+    let html = body_text(list).await;
+    let i10 = html.find("v0.10.0").expect("v0.10.0");
+    let i_acme = html.find("v0.9.0-acme").expect("acme");
+    let i_plain = html
+        .find(">v0.9.0<")
+        .expect("plain v0.9.0 cell (not substring of -acme)");
+    assert!(i10 < i_acme && i_acme < i_plain, "SQL semver order: {html}");
 
     cleanup(&db).await;
 }

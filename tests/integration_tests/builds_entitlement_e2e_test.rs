@@ -51,6 +51,11 @@ async fn e2e_authorized_download_returns_501() {
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -95,6 +100,11 @@ async fn e2e_download_wrong_org_is_404() {
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -133,6 +143,11 @@ async fn e2e_download_anonymous_denied() {
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -191,6 +206,12 @@ async fn e2e_org_private_release_hidden_from_other_org() {
             status: "PUBLISHED".to_owned(),
             notes: "HOTFIX: private".to_owned(),
             organization_id: org_a.id,
+            v_major: vcp::release_pkg::version_sort_fields(&private_ver).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&private_ver).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&private_ver).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&private_ver)
+                .has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&private_ver).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -204,6 +225,11 @@ async fn e2e_org_private_release_hidden_from_other_org() {
             status: "PUBLISHED".to_owned(),
             notes: "GA".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&ga_ver).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&ga_ver).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&ga_ver).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&ga_ver).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&ga_ver).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -294,6 +320,11 @@ async fn e2e_reserved_vauban_org_sees_all_client_private_releases() {
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: visibility".to_owned(),
                 organization_id: org_id,
+                v_major: vcp::release_pkg::version_sort_fields(ver).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(ver).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(ver).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(ver).has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(ver).client_suffix,
             })
             .exec(&mut conn)
             .await
@@ -347,6 +378,11 @@ async fn e2e_hidden_ga_release_absent_from_client_builds() {
             status: RELEASE_STATUS_HIDDEN.to_owned(),
             notes: "FIX: hidden".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&hidden_ver).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&hidden_ver).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&hidden_ver).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&hidden_ver).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&hidden_ver).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -360,6 +396,12 @@ async fn e2e_hidden_ga_release_absent_from_client_builds() {
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: published".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&published_ver).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&published_ver).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&published_ver).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&published_ver)
+                .has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&published_ver).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -417,6 +459,11 @@ async fn e2e_builds_list_opens_latest_with_concept_actions() {
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: concept".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
+                v_major: vcp::release_pkg::version_sort_fields(ver).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(ver).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(ver).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(ver).has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(ver).client_suffix,
             })
             .exec(&mut conn)
             .await
@@ -638,6 +685,11 @@ async fn e2e_ephemeral_expired_offers_generate_new_link() {
             status: "PUBLISHED".to_owned(),
             notes: "FIX: expired".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -691,7 +743,7 @@ async fn e2e_builds_list_pagination() {
         for i in 0..11u32 {
             let version = format!("v99.0.{i}");
             let _ = toasty::create!(Release {
-                version,
+                version: version.clone(),
                 channel: "LTS".to_owned(),
                 released_on: "2026-07-01".to_owned(),
                 size_mb: "1.0".to_owned(),
@@ -700,6 +752,12 @@ async fn e2e_builds_list_pagination() {
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: pagination".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
+                v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
+                    .has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
             })
             .exec(&mut conn)
             .await
@@ -800,6 +858,65 @@ async fn e2e_builds_list_pagination() {
         !deep_body.contains(">v99.0.10<"),
         "open build must stay on its page slice: {deep_body}"
     );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_builds_sql_semver_order_matches_product_rules() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("semver-ord");
+    let slug = unique_slug("semver-ord");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let versions = ["v0.9.0", "v0.10.0", "v0.9.0-zenith", "v0.9.0-acme"];
+    {
+        let mut conn = db.clone();
+        for version in versions {
+            let _ = toasty::create!(Release {
+                version: version.to_owned(),
+                channel: "LTS".to_owned(),
+                released_on: "2026-07-01".to_owned(),
+                size_mb: "1.0".to_owned(),
+                sha256: "abc".to_owned(),
+                status: "PUBLISHED".to_owned(),
+                notes: "FIX: semver order".to_owned(),
+                organization_id: RELEASE_GA_ORG_ID,
+                v_major: vcp::release_pkg::version_sort_fields(version).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(version).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(version).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(version).has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(version).client_suffix,
+            })
+            .exec(&mut conn)
+            .await
+            .expect("release");
+        }
+    }
+
+    let cookie = login(&router, &email).await;
+    let page = get(
+        &router,
+        &format!("/{slug}/builds?channel=LTS"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert!(status(&page).is_success());
+    let html = body_text(page).await;
+    let i10 = html.find("v0.10.0").expect("v0.10.0 in html");
+    let i_acme = html.find("v0.9.0-acme").expect("acme in html");
+    let i_zen = html.find("v0.9.0-zenith").expect("zenith in html");
+    let i_plain = html
+        .rfind(">v0.9.0<")
+        .or_else(|| html.find("v0.9.0"))
+        .expect("plain");
+    assert!(i10 < i_acme, "0.10 before acme: {html}");
+    assert!(i_acme < i_zen, "acme before zenith: {html}");
+    assert!(i_zen < i_plain, "zenith before plain: {html}");
 
     cleanup(&db).await;
 }

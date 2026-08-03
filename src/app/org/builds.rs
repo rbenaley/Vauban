@@ -19,17 +19,19 @@ use crate::{
     app::org::Org,
     auth::{capability_denied, config, require_org},
     db::now_unix,
-    list_page::{PagerLinks, href_with_query, with_page_param},
+    list_page::{PagerLinks, href_with_query, page_offset, with_page_param},
     models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, RESERVED_ORG_SLUG, Release},
     perms::perms_for_user,
-    release_pkg::{cmp_version_desc, package_file_name, sha256_cmd},
+    release_pkg::{package_file_name, sha256_cmd},
     ui::channel_badge_class,
 };
 
 use self::ephemeral::{EphPanel, load_eph_for, panel_from_row};
 
+#[allow(unused_imports)] // retained for test / API stability pins
+pub use crate::list_page::page_slice;
 /// Re-export shared pagination helpers for `builds_entitlement` / `vcp::app`.
-pub use crate::list_page::{BUILDS_PAGE_SIZE, clamp_page, page_count, page_slice, parse_page};
+pub use crate::list_page::{BUILDS_PAGE_SIZE, clamp_page, page_count, parse_page};
 
 const CHANNELS: &[&str] = &["LTS", "Stable", "EOL"];
 
@@ -75,12 +77,10 @@ async fn builds_page(cx: &Cx) -> Result {
         .and_then(|q| q.open.as_deref())
         .is_some_and(|v| v.eq_ignore_ascii_case("none"));
     let mut page = parse_page(q.as_ref().and_then(|q| q.page));
-
-    let mut releases = load_releases_for_org(cx, ctx.org.id, slug, channel).await;
-    sort_releases(&mut releases);
-    let pages = page_count(releases.len(), BUILDS_PAGE_SIZE);
+    let total = count_releases_for_org(cx, ctx.org.id, slug, channel).await;
+    let pages = page_count(total, BUILDS_PAGE_SIZE);
     page = clamp_page(page, pages);
-    let page_releases = page_slice(&releases, page, BUILDS_PAGE_SIZE);
+    let page_releases = load_releases_page_for_org(cx, ctx.org.id, slug, channel, page).await;
     let open_version = if collapse || page != 1 {
         None
     } else {
@@ -91,7 +91,7 @@ async fn builds_page(cx: &Cx) -> Result {
         cx,
         slug,
         channel,
-        page_releases,
+        &page_releases,
         open_version,
         perms.builds_download,
         ctx.user.id,
@@ -648,13 +648,72 @@ pub(super) fn release_visible_to_org(release: &Release, org_id: u64, org_slug: &
     release_matches_sql_visibility(&release.status, release.organization_id, org_id, org_slug)
 }
 
-pub(super) fn sort_releases(releases: &mut [Release]) {
-    releases.sort_by(|a, b| cmp_version_desc(&a.version, &b.version));
+/// Apply published + tenant (+ optional channel) filters for org Builds queries.
+macro_rules! builds_releases_filtered {
+    ($org_id:expr, $org_slug:expr, $channel:expr) => {{
+        let mut q = Release::all().filter(Release::fields().status().eq(RELEASE_STATUS_PUBLISHED));
+        if !$org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+            q = q.filter(
+                Release::fields()
+                    .organization_id()
+                    .in_list([RELEASE_GA_ORG_ID, $org_id]),
+            );
+        }
+        if !$channel.is_empty() {
+            let channel_owned = ($channel).to_owned();
+            q = q.filter(Release::fields().channel().eq(channel_owned));
+        }
+        q
+    }};
 }
 
-/// Load published releases visible to `org_id` / `org_slug` (SQL tenant net).
-///
-/// Semver ordering stays in Rust ([`sort_releases`]) after the SQL-bounded set.
+/// SQL order matching `release_pkg::cmp_version_desc`.
+macro_rules! release_semver_order_by {
+    () => {
+        (
+            Release::fields().v_major().desc(),
+            Release::fields().v_minor().desc(),
+            Release::fields().v_patch().desc(),
+            Release::fields().has_client_suffix().desc(),
+            Release::fields().client_suffix().asc(),
+        )
+    };
+}
+
+/// Count published releases visible to the org (SQL tenant + channel filters).
+pub(crate) async fn count_releases_for_org(
+    cx: &Cx,
+    org_id: u64,
+    org_slug: &str,
+    channel: &str,
+) -> usize {
+    let mut database = crate::auth::db(cx);
+    let q = builds_releases_filtered!(org_id, org_slug, channel);
+    q.count().exec(&mut database).await.unwrap_or(0) as usize
+}
+
+/// One page of published releases (SQL entitlement + semver `ORDER BY` + limit/offset).
+pub(crate) async fn load_releases_page_for_org(
+    cx: &Cx,
+    org_id: u64,
+    org_slug: &str,
+    channel: &str,
+    page: usize,
+) -> Vec<Release> {
+    let mut database = crate::auth::db(cx);
+    let mut filtered = builds_releases_filtered!(org_id, org_slug, channel)
+        .order_by(release_semver_order_by!())
+        .limit(BUILDS_PAGE_SIZE)
+        .offset(page_offset(page, BUILDS_PAGE_SIZE))
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    // Defense in depth — SQL already applied the same net.
+    filtered.retain(|r| release_visible_to_org(r, org_id, org_slug));
+    filtered
+}
+
+/// All published releases for the org, SQL-ordered (dashboard + detail page index).
 pub(crate) async fn load_releases_for_org(
     cx: &Cx,
     org_id: u64,
@@ -662,22 +721,12 @@ pub(crate) async fn load_releases_for_org(
     channel: &str,
 ) -> Vec<Release> {
     let mut database = crate::auth::db(cx);
-    let mut q = Release::all().filter(Release::fields().status().eq(RELEASE_STATUS_PUBLISHED));
-    if !org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        q = q.filter(
-            Release::fields()
-                .organization_id()
-                .in_list([RELEASE_GA_ORG_ID, org_id]),
-        );
-    }
-    if !channel.is_empty() {
-        let channel_owned = channel.to_owned();
-        q = q.filter(Release::fields().channel().eq(channel_owned));
-    }
-    let mut filtered = q.exec(&mut database).await.unwrap_or_default();
-    // Defense in depth — SQL already applied the same net.
+    let mut filtered = builds_releases_filtered!(org_id, org_slug, channel)
+        .order_by(release_semver_order_by!())
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
     filtered.retain(|r| release_visible_to_org(r, org_id, org_slug));
-    sort_releases(&mut filtered);
     filtered
 }
 
@@ -713,6 +762,7 @@ mod builds_entitlement_page_tests {
     };
 
     fn sample_release(status: &str, organization_id: u64) -> Release {
+        let sort = crate::release_pkg::version_sort_fields("v1.0.0");
         Release {
             id: 1,
             version: "v1.0.0".to_owned(),
@@ -723,6 +773,11 @@ mod builds_entitlement_page_tests {
             status: status.to_owned(),
             notes: "FIX: test".to_owned(),
             organization_id,
+            v_major: sort.v_major,
+            v_minor: sort.v_minor,
+            v_patch: sort.v_patch,
+            has_client_suffix: sort.has_client_suffix,
+            client_suffix: sort.client_suffix,
         }
     }
 

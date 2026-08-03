@@ -47,6 +47,12 @@ async fn battle_concurrent_release_creates() {
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: battle".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
+                v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
+                    .has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
             })
             .exec(&mut conn)
             .await
@@ -84,7 +90,7 @@ async fn battle_parallel_admin_releases_page_pagination() {
         for i in 0..11u32 {
             let version = format!("v99.battle.{i}");
             let _ = toasty::create!(Release {
-                version,
+                version: version.clone(),
                 channel: "LTS".to_owned(),
                 released_on: "2026-07-01".to_owned(),
                 size_mb: "1.0".to_owned(),
@@ -92,6 +98,12 @@ async fn battle_parallel_admin_releases_page_pagination() {
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: battle page".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
+                v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
+                    .has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
             })
             .exec(&mut conn)
             .await
@@ -164,6 +176,12 @@ async fn battle_parallel_publish_unpublish_under_list_reads() {
             status: "PUBLISHED".to_owned(),
             notes: "FIX: battle status".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields("v95.battle.status").v_major,
+            v_minor: vcp::release_pkg::version_sort_fields("v95.battle.status").v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields("v95.battle.status").v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields("v95.battle.status")
+                .has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields("v95.battle.status").client_suffix,
         })
         .exec(&mut conn)
         .await
@@ -231,6 +249,117 @@ async fn battle_parallel_publish_unpublish_under_list_reads() {
             rows[0].status == "PUBLISHED" || rows[0].status == "HIDDEN",
             "status must remain a known value: {}",
             rows[0].status
+        );
+    }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn battle_parallel_semver_list_order_under_concurrent_creates() {
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
+
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-semver");
+    let slug = unique_slug("battle-semver");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+
+    let barrier = Arc::new(Barrier::new(4));
+    let mut handles = Vec::new();
+    for (i, suffix) in ["acme", "beta", "zenith"].into_iter().enumerate() {
+        let db = db.clone();
+        let barrier = barrier.clone();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let version = format!("v0.7.1-{suffix}");
+            let mut conn = db.clone();
+            let _ = toasty::create!(Release {
+                version: version.clone(),
+                channel: "LTS".to_owned(),
+                released_on: "2026-07-01".to_owned(),
+                size_mb: "1.0".to_owned(),
+                sha256: "pending".to_owned(),
+                status: "PUBLISHED".to_owned(),
+                notes: format!("FIX: battle {i}"),
+                organization_id: RELEASE_GA_ORG_ID,
+                v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
+                    .has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            })
+            .exec(&mut conn)
+            .await
+            .expect("release");
+        }));
+    }
+    {
+        let db = db.clone();
+        let barrier = barrier.clone();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let version = "v0.7.1".to_owned();
+            let mut conn = db.clone();
+            let _ = toasty::create!(Release {
+                version: version.clone(),
+                channel: "LTS".to_owned(),
+                released_on: "2026-07-01".to_owned(),
+                size_mb: "1.0".to_owned(),
+                sha256: "pending".to_owned(),
+                status: "PUBLISHED".to_owned(),
+                notes: "FIX: plain".to_owned(),
+                organization_id: RELEASE_GA_ORG_ID,
+                v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+                v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+                v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
+                    .has_client_suffix,
+                client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            })
+            .exec(&mut conn)
+            .await
+            .expect("release");
+        }));
+    }
+    for h in handles {
+        h.await.expect("join create");
+    }
+
+    let router = Arc::new(test_router().await);
+    let form = format!("email={}&password=password", urlencoding_encode(&email));
+    let login_resp = post_form(&router, "/login", None, &form).await;
+    let cookie = cookie_header(&login_resp).expect("cookie");
+    let barrier = Arc::new(Barrier::new(3));
+    let mut readers = Vec::new();
+    for _ in 0..3 {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        let barrier = barrier.clone();
+        readers.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let resp = get(&router, "/admin/releases", Some(&cookie)).await;
+            assert_eq!(status(&resp), StatusCode::OK);
+            let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }));
+    }
+    for h in readers {
+        let html = h.await.expect("join read");
+        let i_acme = html.find("v0.7.1-acme").expect("acme");
+        let i_beta = html.find("v0.7.1-beta").expect("beta");
+        let i_zen = html.find("v0.7.1-zenith").expect("zenith");
+        let i_plain = html
+            .find(">v0.7.1<")
+            .or_else(|| html.find("v0.7.1"))
+            .expect("plain");
+        assert!(
+            i_acme < i_beta && i_beta < i_zen && i_zen < i_plain,
+            "stable SQL order under contention: {html}"
         );
     }
 

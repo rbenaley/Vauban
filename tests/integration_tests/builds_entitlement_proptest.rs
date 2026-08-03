@@ -3,7 +3,9 @@
 use proptest::prelude::*;
 use vcp::app::{BUILDS_PAGE_SIZE, clamp_page, page_count, page_slice, parse_page};
 use vcp::config::{Config, Environment};
-use vcp::release_pkg::{cmp_version_desc, package_file_name, sha256_cmd};
+use vcp::release_pkg::{
+    cmp_sort_fields_desc, cmp_version_desc, package_file_name, sha256_cmd, version_sort_fields,
+};
 
 const MSG: &str = "download not configured";
 
@@ -86,6 +88,31 @@ proptest! {
             (&client_b, &client_a)
         };
         prop_assert_eq!(cmp_version_desc(first, second), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn prop_sort_fields_agree_with_cmp_version_desc(
+        maj_a in 0u64..5,
+        min_a in 0u64..20,
+        pat_a in 0u64..20,
+        maj_b in 0u64..5,
+        min_b in 0u64..20,
+        pat_b in 0u64..20,
+        suffix_a in prop::option::of("[a-z]{2,6}"),
+        suffix_b in prop::option::of("[a-z]{2,6}"),
+    ) {
+        let a = match &suffix_a {
+            Some(s) => format!("v{maj_a}.{min_a}.{pat_a}-{s}"),
+            None => format!("v{maj_a}.{min_a}.{pat_a}"),
+        };
+        let b = match &suffix_b {
+            Some(s) => format!("v{maj_b}.{min_b}.{pat_b}-{s}"),
+            None => format!("v{maj_b}.{min_b}.{pat_b}"),
+        };
+        prop_assert_eq!(
+            cmp_version_desc(&a, &b),
+            cmp_sort_fields_desc(&version_sort_fields(&a), &version_sort_fields(&b))
+        );
     }
 
     #[test]

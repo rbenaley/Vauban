@@ -14,12 +14,11 @@ use crate::{
     app::_components::{ico_trash, list_toolbar},
     auth::{capability_denied, require_staff},
     list_page::{
-        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_slice,
+        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_offset,
         parse_page, with_page_param,
     },
     models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release},
     perms::perms_for_user,
-    release_pkg::cmp_version_desc,
     ui::{channel_badge_class, release_status_badge_class},
 };
 
@@ -40,11 +39,11 @@ async fn admin_releases_page(cx: &Cx) -> Result {
     }
 
     let mut database = crate::auth::db(cx);
-    let mut releases = Release::all().exec(&mut database).await.unwrap_or_default();
-    // Stable version order (numeric + client suffix) — status toggles must not
-    // reshuffle rows when the DB returns a different natural order.
-    // Semver sort stays in Rust after the staff catalogue load (see toasty skill).
-    releases.sort_by(|a, b| cmp_version_desc(&a.version, &b.version));
+    let total = Release::all()
+        .count()
+        .exec(&mut database)
+        .await
+        .unwrap_or(0) as usize;
 
     let q = query_params::<AdminReleasesQuery>(cx).ok();
     let delete_id = q
@@ -55,12 +54,33 @@ async fn admin_releases_page(cx: &Cx) -> Result {
         .as_ref()
         .and_then(|q| q.err.as_deref())
         .is_some_and(|e| e == "confirm");
-    let delete_target = delete_id.and_then(|id| releases.iter().find(|r| r.id == id).cloned());
+    let delete_target = if let Some(id) = delete_id {
+        Release::all()
+            .filter(Release::fields().id().eq(id))
+            .exec(&mut database)
+            .await
+            .ok()
+            .and_then(|mut rows| rows.pop())
+    } else {
+        None
+    };
 
     let mut page = parse_page(q.as_ref().and_then(|q| q.page));
-    let pages = page_count(releases.len(), LIST_PAGE_SIZE);
+    let pages = page_count(total, LIST_PAGE_SIZE);
     page = clamp_page(page, pages);
-    let page_releases = page_slice(&releases, page, LIST_PAGE_SIZE);
+    let page_releases = Release::all()
+        .order_by((
+            Release::fields().v_major().desc(),
+            Release::fields().v_minor().desc(),
+            Release::fields().v_patch().desc(),
+            Release::fields().has_client_suffix().desc(),
+            Release::fields().client_suffix().asc(),
+        ))
+        .limit(LIST_PAGE_SIZE)
+        .offset(page_offset(page, LIST_PAGE_SIZE))
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
     let org_ids: Vec<u64> = page_releases
         .iter()
         .map(|r| r.organization_id)
@@ -106,7 +126,7 @@ async fn admin_releases_page(cx: &Cx) -> Result {
                     </tr>
                 </thead>
                 <tbody>
-                    if releases.is_empty() {
+                    if total == 0 {
                         <tr>
                             <td colspan="7">
                                 <div class="vb-empty">"No releases recorded."</div>

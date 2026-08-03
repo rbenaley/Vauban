@@ -41,9 +41,10 @@ rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=
 
 1. Sign in as `l.martin@acme.example` / `password`.
 2. Open `/acme-infrastructure/builds` — expect the **highest version**
-   panel open by default (release notes visible). Order is by version
-   number descending (ignore release dates). For the same `X.Y.Z`,
-   `X.Y.Z-client` rows sit above plain `X.Y.Z`, A→Z by client name.
+   panel open by default (release notes visible). Order is SQL semver
+   (`v_major`…`client_suffix` columns; ignore release dates). For the
+   same `X.Y.Z`, `X.Y.Z-client` rows sit above plain `X.Y.Z`, A→Z by
+   client name. Pager must not reshuffle when toggling publish.
    SIGNATURE column shows the **full** 64-hex SHA-256 (not a 7-char
    prefix). Column gaps look even across VERSION…SIZE.
 3. Action row: **Download (size)**, **5-minute download link**,

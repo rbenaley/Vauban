@@ -191,8 +191,10 @@ async fn models_issue_and_stubs_create() {
     assert!(doc.slug.starts_with("test-"));
     assert_eq!(doc.body.get(), "Body text");
 
+    let version = format!("test-{}", unique_slug("rel"));
+    let sort = vcp::release_pkg::version_sort_fields(&version);
     let rel = toasty::create!(Release {
-        version: format!("test-{}", unique_slug("rel")),
+        version: version.clone(),
         channel: "LTS".to_owned(),
         released_on: "2026-01-01".to_owned(),
         size_mb: "1.0".to_owned(),
@@ -200,6 +202,11 @@ async fn models_issue_and_stubs_create() {
         status: "DRAFT".to_owned(),
         notes: "notes".to_owned(),
         organization_id: 0,
+        v_major: sort.v_major,
+        v_minor: sort.v_minor,
+        v_patch: sort.v_patch,
+        has_client_suffix: sort.has_client_suffix,
+        client_suffix: sort.client_suffix,
     })
     .exec(&mut conn)
     .await

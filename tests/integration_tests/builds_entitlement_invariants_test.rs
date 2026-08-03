@@ -172,25 +172,29 @@ fn inv_builds_concept_ephemeral_server_side() {
     assert!(pkg.contains("strip_prefix('v')"));
     assert!(pkg.contains("cmp_version_desc"));
     assert!(pkg.contains("version_sort_key"));
+    assert!(pkg.contains("fn version_sort_fields"));
 
-    let sort_fn = builds
-        .split("fn sort_releases")
-        .nth(1)
-        .and_then(|s| s.split("async fn load_releases_for_org").next())
-        .expect("sort_releases");
     assert!(
-        sort_fn.contains("cmp_version_desc"),
-        "builds must sort by version number"
+        builds.contains("v_major().desc()"),
+        "builds must SQL ORDER BY semver columns"
     );
     assert!(
-        !sort_fn.contains("released_on"),
-        "builds must not sort by released_on"
+        builds.contains("load_releases_page_for_org"),
+        "builds list must use load_releases_page_for_org"
+    );
+    assert!(
+        builds.contains("page_offset"),
+        "builds must use SQL page_offset"
+    );
+    assert!(
+        !builds.contains("fn sort_releases"),
+        "builds must not Rust-sort on the hot path"
     );
 
     let org = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
     assert!(
         org.contains("load_releases_for_org"),
-        "dashboard latest build must use load_releases_for_org (version-sorted)"
+        "dashboard latest build must use load_releases_for_org (SQL-ordered)"
     );
     assert!(
         builds.contains("RESERVED_ORG_SLUG"),
