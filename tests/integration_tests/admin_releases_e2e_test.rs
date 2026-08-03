@@ -5,7 +5,7 @@ use topcoat::router::StatusCode;
 use vcp::models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED, Release};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, db_lock, get, post_form, status, test_db,
+    cleanup, create_org_with_membership, db_lock, get, login_cookie, post_form, status, test_db,
     test_router, unique_email, unique_slug, urlencoding_encode,
 };
 
@@ -21,10 +21,7 @@ fn count_channel_badges(html: &str) -> usize {
 }
 
 async fn login(router: &topcoat::router::Router, email: &str) -> Option<String> {
-    let form = format!("email={}&password=password", urlencoding_encode(email));
-    let login = post_form(router, "/login", None, &form).await;
-    assert!(status(&login).is_redirection());
-    cookie_header(&login)
+    login_cookie(router, email).await
 }
 
 #[tokio::test]

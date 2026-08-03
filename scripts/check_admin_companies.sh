@@ -139,12 +139,14 @@ grep -n 'Mailbox::new' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must validate v
 grep -n 'Result<Vec<String>, String>' "$ACCOUNTS" >/dev/null \
   || fail "$ACCOUNTS normalize_emails must return Result (fail-closed)"
 grep -n 'fn sync_org_accounts' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must define sync_org_accounts"
-grep -n 'BOOTSTRAP_LOGIN_PASSWORD' "$ACCOUNTS" >/dev/null \
-  || fail "$ACCOUNTS must define BOOTSTRAP_LOGIN_PASSWORD"
-grep -n 'hash_password(BOOTSTRAP_LOGIN_PASSWORD)' "$ACCOUNTS" >/dev/null \
-  || fail "$ACCOUNTS must hash bootstrap password for new users"
-grep -n 'unusable_password_hash' "$ACCOUNTS" >/dev/null \
-  && fail "$ACCOUNTS must not use unusable_password_hash for new users"
+grep -n 'soft_delete_org_user\|deleted_at' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS must soft-delete removed client accounts"
+grep -n 'send_invitation_mail\|invite_user' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS must send invitation magic-link mail"
+grep -n 'send_revocation_mail' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS must send revocation mail on soft-delete"
+grep -n 'password_hash\|BOOTSTRAP_LOGIN_PASSWORD' "$ACCOUNTS" >/dev/null \
+  && fail "$ACCOUNTS must not use password_hash / bootstrap password"
 grep -n 'fn clamp_lts_count' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must define clamp_lts_count"
 grep -n 'fn parse_lts_subscriptions' "$ACCOUNTS" >/dev/null \
   || fail "$ACCOUNTS must define parse_lts_subscriptions"
@@ -191,7 +193,10 @@ grep -n 'max_lts_subscriptions' config/vcp.conf >/dev/null \
   || fail "config/vcp.conf must set org.max_lts_subscriptions"
 grep -nE 'features\s*=\s*\[.*"mail"' Cargo.toml >/dev/null \
   || fail "Cargo.toml must enable topcoat mail feature"
-grep -n 'FileTransport' src/app.rs >/dev/null || fail "src/app.rs must register FileTransport MailConfig"
+grep -n 'build_smtp_transport' src/app.rs >/dev/null \
+  || fail "src/app.rs must register SMTP MailConfig via build_smtp_transport"
+grep -n 'FileTransport' src/app.rs >/dev/null \
+  && fail "src/app.rs must not use FileTransport"
 grep -n 'RouterBuilderMailExt\|\.mail(' src/app.rs >/dev/null \
   || fail "src/app.rs must wire .mail(MailConfig…)"
 

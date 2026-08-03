@@ -19,6 +19,9 @@
 //! - `cargo test --test integration_tests -- admin_issues_search_shard -- --test-threads=1`
 //! - `cargo test --test integration_tests -- issues_search_shard -- --test-threads=1`
 //! - `cargo test --test integration_tests -- display_tz -- --test-threads=1`
+//! - `cargo test --test integration_tests -- magic_link -- --test-threads=1`
+//! - `cargo test --test integration_tests -- companies_magic_mail -- --test-threads=1`
+//! - `cargo test --test integration_tests -- choose_org -- --test-threads=1`
 
 mod admin_companies_battle_test;
 mod admin_companies_e2e_test;
@@ -49,7 +52,10 @@ mod builds_entitlement_battle_test;
 mod builds_entitlement_e2e_test;
 mod builds_entitlement_invariants_test;
 mod builds_entitlement_proptest;
+mod choose_org_battle_test;
+mod choose_org_e2e_test;
 mod common;
+mod companies_magic_mail_e2e_test;
 mod dashboard_stats_battle_test;
 mod dashboard_stats_e2e_test;
 mod dashboard_stats_invariants_test;
@@ -66,6 +72,9 @@ mod http_edge_battle_test;
 mod http_edge_e2e_test;
 mod http_edge_invariants_test;
 mod http_edge_proptest;
+mod magic_link_battle_test;
+mod magic_link_e2e_test;
+mod magic_link_invariants_test;
 mod org_account_battle_test;
 mod org_account_e2e_test;
 mod org_account_invariants_test;

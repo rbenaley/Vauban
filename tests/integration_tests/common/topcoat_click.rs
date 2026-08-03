@@ -17,12 +17,12 @@ pub fn decode_topcoat_js(s: &str) -> String {
         .replace("&apos;", "'")
 }
 
-/// Collect decoded `data-topcoat-on:click` attribute values from SSR HTML.
-pub fn data_topcoat_on_click_values(html: &str) -> Vec<String> {
-    let needle = "data-topcoat-on:click=\"";
+/// Collect decoded `data-topcoat-on:{event}` attribute values from SSR HTML.
+pub fn data_topcoat_on_event_values(html: &str, event: &str) -> Vec<String> {
+    let needle = format!("data-topcoat-on:{event}=\"");
     let mut out = Vec::new();
     let mut rest = html;
-    while let Some(i) = rest.find(needle) {
+    while let Some(i) = rest.find(&needle) {
         let start = i + needle.len();
         let tail = &rest[start..];
         let Some(end) = tail.find('"') else {
@@ -32,6 +32,16 @@ pub fn data_topcoat_on_click_values(html: &str) -> Vec<String> {
         rest = &tail[end + 1..];
     }
     out
+}
+
+/// Collect decoded `data-topcoat-on:click` attribute values from SSR HTML.
+pub fn data_topcoat_on_click_values(html: &str) -> Vec<String> {
+    data_topcoat_on_event_values(html, "click")
+}
+
+/// Collect decoded `data-topcoat-on:submit` attribute values from SSR HTML.
+pub fn data_topcoat_on_submit_values(html: &str) -> Vec<String> {
+    data_topcoat_on_event_values(html, "submit")
 }
 
 /// True when `js` is a function expression under Topcoat's `return ${js}` bind.
@@ -51,6 +61,22 @@ pub fn assert_topcoat_click_handlers_are_functions(html: &str) {
         assert!(
             is_topcoat_function_handler(v),
             "Topcoat click handler must be a function expression \
+             (runtime does `return <js>` at bind time); got: {v}"
+        );
+    }
+}
+
+/// Assert every `data-topcoat-on:submit` in `html` is a function expression.
+pub fn assert_topcoat_submit_handlers_are_functions(html: &str) {
+    let values = data_topcoat_on_submit_values(html);
+    assert!(
+        !values.is_empty(),
+        "expected at least one data-topcoat-on:submit handler in SSR HTML"
+    );
+    for v in &values {
+        assert!(
+            is_topcoat_function_handler(v),
+            "Topcoat submit handler must be a function expression \
              (runtime does `return <js>` at bind time); got: {v}"
         );
     }

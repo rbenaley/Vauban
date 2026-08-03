@@ -5,10 +5,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use argon2::{
-    Argon2, PasswordHasher,
-    password_hash::{SaltString, rand_core::OsRng},
-};
 use toasty::Db;
 use toasty::db::ConnectContext;
 use toasty::migration::History;
@@ -17,9 +13,9 @@ use toasty_cli::Config as ToastyConfig;
 
 use crate::docs_body;
 use crate::models::{
-    DocArticle, ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_SUPPORT,
-    ISSUE_ROLE_SYSTEM, Issue, IssueComment, MEMBERSHIP_ROLE_ORG, Membership, Organization,
-    PORTAL_ROLE_ADMIN, PORTAL_ROLE_ORG, RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release, User,
+    DocArticle, ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_SYSTEM, Issue,
+    IssueComment, MEMBERSHIP_ROLE_ORG, Membership, Organization, PORTAL_ROLE_ORG,
+    RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release, USER_NOT_DELETED, User,
 };
 use crate::release_pkg::{size_mb_from_bytes, version_sort_fields};
 
@@ -363,6 +359,7 @@ pub async fn open(database_url: &str) -> anyhow::Result<Db> {
         .models(toasty::models!(
             crate::models::User,
             crate::models::AuthSession,
+            crate::models::MagicLinkToken,
             crate::models::Organization,
             crate::models::Membership,
             crate::models::DocArticle,
@@ -432,27 +429,17 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let password_hash = hash_password("password")?;
-
-    let support = toasty::create!(User {
-        email: "support@vauban.sh".to_owned(),
-        display_name: "Vauban Support".to_owned(),
-        password_hash: password_hash.clone(),
-        portal_role: PORTAL_ROLE_ADMIN.to_owned(),
-    })
-    .exec(&mut db)
-    .await?;
-
+    // Staff (`vcp_admin`) is JIT-created on first magic-link login — not seeded.
     let member = toasty::create!(User {
         email: "l.martin@acme.example".to_owned(),
         display_name: "L. Martin".to_owned(),
-        password_hash,
         portal_role: PORTAL_ROLE_ORG.to_owned(),
+        deleted_at: USER_NOT_DELETED,
     })
     .exec(&mut db)
     .await?;
 
-    let vauban = toasty::create!(Organization {
+    let _vauban = toasty::create!(Organization {
         slug: RESERVED_ORG_SLUG.to_owned(),
         name: "Vauban".to_owned(),
         address: "Vauban — reserved preview tenant".to_owned(),
@@ -480,14 +467,6 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
         technical_contact_name: "L. Martin".to_owned(),
         technical_contact_email: "l.martin@acme.example".to_owned(),
         status: "ACTIVE".to_owned(),
-    })
-    .exec(&mut db)
-    .await?;
-
-    toasty::create!(Membership {
-        user_id: support.id,
-        organization_id: vauban.id,
-        role: MEMBERSHIP_ROLE_ORG.to_owned(),
     })
     .exec(&mut db)
     .await?;
@@ -590,8 +569,8 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
 
     toasty::create!(IssueComment {
         issue_id: issue_214.id,
-        author_user_id: support.id,
-        author_role: ISSUE_ROLE_SUPPORT.to_owned(),
+        author_user_id: 0,
+        author_role: ISSUE_ROLE_SYSTEM.to_owned(),
         body: "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway.".to_owned(),
         kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
         created_at: now - 7_200,
@@ -707,12 +686,6 @@ mod seed_digest_tests {
 /// Backfill demo discussion rows for seeded issues that have none yet.
 async fn ensure_demo_issue_comments(db: &mut Db) -> anyhow::Result<()> {
     let issues = Issue::all().exec(db).await?;
-    let users = User::all().exec(db).await?;
-    let support_id = users
-        .iter()
-        .find(|u| u.email == "support@vauban.sh")
-        .map(|u| u.id)
-        .unwrap_or(0);
     let now = now_unix();
 
     for issue in issues {
@@ -736,8 +709,8 @@ async fn ensure_demo_issue_comments(db: &mut Db) -> anyhow::Result<()> {
             .await?;
             toasty::create!(IssueComment {
                 issue_id: issue.id,
-                author_user_id: support_id,
-                author_role: ISSUE_ROLE_SUPPORT.to_owned(),
+                author_user_id: 0,
+                author_role: ISSUE_ROLE_SYSTEM.to_owned(),
                 body: "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway.".to_owned(),
                 kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
                 created_at: issue.updated_at.max(now.saturating_sub(7_200)),
@@ -924,27 +897,6 @@ $ ssh db-01.acme.internal@bastion.acme.internal
 - Deploy a second node behind a TCP load balancer for high availability.
 "#;
 
-pub fn hash_password(password: &str) -> anyhow::Result<String> {
-    let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
-    argon2
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .map_err(|e| anyhow::anyhow!("argon2 hash failed: {e}"))
-}
-
-pub fn verify_password(password: &str, password_hash: &str) -> bool {
-    use argon2::{PasswordHash, PasswordVerifier};
-    PasswordHash::new(password_hash)
-        .ok()
-        .and_then(|parsed| {
-            Argon2::default()
-                .verify_password(password.as_bytes(), &parsed)
-                .ok()
-        })
-        .is_some()
-}
-
 pub fn token_hash_hex(hash: &topcoat::session::TokenHash) -> String {
     hex::encode(**hash)
 }
@@ -959,13 +911,6 @@ pub fn now_unix() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn password_hash_roundtrip() {
-        let hash = hash_password("password").expect("hash");
-        assert!(verify_password("password", &hash));
-        assert!(!verify_password("wrong", &hash));
-    }
 
     #[test]
     fn toasty_migration_tree_is_present() {

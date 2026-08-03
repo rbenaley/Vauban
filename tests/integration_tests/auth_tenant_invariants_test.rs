@@ -124,13 +124,17 @@ fn inv_portal_role_closed_catalogue() {
 }
 
 #[test]
-fn inv_login_uses_verify_login_password_and_limiter() {
+fn inv_login_uses_magic_link_and_limiter() {
     let login = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/login.rs"));
-    assert!(login.contains("verify_login_password"));
+    assert!(login.contains("issue_token"));
+    assert!(login.contains("consume_token"));
     assert!(login.contains("LoginRateLimiter"));
+    assert!(!login.contains("verify_login_password"));
+    assert!(!login.contains("password_hash"));
     let default_toml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/default.toml"));
     assert!(default_toml.contains("[login]"));
     assert!(default_toml.contains("max_attempts"));
+    assert!(default_toml.contains("[magiclinks]"));
 }
 
 #[test]
@@ -213,16 +217,20 @@ fn inv_tracked_perms_match_default_policy_csv() {
 }
 
 #[test]
-fn inv_session_entry_redirects_via_home_org_slug() {
+fn inv_session_entry_redirects_via_post_auth_landing() {
     let app = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
     assert!(
-        app.contains("home_org_slug"),
-        "GET / must land authenticated users via home_org_slug"
+        app.contains("post_auth_landing"),
+        "GET / must land authenticated users via post_auth_landing"
     );
     let login = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/login.rs"));
     assert!(
-        login.contains("home_org_slug"),
-        "GET /login must redirect authenticated users via home_org_slug"
+        login.contains("post_auth_landing"),
+        "GET /login must redirect authenticated users via post_auth_landing"
+    );
+    assert!(
+        login.contains("/choose-org"),
+        "login module must expose /choose-org multi-org picker"
     );
     assert!(
         !login.contains("Continue to portal"),
@@ -230,8 +238,16 @@ fn inv_session_entry_redirects_via_home_org_slug() {
     );
     let auth = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/auth.rs"));
     assert!(
+        auth.contains("fn classify_post_auth_landing"),
+        "pure classify_post_auth_landing must exist for unit/proptest coverage"
+    );
+    assert!(
         auth.contains("fn resolve_home_org_slug"),
         "pure resolve_home_org_slug must exist for unit/proptest coverage"
+    );
+    assert!(
+        auth.contains("enum PostAuthLanding"),
+        "PostAuthLanding enum must exist"
     );
 }
 

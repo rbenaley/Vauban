@@ -65,11 +65,80 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub access: AccessConfig,
 
+    pub mail: MailConfig,
+
+    pub magiclinks: MagicLinksConfig,
+
     #[serde(default)]
     pub login: LoginConfig,
 
     #[serde(default)]
     pub org: OrgConfig,
+}
+
+/// SMTP submission settings (`[mail]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct MailConfig {
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub smtp_encryption: SmtpEncryption,
+    #[serde(default)]
+    pub smtp_username: String,
+    #[serde(default)]
+    pub smtp_password: String,
+}
+
+/// SMTP encryption mode for [`MailConfig::smtp_encryption`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpEncryption {
+    Plaintext,
+    Starttls,
+    Tls,
+}
+
+impl SmtpEncryption {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Plaintext => "plaintext",
+            Self::Starttls => "starttls",
+            Self::Tls => "tls",
+        }
+    }
+
+    /// Parse a config / proptest corpus string.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "plaintext" => Some(Self::Plaintext),
+            "starttls" => Some(Self::Starttls),
+            "tls" => Some(Self::Tls),
+            _ => None,
+        }
+    }
+}
+
+/// Magic-link identity and TTL (`[magiclinks]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct MagicLinksConfig {
+    pub from_address: String,
+    pub from_name: String,
+    #[serde(default)]
+    pub reply_to: String,
+    /// Staff email: JIT `portal_role=admin`, Casbin `role:admin`.
+    pub vcp_admin: String,
+    #[serde(default = "default_token_ttl_secs")]
+    pub token_ttl_secs: u64,
+}
+
+fn default_token_ttl_secs() -> u64 {
+    300
+}
+
+impl MagicLinksConfig {
+    /// Normalized admin email (trim + lowercase).
+    pub fn vcp_admin_email(&self) -> String {
+        self.vcp_admin.trim().to_ascii_lowercase()
+    }
 }
 
 fn default_environment() -> Environment {
@@ -373,6 +442,36 @@ impl Config {
         if let Some(acme) = &self.server.tls.acme {
             acme.validate()?;
         }
+        self.validate_mail()?;
+        self.validate_magiclinks()?;
+        Ok(())
+    }
+
+    fn validate_mail(&self) -> anyhow::Result<()> {
+        if self.mail.smtp_host.trim().is_empty() {
+            anyhow::bail!("mail.smtp_host must not be empty");
+        }
+        if self.mail.smtp_port == 0 {
+            anyhow::bail!("mail.smtp_port must be non-zero");
+        }
+        if self.environment.is_production()
+            && self.mail.smtp_encryption == SmtpEncryption::Plaintext
+        {
+            anyhow::bail!("mail.smtp_encryption=plaintext is forbidden in production");
+        }
+        Ok(())
+    }
+
+    fn validate_magiclinks(&self) -> anyhow::Result<()> {
+        if self.magiclinks.from_address.trim().is_empty() {
+            anyhow::bail!("magiclinks.from_address must not be empty");
+        }
+        if self.magiclinks.vcp_admin.trim().is_empty() {
+            anyhow::bail!("magiclinks.vcp_admin must not be empty");
+        }
+        if self.magiclinks.token_ttl_secs == 0 {
+            anyhow::bail!("magiclinks.token_ttl_secs must be greater than zero");
+        }
         Ok(())
     }
 
@@ -435,6 +534,11 @@ mod tests {
         assert_eq!(cfg.login.lockout_secs, 900);
         assert_eq!(cfg.org.max_accounts_per_org, 5);
         assert_eq!(cfg.org.max_lts_subscriptions, 99);
+        assert_eq!(cfg.mail.smtp_host, "localhost");
+        assert_eq!(cfg.mail.smtp_port, 1025);
+        assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Plaintext);
+        assert_eq!(cfg.magiclinks.token_ttl_secs, 300);
+        assert_eq!(cfg.magiclinks.vcp_admin_email(), "support@vauban.sh");
     }
 
     #[test]
@@ -451,6 +555,10 @@ mod tests {
         assert_eq!(cfg.login.lockout_secs, 900);
         assert_eq!(cfg.org.max_accounts_per_org, 5);
         assert_eq!(cfg.org.max_lts_subscriptions, 99);
+        assert_eq!(cfg.mail.smtp_host, "smtp.tem.scaleway.com");
+        assert_eq!(cfg.mail.smtp_port, 587);
+        assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Starttls);
+        assert_eq!(cfg.magiclinks.token_ttl_secs, 300);
     }
 
     #[test]
@@ -471,6 +579,8 @@ mod tests {
         assert_eq!(cfg.login.lockout_secs, 1);
         assert_eq!(cfg.org.max_accounts_per_org, 5);
         assert_eq!(cfg.org.max_lts_subscriptions, 99);
+        assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Plaintext);
+        assert_eq!(cfg.magiclinks.token_ttl_secs, 300);
     }
 
     #[test]
@@ -486,6 +596,44 @@ mod tests {
     }
 
     #[test]
+    fn production_rejects_plaintext_smtp() {
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Production,
+        )
+        .unwrap();
+        cfg.mail.smtp_encryption = SmtpEncryption::Plaintext;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("plaintext"));
+    }
+
+    #[test]
+    fn rejects_zero_token_ttl() {
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Development,
+        )
+        .unwrap();
+        cfg.magiclinks.token_ttl_secs = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("token_ttl_secs"));
+    }
+
+    #[test]
+    fn smtp_encryption_parse_roundtrip() {
+        assert_eq!(
+            SmtpEncryption::parse("plaintext"),
+            Some(SmtpEncryption::Plaintext)
+        );
+        assert_eq!(
+            SmtpEncryption::parse("STARTTLS"),
+            Some(SmtpEncryption::Starttls)
+        );
+        assert_eq!(SmtpEncryption::parse("tls"), Some(SmtpEncryption::Tls));
+        assert_eq!(SmtpEncryption::parse("bogus"), None);
+    }
+
+    #[test]
     fn environment_aliases() {
         assert_eq!(Environment::parse("dev"), Environment::Development);
         assert_eq!(Environment::parse("test"), Environment::Testing);
@@ -497,5 +645,33 @@ mod tests {
         assert_eq!(Environment::Development.default_log_filter(), "debug");
         assert_eq!(Environment::Testing.default_log_filter(), "info");
         assert_eq!(Environment::Production.default_log_filter(), "info");
+    }
+}
+
+#[cfg(test)]
+mod proptest_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        fn smtp_encryption_unknown_strings_reject(s in "[a-zA-Z0-9_]{0,32}") {
+            let known = matches!(
+                s.to_ascii_lowercase().as_str(),
+                "plaintext" | "starttls" | "tls"
+            );
+            prop_assert_eq!(SmtpEncryption::parse(&s).is_some(), known);
+        }
+    }
+
+    proptest! {
+        fn token_ttl_positive_validates(ttl in 1u64..10_000) {
+            let mut cfg = Config::load_with_environment(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+                Environment::Development,
+            )
+            .unwrap();
+            cfg.magiclinks.token_ttl_secs = ttl;
+            prop_assert!(cfg.validate().is_ok());
+        }
     }
 }

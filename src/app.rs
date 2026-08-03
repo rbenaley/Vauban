@@ -19,7 +19,7 @@ use topcoat::{
     context::{Cx, CxBuilder, try_app_context},
     cookie::RouterBuilderCookieExt,
     font,
-    mail::{FileTransport, MailConfig, RouterBuilderMailExt},
+    mail::{MailConfig as TopcoatMailConfig, MemoryTransport, RouterBuilderMailExt},
     router::{
         Body, HeaderValue, IntoResponse, Next, Response, Router, RouterBuilderDiscoverExt,
         StatusCode,
@@ -53,11 +53,12 @@ const APPLE_TOUCH_ICON_PRECOMPOSED_BYTES: &[u8] = include_bytes!(concat!(
 ));
 
 use crate::{
-    auth::{current_user, home_org_slug},
+    auth::{PostAuthLanding, current_user, post_auth_landing},
     config::{Config, Environment},
     fonts::{HANKEN_GROTESK, JETBRAINS_MONO},
     http_canonical::{should_redirect_trailing_slash, trailing_slash_redirect_location},
     login_limit::LoginRateLimiter,
+    mailer::build_smtp_transport,
     perms::PolicyStore,
 };
 
@@ -66,6 +67,38 @@ use crate::{
 struct EnableHsts(bool);
 
 pub fn router(db: Db, policy: Arc<PolicyStore>, cfg: &Config) -> Router {
+    let transport = build_smtp_transport(&cfg.mail).unwrap_or_else(|e| {
+        panic!("invalid mail.smtp configuration: {e}");
+    });
+    router_with_mail(
+        db,
+        policy,
+        cfg,
+        TopcoatMailConfig::builder().transport(transport).build(),
+    )
+}
+
+/// Test helper: same router with an in-memory mail capture (no SMTP).
+pub fn router_with_memory_mail(
+    db: Db,
+    policy: Arc<PolicyStore>,
+    cfg: &Config,
+    memory: MemoryTransport,
+) -> Router {
+    router_with_mail(
+        db,
+        policy,
+        cfg,
+        TopcoatMailConfig::builder().transport(memory).build(),
+    )
+}
+
+fn router_with_mail(
+    db: Db,
+    policy: Arc<PolicyStore>,
+    cfg: &Config,
+    mail: TopcoatMailConfig,
+) -> Router {
     let mut sessions = SessionConfig::builder();
     for origin in &cfg.server.public_origins {
         sessions = sessions.trust_origin(origin.clone());
@@ -80,11 +113,7 @@ pub fn router(db: Db, policy: Arc<PolicyStore>, cfg: &Config) -> Router {
         .cookies()
         .sessions(sessions)
         .assets(assets)
-        .mail(
-            MailConfig::builder()
-                .transport(FileTransport::new("target/mail"))
-                .build(),
-        )
+        .mail(mail)
         .app_context(db)
         .app_context(policy)
         .app_context(Arc::new(cfg.clone()))
@@ -222,14 +251,20 @@ fn apply_security_headers(headers: &mut http::HeaderMap, enable_hsts: bool) {
     }
 }
 
-/// Entry: authenticated users land on their portal home; others go to login.
+/// Entry: authenticated users land on their portal home or org picker; others go to login.
 /// Navigational GET -> `redirect` (307), not `see_other` (303 PRG).
 #[route(GET "/")]
 async fn root(cx: &Cx) -> Result {
-    if let Some(user) = current_user(cx).await
-        && let Some(slug) = home_org_slug(cx, user).await?
-    {
-        return Err(redirect(&format!("/{slug}")).into());
+    if let Some(user) = current_user(cx).await {
+        match post_auth_landing(cx, user).await? {
+            PostAuthLanding::Org(slug) => {
+                return Err(redirect(&format!("/{slug}")).into());
+            }
+            PostAuthLanding::ChooseOrg => {
+                return Err(redirect("/choose-org").into());
+            }
+            PostAuthLanding::None => {}
+        }
     }
     Err(redirect("/login").into())
 }

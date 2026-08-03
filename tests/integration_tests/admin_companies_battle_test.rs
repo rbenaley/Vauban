@@ -12,9 +12,9 @@ use vcp::companies_accounts::{
 use vcp::seats::{can_add_member, membership_count};
 
 use crate::common::{
-    cleanup, cookie_header, create_membership, create_org_with_membership, create_test_org,
-    create_test_user, db_lock, get, post_form, status, test_db, test_router, unique_email,
-    unique_slug, urlencoding_encode,
+    cleanup, create_membership, create_org_with_membership, create_test_org, create_test_user,
+    db_lock, get, login_cookie, post_form, status, test_db, test_router, unique_email, unique_slug,
+    urlencoding_encode,
 };
 
 #[tokio::test]
@@ -130,9 +130,7 @@ async fn battle_parallel_admin_companies_page_pagination() {
     }
 
     let router = Arc::new(test_router().await);
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(router.as_ref(), "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("cookie");
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
 
     let barrier = Arc::new(Barrier::new(2));
     let cookie_a = cookie.clone();
@@ -210,9 +208,7 @@ async fn battle_parallel_company_create_with_lts_counters() {
     let slug = unique_slug("battle-lts-create");
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
     let router = test_router().await;
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(&router, "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("cookie");
+    let cookie = login_cookie(&router, &email).await.expect("cookie");
 
     let n = 4usize;
     let barrier = Arc::new(Barrier::new(n));

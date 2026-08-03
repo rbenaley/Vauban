@@ -3,8 +3,8 @@
 > Manual validation after shipping **Concept companies** (list/edit,
 > email-only accounts, dual technical contact name + Mailbox-validated email,
 > configurable `org.max_accounts_per_org`, default 5; 
-> `org.max_lts_subscriptions`, default 99), **LTS steppers**, **bootstrap
-> login password** for fiche accounts, **card pagination (3/page)**, and
+> `org.max_lts_subscriptions`, default 99), **LTS steppers**, **magic-link
+> invite/revoke** for fiche accounts, **card pagination (3/page)**, and
 > **live search shard**. CI covers unit / invariants / proptest / battle /
 > in-process E2E against `vcp_test`; staging proves browser HTTPS and
 > denial paths.
@@ -14,7 +14,8 @@
 
 Related:
 
-- [README](../../README.md) (seed login, route map)
+- [README](../../README.md) (magic-link login, route map)
+- Magic links / Mailpit: [`magic_links_smoke_test.md`](magic_links_smoke_test.md)
 - Lint: `scripts/check_admin_companies.sh`,
   `scripts/check_admin_companies_search_shard.sh`
 - Pyramid: `.cursor/rules/vcp-test-pyramid.mdc`
@@ -37,31 +38,34 @@ just test --test integration_tests -- admin_companies -- --test-threads=1
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
 - Browser or `curl -k` willing to accept the local self-signed cert.
 - Browser DevTools Network panel (filter `shards`) for live search checks.
-- Seed users: staff `support@vauban.sh` / `password` (lands on `/vauban`);
-  client `l.martin@acme.example` / `password` on `acme-infrastructure`.
+- Mailpit (or TEM) for magic-link delivery. Staff: request a link for
+  `magiclinks.vcp_admin` (default `support@vauban.sh`) → `/vauban`.
+- Demo client `l.martin@acme.example` signs in via magic link after seed.
 
 ## A -- Happy path
 
-1. Sign in as `support@vauban.sh` / `password`.
+1. Sign in as `support@vauban.sh` via magic link (Mailpit).
 2. Open `/admin/companies` — expect Concept cards (contact, ADDRESS/VAT,
    USER ACCOUNTS pills, Edit + trash). No reserved `vauban` card.
 3. Click **+ New company**; fill **Technical contact — full name** and
    **Technical contact — email** (two fields), set **Vauban LTS** /
    **Industrial LTS** steppers (0..N, start at 0), plus up to seat-cap
-   email-only USER ACCOUNTS (no password fields). Save.
+   email-only USER ACCOUNTS (no password fields). Save — invitation mail
+   is sent for each new account.
 4. Confirm list meta row has ADDRESS / VAT / SUBSCRIPTIONS columns; the
    subscriptions column label is
    `SUBSCRIPTIONS (VAUBAN LTS / VAUBAN INDUSTRIAL LTS)` with ratio `2/1`
    below in the same mono style as VAT; open Edit; confirm steppers +
-   contact fields; add/remove an account email; Save.
-5. Sign out; sign in as a fiche account email with password `password`;
-   open `/{org}` and `/{org}/account` — expect address, VAT, LTS counts,
-   and user-account pills from the company fiche.
+   contact fields; add/remove an account email; Save (invite on add,
+   revocation mail on remove, including multi-org users).
+5. Sign out; sign in as a fiche account via its invitation / login magic
+   link; open `/{org}` and `/{org}/account` — expect address, VAT, LTS
+   counts, and user-account pills from the company fiche.
 6. Delete via trash + type `delete`.
 7. Confirm slug/name `Vauban` is rejected on create.
 
 Pass: surface matches Concept; seat + LTS caps from config; fiche users
-reach `/{org}` with bootstrap password.
+reach `/{org}` via magic link.
 
 ## B -- Denial paths
 

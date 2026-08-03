@@ -8,8 +8,8 @@ use topcoat::router::StatusCode;
 use vcp::models::{RELEASE_GA_ORG_ID, Release};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, db_lock, get, post_form, status, test_db,
-    test_router, unique_email, unique_slug, urlencoding_encode,
+    cleanup, create_org_with_membership, db_lock, get, login_cookie, post_form, status, test_db,
+    test_router, unique_email, unique_slug,
 };
 
 #[tokio::test]
@@ -46,9 +46,7 @@ async fn battle_parallel_download_posts() {
     }
 
     let router = test_router().await;
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(&router, "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("cookie");
+    let cookie = login_cookie(&router, &email).await.expect("cookie");
 
     let n = 8usize;
     let barrier = Arc::new(Barrier::new(n));
@@ -111,9 +109,7 @@ async fn battle_parallel_ephemeral_generate() {
     }
 
     let router = test_router().await;
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(&router, "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("cookie");
+    let cookie = login_cookie(&router, &email).await.expect("cookie");
 
     let n = 8usize;
     let barrier = Arc::new(Barrier::new(n));
@@ -174,9 +170,7 @@ async fn battle_parallel_builds_page_keeps_verify_hooks() {
     }
 
     let router = Arc::new(test_router().await);
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(router.as_ref(), "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("cookie");
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
 
     let n = 8usize;
     let barrier = Arc::new(Barrier::new(n));
@@ -251,9 +245,7 @@ async fn battle_parallel_builds_page_pagination() {
     }
 
     let router = Arc::new(test_router().await);
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(router.as_ref(), "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("cookie");
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
 
     let barrier = Arc::new(Barrier::new(2));
     let slug_a = slug.clone();

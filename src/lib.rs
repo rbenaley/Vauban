@@ -24,6 +24,8 @@ pub mod issue_status;
 pub mod issues_search;
 pub mod list_page;
 pub mod login_limit;
+pub mod magic_link;
+pub mod mailer;
 pub mod models;
 pub mod nav;
 pub mod perms;

@@ -87,7 +87,7 @@ async fn e2e_trailing_slash_head_is_308() {
 async fn e2e_trailing_slash_post_is_not_308() {
     let _guard = db_lock().lock().await;
     let router = test_router().await;
-    let resp = post_form(&router, "/login/", None, "email=x&password=y").await;
+    let resp = post_form(&router, "/login/", None, "email=x@example.com").await;
     assert_ne!(
         status(&resp),
         StatusCode::PERMANENT_REDIRECT,

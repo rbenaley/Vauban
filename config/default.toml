@@ -28,6 +28,21 @@ staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 [database]
 url = "postgresql://localhost/vcp"
 
+# Local catch-all (Mailpit / equivalent). Production uses Scaleway TEM in vcp.conf.
+[mail]
+smtp_host = "localhost"
+smtp_port = 1025
+smtp_encryption = "plaintext"
+smtp_username = ""
+smtp_password = ""
+
+[magiclinks]
+from_address = "no-reply@vauban.sh"
+from_name = "Vauban Customer Portal"
+reply_to = ""
+vcp_admin = "support@vauban.sh"
+token_ttl_secs = 300
+
 [access]
 model_path = "config/access/model.conf"
 policy_path = "config/access/default_policy.csv"

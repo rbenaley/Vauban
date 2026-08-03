@@ -61,7 +61,7 @@ pub fn capability_denied() -> NotFoundError {
 }
 
 /// Load a user for a persisted session token hash (hex). Returns `None` when
-/// the session is missing, expired, or the user row is gone.
+/// the session is missing, expired, the user row is gone, or soft-deleted.
 pub async fn load_user_for_token_hex(db: &mut Db, hex: &str) -> Option<User> {
     let Ok(record) = AuthSession::get_by_token_hash(db, hex).await else {
         return None;
@@ -69,7 +69,24 @@ pub async fn load_user_for_token_hex(db: &mut Db, hex: &str) -> Option<User> {
     if session_is_expired(record.expires_at) {
         return None;
     }
-    User::get_by_id(db, record.user_id).await.ok()
+    let user = User::get_by_id(db, record.user_id).await.ok()?;
+    if !user.is_active() {
+        let _ = AuthSession::delete_by_token_hash(db, hex).await;
+        return None;
+    }
+    Some(user)
+}
+
+/// Delete every persisted session for a user (soft-delete / revoke).
+pub async fn invalidate_sessions_for_user(db: &mut Db, user_id: u64) -> anyhow::Result<()> {
+    let sessions = AuthSession::all()
+        .filter(AuthSession::fields().user_id().eq(user_id))
+        .exec(db)
+        .await?;
+    for session in sessions {
+        let _ = AuthSession::delete_by_token_hash(db, &session.token_hash).await;
+    }
+    Ok(())
 }
 
 /// Persist or replace an `AuthSession` row (production path used by login and
@@ -232,29 +249,41 @@ pub async fn delete_session_hash(cx: &Cx, token_hash: &TokenHash) -> Result<()> 
     Ok(())
 }
 
-/// Landing org slug for an authenticated user: reserved `vauban` for staff,
-/// otherwise the first non-reserved membership org.
-pub async fn home_org_slug(cx: &Cx, user: &User) -> Result<Option<String>> {
-    Ok(resolve_home_org_slug(
-        &user.portal_role,
-        first_client_org_slug(cx, user.id).await?,
-    ))
+/// Client organization visible in the post-auth picker (excludes reserved `vauban`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientOrg {
+    pub slug: String,
+    pub name: String,
 }
 
-/// Pure landing-slug decision (unit / proptest).
-pub fn resolve_home_org_slug(
-    portal_role: &str,
-    first_client_slug: Option<String>,
-) -> Option<String> {
+/// Where an authenticated user should land after login / magic-link / `GET /`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PostAuthLanding {
+    /// Direct navigate to `/{slug}` (staff → `vauban`, or single client org).
+    Org(String),
+    /// Multiple client memberships — show `/choose-org`.
+    ChooseOrg,
+    /// No usable client membership (org user with zero orgs).
+    None,
+}
+
+/// Pure landing classification (unit / proptest).
+///
+/// `client_slugs` must already exclude the reserved tenant and be sorted if
+/// callers care about which single slug is chosen when `len == 1`.
+pub fn classify_post_auth_landing(portal_role: &str, client_slugs: &[String]) -> PostAuthLanding {
     if portal_role == PORTAL_ROLE_ADMIN {
-        Some(RESERVED_ORG_SLUG.to_owned())
-    } else {
-        first_client_slug
+        return PostAuthLanding::Org(RESERVED_ORG_SLUG.to_owned());
+    }
+    match client_slugs.len() {
+        0 => PostAuthLanding::None,
+        1 => PostAuthLanding::Org(client_slugs[0].clone()),
+        _ => PostAuthLanding::ChooseOrg,
     }
 }
 
-/// First membership org whose slug is not the reserved preview tenant.
-pub async fn first_client_org_slug(cx: &Cx, user_id: u64) -> Result<Option<String>> {
+/// Client orgs for `user_id`, excluding reserved `vauban`, sorted by slug.
+pub async fn client_orgs_for_user(cx: &Cx, user_id: u64) -> Result<Vec<ClientOrg>> {
     let mut database = db(cx);
     let memberships = Membership::all()
         .filter(Membership::fields().user_id().eq(user_id))
@@ -262,21 +291,58 @@ pub async fn first_client_org_slug(cx: &Cx, user_id: u64) -> Result<Option<Strin
         .await
         .unwrap_or_default();
     if memberships.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let org_ids: Vec<u64> = memberships.iter().map(|m| m.organization_id).collect();
     let orgs = crate::id_lookups::orgs_by_ids(&mut database, &org_ids)
         .await
         .unwrap_or_default();
-    // Preserve membership order so "first" client org is stable.
-    for m in memberships {
-        if let Some(org) = orgs.iter().find(|o| o.id == m.organization_id)
-            && !org.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG)
-        {
-            return Ok(Some(org.slug.clone()));
-        }
+    let mut clients: Vec<ClientOrg> = orgs
+        .into_iter()
+        .filter(|o| !o.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG))
+        .map(|o| ClientOrg {
+            slug: o.slug,
+            name: o.name,
+        })
+        .collect();
+    clients.sort_by(|a, b| a.slug.cmp(&b.slug));
+    Ok(clients)
+}
+
+/// Resolve post-auth landing for an authenticated user.
+pub async fn post_auth_landing(cx: &Cx, user: &User) -> Result<PostAuthLanding> {
+    let clients = client_orgs_for_user(cx, user.id).await?;
+    let slugs: Vec<String> = clients.into_iter().map(|o| o.slug).collect();
+    Ok(classify_post_auth_landing(&user.portal_role, &slugs))
+}
+
+/// Landing org slug when a direct org is available; `None` for ChooseOrg / no orgs.
+///
+/// Prefer [`post_auth_landing`] at session entry points so multi-org users are
+/// sent to `/choose-org` instead of an arbitrary first membership.
+pub async fn home_org_slug(cx: &Cx, user: &User) -> Result<Option<String>> {
+    Ok(match post_auth_landing(cx, user).await? {
+        PostAuthLanding::Org(slug) => Some(slug),
+        PostAuthLanding::ChooseOrg | PostAuthLanding::None => None,
+    })
+}
+
+/// Pure landing-slug decision for the single-org / staff case (unit / proptest).
+pub fn resolve_home_org_slug(
+    portal_role: &str,
+    first_client_slug: Option<String>,
+) -> Option<String> {
+    let slugs: Vec<String> = first_client_slug.into_iter().collect();
+    match classify_post_auth_landing(portal_role, &slugs) {
+        PostAuthLanding::Org(slug) => Some(slug),
+        PostAuthLanding::ChooseOrg | PostAuthLanding::None => None,
     }
-    Ok(None)
+}
+
+/// First client org slug (sorted); `None` if zero client memberships.
+pub async fn first_client_org_slug(cx: &Cx, user_id: u64) -> Result<Option<String>> {
+    let clients = client_orgs_for_user(cx, user_id).await?;
+    Ok(clients.into_iter().next().map(|o| o.slug))
 }
 
 fn system_expires_unix(expires_at: SystemTime) -> i64 {
@@ -289,7 +355,7 @@ fn system_expires_unix(expires_at: SystemTime) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{hash_password, token_hash_hex, verify_password};
+    use crate::db::token_hash_hex;
     use topcoat::session::TokenHash;
 
     #[test]
@@ -307,13 +373,6 @@ mod tests {
         let encoded = token_hash_hex(&hash);
         assert_eq!(encoded, hex::encode(raw));
         assert_eq!(encoded.len(), 64);
-    }
-
-    #[test]
-    fn password_helpers_reject_wrong_secret() {
-        let hash = hash_password("correct-horse").unwrap();
-        assert!(verify_password("correct-horse", &hash));
-        assert!(!verify_password("wrong", &hash));
     }
 
     #[test]
@@ -341,6 +400,33 @@ mod tests {
         assert_eq!(
             resolve_home_org_slug(crate::models::PORTAL_ROLE_ORG, None),
             None
+        );
+    }
+
+    #[test]
+    fn classify_post_auth_landing_staff_zero_one_many() {
+        assert_eq!(
+            classify_post_auth_landing(PORTAL_ROLE_ADMIN, &[]),
+            PostAuthLanding::Org(RESERVED_ORG_SLUG.to_owned())
+        );
+        assert_eq!(
+            classify_post_auth_landing(PORTAL_ROLE_ADMIN, &["a".into(), "b".into()]),
+            PostAuthLanding::Org(RESERVED_ORG_SLUG.to_owned())
+        );
+        assert_eq!(
+            classify_post_auth_landing(crate::models::PORTAL_ROLE_ORG, &[]),
+            PostAuthLanding::None
+        );
+        assert_eq!(
+            classify_post_auth_landing(crate::models::PORTAL_ROLE_ORG, &["acme".into()]),
+            PostAuthLanding::Org("acme".into())
+        );
+        assert_eq!(
+            classify_post_auth_landing(
+                crate::models::PORTAL_ROLE_ORG,
+                &["acme".into(), "beta".into()]
+            ),
+            PostAuthLanding::ChooseOrg
         );
     }
 

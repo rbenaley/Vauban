@@ -251,7 +251,7 @@ async fn save_new_company(
     .await
     .map_err(|_| "Could not create company.".to_owned())?;
 
-    sync_org_accounts(&mut database, created.id, &emails, max)
+    sync_org_accounts(cx, &mut database, created.id, &emails, max, &created.name)
         .await
         .map_err(|e| e.to_string())?;
 

@@ -6,9 +6,9 @@ use vcp::models::{MAX_USERS_PER_COMPANY, Membership, Organization, RESERVED_ORG_
 use vcp::seats::{can_add_member, membership_count};
 
 use crate::common::{
-    cleanup, cookie_header, create_membership, create_org_with_membership, create_test_org,
-    create_test_user, db_lock, get, post_form, status, test_db, test_router, unique_email,
-    unique_slug, urlencoding_encode,
+    cleanup, create_membership, create_org_with_membership, create_test_org, create_test_user,
+    db_lock, get, login_cookie, post_form, status, test_db, test_router, unique_email, unique_slug,
+    urlencoding_encode,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -17,10 +17,7 @@ async fn body_text(resp: topcoat::router::Response) -> String {
 }
 
 async fn login(router: &topcoat::router::Router, email: &str) -> Option<String> {
-    let form = format!("email={}&password=password", urlencoding_encode(email));
-    let login = post_form(router, "/login", None, &form).await;
-    assert!(status(&login).is_redirection());
-    cookie_header(&login)
+    login_cookie(router, email).await
 }
 
 struct ComposeLts {
@@ -264,7 +261,12 @@ async fn e2e_admin_edit_and_delete_company() {
             .exec(&mut conn)
             .await
             .expect("user");
-        assert!(orphan.is_empty(), "orphan client user should be removed");
+        assert_eq!(orphan.len(), 1, "orphan client user should be soft-deleted");
+        assert_ne!(
+            orphan[0].deleted_at,
+            vcp::models::USER_NOT_DELETED,
+            "orphan client user must have deleted_at set"
+        );
     }
 
     cleanup(&db).await;
@@ -733,31 +735,12 @@ async fn e2e_admin_lts_counters_persist_and_fiche_user_can_login() {
         "edit form must show industrial stepper: {edit_html}"
     );
 
-    // Sign out staff; login as fiche-provisioned member with bootstrap password.
+    // Sign out staff; login as fiche-provisioned member via magic link.
     let _ = post_form(&router, "/logout", admin_cookie.as_deref(), "").await;
-    let member_login_form = format!(
-        "email={}&password=password",
-        urlencoding_encode(&member_email)
-    );
-    let member_login = post_form(&router, "/login", None, &member_login_form).await;
-    assert!(
-        status(&member_login).is_redirection(),
-        "fiche user login must redirect"
-    );
-    let location = member_login
-        .headers()
-        .get(topcoat::router::header::LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    assert_eq!(
-        location,
-        format!("/{}", org.slug),
-        "login must land on the company org, not a hardcoded Acme slug"
-    );
-    let member_cookie = cookie_header(&member_login);
+    let member_cookie = login_cookie(&router, &member_email).await;
     assert!(
         member_cookie.is_some(),
-        "fiche user must login with bootstrap password"
+        "fiche user must login via magic link"
     );
 
     let home = get(&router, &format!("/{}", org.slug), member_cookie.as_deref()).await;

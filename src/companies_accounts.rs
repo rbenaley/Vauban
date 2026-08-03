@@ -1,22 +1,26 @@
 //! Parse and sync portal accounts for admin company compose (email-only).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use toasty::Db;
-use topcoat::mail::Mailbox;
+use topcoat::{
+    context::{Cx, app_context},
+    mail::Mailbox,
+};
 
 use crate::{
-    db::hash_password,
-    models::{MEMBERSHIP_ROLE_ORG, Membership, PORTAL_ROLE_ORG, User, is_portal_org},
+    auth::invalidate_sessions_for_user,
+    config::Config,
+    magic_link::{invalidate_tokens_for_user, issue_token},
+    mailer::{send_invitation_mail, send_revocation_mail},
+    models::{
+        MEMBERSHIP_ROLE_ORG, Membership, PORTAL_ROLE_ORG, USER_NOT_DELETED, User, is_portal_org,
+    },
 };
 
 /// Max compose rows we accept from the form (hard ceiling above config cap).
 pub const MAX_EMAIL_FORM_SLOTS: usize = 32;
-
-/// Interim login password for newly provisioned company accounts.
-///
-/// Replaced later by magic links; do not log this value.
-pub const BOOTSTRAP_LOGIN_PASSWORD: &str = "password";
 
 /// Clamp a subscription count into `0..=max`.
 pub fn clamp_lts_count(value: i32, max: usize) -> i32 {
@@ -143,16 +147,80 @@ fn display_name_from_email(email: &str) -> String {
         .to_owned()
 }
 
+/// Notify a client account that access to `org_name` was removed.
+///
+/// Sent for every org membership removal (including multi-org users who remain
+/// active elsewhere). Soft-delete is a separate step for orphans only.
+async fn notify_org_access_revoked(cx: &Cx, cfg: &Config, user: &User, org_name: &str) {
+    if !is_portal_org(&user.portal_role) {
+        return;
+    }
+    if let Err(err) = send_revocation_mail(cx, &cfg.magiclinks, &user.email, org_name).await {
+        tracing::warn!(
+            email = %user.email,
+            error = %err,
+            "failed to send account revocation mail"
+        );
+    }
+}
+
+async fn soft_delete_org_user(db: &mut Db, user: &User) -> anyhow::Result<()> {
+    if !is_portal_org(&user.portal_role) {
+        return Ok(());
+    }
+    let now = crate::db::now_unix();
+    user.clone().update().deleted_at(now).exec(db).await?;
+    invalidate_sessions_for_user(db, user.id).await?;
+    invalidate_tokens_for_user(db, user.id).await?;
+    Ok(())
+}
+
+async fn invite_user(
+    cx: &Cx,
+    db: &mut Db,
+    user: &User,
+    org_name: &str,
+    cfg: &Config,
+) -> anyhow::Result<()> {
+    let raw = issue_token(db, user.id, cfg.magiclinks.token_ttl_secs).await?;
+    if let Err(err) = send_invitation_mail(
+        cx,
+        &cfg.magiclinks,
+        cfg.primary_public_origin(),
+        &user.email,
+        org_name,
+        &raw,
+    )
+    .await
+    {
+        tracing::warn!(
+            email = %user.email,
+            error = %err,
+            "failed to send account invitation mail"
+        );
+    }
+    Ok(())
+}
+
 /// Sync org memberships to exactly `emails` (already normalized), capped at `max`.
+///
+/// Removed client memberships always receive a per-org revocation mail.
+/// Orphan client users (no remaining memberships) are soft-deleted (issues
+/// history preserved). New memberships and revived accounts receive an
+/// invitation magic-link email.
 pub async fn sync_org_accounts(
+    cx: &Cx,
     db: &mut Db,
     organization_id: u64,
     emails: &[String],
     max: usize,
+    org_name: &str,
 ) -> anyhow::Result<()> {
     if emails.len() > max {
         anyhow::bail!("too many accounts for seat cap");
     }
+
+    let cfg = app_context::<Arc<Config>>(cx);
 
     let memberships = Membership::all()
         .filter(Membership::fields().organization_id().eq(organization_id))
@@ -187,41 +255,47 @@ pub async fn sync_org_accounts(
             continue;
         }
         let _ = m.clone().delete().exec(db).await;
+        notify_org_access_revoked(cx, cfg.as_ref(), user, org_name).await;
         let remaining = Membership::all()
             .filter(Membership::fields().user_id().eq(user.id))
             .exec(db)
             .await?;
         if remaining.is_empty() && is_portal_org(&user.portal_role) {
-            let _ = user.clone().delete().exec(db).await;
+            soft_delete_org_user(db, user).await?;
         }
     }
 
     for email in emails {
+        let mut should_invite = false;
         let user = if let Some(existing) = user_by_email.get(email) {
             let mut existing = existing.clone();
-            // Interim until magic links: client fiche accounts always use the
-            // bootstrap password (heals rows created with unusable hashes).
-            // Staff (`portal_role=admin`) hashes are never rewritten here.
-            if is_portal_org(&existing.portal_role) {
-                let password_hash = hash_password(BOOTSTRAP_LOGIN_PASSWORD)?;
+            if !is_portal_org(&existing.portal_role) {
+                // Staff must not be rewritten or re-invited via company sync.
+                existing
+            } else if !existing.is_active() {
                 existing
                     .update()
-                    .password_hash(password_hash.clone())
+                    .deleted_at(USER_NOT_DELETED)
                     .exec(db)
                     .await?;
-                existing.password_hash = password_hash;
+                existing.deleted_at = USER_NOT_DELETED;
+                should_invite = true;
+                existing
+            } else {
+                existing
             }
-            existing
         } else {
-            let password_hash = hash_password(BOOTSTRAP_LOGIN_PASSWORD)?;
-            toasty::create!(User {
+            let created = toasty::create!(User {
                 email: email.clone(),
                 display_name: display_name_from_email(email),
-                password_hash,
                 portal_role: PORTAL_ROLE_ORG.to_owned(),
+                deleted_at: USER_NOT_DELETED,
             })
             .exec(db)
-            .await?
+            .await?;
+            user_by_email.insert(email.clone(), created.clone());
+            should_invite = true;
+            created
         };
 
         let already = Membership::all()
@@ -237,16 +311,29 @@ pub async fn sync_org_accounts(
             })
             .exec(db)
             .await?;
+            if is_portal_org(&user.portal_role) {
+                should_invite = true;
+            }
+        }
+
+        if should_invite {
+            invite_user(cx, db, &user, org_name, cfg.as_ref()).await?;
         }
     }
 
     Ok(())
 }
 
-/// Delete all memberships for an org; remove orphan client users; delete the org.
-pub async fn delete_org_with_accounts(db: &mut Db, org_id: u64) -> anyhow::Result<()> {
+/// Delete all memberships for an org; revoke-mail each client; soft-delete orphans; delete the org.
+pub async fn delete_org_with_accounts(
+    cx: &Cx,
+    db: &mut Db,
+    org_id: u64,
+    org_name: &str,
+) -> anyhow::Result<()> {
     use crate::models::Organization;
 
+    let cfg = app_context::<Arc<Config>>(cx);
     let memberships = Membership::all()
         .filter(Membership::fields().organization_id().eq(org_id))
         .exec(db)
@@ -259,12 +346,13 @@ pub async fn delete_org_with_accounts(db: &mut Db, org_id: u64) -> anyhow::Resul
             .exec(db)
             .await?;
         if let Some(user) = users.into_iter().next() {
+            notify_org_access_revoked(cx, cfg.as_ref(), &user, org_name).await;
             let remaining = Membership::all()
                 .filter(Membership::fields().user_id().eq(user.id))
                 .exec(db)
                 .await?;
             if remaining.is_empty() && is_portal_org(&user.portal_role) {
-                let _ = user.delete().exec(db).await;
+                soft_delete_org_user(db, &user).await?;
             }
         }
     }
@@ -404,10 +492,5 @@ mod tests {
         );
         assert_eq!(apply_lts_compose_action(0, 1, "ind_inc", 99), Some((0, 2)));
         assert_eq!(apply_lts_compose_action(0, 0, "save", 99), None);
-    }
-
-    #[test]
-    fn bootstrap_login_password_is_password() {
-        assert_eq!(BOOTSTRAP_LOGIN_PASSWORD, "password");
     }
 }

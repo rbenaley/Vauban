@@ -8,22 +8,9 @@ use topcoat::router::StatusCode;
 use vcp::models::{RELEASE_GA_ORG_ID, Release};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, db_lock, get, post_form, status, test_db,
-    test_router, unique_email, unique_slug,
+    cleanup, create_org_with_membership, db_lock, get, login_cookie, status, test_db, test_router,
+    unique_email, unique_slug,
 };
-
-fn urlencoding_encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
 
 #[tokio::test]
 async fn battle_parallel_login_and_shell_reads() {
@@ -58,9 +45,9 @@ async fn battle_parallel_login_and_shell_reads() {
         .expect("release");
     }
 
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(router.as_ref(), "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("session cookie");
+    let cookie = login_cookie(router.as_ref(), &email)
+        .await
+        .expect("session cookie");
 
     let n = 10usize;
     let barrier = Arc::new(Barrier::new(n));

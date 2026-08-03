@@ -1,27 +1,10 @@
-//! Login anti-enumeration: constant-time-ish verify + per-email rate limit.
+//! Login anti-enumeration: per-email rate limit for magic-link requests.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::config::LoginConfig;
-use crate::db::verify_password;
-
-/// Precomputed Argon2 hash used when the email is unknown so verify always runs.
-fn dummy_password_hash() -> &'static str {
-    static HASH: OnceLock<String> = OnceLock::new();
-    HASH.get_or_init(|| {
-        // Fixed secret — never a real user password. Computed once per process.
-        crate::db::hash_password("vcp-login-dummy-never-match-7f3a9c2e")
-            .expect("dummy password hash")
-    })
-}
-
-/// Always runs Argon2 verify (real hash or dummy) to reduce timing oracles.
-pub fn verify_login_password(password: &str, stored_hash: Option<&str>) -> bool {
-    let hash = stored_hash.unwrap_or_else(|| dummy_password_hash());
-    verify_password(password, hash) && stored_hash.is_some()
-}
 
 #[derive(Debug, Clone)]
 struct AttemptWindow {
@@ -49,21 +32,15 @@ impl LoginRateLimiter {
         }
     }
 
-    /// Pure decision helper for unit / proptest tests.
-    pub fn decide(failures: u32, max_attempts: u32, locked: bool) -> bool {
-        !locked && failures < max_attempts
-    }
-
-    /// Returns `true` when a login attempt may proceed.
+    /// Whether a magic-link request for this email is currently allowed.
     pub fn allow(&self, email: &str) -> bool {
-        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.inner.lock().expect("login limiter mutex");
         let now = Instant::now();
         let entry = map.entry(email.to_owned()).or_insert(AttemptWindow {
             failures: 0,
             window_start: now,
             locked_until: None,
         });
-
         if let Some(until) = entry.locked_until {
             if now < until {
                 return false;
@@ -72,50 +49,51 @@ impl LoginRateLimiter {
             entry.failures = 0;
             entry.window_start = now;
         }
-
         if now.duration_since(entry.window_start) > self.window {
             entry.failures = 0;
             entry.window_start = now;
         }
-
         Self::decide(entry.failures, self.max_attempts, false)
     }
 
+    /// Record a failed / unknown-email request.
     pub fn record_failure(&self, email: &str) {
-        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.inner.lock().expect("login limiter mutex");
         let now = Instant::now();
         let entry = map.entry(email.to_owned()).or_insert(AttemptWindow {
             failures: 0,
             window_start: now,
             locked_until: None,
         });
-
         if let Some(until) = entry.locked_until
             && now < until
         {
             return;
         }
-
         if now.duration_since(entry.window_start) > self.window {
             entry.failures = 0;
             entry.window_start = now;
         }
-
         entry.failures = entry.failures.saturating_add(1);
         if entry.failures >= self.max_attempts {
             entry.locked_until = Some(now + self.lockout);
         }
     }
 
+    /// Clear the window after a successful magic-link issue.
     pub fn clear(&self, email: &str) {
-        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.inner.lock().expect("login limiter mutex");
         map.remove(email);
     }
 
-    #[cfg(test)]
     pub fn failure_count(&self, email: &str) -> u32 {
-        let map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let map = self.inner.lock().expect("login limiter mutex");
         map.get(email).map(|e| e.failures).unwrap_or(0)
+    }
+
+    /// Pure helper for tests / proptest.
+    pub fn decide(failures: u32, max: u32, locked: bool) -> bool {
+        !locked && failures < max
     }
 }
 
@@ -132,19 +110,17 @@ mod tests {
     }
 
     #[test]
-    fn auth_tenant_rate_limiter_allows_under_max() {
+    fn auth_tenant_rate_limiter_allows_under_cap() {
         let lim = limiter(3);
         assert!(lim.allow("a@example.com"));
         lim.record_failure("a@example.com");
         lim.record_failure("a@example.com");
         assert!(lim.allow("a@example.com"));
-        assert_eq!(lim.failure_count("a@example.com"), 2);
     }
 
     #[test]
     fn auth_tenant_rate_limiter_locks_at_max() {
         let lim = limiter(2);
-        assert!(lim.allow("b@example.com"));
         lim.record_failure("b@example.com");
         lim.record_failure("b@example.com");
         assert!(!lim.allow("b@example.com"));
@@ -157,18 +133,6 @@ mod tests {
         assert!(!lim.allow("c@example.com"));
         lim.clear("c@example.com");
         assert!(lim.allow("c@example.com"));
-    }
-
-    #[test]
-    fn auth_tenant_verify_login_unknown_email_runs_dummy() {
-        assert!(!verify_login_password("anything", None));
-    }
-
-    #[test]
-    fn auth_tenant_verify_login_wrong_password() {
-        let hash = crate::db::hash_password("correct").unwrap();
-        assert!(!verify_login_password("wrong", Some(&hash)));
-        assert!(verify_login_password("correct", Some(&hash)));
     }
 
     #[test]

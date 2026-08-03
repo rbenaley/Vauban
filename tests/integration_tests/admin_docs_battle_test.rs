@@ -8,8 +8,8 @@ use topcoat::router::StatusCode;
 use vcp::{db::now_unix, models::DocArticle};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, create_published_doc, db_lock, get,
-    post_form, status, test_db, test_router, unique_email, unique_slug, urlencoding_encode,
+    cleanup, create_org_with_membership, create_published_doc, db_lock, get, login_cookie, status,
+    test_db, test_router, unique_email, unique_slug,
 };
 
 #[tokio::test]
@@ -267,9 +267,7 @@ async fn battle_parallel_admin_docs_page_pagination() {
     }
 
     let router = Arc::new(test_router().await);
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(router.as_ref(), "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("cookie");
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
 
     let barrier = Arc::new(Barrier::new(2));
     let cookie_a = cookie.clone();

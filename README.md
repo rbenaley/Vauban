@@ -4,12 +4,12 @@ Authenticated customer portal for Vauban.
 
 ## Stack
 
-- [Topcoat](https://github.com/tokio-rs/topcoat) 0.5 (SSR, module router, sessions, Tailwind, `mail`)
+- [Topcoat](https://github.com/tokio-rs/topcoat) 0.5 (SSR, module router, sessions, Tailwind, `mail` + `mail-smtp`)
 - [Toasty](https://github.com/tokio-rs/toasty) 0.9 + PostgreSQL
 - Casbin-format policy file under `config/access/` (custom loader; tenant gate on `{org}`)
 - TOML configuration under `config/` (same layering model as Vauban)
 - **HTTPS only** — TLS 1.3 via rustls; optional ACME TLS-ALPN-01 (no HTTP listener)
-- Dev mail sink: Topcoat `FileTransport` writes `.eml` under `target/mail` (no SMTP yet)
+- Passwordless magic-link login (SMTP): Mailpit in development/testing; Scaleway TEM in production (`[mail]` / `[magiclinks]`)
 
 ## Prerequisites
 
@@ -128,22 +128,37 @@ curl -k https://127.0.0.1:3000/login
 
 Browsers will warn on the self-signed cert until you trust it or use ACME in staging.
 
-### Seed login
+### Login (magic links)
 
-On first boot with an empty `users` table the app seeds:
+`/login` is email-only. Submitting the form swaps in-place to a **Check your
+email** panel (Topcoat signals + procedure; no `/login/check-email` redirect)
+with a resend cooldown of `magiclinks.token_ttl_secs` shown as `MM:SS`. A
+one-shot link is emailed via SMTP. Local development expects
+[Mailpit](https://github.com/axllent/mailpit) (or equivalent) on
+`localhost:1025` (`[mail]` in `development.toml`).
 
-| Email | Password | Notes |
-|-------|----------|--------|
-| `support@vauban.sh` | `password` | Vauban Support (`portal_role=admin`); membership on reserved org `vauban`; lands on `/vauban` |
-| `l.martin@acme.example` | `password` | Client user (`portal_role=org`, membership `role:org`) on `acme-infrastructure` only (org technical contact) |
+After opening a valid link: staff land on `/vauban`; a single client membership
+goes to `/{org}`; multiple client memberships open `/choose-org` to pick a
+tenant (then `/{org}`). Authenticated `GET /` and `GET /login` use the same
+landing rules.
+
+| Email | Notes |
+|-------|--------|
+| `magiclinks.vcp_admin` (default `support@vauban.sh`) | JIT-created on first sign-in as `portal_role=admin`, display name `Vauban Support`; lands on `/vauban` |
+| Company account emails | Provisioned from `/admin/companies` (invitation on create/revive; org-scoped revocation mail on remove; soft-deleted when orphaned) |
+
+Demo seed (empty DB) still creates `l.martin@acme.example` on `acme-infrastructure` for catalog samples — sign in via magic link.
 
 Slug **`vauban`** is reserved (not a billable client). Client companies cannot create or rename to that slug.
+
+Ops smoke: [`docs/runbooks/magic_links_smoke_test.md`](docs/runbooks/magic_links_smoke_test.md).
 
 ## Route map
 
 | Path | Surface |
 |------|---------|
 | `/login` | Sign in |
+| `/choose-org` | Multi-org picker (session required) |
 | `/{org}` | Dashboard (clients + staff preview on `vauban`) |
 | `/{org}/docs` | Documentation KB (shared catalogue) |
 | `/{org}/builds` | Builds (GA + that org's private releases) |
@@ -154,7 +169,7 @@ Slug **`vauban`** is reserved (not a billable client). Client companies cannot c
 | `/admin/docs` | Documentation editor |
 | `/admin/releases` | Release manager (GA or org-targeted) |
 | `/admin/companies` | Client companies: list / new / edit / delete (excludes reserved `vauban`) |
-| `/admin/companies/new` | Onboard org + provision email-only accounts (Mailbox syntax check; bootstrap password `password` until magic links) |
+| `/admin/companies/new` | Onboard org + provision email-only accounts (Mailbox syntax check; invitation magic link on create) |
 | `/admin/companies/{id}` | Edit company + sync accounts under `org.max_accounts_per_org` |
 
 Wrong org slug → **404** (no cross-tenant leak). `/admin/*` requires Vauban Support (`portal_role=admin` + Casbin `admin:view`). Direct `/vauban/issues*` redirects to `/admin/issues`.

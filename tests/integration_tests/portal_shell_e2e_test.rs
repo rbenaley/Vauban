@@ -5,26 +5,13 @@ use topcoat::router::StatusCode;
 use vcp::models::{RELEASE_GA_ORG_ID, Release};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, create_published_doc, db_lock, get,
+    cleanup, create_org_with_membership, create_published_doc, db_lock, get, login_cookie,
     post_form, status, test_db, test_router, unique_email, unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
     let bytes = resp.into_body().collect().await.expect("body").to_bytes();
     String::from_utf8_lossy(&bytes).into_owned()
-}
-
-fn urlencoding_encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 #[tokio::test]
@@ -83,9 +70,7 @@ async fn e2e_admin_dashboard_renders_shell_with_admin_rail() {
     let slug = unique_slug("shell-admin");
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
 
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(&router, "/login", None, &form).await;
-    let cookie = cookie_header(&login);
+    let cookie = login_cookie(&router, &email).await;
     assert!(cookie.is_some(), "login cookie required");
 
     let dash = get(&router, &format!("/{slug}"), cookie.as_deref()).await;
@@ -111,9 +96,7 @@ async fn e2e_member_dashboard_shell_without_admin_rail() {
     let slug = unique_slug("shell-member");
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
 
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(&router, "/login", None, &form).await;
-    let cookie = cookie_header(&login);
+    let cookie = login_cookie(&router, &email).await;
     assert!(cookie.is_some(), "login cookie required");
 
     let dash = get(&router, &format!("/{slug}"), cookie.as_deref()).await;
@@ -147,9 +130,7 @@ async fn e2e_docs_modal_exposes_close_hit_target() {
     let article = unique_slug("shell-article");
     create_published_doc(&db, "Shell Polish Doc", "summary", "Guides", &article).await;
 
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(&router, "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("session cookie");
+    let cookie = login_cookie(&router, &email).await.expect("session cookie");
 
     let modal = get(&router, &format!("/{slug}/docs/{article}"), Some(&cookie)).await;
     assert_eq!(status(&modal), StatusCode::OK);
@@ -195,9 +176,7 @@ async fn e2e_builds_ephemeral_exposes_countdown_class() {
         .expect("release");
     }
 
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(&router, "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("session cookie");
+    let cookie = login_cookie(&router, &email).await.expect("session cookie");
 
     let gen_resp = post_form(
         &router,

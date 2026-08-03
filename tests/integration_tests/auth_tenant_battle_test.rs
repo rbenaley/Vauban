@@ -11,8 +11,8 @@ use vcp::{
 };
 
 use crate::common::{
-    cleanup, create_org_with_membership, create_test_org, create_test_user, db_lock, get, status,
-    test_db, test_router, unique_email, unique_slug,
+    call_request_login_link, cleanup, create_org_with_membership, create_test_org,
+    create_test_user, db_lock, get, status, test_db, test_router, unique_email, unique_slug,
 };
 
 #[tokio::test]
@@ -263,7 +263,7 @@ async fn battle_parallel_wrong_org_and_admin_denials_are_404() {
 }
 
 #[tokio::test]
-async fn battle_parallel_login_failures_stay_redirect() {
+async fn battle_parallel_login_failures_stay_ok() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
@@ -286,16 +286,10 @@ async fn battle_parallel_login_failures_stay_redirect() {
         let email = email.clone();
         handles.push(tokio::spawn(async move {
             barrier.wait().await;
-            let enc = email.replace('@', "%40");
-            let form = format!("email={enc}&password=wrong-{i}");
-            let resp = crate::common::post_form(&router, "/login", None, &form).await;
-            assert!(status(&resp).is_redirection());
-            let loc = resp
-                .headers()
-                .get("location")
-                .and_then(|v| v.to_str().ok())
-                .expect("location");
-            assert_eq!(loc, "/login");
+            // Concurrent floods against an unknown address (shared limiter key).
+            let missing = format!("missing-{i}-{email}");
+            let resp = call_request_login_link(&router, &missing).await;
+            assert_eq!(status(&resp), StatusCode::OK);
         }));
     }
 

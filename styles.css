@@ -778,6 +778,11 @@ a.vb-btn.vb-btn-build, button.vb-btn.vb-btn-build, span.vb-btn.vb-btn-build {
 }
 .vb-login-panel h2 { margin: 0 0 8px; font-size: 22px; color: #fff; }
 .vb-login-panel .vb-muted { color: #9aa3ab; }
+.vb-login-panel .vb-login-error {
+  margin: 12px 0 0; padding: 10px 12px; border-radius: 4px;
+  border: 1px solid #5a3030; background: #2a1818; color: #e8b4b4;
+  font-size: 13px; line-height: 1.4;
+}
 .vb-login-panel label { display: block; font-size: 13px; margin: 14px 0 6px; color: #9aa3ab; }
 .vb-login-panel input {
   width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 4px;
@@ -788,4 +793,15 @@ a.vb-btn.vb-btn-build, button.vb-btn.vb-btn-build, span.vb-btn.vb-btn-build {
   background: var(--accent); color: #fff; font-weight: 600; cursor: pointer;
   font-size: 14px;
 }
+.vb-login-org-list {
+  list-style: none; margin: 18px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px;
+}
+.vb-login-org-link {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 12px 14px; border-radius: 4px;
+  border: 1px solid #3a424c; background: #11151a; color: #fff; text-decoration: none;
+}
+.vb-login-org-link:hover { border-color: var(--accent); }
+.vb-login-org-name { display: block; font-weight: 600; font-size: 14px; color: #fff; }
+.vb-login-org-slug { display: block; font-size: 12px; color: #9aa3ab; }
 

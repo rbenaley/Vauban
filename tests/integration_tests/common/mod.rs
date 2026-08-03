@@ -3,26 +3,29 @@
 mod topcoat_click;
 
 pub use topcoat_click::{
-    assert_topcoat_click_handlers_are_functions, data_topcoat_on_click_values,
-    is_topcoat_function_handler,
+    assert_topcoat_click_handlers_are_functions, assert_topcoat_submit_handlers_are_functions,
+    data_topcoat_on_click_values, is_topcoat_function_handler,
 };
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use http_body_util::BodyExt;
 use toasty::Db;
 use tokio::sync::Mutex;
+use topcoat::mail::MemoryTransport;
 use topcoat::router::{Body, Method, Request, Response, Router, StatusCode};
 use vcp::{
     app,
     auth::persist_session_record,
     config::{Config, Environment},
-    db::{self, hash_password, now_unix},
+    db::{self, now_unix},
+    magic_link::{active_user_by_email, issue_token},
     models::{
         AuthSession, DOC_STATUS_PUBLISHED, DocArticle, EphemeralDownload, Issue,
-        MEMBERSHIP_ROLE_ORG, Membership, Organization, PORTAL_ROLE_ADMIN, PORTAL_ROLE_ORG,
-        RESERVED_ORG_SLUG, Release, User,
+        MEMBERSHIP_ROLE_ORG, MagicLinkToken, Membership, Organization, PORTAL_ROLE_ADMIN,
+        PORTAL_ROLE_ORG, RESERVED_ORG_SLUG, Release, USER_NOT_DELETED, User,
     },
     perms::PolicyStore,
 };
@@ -100,6 +103,16 @@ pub async fn test_router_with_config(cfg: Config) -> Router {
     app::router(database, policy, &cfg)
 }
 
+/// Router with [`MemoryTransport`] for asserting outbound mail without SMTP.
+pub async fn test_router_with_memory_mail(memory: MemoryTransport) -> Router {
+    let cfg = test_config().await;
+    let database = test_db().await;
+    let policy = std::sync::Arc::new(
+        PolicyStore::load_from_csv(&cfg.access.policy_path).expect("load policy"),
+    );
+    app::router_with_memory_mail(database, policy, &cfg, memory)
+}
+
 pub fn unique_suffix() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -116,23 +129,22 @@ pub fn unique_slug(prefix: &str) -> String {
     format!("test-{prefix}-{}", unique_suffix())
 }
 
-pub async fn create_test_user(db: &Db, email: &str, password: &str) -> User {
-    create_test_user_with_portal_role(db, email, password, PORTAL_ROLE_ORG).await
+pub async fn create_test_user(db: &Db, email: &str, _password: &str) -> User {
+    create_test_user_with_portal_role(db, email, _password, PORTAL_ROLE_ORG).await
 }
 
 pub async fn create_test_user_with_portal_role(
     db: &Db,
     email: &str,
-    password: &str,
+    _password: &str,
     portal_role: &str,
 ) -> User {
     let mut db = db.clone();
-    let password_hash = hash_password(password).expect("hash password");
     toasty::create!(User {
         email: email.to_owned(),
         display_name: format!("Test {email}"),
-        password_hash,
         portal_role: portal_role.to_owned(),
+        deleted_at: USER_NOT_DELETED,
     })
     .exec(&mut db)
     .await
@@ -266,6 +278,16 @@ pub async fn cleanup(db: &Db) {
         }
     }
 
+    let tokens = MagicLinkToken::all()
+        .exec(&mut db)
+        .await
+        .unwrap_or_default();
+    for t in tokens {
+        if test_user_ids.contains(&t.user_id) {
+            let _ = MagicLinkToken::delete_by_token_hash(&mut db, &t.token_hash).await;
+        }
+    }
+
     let memberships = Membership::all().exec(&mut db).await.unwrap_or_default();
     for m in memberships {
         let drop = test_user_ids.contains(&m.user_id) || test_org_ids.contains(&m.organization_id);
@@ -373,10 +395,15 @@ pub async fn post_json(router: &Router, path: &str, cookie: Option<&str>, json: 
     router.handle(req).await
 }
 
-/// Login helper (password fixture `password`).
+/// Login helper: issue a magic-link token and consume it (same production path).
 pub async fn login_cookie(router: &Router, email: &str) -> Option<String> {
-    let form = format!("email={}&password=password", urlencoding_encode(email));
-    let login = post_form(router, "/login", None, &form).await;
+    let db = test_db().await;
+    let mut conn = db.clone();
+    let normalized = email.trim().to_ascii_lowercase();
+    let user = active_user_by_email(&mut conn, &normalized).await.ok()??;
+    let raw = issue_token(&mut conn, user.id, 300).await.ok()?;
+    let path = format!("/login/magic?token={raw}");
+    let login = get(router, &path, None).await;
     cookie_header(&login)
 }
 
@@ -389,6 +416,79 @@ pub fn shard_path_from_html(html: &str) -> Option<String> {
         .find(['"', '\'', ' ', ')', ',', '&'])
         .unwrap_or(rest.len());
     Some(rest[..end].replace("\\/", "/"))
+}
+
+/// Extract the first `/_topcoat/procedures/{id}` path from SSR HTML.
+///
+/// Procedure IDs are compile-time UUIDs embedded as hydrated
+/// `{ t: "Procedure", id: "…" }` markers (or a literal path).
+pub fn procedure_path_from_html(html: &str) -> Option<String> {
+    let key = "/_topcoat/procedures/";
+    if let Some(i) = html.find(key) {
+        let rest = &html[i..];
+        let end = rest
+            .find(['"', '\'', ' ', ')', ',', '&'])
+            .unwrap_or(rest.len());
+        return Some(rest[..end].replace("\\/", "/"));
+    }
+    procedure_id_from_html(html).map(|id| format!("/_topcoat/procedures/{id}"))
+}
+
+/// Pull a Topcoat procedure UUID out of SSR hydrate / attribute payloads.
+pub fn procedure_id_from_html(html: &str) -> Option<String> {
+    // Unescaped: "t":"Procedure","id":"<uuid>"
+    const MARKERS: &[&str] = &[
+        "\"t\":\"Procedure\",\"id\":\"",
+        "\"t\": \"Procedure\", \"id\": \"",
+        "&quot;t&quot;:&quot;Procedure&quot;,&quot;id&quot;:&quot;",
+        "&quot;t&quot;: &quot;Procedure&quot;, &quot;id&quot;: &quot;",
+    ];
+    for marker in MARKERS {
+        if let Some(i) = html.find(marker) {
+            let rest = &html[i + marker.len()..];
+            let end = rest.find(['"', '&']).unwrap_or(rest.len());
+            let id = &rest[..end];
+            if looks_like_procedure_id(id) {
+                return Some(id.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn looks_like_procedure_id(id: &str) -> bool {
+    // UUID or any non-empty opaque id Topcoat may emit.
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// JSON body for `request_login_link(email)` (single String arg).
+pub fn request_login_link_json(email: &str) -> String {
+    format!("[{}]", json_string(email))
+}
+
+/// Resolve the login magic-link procedure path from a fresh GET `/login`, then POST.
+pub async fn call_request_login_link(router: &Router, email: &str) -> Response {
+    let page = get(router, "/login", None).await;
+    assert_eq!(
+        status(&page),
+        StatusCode::OK,
+        "GET /login must succeed before calling request_login_link"
+    );
+    let html = {
+        let bytes = page
+            .into_body()
+            .collect()
+            .await
+            .expect("login body")
+            .to_bytes();
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    let path = procedure_path_from_html(&html).expect("procedure path in /login SSR HTML");
+    post_json(router, &path, None, &request_login_link_json(email)).await
 }
 
 /// JSON body for `docs_search_results(org_slug, q, cat, page)`.

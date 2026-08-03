@@ -95,17 +95,23 @@ grep -nE 'admin,[[:space:]]*view' "$POLICY" >/dev/null || fail "$POLICY must gra
 if grep -REn --include='*.rs' -e 'Continue to portal' src/app/ >/dev/null 2>&1; then
   fail "src/app must not render a Continue to portal button (redirect instead)"
 fi
-if ! grep -n 'home_org_slug' src/app.rs >/dev/null; then
-  fail "GET / must call home_org_slug for session landing"
+if ! grep -n 'post_auth_landing' src/app.rs >/dev/null; then
+  fail "GET / must call post_auth_landing for session landing"
 fi
-if ! grep -n 'home_org_slug' src/app/login.rs >/dev/null; then
-  fail "GET /login must call home_org_slug when a session is present"
+if ! grep -n 'post_auth_landing' src/app/login.rs >/dev/null; then
+  fail "GET /login must call post_auth_landing when a session is present"
 fi
 if ! grep -nE 'Err\(redirect\(' src/app/login.rs >/dev/null; then
   fail "GET /login must Err(redirect(...)) for authenticated sessions"
 fi
+if ! grep -n 'fn classify_post_auth_landing' src/auth.rs >/dev/null; then
+  fail "src/auth.rs must expose classify_post_auth_landing (pure landing decision)"
+fi
 if ! grep -n 'fn resolve_home_org_slug' src/auth.rs >/dev/null; then
   fail "src/auth.rs must expose resolve_home_org_slug (pure landing decision)"
+fi
+if ! grep -n '/choose-org' src/app/login.rs >/dev/null; then
+  fail "src/app/login.rs must expose /choose-org multi-org picker"
 fi
 
 # Navigational GET hubs use redirect (307), not see_other (303 PRG).
@@ -176,9 +182,15 @@ if ! grep -n 'trust_origin' src/app.rs >/dev/null; then
   fail "router must trust_origin from server.public_origins"
 fi
 
-# Login must always verify (dummy hash path) and use the rate limiter.
-if ! grep -n 'verify_login_password' src/app/login.rs >/dev/null; then
-  fail "login must call verify_login_password (dummy Argon2 path)"
+# Login is passwordless magic-link with rate limiting.
+if ! grep -n 'issue_token' src/app/login.rs >/dev/null; then
+  fail "login must issue magic-link tokens"
+fi
+if ! grep -n 'consume_token' src/app/login.rs >/dev/null; then
+  fail "login must consume magic-link tokens"
+fi
+if grep -n 'verify_login_password\|password_hash' src/app/login.rs >/dev/null; then
+  fail "login must not use password verification"
 fi
 if ! grep -n 'LoginRateLimiter' src/app/login.rs >/dev/null; then
   fail "login must use LoginRateLimiter"
@@ -186,10 +198,14 @@ fi
 if ! grep -n 'LoginRateLimiter' src/app.rs >/dev/null; then
   fail "router must install LoginRateLimiter in app_context"
 fi
+if ! grep -n 'build_smtp_transport' src/app.rs >/dev/null; then
+  fail "router must build SMTP transport from [mail] config"
+fi
 for f in config/default.toml config/development.toml config/vcp.conf; do
   grep -n 'max_attempts' "$f" >/dev/null || fail "$f must define [login] max_attempts"
   grep -n 'window_secs' "$f" >/dev/null || fail "$f must define [login] window_secs"
   grep -n 'lockout_secs' "$f" >/dev/null || fail "$f must define [login] lockout_secs"
+  grep -n 'token_ttl_secs' "$f" >/dev/null || fail "$f must define [magiclinks] token_ttl_secs"
 done
 # Testing uses an elevated ceiling so suite login floods do not lock out.
 grep -n 'max_attempts' config/testing.toml >/dev/null || fail "config/testing.toml must define [login] max_attempts"

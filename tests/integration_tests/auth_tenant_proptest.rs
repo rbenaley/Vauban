@@ -2,24 +2,13 @@
 
 use proptest::prelude::*;
 use vcp::{
-    auth::resolve_home_org_slug,
+    auth::{PostAuthLanding, classify_post_auth_landing, resolve_home_org_slug},
     config::LoginConfig,
-    db::{hash_password, verify_password},
-    login_limit::{LoginRateLimiter, verify_login_password},
+    login_limit::LoginRateLimiter,
+    magic_link::{generate_raw_token, hash_token},
     models::{PORTAL_ROLE_ADMIN, PORTAL_ROLE_ORG, RESERVED_ORG_SLUG, is_allowed_portal_role},
     perms::PolicyStore,
 };
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-
-    #[test]
-    fn prop_password_roundtrip(password in "[a-zA-Z0-9]{8,24}") {
-        let hash = hash_password(&password).expect("hash");
-        prop_assert!(verify_password(&password, &hash));
-        prop_assert!(!verify_password(&(password + "!"), &hash));
-    }
-}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
@@ -68,6 +57,24 @@ proptest! {
     }
 
     #[test]
+    fn prop_classify_post_auth_landing_by_client_count(
+        slugs in prop::collection::vec("[a-z][a-z0-9-]{2,12}", 0..6)
+    ) {
+        // Deduplicate so len matches distinct memberships.
+        let mut unique = slugs;
+        unique.sort();
+        unique.dedup();
+        let landed = classify_post_auth_landing(PORTAL_ROLE_ORG, &unique);
+        match unique.len() {
+            0 => prop_assert_eq!(landed, PostAuthLanding::None),
+            1 => prop_assert_eq!(landed, PostAuthLanding::Org(unique[0].clone())),
+            _ => prop_assert_eq!(landed, PostAuthLanding::ChooseOrg),
+        }
+        let staff = classify_post_auth_landing(PORTAL_ROLE_ADMIN, &unique);
+        prop_assert_eq!(staff, PostAuthLanding::Org(RESERVED_ORG_SLUG.to_owned()));
+    }
+
+    #[test]
     fn prop_portal_role_catalogue_rejects_noise(role in "[a-z]{1,16}") {
         prop_assume!(role != PORTAL_ROLE_ADMIN && role != PORTAL_ROLE_ORG);
         prop_assert!(!is_allowed_portal_role(&role));
@@ -85,8 +92,13 @@ proptest! {
     }
 
     #[test]
-    fn prop_verify_login_unknown_email_always_false(password in "[a-zA-Z0-9]{8,24}") {
-        prop_assert!(!verify_login_password(&password, None));
+    fn prop_magic_token_hash_stable(raw in "[0-9a-f]{16,64}") {
+        prop_assert_eq!(hash_token(&raw), hash_token(&raw));
+        let (a, ha) = generate_raw_token();
+        let (b, hb) = generate_raw_token();
+        prop_assert_ne!(&a, &b);
+        prop_assert_eq!(ha, hash_token(&a));
+        prop_assert_eq!(hb, hash_token(&b));
     }
 }
 

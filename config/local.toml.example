@@ -3,3 +3,11 @@
 
 [database]
 url = "postgresql://localhost/vcp"
+
+# Optional: point at Scaleway TEM instead of local Mailpit.
+# [mail]
+# smtp_host = "smtp.tem.scaleway.com"
+# smtp_port = 587
+# smtp_encryption = "starttls"
+# smtp_username = "YOUR-PROJECT-ID"
+# smtp_password = "YOUR-IAM-SECRET-KEY"

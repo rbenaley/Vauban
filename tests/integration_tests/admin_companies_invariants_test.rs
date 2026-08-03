@@ -49,9 +49,24 @@ fn inv_lts_subscription_cap_and_steppers() {
         env!("CARGO_MANIFEST_DIR"),
         "/src/companies_accounts.rs"
     ));
-    assert!(accounts.contains("BOOTSTRAP_LOGIN_PASSWORD"));
-    assert!(accounts.contains("hash_password(BOOTSTRAP_LOGIN_PASSWORD)"));
-    assert!(!accounts.contains("unusable_password_hash"));
+    assert!(accounts.contains("soft_delete_org_user"));
+    assert!(accounts.contains("notify_org_access_revoked"));
+    assert!(accounts.contains("invite_user"));
+    assert!(accounts.contains("send_invitation_mail"));
+    assert!(accounts.contains("send_revocation_mail"));
+    // Revocation mail is per membership removal, not only orphan soft-delete.
+    assert!(accounts.contains("notify_org_access_revoked(cx, cfg.as_ref(), user, org_name)"));
+    let soft_fn = accounts
+        .split("async fn soft_delete_org_user")
+        .nth(1)
+        .and_then(|s| s.split("async fn ").next())
+        .expect("soft_delete_org_user body");
+    assert!(
+        !soft_fn.contains("send_revocation_mail"),
+        "soft-delete must not own revocation mail"
+    );
+    assert!(!accounts.contains("password_hash"));
+    assert!(!accounts.contains("BOOTSTRAP_LOGIN_PASSWORD"));
     let new = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/app/admin/companies/new.rs"
@@ -95,8 +110,10 @@ fn inv_mailbox_email_validation_wired() {
     assert!(accounts.contains("Mailbox::new"));
     assert!(accounts.contains("Result<Vec<String>, String>"));
     assert!(cargo.contains("\"mail\""));
-    assert!(app.contains("FileTransport"));
+    assert!(cargo.contains("mail-smtp"));
+    assert!(app.contains("build_smtp_transport"));
     assert!(app.contains(".mail("));
+    assert!(!app.contains("FileTransport"));
 }
 
 #[test]

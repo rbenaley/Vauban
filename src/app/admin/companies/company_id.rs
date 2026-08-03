@@ -357,7 +357,7 @@ async fn save_edit(
         .await
         .map_err(|_| "Could not update company.".to_owned())?;
 
-    sync_org_accounts(&mut database, org.id, &emails, max)
+    sync_org_accounts(cx, &mut database, org.id, &emails, max, &org.name)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -374,7 +374,7 @@ async fn admin_companies_delete(cx: &Cx, Form(form): Form<DeleteCompanyForm>) ->
     let Some(id) = parse_company_id(raw) else {
         return Err(not_found().into());
     };
-    let Some(_org) = load_company(cx, id).await else {
+    let Some(org) = load_company(cx, id).await else {
         return Err(not_found().into());
     };
 
@@ -384,8 +384,9 @@ async fn admin_companies_delete(cx: &Cx, Form(form): Form<DeleteCompanyForm>) ->
         )));
     }
 
+    let org_name = org.name.clone();
     let mut database = db(cx);
-    let _ = delete_org_with_accounts(&mut database, id).await;
+    let _ = delete_org_with_accounts(cx, &mut database, id, &org_name).await;
 
     Ok(see_other("/admin/companies"))
 }

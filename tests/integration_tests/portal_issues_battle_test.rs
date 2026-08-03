@@ -10,7 +10,7 @@ use vcp::models::{
 };
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, db_lock, get, post_form, status, test_db,
+    cleanup, create_org_with_membership, db_lock, get, login_cookie, post_form, status, test_db,
     test_router, unique_email, unique_slug, urlencoding_encode,
 };
 
@@ -25,16 +25,7 @@ async fn battle_concurrent_report_issue_http_posts() {
     let (_user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
 
     let router = test_router().await;
-    let cookie = cookie_header(
-        &post_form(
-            &router,
-            "/login",
-            None,
-            &format!("email={}&password=password", urlencoding_encode(&email)),
-        )
-        .await,
-    )
-    .expect("login cookie");
+    let cookie = login_cookie(&router, &email).await.expect("login cookie");
 
     let n = 8usize;
     let barrier = Arc::new(Barrier::new(n));
@@ -293,9 +284,7 @@ async fn battle_parallel_close_reopen_under_detail_reads() {
         .expect("issue");
     }
 
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(router.as_ref(), "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("cookie");
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
 
     let barrier = Arc::new(Barrier::new(3));
     let close_path = format!("/{slug}/issues/{key}/close");

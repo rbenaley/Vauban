@@ -8,8 +8,8 @@ use topcoat::router::StatusCode;
 use vcp::models::{RELEASE_GA_ORG_ID, Release};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, db_lock, get, post_form, status, test_db,
-    test_router, unique_email, unique_slug, urlencoding_encode,
+    cleanup, create_org_with_membership, db_lock, get, login_cookie, post_form, status, test_db,
+    test_router, unique_email, unique_slug,
 };
 
 fn count_channel_badges(html: &str) -> usize {
@@ -112,9 +112,7 @@ async fn battle_parallel_admin_releases_page_pagination() {
     }
 
     let router = Arc::new(test_router().await);
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(router.as_ref(), "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("cookie");
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
 
     let barrier = Arc::new(Barrier::new(2));
     let cookie_a = cookie.clone();
@@ -190,9 +188,7 @@ async fn battle_parallel_publish_unpublish_under_list_reads() {
     };
 
     let router = Arc::new(test_router().await);
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(router.as_ref(), "/login", None, &form).await;
-    let cookie = cookie_header(&login).expect("cookie");
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
 
     let barrier = Arc::new(Barrier::new(3));
     let cookie_a = cookie.clone();
@@ -331,9 +327,7 @@ async fn battle_parallel_semver_list_order_under_concurrent_creates() {
     }
 
     let router = Arc::new(test_router().await);
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login_resp = post_form(&router, "/login", None, &form).await;
-    let cookie = cookie_header(&login_resp).expect("cookie");
+    let cookie = login_cookie(&router, &email).await.expect("cookie");
     let barrier = Arc::new(Barrier::new(3));
     let mut readers = Vec::new();
     for _ in 0..3 {

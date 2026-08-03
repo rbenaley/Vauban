@@ -6,8 +6,8 @@ use topcoat::router::StatusCode;
 use vcp::models::DocArticle;
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, db_lock, get, post_form, status, test_db,
-    test_router, unique_email, unique_slug, urlencoding_encode,
+    cleanup, create_org_with_membership, db_lock, get, login_cookie, status, test_db, test_router,
+    unique_email, unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -50,9 +50,7 @@ async fn e2e_vcp_tz_cookie_changes_admin_docs_time() {
         .id
     };
 
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(&router, "/login", None, &form).await;
-    let session = cookie_header(&login).expect("session cookie");
+    let session = login_cookie(&router, &email).await.expect("session cookie");
 
     let utc_cookie = format!("{session}; vcp_tz=UTC");
     let paris_cookie = format!("{session}; vcp_tz=Europe/Paris");

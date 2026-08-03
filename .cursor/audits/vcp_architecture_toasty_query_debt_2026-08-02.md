@@ -160,7 +160,7 @@ org issue volume makes full key-list allocation hot (not required now).
 Not tracked as ORM debt here; product / ops follow-ups only:
 
 - In-process login rate limiter (multi-instance)
-- Real mail + magic links (onboarding)
+- ~~Real mail + magic links (onboarding)~~ — **Done** (passwordless SMTP magic links, soft-delete accounts, invite/revoke mails)
 - `unwrap()` triage outside tests
 - Young 0.x Topcoat / Toasty churn risk (API capability confirmed below)
 

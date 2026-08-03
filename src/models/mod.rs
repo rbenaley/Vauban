@@ -58,6 +58,12 @@ pub const DOC_CATEGORIES: &[&str] = &[
     "Operations",
 ];
 
+/// `User.deleted_at` sentinel: account is active (not soft-deleted).
+pub const USER_NOT_DELETED: i64 = 0;
+
+/// `MagicLinkToken.consumed_at` sentinel: token not yet used.
+pub const MAGIC_LINK_NOT_CONSUMED: i64 = 0;
+
 #[derive(Debug, Clone, Model)]
 pub struct User {
     #[key]
@@ -69,10 +75,37 @@ pub struct User {
 
     pub display_name: String,
 
-    pub password_hash: String,
-
     /// [`PORTAL_ROLE_ORG`] for clients; [`PORTAL_ROLE_ADMIN`] for Vauban Support.
     pub portal_role: String,
+
+    /// Unix timestamp when soft-deleted; [`USER_NOT_DELETED`] when active.
+    pub deleted_at: i64,
+}
+
+/// One-shot magic-link token (DB stores hash only; raw token is emailed).
+#[derive(Debug, Clone, Model)]
+#[table = "magic_link_tokens"]
+pub struct MagicLinkToken {
+    #[key]
+    pub token_hash: String,
+
+    #[index]
+    pub user_id: u64,
+
+    /// Unix timestamp when the token expires.
+    pub expires_at: i64,
+
+    /// Unix timestamp when consumed; [`MAGIC_LINK_NOT_CONSUMED`] until then.
+    pub consumed_at: i64,
+
+    pub created_at: i64,
+}
+
+impl User {
+    /// Whether this account may log in or receive magic links.
+    pub fn is_active(&self) -> bool {
+        self.deleted_at == USER_NOT_DELETED
+    }
 }
 
 /// Persisted Topcoat session: SHA-256 token hash (hex) + expiry, never the raw token.

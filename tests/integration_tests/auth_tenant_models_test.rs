@@ -48,8 +48,8 @@ async fn models_reject_duplicate_email() {
     let err = toasty::create!(User {
         email: email.clone(),
         display_name: "Dup".to_owned(),
-        password_hash: "x".to_owned(),
         portal_role: PORTAL_ROLE_ORG.to_owned(),
+        deleted_at: 0,
     })
     .exec(&mut conn)
     .await;
@@ -69,8 +69,8 @@ async fn models_portal_role_check_rejects_unknown() {
     let err = toasty::create!(User {
         email: email.clone(),
         display_name: "Bad".to_owned(),
-        password_hash: "x".to_owned(),
         portal_role: "member".to_owned(),
+        deleted_at: 0,
     })
     .exec(&mut conn)
     .await;

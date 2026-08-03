@@ -6,9 +6,9 @@ use vcp::db::now_unix;
 use vcp::models::{AuthSession, PORTAL_ROLE_ORG, RESERVED_ORG_SLUG};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, create_test_org, db_lock,
-    expire_all_sessions_for_user, get, login_cookie, post_form, status, test_config, test_db,
-    test_router, test_router_with_config, unique_email, unique_slug,
+    call_request_login_link, cleanup, create_org_with_membership, create_test_org, db_lock,
+    expire_all_sessions_for_user, get, login_cookie, status, test_config, test_db, test_router,
+    test_router_with_config, unique_email, unique_slug,
 };
 
 fn location(resp: &topcoat::router::Response) -> Option<&str> {
@@ -31,14 +31,7 @@ async fn e2e_login_reaches_member_dashboard() {
     let slug = unique_slug("e2e-org");
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
 
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(&router, "/login", None, &form).await;
-    assert!(
-        status(&login).is_redirection(),
-        "login should redirect, got {}",
-        status(&login)
-    );
-    let cookie = cookie_header(&login);
+    let cookie = login_cookie(&router, &email).await;
     assert!(
         cookie.is_some(),
         "login must set session cookie: {cookie:?}"
@@ -75,9 +68,7 @@ async fn e2e_wrong_org_slug_is_404() {
     );
     let _other = create_test_org(&db, &unique_slug("e2e-other")).await;
 
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(&router, "/login", None, &form).await;
-    let cookie = cookie_header(&login);
+    let cookie = login_cookie(&router, &email).await;
 
     let missing = get(
         &router,
@@ -101,9 +92,7 @@ async fn e2e_member_denied_admin_nest() {
     let slug = unique_slug("e2e-memorg");
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
 
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(&router, "/login", None, &form).await;
-    let cookie = cookie_header(&login);
+    let cookie = login_cookie(&router, &email).await;
     assert!(cookie.is_some(), "login cookie required");
 
     // Same 404 as anonymous — no existence oracle for `/admin/*`.
@@ -167,7 +156,7 @@ async fn e2e_existing_org_without_membership_same_as_missing_slug() {
 }
 
 #[tokio::test]
-async fn e2e_login_unknown_email_and_bad_password_same_redirect() {
+async fn e2e_login_unknown_and_known_email_same_procedure_ok() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
@@ -177,36 +166,16 @@ async fn e2e_login_unknown_email_and_bad_password_same_redirect() {
     let slug = unique_slug("e2e-login-oracle");
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
 
-    let unknown = post_form(
-        &router,
-        "/login",
-        None,
-        &format!(
-            "email={}&password=password",
-            urlencoding_encode(&unique_email("e2e-login-missing"))
-        ),
-    )
-    .await;
-    let bad = post_form(
-        &router,
-        "/login",
-        None,
-        &format!(
-            "email={}&password=wrong-password",
-            urlencoding_encode(&email)
-        ),
-    )
-    .await;
-    assert!(status(&unknown).is_redirection());
-    assert!(status(&bad).is_redirection());
-    assert_eq!(location(&unknown), Some("/login"));
-    assert_eq!(location(&bad), Some("/login"));
+    let unknown = call_request_login_link(&router, &unique_email("e2e-login-missing")).await;
+    let known = call_request_login_link(&router, &email).await;
+    assert_eq!(status(&unknown), StatusCode::OK);
+    assert_eq!(status(&known), StatusCode::OK);
 
     cleanup(&db).await;
 }
 
 #[tokio::test]
-async fn e2e_login_rate_limit_still_redirects_to_login() {
+async fn e2e_login_rate_limit_still_returns_ok() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
@@ -220,14 +189,14 @@ async fn e2e_login_rate_limit_still_redirects_to_login() {
     let email = unique_email("e2e-rate");
     let slug = unique_slug("e2e-rate");
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
-    let form = format!("email={}&password=wrong", urlencoding_encode(&email));
+    // Unknown email failures share one limiter key (anti-enumeration flood).
+    let missing = unique_email("e2e-rate-miss");
 
-    let first = post_form(&router, "/login", None, &form).await;
-    let second = post_form(&router, "/login", None, &form).await;
-    let third = post_form(&router, "/login", None, &form).await;
+    let first = call_request_login_link(&router, &missing).await;
+    let second = call_request_login_link(&router, &missing).await;
+    let third = call_request_login_link(&router, &missing).await;
     for resp in [&first, &second, &third] {
-        assert!(status(resp).is_redirection());
-        assert_eq!(location(resp), Some("/login"));
+        assert_eq!(status(resp), StatusCode::OK);
     }
 
     cleanup(&db).await;
@@ -333,9 +302,7 @@ async fn e2e_expired_session_cannot_open_org() {
     let slug = unique_slug("e2e-exp-org");
     let (user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
 
-    let form = format!("email={}&password=password", urlencoding_encode(&email));
-    let login = post_form(&router, "/login", None, &form).await;
-    let cookie = cookie_header(&login);
+    let cookie = login_cookie(&router, &email).await;
     assert!(cookie.is_some());
 
     // Force every persisted session for this user into the past.
@@ -357,17 +324,4 @@ async fn e2e_expired_session_cannot_open_org() {
     assert_eq!(status(&dash), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
-}
-
-fn urlencoding_encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }

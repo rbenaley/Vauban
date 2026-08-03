@@ -5,7 +5,7 @@ use topcoat::router::StatusCode;
 use vcp::{db::now_unix, models::DocArticle};
 
 use crate::common::{
-    cleanup, cookie_header, create_org_with_membership, create_published_doc, db_lock, get,
+    cleanup, create_org_with_membership, create_published_doc, db_lock, get, login_cookie,
     post_form, status, test_db, test_router, unique_email, unique_slug, urlencoding_encode,
 };
 
@@ -15,14 +15,7 @@ async fn body_text(resp: topcoat::router::Response) -> String {
 }
 
 async fn login(router: &topcoat::router::Router, email: &str) -> Option<String> {
-    let form = format!("email={}&password=password", urlencoding_encode(email));
-    let login = post_form(router, "/login", None, &form).await;
-    assert!(
-        status(&login).is_redirection(),
-        "login should redirect, got {}",
-        status(&login)
-    );
-    cookie_header(&login)
+    login_cookie(router, email).await
 }
 
 #[tokio::test]

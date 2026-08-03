@@ -49,3 +49,13 @@ snapshot_name = "0008_snapshot.toml"
 id = 8501667267130331648
 name = "0009_issue_org_key_unique.sql"
 snapshot_name = "0009_snapshot.toml"
+
+[[migrations]]
+id = 5394432968547171849
+name = "0010_passwordless_magic_links.sql"
+snapshot_name = "0010_snapshot.toml"
+
+[[migrations]]
+id = 4482585450857786769
+name = "0011_magic_link_tokens.sql"
+snapshot_name = "0011_snapshot.toml"
