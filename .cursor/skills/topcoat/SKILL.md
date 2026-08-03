@@ -181,10 +181,38 @@ rebundle). Override bind with `HOST` / `PORT`. Format macros with
   recursive components (comment threads, trees).
 - `attributes!` / `class!` / `props!`: attribute fragments and class lists.
 - Boolean attrs render as `disabled=""` when true (**0.5+**; was
-  `disabled="true"`). `false` still omits the attribute. Update HTML
-  snapshot asserts accordingly.
+  `disabled="true"`). **Only the Rust `bool` `false` omits the
+  attribute.** Update HTML snapshot asserts accordingly.
 - Components may be async and talk to the DB directly — no mandatory
   separate JSON API for HTML.
+
+### Boolean attributes and `<select>` (mandatory)
+
+HTML boolean attributes (`selected`, `checked`, `disabled`, `required`,
+…) are **presence-based**. Topcoat emits the attr whenever the value is
+not the bool `false`.
+
+| OK | Forbidden |
+|----|-----------|
+| `selected=(cond)` / `selected=(true)` | `selected=(if cond { "selected" } else { "" })` |
+| `disabled=(busy)` | `disabled=(if busy { "disabled" } else { "" })` |
+| Branch: `if cond { <option selected=(true)> } else { <option> }` | Putting `selected=""` on **every** `<option>` in a `for` loop |
+
+**Why:** `else { "" }` still renders `selected=""` on non-matching
+options. For a single-select, the browser keeps the **last** marked
+option — VCP hit this on admin release edit (`Channel` flipped to EOL,
+`Target organization` to the last org alphabetically). Saving then
+rewrote the row to the wrong client/channel.
+
+**VCP pins:** `scripts/check_topcoat_boolean_attrs.sh` (run via
+`topcoat_boolean_attrs_invariants_test`). Prefer precomputed `bool`s
+outside `view!` when several options share one stored value:
+
+```rust
+let channel_stable = rel.channel == "Stable";
+// ...
+<option value="Stable" selected=(channel_stable)>"Stable"</option>
+```
 
 Upstream guides: `topcoat-view/macro/docs/view.md`, `component.md`, etc.
 

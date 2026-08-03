@@ -42,6 +42,15 @@ grep -n 'RELEASE_STATUS_PUBLISHED' "$EDIT" >/dev/null \
   || fail "$EDIT must set RELEASE_STATUS_PUBLISHED"
 grep -n 'RELEASE_STATUS_HIDDEN' "$EDIT" >/dev/null \
   || fail "$EDIT must set RELEASE_STATUS_HIDDEN"
+# Boolean selected=(…) omits the attr when false. String "" emits selected="" on
+# every option and browsers keep the last one (wrong target org / channel on Save).
+grep -nE 'selected=\(org\.id == org_id\)' "$EDIT" >/dev/null \
+  || fail "$EDIT must use boolean selected=(org.id == org_id) for target org"
+grep -n 'selected=(channel_stable)' "$EDIT" >/dev/null \
+  || fail "$EDIT must use boolean selected=(channel_stable) for Channel"
+if grep -nE 'selected=\(if .* \{ "selected" \} else \{ "" \}\)' "$EDIT" >/dev/null; then
+  fail "$EDIT must not use string selected=\"\"/\"selected\" (boolean attrs only)"
+fi
 
 grep -n 'fn release_status_badge_class' "$UI" >/dev/null \
   || fail "$UI must define release_status_badge_class"

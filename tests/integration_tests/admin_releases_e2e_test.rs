@@ -109,6 +109,183 @@ async fn e2e_admin_creates_org_targeted_release() {
     cleanup(&db).await;
 }
 
+/// Regression: string `selected=""` on every `<option>` made the browser keep the
+/// *last* org (often wrong). Boolean `selected=(…)` omits the attr when false.
+#[tokio::test]
+async fn e2e_admin_releases_edit_preserves_target_org_selection() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("rel-org-sel");
+    // Names sort as Org aaa-… then Org zzz-…; a "last selected wins" bug picks zzz.
+    let (_user, target) =
+        create_org_with_membership(&db, &email, "password", &unique_slug("aaa-target"), "admin")
+            .await;
+    let decoy = crate::common::create_test_org(&db, &unique_slug("zzz-decoy")).await;
+    let decoy_id = decoy.id;
+
+    let cookie = login(&router, &email).await;
+    let version = unique_slug("v-org-sel");
+    let sort = vcp::release_pkg::version_sort_fields(&version);
+    let release_id = {
+        let mut conn = db.clone();
+        toasty::create!(Release {
+            version: version.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            size_mb: "1.0".to_owned(),
+            sha256: "pending".to_owned(),
+            status: RELEASE_STATUS_PUBLISHED.to_owned(),
+            notes: "FIX: private".to_owned(),
+            organization_id: target.id,
+            v_major: sort.v_major,
+            v_minor: sort.v_minor,
+            v_patch: sort.v_patch,
+            has_client_suffix: sort.has_client_suffix,
+            client_suffix: sort.client_suffix,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("release")
+        .id
+    };
+
+    let page = get(
+        &router,
+        &format!("/admin/releases/{release_id}"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&page), StatusCode::OK);
+    let html = body_text(page).await;
+    let select = select_fragment(&html, "organization_id");
+    assert!(
+        option_is_selected(select, &target.id.to_string()),
+        "saved target org must be selected; select={select}"
+    );
+    assert!(
+        !option_is_selected(select, &decoy_id.to_string()),
+        "decoy org must not be selected; select={select}"
+    );
+    assert_eq!(
+        select.matches("selected").count(),
+        1,
+        "exactly one selected option; select={select}"
+    );
+
+    let form = format!(
+        "version={}&channel=LTS&date=2026-07-01&notes={}&organization_id={}",
+        urlencoding_encode(&version),
+        urlencoding_encode("FIX: private"),
+        target.id
+    );
+    let save = post_form(
+        &router,
+        &format!("/admin/releases/{release_id}"),
+        cookie.as_deref(),
+        &form,
+    )
+    .await;
+    assert!(status(&save).is_redirection());
+    {
+        let mut conn = db.clone();
+        let rows = Release::all()
+            .filter(Release::fields().id().eq(release_id))
+            .exec(&mut conn)
+            .await
+            .expect("lookup");
+        assert_eq!(rows[0].organization_id, target.id);
+    }
+
+    cleanup(&db).await;
+}
+
+/// Same selected-attr bug as target org: Stable/EOL must not flip to EOL (last option).
+#[tokio::test]
+async fn e2e_admin_releases_edit_preserves_channel_selection() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("rel-chan-sel");
+    let (_user, _org) =
+        create_org_with_membership(&db, &email, "password", &unique_slug("rel-chan"), "admin")
+            .await;
+    let cookie = login(&router, &email).await;
+
+    let version = unique_slug("v-chan-sel");
+    let sort = vcp::release_pkg::version_sort_fields(&version);
+    let release_id = {
+        let mut conn = db.clone();
+        toasty::create!(Release {
+            version: version.clone(),
+            channel: "Stable".to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            size_mb: "1.0".to_owned(),
+            sha256: "pending".to_owned(),
+            status: RELEASE_STATUS_PUBLISHED.to_owned(),
+            notes: "FIX: stable".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: sort.v_major,
+            v_minor: sort.v_minor,
+            v_patch: sort.v_patch,
+            has_client_suffix: sort.has_client_suffix,
+            client_suffix: sort.client_suffix,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("release")
+        .id
+    };
+
+    let page = get(
+        &router,
+        &format!("/admin/releases/{release_id}"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&page), StatusCode::OK);
+    let html = body_text(page).await;
+    let select = select_fragment(&html, "channel");
+    assert!(
+        option_is_selected(select, "Stable"),
+        "saved channel must be selected; select={select}"
+    );
+    assert!(
+        !option_is_selected(select, "LTS") && !option_is_selected(select, "EOL"),
+        "other channels must not be selected; select={select}"
+    );
+    assert_eq!(
+        select.matches("selected").count(),
+        1,
+        "exactly one selected channel; select={select}"
+    );
+
+    cleanup(&db).await;
+}
+
+fn select_fragment<'a>(html: &'a str, id: &str) -> &'a str {
+    let marker = format!("id=\"{id}\"");
+    let start = html.find(&marker).unwrap_or_else(|| panic!("{id} select"));
+    let rest = &html[start..];
+    let end = rest.find("</select>").expect("select close");
+    &rest[..end]
+}
+
+fn option_is_selected(select_html: &str, value: &str) -> bool {
+    let needle = format!("value=\"{value}\"");
+    let Some(pos) = select_html.find(&needle) else {
+        return false;
+    };
+    let option_start = select_html[..pos].rfind("<option").unwrap_or(0);
+    let after = &select_html[option_start..];
+    let option_end = after.find('>').unwrap_or(after.len());
+    after[..option_end].contains("selected")
+}
+
 #[tokio::test]
 async fn e2e_admin_releases_list_pagination() {
     let _guard = db_lock().lock().await;

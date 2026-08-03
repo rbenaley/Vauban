@@ -253,6 +253,12 @@ Pin via surface `scripts/check_*.sh` when touching those pages (see
   (307 temporary), `redirect_permanent` (308 canonical / permanent). Do
   not hand-roll `301`/`302` + `Location` when those helpers fit (see
   `topcoat` skill §6 + `references/RUNTIME.md`).
+- **`<select>` preselection (edit forms):** use Topcoat **boolean**
+  attrs only — `selected=(value == stored)` or
+  `if match { <option selected=(true)> } else { <option> }`. Never
+  `selected=(if … { "selected" } else { "" })` (emits `selected=""` on
+  every option; browser keeps the last → silent wrong Save). Details:
+  `topcoat` skill §5; lint: `scripts/check_topcoat_boolean_attrs.sh`.
 
 ## List pagination (mandatory)
 
@@ -389,6 +395,7 @@ Diagnostic commands: prefix with `rtk` (`rtk-proxy.mdc`).
 - [ ] Auth + Casbin + tenant checks (fail closed)
 - [ ] Org-scoped DB queries filter on active tenant
 - [ ] Forms: mutations POST + CSRF/PRG; filter/search GET OK; or shard/procedure
+- [ ] Edit `<select>`s: boolean `selected=(…)` only (not string `""`/`"selected"`)
 - [ ] Dates localized via `format_local*` when shown in HTML
 - [ ] No secrets in logs; no cross-tenant leakage in errors
 - [ ] Pyramid layers listed for the change

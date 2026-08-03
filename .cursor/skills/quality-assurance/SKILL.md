@@ -23,6 +23,8 @@ and tests all pass on the touched scope. Hard gate:
    - Verify: `rtk cargo fmt --all -- --check` (`just fmt-check`)
 2. **Clippy** — warnings as errors on touched crates
 3. **Structural lints** — matching `scripts/check_*.sh` only
+   (forms with `<select>` / boolean HTML attrs: also
+   `scripts/check_topcoat_boolean_attrs.sh`)
 4. **Focused tests** — change + denial paths; then widen before hand-off
 
 ```text
@@ -30,6 +32,7 @@ just fmt
 rtk cargo fmt --all -- --check
 rtk cargo clippy -p <crate> --all-targets -- -D warnings
 # optional: bash scripts/check_<surface>.sh
+# forms/selects: bash scripts/check_topcoat_boolean_attrs.sh
 rtk cargo test -p <crate> -- <filter> -- --test-threads=1
 # before commit / "done": just fmt-check  (or just validate)
 ```

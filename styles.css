@@ -410,6 +410,9 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
 .vb-sev {
   font-size: 11px; padding: 3px 9px; border-radius: 3px; flex: none;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
+  /* Match longest label ("Critical") so Major / Minor align. */
+  display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: content-box; min-width: 8ch; text-align: center;
 }
 .vb-sev.major { background: #f7f1e3; color: #8a6a1e; }
 .vb-sev.minor { background: #eef0ed; color: #5a5f66; }
@@ -417,6 +420,9 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
 .vb-status {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 11px; padding: 4px 10px; border-radius: 3px; flex: none;
+  /* Match longest label ("In analysis") so Open / Closed / Resolved align. */
+  display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: content-box; min-width: 11ch; text-align: center;
 }
 .vb-status.open { background: #e7f6f2; color: var(--accent); }
 .vb-status.analysis { background: #f7f1e3; color: #8a6a1e; }

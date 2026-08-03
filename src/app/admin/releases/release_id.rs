@@ -89,9 +89,13 @@ async fn admin_releases_edit_page(cx: &Cx) -> Result {
         .unwrap_or_default();
 
     let action = format!("/admin/releases/{id}");
-    let channel = rel.channel.clone();
     let org_id = rel.organization_id;
     let ga_selected = org_id == RELEASE_GA_ORG_ID;
+    // Precompute outside view!: avoid string selected="" on every option (browser
+    // keeps the last marked channel) and make comparisons borrow-stable.
+    let channel_lts = rel.channel == "LTS";
+    let channel_stable = rel.channel == "Stable";
+    let channel_eol = rel.channel == "EOL";
 
     view! {
         <div>
@@ -123,33 +127,11 @@ async fn admin_releases_edit_page(cx: &Cx) -> Result {
                         <div>
                             <label for="channel">"Channel"</label>
                             <select id="channel" name="channel">
-                                <option
-                                    selected=(if channel == "LTS" {
-                                        "selected"
-                                    } else {
-                                        ""
-                                    })
-                                >
-                                    "LTS"
-                                </option>
-                                <option
-                                    selected=(if channel == "Stable" {
-                                        "selected"
-                                    } else {
-                                        ""
-                                    })
-                                >
+                                <option value="LTS" selected=(channel_lts)>"LTS"</option>
+                                <option value="Stable" selected=(channel_stable)>
                                     "Stable"
                                 </option>
-                                <option
-                                    selected=(if channel == "EOL" {
-                                        "selected"
-                                    } else {
-                                        ""
-                                    })
-                                >
-                                    "EOL"
-                                </option>
+                                <option value="EOL" selected=(channel_eol)>"EOL"</option>
                             </select>
                         </div>
                         <div>
@@ -164,20 +146,15 @@ async fn admin_releases_edit_page(cx: &Cx) -> Result {
                     </div>
                     <label for="organization_id">"Target organization"</label>
                     <select id="organization_id" name="organization_id">
-                        <option
-                            value=""
-                            selected=(if ga_selected { "selected" } else { "" })
-                        >
+                        <option value="" selected=(ga_selected)>
                             "Generally available (all orgs)"
                         </option>
                         for org in orgs {
                             let value = org.id.to_string();
                             let label = format!("{} ({})", org.name, org.slug);
-                            let selected = org.id == org_id;
-                            <option
-                                value=(value)
-                                selected=(if selected { "selected" } else { "" })
-                            >
+                            // Boolean attrs only: string "" still emits selected="" and
+                            // the browser keeps the *last* marked option (wrong org).
+                            <option value=(value) selected=(org.id == org_id)>
                                 (label)
                             </option>
                         }

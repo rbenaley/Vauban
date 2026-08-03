@@ -124,7 +124,9 @@ async fn admin_docs_edit_page(cx: &Cx) -> Result {
                                 for cat in DOC_CATEGORIES {
                                     let label = (*cat).to_owned();
                                     if *cat == current_cat.as_str() {
-                                        <option value=(label.clone()) selected="">(label)</option>
+                                        <option value=(label.clone()) selected=(true)>
+                                            (label)
+                                        </option>
                                     } else {
                                         <option value=(label.clone())>(label)</option>
                                     }

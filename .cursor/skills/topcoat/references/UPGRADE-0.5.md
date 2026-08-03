@@ -100,6 +100,12 @@ the bundler will miss it).
 Boolean attributes: `disabled="true"` → `disabled=""`. Grep tests and
 `check_*.sh` for the old spelling.
 
+Do **not** “fix” selects with
+`selected=(if x { "selected" } else { "" })` — `""` still emits the
+attribute (last marked `<option>` wins). Use `selected=(x)` / `bool`
+only; see `topcoat` skill §5 “Boolean attributes and `<select>`” and
+`scripts/check_topcoat_boolean_attrs.sh`.
+
 ### 6. Features / serve
 
 Default features already include `serve`. Only builds with

@@ -22,6 +22,7 @@
 //! - `cargo test --test integration_tests -- magic_link -- --test-threads=1`
 //! - `cargo test --test integration_tests -- companies_magic_mail -- --test-threads=1`
 //! - `cargo test --test integration_tests -- choose_org -- --test-threads=1`
+//! - `cargo test --test integration_tests -- topcoat_boolean_attrs -- --test-threads=1`
 
 mod admin_companies_battle_test;
 mod admin_companies_e2e_test;
@@ -103,3 +104,4 @@ mod toasty_migrations_battle_test;
 mod toasty_migrations_e2e_test;
 mod toasty_migrations_invariants_test;
 mod toasty_migrations_proptest;
+mod topcoat_boolean_attrs_invariants_test;

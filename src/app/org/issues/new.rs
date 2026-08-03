@@ -78,7 +78,7 @@ async fn new_issue_page(cx: &Cx) -> Result {
                             </label>
                             <select id="severity" name="severity">
                                 <option value="Minor">"Minor"</option>
-                                <option value="Major" selected="">"Major"</option>
+                                <option value="Major" selected=(true)>"Major"</option>
                                 <option value="Critical">"Critical"</option>
                             </select>
                         </div>
@@ -91,7 +91,9 @@ async fn new_issue_page(cx: &Cx) -> Result {
                                 "COMPONENT"
                             </label>
                             <select id="component" name="component">
-                                <option value="SSH Proxy" selected="">"SSH Proxy"</option>
+                                <option value="SSH Proxy" selected=(true)>
+                                    "SSH Proxy"
+                                </option>
                                 <option value="RDP Gateway">"RDP Gateway"</option>
                                 <option value="Control plane">"Control plane"</option>
                                 <option value="Portal">"Portal"</option>
