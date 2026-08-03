@@ -128,16 +128,40 @@ pub struct MagicLinksConfig {
     pub vcp_admin: String,
     #[serde(default = "default_token_ttl_secs")]
     pub token_ttl_secs: u64,
+    /// Keep rows this many days after `expires_at` before purge (0 = purge when expired).
+    #[serde(default = "default_token_retention_days")]
+    pub token_retention_days: u64,
+    /// Background purge tick interval.
+    #[serde(default = "default_purge_interval_minutes")]
+    pub purge_interval_minutes: u64,
 }
 
 fn default_token_ttl_secs() -> u64 {
     300
 }
 
+fn default_token_retention_days() -> u64 {
+    1
+}
+
+fn default_purge_interval_minutes() -> u64 {
+    60
+}
+
 impl MagicLinksConfig {
     /// Normalized admin email (trim + lowercase).
     pub fn vcp_admin_email(&self) -> String {
         self.vcp_admin.trim().to_ascii_lowercase()
+    }
+
+    /// Retention window in seconds (`token_retention_days * 86400`).
+    pub fn retention_secs(&self) -> u64 {
+        self.token_retention_days.saturating_mul(86_400)
+    }
+
+    /// Purge loop interval as a [`std::time::Duration`].
+    pub fn purge_interval_duration(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.purge_interval_minutes.saturating_mul(60))
     }
 }
 
@@ -472,6 +496,9 @@ impl Config {
         if self.magiclinks.token_ttl_secs == 0 {
             anyhow::bail!("magiclinks.token_ttl_secs must be greater than zero");
         }
+        if self.magiclinks.purge_interval_minutes == 0 {
+            anyhow::bail!("magiclinks.purge_interval_minutes must be greater than zero");
+        }
         Ok(())
     }
 
@@ -538,6 +565,13 @@ mod tests {
         assert_eq!(cfg.mail.smtp_port, 1025);
         assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Plaintext);
         assert_eq!(cfg.magiclinks.token_ttl_secs, 300);
+        assert_eq!(cfg.magiclinks.token_retention_days, 7);
+        assert_eq!(cfg.magiclinks.purge_interval_minutes, 60);
+        assert_eq!(cfg.magiclinks.retention_secs(), 7 * 86_400);
+        assert_eq!(
+            cfg.magiclinks.purge_interval_duration(),
+            std::time::Duration::from_secs(3600)
+        );
         assert_eq!(cfg.magiclinks.vcp_admin_email(), "support@vauban.sh");
     }
 
@@ -559,6 +593,8 @@ mod tests {
         assert_eq!(cfg.mail.smtp_port, 587);
         assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Starttls);
         assert_eq!(cfg.magiclinks.token_ttl_secs, 300);
+        assert_eq!(cfg.magiclinks.token_retention_days, 1);
+        assert_eq!(cfg.magiclinks.purge_interval_minutes, 60);
     }
 
     #[test]
@@ -581,6 +617,8 @@ mod tests {
         assert_eq!(cfg.org.max_lts_subscriptions, 99);
         assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Plaintext);
         assert_eq!(cfg.magiclinks.token_ttl_secs, 300);
+        assert_eq!(cfg.magiclinks.token_retention_days, 0);
+        assert_eq!(cfg.magiclinks.purge_interval_minutes, 60);
     }
 
     #[test]
@@ -617,6 +655,18 @@ mod tests {
         cfg.magiclinks.token_ttl_secs = 0;
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("token_ttl_secs"));
+    }
+
+    #[test]
+    fn rejects_zero_purge_interval_minutes() {
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Development,
+        )
+        .unwrap();
+        cfg.magiclinks.purge_interval_minutes = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("purge_interval_minutes"));
     }
 
     #[test]
@@ -672,6 +722,34 @@ mod proptest_tests {
             .unwrap();
             cfg.magiclinks.token_ttl_secs = ttl;
             prop_assert!(cfg.validate().is_ok());
+        }
+    }
+
+    proptest! {
+        fn retention_secs_is_days_times_86400(days in 0u64..=365) {
+            let mut cfg = Config::load_with_environment(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+                Environment::Development,
+            )
+            .unwrap();
+            cfg.magiclinks.token_retention_days = days;
+            prop_assert_eq!(cfg.magiclinks.retention_secs(), days.saturating_mul(86_400));
+        }
+    }
+
+    proptest! {
+        fn purge_interval_minutes_to_duration(mins in 1u64..=10_000) {
+            let mut cfg = Config::load_with_environment(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+                Environment::Development,
+            )
+            .unwrap();
+            cfg.magiclinks.purge_interval_minutes = mins;
+            prop_assert!(cfg.validate().is_ok());
+            prop_assert_eq!(
+                cfg.magiclinks.purge_interval_duration(),
+                std::time::Duration::from_secs(mins.saturating_mul(60))
+            );
         }
     }
 }

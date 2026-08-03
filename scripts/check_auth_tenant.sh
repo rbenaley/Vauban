@@ -206,9 +206,21 @@ for f in config/default.toml config/development.toml config/vcp.conf; do
   grep -n 'window_secs' "$f" >/dev/null || fail "$f must define [login] window_secs"
   grep -n 'lockout_secs' "$f" >/dev/null || fail "$f must define [login] lockout_secs"
   grep -n 'token_ttl_secs' "$f" >/dev/null || fail "$f must define [magiclinks] token_ttl_secs"
+  grep -n 'token_retention_days' "$f" >/dev/null \
+    || fail "$f must define [magiclinks] token_retention_days"
+  grep -n 'purge_interval_minutes' "$f" >/dev/null \
+    || fail "$f must define [magiclinks] purge_interval_minutes"
 done
 # Testing uses an elevated ceiling so suite login floods do not lock out.
 grep -n 'max_attempts' config/testing.toml >/dev/null || fail "config/testing.toml must define [login] max_attempts"
+grep -n 'token_retention_days' config/testing.toml >/dev/null \
+  || fail "config/testing.toml must define token_retention_days"
+grep -n 'start_magic_link_purge' src/main.rs >/dev/null \
+  || fail "src/main.rs must spawn start_magic_link_purge"
+grep -n 'purge_expired_tokens' src/magic_link.rs >/dev/null \
+  || fail "src/magic_link.rs must define purge_expired_tokens"
+[[ -f toasty/migrations/0012_magic_link_tokens_expires_at_index.sql ]] \
+  || fail "missing toasty/migrations/0012_magic_link_tokens_expires_at_index.sql"
 
 # Closed User.portal_role catalogue: admin | org (never empty string).
 grep -n 'PORTAL_ROLE_ORG' src/models/mod.rs >/dev/null \

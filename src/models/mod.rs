@@ -93,6 +93,7 @@ pub struct MagicLinkToken {
     pub user_id: u64,
 
     /// Unix timestamp when the token expires.
+    #[index]
     pub expires_at: i64,
 
     /// Unix timestamp when consumed; [`MAGIC_LINK_NOT_CONSUMED`] until then.

@@ -11,3 +11,8 @@ url = "postgresql://localhost/vcp"
 # smtp_encryption = "starttls"
 # smtp_username = "YOUR-PROJECT-ID"
 # smtp_password = "YOUR-IAM-SECRET-KEY"
+
+# Optional: override magic-link retention / purge cadence.
+# [magiclinks]
+# token_retention_days = 7
+# purge_interval_minutes = 60

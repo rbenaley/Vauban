@@ -72,12 +72,58 @@ fn inv_toml_magiclinks_ttl_300() {
             contents.contains("token_ttl_secs = 300"),
             "{rel} must set token_ttl_secs = 300"
         );
+        assert!(
+            contents.contains("purge_interval_minutes = 60"),
+            "{rel} must set purge_interval_minutes = 60"
+        );
+        assert!(
+            contents.contains("token_retention_days"),
+            "{rel} must set token_retention_days"
+        );
+        assert!(
+            !contents.contains("token_retention_secs"),
+            "{rel} must not use token_retention_secs"
+        );
+        assert!(
+            !contents.contains("purge_interval_secs"),
+            "{rel} must not use purge_interval_secs"
+        );
         assert!(contents.contains("[mail]"), "{rel} must have [mail]");
         assert!(
             contents.contains("[magiclinks]"),
             "{rel} must have [magiclinks]"
         );
     }
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/");
+    let default = std::fs::read_to_string(format!("{root}config/default.toml")).unwrap();
+    let development = std::fs::read_to_string(format!("{root}config/development.toml")).unwrap();
+    let testing = std::fs::read_to_string(format!("{root}config/testing.toml")).unwrap();
+    let prod = std::fs::read_to_string(format!("{root}config/vcp.conf")).unwrap();
+    assert!(default.contains("token_retention_days = 1"));
+    assert!(prod.contains("token_retention_days = 1"));
+    assert!(development.contains("token_retention_days = 7"));
+    assert!(testing.contains("token_retention_days = 0"));
+}
+
+#[test]
+fn inv_purge_helpers_and_main_spawn() {
+    let magic = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/magic_link.rs"));
+    assert!(magic.contains("pub async fn purge_expired_tokens"));
+    assert!(magic.contains("pub fn start_magic_link_purge"));
+    assert!(magic.contains("pub fn purge_cutoff"));
+    let main = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
+    assert!(
+        main.contains("start_magic_link_purge"),
+        "main must spawn the magic-link purge scheduler"
+    );
+    assert!(
+        std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/toasty/migrations/0012_magic_link_tokens_expires_at_index.sql"
+        ))
+        .exists(),
+        "missing expires_at index migration"
+    );
 }
 
 #[test]

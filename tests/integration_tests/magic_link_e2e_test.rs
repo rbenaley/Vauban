@@ -3,8 +3,8 @@
 use http_body_util::BodyExt;
 use topcoat::mail::{MemoryTransport, TextBody};
 use topcoat::router::StatusCode;
-use vcp::magic_link::{hash_token, issue_token};
-use vcp::models::{PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG, USER_NOT_DELETED, User};
+use vcp::magic_link::{hash_token, issue_token, purge_expired_tokens};
+use vcp::models::{MagicLinkToken, PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG, USER_NOT_DELETED, User};
 
 use crate::common::{
     assert_topcoat_click_handlers_are_functions, assert_topcoat_submit_handlers_are_functions,
@@ -265,4 +265,69 @@ async fn e2e_failed_magic_link_shows_generic_error() {
         !other_html.contains("This sign-in link is invalid or has expired"),
         "unknown error= values must not show the link-error banner"
     );
+}
+
+/// Retention 0 (testing.toml): expired rows purge; still-valid tokens remain.
+#[tokio::test]
+async fn e2e_purge_expired_tokens_keeps_active_deletes_stale() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("ml-purge");
+    let slug = unique_slug("ml-purge");
+    let (user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let mut conn = db.clone();
+    let fresh_raw = issue_token(&mut conn, user.id, 300)
+        .await
+        .expect("fresh issue");
+    let fresh_hash = hash_token(&fresh_raw);
+    let stale_hash = format!("stale-{}", unique_slug("h"));
+    toasty::create!(MagicLinkToken {
+        token_hash: stale_hash.clone(),
+        user_id: user.id,
+        expires_at: now - 120,
+        consumed_at: now - 60,
+        created_at: now - 3600,
+    })
+    .exec(&mut conn)
+    .await
+    .expect("stale expired row");
+
+    let deleted = purge_expired_tokens(&mut conn, now, 0)
+        .await
+        .expect("purge");
+    assert!(deleted >= 1, "purge must delete the expired row");
+
+    let leftover = MagicLinkToken::all()
+        .filter(MagicLinkToken::fields().user_id().eq(user.id))
+        .exec(&mut conn)
+        .await
+        .expect("list");
+    assert!(
+        leftover.iter().all(|t| t.expires_at >= now),
+        "no expired rows should remain; got {leftover:?}"
+    );
+    assert!(
+        leftover.iter().any(|t| t.token_hash == fresh_hash),
+        "active issued token must survive purge"
+    );
+    assert!(
+        leftover.iter().all(|t| t.token_hash != stale_hash),
+        "stale hash must be gone"
+    );
+
+    let user_again = vcp::magic_link::consume_token(&mut conn, &fresh_raw)
+        .await
+        .expect("consume")
+        .expect("active token still valid");
+    assert_eq!(user_again.id, user.id);
+
+    cleanup(&db).await;
 }

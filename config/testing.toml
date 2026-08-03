@@ -33,6 +33,8 @@ from_name = "Vauban Customer Portal"
 reply_to = ""
 vcp_admin = "support@vauban.sh"
 token_ttl_secs = 300
+token_retention_days = 0
+purge_interval_minutes = 60
 
 # High ceiling so normal tests do not trip lockout; E2E rate-limit uses a custom limiter.
 [login]

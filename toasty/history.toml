@@ -59,3 +59,8 @@ snapshot_name = "0010_snapshot.toml"
 id = 4482585450857786769
 name = "0011_magic_link_tokens.sql"
 snapshot_name = "0011_snapshot.toml"
+
+[[migrations]]
+id = 5448312230887730985
+name = "0012_magic_link_tokens_expires_at_index.sql"
+snapshot_name = "0012_snapshot.toml"

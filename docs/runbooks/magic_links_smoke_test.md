@@ -14,7 +14,8 @@ invite/revoke mail on a staging or local host.
     MacPorts: install `mailpit +ui` so `/dist/app.css` / `app.js` are embedded.
   - Staging/prod: Scaleway TEM (`smtp.tem.scaleway.com`, `starttls` / `tls`);
     `smtp_username` = Project ID, `smtp_password` = IAM secret (host secret).
-- `[magiclinks]` configured: `vcp_admin`, `from_address`, `token_ttl_secs = 300`.
+- `[magiclinks]` configured: `vcp_admin`, `from_address`, `token_ttl_secs = 300`,
+  `token_retention_days` (dev `7`, prod `1`), `purge_interval_minutes = 60`.
 - Browser can open `server.public_origins[0]` (HTTPS) with Topcoat runtime
   enabled (no progressive-enhancement POST fallback on `/login`).
 
@@ -79,6 +80,19 @@ user row.
 
 **Fail if:** magic link skips the picker with two memberships; picker lists
 orgs the user is not a member of; staff accounts are forced through the picker.
+
+### 5. Token table retention (ops)
+
+1. After several login cycles, `SELECT count(*) FROM magic_link_tokens;` may grow
+   briefly (consumed / superseded rows stay until purge).
+2. The in-process job runs at boot then every `purge_interval_minutes` (60) and
+   deletes rows with `expires_at < now - token_retention_days` (dev keeps 7 days
+   for forensics; prod keeps 1 day).
+3. Optional: wait one interval (or restart `just run`) and confirm the count
+   drops for clearly expired rows.
+
+**Fail if:** the table grows without bound across days with no deletes after
+expiry + retention; or active (unexpired) tokens disappear mid-TTL.
 
 ## Related
 
