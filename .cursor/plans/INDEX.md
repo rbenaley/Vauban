@@ -46,10 +46,11 @@ is planned._
 | Issues live search shards | [`issues_live_search_shards_d44946a2.plan.md`](issues_live_search_shards_d44946a2.plan.md) | Done |
 | List pagination standard | [`list_pagination_standard_4c1f389a.plan.md`](list_pagination_standard_4c1f389a.plan.md) | Done |
 | Login signal UX | [`login_signal_ux_5fb30469.plan.md`](login_signal_ux_5fb30469.plan.md) | Done |
+| magic link purge job | [`magic_link_purge_job_1d977634.plan.md`](magic_link_purge_job_1d977634.plan.md) | Done |
 | Magic links mail | [`magic_links_mail_b6cb5f62.plan.md`](magic_links_mail_b6cb5f62.plan.md) | Done |
 | Mailbox email validation | [`mailbox_email_validation_57513d5f.plan.md`](mailbox_email_validation_57513d5f.plan.md) | Done |
 | Mockup visual fidelity | [`mockup_visual_fidelity_eea72dae.plan.md`](mockup_visual_fidelity_eea72dae.plan.md) | Done |
-| Multi-org choose picker | [`multi-org_choose_picker_a9604b68.plan.md`](multi-org_choose_picker_a9604b68.plan.md) | Open |
+| Multi-org choose picker | [`multi-org_choose_picker_a9604b68.plan.md`](multi-org_choose_picker_a9604b68.plan.md) | Done |
 | ORM Toasty Postgres | [`orm_toasty_postgres_3e00d8ac.plan.md`](orm_toasty_postgres_3e00d8ac.plan.md) | Done |
 | P0-P3 Topcoat campaign | [`p0-p3_topcoat_campaign_d0d5c3c6.plan.md`](p0-p3_topcoat_campaign_d0d5c3c6.plan.md) | Done |
 | Pyramid compliance backfill | [`pyramid_compliance_backfill_c0557c49.plan.md`](pyramid_compliance_backfill_c0557c49.plan.md) | Done |
