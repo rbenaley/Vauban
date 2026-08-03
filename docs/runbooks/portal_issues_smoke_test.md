@@ -76,11 +76,26 @@ shard (10/page, status chips omit `page=`). See
 [`org_issues_search_shard_smoke_test.md`](org_issues_search_shard_smoke_test.md)
 § C for the full checklist.
 
+## E -- Concurrent report (double submit)
+
+1. As a client member with `issues_write`, open `/…/issues/new`.
+2. Submit the same report twice quickly (double-click or two tabs), or
+   open two compose tabs and submit nearly together.
+3. Confirm each success lands on a **distinct** `VBN-*` detail URL that
+   loads (200) with the title/details — never a 404 after an apparent
+   success redirect.
+4. If create fails after retries, the redirect is
+   `/{org}/issues?err=create` (list), not a ghost detail key.
+
+Pass: no lost ticket; no redirect to a missing detail after “success”.
+
+Fail: two submits share one key, or Location points at a 404 detail.
+
 ## Related automated coverage
 
 | Layer | Filter / artifact |
 |-------|-------------------|
 | Invariants | `inv_`, `scripts/check_portal_issues.sh` |
 | Proptest | `prop_` |
-| Battle | `battle_` |
+| Battle | `battle_` (incl. `battle_concurrent_report_issue_http_posts`) |
 | E2E | `e2e_` (`--test integration_tests`) |

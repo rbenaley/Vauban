@@ -40,7 +40,8 @@ just test -- org_issues_search_shard
 1. Sign in as `l.martin@acme.example` / `password`.
 2. Open `/acme-infrastructure/issues`.
 3. Open DevTools → Network; filter on `/_topcoat/shards`.
-4. Type a fragment of a known issue title or key gradually.
+4. Type a fragment of a known issue title or key gradually (do not submit
+   the form).
 5. Confirm POSTs to `/_topcoat/shards/{id}` return **200** (not 500).
 6. Confirm the issue list updates without a full page reload.
 7. Confirm no `path parameter "org" was not found` panic in the server log.

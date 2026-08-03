@@ -56,20 +56,63 @@ async fn e2e_report_issue_persists_and_shows_details() {
         status(&report)
     );
 
-    // Follow Location if present; otherwise list and open first VBN- row.
     let location = report
         .headers()
         .get(topcoat::router::header::LOCATION)
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_owned());
-    let detail_path = location.unwrap_or_else(|| format!("/{slug}/issues"));
-    let detail = get(&router, &detail_path, cookie.as_deref()).await;
+        .map(|s| s.to_owned())
+        .expect("Location after report");
+    assert!(
+        location.starts_with(&format!("/{slug}/issues/VBN-")),
+        "happy create must land on detail URL, got {location}"
+    );
+    assert!(
+        !location.contains("err=create"),
+        "successful create must not use err=create"
+    );
+    let detail = get(&router, &location, cookie.as_deref()).await;
     assert_eq!(status(&detail), StatusCode::OK);
     let html = body_text(detail).await;
     assert!(
         html.contains(details) || html.contains("Test portal latency"),
         "detail should show persisted details; html={html}"
     );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_report_issue_empty_title_skips_create() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("iss-empty");
+    let slug = unique_slug("iss-empty-org");
+    let (_user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let cookie = login(&router, &email).await;
+
+    let form = "title=&component=Portal&severity=Minor&details=ignored";
+    let report = post_form(&router, &format!("/{slug}/issues"), cookie.as_deref(), form).await;
+    assert!(status(&report).is_redirection());
+    let location = report
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert_eq!(location, format!("/{slug}/issues"));
+    assert!(!location.contains("VBN-"));
+
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().organization_id().eq(org.id))
+            .exec(&mut conn)
+            .await
+            .expect("list");
+        assert!(rows.is_empty(), "empty title must not insert");
+    }
 
     cleanup(&db).await;
 }

@@ -210,6 +210,7 @@ pub const ISSUE_STATUS_RESOLVED: &str = "Resolved";
 pub const ISSUE_STATUS_CLOSED: &str = "Closed";
 
 #[derive(Debug, Clone, Model)]
+#[unique(organization_id, key)]
 pub struct Issue {
     #[key]
     #[auto]

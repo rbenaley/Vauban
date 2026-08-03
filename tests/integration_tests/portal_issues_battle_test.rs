@@ -15,6 +15,110 @@ use crate::common::{
 };
 
 #[tokio::test]
+async fn battle_concurrent_report_issue_http_posts() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-http-iss");
+    let slug = unique_slug("battle-http-iss");
+    let (_user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let router = test_router().await;
+    let cookie = cookie_header(
+        &post_form(
+            &router,
+            "/login",
+            None,
+            &format!("email={}&password=password", urlencoding_encode(&email)),
+        )
+        .await,
+    )
+    .expect("login cookie");
+
+    let n = 8usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    let marker = unique_slug("http-iss");
+
+    for i in 0..n {
+        let barrier = barrier.clone();
+        let cookie = cookie.clone();
+        let slug = slug.clone();
+        let marker = marker.clone();
+        let router = test_router().await;
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let title = format!("HTTP battle {marker} {i}");
+            let form = format!(
+                "title={}&component=Portal&severity=Minor&details=battle-{}",
+                urlencoding_encode(&title),
+                i
+            );
+            let resp = post_form(&router, &format!("/{slug}/issues"), Some(&cookie), &form).await;
+            assert!(
+                status(&resp).is_redirection(),
+                "expected redirect, got {}",
+                status(&resp)
+            );
+            let location = resp
+                .headers()
+                .get(topcoat::router::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_owned())
+                .expect("Location");
+            assert!(
+                !location.contains("err=create"),
+                "create must succeed under contention: {location}"
+            );
+            assert!(
+                location.contains(&format!("/{slug}/issues/VBN-")),
+                "expected detail redirect, got {location}"
+            );
+            let detail = get(&router, &location, Some(&cookie)).await;
+            assert_eq!(
+                status(&detail),
+                StatusCode::OK,
+                "must not redirect to missing detail ({location})"
+            );
+            location
+        }));
+    }
+
+    let mut locations = Vec::with_capacity(n);
+    for h in handles {
+        locations.push(h.await.expect("join"));
+    }
+    locations.sort();
+    locations.dedup();
+    assert_eq!(
+        locations.len(),
+        n,
+        "concurrent reports must allocate distinct keys"
+    );
+
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().organization_id().eq(org.id))
+            .exec(&mut conn)
+            .await
+            .expect("list");
+        let ours: Vec<_> = rows
+            .into_iter()
+            .filter(|i| i.title.contains(&marker))
+            .collect();
+        assert_eq!(ours.len(), n);
+        let mut keys: Vec<_> = ours.into_iter().map(|i| i.key).collect();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), n);
+    }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
 async fn battle_concurrent_issue_creates() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;

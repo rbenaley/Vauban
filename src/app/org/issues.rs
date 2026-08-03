@@ -23,6 +23,10 @@ use crate::{
     app::org::Org,
     auth::{capability_denied, db, require_org},
     db::now_unix,
+    issue_key::{
+        ISSUE_KEY_CREATE_ATTEMPTS, ISSUE_KEY_PREFIX, allocate_issue_key, is_unique_violation,
+        parse_vbn_suffix,
+    },
     issues_search::{normalize_query, normalize_status},
     list_page::{
         LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_offset,
@@ -255,39 +259,75 @@ async fn report_issue(cx: &Cx, Form(form): Form<ReportForm>) -> Result<SeeOther>
         return Ok(see_other(&format!("/{slug}/issues")));
     }
 
-    let mut database = db(cx);
-    let existing = Issue::all()
-        .filter(Issue::fields().organization_id().eq(ctx.org.id))
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let next = existing.len() + 200;
-    let key = format!("VBN-{next}");
     let title = form.title.trim().to_owned();
     let component = form.component.trim().to_owned();
     let severity = form.severity.trim().to_owned();
     let details = form.details.trim().to_owned();
 
-    if !title.is_empty() {
-        let now = now_unix();
-        let _ = toasty::create!(Issue {
+    if title.is_empty() {
+        return Ok(see_other(&format!("/{slug}/issues")));
+    }
+
+    let mut database = db(cx);
+    let now = now_unix();
+    let mut last_err: Option<String> = None;
+    let mut candidate: Option<String> = None;
+
+    for attempt in 0..ISSUE_KEY_CREATE_ATTEMPTS {
+        let key = match candidate.take() {
+            Some(k) => k,
+            None => allocate_issue_key(&mut database, ctx.org.id).await,
+        };
+        match toasty::create!(Issue {
             key: key.clone(),
-            title,
-            component,
-            severity,
+            title: title.clone(),
+            component: component.clone(),
+            severity: severity.clone(),
             status: "Open".to_owned(),
             organization_id: ctx.org.id,
-            details,
+            details: details.clone(),
             opened_by_user_id: ctx.user.id,
             created_at: now,
             updated_at: now,
         })
         .exec(&mut database)
-        .await;
-        return Ok(see_other(&format!("/{slug}/issues/{key}")));
+        .await
+        {
+            Ok(_) => return Ok(see_other(&format!("/{slug}/issues/{key}"))),
+            Err(err) if is_unique_violation(&err) && attempt + 1 < ISSUE_KEY_CREATE_ATTEMPTS => {
+                tracing::warn!(
+                    org = %slug,
+                    attempt,
+                    key = %key,
+                    "issue create unique conflict; retrying with new key"
+                );
+                last_err = Some(err.to_string());
+                // Fan out past the collided tip so parallel retries diverge.
+                let collided = parse_vbn_suffix(&key).unwrap_or(0);
+                let fresh = allocate_issue_key(&mut database, ctx.org.id).await;
+                let fresh_n = parse_vbn_suffix(&fresh).unwrap_or(collided.saturating_add(1));
+                let next = fresh_n
+                    .max(collided.saturating_add(1))
+                    .saturating_add(attempt);
+                candidate = Some(format!("{ISSUE_KEY_PREFIX}{next}"));
+            }
+            Err(err) => {
+                tracing::warn!(
+                    org = %slug,
+                    key = %key,
+                    error = %err,
+                    "issue create failed"
+                );
+                last_err = Some(err.to_string());
+                break;
+            }
+        }
     }
 
-    Ok(see_other(&format!("/{slug}/issues")))
+    if let Some(err) = last_err {
+        tracing::warn!(org = %slug, error = %err, "issue create exhausted retries");
+    }
+    Ok(see_other(&format!("/{slug}/issues?err=create")))
 }
 
 fn urlencoding_encode(value: &str) -> String {

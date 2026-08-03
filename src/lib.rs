@@ -19,6 +19,7 @@ pub mod docs_version;
 pub mod fonts;
 pub mod http_canonical;
 pub mod id_lookups;
+pub mod issue_key;
 pub mod issue_status;
 pub mod issues_search;
 pub mod list_page;

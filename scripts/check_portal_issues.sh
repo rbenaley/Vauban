@@ -22,6 +22,22 @@ grep -nE '#\[route\(POST' "$LIST" >/dev/null || fail "$LIST must define POST rep
 grep -n 'details' "$LIST" >/dev/null || fail "$LIST must persist form details"
 grep -n 'issues_write' "$LIST" >/dev/null || fail "$LIST must gate writes on issues_write"
 grep -n 'organization_id' "$LIST" >/dev/null || fail "$LIST must scope issues by organization_id"
+grep -n 'allocate_issue_key' "$LIST" >/dev/null \
+  || fail "$LIST must allocate keys via allocate_issue_key"
+grep -n 'err=create' "$LIST" >/dev/null \
+  || fail "$LIST must redirect to err=create on failed create"
+if grep -nE 'existing\.len\(\)\s*\+\s*200|len\(\)\s*\+\s*200' "$LIST" >/dev/null 2>&1; then
+  fail "$LIST must not forge keys via existing.len() + 200"
+fi
+if grep -nE 'let _ = toasty::create!\(Issue' "$LIST" >/dev/null 2>&1; then
+  fail "$LIST must not swallow create!(Issue) errors"
+fi
+grep -n 'fn allocate_issue_key' src/issue_key.rs >/dev/null \
+  || fail "src/issue_key.rs must define allocate_issue_key"
+grep -n '0009_issue_org_key_unique.sql' toasty/history.toml >/dev/null \
+  || fail "toasty/history.toml must list 0009_issue_org_key_unique.sql"
+grep -n 'index_issues_by_organization_id_and_key' toasty/migrations/0009_issue_org_key_unique.sql >/dev/null \
+  || fail "migration 0009 must create unique (organization_id, key) index"
 # Light SSR pagination pin (full pyramid lives on org_issues_search_shard).
 grep -n 'page: Option<u32>' "$LIST" >/dev/null || fail "$LIST IssuesQuery must include page: Option<u32>"
 grep -n 'filter_row' "$LIST" >/dev/null || fail "$LIST must use filter_row for chips + pager"

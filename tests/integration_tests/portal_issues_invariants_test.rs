@@ -29,6 +29,41 @@ fn inv_report_issue_persists_details() {
 }
 
 #[test]
+fn inv_report_issue_safe_key_allocation() {
+    let src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/issues.rs"
+    ));
+    let helper = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/issue_key.rs"));
+    let history = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/toasty/history.toml"));
+    let migration = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/toasty/migrations/0009_issue_org_key_unique.sql"
+    ));
+    assert!(
+        src.contains("allocate_issue_key"),
+        "report_issue must call allocate_issue_key"
+    );
+    assert!(
+        src.contains("err=create"),
+        "failed create must redirect with err=create"
+    );
+    assert!(
+        !src.contains("existing.len() + 200") && !src.contains("len() + 200"),
+        "must not forge keys via len() + 200"
+    );
+    assert!(
+        !src.contains("let _ = toasty::create!(Issue"),
+        "must not swallow create!(Issue) errors"
+    );
+    assert!(helper.contains("fn allocate_issue_key"));
+    assert!(helper.contains("fn next_issue_key_from_keys"));
+    assert!(history.contains("0009_issue_org_key_unique.sql"));
+    assert!(migration.contains("index_issues_by_organization_id_and_key"));
+    assert!(migration.contains("UNIQUE"));
+}
+
+#[test]
 fn inv_issue_detail_renders_details() {
     let src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

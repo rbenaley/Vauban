@@ -45,3 +45,7 @@ id = 1657256991217527841
 name = "0008_release_version_sort.sql"
 snapshot_name = "0008_snapshot.toml"
 
+[[migrations]]
+id = 8501667267130331648
+name = "0009_issue_org_key_unique.sql"
+snapshot_name = "0009_snapshot.toml"

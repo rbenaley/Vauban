@@ -32,6 +32,10 @@ fn inv_history_lists_initial_migration() {
         history.contains("0008_release_version_sort.sql"),
         "history.toml must record 0008_release_version_sort.sql"
     );
+    assert!(
+        history.contains("0009_issue_org_key_unique.sql"),
+        "history.toml must record 0009_issue_org_key_unique.sql"
+    );
 }
 
 #[test]
