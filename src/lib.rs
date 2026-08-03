@@ -33,6 +33,7 @@ pub mod release_pkg;
 pub mod seats;
 pub mod slug;
 pub mod sql_search;
+pub mod storage;
 pub mod tls;
 pub mod tz;
 pub mod ui;

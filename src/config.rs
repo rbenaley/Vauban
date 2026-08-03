@@ -74,6 +74,9 @@ pub struct Config {
 
     #[serde(default)]
     pub org: OrgConfig,
+
+    #[serde(default)]
+    pub storage: StorageConfig,
 }
 
 /// SMTP submission settings (`[mail]`).
@@ -331,6 +334,106 @@ fn default_max_lts_subscriptions() -> usize {
     crate::models::MAX_LTS_SUBSCRIPTIONS_DEFAULT
 }
 
+/// Blob helper IPC mode (`[storage].ipc`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageIpcMode {
+    /// Dev: `vcp` spawns `vcp-store` and accepts a Unix stream.
+    Spawn,
+    /// Prod: connect to a named socket owned by `vcp-store`.
+    Socket,
+    /// Test-only: in-process [`crate::storage::StorageEngine`] (same API surface).
+    Inline,
+}
+
+impl StorageIpcMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Spawn => "spawn",
+            Self::Socket => "socket",
+            Self::Inline => "inline",
+        }
+    }
+}
+
+/// On-disk artifact storage + helper IPC (`[storage]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct StorageConfig {
+    #[serde(default = "default_storage_blob_path")]
+    pub blob_path: String,
+    #[serde(default = "default_storage_ipc")]
+    pub ipc: StorageIpcMode,
+    #[serde(default)]
+    pub socket_path: String,
+    #[serde(default)]
+    pub helper_path: String,
+    #[serde(default = "default_max_artifact_bytes")]
+    pub max_artifact_bytes: u64,
+    #[serde(default = "default_max_image_bytes")]
+    pub max_image_bytes: u64,
+    #[serde(default = "default_allowed_image_types")]
+    pub allowed_image_types: Vec<String>,
+    #[serde(default = "default_max_concurrent_uploads")]
+    pub max_concurrent_uploads: u32,
+    #[serde(default = "default_max_images_per_org")]
+    pub max_images_per_org: u32,
+    #[serde(default = "default_upload_ttl_secs")]
+    pub upload_ttl_secs: u64,
+    /// When set (socket mode), helper rejects peers whose UID differs.
+    #[serde(default)]
+    pub expected_peer_uid: Option<u32>,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            blob_path: default_storage_blob_path(),
+            ipc: default_storage_ipc(),
+            socket_path: String::new(),
+            helper_path: String::new(),
+            max_artifact_bytes: default_max_artifact_bytes(),
+            max_image_bytes: default_max_image_bytes(),
+            allowed_image_types: default_allowed_image_types(),
+            max_concurrent_uploads: default_max_concurrent_uploads(),
+            max_images_per_org: default_max_images_per_org(),
+            upload_ttl_secs: default_upload_ttl_secs(),
+            expected_peer_uid: None,
+        }
+    }
+}
+
+fn default_storage_blob_path() -> String {
+    "target/vcp-storage".into()
+}
+
+fn default_storage_ipc() -> StorageIpcMode {
+    StorageIpcMode::Spawn
+}
+
+fn default_max_artifact_bytes() -> u64 {
+    2 * 1024 * 1024 * 1024
+}
+
+fn default_max_image_bytes() -> u64 {
+    10 * 1024 * 1024
+}
+
+fn default_allowed_image_types() -> Vec<String> {
+    vec!["png".into(), "jpeg".into(), "webp".into()]
+}
+
+fn default_max_concurrent_uploads() -> u32 {
+    4
+}
+
+fn default_max_images_per_org() -> u32 {
+    1000
+}
+
+fn default_upload_ttl_secs() -> u64 {
+    3600
+}
+
 impl Config {
     /// Load using auto-discovered config directory and `VCP_ENVIRONMENT`.
     pub fn load() -> anyhow::Result<Self> {
@@ -428,6 +531,15 @@ impl Config {
         {
             acme.account_key_path = resolve_path(root, &acme.account_key_path);
         }
+        if !self.storage.blob_path.is_empty() {
+            self.storage.blob_path = resolve_path(root, &self.storage.blob_path);
+        }
+        if !self.storage.socket_path.is_empty() {
+            self.storage.socket_path = resolve_path(root, &self.storage.socket_path);
+        }
+        if !self.storage.helper_path.is_empty() {
+            self.storage.helper_path = resolve_path(root, &self.storage.helper_path);
+        }
     }
 
     fn validate(&self) -> anyhow::Result<()> {
@@ -468,6 +580,79 @@ impl Config {
         }
         self.validate_mail()?;
         self.validate_magiclinks()?;
+        self.validate_storage()?;
+        Ok(())
+    }
+
+    fn validate_storage(&self) -> anyhow::Result<()> {
+        let path = Path::new(&self.storage.blob_path);
+        if self.storage.blob_path.trim().is_empty() {
+            anyhow::bail!("storage.blob_path must not be empty");
+        }
+        if !path.is_absolute() {
+            anyhow::bail!("storage.blob_path must be absolute after path resolution");
+        }
+        if self.storage.ipc == StorageIpcMode::Inline && self.environment.is_production() {
+            anyhow::bail!("storage.ipc=inline is not allowed in production");
+        }
+        if self.environment.is_production() {
+            if self.storage.ipc != StorageIpcMode::Socket {
+                anyhow::bail!("storage.ipc=socket is required in production");
+            }
+            if self.storage.socket_path.trim().is_empty() {
+                anyhow::bail!("storage.socket_path is required when ipc=socket");
+            }
+            if !path.is_dir() {
+                // Committed `config/vcp.conf` points at `/var/db/vcp/storage`,
+                // which is absent on developer / CI hosts. Integration tests and
+                // unit tests load Production config to pin public_origins; the
+                // helper / StorageClient::connect still require a usable root
+                // when the portal actually boots against that path.
+            } else {
+                // Refuse a blob root the portal UID can write (D2).
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = std::fs::metadata(path) {
+                        let mode = meta.permissions().mode() & 0o777;
+                        // Heuristic: world/group writable is never OK; also probe write access.
+                        if mode & 0o022 != 0 {
+                            anyhow::bail!(
+                                "storage.blob_path must not be group/world-writable (got mode {mode:o})"
+                            );
+                        }
+                    }
+                    let probe = path.join(".vcp-write-probe");
+                    match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&probe)
+                    {
+                        Ok(_) => {
+                            let _ = std::fs::remove_file(&probe);
+                            anyhow::bail!(
+                                "storage.blob_path is writable by the vcp process UID; \
+                                 production requires ownership by vcp-store only (0700)"
+                            );
+                        }
+                        Err(_) => {
+                            // Not writable — expected in multi-UID prod.
+                        }
+                    }
+                }
+            }
+        } else {
+            // Dev/test: ensure the directory exists so spawn mode can open it.
+            std::fs::create_dir_all(path).map_err(|e| {
+                anyhow::anyhow!("failed to create storage.blob_path {}: {e}", path.display())
+            })?;
+        }
+        if self.storage.max_artifact_bytes == 0 || self.storage.max_image_bytes == 0 {
+            anyhow::bail!("storage max_*_bytes must be greater than zero");
+        }
+        if self.storage.max_concurrent_uploads == 0 {
+            anyhow::bail!("storage.max_concurrent_uploads must be greater than zero");
+        }
         Ok(())
     }
 
@@ -695,6 +880,52 @@ mod tests {
         assert_eq!(Environment::Development.default_log_filter(), "debug");
         assert_eq!(Environment::Testing.default_log_filter(), "info");
         assert_eq!(Environment::Production.default_log_filter(), "info");
+    }
+
+    #[test]
+    fn production_rejects_storage_ipc_spawn() {
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Production,
+        )
+        .unwrap();
+        cfg.storage.ipc = StorageIpcMode::Spawn;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("storage.ipc=socket is required in production"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn production_rejects_writable_blob_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let blob = tmp.path().canonicalize().unwrap();
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Production,
+        )
+        .unwrap();
+        cfg.storage.ipc = StorageIpcMode::Socket;
+        cfg.storage.socket_path = "/var/run/vcp/store.sock".into();
+        cfg.storage.blob_path = blob.to_string_lossy().into_owned();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("writable by the vcp process UID") || err.contains("group/world-writable"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn production_conf_requires_socket_ipc() {
+        let cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Production,
+        )
+        .unwrap();
+        assert_eq!(cfg.storage.ipc, StorageIpcMode::Socket);
+        assert!(!cfg.storage.socket_path.is_empty());
+        assert!(Path::new(&cfg.storage.blob_path).is_absolute());
     }
 }
 

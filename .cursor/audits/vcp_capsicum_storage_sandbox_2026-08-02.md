@@ -1,13 +1,19 @@
 # VCP Capsicum and artifact storage sandboxing
 
-**Date:** 2026-08-02  
+**Date:** 2026-08-02 (status updated 2026-08-04)  
 **Scope:** Whether Capsicum is useful for VCP (customer portal), and specifically
 whether a dedicated **thread** that reads/writes a future `storage/` tree for
 release artifacts adds security value versus ordinary in-process I/O.  
 **Audience:** engineers designing FreeBSD deploy hardening for uploads
 (admin) and downloads (org / client).  
-**Status:** design audit (no Capsicum helper implemented in VCP yet).  
-**Related:** bastion patterns in `../Vauban` (`Vauban_Privsep_Architecture`);
+**Status:** **implemented** — Option C helper process shipped as `vcp-store`
+(`src/bin/vcp_store.rs`, `src/storage/*`). Portable I/O + SEQPACKET IPC +
+`storage_objects` SoT; FreeBSD attempts real `cap_enter`; soft WARN elsewhere.
+**Related:** architecture
+[`docs/technical/VCP_Storage_Helper_Architecture_EN(1.0).md`](../../docs/technical/VCP_Storage_Helper_Architecture_EN(1.0).md);
+ops [`docs/runbooks/storage_helper_ops.md`](../../docs/runbooks/storage_helper_ops.md);
+smoke [`docs/runbooks/storage_helper_smoke_test.md`](../../docs/runbooks/storage_helper_smoke_test.md);
+bastion patterns in `../Vauban` (`Vauban_Privsep_Architecture`);
 VCP TLS code already notes some paths must run before `cap_enter()`
 (`src/tls/resolver.rs`).
 
@@ -332,3 +338,20 @@ meaningful sandbox value over ordinary in-process I/O. Invest first in
 directory-FD storage hygiene and tenant-safe keys; when you want Capsicum,
 either seal **all of `vcp`** after boot or add a **storage helper process** —
 not a storage thread.
+
+## 12. Implementation status (2026-08-04)
+
+| Item | State |
+|------|-------|
+| Helper binary `vcp-store` | Shipped (`[[bin]]`, spawn + named socket) |
+| Engine (cap-std dirfd, digest, sniff, quotas) | `src/storage/engine.rs` |
+| IPC + SCM_RIGHTS + peercred | `src/storage/ipc.rs`, socket mode in bin |
+| `storage_objects` SoT | Migration `0013_storage_objects.sql`; digests off `Release` |
+| HTTP releases + images | Admin upload / org download / `/{org}/images` |
+| Prod boot guards | Refuse `ipc=spawn` / writable `blob_path` |
+| Capsicum | FreeBSD `cap_enter` attempt; WARN soft path elsewhere |
+| Ops / smoke | `docs/runbooks/storage_helper_ops.md`, `storage_helper_smoke_test.md` |
+| Pyramid | `tests/integration_tests/storage_*` + `scripts/check_storage.sh` |
+
+Jail / gisco validation remains a **manual FreeBSD** checklist in the ops
+runbook (not exercised on macOS CI).

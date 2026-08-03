@@ -17,7 +17,8 @@ use crate::models::{
     IssueComment, MEMBERSHIP_ROLE_ORG, Membership, Organization, PORTAL_ROLE_ORG,
     RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release, USER_NOT_DELETED, User,
 };
-use crate::release_pkg::{size_mb_from_bytes, version_sort_fields};
+use crate::release_pkg::version_sort_fields;
+use crate::storage::upsert_release_object;
 
 /// GA release catalog: (version, channel, released_on, bytes, sha256, notes).
 fn ga_release_catalog() -> Vec<(
@@ -222,6 +223,8 @@ const ACME_PRIVATE_SHA256: &str =
     "b7e4d01c9e2a4f8b1d6c0e5a3f7b9d2e4c8a1f0b6d5e3c9a7f2b8d4e0c1a6953";
 
 const ACME_PRIVATE_VERSION: &str = "v0.8.6-acme1";
+/// Catalog-only byte size for the Acme private hotfix (display ≈ 20.5 MiB).
+const ACME_PRIVATE_BYTES: u64 = 21_443_380;
 const ACME_ORG_SLUG: &str = "acme-infrastructure";
 
 async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
@@ -233,14 +236,12 @@ async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
         .collect();
 
     for (version, channel, date, bytes, sha, notes) in ga_release_catalog() {
-        let size = size_mb_from_bytes(bytes);
         let sort = version_sort_fields(version);
-        if let Some(mut rel) = by_ver.remove(version) {
+        let release_id = if let Some(mut rel) = by_ver.remove(version) {
+            let id = rel.id;
             rel.update()
                 .channel(channel.to_owned())
                 .released_on(date.to_owned())
-                .size_mb(size)
-                .sha256(sha.to_owned())
                 .status("PUBLISHED".to_owned())
                 .notes(notes.to_owned())
                 .v_major(sort.v_major)
@@ -250,13 +251,12 @@ async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
                 .client_suffix(sort.client_suffix.clone())
                 .exec(db)
                 .await?;
+            id
         } else {
-            toasty::create!(Release {
+            let created = toasty::create!(Release {
                 version: version.to_owned(),
                 channel: channel.to_owned(),
                 released_on: date.to_owned(),
-                size_mb: size,
-                sha256: sha.to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: notes.to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
@@ -268,7 +268,10 @@ async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
             })
             .exec(db)
             .await?;
-        }
+            created.id
+        };
+        // Metadata only — seed does not require a blob on disk.
+        upsert_release_object(db, release_id, sha, bytes).await?;
     }
     Ok(())
 }
@@ -286,15 +289,14 @@ async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
 
     let existing = Release::all().exec(db).await?;
     let sort = version_sort_fields(ACME_PRIVATE_VERSION);
-    if let Some(mut rel) = existing
+    let release_id = if let Some(mut rel) = existing
         .into_iter()
         .find(|r| r.version == ACME_PRIVATE_VERSION)
     {
+        let id = rel.id;
         rel.update()
             .channel("EOL".to_owned())
             .released_on("2026-06-20".to_owned())
-            .size_mb("20.5".to_owned())
-            .sha256(ACME_PRIVATE_SHA256.to_owned())
             .status("PUBLISHED".to_owned())
             .notes("HOTFIX: Acme-only proxy backpressure patch".to_owned())
             .organization_id(org.id)
@@ -305,13 +307,12 @@ async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
             .client_suffix(sort.client_suffix.clone())
             .exec(db)
             .await?;
+        id
     } else {
-        toasty::create!(Release {
+        let created = toasty::create!(Release {
             version: ACME_PRIVATE_VERSION.to_owned(),
             channel: "EOL".to_owned(),
             released_on: "2026-06-20".to_owned(),
-            size_mb: "20.5".to_owned(),
-            sha256: ACME_PRIVATE_SHA256.to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "HOTFIX: Acme-only proxy backpressure patch".to_owned(),
             organization_id: org.id,
@@ -323,7 +324,10 @@ async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
         })
         .exec(db)
         .await?;
-    }
+        created.id
+    };
+    // Metadata only — seed does not require a blob on disk.
+    upsert_release_object(db, release_id, ACME_PRIVATE_SHA256, ACME_PRIVATE_BYTES).await?;
     Ok(())
 }
 
@@ -364,6 +368,7 @@ pub async fn open(database_url: &str) -> anyhow::Result<Db> {
             crate::models::Membership,
             crate::models::DocArticle,
             crate::models::Release,
+            crate::models::StorageObject,
             crate::models::Issue,
             crate::models::IssueComment,
             crate::models::EphemeralDownload,

@@ -1,6 +1,6 @@
 # Runbook -- Builds download entitlement
 
-> Manual validation after shipping **authorized 501 download stub**,
+> Manual validation after shipping **storage-backed artifact download**,
 > **GA vs org-private release visibility**, and **Concept Builds chrome**
 > (default-open latest + **server-side** ephemeral download links via
 > Topcoat POST/PRG). CI covers unit / invariants / proptest / battle /
@@ -13,7 +13,8 @@
 Related:
 
 - [README](../../README.md) (seed login, route map)
-- Lint: `scripts/check_builds_entitlement.sh`
+- Lint: `scripts/check_builds_entitlement.sh`, `scripts/check_storage.sh`
+- Storage helper: [`storage_helper_smoke_test.md`](storage_helper_smoke_test.md)
 - Pyramid: `.cursor/rules/vcp-test-pyramid.mdc`
 - Filter: `cargo test --test integration_tests -- builds_entitlement -- --test-threads=1`
 - Auth denials: [`auth_tenant_smoke_test.md`](auth_tenant_smoke_test.md)
@@ -25,6 +26,7 @@ bash scripts/setup_test_db.sh   # or: just db-create-test
 rtk cargo fmt --all -- --check
 rtk cargo clippy --all-targets -- -D warnings
 bash scripts/check_builds_entitlement.sh
+bash scripts/check_storage.sh
 rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=1
 ```
 
@@ -59,13 +61,14 @@ rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=
    toggle that in-process E2E cannot drive.
 6. Regenerate / Revoke via POST forms. After expiry, expect
    **Generate new link** (no custom JS asset — Topcoat runtime only).
-7. Download POST on a visible version returns **501**
-   (`download not configured`) until artifact storage ships.
+7. Download POST on a visible version with a `storage_objects` row + blob
+   returns **200** and the package bytes. Missing storage row → **404**.
+   Helper failure → **503** (`download unavailable`).
 8. As `support@vauban.sh` on `/vauban/builds`, confirm **all published**
    `X.Y.Z-client` private builds are visible (not only GA). `HIDDEN` rows stay
    off the Builds list (admin-only).
 
-Pass: Concept chrome + server ephemeral tokens; download remains 501.
+Pass: Concept chrome + server ephemeral tokens; authorized download streams.
 
 ## B -- Org-private isolation
 
@@ -139,7 +142,7 @@ deep-link keeps the open build on-page.
 
 | Layer | Filter / artifact |
 |-------|-------------------|
-| Invariants | `inv_`, `scripts/check_builds_entitlement.sh` |
+| Invariants | `inv_`, `scripts/check_builds_entitlement.sh`, `scripts/check_storage.sh` |
 | Proptest | `prop_` |
 | Battle | `battle_` |
 | E2E | `e2e_` (`--test integration_tests`) |

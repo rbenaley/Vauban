@@ -57,3 +57,13 @@ lockout_secs = 900
 [org]
 max_accounts_per_org = 5
 max_lts_subscriptions = 99
+
+[storage]
+blob_path = "target/vcp-storage"
+ipc = "spawn"
+max_artifact_bytes = 2147483648
+max_image_bytes = 10485760
+allowed_image_types = ["png", "jpeg", "webp"]
+max_concurrent_uploads = 4
+max_images_per_org = 1000
+upload_ttl_secs = 3600

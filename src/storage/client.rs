@@ -1,0 +1,515 @@
+//! Storage client used by `vcp` (spawn, named socket, or inline engine).
+
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use crate::config::{StorageConfig, StorageIpcMode};
+
+use super::engine::StorageEngine;
+use super::error::{StorageError, StorageErrorCode};
+use super::ids::StorageScope;
+use super::ipc::{encode_request, recv_fd, recv_response, send_bytes};
+use super::protocol::{StorageRequest, StorageResponse};
+
+enum Backend {
+    Ipc {
+        stream: Mutex<UnixStream>,
+        _child: Option<Child>,
+    },
+    Inline(Box<Mutex<StorageEngine>>),
+}
+
+/// Connected storage helper client.
+pub struct StorageClient {
+    backend: Backend,
+}
+
+impl StorageClient {
+    pub fn connect(cfg: &StorageConfig) -> Result<Self, StorageError> {
+        match cfg.ipc {
+            StorageIpcMode::Spawn => Self::spawn(cfg),
+            StorageIpcMode::Socket => Self::connect_socket(cfg),
+            StorageIpcMode::Inline => {
+                let engine = StorageEngine::open(&cfg.blob_path, cfg.clone())?;
+                Ok(Self {
+                    backend: Backend::Inline(Box::new(Mutex::new(engine))),
+                })
+            }
+        }
+    }
+
+    fn connect_socket(cfg: &StorageConfig) -> Result<Self, StorageError> {
+        if cfg.socket_path.is_empty() {
+            return Err(StorageError::new(
+                StorageErrorCode::Io,
+                "socket_path required",
+            ));
+        }
+        let stream = UnixStream::connect(&cfg.socket_path)
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("connect: {e}")))?;
+        stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+        stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
+        Ok(Self {
+            backend: Backend::Ipc {
+                stream: Mutex::new(stream),
+                _child: None,
+            },
+        })
+    }
+
+    fn spawn(cfg: &StorageConfig) -> Result<Self, StorageError> {
+        let helper = if cfg.helper_path.is_empty() {
+            default_helper_path()
+        } else {
+            PathBuf::from(&cfg.helper_path)
+        };
+        if !helper.exists() {
+            return Err(StorageError::new(
+                StorageErrorCode::Io,
+                format!("helper missing: {}", helper.display()),
+            ));
+        }
+        let sock_path =
+            std::env::temp_dir().join(format!("vcp-store-spawn-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&sock_path);
+
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).map_err(|e| {
+            StorageError::new(StorageErrorCode::Io, format!("bind spawn sock: {e}"))
+        })?;
+
+        let mut child = Command::new(&helper)
+            .arg("--blob-path")
+            .arg(&cfg.blob_path)
+            .arg("--listen")
+            .arg(&sock_path)
+            .arg("--spawn-mode")
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("spawn helper: {e}")))?;
+
+        listener
+            .set_nonblocking(false)
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("listener: {e}")))?;
+
+        let (stream, _) = listener.accept().map_err(|e| {
+            let _ = child.kill();
+            StorageError::new(StorageErrorCode::Io, format!("accept helper: {e}"))
+        })?;
+        stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+        stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
+        let _ = std::fs::remove_file(&sock_path);
+        Ok(Self {
+            backend: Backend::Ipc {
+                stream: Mutex::new(stream),
+                _child: Some(child),
+            },
+        })
+    }
+
+    pub fn put_begin_release(
+        &self,
+        release_id: u64,
+        declared_size: u64,
+    ) -> Result<(String, File), StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                let ok = eng.put_begin(
+                    StorageScope::Release,
+                    Some(&release_id.to_string()),
+                    None,
+                    declared_size,
+                    None,
+                )?;
+                let path = eng.partial_abs_path(&ok.upload_id)?;
+                let file = OpenOptions::new()
+                    .write(true)
+                    .read(true)
+                    .open(&path)
+                    .map_err(|e| {
+                        StorageError::new(StorageErrorCode::Io, format!("open tmp: {e}"))
+                    })?;
+                Ok((ok.upload_id, file))
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::PutBegin {
+                    scope: StorageScope::Release.as_str().into(),
+                    release_id: Some(release_id.to_string()),
+                    org_id: None,
+                    declared_size,
+                    ext: None,
+                };
+                self.roundtrip_with_fd(req)
+            }
+        }
+    }
+
+    pub fn put_begin_image(
+        &self,
+        org_id: u64,
+        declared_size: u64,
+        ext: &str,
+    ) -> Result<(String, File), StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                let ok = eng.put_begin(
+                    StorageScope::Image,
+                    None,
+                    Some(&org_id.to_string()),
+                    declared_size,
+                    Some(ext),
+                )?;
+                let path = eng.partial_abs_path(&ok.upload_id)?;
+                let file = OpenOptions::new()
+                    .write(true)
+                    .read(true)
+                    .open(&path)
+                    .map_err(|e| {
+                        StorageError::new(StorageErrorCode::Io, format!("open tmp: {e}"))
+                    })?;
+                Ok((ok.upload_id, file))
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::PutBegin {
+                    scope: StorageScope::Image.as_str().into(),
+                    release_id: None,
+                    org_id: Some(org_id.to_string()),
+                    declared_size,
+                    ext: Some(ext.to_owned()),
+                };
+                self.roundtrip_with_fd(req)
+            }
+        }
+    }
+
+    pub fn put_commit_release(
+        &self,
+        upload_id: &str,
+        release_id: u64,
+        sha256: &str,
+    ) -> Result<(u64, String), StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                let st = eng.put_commit(upload_id, sha256, None)?;
+                let _ = release_id;
+                Ok((st.size, st.sha256))
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::PutCommit {
+                    upload_id: upload_id.to_owned(),
+                    scope: StorageScope::Release.as_str().into(),
+                    sha256: sha256.to_owned(),
+                    release_id: Some(release_id.to_string()),
+                    org_id: None,
+                    image_id: None,
+                    ext: None,
+                };
+                let resp = self.roundtrip(req)?;
+                ok_stat(resp)
+            }
+        }
+    }
+
+    pub fn put_commit_image(
+        &self,
+        upload_id: &str,
+        org_id: u64,
+        image_id: &str,
+        ext: &str,
+        sha256: &str,
+    ) -> Result<(u64, String), StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                let st = eng.put_commit(upload_id, sha256, Some(image_id))?;
+                let _ = (org_id, ext);
+                Ok((st.size, st.sha256))
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::PutCommit {
+                    upload_id: upload_id.to_owned(),
+                    scope: StorageScope::Image.as_str().into(),
+                    sha256: sha256.to_owned(),
+                    release_id: None,
+                    org_id: Some(org_id.to_string()),
+                    image_id: Some(image_id.to_owned()),
+                    ext: Some(ext.to_owned()),
+                };
+                let resp = self.roundtrip(req)?;
+                ok_stat(resp)
+            }
+        }
+    }
+
+    pub fn put_abort(&self, upload_id: &str) -> Result<(), StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                eng.put_abort(upload_id)
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::PutAbort {
+                    upload_id: upload_id.to_owned(),
+                };
+                let resp = self.roundtrip(req)?;
+                if resp.ok {
+                    Ok(())
+                } else {
+                    Err(StorageError::new(
+                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
+                            .unwrap_or(StorageErrorCode::Io),
+                        "put_abort",
+                    ))
+                }
+            }
+        }
+    }
+
+    pub fn get_release(&self, release_id: u64) -> Result<(u64, String, File), StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                let id = release_id.to_string();
+                let st = eng.get_stat(StorageScope::Release, Some(&id), None, None, None)?;
+                let path =
+                    eng.object_abs_path(StorageScope::Release, Some(&id), None, None, None)?;
+                let file = File::open(&path).map_err(|e| {
+                    StorageError::new(StorageErrorCode::Io, format!("open object: {e}"))
+                })?;
+                Ok((st.size, st.sha256, file))
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::Get {
+                    scope: StorageScope::Release.as_str().into(),
+                    release_id: Some(release_id.to_string()),
+                    org_id: None,
+                    image_id: None,
+                    ext: None,
+                };
+                let (resp, file) = self.roundtrip_with_fd_file(req)?;
+                let (size, sha) = ok_stat(resp)?;
+                Ok((size, sha, file))
+            }
+        }
+    }
+
+    pub fn get_image(
+        &self,
+        org_id: u64,
+        image_id: &str,
+        ext: &str,
+    ) -> Result<(u64, String, File), StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                let org = org_id.to_string();
+                let st = eng.get_stat(
+                    StorageScope::Image,
+                    None,
+                    Some(&org),
+                    Some(image_id),
+                    Some(ext),
+                )?;
+                let path = eng.object_abs_path(
+                    StorageScope::Image,
+                    None,
+                    Some(&org),
+                    Some(image_id),
+                    Some(ext),
+                )?;
+                let file = File::open(&path).map_err(|e| {
+                    StorageError::new(StorageErrorCode::Io, format!("open object: {e}"))
+                })?;
+                Ok((st.size, st.sha256, file))
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::Get {
+                    scope: StorageScope::Image.as_str().into(),
+                    release_id: None,
+                    org_id: Some(org_id.to_string()),
+                    image_id: Some(image_id.to_owned()),
+                    ext: Some(ext.to_owned()),
+                };
+                let (resp, file) = self.roundtrip_with_fd_file(req)?;
+                let (size, sha) = ok_stat(resp)?;
+                Ok((size, sha, file))
+            }
+        }
+    }
+
+    pub fn delete_release(&self, release_id: u64) -> Result<(), StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                eng.delete(
+                    StorageScope::Release,
+                    Some(&release_id.to_string()),
+                    None,
+                    None,
+                    None,
+                )
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::Delete {
+                    scope: StorageScope::Release.as_str().into(),
+                    release_id: Some(release_id.to_string()),
+                    org_id: None,
+                    image_id: None,
+                    ext: None,
+                };
+                let resp = self.roundtrip(req)?;
+                if resp.ok {
+                    Ok(())
+                } else {
+                    Err(StorageError::new(
+                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
+                            .unwrap_or(StorageErrorCode::Io),
+                        "delete",
+                    ))
+                }
+            }
+        }
+    }
+
+    pub fn delete_org(&self, org_id: u64) -> Result<u32, StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                eng.delete_org(&org_id.to_string())
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::DeleteOrg {
+                    org_id: org_id.to_string(),
+                };
+                let resp = self.roundtrip(req)?;
+                if resp.ok {
+                    Ok(resp.deleted.unwrap_or(0))
+                } else {
+                    Err(StorageError::new(
+                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
+                            .unwrap_or(StorageErrorCode::Io),
+                        "delete_org",
+                    ))
+                }
+            }
+        }
+    }
+
+    fn roundtrip(&self, req: StorageRequest) -> Result<StorageResponse, StorageError> {
+        let Backend::Ipc { stream, .. } = &self.backend else {
+            return Err(StorageError::new(
+                StorageErrorCode::Io,
+                "roundtrip on inline backend",
+            ));
+        };
+        let mut stream = stream.lock().expect("storage client mutex");
+        let bytes = encode_request(&req)?;
+        send_bytes(&mut stream, &bytes)?;
+        recv_response(&mut stream)
+    }
+
+    fn roundtrip_with_fd(&self, req: StorageRequest) -> Result<(String, File), StorageError> {
+        let (resp, file) = self.roundtrip_with_fd_file(req)?;
+        if !resp.ok {
+            return Err(StorageError::new(
+                StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
+                    .unwrap_or(StorageErrorCode::Io),
+                "put_begin",
+            ));
+        }
+        let upload_id = resp
+            .upload_id
+            .ok_or_else(|| StorageError::new(StorageErrorCode::Io, "missing upload_id"))?;
+        Ok((upload_id, file))
+    }
+
+    fn roundtrip_with_fd_file(
+        &self,
+        req: StorageRequest,
+    ) -> Result<(StorageResponse, File), StorageError> {
+        let Backend::Ipc { stream, .. } = &self.backend else {
+            return Err(StorageError::new(
+                StorageErrorCode::Io,
+                "roundtrip_fd on inline backend",
+            ));
+        };
+        let mut stream = stream.lock().expect("storage client mutex");
+        let bytes = encode_request(&req)?;
+        send_bytes(&mut stream, &bytes)?;
+        let resp = recv_response(&mut stream)?;
+        if !resp.ok {
+            return Err(StorageError::new(
+                StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
+                    .unwrap_or(StorageErrorCode::Io),
+                resp.err.unwrap_or_else(|| "error".into()),
+            ));
+        }
+        let owned: OwnedFd = recv_fd(&stream)?;
+        let file = File::from(owned);
+        Ok((resp, file))
+    }
+}
+
+fn ok_stat(resp: StorageResponse) -> Result<(u64, String), StorageError> {
+    if !resp.ok {
+        return Err(StorageError::new(
+            StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
+                .unwrap_or(StorageErrorCode::Io),
+            "stat",
+        ));
+    }
+    Ok((resp.size.unwrap_or(0), resp.sha256.unwrap_or_default()))
+}
+
+fn default_helper_path() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join("vcp-store");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/vcp-store")
+}
+
+/// Stream bytes into a write FD while hashing.
+pub fn write_and_hash(
+    file: &mut File,
+    mut reader: impl Read,
+) -> Result<(u64, String), StorageError> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("read body: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("write fd: {e}")))?;
+        hasher.update(&buf[..n]);
+        total += n as u64;
+    }
+    file.sync_all()
+        .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("fsync: {e}")))?;
+    Ok((total, hex::encode(hasher.finalize())))
+}
+
+pub fn ensure_blob_dir(path: &Path) -> Result<(), StorageError> {
+    std::fs::create_dir_all(path)
+        .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("mkdir blob: {e}")))
+}

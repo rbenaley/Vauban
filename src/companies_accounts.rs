@@ -332,6 +332,12 @@ pub async fn delete_org_with_accounts(
     org_name: &str,
 ) -> anyhow::Result<()> {
     use crate::models::Organization;
+    use crate::storage::delete_org_objects;
+
+    // Best-effort blob purge before catalog delete (authz already passed).
+    let store = crate::auth::storage(cx);
+    let _ = store.delete_org(org_id);
+    let _ = delete_org_objects(db, org_id).await;
 
     let cfg = app_context::<Arc<Config>>(cx);
     let memberships = Membership::all()

@@ -17,8 +17,9 @@ use crate::{
     perms::perms_for_user,
 };
 
+/// `{release_ver}` segment for detail / download / ephemeral routes.
 #[path_param]
-struct ReleaseVer(str);
+pub(super) struct ReleaseVer(str);
 
 #[page]
 async fn build_detail_page(cx: &Cx) -> Result {

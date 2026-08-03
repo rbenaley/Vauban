@@ -210,11 +210,6 @@ pub struct Release {
 
     pub released_on: String,
 
-    pub size_mb: String,
-
-    /// Full package SHA-256 hex digest (or `"pending"` before publish artifacts exist).
-    pub sha256: String,
-
     pub status: String,
 
     pub notes: String,
@@ -230,6 +225,46 @@ pub struct Release {
     pub has_client_suffix: u64,
     pub client_suffix: String,
 }
+
+/// Unified blob metadata (sole source of truth for digests / sizes).
+#[derive(Debug, Clone, Model)]
+#[table = "storage_objects"]
+#[unique(scope, object_key)]
+pub struct StorageObject {
+    #[key]
+    #[auto]
+    pub id: u64,
+
+    /// `"release"` or `"image"`.
+    pub scope: String,
+
+    /// Opaque key: release id decimal, or `{org_id}/{uuid}.{ext}` for images.
+    pub object_key: String,
+
+    /// Required for images; [`None`]/scope] for releases (Toasty: use 0 sentinel?).
+    /// Stored as 0 for releases (no org ownership).
+    #[index]
+    pub organization_id: u64,
+
+    /// Lowercase 64-char hex SHA-256.
+    pub sha256: String,
+
+    pub size_bytes: u64,
+
+    /// Image content type / ext (`png` / `jpeg` / `webp`); empty for releases.
+    pub content_type: String,
+
+    pub created_at: i64,
+
+    pub updated_at: i64,
+}
+
+/// `StorageObject.scope` for release artifacts.
+pub const STORAGE_SCOPE_RELEASE: &str = "release";
+/// `StorageObject.scope` for tenant images.
+pub const STORAGE_SCOPE_IMAGE: &str = "image";
+/// `StorageObject.organization_id` when the blob is not org-scoped (releases).
+pub const STORAGE_ORG_NONE: u64 = 0;
 
 pub const ISSUE_COMMENT_KIND_COMMENT: &str = "comment";
 pub const ISSUE_COMMENT_KIND_STATUS: &str = "status_change";

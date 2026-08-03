@@ -94,8 +94,6 @@ async fn battle_parallel_channel_release_filters() {
                 version: ver.clone(),
                 channel: ch.to_owned(),
                 released_on: "2026-07-01".to_owned(),
-                size_mb: "1.0".to_owned(),
-                sha256: "x".to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "n".to_owned(),
                 organization_id: 0,

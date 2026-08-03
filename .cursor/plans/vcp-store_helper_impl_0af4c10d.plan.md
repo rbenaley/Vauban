@@ -4,22 +4,22 @@ overview: "Implémenter le helper `vcp-store` selon [VCP_Storage_Helper_Architec
 todos:
   - id: p1-storage-module
     content: "Phase 1: StorageConfig + src/storage engine (cap-std, IDs, digest, sniff, quotas) + pyramid"
-    status: pending
+    status: completed
   - id: p2-vcp-store-bin
     content: "Phase 2: vcp-store bin, SEQPACKET IPC + SCM_RIGHTS, spawn mode, client lib + pyramid"
-    status: pending
+    status: completed
   - id: p3-storage-objects
     content: "Phase 3: migration storage_objects; drop Release.sha256/size_mb; wire HTTP releases+images; pyramid"
-    status: pending
+    status: completed
   - id: p4-socket-prod
     content: "Phase 4: socket mode, peercred, prod boot guards, rc.d notes"
-    status: pending
+    status: completed
   - id: p5-capsicum
     content: "Phase 5: FreeBSD cap_enter/rights + gisco/jail tests + WARN path"
-    status: pending
+    status: completed
   - id: p6-runbooks-audit
     content: "Phase 6: storage helper runbooks + audit status update"
-    status: pending
+    status: completed
 isProject: false
 ---
 

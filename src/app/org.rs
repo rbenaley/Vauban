@@ -3,6 +3,7 @@
 mod account;
 mod builds;
 mod docs;
+mod images;
 mod issues;
 
 pub use builds::builds_list_href;

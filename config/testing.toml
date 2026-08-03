@@ -45,3 +45,7 @@ lockout_secs = 1
 [org]
 max_accounts_per_org = 5
 max_lts_subscriptions = 99
+
+[storage]
+blob_path = "target/vcp-storage-test"
+ipc = "inline"

@@ -23,6 +23,7 @@
 //! - `cargo test --test integration_tests -- companies_magic_mail -- --test-threads=1`
 //! - `cargo test --test integration_tests -- choose_org -- --test-threads=1`
 //! - `cargo test --test integration_tests -- topcoat_boolean_attrs -- --test-threads=1`
+//! - `cargo test --test integration_tests -- storage_ -- --test-threads=1`
 
 mod admin_companies_battle_test;
 mod admin_companies_e2e_test;
@@ -96,6 +97,10 @@ mod request_sql_dedup_battle_test;
 mod request_sql_dedup_e2e_test;
 mod request_sql_dedup_invariants_test;
 mod request_sql_dedup_proptest;
+mod storage_battle_test;
+mod storage_e2e_test;
+mod storage_invariants_test;
+mod storage_proptest;
 mod toasty_filters_battle_test;
 mod toasty_filters_e2e_test;
 mod toasty_filters_invariants_test;

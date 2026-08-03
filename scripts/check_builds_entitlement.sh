@@ -19,10 +19,15 @@ EPH="src/app/org/builds/ephemeral.rs"
 
 grep -nE '#\[route\(POST' "$DL" >/dev/null || fail "$DL must expose POST download route"
 grep -n 'builds_download' "$DL" >/dev/null || fail "$DL must gate on builds_download"
-grep -n 'download not configured' "$DL" >/dev/null \
-  || fail "$DL must return stable 'download not configured' message"
-grep -n 'NOT_IMPLEMENTED\|StatusCode::NOT_IMPLEMENTED' "$DL" >/dev/null \
-  || fail "$DL must return 501 NOT_IMPLEMENTED when authorized"
+grep -n 'DOWNLOAD_UNAVAILABLE\|download unavailable' "$DL" >/dev/null \
+  || fail "$DL must return stable DOWNLOAD_UNAVAILABLE when helper fails"
+grep -n 'find_release_object' "$DL" >/dev/null \
+  || fail "$DL must require storage_objects via find_release_object"
+grep -n 'get_release' "$DL" >/dev/null \
+  || fail "$DL must stream artifacts via get_release"
+if grep -nE 'NOT_IMPLEMENTED|download not configured' "$DL" >/dev/null 2>&1; then
+  fail "$DL must not return 501 / 'download not configured' (storage Phase 3)"
+fi
 grep -n 'require_org' "$DL" >/dev/null || fail "$DL must call require_org"
 grep -n 'forbidden' "$DL" >/dev/null || fail "$DL must fail closed with forbidden when missing perm"
 
@@ -37,7 +42,7 @@ grep -n 'in_list' "$BUILDS" >/dev/null \
 grep -n 'status().eq\|RELEASE_STATUS_PUBLISHED' "$BUILDS" >/dev/null \
   || fail "$BUILDS must filter PUBLISHED status in SQL"
 grep -n 'find_visible_release_by_version' "$DL" >/dev/null \
-  || fail "$DL must use find_visible_release_by_version (SQL tenant net) before 501"
+  || fail "$DL must use find_visible_release_by_version (SQL tenant net) before storage get"
 grep -n 'find_visible_release_by_version' "$EPH" >/dev/null \
   || fail "$EPH must use find_visible_release_by_version (SQL tenant net)"
 
@@ -93,10 +98,19 @@ echo "$EPH_HOST" | grep -q 'display:none' \
 # Inverted vs verify panel: verify shows when open; ephemeral hides when open.
 echo "$EPH_HOST" | grep -q '{ "display:none" } else { "" }' \
   || fail "$BUILDS ephemeral host must hide when verify_open (not show)"
-grep -n 'pub sha256' src/models/mod.rs >/dev/null \
-  || fail "Release model must expose sha256"
+grep -n 'struct StorageObject' src/models/mod.rs >/dev/null \
+  || fail "models must define StorageObject (digest SoT)"
+RELEASE_BLOCK="$(awk '/^pub struct Release \{/,/^}/' src/models/mod.rs)"
+echo "$RELEASE_BLOCK" | grep -qE 'sha256|size_mb' \
+  && fail "Release must not declare sha256 or size_mb (live on StorageObject)" || true
+grep -n 'pub sha256:' src/models/mod.rs >/dev/null \
+  || fail "StorageObject must expose sha256"
+grep -n 'release_blob_display' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must read digests via release_blob_display"
 grep -n 'RENAME COLUMN "signature_prefix" TO "sha256"' toasty/migrations/0005_release_sha256.sql >/dev/null \
   || fail "migration 0005 must rename signature_prefix to sha256"
+grep -n 'storage_objects' toasty/migrations/0013_storage_objects.sql >/dev/null \
+  || fail "migration 0013 must introduce storage_objects"
 grep -n 'upsert_acme_private_release' src/db.rs >/dev/null \
   || fail "src/db.rs must upsert Acme private hotfix (refresh legacy 7-char prefix)"
 grep -nE '"b7e4d01[0-9a-fA-F]{57}"' src/db.rs >/dev/null \

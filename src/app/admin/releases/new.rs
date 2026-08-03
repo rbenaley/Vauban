@@ -1,11 +1,12 @@
 //! Admin publish release at `/admin/releases/new`.
 
-use serde::Deserialize;
+use std::io::Cursor;
+
 use topcoat::{
     Result,
     context::Cx,
     router::{
-        content::Form,
+        content::multipart::Multipart,
         error::{SeeOther, see_other},
         page, route,
     },
@@ -13,23 +14,13 @@ use topcoat::{
 };
 
 use crate::{
-    auth::{capability_denied, db, require_staff},
-    models::{Organization, RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release},
+    auth::{capability_denied, db, require_staff, storage},
+    models::{
+        Organization, RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED, Release,
+    },
     perms::perms_for_user,
+    storage::{upsert_release_object, write_and_hash},
 };
-
-#[derive(Deserialize)]
-struct CreateReleaseForm {
-    version: String,
-    channel: String,
-    #[serde(default)]
-    date: String,
-    #[serde(default)]
-    notes: String,
-    /// Empty / missing = GA ([`RELEASE_GA_ORG_ID`]).
-    #[serde(default)]
-    organization_id: String,
-}
 
 #[page]
 async fn admin_releases_new_page(cx: &Cx) -> Result {
@@ -62,10 +53,15 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
             </a>
             <h1 class="vb-title">"Publish release"</h1>
             <p class="vb-lead">
-                "Channel metadata and notes. Binary upload ships later."
+                "Channel metadata, notes, and optional package upload. Releases without a package stay hidden."
             </p>
             <div class="vb-panel" style="padding: 24px;">
-                <form class="vb-form" method="POST" action="/admin/releases/new">
+                <form
+                    class="vb-form"
+                    method="POST"
+                    action="/admin/releases/new"
+                    enctype="multipart/form-data"
+                >
                     <div
                         style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;"
                     >
@@ -110,18 +106,13 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                         style="min-height: 120px;"
                         placeholder="FIX: …\nFEAT: …"
                     ></textarea>
-                    <div class="vb-drop" style="margin-top: 18px;">
-                        <span style="font-size: 22px; color: var(--accent);">
-                            "⇪"
-                        </span>
-                        <span>"Binary upload stub"</span>
-                        <span
-                            class="vb-mono"
-                            style="font-size: 10.5px; color: #9aa0a6;"
-                        >
-                            "SHA-256 computed server-side in a later slice"
-                        </span>
-                    </div>
+                    <label for="package" style="margin-top: 18px;">
+                        "Package (.pkg)"
+                    </label>
+                    <input id="package" name="package" type="file">
+                    <p class="vb-form-hint">
+                        "Optional. When provided, the binary is stored and the release is published. SHA-256 is computed server-side."
+                    </p>
                     <div style="display: flex; gap: 12px; margin-top: 18px;">
                         <button class="vb-btn" type="submit">"Publish"</button>
                         <a
@@ -138,13 +129,61 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
     }
 }
 
+struct CreateReleaseFields {
+    version: String,
+    channel: String,
+    date: String,
+    notes: String,
+    organization_id: String,
+    package: Option<Vec<u8>>,
+}
+
+async fn parse_create_multipart(mut multipart: Multipart) -> Result<CreateReleaseFields> {
+    let mut version = String::new();
+    let mut channel = String::new();
+    let mut date = String::new();
+    let mut notes = String::new();
+    let mut organization_id = String::new();
+    let mut package: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart.next_field().await? {
+        match field.name() {
+            Some("version") => version = field.text().await?,
+            Some("channel") => channel = field.text().await?,
+            Some("date") => date = field.text().await?,
+            Some("notes") => notes = field.text().await?,
+            Some("organization_id") => organization_id = field.text().await?,
+            Some("package") => {
+                let data = field.bytes().await?;
+                if !data.is_empty() {
+                    package = Some(data.to_vec());
+                }
+            }
+            _ => {
+                let _ = field.bytes().await?;
+            }
+        }
+    }
+
+    Ok(CreateReleaseFields {
+        version,
+        channel,
+        date,
+        notes,
+        organization_id,
+        package,
+    })
+}
+
 #[route(POST "/admin/releases/new")]
-async fn admin_releases_create(cx: &Cx, Form(form): Form<CreateReleaseForm>) -> Result<SeeOther> {
+async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
         return Err(capability_denied().into());
     }
+
+    let form = parse_create_multipart(multipart).await?;
 
     let version = form.version.trim().to_owned();
     if version.is_empty() {
@@ -171,13 +210,11 @@ async fn admin_releases_create(cx: &Cx, Form(form): Form<CreateReleaseForm>) -> 
 
     let sort = crate::release_pkg::version_sort_fields(&version);
     let mut database = db(cx);
-    let _ = toasty::create!(Release {
+    let Ok(mut created) = toasty::create!(Release {
         version,
         channel,
         released_on,
-        size_mb: "0.0".to_owned(),
-        sha256: "pending".to_owned(),
-        status: RELEASE_STATUS_PUBLISHED.to_owned(),
+        status: RELEASE_STATUS_HIDDEN.to_owned(),
         notes,
         organization_id,
         v_major: sort.v_major,
@@ -187,7 +224,39 @@ async fn admin_releases_create(cx: &Cx, Form(form): Form<CreateReleaseForm>) -> 
         client_suffix: sort.client_suffix,
     })
     .exec(&mut database)
-    .await;
+    .await
+    else {
+        return Ok(see_other("/admin/releases"));
+    };
+
+    if let Some(package) = form.package {
+        let store = storage(cx);
+        let upload = (|| {
+            let (upload_id, mut file) =
+                store.put_begin_release(created.id, package.len() as u64)?;
+            let (_written, sha) = write_and_hash(&mut file, Cursor::new(package.as_slice()))?;
+            store.put_commit_release(&upload_id, created.id, &sha)
+        })();
+
+        match upload {
+            Ok((size_bytes, sha256)) => {
+                if upsert_release_object(&mut database, created.id, &sha256, size_bytes)
+                    .await
+                    .is_ok()
+                {
+                    let _ = created
+                        .update()
+                        .status(RELEASE_STATUS_PUBLISHED.to_owned())
+                        .exec(&mut database)
+                        .await;
+                }
+                // Storage/DB failure: leave HIDDEN and return to the list.
+            }
+            Err(_) => {
+                // Blob write failed: catalog row stays HIDDEN.
+            }
+        }
+    }
 
     Ok(see_other("/admin/releases"))
 }

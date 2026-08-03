@@ -118,9 +118,10 @@ Strict sequence inside the helper:
    (directory `/var/run/vcp`: `vcp-store:vcp`, `0750`; socket `0660`).
 4. **FreeBSD:** `cap_rights_limit` on `storage_dirfd` and on the listening
    socket (§7), then `cap_enter()`. Verify with `cap_getmode` and log
-   `INFO capsicum: capability mode entered`.
+   `INFO Capsicum: capability mode entered`.
 5. **Non-FreeBSD or failure:**
-   `WARN capsicum unavailable on <os>; storage helper running with soft containment only (dirfd + RESOLVE_BENEATH + uid/permissions)` —
+   `WARN Capsicum unavailable on <OS>; storage helper running with soft containment only (dirfd + RESOLVE_BENEATH + uid/permissions)`
+   (OS display names: `macOS`, `FreeBSD`, `Linux`) —
    once at boot, level `warn`, never fatal. If `environment = production`
    **and** OS ≠ FreeBSD, add a second
    `WARN production deployment without kernel sandbox`.

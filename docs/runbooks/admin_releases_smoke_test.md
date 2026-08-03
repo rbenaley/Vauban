@@ -12,6 +12,7 @@ Related:
 
 - [README](../../README.md) (seed login, route map)
 - Lint: `scripts/check_admin_releases.sh`
+- Storage helper: [`storage_helper_smoke_test.md`](storage_helper_smoke_test.md)
 - Pyramid: `.cursor/rules/vcp-test-pyramid.mdc`
 - Filter: `cargo test --test integration_tests -- admin_releases -- --test-threads=1`
 - Auth denials: [`auth_tenant_smoke_test.md`](auth_tenant_smoke_test.md)
@@ -37,8 +38,11 @@ rtk cargo test --test integration_tests -- builds_entitlement_ -- --test-threads
 ## A -- Happy path
 
 1. Sign in as `support@vauban.sh` / `password`.
-2. Open `/admin/releases/new` and publish a GA release (empty target org).
-3. On `/admin/releases`, confirm STATUS shows a green **PUBLISHED** badge and
+2. Open `/admin/releases/new` and publish a GA release (empty target org)
+   **with a package file** so `vcp-store` commits the blob and
+   `storage_objects` is upserted (no package → row stays **HIDDEN**).
+3. On `/admin/releases`, confirm STATUS shows a green **PUBLISHED** badge,
+   SIGNATURE shows a full 64-hex digest from `storage_objects`, and
    ACTIONS has **Edit** / **Unpublish** / Delete (trash).
 4. Publish an org-targeted hotfix; confirm TARGET column on the list.
 5. Click **Unpublish** — STATUS becomes amber **HIDDEN**. Confirm the version is

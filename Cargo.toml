@@ -9,9 +9,15 @@ default-run = "vcp"
 name = "vcp-cli"
 path = "src/bin/vcp_cli.rs"
 
+[[bin]]
+name = "vcp-store"
+path = "src/bin/vcp_store.rs"
+
 [dependencies]
+ambient-authority = "0.0.2"
 anyhow = "1.0.104"
 argon2 = "0.5.3"
+cap-std = "4.0.2"
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
 config = { version = "0.15", default-features = false, features = ["toml"] }
@@ -20,7 +26,11 @@ http = "1"
 hyper = "1"
 hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
 instant-acme = { version = "0.8", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }
+libc = "0.2.189"
+nix = { version = "0.31.3", features = ["socket", "uio", "user"] }
+passfd = "0.1.6"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+regex = "1.13.1"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 rustls-pki-types = "1"
 secrecy = "0.10.3"
@@ -32,7 +42,7 @@ toasty = { version = "0.9.0", features = ["postgresql", "migration"] }
 toasty-cli = "0.9.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
-topcoat = { version = "0.5.0", features = ["tailwind", "font-fontsource", "mail", "mail-smtp"] }
+topcoat = { version = "0.5.0", features = ["tailwind", "font-fontsource", "mail", "mail-smtp", "multipart"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }

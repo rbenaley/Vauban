@@ -197,8 +197,6 @@ async fn models_issue_and_stubs_create() {
         version: version.clone(),
         channel: "LTS".to_owned(),
         released_on: "2026-01-01".to_owned(),
-        size_mb: "1.0".to_owned(),
-        sha256: "deadbeef".to_owned(),
         status: "DRAFT".to_owned(),
         notes: "notes".to_owned(),
         organization_id: 0,

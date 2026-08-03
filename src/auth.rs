@@ -47,6 +47,11 @@ pub fn config(cx: &Cx) -> std::sync::Arc<Config> {
     app_context::<std::sync::Arc<Config>>(cx).clone()
 }
 
+/// Connected storage helper client from router `app_context`.
+pub fn storage(cx: &Cx) -> std::sync::Arc<crate::storage::StorageClient> {
+    app_context::<std::sync::Arc<crate::storage::StorageClient>>(cx).clone()
+}
+
 /// True when the persisted session expiry is at or before "now".
 pub fn session_is_expired(expires_at: i64) -> bool {
     expires_at <= now_unix()

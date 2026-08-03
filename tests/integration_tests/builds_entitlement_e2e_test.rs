@@ -1,4 +1,4 @@
-//! E2E: authorized download 501; wrong org 404; anonymous denied; GA vs private.
+//! E2E: authorized download streams blob; wrong org 404; anonymous denied; GA vs private.
 
 use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
@@ -12,8 +12,9 @@ use vcp::{
 
 use crate::common::{
     assert_topcoat_click_handlers_are_functions, cleanup, create_org_with_membership,
-    create_test_org, data_topcoat_on_click_values, db_lock, get, login_cookie, post_form, status,
-    test_config, test_db, test_router, unique_email, unique_slug,
+    create_test_org, data_topcoat_on_click_values, db_lock, get, login_cookie, post_form,
+    seed_release_artifact, seed_release_digest, status, test_config, test_db, test_router,
+    unique_email, unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -26,26 +27,73 @@ async fn login(router: &topcoat::router::Router, email: &str) -> Option<String> 
 }
 
 #[tokio::test]
-async fn e2e_authorized_download_returns_501() {
+async fn e2e_authorized_download_returns_200_with_blob() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
-    let router = test_router().await;
 
     let email = unique_email("dl-ok");
     let slug = unique_slug("dl-org");
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
     let version = unique_slug("dlv");
+    let payload = b"vcp-entitlement-download-fixture-bytes";
+    {
+        let mut conn = db.clone();
+        let id = toasty::create!(Release {
+            version: version.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            status: "PUBLISHED".to_owned(),
+            notes: "FIX: x".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("release")
+        .id;
+        let _sha = seed_release_artifact(&db, id, payload).await;
+    }
+
+    let router = test_router().await;
+    let cookie = login(&router, &email).await;
+    let resp = post_form(
+        &router,
+        &format!("/{slug}/builds/{version}/download"),
+        cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert_eq!(status(&resp), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+    assert_eq!(bytes.as_ref(), payload);
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_download_without_storage_row_is_404() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("dl-nostore");
+    let slug = unique_slug("dl-nostore");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let version = unique_slug("dlv-nostore");
     {
         let mut conn = db.clone();
         let _ = toasty::create!(Release {
             version: version.clone(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
-            notes: "FIX: x".to_owned(),
+            notes: "FIX: no blob meta".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
             v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
@@ -66,9 +114,7 @@ async fn e2e_authorized_download_returns_501() {
         "",
     )
     .await;
-    assert_eq!(status(&resp), StatusCode::NOT_IMPLEMENTED);
-    let body = body_text(resp).await;
-    assert!(body.contains("download not configured"), "{body}");
+    assert_eq!(status(&resp), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
 }
@@ -91,8 +137,6 @@ async fn e2e_download_wrong_org_is_404() {
             version: version.clone(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -134,8 +178,6 @@ async fn e2e_download_anonymous_denied() {
             version: version.clone(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: x".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -164,8 +206,9 @@ async fn e2e_download_anonymous_denied() {
             || st == StatusCode::UNAUTHORIZED
             || st.is_redirection()
             || st == StatusCode::FORBIDDEN,
-        "anonymous must not get 501, got {st}"
+        "anonymous must not get 200/501, got {st}"
     );
+    assert_ne!(st, StatusCode::OK);
     assert_ne!(st, StatusCode::NOT_IMPLEMENTED);
 
     cleanup(&db).await;
@@ -197,8 +240,6 @@ async fn e2e_org_private_release_hidden_from_other_org() {
             version: private_ver.clone(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "HOTFIX: private".to_owned(),
             organization_id: org_a.id,
@@ -216,8 +257,6 @@ async fn e2e_org_private_release_hidden_from_other_org() {
             version: ga_ver.clone(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-02".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "def".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "GA".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -310,9 +349,6 @@ async fn e2e_reserved_vauban_org_sees_all_client_private_releases() {
                 version: ver.to_owned(),
                 channel: "EOL".to_owned(),
                 released_on: "2026-06-18".to_owned(),
-                size_mb: "1.0".to_owned(),
-                sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                    .to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: visibility".to_owned(),
                 organization_id: org_id,
@@ -369,8 +405,6 @@ async fn e2e_hidden_ga_release_absent_from_client_builds() {
             version: hidden_ver.clone(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "abc".to_owned(),
             status: RELEASE_STATUS_HIDDEN.to_owned(),
             notes: "FIX: hidden".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -387,8 +421,6 @@ async fn e2e_hidden_ga_release_absent_from_client_builds() {
             version: published_ver.clone(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-02".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "def".to_owned(),
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: published".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -446,12 +478,10 @@ async fn e2e_builds_list_opens_latest_with_concept_actions() {
     {
         let mut conn = db.clone();
         for (ver, date) in [(&higher, "2026-01-01"), (&lower, "2026-12-31")] {
-            let _ = toasty::create!(Release {
+            let id = toasty::create!(Release {
                 version: ver.clone(),
                 channel: "LTS".to_owned(),
                 released_on: date.to_owned(),
-                size_mb: "2.0".to_owned(),
-                sha256: digest.to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: concept".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
@@ -463,7 +493,10 @@ async fn e2e_builds_list_opens_latest_with_concept_actions() {
             })
             .exec(&mut conn)
             .await
-            .expect("release");
+            .expect("release")
+            .id;
+            // Digests live on storage_objects (UI via release_blob_display).
+            seed_release_digest(&db, id, digest, 1_048_576).await;
         }
     }
 
@@ -676,8 +709,6 @@ async fn e2e_ephemeral_expired_offers_generate_new_link() {
             version: version.clone(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-20".to_owned(),
-            size_mb: "1.5".to_owned(),
-            sha256: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: expired".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -742,9 +773,6 @@ async fn e2e_builds_list_pagination() {
                 version: version.clone(),
                 channel: "LTS".to_owned(),
                 released_on: "2026-07-01".to_owned(),
-                size_mb: "1.0".to_owned(),
-                sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                    .to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: pagination".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
@@ -877,8 +905,6 @@ async fn e2e_builds_sql_semver_order_matches_product_rules() {
                 version: version.to_owned(),
                 channel: "LTS".to_owned(),
                 released_on: "2026-07-01".to_owned(),
-                size_mb: "1.0".to_owned(),
-                sha256: "abc".to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: semver order".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,

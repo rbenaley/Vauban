@@ -30,6 +30,7 @@ use vcp::{
         PORTAL_ROLE_ORG, RESERVED_ORG_SLUG, Release, USER_NOT_DELETED, User,
     },
     perms::PolicyStore,
+    storage::{StorageClient, upsert_release_object, write_and_hash},
 };
 
 static TRACING: OnceLock<()> = OnceLock::new();
@@ -317,6 +318,7 @@ pub async fn cleanup(db: &Db) {
         // Keep seed / catalog rows; drop every fixture release (including
         // pagination versions like `v99.0.N` that must sort numerically).
         if !is_seed_release_version(&rel.version) {
+            let _ = vcp::storage::delete_release_object(&mut db, rel.id).await;
             let _ = Release::delete_by_id(&mut db, rel.id).await;
         }
     }
@@ -380,6 +382,90 @@ pub async fn get(router: &Router, path: &str, cookie: Option<&str>) -> Response 
 pub async fn post_form(router: &Router, path: &str, cookie: Option<&str>, form: &str) -> Response {
     request(router, Method::POST, path, cookie, Some(form.to_owned())).await
 }
+
+/// POST `multipart/form-data` with text fields (optional empty `package` file field).
+pub async fn post_multipart(
+    router: &Router,
+    path: &str,
+    cookie: Option<&str>,
+    fields: &[(&str, &str)],
+) -> Response {
+    post_multipart_with_files(router, path, cookie, fields, &[]).await
+}
+
+/// One binary file part for [`post_multipart_with_files`].
+pub struct MultipartFile<'a> {
+    pub field: &'a str,
+    pub filename: &'a str,
+    pub content_type: &'a str,
+    pub bytes: &'a [u8],
+}
+
+/// POST `multipart/form-data` with text fields and zero or more file parts.
+pub async fn post_multipart_with_files(
+    router: &Router,
+    path: &str,
+    cookie: Option<&str>,
+    fields: &[(&str, &str)],
+    files: &[MultipartFile<'_>],
+) -> Response {
+    let boundary = "----VcpTestBoundary7MA4YWxkTrZu0gW";
+    let mut body: Vec<u8> = Vec::new();
+    for (name, value) in fields {
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(boundary.as_bytes());
+        body.extend_from_slice(b"\r\nContent-Disposition: form-data; name=\"");
+        body.extend_from_slice(name.as_bytes());
+        body.extend_from_slice(b"\"\r\n\r\n");
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+    for file in files {
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(boundary.as_bytes());
+        body.extend_from_slice(b"\r\nContent-Disposition: form-data; name=\"");
+        body.extend_from_slice(file.field.as_bytes());
+        body.extend_from_slice(b"\"; filename=\"");
+        body.extend_from_slice(file.filename.as_bytes());
+        body.extend_from_slice(b"\"\r\nContent-Type: ");
+        body.extend_from_slice(file.content_type.as_bytes());
+        body.extend_from_slice(b"\r\n\r\n");
+        body.extend_from_slice(file.bytes);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(b"--");
+    body.extend_from_slice(boundary.as_bytes());
+    body.extend_from_slice(b"--\r\n");
+
+    let uri = absolute_uri(path);
+    let mut builder = Request::builder().method(Method::POST).uri(uri);
+    if let Some(cookie) = cookie {
+        builder = builder.header("cookie", cookie);
+    }
+    builder = builder.header("origin", TEST_ORIGIN).header(
+        "content-type",
+        format!("multipart/form-data; boundary={boundary}"),
+    );
+    let req = builder
+        .body(Body::from(body))
+        .expect("build multipart request");
+    router.handle(req).await
+}
+
+/// Minimal valid 1×1 PNG (magic + IHDR + IEND) for image upload tests.
+pub const TINY_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // signature
+    0x00, 0x00, 0x00, 0x0D, // IHDR len
+    0x49, 0x48, 0x44, 0x52, // IHDR
+    0x00, 0x00, 0x00, 0x01, // w
+    0x00, 0x00, 0x00, 0x01, // h
+    0x08, 0x02, // bit depth / color
+    0x00, 0x00, 0x00, // compression / filter / interlace
+    0x90, 0x77, 0x53, 0xDE, // CRC
+    0x00, 0x00, 0x00, 0x00, // IEND len
+    0x49, 0x45, 0x4E, 0x44, // IEND
+    0xAE, 0x42, 0x60, 0x82, // CRC
+];
 
 /// POST JSON (Topcoat shard / procedure bodies).
 pub async fn post_json(router: &Router, path: &str, cookie: Option<&str>, json: &str) -> Response {
@@ -670,6 +756,33 @@ pub fn urlencoding_encode(value: &str) -> String {
         }
     }
     out
+}
+
+/// Upsert a `storage_objects` digest/size row for a release (metadata only).
+pub async fn seed_release_digest(db: &Db, release_id: u64, sha256: &str, size_bytes: u64) {
+    let mut conn = db.clone();
+    upsert_release_object(&mut conn, release_id, sha256, size_bytes)
+        .await
+        .expect("upsert storage_objects");
+}
+
+/// Write a release blob via inline `StorageClient` and upsert `storage_objects`.
+///
+/// Returns the lowercase hex SHA-256 of `bytes`.
+pub async fn seed_release_artifact(db: &Db, release_id: u64, bytes: &[u8]) -> String {
+    let cfg = test_config().await;
+    let client = StorageClient::connect(&cfg.storage).expect("storage connect");
+    let (upload_id, mut file) = client
+        .put_begin_release(release_id, bytes.len() as u64)
+        .expect("put_begin_release");
+    let (size, sha) =
+        write_and_hash(&mut file, std::io::Cursor::new(bytes)).expect("write_and_hash");
+    drop(file);
+    client
+        .put_commit_release(&upload_id, release_id, &sha)
+        .expect("put_commit_release");
+    seed_release_digest(db, release_id, &sha, size).await;
+    sha
 }
 
 /// Proptest config that persists failure seeds under `target/proptest-regressions/`.

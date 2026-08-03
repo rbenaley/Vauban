@@ -20,11 +20,23 @@ CSS="styles.css"
 [[ -f "$EDIT" ]] || fail "missing $EDIT"
 
 grep -n 'method="POST"' "$NEW" >/dev/null || fail "$NEW must POST compose form"
+grep -n 'enctype="multipart/form-data"' "$NEW" >/dev/null \
+  || fail "$NEW must use multipart/form-data for package upload"
+grep -n 'name="package"' "$NEW" >/dev/null || fail "$NEW must include package file input"
 grep -nE '#\[route\(POST' "$NEW" >/dev/null || fail "$NEW must define POST create route"
+grep -n 'Multipart' "$NEW" >/dev/null || fail "$NEW must parse Multipart on create"
 grep -n 'releases_manage' "$NEW" >/dev/null || fail "$NEW must gate on releases_manage"
 grep -n 'toasty::create!(Release' "$NEW" >/dev/null || fail "$NEW must create Release rows"
+grep -n 'RELEASE_STATUS_HIDDEN' "$NEW" >/dev/null \
+  || fail "$NEW must create as RELEASE_STATUS_HIDDEN until package upload"
 grep -n 'RELEASE_STATUS_PUBLISHED' "$NEW" >/dev/null \
-  || fail "$NEW must create as RELEASE_STATUS_PUBLISHED"
+  || fail "$NEW must publish as RELEASE_STATUS_PUBLISHED after package"
+grep -n 'upsert_release_object' "$NEW" >/dev/null \
+  || fail "$NEW must upsert storage_objects after package commit"
+grep -n 'find_release_object' "$EDIT" >/dev/null \
+  || fail "$EDIT must require storage row before publish"
+grep -n 'delete_release' "$EDIT" >/dev/null \
+  || fail "$EDIT must delete helper blob on release delete"
 grep -n 'method="GET"' "$NEW" >/dev/null && fail "$NEW must not use method=GET on compose form"
 if grep -nE 'max-width:\s*(720|820)px' "$NEW" >/dev/null 2>&1; then
   fail "$NEW must not constrain content width (Concept full width)"

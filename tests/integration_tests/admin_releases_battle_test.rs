@@ -42,8 +42,6 @@ async fn battle_concurrent_release_creates() {
                 version: version.clone(),
                 channel: "LTS".to_owned(),
                 released_on: "2026-07-01".to_owned(),
-                size_mb: "1.0".to_owned(),
-                sha256: "pending".to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: battle".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
@@ -93,8 +91,6 @@ async fn battle_parallel_admin_releases_page_pagination() {
                 version: version.clone(),
                 channel: "LTS".to_owned(),
                 released_on: "2026-07-01".to_owned(),
-                size_mb: "1.0".to_owned(),
-                sha256: "eee".to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: battle page".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
@@ -165,12 +161,10 @@ async fn battle_parallel_publish_unpublish_under_list_reads() {
 
     let release_id = {
         let mut conn = db.clone();
-        toasty::create!(Release {
+        let id = toasty::create!(Release {
             version: "v95.battle.status".to_owned(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "pending".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: battle status".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -184,7 +178,16 @@ async fn battle_parallel_publish_unpublish_under_list_reads() {
         .exec(&mut conn)
         .await
         .expect("release")
-        .id
+        .id;
+        vcp::storage::upsert_release_object(
+            &mut conn,
+            id,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            1_048_576,
+        )
+        .await
+        .expect("storage object");
+        id
     };
 
     let router = Arc::new(test_router().await);
@@ -277,8 +280,6 @@ async fn battle_parallel_semver_list_order_under_concurrent_creates() {
                 version: version.clone(),
                 channel: "LTS".to_owned(),
                 released_on: "2026-07-01".to_owned(),
-                size_mb: "1.0".to_owned(),
-                sha256: "pending".to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: format!("FIX: battle {i}"),
                 organization_id: RELEASE_GA_ORG_ID,
@@ -305,8 +306,6 @@ async fn battle_parallel_semver_list_order_under_concurrent_creates() {
                 version: version.clone(),
                 channel: "LTS".to_owned(),
                 released_on: "2026-07-01".to_owned(),
-                size_mb: "1.0".to_owned(),
-                sha256: "pending".to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: plain".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,

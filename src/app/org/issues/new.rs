@@ -132,7 +132,7 @@ async fn new_issue_page(cx: &Cx) -> Result {
                             class="vb-mono"
                             style="font-size: 10.5px; color: #9aa0a6;"
                         >
-                            "PNG, JPG, GIF · up to 10 MB each · upload stub"
+                            "PNG, JPEG, WebP · up to 10 MB · POST /{org}/images"
                         </span>
                     </div>
 

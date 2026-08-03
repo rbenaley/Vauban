@@ -1,28 +1,31 @@
 //! Server-issued ephemeral download links (POST/PRG; no client JS).
 
+use std::io::Read;
+
 use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
     router::{
+        Body, Response, StatusCode,
         content::Form,
         error::{SeeOther, forbidden, not_found, see_other},
-        path_param, route,
+        header, path_param, route,
     },
 };
 use uuid::Uuid;
 
+use super::download::DOWNLOAD_UNAVAILABLE;
 use super::find_visible_release_by_version;
+use super::release_ver::ReleaseVer;
 use crate::{
     app::org::Org,
-    auth::{db, require_org},
+    auth::{db, require_org, storage},
     db::now_unix,
     models::{EPH_DOWNLOAD_TTL_SECS, EphemeralDownload, Release},
     perms::perms_for_user,
+    storage::{find_release_object, storage_http_status},
 };
-
-#[path_param]
-struct ReleaseVer(str);
 
 #[derive(Debug, Deserialize)]
 struct EphRedirectForm {
@@ -138,7 +141,98 @@ async fn require_downloadable_release(
     else {
         return Err(not_found().into());
     };
+    if find_release_object(&mut database, release.id)
+        .await
+        .is_none()
+    {
+        return Err(not_found().into());
+    }
     Ok((ctx, release))
+}
+
+/// Public GET for a short-lived download token (no session).
+///
+/// Token / package segments are read from the absolute route capture map
+/// (this module already owns `{release_ver}` via [`ReleaseVer`]; Topcoat
+/// allows only one `#[path_param]` / `segment!` registration per module).
+#[route(GET "/releases/{eph_token}/{eph_pkg}")]
+async fn ephemeral_download_get(cx: &Cx) -> Result<Response> {
+    let mut token = None;
+    let mut pkg = None;
+    for (key, value) in topcoat::router::raw_path_params(cx) {
+        match key {
+            "eph_token" => token = Some(value.to_owned()),
+            "eph_pkg" => pkg = Some(value.to_owned()),
+            _ => {}
+        }
+    }
+    let Some(token) = token else {
+        return Err(not_found().into());
+    };
+    let Some(_pkg) = pkg else {
+        return Err(not_found().into());
+    };
+
+    let mut database = db(cx);
+    let rows = EphemeralDownload::all()
+        .filter(EphemeralDownload::fields().token().eq(token))
+        .limit(1)
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    let Some(row) = rows.into_iter().next() else {
+        return Err(not_found().into());
+    };
+    let now = now_unix();
+    if row.expires_at <= now {
+        return Err(not_found().into());
+    }
+
+    let Some(org) = crate::models::Organization::get_by_id(&mut database, row.organization_id)
+        .await
+        .ok()
+    else {
+        return Err(not_found().into());
+    };
+    let Some(rel) =
+        find_visible_release_by_version(&mut database, &row.release_version, org.id, &org.slug)
+            .await
+    else {
+        return Err(not_found().into());
+    };
+    let Some(obj) = find_release_object(&mut database, rel.id).await else {
+        return Err(not_found().into());
+    };
+
+    let client = storage(cx);
+    let (size, _sha, mut file) = match client.get_release(rel.id) {
+        Ok(v) => v,
+        Err(e) => {
+            let status = StatusCode::from_u16(storage_http_status(&e))
+                .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+            return Ok(Response::builder()
+                .status(status)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(Body::from(DOWNLOAD_UNAVAILABLE))?);
+        }
+    };
+    let mut bytes = Vec::with_capacity(size.min(64 * 1024 * 1024) as usize);
+    if file.read_to_end(&mut bytes).is_err() {
+        return Ok(Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .body(Body::from(DOWNLOAD_UNAVAILABLE))?);
+    }
+    let _ = obj;
+    let filename = package_file_name(&rel.version, &rel.channel);
+    let disposition = format!("attachment; filename=\"{filename}\"");
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_DISPOSITION, disposition)
+        .header(header::CONTENT_LENGTH, bytes.len().to_string())
+        .header("X-Content-Type-Options", "nosniff")
+        .body(Body::from(bytes))?)
 }
 
 async fn delete_existing_for(

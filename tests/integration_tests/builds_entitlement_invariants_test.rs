@@ -36,14 +36,33 @@ fn inv_check_builds_entitlement_script() {
 }
 
 #[test]
-fn inv_download_route_gates_and_returns_501_message() {
+fn inv_check_storage_script() {
+    let output = Command::new("bash")
+        .arg("scripts/check_storage.sh")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run check_storage.sh");
+    assert!(
+        output.status.success(),
+        "scripts/check_storage.sh failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn inv_download_route_gates_and_streams_via_storage() {
     let src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/app/org/builds/download.rs"
     ));
     assert!(src.contains("builds_download"));
-    assert!(src.contains("download not configured"));
-    assert!(src.contains("NOT_IMPLEMENTED"));
+    assert!(src.contains("DOWNLOAD_UNAVAILABLE"));
+    assert!(src.contains("download unavailable"));
+    assert!(src.contains("find_release_object"));
+    assert!(src.contains("get_release"));
+    assert!(!src.contains("NOT_IMPLEMENTED"));
+    assert!(!src.contains("download not configured"));
     assert!(src.contains("forbidden"));
     assert!(src.contains("require_org"));
 }
@@ -148,14 +167,39 @@ fn inv_builds_concept_ephemeral_server_side() {
     assert!(!builds.contains("ACCESS_PUBLIC_ORIGIN"));
 
     let models = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/models/mod.rs"));
+    assert!(
+        models.contains("struct StorageObject"),
+        "digests live on StorageObject"
+    );
     assert!(models.contains("pub sha256: String"));
+    let release_block = models
+        .split("pub struct Release {")
+        .nth(1)
+        .and_then(|s| s.split('}').next())
+        .expect("Release struct");
+    assert!(
+        !release_block.contains("sha256") && !release_block.contains("size_mb"),
+        "Release must not declare sha256/size_mb: {release_block}"
+    );
     assert!(!models.contains("signature_prefix"));
+    assert!(
+        builds.contains("release_blob_display"),
+        "builds UI must read digests via release_blob_display"
+    );
 
     let mig = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/toasty/migrations/0005_release_sha256.sql"
     ));
     assert!(mig.contains("RENAME COLUMN \"signature_prefix\" TO \"sha256\""));
+    let mig13 = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/toasty/migrations/0013_storage_objects.sql"
+    ));
+    assert!(
+        mig13.contains("storage_objects"),
+        "migration 0013 must introduce storage_objects"
+    );
 
     let seed = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/db.rs"));
     assert!(

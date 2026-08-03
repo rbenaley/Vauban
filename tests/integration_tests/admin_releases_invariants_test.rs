@@ -25,9 +25,14 @@ fn inv_admin_releases_create_is_post_and_gated() {
     ));
     assert!(src.contains("method=\"POST\""));
     assert!(!src.contains("method=\"GET\""));
+    assert!(src.contains("enctype=\"multipart/form-data\""));
+    assert!(src.contains("name=\"package\""));
+    assert!(src.contains("Multipart"));
     assert!(src.contains("releases_manage"));
     assert!(src.contains("toasty::create!(Release"));
     assert!(src.contains("RELEASE_STATUS_PUBLISHED"));
+    assert!(src.contains("RELEASE_STATUS_HIDDEN"));
+    assert!(src.contains("upsert_release_object"));
 }
 
 #[test]

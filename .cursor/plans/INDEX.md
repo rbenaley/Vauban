@@ -60,6 +60,8 @@ is planned._
 | Topcoat 0.5 migration | [`topcoat_0.5_migration_60d77b42.plan.md`](topcoat_0.5_migration_60d77b42.plan.md) | Done |
 | Topcoat idiomatic adoption | [`topcoat_idiomatic_adoption_820f64e6.plan.md`](topcoat_idiomatic_adoption_820f64e6.plan.md) | Done |
 | UI polish CSS pyramid | [`ui_polish_css_pyramid_40fa6ffc.plan.md`](ui_polish_css_pyramid_40fa6ffc.plan.md) | Done |
+| vcp-store helper impl | [`vcp-store_helper_impl_0af4c10d.plan.md`](vcp-store_helper_impl_0af4c10d.plan.md) | Done |
+| vcp-store SQLite SoT | [`vcp-store_sqlite_sot_2ec4149f.plan.md`](vcp-store_sqlite_sot_2ec4149f.plan.md) | Open |
 | VCP HTTPS TLS ACME | [`vcp_https_tls_acme_b5efb33c.plan.md`](vcp_https_tls_acme_b5efb33c.plan.md) | Done |
 | VCP test pyramid | [`vcp_test_pyramid_c64572e6.plan.md`](vcp_test_pyramid_c64572e6.plan.md) | Done |
 | VCP Topcoat Scaffold | [`vcp_topcoat_scaffold_8eafdb31.plan.md`](vcp_topcoat_scaffold_8eafdb31.plan.md) | Done |

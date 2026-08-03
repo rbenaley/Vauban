@@ -5,8 +5,8 @@ use topcoat::router::StatusCode;
 use vcp::models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED, Release};
 
 use crate::common::{
-    cleanup, create_org_with_membership, db_lock, get, login_cookie, post_form, status, test_db,
-    test_router, unique_email, unique_slug, urlencoding_encode,
+    cleanup, create_org_with_membership, db_lock, get, login_cookie, post_form, post_multipart,
+    status, test_db, test_router, unique_email, unique_slug, urlencoding_encode,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -37,12 +37,18 @@ async fn e2e_admin_creates_release() {
     let cookie = login(&router, &email).await;
 
     let version = unique_slug("v");
-    let form = format!(
-        "version={}&channel=LTS&date=2026-07-01&notes={}",
-        urlencoding_encode(&version),
-        urlencoding_encode("FIX: test release")
-    );
-    let create = post_form(&router, "/admin/releases/new", cookie.as_deref(), &form).await;
+    let create = post_multipart(
+        &router,
+        "/admin/releases/new",
+        cookie.as_deref(),
+        &[
+            ("version", &version),
+            ("channel", "LTS"),
+            ("date", "2026-07-01"),
+            ("notes", "FIX: test release"),
+        ],
+    )
+    .await;
     assert!(
         status(&create).is_redirection(),
         "create should PRG, got {}",
@@ -70,8 +76,18 @@ async fn e2e_member_denied_admin_releases() {
     let page = get(&router, "/admin/releases/new", cookie.as_deref()).await;
     assert_eq!(status(&page), StatusCode::NOT_FOUND);
 
-    let form = "version=test-1.0.0&channel=LTS&date=2026-07-01&notes=x";
-    let create = post_form(&router, "/admin/releases/new", cookie.as_deref(), form).await;
+    let create = post_multipart(
+        &router,
+        "/admin/releases/new",
+        cookie.as_deref(),
+        &[
+            ("version", "test-1.0.0"),
+            ("channel", "LTS"),
+            ("date", "2026-07-01"),
+            ("notes", "x"),
+        ],
+    )
+    .await;
     assert_eq!(status(&create), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
@@ -90,13 +106,20 @@ async fn e2e_admin_creates_org_targeted_release() {
     let cookie = login(&router, &email).await;
 
     let version = unique_slug("v-priv");
-    let form = format!(
-        "version={}&channel=LTS&date=2026-07-01&notes={}&organization_id={}",
-        urlencoding_encode(&version),
-        urlencoding_encode("FIX: private hotfix"),
-        org.id
-    );
-    let create = post_form(&router, "/admin/releases/new", cookie.as_deref(), &form).await;
+    let org_id = org.id.to_string();
+    let create = post_multipart(
+        &router,
+        "/admin/releases/new",
+        cookie.as_deref(),
+        &[
+            ("version", &version),
+            ("channel", "LTS"),
+            ("date", "2026-07-01"),
+            ("notes", "FIX: private hotfix"),
+            ("organization_id", &org_id),
+        ],
+    )
+    .await;
     assert!(status(&create).is_redirection());
 
     {
@@ -135,8 +158,6 @@ async fn e2e_admin_releases_edit_preserves_target_org_selection() {
             version: version.clone(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "pending".to_owned(),
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: private".to_owned(),
             organization_id: target.id,
@@ -224,8 +245,6 @@ async fn e2e_admin_releases_edit_preserves_channel_selection() {
             version: version.clone(),
             channel: "Stable".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "pending".to_owned(),
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: stable".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -306,9 +325,6 @@ async fn e2e_admin_releases_list_pagination() {
                 version: version.clone(),
                 channel: "LTS".to_owned(),
                 released_on: "2026-07-01".to_owned(),
-                size_mb: "1.0".to_owned(),
-                sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-                    .to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: admin pagination".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
@@ -376,8 +392,6 @@ async fn e2e_admin_releases_list_shows_status_badges_and_actions() {
             version: "v95.ui.1".to_owned(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "pending".to_owned(),
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: ui".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -438,8 +452,6 @@ async fn e2e_admin_releases_order_stable_across_unpublish() {
                 version: ver.to_owned(),
                 channel: "LTS".to_owned(),
                 released_on: "2026-07-01".to_owned(),
-                size_mb: "1.0".to_owned(),
-                sha256: "pending".to_owned(),
                 status: RELEASE_STATUS_PUBLISHED.to_owned(),
                 notes: "FIX: order".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,
@@ -523,12 +535,10 @@ async fn e2e_unpublish_hides_from_client_builds_publish_restores() {
     let version = "v95.vis.0".to_owned();
     let release_id = {
         let mut conn = db.clone();
-        toasty::create!(Release {
+        let id = toasty::create!(Release {
             version: version.clone(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "pending".to_owned(),
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: visibility toggle".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -541,7 +551,17 @@ async fn e2e_unpublish_hides_from_client_builds_publish_restores() {
         .exec(&mut conn)
         .await
         .expect("release")
-        .id
+        .id;
+        // Publish requires a storage_objects row (digest SoT).
+        vcp::storage::upsert_release_object(
+            &mut conn,
+            id,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            1_048_576,
+        )
+        .await
+        .expect("storage object");
+        id
     };
 
     let staff_cookie = login(&router, &staff_email).await;
@@ -654,8 +674,6 @@ async fn e2e_admin_releases_delete_with_confirm() {
             version: version.clone(),
             channel: "Stable".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "pending".to_owned(),
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: delete me".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -757,8 +775,6 @@ async fn e2e_member_denied_admin_releases_mutations() {
             version: "v95.mem.0".to_owned(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "pending".to_owned(),
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: member denied".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -815,8 +831,6 @@ async fn e2e_admin_releases_edit_updates_row() {
             version: "v95.edit.0".to_owned(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "pending".to_owned(),
             status: RELEASE_STATUS_PUBLISHED.to_owned(),
             notes: "FIX: before".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -895,8 +909,6 @@ async fn e2e_admin_releases_sql_semver_order_and_sort_columns() {
                 version: version.to_owned(),
                 channel: "Stable".to_owned(),
                 released_on: "2026-07-01".to_owned(),
-                size_mb: "1.0".to_owned(),
-                sha256: "pending".to_owned(),
                 status: "PUBLISHED".to_owned(),
                 notes: "FIX: admin order".to_owned(),
                 organization_id: RELEASE_GA_ORG_ID,

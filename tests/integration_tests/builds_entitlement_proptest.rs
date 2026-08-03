@@ -7,7 +7,7 @@ use vcp::release_pkg::{
     cmp_sort_fields_desc, cmp_version_desc, package_file_name, sha256_cmd, version_sort_fields,
 };
 
-const MSG: &str = "download not configured";
+const MSG: &str = "download unavailable";
 
 /// (version, channel, expected package basename)
 const PACKAGE_CASES: &[(&str, &str, &str)] = &[
@@ -35,9 +35,16 @@ proptest! {
 
     #[test]
     fn prop_download_message_is_stable(_n in 0u8..32) {
-        prop_assert_eq!(MSG, "download not configured");
+        prop_assert_eq!(MSG, "download unavailable");
         prop_assert!(!MSG.is_empty());
         prop_assert!(MSG.chars().all(|c| c.is_ascii_lowercase() || c == ' '));
+        // Pin source constant stays aligned with the proptest corpus.
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/app/org/builds/download.rs"
+        ));
+        prop_assert!(src.contains("DOWNLOAD_UNAVAILABLE"));
+        prop_assert!(src.contains(MSG));
     }
 
     #[test]

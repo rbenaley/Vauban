@@ -60,6 +60,7 @@ use crate::{
     login_limit::LoginRateLimiter,
     mailer::build_smtp_transport,
     perms::PolicyStore,
+    storage::StorageClient,
 };
 
 /// When true, the security layer attaches HSTS on every response.
@@ -108,6 +109,12 @@ fn router_with_mail(
     let assets = load_assets(cfg.environment);
     let enable_hsts = EnableHsts(cfg.environment == Environment::Production);
     let login_limiter = Arc::new(LoginRateLimiter::new(&cfg.login));
+    let storage = Arc::new(StorageClient::connect(&cfg.storage).unwrap_or_else(|e| {
+        panic!(
+            "storage helper connect failed ({}): {e}",
+            cfg.storage.ipc.as_str()
+        );
+    }));
 
     topcoat::router::module_router!()
         .cookies()
@@ -119,6 +126,7 @@ fn router_with_mail(
         .app_context(Arc::new(cfg.clone()))
         .app_context(enable_hsts)
         .app_context(login_limiter)
+        .app_context(storage)
         .discover()
         .build()
 }

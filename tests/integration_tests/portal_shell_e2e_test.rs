@@ -6,7 +6,7 @@ use vcp::models::{RELEASE_GA_ORG_ID, Release};
 
 use crate::common::{
     cleanup, create_org_with_membership, create_published_doc, db_lock, get, login_cookie,
-    post_form, status, test_db, test_router, unique_email, unique_slug,
+    post_form, seed_release_digest, status, test_db, test_router, unique_email, unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -154,14 +154,12 @@ async fn e2e_builds_ephemeral_exposes_countdown_class() {
     let slug = unique_slug("shell-eph");
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
     let version = unique_slug("shell-rel");
-    {
+    let release_id = {
         let mut conn = db.clone();
-        let _ = toasty::create!(Release {
+        let rel = toasty::create!(Release {
             version: version.clone(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-15".to_owned(),
-            size_mb: "2.0".to_owned(),
-            sha256: "abc".to_owned(),
             status: "PUBLISHED".to_owned(),
             notes: "FIX: polish".to_owned(),
             organization_id: RELEASE_GA_ORG_ID,
@@ -174,7 +172,15 @@ async fn e2e_builds_ephemeral_exposes_countdown_class() {
         .exec(&mut conn)
         .await
         .expect("release");
-    }
+        rel.id
+    };
+    seed_release_digest(
+        &db,
+        release_id,
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        1024,
+    )
+    .await;
 
     let cookie = login_cookie(&router, &email).await.expect("session cookie");
 

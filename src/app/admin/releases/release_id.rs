@@ -13,12 +13,13 @@ use topcoat::{
 };
 
 use crate::{
-    auth::{capability_denied, db, require_staff},
+    auth::{capability_denied, db, require_staff, storage},
     docs_version::is_delete_confirm,
     models::{
         Organization, RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED, Release,
     },
     perms::perms_for_user,
+    storage::{delete_release_object, find_release_object},
 };
 
 #[path_param]
@@ -239,7 +240,29 @@ async fn admin_releases_update(cx: &Cx, Form(form): Form<UpdateReleaseForm>) -> 
 
 #[route(POST "/admin/releases/{release_id}/publish")]
 async fn admin_releases_publish(cx: &Cx) -> Result<SeeOther> {
-    set_release_status(cx, RELEASE_STATUS_PUBLISHED).await
+    let raw = path_param::<ReleaseId>(cx);
+    require_releases_manage(cx).await?;
+
+    let Some(id) = parse_release_id(raw) else {
+        return Err(not_found().into());
+    };
+    let Some(mut rel) = load_release_by_id(cx, id).await else {
+        return Err(not_found().into());
+    };
+
+    let mut database = db(cx);
+    if find_release_object(&mut database, id).await.is_none() {
+        // No storage row: refuse publish (capability-safe — no chatty error).
+        return Ok(see_other("/admin/releases"));
+    }
+
+    let _ = rel
+        .update()
+        .status(RELEASE_STATUS_PUBLISHED.to_owned())
+        .exec(&mut database)
+        .await;
+
+    Ok(see_other("/admin/releases"))
 }
 
 #[route(POST "/admin/releases/{release_id}/unpublish")]
@@ -265,7 +288,11 @@ async fn admin_releases_delete(cx: &Cx, Form(form): Form<DeleteReleaseForm>) -> 
         )));
     }
 
+    let store = storage(cx);
+    let _ = store.delete_release(id);
+
     let mut database = db(cx);
+    let _ = delete_release_object(&mut database, id).await;
     let _ = rel.delete().exec(&mut database).await;
 
     Ok(see_other("/admin/releases"))

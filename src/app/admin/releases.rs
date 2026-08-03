@@ -19,6 +19,7 @@ use crate::{
     },
     models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release},
     perms::perms_for_user,
+    storage::{BlobDisplay, release_blob_display},
     ui::{channel_badge_class, release_status_badge_class},
 };
 
@@ -89,6 +90,11 @@ async fn admin_releases_page(cx: &Cx) -> Result {
     let orgs = crate::id_lookups::orgs_by_ids(&mut database, &org_ids)
         .await
         .unwrap_or_default();
+    let mut blobs: Vec<BlobDisplay> = Vec::with_capacity(page_releases.len());
+    for rel in &page_releases {
+        blobs.push(release_blob_display(&mut database, rel.id).await);
+    }
+    let rows: Vec<(&Release, &BlobDisplay)> = page_releases.iter().zip(blobs.iter()).collect();
     // Pager keeps only `page` — never sticky `delete` / `err` (overlay query).
     let pager = PagerLinks::from_hrefs(page, pages, |n| {
         let mut parts = Vec::new();
@@ -133,7 +139,7 @@ async fn admin_releases_page(cx: &Cx) -> Result {
                             </td>
                         </tr>
                     } else {
-                        for rel in page_releases {
+                        for (rel, blob) in rows {
                             let target = if rel.organization_id == RELEASE_GA_ORG_ID {
                                 "GA".to_owned()
                             } else {
@@ -156,6 +162,7 @@ async fn admin_releases_page(cx: &Cx) -> Result {
                                 format!("/admin/releases?delete={}", rel.id)
                             };
                             let is_published = rel.status == RELEASE_STATUS_PUBLISHED;
+                            let size_label = format!("{} MB", blob.size_mb);
                             <tr>
                                 <td style="font-weight: 700;">(rel.version.clone())</td>
                                 <td>
@@ -163,10 +170,7 @@ async fn admin_releases_page(cx: &Cx) -> Result {
                                 </td>
                                 <td>(target)</td>
                                 <td>(rel.released_on.clone())</td>
-                                <td>
-                                    (rel.size_mb.clone())
-                                    " MB"
-                                </td>
+                                <td>(size_label)</td>
                                 <td>
                                     <span class=(status_badge)>(rel.status.clone())</span>
                                 </td>

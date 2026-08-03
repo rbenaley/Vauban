@@ -23,6 +23,7 @@ use crate::{
     models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, RESERVED_ORG_SLUG, Release},
     perms::perms_for_user,
     release_pkg::{package_file_name, sha256_cmd},
+    storage::{BlobDisplay, release_blob_display},
     ui::channel_badge_class,
 };
 
@@ -168,6 +169,13 @@ pub(super) async fn render_builds(
         "5-minute download link"
     };
 
+    let mut database = crate::auth::db(cx);
+    let mut blobs: Vec<BlobDisplay> = Vec::with_capacity(releases.len());
+    for rel in releases {
+        blobs.push(release_blob_display(&mut database, rel.id).await);
+    }
+    let rows: Vec<(&Release, &BlobDisplay)> = releases.iter().zip(blobs.iter()).collect();
+
     view! {
         cx =>
         <h1 class="vb-title">"Certified LTS builds"</h1>
@@ -186,10 +194,10 @@ pub(super) async fn render_builds(
                 <div>"SIZE"</div>
                 <div></div>
             </div>
-            if releases.is_empty() {
+            if rows.is_empty() {
                 <div class="vb-empty">"No published builds."</div>
             } else {
-                for rel in releases {
+                for (rel, blob) in rows {
                     let is_open = open_version.is_some_and(|v| v == rel.version);
                     let row_href = if is_open {
                         collapse_href.clone()
@@ -206,7 +214,7 @@ pub(super) async fn render_builds(
                         "vb-build-row"
                     };
                     let notes = parse_notes(&rel.notes);
-                    let size_label = format!("{} MB", rel.size_mb);
+                    let size_label = format!("{} MB", blob.size_mb);
                     let dl_label = format!("Download ({size_label})");
                     let channel_badge = channel_badge_class(&rel.channel).to_owned();
                     let eph_action = format!("/{}/builds/{}/ephemeral", org, rel.version);
@@ -214,6 +222,7 @@ pub(super) async fn render_builds(
                         "/{}/builds/{}/ephemeral/revoke", org, rel.version
                     );
                     let open_panel = if is_open { eph_model.clone() } else { None };
+                    let sha256 = blob.sha256.clone();
 
                     <div>
                         <a class=(row_class) href=(row_href)>
@@ -226,7 +235,7 @@ pub(super) async fn render_builds(
                             <div style="color: #5a5f66;">(rel.released_on.clone())</div>
                             <div class="vb-build-sig">
                                 (ico_check(cx, 12).await?)
-                                <span class="vb-build-sig-hash">(rel.sha256.clone())</span>
+                                <span class="vb-build-sig-hash">(sha256.clone())</span>
                             </div>
                             <div style="color: #5a5f66;">(size_label.clone())</div>
                             <div
@@ -262,7 +271,7 @@ pub(super) async fn render_builds(
                                             org: org.clone(),
                                             version: rel.version.clone(),
                                             release_channel: rel.channel.clone(),
-                                            sha256: rel.sha256.clone(),
+                                            sha256: sha256.clone(),
                                             dl_label: dl_label.clone(),
                                             gen_label: gen_label.to_owned(),
                                             eph_action: eph_action.clone(),
@@ -768,8 +777,6 @@ mod builds_entitlement_page_tests {
             version: "v1.0.0".to_owned(),
             channel: "LTS".to_owned(),
             released_on: "2026-07-01".to_owned(),
-            size_mb: "1.0".to_owned(),
-            sha256: "pending".to_owned(),
             status: status.to_owned(),
             notes: "FIX: test".to_owned(),
             organization_id,
