@@ -2,6 +2,7 @@
 //!
 //! See `docs/technical/VCP_Storage_Helper_Architecture_EN(1.2).md`.
 
+pub mod audit;
 pub mod capsicum;
 pub mod client;
 pub mod engine;
@@ -13,9 +14,12 @@ pub mod objects;
 pub mod protocol;
 pub mod server;
 pub mod sniff;
+pub mod webauthn;
 
-pub use client::{StorageClient, write_and_hash};
-pub use engine::{ObjectStat, PutBeginOk, StorageEngine, sha256_hex, write_abs_file};
+pub use client::{
+    PendingDeleteCeremony, PendingReleaseCeremony, PrepareClientOk, StorageClient, write_and_hash,
+};
+pub use engine::{ObjectStat, PrepareOk, PutBeginOk, StorageEngine, sha256_hex, write_abs_file};
 pub use error::{StorageError, StorageErrorCode};
 pub use ids::{StorageScope, is_uuid_key, normalize_image_ext};
 pub use meta_db::{META_DB_FILE, MetaDb, MetaObject, ct_eq_hex};
@@ -24,3 +28,4 @@ pub use objects::{
     release_blob_display, storage_http_status, upsert_image_object, upsert_release_object,
 };
 pub use protocol::{StorageRequest, StorageResponse};
+pub use webauthn::{credential_fingerprint, soft_assertion_json};

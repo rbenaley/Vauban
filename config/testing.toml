@@ -22,6 +22,12 @@ url = "postgresql://vcp_test:vcp_test@localhost/vcp_test"
 [storage]
 blob_path = "target/vcp-storage-test"
 ipc = "inline"
+webauthn_required = false
+webauthn_user_verification = "required"
+webauthn_strict_sign_count = false
+webauthn_rp_id = "127.0.0.1"
+webauthn_origin = "https://127.0.0.1:3001"
+webauthn_challenge_ttl_secs = 300
 
 # Mailpit (or local SMTP catch-all) for the test suite.
 [mail]

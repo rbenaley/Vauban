@@ -389,6 +389,19 @@ pub struct StorageConfig {
     /// Unused by the portal process; peer UID is configured on the helper.
     #[serde(default)]
     pub expected_peer_uid: Option<u32>,
+    /// When true, release finalize + deletes require helper-side WebAuthn.
+    #[serde(default = "default_webauthn_required")]
+    pub webauthn_required: bool,
+    #[serde(default = "default_webauthn_uv")]
+    pub webauthn_user_verification: String,
+    #[serde(default)]
+    pub webauthn_strict_sign_count: bool,
+    #[serde(default = "default_webauthn_rp_id")]
+    pub webauthn_rp_id: String,
+    #[serde(default = "default_webauthn_origin")]
+    pub webauthn_origin: String,
+    #[serde(default = "default_webauthn_challenge_ttl")]
+    pub webauthn_challenge_ttl_secs: u64,
 }
 
 impl Default for StorageConfig {
@@ -405,6 +418,12 @@ impl Default for StorageConfig {
             max_images_per_org: default_max_images_per_org(),
             upload_ttl_secs: default_upload_ttl_secs(),
             expected_peer_uid: None,
+            webauthn_required: default_webauthn_required(),
+            webauthn_user_verification: default_webauthn_uv(),
+            webauthn_strict_sign_count: false,
+            webauthn_rp_id: default_webauthn_rp_id(),
+            webauthn_origin: default_webauthn_origin(),
+            webauthn_challenge_ttl_secs: default_webauthn_challenge_ttl(),
         }
     }
 }
@@ -428,6 +447,18 @@ pub struct StoreHelperConfig {
     pub max_images_per_org: u32,
     #[serde(default = "default_upload_ttl_secs")]
     pub upload_ttl_secs: u64,
+    #[serde(default = "default_webauthn_required_prod")]
+    pub webauthn_required: bool,
+    #[serde(default = "default_webauthn_uv")]
+    pub webauthn_user_verification: String,
+    #[serde(default)]
+    pub webauthn_strict_sign_count: bool,
+    #[serde(default = "default_webauthn_rp_id")]
+    pub webauthn_rp_id: String,
+    #[serde(default = "default_webauthn_origin")]
+    pub webauthn_origin: String,
+    #[serde(default = "default_webauthn_challenge_ttl")]
+    pub webauthn_challenge_ttl_secs: u64,
 }
 
 impl StoreHelperConfig {
@@ -471,6 +502,9 @@ impl StoreHelperConfig {
         if self.max_concurrent_uploads == 0 {
             anyhow::bail!("vcp-store max_concurrent_uploads must be greater than zero");
         }
+        if self.webauthn_user_verification != "required" {
+            anyhow::bail!("vcp-store webauthn_user_verification must be \"required\"");
+        }
         Ok(())
     }
 
@@ -488,6 +522,12 @@ impl StoreHelperConfig {
             max_images_per_org: self.max_images_per_org,
             upload_ttl_secs: self.upload_ttl_secs,
             expected_peer_uid: self.expected_peer_uid,
+            webauthn_required: self.webauthn_required,
+            webauthn_user_verification: self.webauthn_user_verification.clone(),
+            webauthn_strict_sign_count: self.webauthn_strict_sign_count,
+            webauthn_rp_id: self.webauthn_rp_id.clone(),
+            webauthn_origin: self.webauthn_origin.clone(),
+            webauthn_challenge_ttl_secs: self.webauthn_challenge_ttl_secs,
         }
     }
 }
@@ -518,6 +558,31 @@ fn default_max_images_per_org() -> u32 {
 
 fn default_upload_ttl_secs() -> u64 {
     3600
+}
+
+/// Portal `StorageConfig` default (overridden per environment TOML).
+fn default_webauthn_required() -> bool {
+    true
+}
+
+fn default_webauthn_required_prod() -> bool {
+    true
+}
+
+fn default_webauthn_uv() -> String {
+    "required".into()
+}
+
+fn default_webauthn_rp_id() -> String {
+    "access.vauban.sh".into()
+}
+
+fn default_webauthn_origin() -> String {
+    "https://access.vauban.sh".into()
+}
+
+fn default_webauthn_challenge_ttl() -> u64 {
+    300
 }
 
 impl Config {
@@ -819,7 +884,8 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
         let cfg = Config::load_with_environment(&dir, Environment::Production).unwrap();
         assert_eq!(cfg.environment, Environment::Production);
-        assert!(cfg.server.tls.acme.as_ref().is_some_and(|a| a.enabled));
+        // ACME stays off until an operator enables and parameterizes it.
+        assert!(cfg.server.tls.acme.as_ref().is_some_and(|a| !a.enabled));
         assert_eq!(cfg.server.port, 443);
         assert_eq!(cfg.server.access_log_path, "/var/log/vcp-access.log");
         assert_eq!(cfg.primary_public_origin(), "https://access.vauban.sh");

@@ -1,5 +1,6 @@
 //! Storage client used by `vcp` (spawn, named socket, or inline engine).
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
@@ -7,9 +8,10 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::{StorageConfig, StorageIpcMode};
+use uuid::Uuid;
 
 use super::engine::StorageEngine;
 use super::error::{StorageError, StorageErrorCode};
@@ -25,9 +27,39 @@ enum Backend {
     Inline(Box<Mutex<StorageEngine>>),
 }
 
+/// Portal-side pending release finalize (C1) after `put_prepare`.
+#[derive(Debug, Clone)]
+pub struct PendingReleaseCeremony {
+    pub upload_id: String,
+    pub release_id: u64,
+    pub sha256: String,
+    pub summary: String,
+    pub challenge_id: String,
+    pub challenge: String,
+    pub rp_id: String,
+    pub allow_credentials: Vec<String>,
+    pub expires_at: i64,
+}
+
+/// Portal-side pending gated delete (C1).
+#[derive(Debug, Clone)]
+pub struct PendingDeleteCeremony {
+    pub kind: String,
+    pub release_id: Option<u64>,
+    pub org_id: Option<u64>,
+    pub summary: String,
+    pub challenge_id: String,
+    pub challenge: String,
+    pub rp_id: String,
+    pub allow_credentials: Vec<String>,
+}
+
 /// Connected storage helper client.
 pub struct StorageClient {
     backend: Backend,
+    pending_release: Mutex<HashMap<String, PendingReleaseCeremony>>,
+    pending_delete: Mutex<HashMap<String, PendingDeleteCeremony>>,
+    webauthn_required: bool,
 }
 
 impl StorageClient {
@@ -39,9 +71,64 @@ impl StorageClient {
                 let engine = StorageEngine::open(&cfg.blob_path, cfg.clone())?;
                 Ok(Self {
                     backend: Backend::Inline(Box::new(Mutex::new(engine))),
+                    pending_release: Mutex::new(HashMap::new()),
+                    pending_delete: Mutex::new(HashMap::new()),
+                    webauthn_required: cfg.webauthn_required,
                 })
             }
         }
+    }
+
+    pub fn webauthn_required(&self) -> bool {
+        self.webauthn_required
+    }
+
+    pub fn stash_pending_release(&self, pending: PendingReleaseCeremony) -> String {
+        let token = Uuid::new_v4().to_string();
+        self.pending_release
+            .lock()
+            .expect("pending mutex")
+            .insert(token.clone(), pending);
+        token
+    }
+
+    pub fn take_pending_release(&self, token: &str) -> Option<PendingReleaseCeremony> {
+        self.pending_release
+            .lock()
+            .expect("pending mutex")
+            .remove(token)
+    }
+
+    pub fn peek_pending_release(&self, token: &str) -> Option<PendingReleaseCeremony> {
+        self.pending_release
+            .lock()
+            .expect("pending mutex")
+            .get(token)
+            .cloned()
+    }
+
+    pub fn stash_pending_delete(&self, pending: PendingDeleteCeremony) -> String {
+        let token = Uuid::new_v4().to_string();
+        self.pending_delete
+            .lock()
+            .expect("pending delete mutex")
+            .insert(token.clone(), pending);
+        token
+    }
+
+    pub fn take_pending_delete(&self, token: &str) -> Option<PendingDeleteCeremony> {
+        self.pending_delete
+            .lock()
+            .expect("pending delete mutex")
+            .remove(token)
+    }
+
+    pub fn peek_pending_delete(&self, token: &str) -> Option<PendingDeleteCeremony> {
+        self.pending_delete
+            .lock()
+            .expect("pending delete mutex")
+            .get(token)
+            .cloned()
     }
 
     fn connect_socket(cfg: &StorageConfig) -> Result<Self, StorageError> {
@@ -60,6 +147,9 @@ impl StorageClient {
                 stream: Mutex::new(stream),
                 _child: None,
             },
+            pending_release: Mutex::new(HashMap::new()),
+            pending_delete: Mutex::new(HashMap::new()),
+            webauthn_required: cfg.webauthn_required,
         })
     }
 
@@ -99,6 +189,12 @@ impl StorageClient {
             .arg(cfg.max_images_per_org.to_string())
             .arg("--upload-ttl-secs")
             .arg(cfg.upload_ttl_secs.to_string())
+            .arg("--webauthn-required")
+            .arg(if cfg.webauthn_required {
+                "true"
+            } else {
+                "false"
+            })
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -121,7 +217,18 @@ impl StorageClient {
                 stream: Mutex::new(stream),
                 _child: Some(child),
             },
+            pending_release: Mutex::new(HashMap::new()),
+            pending_delete: Mutex::new(HashMap::new()),
+            webauthn_required: cfg.webauthn_required,
         })
+    }
+
+    pub fn ceremony_ttl_unix(secs: u64) -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+            .saturating_add(secs as i64)
     }
 
     pub fn put_begin_release(
@@ -201,16 +308,58 @@ impl StorageClient {
         }
     }
 
+    pub fn put_prepare_release(
+        &self,
+        upload_id: &str,
+        release_id: u64,
+        sha256: &str,
+    ) -> Result<PrepareClientOk, StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                let _ = release_id;
+                let ok = eng.put_prepare(upload_id, sha256)?;
+                Ok(PrepareClientOk {
+                    digest: ok.digest,
+                    challenge_id: ok.challenge.challenge_id,
+                    challenge: ok.challenge.challenge_b64,
+                    summary: ok.challenge.summary,
+                    rp_id: ok.challenge.rp_id,
+                    allow_credentials: ok.challenge.allow_credentials,
+                })
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::PutPrepare {
+                    upload_id: upload_id.to_owned(),
+                    sha256: sha256.to_owned(),
+                    release_id: Some(release_id.to_string()),
+                };
+                let resp = self.roundtrip(req)?;
+                ok_challenge(resp)
+            }
+        }
+    }
+
     pub fn put_commit_release(
         &self,
         upload_id: &str,
         release_id: u64,
         sha256: &str,
     ) -> Result<(u64, String), StorageError> {
+        self.put_commit_release_asserted(upload_id, release_id, sha256, None)
+    }
+
+    pub fn put_commit_release_asserted(
+        &self,
+        upload_id: &str,
+        release_id: u64,
+        sha256: &str,
+        assertion: Option<&str>,
+    ) -> Result<(u64, String), StorageError> {
         match &self.backend {
             Backend::Inline(engine) => {
                 let eng = engine.lock().expect("inline engine");
-                let st = eng.put_commit(upload_id, sha256, None)?;
+                let st = eng.put_commit(upload_id, sha256, None, assertion)?;
                 let _ = release_id;
                 Ok((st.size, st.sha256))
             }
@@ -223,6 +372,8 @@ impl StorageClient {
                     org_id: None,
                     image_id: None,
                     ext: None,
+                    assertion: assertion.map(str::to_owned),
+                    challenge_id: None,
                 };
                 let resp = self.roundtrip(req)?;
                 ok_stat(resp)
@@ -241,7 +392,7 @@ impl StorageClient {
         match &self.backend {
             Backend::Inline(engine) => {
                 let eng = engine.lock().expect("inline engine");
-                let st = eng.put_commit(upload_id, sha256, Some(image_id))?;
+                let st = eng.put_commit(upload_id, sha256, Some(image_id), None)?;
                 let _ = (org_id, ext);
                 Ok((st.size, st.sha256))
             }
@@ -254,6 +405,8 @@ impl StorageClient {
                     org_id: Some(org_id.to_string()),
                     image_id: Some(image_id.to_owned()),
                     ext: Some(ext.to_owned()),
+                    assertion: None,
+                    challenge_id: None,
                 };
                 let resp = self.roundtrip(req)?;
                 ok_stat(resp)
@@ -363,7 +516,82 @@ impl StorageClient {
         }
     }
 
+    pub fn challenge_begin_delete_release(
+        &self,
+        release_id: u64,
+    ) -> Result<PrepareClientOk, StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                let ch = eng.challenge_begin_delete(
+                    StorageScope::Release,
+                    Some(&release_id.to_string()),
+                    None,
+                    None,
+                    None,
+                )?;
+                Ok(PrepareClientOk {
+                    digest: String::new(),
+                    challenge_id: ch.challenge_id,
+                    challenge: ch.challenge_b64,
+                    summary: ch.summary,
+                    rp_id: ch.rp_id,
+                    allow_credentials: ch.allow_credentials,
+                })
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::ChallengeBegin {
+                    kind: "delete".into(),
+                    scope: Some(StorageScope::Release.as_str().into()),
+                    release_id: Some(release_id.to_string()),
+                    org_id: None,
+                    image_id: None,
+                    ext: None,
+                };
+                let resp = self.roundtrip(req)?;
+                ok_challenge(resp)
+            }
+        }
+    }
+
+    pub fn challenge_begin_delete_org(&self, org_id: u64) -> Result<PrepareClientOk, StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                let ch = eng.challenge_begin_delete_org(&org_id.to_string())?;
+                Ok(PrepareClientOk {
+                    digest: String::new(),
+                    challenge_id: ch.challenge_id,
+                    challenge: ch.challenge_b64,
+                    summary: ch.summary,
+                    rp_id: ch.rp_id,
+                    allow_credentials: ch.allow_credentials,
+                })
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::ChallengeBegin {
+                    kind: "delete_org".into(),
+                    scope: None,
+                    release_id: None,
+                    org_id: Some(org_id.to_string()),
+                    image_id: None,
+                    ext: None,
+                };
+                let resp = self.roundtrip(req)?;
+                ok_challenge(resp)
+            }
+        }
+    }
+
     pub fn delete_release(&self, release_id: u64) -> Result<(), StorageError> {
+        self.delete_release_asserted(release_id, None)
+    }
+
+    pub fn delete_release_asserted(
+        &self,
+        release_id: u64,
+        assertion: Option<&str>,
+    ) -> Result<(), StorageError> {
         match &self.backend {
             Backend::Inline(engine) => {
                 let eng = engine.lock().expect("inline engine");
@@ -373,6 +601,7 @@ impl StorageClient {
                     None,
                     None,
                     None,
+                    assertion,
                 )
             }
             Backend::Ipc { .. } => {
@@ -382,6 +611,8 @@ impl StorageClient {
                     org_id: None,
                     image_id: None,
                     ext: None,
+                    assertion: assertion.map(str::to_owned),
+                    challenge_id: None,
                 };
                 let resp = self.roundtrip(req)?;
                 if resp.ok {
@@ -398,14 +629,24 @@ impl StorageClient {
     }
 
     pub fn delete_org(&self, org_id: u64) -> Result<u32, StorageError> {
+        self.delete_org_asserted(org_id, None)
+    }
+
+    pub fn delete_org_asserted(
+        &self,
+        org_id: u64,
+        assertion: Option<&str>,
+    ) -> Result<u32, StorageError> {
         match &self.backend {
             Backend::Inline(engine) => {
                 let eng = engine.lock().expect("inline engine");
-                eng.delete_org(&org_id.to_string())
+                eng.delete_org(&org_id.to_string(), assertion)
             }
             Backend::Ipc { .. } => {
                 let req = StorageRequest::DeleteOrg {
                     org_id: org_id.to_string(),
+                    assertion: assertion.map(str::to_owned),
+                    challenge_id: None,
                 };
                 let resp = self.roundtrip(req)?;
                 if resp.ok {
@@ -415,6 +656,99 @@ impl StorageClient {
                         StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
                             .unwrap_or(StorageErrorCode::Io),
                         "delete_org",
+                    ))
+                }
+            }
+        }
+    }
+
+    pub fn ctap2_enrol_stage(
+        &self,
+        credential_id: &[u8],
+        public_key_cose: &[u8],
+        user_handle: &str,
+        admin_label: &str,
+        is_soft: bool,
+    ) -> Result<String, StorageError> {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                eng.ctap2_enrol_stage(
+                    credential_id,
+                    public_key_cose,
+                    user_handle,
+                    admin_label,
+                    is_soft,
+                )
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::Ctap2EnrolStage {
+                    credential_id_b64: URL_SAFE_NO_PAD.encode(credential_id),
+                    public_key_cose_b64: URL_SAFE_NO_PAD.encode(public_key_cose),
+                    user_handle: user_handle.to_owned(),
+                    admin_label: admin_label.to_owned(),
+                    is_soft,
+                };
+                let resp = self.roundtrip(req)?;
+                if resp.ok {
+                    Ok(resp.fingerprint.unwrap_or_default())
+                } else {
+                    Err(StorageError::new(
+                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
+                            .unwrap_or(StorageErrorCode::Io),
+                        "enrol_stage",
+                    ))
+                }
+            }
+        }
+    }
+
+    pub fn ctap2_list(&self, kind: &str) -> Result<String, StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                eng.ctap2_list_json(kind)
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::Ctap2List {
+                    kind: kind.to_owned(),
+                };
+                let resp = self.roundtrip(req)?;
+                if resp.ok {
+                    Ok(resp.summary.unwrap_or_else(|| "[]".into()))
+                } else {
+                    Err(StorageError::new(
+                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
+                            .unwrap_or(StorageErrorCode::Io),
+                        "ctap2_list",
+                    ))
+                }
+            }
+        }
+    }
+
+    pub fn ctap2_revoke(&self, credential_id: &[u8]) -> Result<(), StorageError> {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                eng.ctap2_revoke(credential_id)
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::Ctap2Revoke {
+                    credential_id_b64: URL_SAFE_NO_PAD.encode(credential_id),
+                };
+                let resp = self.roundtrip(req)?;
+                if resp.ok {
+                    Ok(())
+                } else {
+                    Err(StorageError::new(
+                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
+                            .unwrap_or(StorageErrorCode::Io),
+                        "revoke",
                     ))
                 }
             }
@@ -476,6 +810,17 @@ impl StorageClient {
     }
 }
 
+/// Challenge / prepare response returned to portal ceremony UI.
+#[derive(Debug, Clone)]
+pub struct PrepareClientOk {
+    pub digest: String,
+    pub challenge_id: String,
+    pub challenge: String,
+    pub summary: String,
+    pub rp_id: String,
+    pub allow_credentials: Vec<String>,
+}
+
 fn ok_stat(resp: StorageResponse) -> Result<(u64, String), StorageError> {
     if !resp.ok {
         return Err(StorageError::new(
@@ -485,6 +830,24 @@ fn ok_stat(resp: StorageResponse) -> Result<(u64, String), StorageError> {
         ));
     }
     Ok((resp.size.unwrap_or(0), resp.sha256.unwrap_or_default()))
+}
+
+fn ok_challenge(resp: StorageResponse) -> Result<PrepareClientOk, StorageError> {
+    if !resp.ok {
+        return Err(StorageError::new(
+            StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
+                .unwrap_or(StorageErrorCode::Io),
+            "challenge",
+        ));
+    }
+    Ok(PrepareClientOk {
+        digest: resp.sha256.unwrap_or_default(),
+        challenge_id: resp.challenge_id.unwrap_or_default(),
+        challenge: resp.challenge.unwrap_or_default(),
+        summary: resp.summary.unwrap_or_default(),
+        rp_id: resp.rp_id.unwrap_or_default(),
+        allow_credentials: resp.allow_credentials.unwrap_or_default(),
+    })
 }
 
 fn default_helper_path() -> PathBuf {

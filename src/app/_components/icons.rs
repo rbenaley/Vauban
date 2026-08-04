@@ -171,6 +171,33 @@ pub async fn ico_orgs(cx: &Cx, size: u32) -> Result {
     }
 }
 
+/// Security key (CTAP2 / WebAuthn) — round head, toothed shaft.
+pub async fn ico_key(cx: &Cx, size: u32) -> Result {
+    let s = size.to_string();
+    let style = box_style(size);
+    let stroke = RAIL_STROKE;
+    view! {
+        cx =>
+        <span class="vb-ico" aria-hidden="true" style=(style)>
+            <svg
+                width=(s.clone())
+                height=(s)
+                viewBox="0 0 17 17"
+                fill="none"
+                stroke="currentColor"
+                stroke-width=(stroke)
+                stroke-linecap="round"
+                stroke-linejoin="round"
+            >
+                <circle cx="6" cy="6" r="3.2"></circle>
+                <path d="M8.3 8.3 L14.4 14.4"></path>
+                <path d="M11.2 11.2 L13 9.4"></path>
+                <path d="M13.3 13.3 L15.1 11.5"></path>
+            </svg>
+        </span>
+    }
+}
+
 pub async fn ico_arrow_down(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);

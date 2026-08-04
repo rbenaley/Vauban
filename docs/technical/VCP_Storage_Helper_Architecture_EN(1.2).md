@@ -85,7 +85,8 @@ SQLite `meta.sqlite`; Postgres `storage_objects` = portal mirror.
 Helper-host CLI:
 
 ```text
-vcp-store ctap2 pending          # list in-flight challenges + bindings/summaries
+vcp-store ctap2 pending          # PENDING credentials (E2) + in-flight challenges/summaries
+vcp-store ctap2 list             # all credentials (pending / active / revoked)
 vcp-store ctap2 approve …        # E2: activate credential after fingerprint match
 ```
 
@@ -293,8 +294,9 @@ normative in 1.2:
 
 1. Helper returns **canonical `summary`** with every challenge; portal UI
    **must** show it (not only a soft label invented by `vcp`).
-2. **`vcp-store ctap2 pending`** lists in-flight challenges with bindings /
-   summaries for independent check on the helper host.
+2. **`vcp-store ctap2 pending`** lists PENDING credentials awaiting E2
+   approve (fingerprint / label) **and** in-flight ceremony challenges with
+   bindings / summaries for independent check on the helper host.
 3. **Helper audit log** under `blob_path` (out of UID 800 write reach).
 
 Hardening to a separate ceremony channel (**C2**) is deferred

@@ -17,6 +17,7 @@ path = "src/bin/vcp_store.rs"
 ambient-authority = "0.0.2"
 anyhow = "1.0.104"
 argon2 = "0.5.3"
+base64 = "0.22"
 cap-std = "4.0.2"
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
@@ -28,6 +29,7 @@ hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
 instant-acme = { version = "0.8", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }
 libc = "0.2.189"
 nix = { version = "0.31.3", features = ["socket", "uio", "user"] }
+p256 = { version = "0.13", features = ["ecdsa"] }
 passfd = "0.1.6"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 regex = "1.13.1"

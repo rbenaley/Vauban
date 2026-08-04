@@ -7,7 +7,8 @@ environment = "development"
 [server]
 host = "127.0.0.1"
 port = 3000
-public_origins = ["https://127.0.0.1:3000", "https://localhost:3000"]
+# Prefer localhost first: WebAuthn rp_id cannot be an IP (use https://localhost:3000).
+public_origins = ["https://localhost:3000", "https://127.0.0.1:3000"]
 # Apache CLF access log (relative paths resolve against the crate root).
 access_log_path = "logs/vcp-access.log"
 
@@ -39,6 +40,12 @@ allowed_image_types = ["png", "jpeg", "webp"]
 max_concurrent_uploads = 4
 max_images_per_org = 1000
 upload_ttl_secs = 3600
+webauthn_required = true
+webauthn_user_verification = "required"
+webauthn_strict_sign_count = false
+webauthn_rp_id = "localhost"
+webauthn_origin = "https://localhost:3000"
+webauthn_challenge_ttl_secs = 300
 
 # Local catch-all (Mailpit / equivalent). Production uses Scaleway TEM in vcp.conf.
 [mail]

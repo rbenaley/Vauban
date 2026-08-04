@@ -144,4 +144,42 @@ grep -n 'cap_std\|Dir::' "$ENGINE" >/dev/null \
 grep -n 'StorageIpcMode::Inline\|StorageIpcMode::Spawn\|StorageIpcMode::Socket' "$CLIENT" >/dev/null \
   || fail "$CLIENT must support spawn/socket/inline backends"
 
+# Architecture 1.2 WebAuthn / CTAP2 (ADR 002–004).
+WEBAUTHN="src/storage/webauthn.rs"
+AUDIT="src/storage/audit.rs"
+DOC12="docs/technical/VCP_Storage_Helper_Architecture_EN(1.2).md"
+ADR002="docs/adr/002-storage-webauthn-ceremony-channel-c1.md"
+ADR003="docs/adr/003-ctap2-enrol-revoke-asymmetry.md"
+ADR004="docs/adr/004-webauthn-sign-count-policy.md"
+[[ -f "$WEBAUTHN" ]] || fail "missing $WEBAUTHN"
+[[ -f "$AUDIT" ]] || fail "missing $AUDIT"
+[[ -f "$DOC12" ]] || fail "missing $DOC12"
+[[ -f "$ADR002" ]] || fail "missing $ADR002"
+[[ -f "$ADR003" ]] || fail "missing $ADR003"
+[[ -f "$ADR004" ]] || fail "missing $ADR004"
+grep -n 'webauthn_required\|webauthn_invalid\|webauthn_expired\|challenge_unknown\|object_modified' "$ERR" >/dev/null \
+  || fail "$ERR must define WebAuthn closed error codes"
+grep -n 'PutPrepare\|ChallengeBegin\|Ctap2EnrolStage\|Ctap2Revoke' "$PROTO" >/dev/null \
+  || fail "$PROTO must define put_prepare / challenge_begin / ctap2 ops"
+grep -n 'webauthn_credentials\|webauthn_challenges' "$META" >/dev/null \
+  || fail "$META must define webauthn_* tables"
+grep -n 'put_prepare\|validate_production_webauthn' "$ENGINE" >/dev/null \
+  || fail "$ENGINE must implement put_prepare + production WebAuthn boot guard"
+grep -n 'webauthn_required = true' "$STORE_CONF" >/dev/null \
+  || fail "$STORE_CONF must set webauthn_required = true"
+grep -n 'webauthn_strict_sign_count = false' "$STORE_CONF" >/dev/null \
+  || fail "$STORE_CONF must default webauthn_strict_sign_count = false (ADR 004)"
+grep -n 'webauthn_user_verification = "required"' "$STORE_CONF" >/dev/null \
+  || fail "$STORE_CONF must require userVerification"
+grep -n 'ctap2 pending\|ctap2 approve\|ctap2 list' "$BIN" >/dev/null \
+  || fail "$BIN must implement ctap2 pending/list/approve CLI (ADR 003)"
+grep -n 'list_pending_credentials_cli\|PENDING credentials' "$BIN" >/dev/null \
+  || fail "$BIN ctap2 pending must list PENDING credentials (E2 queue), not only challenges"
+grep -n 'list_all_credentials_cli\|format_ascii_table' "$BIN" >/dev/null \
+  || fail "$BIN must table-format ctap2 list/pending output"
+grep -n 'validate_production_webauthn\|webauthn_required=false' "$BIN" >/dev/null \
+  || fail "$BIN must refuse production webauthn_required=false"
+grep -n 'credential_fingerprint\|summary' "$WEBAUTHN" >/dev/null \
+  || fail "$WEBAUTHN must implement fingerprint + canonical summary"
+
 echo "check_storage: OK"

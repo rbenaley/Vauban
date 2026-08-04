@@ -1,6 +1,7 @@
 //! Global admin tools under `/admin/…` — gated by [`crate::auth::require_staff`].
 
 mod companies;
+mod ctap2;
 mod docs;
 mod issues;
 mod releases;

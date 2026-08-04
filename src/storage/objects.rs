@@ -221,7 +221,12 @@ pub fn storage_http_status(err: &StorageError) -> u16 {
         | StorageErrorCode::Io => 503,
         StorageErrorCode::DigestMismatch
         | StorageErrorCode::BadImage
-        | StorageErrorCode::InvalidId => 400,
+        | StorageErrorCode::InvalidId
+        | StorageErrorCode::WebauthnRequired
+        | StorageErrorCode::WebauthnInvalid
+        | StorageErrorCode::WebauthnExpired
+        | StorageErrorCode::ChallengeUnknown
+        | StorageErrorCode::ObjectModified => 400,
     }
 }
 

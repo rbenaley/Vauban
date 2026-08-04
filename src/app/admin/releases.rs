@@ -1,5 +1,7 @@
 //! Admin releases list at `/admin/releases`.
 
+mod confirm;
+mod delete_confirm;
 mod new;
 mod release_id;
 

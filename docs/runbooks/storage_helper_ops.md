@@ -151,6 +151,29 @@ CI on macOS/Linux keeps the soft-containment WARN path. On FreeBSD hosts:
 
 Do **not** expect macOS CI to exercise `cap_enter` or jail.
 
+## WebAuthn / CTAP2 ops (architecture 1.2)
+
+| Item | Notes |
+|------|-------|
+| Conf knobs | `vcp-store.conf`: `webauthn_required`, `webauthn_user_verification=required`, `webauthn_strict_sign_count` (default **false**, ADR 004), RP id/origin, challenge TTL |
+| Production boot | `--production` + `webauthn_required=false` → **refuse to start** |
+| Audit log | `blob_path/audit/webauthn.log` (JSONL; UID 801 only) |
+| Pending queue | `vcp-store ctap2 pending` — PENDING credentials (E2) + in-flight ceremony challenges (table output) |
+| List keys | `vcp-store ctap2 list` — all credentials (pending / active / revoked) |
+| Activate key | `vcp-store ctap2 approve --fingerprint <hex>` (fingerprint OOB match). Dev spawn: `VCP_ENVIRONMENT=development` so the CLI uses portal `[storage].blob_path`, not production `/var/db/vcp/storage` |
+| Revoke | Admin `/admin/ctap2` only (no CLI revoke) — ADR 003 |
+| Ceremony channel | C1 (portal relay); C2 deferred — ADR 002 |
+| Backup | Always joint: `meta.sqlite` + blobs + WebAuthn credential rows. Credentials cannot be rebuilt from blobs. |
+| Breakglass | Loss of all keys → E1 enrol from trusted admin session + E2 CLI approve on helper host; every approve is audited |
+
+### Alerting (ops)
+
+Watch helper / portal logs for `target=vcp_storage_alert`:
+
+- `ALERT delete_org ceremony`
+- `ALERT ctap2_revoke` (burst = possible compromised portal DoS)
+- `ALERT webauthn sign_count regression` (only when `webauthn_strict_sign_count=true`)
+
 ## Related smoke surfaces
 
 | Surface | Runbook |

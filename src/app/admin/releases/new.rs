@@ -231,29 +231,53 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
 
     if let Some(package) = form.package {
         let store = storage(cx);
-        let upload = (|| {
-            let (upload_id, mut file) =
-                store.put_begin_release(created.id, package.len() as u64)?;
-            let (_written, sha) = write_and_hash(&mut file, Cursor::new(package.as_slice()))?;
-            store.put_commit_release(&upload_id, created.id, &sha)
-        })();
-
-        match upload {
-            Ok((size_bytes, sha256)) => {
-                if upsert_release_object(&mut database, created.id, &sha256, size_bytes)
-                    .await
-                    .is_ok()
-                {
-                    let _ = created
-                        .update()
-                        .status(RELEASE_STATUS_PUBLISHED.to_owned())
-                        .exec(&mut database)
-                        .await;
+        if let Ok((upload_id, mut file)) = store.put_begin_release(created.id, package.len() as u64)
+        {
+            match write_and_hash(&mut file, Cursor::new(package.as_slice())) {
+                Ok((_written, sha)) if store.webauthn_required() => {
+                    match store.put_prepare_release(&upload_id, created.id, &sha) {
+                        Ok(prep) => {
+                            let token = store.stash_pending_release(
+                                crate::storage::PendingReleaseCeremony {
+                                    upload_id,
+                                    release_id: created.id,
+                                    sha256: sha,
+                                    summary: prep.summary,
+                                    challenge_id: prep.challenge_id,
+                                    challenge: prep.challenge,
+                                    rp_id: prep.rp_id,
+                                    allow_credentials: prep.allow_credentials,
+                                    expires_at: crate::storage::StorageClient::ceremony_ttl_unix(
+                                        300,
+                                    ),
+                                },
+                            );
+                            return Ok(see_other(&format!(
+                                "/admin/releases/confirm?token={token}"
+                            )));
+                        }
+                        Err(_) => {
+                            let _ = store.put_abort(&upload_id);
+                        }
+                    }
                 }
-                // Storage/DB failure: leave HIDDEN and return to the list.
-            }
-            Err(_) => {
-                // Blob write failed: catalog row stays HIDDEN.
+                Ok((_written, sha)) => {
+                    if let Ok((size_bytes, sha256)) =
+                        store.put_commit_release(&upload_id, created.id, &sha)
+                        && upsert_release_object(&mut database, created.id, &sha256, size_bytes)
+                            .await
+                            .is_ok()
+                    {
+                        let _ = created
+                            .update()
+                            .status(RELEASE_STATUS_PUBLISHED.to_owned())
+                            .exec(&mut database)
+                            .await;
+                    }
+                }
+                Err(_) => {
+                    let _ = store.put_abort(&upload_id);
+                }
             }
         }
     }

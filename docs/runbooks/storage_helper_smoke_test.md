@@ -115,6 +115,45 @@ the known key → same deny on verify-on-read.
 | **Pass** | Socket mode, helper conf owns blob root, peercred enforced. |
 | **Fail** | Portal accepts `ipc=spawn` in production, or shared writable storage. |
 
+## F -- WebAuthn C1 release publish (Pass / Fail)
+
+Requires at least one ACTIVE CTAP2 key (see ops breakglass / CTAP2 enrol).
+
+1. Admin → Publish release with package. Confirm redirect to
+   `/admin/releases/confirm?token=…` showing **helper** summary
+   (`release_put_commit id=… sha256=…`).
+2. On helper host: `vcp-store ctap2 pending` shows the same summary/binding.
+3. Complete WebAuthn (UV required). Release becomes PUBLISHED; download
+   matches digest.
+4. Negative: abort ceremony / refuse UV → release stays HIDDEN; no rename.
+
+| Result | Criteria |
+|--------|----------|
+| **Pass** | Summary is helper-issued; publish only after valid assertion. |
+| **Fail** | Publish without ceremony, or UI invents its own summary label. |
+
+## G -- CTAP2 enrol / approve / revoke (Pass / Fail)
+
+Local lab: open **`https://localhost:3000/admin/ctap2`** (not `127.0.0.1`).
+WebAuthn rejects IP hosts; `webauthn_rp_id` / `webauthn_origin` are `localhost`.
+Accept the self-signed cert for `localhost` if prompted.
+
+1. `/admin/ctap2` → Create passkey → PENDING fingerprint shown + CLI hint.
+2. Activate (E2) with OOB fingerprint match:
+   - **Local spawn (`just run`):** from the repo root,
+     `VCP_ENVIRONMENT=development ./target/debug/vcp-store ctap2 approve --fingerprint <hex>`
+     (loads the same `[storage].blob_path` as the portal, typically
+     `<repo>/vcp-storage`). Bare `vcp-store` without the env var reads
+     production `vcp-store.conf` (`/var/db/vcp/storage`) and fails on Mac.
+   - **Production helper host:** `vcp-store ctap2 approve --fingerprint <hex>`
+3. Dashboard lists ACTIVE; revoke from dashboard (no CLI revoke).
+4. Wrong fingerprint on approve → fail closed; no ACTIVE insert.
+
+| Result | Criteria |
+|--------|----------|
+| **Pass** | Only CLI approve activates; revoke is dashboard-only (ADR 003). |
+| **Fail** | Portal-only activate, or approve without fingerprint match. |
+
 ## Related automated coverage
 
 | Layer | Filter / artifact |

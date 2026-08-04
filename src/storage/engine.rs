@@ -12,14 +12,23 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::config::StorageConfig;
+use serde_json::json;
 
+use super::audit::WebauthnAudit;
 use super::error::{StorageError, StorageErrorCode};
 use super::ids::{
     StorageScope, image_rel_path, is_decimal_id, is_uuid_key, normalize_image_ext,
     release_rel_path, tmp_rel_path,
 };
-use super::meta_db::{MetaDb, MetaObject, ct_eq_hex, image_object_key, release_object_key};
+use super::meta_db::{
+    CredentialStatus, MetaDb, MetaObject, WebauthnCredentialRow, ct_eq_hex, image_object_key,
+    release_object_key,
+};
 use super::sniff::sniff_matches_ext;
+use super::webauthn::{
+    ChallengeIssued, credential_fingerprint, drop_challenge_for_upload, issue_challenge,
+    verify_and_consume,
+};
 
 #[derive(Debug, Clone)]
 pub struct PutBeginOk {
@@ -32,12 +41,21 @@ pub struct ObjectStat {
     pub sha256: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PrepareOk {
+    pub digest: String,
+    pub challenge: ChallengeIssued,
+}
+
+#[derive(Clone)]
 struct InflightUpload {
     scope: StorageScope,
     release_id: Option<String>,
     org_id: Option<String>,
     ext: Option<String>,
     declared_size: u64,
+    prepared_digest: Option<String>,
+    challenge_id: Option<String>,
 }
 
 /// In-process storage engine (also used by `vcp-store`).
@@ -47,6 +65,7 @@ pub struct StorageEngine {
     cfg: StorageConfig,
     inflight: Mutex<HashMap<String, InflightUpload>>,
     meta: Mutex<MetaDb>,
+    audit: WebauthnAudit,
 }
 
 impl StorageEngine {
@@ -63,7 +82,7 @@ impl StorageEngine {
         })?;
         let dir = Dir::open_ambient_dir(&root, ambient_authority())
             .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("open blob root: {e}")))?;
-        for sub in ["releases", "images", "tmp"] {
+        for sub in ["releases", "images", "tmp", "audit"] {
             if !dir.exists(sub) {
                 match dir.create_dir(sub) {
                     Ok(()) => {}
@@ -79,15 +98,33 @@ impl StorageEngine {
             }
         }
         let meta = MetaDb::open(&root)?;
+        let audit = WebauthnAudit::open(&root)?;
         let engine = Self {
             dir,
             root,
             cfg,
             inflight: Mutex::new(HashMap::new()),
             meta: Mutex::new(meta),
+            audit,
         };
         engine.purge_expired_tmp()?;
         Ok(engine)
+    }
+
+    /// Refuse production boot when WebAuthn is disabled (architecture §3.2).
+    pub fn validate_production_webauthn(
+        production: bool,
+        cfg: &StorageConfig,
+    ) -> Result<(), String> {
+        if production && !cfg.webauthn_required {
+            return Err(
+                "production refuses webauthn_required=false (architecture 1.2 / ADR)".into(),
+            );
+        }
+        if cfg.webauthn_user_verification != "required" {
+            return Err("webauthn_user_verification must be \"required\"".into());
+        }
+        Ok(())
     }
 
     pub fn root(&self) -> &Path {
@@ -208,9 +245,110 @@ impl StorageEngine {
                 org_id: org_id.map(str::to_owned),
                 ext: ext.map(str::to_owned),
                 declared_size,
+                prepared_digest: None,
+                challenge_id: None,
             },
         );
         Ok(PutBeginOk { upload_id })
+    }
+
+    /// Hash the partial (release), issue WebAuthn challenge; no renameat.
+    pub fn put_prepare(
+        &self,
+        upload_id: &str,
+        expected_sha256: &str,
+    ) -> Result<PrepareOk, StorageError> {
+        let meta = {
+            let map = self.inflight.lock().expect("inflight mutex");
+            map.get(upload_id)
+                .cloned()
+                .ok_or_else(|| StorageError::new(StorageErrorCode::NotFound, "unknown upload_id"))?
+        };
+        if meta.scope != StorageScope::Release {
+            return Err(StorageError::new(
+                StorageErrorCode::InvalidId,
+                "put_prepare is release-only",
+            ));
+        }
+        let (digest, size) = self.hash_partial(upload_id, &meta)?;
+        let expected = expected_sha256.trim().to_ascii_lowercase();
+        if digest != expected
+            || expected.len() != 64
+            || !expected.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            return Err(StorageError::new(
+                StorageErrorCode::DigestMismatch,
+                "sha256",
+            ));
+        }
+        let _ = size;
+        let release_id = meta.release_id.clone().unwrap_or_default();
+        let binding = json!({
+            "op": "release_put_commit",
+            "release_id": release_id,
+            "upload_id": upload_id,
+            "digest": digest,
+        });
+        let db = self.meta.lock().expect("meta mutex");
+        let issued = issue_challenge(
+            &db,
+            &self.audit,
+            "release_put_commit",
+            binding,
+            self.cfg.webauthn_challenge_ttl_secs,
+            &self.cfg.webauthn_rp_id,
+        )?;
+        drop(db);
+        {
+            let mut map = self.inflight.lock().expect("inflight mutex");
+            if let Some(row) = map.get_mut(upload_id) {
+                row.prepared_digest = Some(digest.clone());
+                row.challenge_id = Some(issued.challenge_id.clone());
+            }
+        }
+        Ok(PrepareOk {
+            digest,
+            challenge: issued,
+        })
+    }
+
+    fn hash_partial(
+        &self,
+        upload_id: &str,
+        meta: &InflightUpload,
+    ) -> Result<(String, u64), StorageError> {
+        let rel_tmp = tmp_rel_path(upload_id)
+            .ok_or_else(|| StorageError::new(StorageErrorCode::InvalidId, "upload_id"))?;
+        let mut open_opts = OpenOptions::new();
+        open_opts.read(true).write(true);
+        let mut file = self
+            .dir
+            .open_with(&rel_tmp, &open_opts)
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("open partial: {e}")))?;
+        let size = file
+            .seek(SeekFrom::End(0))
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("seek: {e}")))?;
+        let max = match meta.scope {
+            StorageScope::Release => self.cfg.max_artifact_bytes,
+            StorageScope::Image => self.cfg.max_image_bytes,
+        };
+        if size == 0 || size > max || size > meta.declared_size {
+            return Err(StorageError::new(StorageErrorCode::Quota, "size"));
+        }
+        file.seek(SeekFrom::Start(0))
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("rewind: {e}")))?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = file
+                .read(&mut buf)
+                .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("read: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        Ok((hex::encode(hasher.finalize()), size))
     }
 
     /// Absolute path to the partial file (for FD handoff / streaming tests).
@@ -225,7 +363,51 @@ impl StorageEngine {
         upload_id: &str,
         expected_sha256: &str,
         image_id: Option<&str>,
+        assertion: Option<&str>,
     ) -> Result<ObjectStat, StorageError> {
+        // Peek first so WebAuthn failures keep the inflight upload for retry.
+        let meta = {
+            let map = self.inflight.lock().expect("inflight mutex");
+            map.get(upload_id)
+                .cloned()
+                .ok_or_else(|| StorageError::new(StorageErrorCode::NotFound, "unknown upload_id"))?
+        };
+
+        if meta.scope == StorageScope::Release && self.cfg.webauthn_required {
+            let assertion = assertion.ok_or_else(|| {
+                StorageError::new(StorageErrorCode::WebauthnRequired, "assertion")
+            })?;
+            let digest = meta.prepared_digest.clone().ok_or_else(|| {
+                StorageError::new(StorageErrorCode::WebauthnRequired, "put_prepare first")
+            })?;
+            let expected = expected_sha256.trim().to_ascii_lowercase();
+            if !ct_eq_hex(&digest, &expected) {
+                return Err(StorageError::new(
+                    StorageErrorCode::DigestMismatch,
+                    "sha256",
+                ));
+            }
+            let binding = json!({
+                "op": "release_put_commit",
+                "release_id": meta.release_id.clone().unwrap_or_default(),
+                "upload_id": upload_id,
+                "digest": digest,
+            });
+            let db = self.meta.lock().expect("meta mutex");
+            verify_and_consume(
+                &db,
+                &self.audit,
+                assertion,
+                "release_put_commit",
+                &binding,
+                &self.cfg.webauthn_rp_id,
+                &self.cfg.webauthn_origin,
+                self.cfg.webauthn_strict_sign_count,
+                true,
+            )?;
+            drop(db);
+        }
+
         let meta = {
             let mut map = self.inflight.lock().expect("inflight mutex");
             map.remove(upload_id)
@@ -373,10 +555,231 @@ impl StorageEngine {
             .lock()
             .expect("inflight mutex")
             .remove(upload_id);
+        {
+            let db = self.meta.lock().expect("meta mutex");
+            let _ = drop_challenge_for_upload(&db, upload_id);
+        }
         if let Some(rel) = tmp_rel_path(upload_id) {
             let _ = self.dir.remove_file(rel);
         }
         Ok(())
+    }
+
+    pub fn challenge_begin_delete(
+        &self,
+        scope: StorageScope,
+        release_id: Option<&str>,
+        org_id: Option<&str>,
+        image_id: Option<&str>,
+        ext: Option<&str>,
+    ) -> Result<ChallengeIssued, StorageError> {
+        let object_key = match scope {
+            StorageScope::Release => release_object_key(release_id.unwrap_or("")),
+            StorageScope::Image => image_object_key(
+                org_id.unwrap_or(""),
+                image_id.unwrap_or(""),
+                ext.unwrap_or(""),
+            ),
+        };
+        let sot_sha = {
+            let db = self.meta.lock().expect("meta mutex");
+            db.get(scope, &object_key)?.map(|o| o.sha256)
+        };
+        let mut binding = json!({
+            "op": "delete",
+            "scope": scope.as_str(),
+        });
+        if let Some(obj) = binding.as_object_mut() {
+            if let Some(id) = release_id {
+                obj.insert("release_id".into(), json!(id));
+            }
+            if let Some(id) = org_id {
+                obj.insert("org_id".into(), json!(id));
+            }
+            if let Some(id) = image_id {
+                obj.insert("image_id".into(), json!(id));
+            }
+            if let Some(e) = ext {
+                obj.insert("ext".into(), json!(e));
+            }
+            if let Some(sha) = &sot_sha {
+                obj.insert("sha256".into(), json!(sha));
+            }
+        }
+        let db = self.meta.lock().expect("meta mutex");
+        issue_challenge(
+            &db,
+            &self.audit,
+            "delete",
+            binding,
+            self.cfg.webauthn_challenge_ttl_secs,
+            &self.cfg.webauthn_rp_id,
+        )
+    }
+
+    pub fn challenge_begin_delete_org(
+        &self,
+        org_id: &str,
+    ) -> Result<ChallengeIssued, StorageError> {
+        if !is_decimal_id(org_id) {
+            return Err(StorageError::new(StorageErrorCode::InvalidId, "org_id"));
+        }
+        let binding = json!({"op": "delete_org", "org_id": org_id});
+        let db = self.meta.lock().expect("meta mutex");
+        issue_challenge(
+            &db,
+            &self.audit,
+            "delete_org",
+            binding,
+            self.cfg.webauthn_challenge_ttl_secs,
+            &self.cfg.webauthn_rp_id,
+        )
+    }
+
+    pub fn ctap2_enrol_stage(
+        &self,
+        credential_id: &[u8],
+        public_key_cose: &[u8],
+        user_handle: &str,
+        admin_label: &str,
+        is_soft: bool,
+    ) -> Result<String, StorageError> {
+        let fp = credential_fingerprint(credential_id, public_key_cose);
+        let db = self.meta.lock().expect("meta mutex");
+        db.insert_credential(&WebauthnCredentialRow {
+            credential_id: credential_id.to_vec(),
+            public_key_cose: public_key_cose.to_vec(),
+            user_handle: user_handle.to_owned(),
+            admin_label: admin_label.to_owned(),
+            sign_count: 0,
+            status: CredentialStatus::Pending,
+            is_soft,
+            created_at: now_unix(),
+            activated_at: None,
+            revoked_at: None,
+        })?;
+        let _ = self.audit.append(
+            "enrol_stage",
+            json!({
+                "fingerprint": fp,
+                "admin_label": admin_label,
+                "user_handle": user_handle,
+            }),
+        );
+        Ok(fp)
+    }
+
+    pub fn ctap2_approve(&self, expected_fingerprint: &str) -> Result<(), StorageError> {
+        let db = self.meta.lock().expect("meta mutex");
+        let pending = db.list_pending_credentials()?;
+        let mut matched = None;
+        for row in pending {
+            let fp = credential_fingerprint(&row.credential_id, &row.public_key_cose);
+            if ct_eq_hex(&fp, &expected_fingerprint.trim().to_ascii_lowercase())
+                || fp == expected_fingerprint.trim().to_ascii_lowercase()
+            {
+                matched = Some(row);
+                break;
+            }
+        }
+        let Some(row) = matched else {
+            return Err(StorageError::new(
+                StorageErrorCode::WebauthnInvalid,
+                "fingerprint mismatch",
+            ));
+        };
+        let fp = credential_fingerprint(&row.credential_id, &row.public_key_cose);
+        db.activate_credential(&row.credential_id)?;
+        let _ = self.audit.append(
+            "ctap2_approve",
+            json!({
+                "fingerprint": fp,
+                "admin_label": row.admin_label,
+            }),
+        );
+        Ok(())
+    }
+
+    pub fn ctap2_revoke(&self, credential_id: &[u8]) -> Result<(), StorageError> {
+        let db = self.meta.lock().expect("meta mutex");
+        db.revoke_credential(credential_id)?;
+        let _ = self.audit.append(
+            "ctap2_revoke",
+            json!({
+                "credential_id": hex::encode(credential_id),
+            }),
+        );
+        tracing::warn!(
+            target: "vcp_storage_alert",
+            cred = %hex::encode(credential_id),
+            "ALERT ctap2_revoke"
+        );
+        Ok(())
+    }
+
+    pub fn list_pending_challenges_cli(
+        &self,
+    ) -> Result<Vec<super::meta_db::WebauthnChallengeRow>, StorageError> {
+        let db = self.meta.lock().expect("meta mutex");
+        db.list_pending_challenges()
+    }
+
+    /// PENDING credentials awaiting E2 (`ctap2 approve`) — helper-host ops view.
+    pub fn list_pending_credentials_cli(&self) -> Result<Vec<WebauthnCredentialRow>, StorageError> {
+        let db = self.meta.lock().expect("meta mutex");
+        db.list_pending_credentials()
+    }
+
+    /// All credentials (pending / active / revoked) for `ctap2 list`.
+    pub fn list_all_credentials_cli(&self) -> Result<Vec<WebauthnCredentialRow>, StorageError> {
+        let db = self.meta.lock().expect("meta mutex");
+        db.list_all_credentials()
+    }
+
+    /// JSON list of pending or active credentials for IPC / CTAP2 UI.
+    pub fn ctap2_list_json(&self, kind: &str) -> Result<String, StorageError> {
+        let db = self.meta.lock().expect("meta mutex");
+        let rows = match kind {
+            "pending" => db.list_pending_credentials()?,
+            _ => db.list_active_credentials()?,
+        };
+        let items: Vec<serde_json::Value> = rows
+            .into_iter()
+            .map(|r| {
+                json!({
+                    "credential_id_hex": hex::encode(&r.credential_id),
+                    "fingerprint": credential_fingerprint(&r.credential_id, &r.public_key_cose),
+                    "admin_label": r.admin_label,
+                    "user_handle": r.user_handle,
+                    "status": r.status.as_str(),
+                    "is_soft": r.is_soft,
+                })
+            })
+            .collect();
+        Ok(serde_json::to_string(&items).unwrap_or_else(|_| "[]".into()))
+    }
+
+    pub fn seed_soft_active_credential(
+        &self,
+        credential_id: &[u8],
+        admin_label: &str,
+    ) -> Result<String, StorageError> {
+        let cose = b"soft-cose-placeholder".to_vec();
+        let fp = credential_fingerprint(credential_id, &cose);
+        let db = self.meta.lock().expect("meta mutex");
+        db.insert_credential(&WebauthnCredentialRow {
+            credential_id: credential_id.to_vec(),
+            public_key_cose: cose,
+            user_handle: "soft".into(),
+            admin_label: admin_label.to_owned(),
+            sign_count: 0,
+            status: CredentialStatus::Active,
+            is_soft: true,
+            created_at: now_unix(),
+            activated_at: Some(now_unix()),
+            revoked_at: None,
+        })?;
+        Ok(fp)
     }
 
     pub fn get_stat(
@@ -480,6 +883,7 @@ impl StorageEngine {
         org_id: Option<&str>,
         image_id: Option<&str>,
         ext: Option<&str>,
+        assertion: Option<&str>,
     ) -> Result<(), StorageError> {
         let object_key = match scope {
             StorageScope::Release => release_object_key(release_id.unwrap_or("")),
@@ -489,19 +893,127 @@ impl StorageEngine {
                 ext.unwrap_or(""),
             ),
         };
+        let sot = {
+            let db = self.meta.lock().expect("meta mutex");
+            db.get(scope, &object_key)?
+        };
+        if self.cfg.webauthn_required {
+            let assertion = assertion.ok_or_else(|| {
+                StorageError::new(StorageErrorCode::WebauthnRequired, "assertion")
+            })?;
+            let mut binding = json!({
+                "op": "delete",
+                "scope": scope.as_str(),
+            });
+            if let Some(obj) = binding.as_object_mut() {
+                if let Some(id) = release_id {
+                    obj.insert("release_id".into(), json!(id));
+                }
+                if let Some(id) = org_id {
+                    obj.insert("org_id".into(), json!(id));
+                }
+                if let Some(id) = image_id {
+                    obj.insert("image_id".into(), json!(id));
+                }
+                if let Some(e) = ext {
+                    obj.insert("ext".into(), json!(e));
+                }
+            }
+            // Re-load challenge binding from DB via verify — check digest drift first
+            // by reconstructing expected binding with sha when SoT existed at challenge.
+            let db = self.meta.lock().expect("meta mutex");
+            // Find unconsumed delete challenge for this object via pending list.
+            let pending = db.list_pending_challenges()?;
+            let mut matched_binding = None;
+            for ch in pending {
+                if ch.op != "delete" {
+                    continue;
+                }
+                let bound: serde_json::Value =
+                    serde_json::from_str(&ch.binding_json).unwrap_or(json!({}));
+                let same_scope =
+                    bound.get("scope").and_then(|v| v.as_str()) == Some(scope.as_str());
+                let same_release = release_id
+                    .is_none_or(|id| bound.get("release_id").and_then(|v| v.as_str()) == Some(id));
+                let same_image = image_id
+                    .is_none_or(|id| bound.get("image_id").and_then(|v| v.as_str()) == Some(id));
+                if same_scope && same_release && same_image {
+                    matched_binding = Some(bound);
+                    break;
+                }
+            }
+            let bound = matched_binding.ok_or_else(|| {
+                StorageError::new(StorageErrorCode::ChallengeUnknown, "delete challenge")
+            })?;
+            if let Some(bound_sha) = bound.get("sha256").and_then(|v| v.as_str()) {
+                match &sot {
+                    Some(obj) if !ct_eq_hex(&obj.sha256, bound_sha) => {
+                        return Err(StorageError::new(
+                            StorageErrorCode::ObjectModified,
+                            "digest drifted",
+                        ));
+                    }
+                    None => {
+                        return Err(StorageError::new(
+                            StorageErrorCode::ObjectModified,
+                            "object vanished",
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            verify_and_consume(
+                &db,
+                &self.audit,
+                assertion,
+                "delete",
+                &bound,
+                &self.cfg.webauthn_rp_id,
+                &self.cfg.webauthn_origin,
+                self.cfg.webauthn_strict_sign_count,
+                true,
+            )?;
+            drop(db);
+            let _ = binding;
+        }
         {
             let db = self.meta.lock().expect("meta mutex");
             db.delete(scope, &object_key)?;
         }
         let rel = self.object_rel(scope, release_id, org_id, image_id, ext)?;
-        self.dir
-            .remove_file(&rel)
-            .map_err(|_| StorageError::new(StorageErrorCode::NotFound, "object"))
+        match self.dir.remove_file(&rel) {
+            Ok(()) => Ok(()),
+            Err(_) if sot.is_none() => Ok(()), // idempotent absent
+            Err(_) => Err(StorageError::new(StorageErrorCode::NotFound, "object")),
+        }
     }
 
-    pub fn delete_org(&self, org_id: &str) -> Result<u32, StorageError> {
+    pub fn delete_org(&self, org_id: &str, assertion: Option<&str>) -> Result<u32, StorageError> {
         if !is_decimal_id(org_id) {
             return Err(StorageError::new(StorageErrorCode::InvalidId, "org_id"));
+        }
+        if self.cfg.webauthn_required {
+            let assertion = assertion.ok_or_else(|| {
+                StorageError::new(StorageErrorCode::WebauthnRequired, "assertion")
+            })?;
+            let binding = json!({"op": "delete_org", "org_id": org_id});
+            tracing::warn!(
+                target: "vcp_storage_alert",
+                org_id,
+                "ALERT delete_org ceremony"
+            );
+            let db = self.meta.lock().expect("meta mutex");
+            verify_and_consume(
+                &db,
+                &self.audit,
+                assertion,
+                "delete_org",
+                &binding,
+                &self.cfg.webauthn_rp_id,
+                &self.cfg.webauthn_origin,
+                self.cfg.webauthn_strict_sign_count,
+                true,
+            )?;
         }
         {
             let db = self.meta.lock().expect("meta mutex");
@@ -595,15 +1107,12 @@ mod tests {
         StorageConfig {
             blob_path: "/tmp/unused".into(),
             ipc: StorageIpcMode::Spawn,
-            socket_path: String::new(),
-            helper_path: String::new(),
             max_artifact_bytes: 1024 * 1024,
             max_image_bytes: 64 * 1024,
-            allowed_image_types: vec!["png".into(), "jpeg".into(), "webp".into()],
             max_concurrent_uploads: 4,
             max_images_per_org: 3,
-            upload_ttl_secs: 3600,
-            expected_peer_uid: None,
+            webauthn_required: false,
+            ..StorageConfig::default()
         }
     }
 
@@ -618,7 +1127,9 @@ mod tests {
         let data = b"hello-world";
         let digest = sha256_hex(data);
         write_abs_file(&eng.partial_abs_path(&begin.upload_id).unwrap(), data).unwrap();
-        let st = eng.put_commit(&begin.upload_id, &digest, None).unwrap();
+        let st = eng
+            .put_commit(&begin.upload_id, &digest, None, None)
+            .unwrap();
         assert_eq!(st.size, 11);
         assert_eq!(st.sha256, digest);
         let (got, _) = eng
@@ -648,9 +1159,153 @@ mod tests {
             .unwrap();
         write_abs_file(&eng.partial_abs_path(&begin.upload_id).unwrap(), b"abcd").unwrap();
         let err = eng
-            .put_commit(&begin.upload_id, &sha256_hex(b"nope"), None)
+            .put_commit(&begin.upload_id, &sha256_hex(b"nope"), None, None)
             .unwrap_err();
         assert_eq!(err.code, StorageErrorCode::DigestMismatch);
+    }
+
+    #[test]
+    fn release_webauthn_required_without_assertion() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut cfg = test_cfg();
+        cfg.webauthn_required = true;
+        let eng = StorageEngine::open(&root, cfg).unwrap();
+        let begin = eng
+            .put_begin(StorageScope::Release, Some("8"), None, 4, None)
+            .unwrap();
+        write_abs_file(&eng.partial_abs_path(&begin.upload_id).unwrap(), b"abcd").unwrap();
+        let digest = sha256_hex(b"abcd");
+        let prep = eng.put_prepare(&begin.upload_id, &digest).unwrap();
+        assert!(prep.challenge.summary.contains("release_put_commit"));
+        let err = eng
+            .put_commit(&begin.upload_id, &digest, None, None)
+            .unwrap_err();
+        assert_eq!(err.code, StorageErrorCode::WebauthnRequired);
+    }
+
+    #[test]
+    fn release_webauthn_soft_ok() {
+        use crate::storage::webauthn::soft_assertion_json;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut cfg = test_cfg();
+        cfg.webauthn_required = true;
+        let eng = StorageEngine::open(&root, cfg).unwrap();
+        let cred = b"soft-release-1";
+        eng.seed_soft_active_credential(cred, "t").unwrap();
+        let begin = eng
+            .put_begin(StorageScope::Release, Some("9"), None, 4, None)
+            .unwrap();
+        write_abs_file(&eng.partial_abs_path(&begin.upload_id).unwrap(), b"abcd").unwrap();
+        let digest = sha256_hex(b"abcd");
+        let prep = eng.put_prepare(&begin.upload_id, &digest).unwrap();
+        let assertion = soft_assertion_json(cred, &prep.challenge.challenge_id, true, 0);
+        let st = eng
+            .put_commit(&begin.upload_id, &digest, None, Some(&assertion))
+            .unwrap();
+        assert_eq!(st.sha256, digest);
+    }
+
+    #[test]
+    fn production_boot_refuses_webauthn_bypass() {
+        let cfg = StorageConfig {
+            webauthn_required: false,
+            ..StorageConfig::default()
+        };
+        let err = StorageEngine::validate_production_webauthn(true, &cfg).unwrap_err();
+        assert!(err.contains("webauthn_required=false"));
+    }
+
+    #[test]
+    fn delete_object_modified_on_digest_drift() {
+        use crate::storage::webauthn::soft_assertion_json;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut cfg = test_cfg();
+        cfg.webauthn_required = true;
+        let eng = StorageEngine::open(&root, cfg).unwrap();
+        let cred = b"soft-del-1";
+        eng.seed_soft_active_credential(cred, "t").unwrap();
+        let begin = eng
+            .put_begin(StorageScope::Release, Some("55"), None, 4, None)
+            .unwrap();
+        write_abs_file(&eng.partial_abs_path(&begin.upload_id).unwrap(), b"abcd").unwrap();
+        let digest = sha256_hex(b"abcd");
+        let prep = eng.put_prepare(&begin.upload_id, &digest).unwrap();
+        let assertion = soft_assertion_json(cred, &prep.challenge.challenge_id, true, 0);
+        eng.put_commit(&begin.upload_id, &digest, None, Some(&assertion))
+            .unwrap();
+
+        let ch = eng
+            .challenge_begin_delete(StorageScope::Release, Some("55"), None, None, None)
+            .unwrap();
+        // Overwrite blob digest in SoT to simulate drift.
+        {
+            let db = eng.meta.lock().unwrap();
+            db.upsert(&MetaObject {
+                scope: StorageScope::Release,
+                object_key: "55".into(),
+                org_id: String::new(),
+                sha256: "f".repeat(64),
+                size_bytes: 4,
+                content_type: String::new(),
+                ext: String::new(),
+            })
+            .unwrap();
+        }
+        let a2 = soft_assertion_json(cred, &ch.challenge_id, true, 0);
+        let err = eng
+            .delete(
+                StorageScope::Release,
+                Some("55"),
+                None,
+                None,
+                None,
+                Some(&a2),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, StorageErrorCode::ObjectModified);
+    }
+
+    #[test]
+    fn ctap2_approve_fingerprint_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let eng = StorageEngine::open(&root, test_cfg()).unwrap();
+        let cred = b"pend-1";
+        let cose = b"cose-pend";
+        let fp = eng
+            .ctap2_enrol_stage(cred, cose, "u", "label", true)
+            .unwrap();
+        let err = eng.ctap2_approve("0".repeat(64).as_str()).unwrap_err();
+        assert_eq!(err.code, StorageErrorCode::WebauthnInvalid);
+        eng.ctap2_approve(&fp).unwrap();
+    }
+
+    #[test]
+    fn ctap2_pending_lists_staged_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let eng = StorageEngine::open(&root, test_cfg()).unwrap();
+        assert!(eng.list_pending_credentials_cli().unwrap().is_empty());
+        let fp = eng
+            .ctap2_enrol_stage(b"pend-cli", b"cose-cli", "42", "macbook", true)
+            .unwrap();
+        let pending = eng.list_pending_credentials_cli().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].admin_label, "macbook");
+        assert_eq!(
+            credential_fingerprint(&pending[0].credential_id, &pending[0].public_key_cose),
+            fp
+        );
+        // Ceremony challenge table stays empty until put_prepare / challenge_begin.
+        assert!(eng.list_pending_challenges_cli().unwrap().is_empty());
+        eng.ctap2_approve(&fp).unwrap();
+        assert!(eng.list_pending_credentials_cli().unwrap().is_empty());
+        let all = eng.list_all_credentials_cli().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].status, CredentialStatus::Active);
     }
 
     #[test]
@@ -674,6 +1329,7 @@ mod tests {
                 &begin.upload_id,
                 &sha256_hex(fake),
                 Some("550e8400-e29b-41d4-a716-446655440000"),
+                None,
             )
             .unwrap_err();
         assert_eq!(err.code, StorageErrorCode::BadImage);
@@ -702,7 +1358,7 @@ mod tests {
             )
             .unwrap();
         write_abs_file(&eng.partial_abs_path(&begin.upload_id).unwrap(), &png).unwrap();
-        eng.put_commit(&begin.upload_id, &sha256_hex(&png), Some(id1))
+        eng.put_commit(&begin.upload_id, &sha256_hex(&png), Some(id1), None)
             .unwrap();
         let err = eng
             .put_begin(

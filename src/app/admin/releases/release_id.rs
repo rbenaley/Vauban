@@ -289,6 +289,30 @@ async fn admin_releases_delete(cx: &Cx, Form(form): Form<DeleteReleaseForm>) -> 
     }
 
     let store = storage(cx);
+    if store.webauthn_required() {
+        match store.challenge_begin_delete_release(id) {
+            Ok(ch) => {
+                let token = store.stash_pending_delete(crate::storage::PendingDeleteCeremony {
+                    kind: "release".into(),
+                    release_id: Some(id),
+                    org_id: None,
+                    summary: ch.summary,
+                    challenge_id: ch.challenge_id,
+                    challenge: ch.challenge,
+                    rp_id: ch.rp_id,
+                    allow_credentials: ch.allow_credentials,
+                });
+                return Ok(see_other(&format!(
+                    "/admin/releases/delete-confirm?token={token}"
+                )));
+            }
+            Err(_) => {
+                return Ok(see_other(&format!(
+                    "/admin/releases?delete={id}&err=webauthn"
+                )));
+            }
+        }
+    }
     let _ = store.delete_release(id);
 
     let mut database = db(cx);

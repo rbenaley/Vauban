@@ -6,7 +6,9 @@ use topcoat::{
 
 use crate::{auth::require_org, nav::NavSection, perms::perms_for_user, ui};
 
-use super::icons::{ico_builds, ico_docs, ico_edit, ico_home, ico_issues, ico_orgs, ico_release};
+use super::icons::{
+    ico_builds, ico_docs, ico_edit, ico_home, ico_issues, ico_key, ico_orgs, ico_release,
+};
 
 /// Org rail chrome. Resolves org/perms via memoized `require_org` (locality).
 #[component]
@@ -105,6 +107,15 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
                     (ico_orgs(cx, 17).await?)
                     <span class="lbl">"Orgs"</span>
                 </a>
+                if perms.ctap2_manage {
+                    <a
+                        href="/admin/ctap2"
+                        class=(rail_class(section == NavSection::AdminCtap2))
+                    >
+                        (ico_key(cx, 17).await?)
+                        <span class="lbl">"Keys"</span>
+                    </a>
+                }
             }
             <a href=(account_href) class="vb-rail-account" title="Account">
                 (initials)

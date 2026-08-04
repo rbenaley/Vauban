@@ -144,6 +144,123 @@ fn inv_production_conf_is_socket_mode() {
 }
 
 #[test]
+fn inv_webauthn_12_and_adrs_pinned() {
+    let store = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/config/vcp-store.conf"
+    ));
+    assert!(store.contains("webauthn_required = true"));
+    assert!(store.contains("webauthn_strict_sign_count = false"));
+    assert!(store.contains("webauthn_user_verification = \"required\""));
+
+    let err = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/storage/error.rs"));
+    for code in [
+        "webauthn_required",
+        "webauthn_invalid",
+        "webauthn_expired",
+        "challenge_unknown",
+        "object_modified",
+    ] {
+        assert!(err.contains(code), "missing {code}");
+    }
+
+    let bin = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/vcp_store.rs"));
+    assert!(bin.contains("ctap2"));
+    assert!(bin.contains("approve"));
+    assert!(bin.contains("validate_production_webauthn"));
+
+    assert!(
+        std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/docs/adr/002-storage-webauthn-ceremony-channel-c1.md"
+        ))
+        .is_file()
+    );
+    assert!(
+        std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/docs/adr/003-ctap2-enrol-revoke-asymmetry.md"
+        ))
+        .is_file()
+    );
+    assert!(
+        std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/docs/adr/004-webauthn-sign-count-policy.md"
+        ))
+        .is_file()
+    );
+    assert!(
+        std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/docs/technical/VCP_Storage_Helper_Architecture_EN(1.2).md"
+        ))
+        .is_file()
+    );
+
+    let confirm = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/releases/confirm.rs"
+    ));
+    assert!(confirm.contains("vcp-webauthn-summary"));
+    assert!(confirm.contains("vcp-store ctap2 pending"));
+}
+
+/// §6.5 / ADR 003 dashboard contract: fingerprint at E1, CLI approve
+/// instructions, pending cross-check hint, Casbin gate, typed revoke confirm.
+#[test]
+fn inv_ctap2_dashboard_ui_pinned() {
+    let page = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/ctap2.rs"
+    ));
+    assert!(page.contains("perms.ctap2_manage"), "Casbin gate");
+    assert!(
+        page.contains("vcp-ctap2-fingerprint"),
+        "E1 fingerprint block"
+    );
+    assert!(
+        page.contains("ctap2 approve --fingerprint"),
+        "CLI approve command (E2)"
+    );
+    assert!(
+        page.contains("VCP_ENVIRONMENT=development"),
+        "dev spawn approve command must set VCP_ENVIRONMENT"
+    );
+    assert!(
+        page.contains("vcp-store ctap2 pending"),
+        "helper-host cross-check hint"
+    );
+    assert!(
+        page.contains("!= \"revoke\""),
+        "typed confirmation gates ctap2_revoke"
+    );
+    assert!(page.contains("data-mode=\"create\""), "E1 ceremony root");
+    assert!(
+        page.contains("https://localhost:3000"),
+        "dev hint: WebAuthn requires localhost, not 127.0.0.1"
+    );
+
+    let rail = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/_components/rail.rs"
+    ));
+    assert!(
+        rail.contains("ico_key(cx"),
+        "rail must use the dedicated key icon for /admin/ctap2"
+    );
+
+    let js = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/vcp_webauthn.js"
+    ));
+    assert!(
+        js.contains("cannot run on an IP address"),
+        "ceremony JS must reject IP hosts before navigator.credentials"
+    );
+}
+
+#[test]
 fn inv_normalize_image_ext_and_uuid_exported() {
     assert_eq!(vcp::storage::normalize_image_ext("JPG"), Some("jpeg"));
     assert_eq!(vcp::storage::normalize_image_ext("png"), Some("png"));

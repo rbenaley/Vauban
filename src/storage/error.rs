@@ -1,4 +1,4 @@
-//! Closed error codes for storage IPC / engine (architecture §6.1).
+//! Closed error codes for storage IPC / engine (architecture 1.2 §6.8).
 
 use std::fmt;
 
@@ -14,6 +14,11 @@ pub enum StorageErrorCode {
     IntegrityMismatch,
     Io,
     Busy,
+    WebauthnRequired,
+    WebauthnInvalid,
+    WebauthnExpired,
+    ChallengeUnknown,
+    ObjectModified,
 }
 
 impl StorageErrorCode {
@@ -28,6 +33,11 @@ impl StorageErrorCode {
             Self::IntegrityMismatch => "integrity_mismatch",
             Self::Io => "io",
             Self::Busy => "busy",
+            Self::WebauthnRequired => "webauthn_required",
+            Self::WebauthnInvalid => "webauthn_invalid",
+            Self::WebauthnExpired => "webauthn_expired",
+            Self::ChallengeUnknown => "challenge_unknown",
+            Self::ObjectModified => "object_modified",
         }
     }
 
@@ -42,6 +52,11 @@ impl StorageErrorCode {
             "integrity_mismatch" => Some(Self::IntegrityMismatch),
             "io" => Some(Self::Io),
             "busy" => Some(Self::Busy),
+            "webauthn_required" => Some(Self::WebauthnRequired),
+            "webauthn_invalid" => Some(Self::WebauthnInvalid),
+            "webauthn_expired" => Some(Self::WebauthnExpired),
+            "challenge_unknown" => Some(Self::ChallengeUnknown),
+            "object_modified" => Some(Self::ObjectModified),
             _ => None,
         }
     }

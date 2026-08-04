@@ -17,15 +17,12 @@ fn engine_cfg() -> StorageConfig {
     StorageConfig {
         blob_path: "/tmp/unused".into(),
         ipc: StorageIpcMode::Inline,
-        socket_path: String::new(),
-        helper_path: String::new(),
         max_artifact_bytes: 1024 * 1024,
         max_image_bytes: 64 * 1024,
-        allowed_image_types: vec!["png".into(), "jpeg".into(), "webp".into()],
         max_concurrent_uploads: 8,
         max_images_per_org: 100,
-        upload_ttl_secs: 3600,
-        expected_peer_uid: None,
+        webauthn_required: false,
+        ..StorageConfig::default()
     }
 }
 
@@ -33,6 +30,10 @@ fn engine_cfg() -> StorageConfig {
 fn battle_concurrent_put_commit_under_tempfile() {
     let dir = tempfile::tempdir().unwrap();
     let root = Arc::new(dir.path().canonicalize().unwrap());
+    // Serialize schema / WAL bootstrap so N concurrent opens do not race CREATE.
+    {
+        let _bootstrap = StorageEngine::open(root.as_path(), engine_cfg()).expect("bootstrap");
+    }
     let n = 8usize;
     let barrier = Arc::new(std::sync::Barrier::new(n));
     let mut handles = Vec::with_capacity(n);
@@ -42,11 +43,14 @@ fn battle_concurrent_put_commit_under_tempfile() {
         let barrier = barrier.clone();
         handles.push(std::thread::spawn(move || {
             // Per-thread engine (cap-std Dir is not Sync); same blob root.
-            let eng = StorageEngine::open(root.as_path(), engine_cfg()).unwrap();
+            // Always reach the barrier even if open fails — otherwise a panic
+            // before wait() deadlocks the other threads forever.
+            let opened = StorageEngine::open(root.as_path(), engine_cfg());
+            barrier.wait();
+            let eng = opened.expect("open engine");
             let release_id = format!("{}", 10_000 + i);
             let data = format!("pkg-body-{i}").into_bytes();
             let digest = sha256_hex(&data);
-            barrier.wait();
             let begin = eng
                 .put_begin(
                     StorageScope::Release,
@@ -58,7 +62,7 @@ fn battle_concurrent_put_commit_under_tempfile() {
                 .expect("put_begin");
             write_abs_file(&eng.partial_abs_path(&begin.upload_id).unwrap(), &data).expect("write");
             let st = eng
-                .put_commit(&begin.upload_id, &digest, None)
+                .put_commit(&begin.upload_id, &digest, None, None)
                 .expect("put_commit");
             assert_eq!(st.sha256, digest);
             let (got, _) = eng
@@ -78,6 +82,54 @@ fn battle_concurrent_put_commit_under_tempfile() {
     for h in handles {
         h.join().expect("join");
     }
+}
+
+#[test]
+fn battle_challenge_double_consume() {
+    use vcp::storage::{StorageErrorCode, soft_assertion_json};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let mut cfg = engine_cfg();
+    cfg.webauthn_required = true;
+    let eng = Arc::new(StorageEngine::open(&root, cfg).unwrap());
+    let cred = b"battle-soft";
+    eng.seed_soft_active_credential(cred, "t").unwrap();
+    let ch = eng.challenge_begin_delete_org("99").unwrap();
+    let assertion = soft_assertion_json(cred, &ch.challenge_id, true, 0);
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let eng = eng.clone();
+        let assertion = assertion.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            eng.delete_org("99", Some(&assertion))
+        }));
+    }
+    let mut oks = 0;
+    let mut fails = 0;
+    for h in handles {
+        match h.join().unwrap() {
+            Ok(_) => oks += 1,
+            Err(e) => {
+                fails += 1;
+                assert!(
+                    matches!(
+                        e.code,
+                        StorageErrorCode::WebauthnInvalid
+                            | StorageErrorCode::ChallengeUnknown
+                            | StorageErrorCode::WebauthnExpired
+                    ),
+                    "unexpected {:?}",
+                    e.code
+                );
+            }
+        }
+    }
+    assert_eq!(oks, 1);
+    assert_eq!(fails, 1);
 }
 
 #[tokio::test]
