@@ -10,10 +10,11 @@ release artifacts adds security value versus ordinary in-process I/O.
 (`src/bin/vcp_store.rs`, `src/storage/*`). Portable I/O + SEQPACKET IPC;
 **digest SoT = SQLite** in the helper (`blob_path/meta.sqlite`); Postgres
 `storage_objects` is a **mirror** for portal UI / publish gates (SQLite SoT
-migration in progress per architecture 1.0, design updated 2026-08-04);
+SQLite SoT shipped; WebAuthn/CTAP2 gates specified in architecture 1.1);
 FreeBSD attempts real `cap_enter`; soft WARN elsewhere.
 **Related:** architecture
-[`docs/technical/VCP_Storage_Helper_Architecture_EN(1.0).md`](../../docs/technical/VCP_Storage_Helper_Architecture_EN(1.0).md);
+[`docs/technical/VCP_Storage_Helper_Architecture_EN(1.1).md`](../../docs/technical/VCP_Storage_Helper_Architecture_EN(1.1).md)
+(1.0 retained as historical baseline);
 ops [`docs/runbooks/storage_helper_ops.md`](../../docs/runbooks/storage_helper_ops.md);
 smoke [`docs/runbooks/storage_helper_smoke_test.md`](../../docs/runbooks/storage_helper_smoke_test.md);
 bastion patterns in `../Vauban` (`Vauban_Privsep_Architecture`);

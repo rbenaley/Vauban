@@ -12,7 +12,7 @@
 Related:
 
 - Ops: [`storage_helper_ops.md`](storage_helper_ops.md)
-- Architecture: [VCP_Storage_Helper_Architecture_EN(1.0).md](../technical/VCP_Storage_Helper_Architecture_EN(1.0).md)
+- Architecture: [VCP_Storage_Helper_Architecture_EN(1.1).md](../technical/VCP_Storage_Helper_Architecture_EN(1.1).md)
 - Lint: `scripts/check_storage.sh`
 - Filter: `cargo test --test integration_tests -- storage_ -- --test-threads=1`
 - Builds: [`builds_entitlement_smoke_test.md`](builds_entitlement_smoke_test.md)

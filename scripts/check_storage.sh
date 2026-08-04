@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Structural invariants for vcp-store storage helper (architecture 1.0).
+# Structural invariants for vcp-store storage helper (architecture 1.1).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

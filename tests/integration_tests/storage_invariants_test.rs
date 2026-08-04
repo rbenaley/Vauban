@@ -1,4 +1,4 @@
-//! Source-shape invariants for the storage helper (architecture 1.0).
+//! Source-shape invariants for the storage helper (architecture 1.1).
 
 use std::process::Command;
 
