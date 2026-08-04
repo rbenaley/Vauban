@@ -1,6 +1,6 @@
 //! Artifact storage: portable engine, IPC client/server, Capsicum hooks.
 //!
-//! See `docs/technical/VCP_Storage_Helper_Architecture_EN(1.1).md`.
+//! See `docs/technical/VCP_Storage_Helper_Architecture_EN(1.2).md`.
 
 pub mod capsicum;
 pub mod client;

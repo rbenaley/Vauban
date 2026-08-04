@@ -2,9 +2,9 @@
 
 **Version:** 1.0  
 **Date:** 2026-08-03 (design updated 2026-08-04)  
-**Status:** **superseded by
-[`VCP_Storage_Helper_Architecture_EN(1.1).md`](VCP_Storage_Helper_Architecture_EN(1.1).md)**
-for WebAuthn/CTAP2 gates. The 1.0 text remains the historical record of the
+**Status:** **superseded** for current design by
+[`VCP_Storage_Helper_Architecture_EN(1.2).md`](VCP_Storage_Helper_Architecture_EN(1.2).md)
+(via 1.1 WebAuthn gates). The 1.0 text remains the historical record of the
 shipped helper + SQLite digest SoT baseline.  
 **Implementation note (1.0 baseline):** Option C helper; digests SoT in
 `vcp-store` `meta.sqlite`; Postgres `storage_objects` mirror; `get` /

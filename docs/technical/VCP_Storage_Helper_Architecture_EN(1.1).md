@@ -2,11 +2,14 @@
 
 **Version:** 1.1  
 **Date:** 2026-08-04  
-**Status:** design — supersedes
-[`VCP_Storage_Helper_Architecture_EN(1.0).md`](VCP_Storage_Helper_Architecture_EN(1.0).md);
-implementation of the 1.0 helper + SQLite digest SoT is shipped; **1.1 adds
-WebAuthn (CTAP2) gates verified inside `vcp-store`** and splits release
-finalize into `put_prepare` / `put_commit`.  
+**Status:** **superseded by
+[`VCP_Storage_Helper_Architecture_EN(1.2).md`](VCP_Storage_Helper_Architecture_EN(1.2).md)**
+(post-review hardening). Historical record of the first WebAuthn/CTAP2 gate
+design; supersedes
+[`VCP_Storage_Helper_Architecture_EN(1.0).md`](VCP_Storage_Helper_Architecture_EN(1.0).md)
+for the 1.1 delta only.  
+**Implementation note:** 1.0 helper + SQLite digest SoT shipped; 1.1/1.2
+WebAuthn gates are design — implement against **1.2**.  
 **Scope:** on-disk storage under a helper-owned root (`blob_path` in
 `vcp-store.conf`) for **release artifacts** and **tenant images**, served by
 `vcp-store` (Capsicum on FreeBSD; soft fence elsewhere). Digests SoT =

@@ -1,4 +1,4 @@
-//! `vcp-store` — sandboxed artifact helper (architecture 1.1).
+//! `vcp-store` — sandboxed artifact helper (architecture 1.2).
 //!
 //! Production: load `vcp-store.conf` (`--config` or default beside portal
 //! config). Development spawn: parent passes `--blob-path` / `--listen` /
