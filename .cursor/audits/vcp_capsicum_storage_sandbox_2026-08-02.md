@@ -352,7 +352,7 @@ not a storage thread.
 | Digest SoT (SQLite in helper) | `blob_path/meta.sqlite` (`objects`); migration in progress |
 | Postgres `storage_objects` mirror | Migration `0013_storage_objects.sql`; digests off `Release` |
 | HTTP releases + images | Admin upload / org download / `/{org}/images` |
-| Prod boot guards | Refuse `ipc=spawn` / writable `blob_path` |
+| Prod boot guards | Portal: refuse `ipc=spawn` / non-empty `blob_path`; helper: `vcp-store.conf` |
 | Capsicum | FreeBSD `cap_enter` attempt; WARN soft path elsewhere |
 | Ops / smoke | `docs/runbooks/storage_helper_ops.md`, `storage_helper_smoke_test.md` |
 | Pyramid | `tests/integration_tests/storage_*` + `scripts/check_storage.sh` |

@@ -127,8 +127,20 @@ fn inv_vcp_store_pins_peercred_and_capsicum() {
 fn inv_production_conf_is_socket_mode() {
     let conf = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/vcp.conf"));
     assert!(conf.contains("ipc = \"socket\""));
-    assert!(conf.contains("blob_path = \"/var/db/vcp/storage\""));
     assert!(conf.contains("socket_path = \"/var/run/vcp/store.sock\""));
+    assert!(
+        !conf
+            .lines()
+            .any(|l| l.trim_start().starts_with("blob_path")),
+        "vcp.conf must not set blob_path (helper conf owns it)"
+    );
+
+    let store = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/config/vcp-store.conf"
+    ));
+    assert!(store.contains("blob_path = \"/var/db/vcp/storage\""));
+    assert!(store.contains("listen = \"/var/run/vcp/store.sock\""));
 }
 
 #[test]

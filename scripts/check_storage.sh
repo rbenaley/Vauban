@@ -21,6 +21,7 @@ DL="src/app/org/builds/download.rs"
 IMG="src/app/org/images.rs"
 MODELS="src/models/mod.rs"
 CONF="config/vcp.conf"
+STORE_CONF="config/vcp-store.conf"
 CFG="src/config.rs"
 
 [[ -f "$ENGINE" ]] || fail "missing $ENGINE"
@@ -107,13 +108,29 @@ grep -n 'pub fn normalize_image_ext' "$IDS" >/dev/null \
   || fail "$IDS must export normalize_image_ext"
 grep -n 'png\|jpeg\|webp' "$IDS" >/dev/null || fail "$IDS must catalogue png/jpeg/webp"
 
-# Prod config: socket mode + absolute blob root.
+# Prod portal: socket client only; helper owns blob_path in vcp-store.conf.
+[[ -f "$STORE_CONF" ]] || fail "missing $STORE_CONF"
 grep -n 'ipc = "socket"' "$CONF" >/dev/null \
   || fail "$CONF production storage.ipc must be socket"
-grep -n 'blob_path = "/var/db/vcp/storage"' "$CONF" >/dev/null \
-  || fail "$CONF must set absolute production blob_path"
+grep -n 'socket_path' "$CONF" >/dev/null \
+  || fail "$CONF production storage must set socket_path"
+if grep -nE '^\s*blob_path\s*=' "$CONF" >/dev/null; then
+  fail "$CONF must not set storage.blob_path (helper owns it in $STORE_CONF)"
+fi
+grep -n 'blob_path = "/var/db/vcp/storage"' "$STORE_CONF" >/dev/null \
+  || fail "$STORE_CONF must set absolute production blob_path"
+grep -n 'listen = "/var/run/vcp/store.sock"' "$STORE_CONF" >/dev/null \
+  || fail "$STORE_CONF must set listen socket path"
+grep -n 'expected_peer_uid = 800' "$STORE_CONF" >/dev/null \
+  || fail "$STORE_CONF must pin expected_peer_uid = 800 (portal vcp)"
+grep -n 'vcp-storage' "$STORE_CONF" >/dev/null \
+  || fail "$STORE_CONF must document helper OS user vcp-storage (801)"
+grep -n 'struct StoreHelperConfig' "$CFG" >/dev/null \
+  || fail "$CFG must define StoreHelperConfig for vcp-store.conf"
 grep -n 'storage.ipc=socket is required in production' "$CFG" >/dev/null \
   || fail "$CFG validate_storage must refuse non-socket ipc in production"
+grep -n 'blob_path must be empty in production' "$CFG" >/dev/null \
+  || fail "$CFG must refuse portal blob_path in production"
 
 # Upsert helpers after put_commit.
 grep -n 'upsert_release_object\|upsert_image_object' "$OBJECTS" >/dev/null \

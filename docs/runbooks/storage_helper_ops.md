@@ -26,15 +26,17 @@ rtk cargo test -p vcp --lib production_rejects_storage_ipc_spawn -- --test-threa
 
 | Item | Typical path / mode |
 |------|---------------------|
-| Config | `/usr/local/etc/vcp/vcp.conf` (`storage.ipc = "socket"`) |
-| Blob root | `/var/db/vcp/storage` owned by `vcp-store:vcp-store`, mode **0700** (includes `meta.sqlite` SoT + `releases/` / `images/` / `tmp/`) |
-| Listen socket | `/var/run/vcp/store.sock` — directory **0700**, socket owned so only `vcp` UID can connect |
-| Helper binary | `/usr/local/sbin/vcp-store` (or `storage.helper_path`) |
-| Portal UID | `vcp` — **must not** write `blob_path` (boot refuses writable root) |
+| Portal config | `/usr/local/etc/vcp/vcp.conf` — `[storage]` = `ipc=socket` + `socket_path` only |
+| Helper config | `/usr/local/etc/vcp/vcp-store.conf` — `blob_path`, `listen`, quotas, `expected_peer_uid` |
+| Blob root | `/var/db/vcp/storage` owned by `vcp-storage:vcp-storage` (UID **801**), mode **0700** (includes `meta.sqlite` SoT + `releases/` / `images/` / `tmp/`) |
+| Listen socket | `/var/run/vcp/store.sock` — directory **0700**, socket owned so only portal UID **800** (`vcp`) can connect |
+| Helper binary | `/usr/local/sbin/vcp-store` (runs as `vcp-storage` / 801) |
+| Portal UID | `vcp` = **800** — no blob mount required; peercred identity for IPC |
 
 `vcp` talks to the helper over the named SEQPACKET socket. The helper
 checks **peer credentials** (`getpeereid` / `SO_PEERCRED`) when
 `expected_peer_uid` / `--expected-uid` is set and rejects foreign UIDs.
+With `--production`, peer UID is **required**.
 
 ### rc.d / service ownership
 
@@ -44,17 +46,18 @@ checks **peer credentials** (`getpeereid` / `SO_PEERCRED`) when
 3. After bind, confirm:
    - `ls -ld /var/run/vcp` → `drwx------` for the store / runtime user;
    - `ls -l /var/run/vcp/store.sock` → socket; only portal UID can connect;
-   - `ls -ld /var/db/vcp/storage` → `drwx------ vcp-store vcp-store`.
-4. Portal boot with `ipc=spawn` or a blob root writable by the `vcp` UID
-   **fails validation** — fix ownership before restarting `vcp`.
+   - `ls -ld /var/db/vcp/storage` → `drwx------ vcp-storage vcp-storage`.
+4. Portal boot with `ipc=spawn` or a non-empty `storage.blob_path` in
+   `vcp.conf` **fails validation** — keep blob settings in `vcp-store.conf`.
 
 Example FreeBSD `rc.conf` sketch (adjust names to your package):
 
 ```sh
 vcp_store_enable="YES"
 vcp_enable="YES"
-# vcp_store_user="vcp-store"
-# vcp_store_flags="--blob-path /var/db/vcp/storage --listen /var/run/vcp/store.sock --production --expected-uid <vcp-uid>"
+# vcp_store_user="vcp-storage"   # UID 801
+# vcp_user="vcp"                 # UID 800
+# vcp_store_flags="--config /usr/local/etc/vcp/vcp-store.conf --production"
 ```
 
 ## Restart helper
@@ -70,17 +73,17 @@ Pass: helper listens; peercred accepts `vcp`; artifact GET returns 200.
 
 ## Rotate `blob_path`
 
-1. Provision new directory as `vcp-store:vcp-store` **0700**.
+1. Provision new directory as `vcp-storage:vcp-storage` (801) **0700**.
 2. Stop helper; rsync/move **`meta.sqlite`** (digest SoT), `releases/`,
    `images/`, `tmp/` (drop stale `tmp/*.partial`). Never move blobs without
    `meta.sqlite` (or the reverse).
-3. Point `storage.blob_path` in `vcp.conf` at the new root; keep `ipc=socket`.
-4. Start helper; confirm portal UID still cannot write the new root.
-5. Restart `vcp` so config reload validates the new path.
+3. Point `blob_path` in **`vcp-store.conf`** at the new root; keep portal
+   `ipc=socket` + `socket_path` unchanged (unless the socket path also moves).
+4. Start helper; confirm portal jail still has no write access to the blob root.
+5. Restart helper (portal reconnects on next request).
 6. Smoke download of a known release + one org image.
 
-Fail: portal boots with writable blob root, or downloads fail with
-`integrity_mismatch` / 503 after an incomplete copy.
+Fail: downloads fail with `integrity_mismatch` / 503 after an incomplete copy.
 
 ## Backup
 
@@ -135,7 +138,7 @@ SQLite rows) and removes matching Postgres mirror image rows. Operators:
 
 CI on macOS/Linux keeps the soft-containment WARN path. On FreeBSD hosts:
 
-- [ ] Helper runs as dedicated `vcp-store` UID (not shared with `vcp`).
+- [ ] Helper runs as `vcp-storage` (UID 801), portal as `vcp` (UID 800).
 - [ ] Boot logs `Capsicum: entered capability mode via cap_enter` (or
       documented soft path if API unavailable in the jail).
 - [ ] Optional: run helper inside a thin jail / **gisco**-style containment
@@ -164,4 +167,4 @@ Do **not** expect macOS CI to exercise `cap_enter` or jail.
 | Proptest | `storage_proptest` |
 | Battle | `storage_battle_` |
 | E2E | `storage_e2e_` |
-| Config | `production_rejects_storage_ipc_spawn`, `production_rejects_writable_blob_path` |
+| Config | `production_rejects_storage_ipc_spawn`, `production_rejects_portal_blob_path`, `store_helper_conf_loads_blob_and_listen` |

@@ -26,7 +26,7 @@ selected, Option A folded in as the baseline); `../Vauban` for the
 | # | Decision | Rationale |
 |---|----------|-----------|
 | D1 | **Helper process** `vcp-store`; no thread, no Capsicum on `vcp` itself | `cap_enter(2)` is process-wide; ACME/cert rotation inside `vcp` stays unconstrained (`src/tls/resolver.rs` already mandates pre-`cap_enter` file I/O) |
-| D2 | **Dedicated UID** `vcp-store` in production; `storage/` owned by it, mode `0700` | Without a separate UID, a compromised `vcp` opens blobs by path and bypasses the helper — the sandbox would be decorative |
+| D2 | **Dedicated OS user** `vcp-storage` (UID **801**) in production; `storage/` owned by it, mode `0700`; portal is `vcp` (UID **800**) | Without a separate UID, a compromised `vcp` opens blobs by path and bypasses the helper — the sandbox would be decorative |
 | D3 | **Separate control plane / data plane**: IPC for commands, `SCM_RIGHTS` for bytes | Native disk throughput, helper out of the data path; every transferred FD is a single-file capability with minimal rights |
 | D4 | **Best-effort Capsicum**: `cap_enter` + `cap_rights_limit` on FreeBSD; elsewhere no-op + `WARN` | macOS/Linux dev and CI behave identically; FreeBSD production gains the kernel fence |
 | D5 | **Mandatory portable baseline**: dirfd + `openat`, `O_NOFOLLOW`, `O_RESOLVE_BENEATH`/`openat2(RESOLVE_BENEATH)`, opaque IDs, umask 077 | Security never depends on Capsicum alone; Capsicum turns “we promise” into “the kernel refuses” |
@@ -81,38 +81,46 @@ under the helper UID in SQLite; Postgres holds a presentation mirror that
 
 ---
 
-## 3. Configuration (`vcp.conf`)
+## 3. Configuration (split portal / helper)
+
+Production keeps **two** self-contained files so `vcp` and `vcp-store` can
+live in separate FreeBSD jails. Development / testing keep a single layered
+TOML (`default.toml` + env) with `ipc = "spawn"` or `"inline"`.
+
+### 3.1 Portal — `vcp.conf` `[storage]` (production client)
 
 ```toml
 [storage]
-# Blob root. Must exist and be owned by the helper's user.
-# meta.sqlite (digest SoT) lives under this path.
-blob_path = "/var/db/vcp/storage"
-
-# IPC mode: "spawn"  (vcp fork/execs the helper, socketpair, same UID — dev)
-#           "socket" (helper started by rc.d under its own UID, named socket — prod)
 ipc = "socket"
-
-# "socket" mode only:
-socket_path = "/var/run/vcp/store.sock"
-
-# "spawn" mode only (default: vcp-store binary next to the executable):
-# helper_path = "/usr/local/libexec/vcp-store"
-
-# Abuse guards (enforced by the helper, re-checked by vcp):
-max_artifact_bytes = 2147483648        # 2 GiB — release artifacts
-max_image_bytes = 10485760             # 10 MiB — tenant images
-allowed_image_types = ["png", "jpeg", "webp"]  # no SVG (stored-XSS vector)
-max_concurrent_uploads = 4
-max_images_per_org = 1000              # per-tenant cap, enforced at put_begin
-upload_ttl_secs = 3600                 # purge orphaned .partial files
+socket_path = "/var/run/vcp/store.sock"   # path as seen from the vcp jail
 ```
 
-Boot-time validation rules (`config.rs`, struct `StorageConfig`):
-`blob_path` absolute, existing, a directory; in production `ipc = "socket"` is
-required, and `vcp` **refuses to start** if `blob_path` is writable by the
-`vcp` UID (effective check via `access(2)`), so that a bad install silently
-voiding D2 is caught immediately.
+No `blob_path` and no abuse quotas on the portal in production (helper owns
+them). Boot refuses `ipc != socket`, empty `socket_path`, or a non-empty
+`storage.blob_path` (configure the root in `vcp-store.conf` instead).
+
+### 3.2 Helper — `vcp-store.conf` (production)
+
+```toml
+blob_path = "/var/db/vcp/storage"         # meta.sqlite SoT lives here
+listen = "/var/run/vcp/store.sock"        # path as seen from the helper jail
+expected_peer_uid = 800                   # portal UID (vcp); helper runs as 801
+max_artifact_bytes = 2147483648
+max_image_bytes = 10485760
+allowed_image_types = ["png", "jpeg", "webp"]
+max_concurrent_uploads = 4
+max_images_per_org = 1000
+upload_ttl_secs = 3600
+```
+
+### 3.3 Development / testing (portal TOML only)
+
+```toml
+[storage]
+blob_path = "vcp-storage"                 # or target/vcp-storage-test
+ipc = "spawn"                             # testing: "inline"
+# quotas optional (defaults apply; passed to spawned helper)
+```
 
 ---
 

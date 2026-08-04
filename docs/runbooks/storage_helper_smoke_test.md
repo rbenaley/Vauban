@@ -30,7 +30,7 @@ rtk cargo test --test integration_tests -- storage_ -- --test-threads=1
 
 ## Lab prerequisites
 
-- Staging: `storage.ipc = "socket"`, helper running as `vcp-store`, blob root
+- Staging: `storage.ipc = "socket"`, helper running as `vcp-storage` (801), blob root
   **0700**, socket parent **0700**, peercred expected UID = portal.
 - Dev alternative: `VCP_ENVIRONMENT=development` + `just run` (`ipc=spawn`).
 - Seed staff `support@vauban.sh` / client `l.martin@acme.example` on
@@ -102,7 +102,8 @@ the known key → same deny on verify-on-read.
 
 ## E -- Production guards (Pass / Fail)
 
-1. Confirm `vcp.conf` has `ipc = "socket"` and absolute `blob_path`.
+1. Confirm `vcp.conf` has `ipc = "socket"` + `socket_path`, and
+   `vcp-store.conf` has absolute `blob_path` + `listen`.
 2. Confirm blob root not writable by portal UID (`touch` as `vcp` fails).
 3. Confirm socket peercred rejects a foreign UID (optional: connect as
    another user → helper logs reject / drops).
@@ -111,7 +112,7 @@ the known key → same deny on verify-on-read.
 
 | Result | Criteria |
 |--------|----------|
-| **Pass** | Socket mode, non-writable blob root, peercred enforced. |
+| **Pass** | Socket mode, helper conf owns blob root, peercred enforced. |
 | **Fail** | Portal accepts `ipc=spawn` in production, or shared writable storage. |
 
 ## Related automated coverage

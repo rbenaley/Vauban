@@ -6,7 +6,8 @@
 //! 3. `/usr/local/etc/vcp` (production install)
 //!
 //! Loading:
-//! - Production: `vcp.conf` only (self-contained)
+//! - Production portal: `vcp.conf` only (self-contained). Storage helper
+//!   loads sibling `vcp-store.conf` (blob root, listen, quotas, peer UID).
 //! - Development: `default.toml` + `development.toml` + optional `local.toml`
 //! - Testing: `default.toml` + `testing.toml` (no `local.toml`)
 //!
@@ -356,10 +357,16 @@ impl StorageIpcMode {
     }
 }
 
-/// On-disk artifact storage + helper IPC (`[storage]`).
+/// Portal-side storage client settings (`[storage]` in `vcp.conf` / TOML).
+///
+/// Production socket mode needs only [`Self::ipc`] + [`Self::socket_path`].
+/// Dev spawn / test inline also set [`Self::blob_path`] and abuse-limit
+/// fields (passed into the helper or inline engine). Helper-owned prod
+/// settings live in [`StoreHelperConfig`] / `vcp-store.conf`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StorageConfig {
-    #[serde(default = "default_storage_blob_path")]
+    /// Blob root for spawn/inline only. Empty in production (`vcp.conf`).
+    #[serde(default)]
     pub blob_path: String,
     #[serde(default = "default_storage_ipc")]
     pub ipc: StorageIpcMode,
@@ -379,7 +386,7 @@ pub struct StorageConfig {
     pub max_images_per_org: u32,
     #[serde(default = "default_upload_ttl_secs")]
     pub upload_ttl_secs: u64,
-    /// When set (socket mode), helper rejects peers whose UID differs.
+    /// Unused by the portal process; peer UID is configured on the helper.
     #[serde(default)]
     pub expected_peer_uid: Option<u32>,
 }
@@ -387,7 +394,7 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            blob_path: default_storage_blob_path(),
+            blob_path: "vcp-storage".into(),
             ipc: default_storage_ipc(),
             socket_path: String::new(),
             helper_path: String::new(),
@@ -402,8 +409,87 @@ impl Default for StorageConfig {
     }
 }
 
-fn default_storage_blob_path() -> String {
-    "vcp-storage".into()
+/// Production helper settings (`vcp-store.conf`, loaded only by `vcp-store`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct StoreHelperConfig {
+    pub blob_path: String,
+    pub listen: String,
+    #[serde(default)]
+    pub expected_peer_uid: Option<u32>,
+    #[serde(default = "default_max_artifact_bytes")]
+    pub max_artifact_bytes: u64,
+    #[serde(default = "default_max_image_bytes")]
+    pub max_image_bytes: u64,
+    #[serde(default = "default_allowed_image_types")]
+    pub allowed_image_types: Vec<String>,
+    #[serde(default = "default_max_concurrent_uploads")]
+    pub max_concurrent_uploads: u32,
+    #[serde(default = "default_max_images_per_org")]
+    pub max_images_per_org: u32,
+    #[serde(default = "default_upload_ttl_secs")]
+    pub upload_ttl_secs: u64,
+}
+
+impl StoreHelperConfig {
+    /// Load a self-contained helper TOML (no layering).
+    pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let path = path.as_ref();
+        // `.conf` is not a config-rs format extension; force TOML like `vcp.conf`.
+        let contents = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
+        let cfg: Self = ConfigBuilder::builder()
+            .add_source(config::File::from_str(&contents, config::FileFormat::Toml))
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build {}: {e}", path.display()))?
+            .try_deserialize()
+            .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", path.display()))?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// Default path beside portal config: `{config_dir}/vcp-store.conf`.
+    pub fn default_path(config_dir: impl AsRef<Path>) -> PathBuf {
+        config_dir.as_ref().join("vcp-store.conf")
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.blob_path.trim().is_empty() {
+            anyhow::bail!("vcp-store blob_path must not be empty");
+        }
+        if !Path::new(&self.blob_path).is_absolute() {
+            anyhow::bail!("vcp-store blob_path must be absolute");
+        }
+        if self.listen.trim().is_empty() {
+            anyhow::bail!("vcp-store listen must not be empty");
+        }
+        if !Path::new(&self.listen).is_absolute() {
+            anyhow::bail!("vcp-store listen must be absolute");
+        }
+        if self.max_artifact_bytes == 0 || self.max_image_bytes == 0 {
+            anyhow::bail!("vcp-store max_*_bytes must be greater than zero");
+        }
+        if self.max_concurrent_uploads == 0 {
+            anyhow::bail!("vcp-store max_concurrent_uploads must be greater than zero");
+        }
+        Ok(())
+    }
+
+    /// Convert into the engine [`StorageConfig`] shape.
+    pub fn to_storage_config(&self) -> StorageConfig {
+        StorageConfig {
+            blob_path: self.blob_path.clone(),
+            ipc: StorageIpcMode::Socket,
+            socket_path: self.listen.clone(),
+            helper_path: String::new(),
+            max_artifact_bytes: self.max_artifact_bytes,
+            max_image_bytes: self.max_image_bytes,
+            allowed_image_types: self.allowed_image_types.clone(),
+            max_concurrent_uploads: self.max_concurrent_uploads,
+            max_images_per_org: self.max_images_per_org,
+            upload_ttl_secs: self.upload_ttl_secs,
+            expected_peer_uid: self.expected_peer_uid,
+        }
+    }
 }
 
 fn default_storage_ipc() -> StorageIpcMode {
@@ -585,13 +671,6 @@ impl Config {
     }
 
     fn validate_storage(&self) -> anyhow::Result<()> {
-        let path = Path::new(&self.storage.blob_path);
-        if self.storage.blob_path.trim().is_empty() {
-            anyhow::bail!("storage.blob_path must not be empty");
-        }
-        if !path.is_absolute() {
-            anyhow::bail!("storage.blob_path must be absolute after path resolution");
-        }
         if self.storage.ipc == StorageIpcMode::Inline && self.environment.is_production() {
             anyhow::bail!("storage.ipc=inline is not allowed in production");
         }
@@ -602,47 +681,22 @@ impl Config {
             if self.storage.socket_path.trim().is_empty() {
                 anyhow::bail!("storage.socket_path is required when ipc=socket");
             }
-            if !path.is_dir() {
-                // Committed `config/vcp.conf` points at `/var/db/vcp/storage`,
-                // which is absent on developer / CI hosts. Integration tests and
-                // unit tests load Production config to pin public_origins; the
-                // helper / StorageClient::connect still require a usable root
-                // when the portal actually boots against that path.
-            } else {
-                // Refuse a blob root the portal UID can write (D2).
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(meta) = std::fs::metadata(path) {
-                        let mode = meta.permissions().mode() & 0o777;
-                        // Heuristic: world/group writable is never OK; also probe write access.
-                        if mode & 0o022 != 0 {
-                            anyhow::bail!(
-                                "storage.blob_path must not be group/world-writable (got mode {mode:o})"
-                            );
-                        }
-                    }
-                    let probe = path.join(".vcp-write-probe");
-                    match std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&probe)
-                    {
-                        Ok(_) => {
-                            let _ = std::fs::remove_file(&probe);
-                            anyhow::bail!(
-                                "storage.blob_path is writable by the vcp process UID; \
-                                 production requires ownership by vcp-store only (0700)"
-                            );
-                        }
-                        Err(_) => {
-                            // Not writable — expected in multi-UID prod.
-                        }
-                    }
-                }
+            // Portal production config must not own the blob root (helper /
+            // vcp-store.conf does). Empty blob_path is the jail-friendly shape.
+            if !self.storage.blob_path.trim().is_empty() {
+                anyhow::bail!(
+                    "storage.blob_path must be empty in production (configure blob_path in vcp-store.conf)"
+                );
             }
         } else {
-            // Dev/test: ensure the directory exists so spawn mode can open it.
+            let path = Path::new(&self.storage.blob_path);
+            if self.storage.blob_path.trim().is_empty() {
+                anyhow::bail!("storage.blob_path must not be empty outside production");
+            }
+            if !path.is_absolute() {
+                anyhow::bail!("storage.blob_path must be absolute after path resolution");
+            }
+            // Dev/test: ensure the directory exists so spawn/inline can open it.
             std::fs::create_dir_all(path).map_err(|e| {
                 anyhow::anyhow!("failed to create storage.blob_path {}: {e}", path.display())
             })?;
@@ -898,9 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn production_rejects_writable_blob_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let blob = tmp.path().canonicalize().unwrap();
+    fn production_rejects_portal_blob_path() {
         let mut cfg = Config::load_with_environment(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
             Environment::Production,
@@ -908,10 +960,10 @@ mod tests {
         .unwrap();
         cfg.storage.ipc = StorageIpcMode::Socket;
         cfg.storage.socket_path = "/var/run/vcp/store.sock".into();
-        cfg.storage.blob_path = blob.to_string_lossy().into_owned();
+        cfg.storage.blob_path = "/var/db/vcp/storage".into();
         let err = cfg.validate().unwrap_err().to_string();
         assert!(
-            err.contains("writable by the vcp process UID") || err.contains("group/world-writable"),
+            err.contains("blob_path must be empty in production"),
             "{err}"
         );
     }
@@ -925,7 +977,20 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.storage.ipc, StorageIpcMode::Socket);
         assert!(!cfg.storage.socket_path.is_empty());
-        assert!(Path::new(&cfg.storage.blob_path).is_absolute());
+        assert!(
+            cfg.storage.blob_path.is_empty(),
+            "portal vcp.conf must not set blob_path"
+        );
+    }
+
+    #[test]
+    fn store_helper_conf_loads_blob_and_listen() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/vcp-store.conf");
+        let helper = StoreHelperConfig::load(&path).unwrap();
+        assert_eq!(helper.blob_path, "/var/db/vcp/storage");
+        assert_eq!(helper.listen, "/var/run/vcp/store.sock");
+        assert_eq!(helper.expected_peer_uid, Some(800));
+        assert!(helper.max_artifact_bytes > 0);
     }
 }
 
