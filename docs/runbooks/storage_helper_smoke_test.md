@@ -139,20 +139,30 @@ WebAuthn rejects IP hosts; `webauthn_rp_id` / `webauthn_origin` are `localhost`.
 Accept the self-signed cert for `localhost` if prompted.
 
 1. `/admin/ctap2` → Create passkey → PENDING fingerprint shown + CLI hint.
-2. Activate (E2) with OOB fingerprint match:
+2. **Empty / whitespace-only key label** (leave label blank or spaces, click
+   Create): must **not** open the authenticator dialog; banner / redirect
+   `err=label`. No PENDING row in `vcp-store ctap2 pending`.
+3. **PENDING TTL** (`webauthn_pending_ttl_hours`, default 24): an unapproved
+   PENDING older than the TTL must show as `expired` in `ctap2 list` and
+   leave the `ctap2 pending` queue; `ctap2 approve` for that fingerprint
+   fails closed (`webauthn_expired`).
+4. Activate (E2) with OOB fingerprint match:
    - **Local spawn (`just run`):** from the repo root,
      `VCP_ENVIRONMENT=development ./target/debug/vcp-store ctap2 approve --fingerprint <hex>`
      (loads the same `[storage].blob_path` as the portal, typically
      `<repo>/vcp-storage`). Bare `vcp-store` without the env var reads
      production `vcp-store.conf` (`/var/db/vcp/storage`) and fails on Mac.
    - **Production helper host:** `vcp-store ctap2 approve --fingerprint <hex>`
-3. Dashboard lists ACTIVE; revoke from dashboard (no CLI revoke).
-4. Wrong fingerprint on approve → fail closed; no ACTIVE insert.
+5. Cross-check listing:
+   - `vcp-store ctap2 pending` shows the PENDING credential (not only challenges).
+   - After approve: `vcp-store ctap2 list` shows ACTIVE; pending queue empty.
+6. Dashboard lists ACTIVE; revoke from dashboard (no CLI revoke).
+7. Wrong fingerprint on approve → fail closed; no ACTIVE insert.
 
 | Result | Criteria |
 |--------|----------|
-| **Pass** | Only CLI approve activates; revoke is dashboard-only (ADR 003). |
-| **Fail** | Portal-only activate, or approve without fingerprint match. |
+| **Pass** | Blank label fails closed; stale PENDING becomes `expired`; pending/list reflect E2 queue; only CLI approve activates; revoke is dashboard-only (ADR 003). |
+| **Fail** | Empty label reaches `credentials.create`, stale PENDING stays approvable, pending omits staged keys, portal-only activate, or approve without fingerprint match. |
 
 ## Related automated coverage
 

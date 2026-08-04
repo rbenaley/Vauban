@@ -152,6 +152,24 @@ fn inv_webauthn_12_and_adrs_pinned() {
     assert!(store.contains("webauthn_required = true"));
     assert!(store.contains("webauthn_strict_sign_count = false"));
     assert!(store.contains("webauthn_user_verification = \"required\""));
+    assert!(
+        store.contains("webauthn_pending_ttl_hours = 24"),
+        "helper conf must expire stale PENDING enrolments"
+    );
+
+    let def = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/default.toml"));
+    let development = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/config/development.toml"
+    ));
+    assert!(
+        def.contains("webauthn_pending_ttl_hours = 24"),
+        "portal default.toml must carry pending TTL for spawn/dev"
+    );
+    assert!(
+        development.contains("webauthn_pending_ttl_hours = 24"),
+        "development.toml must carry pending TTL (vcp-store.conf unused in spawn)"
+    );
 
     let err = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/storage/error.rs"));
     for code in [
@@ -167,7 +185,45 @@ fn inv_webauthn_12_and_adrs_pinned() {
     let bin = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/vcp_store.rs"));
     assert!(bin.contains("ctap2"));
     assert!(bin.contains("approve"));
+    assert!(bin.contains("ctap2 list") || bin.contains("\"list\""));
+    assert!(bin.contains("load_ctap2_cfg_with_env"));
+    assert!(bin.contains("VCP_ENVIRONMENT"));
     assert!(bin.contains("validate_production_webauthn"));
+    assert!(bin.contains("format_ascii_table"));
+    assert!(
+        bin.contains("STORE_LOG_TARGET"),
+        "helper binary logs must use vcp-store target constant"
+    );
+    assert!(
+        !bin.contains("vcp_storage_alert"),
+        "forbidden ambiguous tracing target"
+    );
+
+    let store_mod = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/storage/mod.rs"));
+    assert!(store_mod.contains("STORE_ALERT_TARGET"));
+    assert!(store_mod.contains("\"vcp-store::alert\""));
+    assert!(store_mod.contains("\"vcp-store\""));
+
+    let webauthn = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/storage/webauthn.rs"
+    ));
+    assert!(webauthn.contains("canonical_summary"));
+    assert!(webauthn.contains("webauthn_host_is_ip"));
+    assert!(webauthn.contains("test_attestation_object_b64"));
+
+    let dev = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/config/development.toml"
+    ));
+    assert!(
+        dev.contains("webauthn_rp_id = \"localhost\""),
+        "dev RP ID must be localhost (not an IP)"
+    );
+    assert!(
+        !dev.contains("webauthn_rp_id = \"127.0.0.1\""),
+        "dev must not use 127.0.0.1 as RP ID"
+    );
 
     assert!(
         std::path::Path::new(concat!(
@@ -237,6 +293,14 @@ fn inv_ctap2_dashboard_ui_pinned() {
     );
     assert!(page.contains("data-mode=\"create\""), "E1 ceremony root");
     assert!(
+        page.contains("err=label"),
+        "empty admin_label must redirect with err=label"
+    );
+    assert!(
+        page.contains("normalize_admin_label"),
+        "portal enrol must share helper label normalization"
+    );
+    assert!(
         page.contains("https://localhost:3000"),
         "dev hint: WebAuthn requires localhost, not 127.0.0.1"
     );
@@ -257,6 +321,14 @@ fn inv_ctap2_dashboard_ui_pinned() {
     assert!(
         js.contains("cannot run on an IP address"),
         "ceremony JS must reject IP hosts before navigator.credentials"
+    );
+    assert!(
+        js.contains("Key label is required"),
+        "create ceremony must refuse empty admin_label before credentials.create"
+    );
+    assert!(
+        js.contains("function isIpHostname"),
+        "ceremony JS must keep the IP-host gate"
     );
 }
 

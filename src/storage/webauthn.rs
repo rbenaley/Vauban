@@ -72,6 +72,32 @@ pub fn credential_fingerprint(credential_id: &[u8], public_key_cose: &[u8]) -> S
     hex::encode(hasher.finalize())
 }
 
+/// CTAP2 admin key label: trim; reject empty / whitespace-only.
+pub fn normalize_admin_label(raw: &str) -> Option<&str> {
+    let label = raw.trim();
+    if label.is_empty() { None } else { Some(label) }
+}
+
+/// Mirror of `isIpHostname` in `assets/vcp_webauthn.js` (WebAuthn RP ID rule).
+pub fn webauthn_host_is_ip(host: &str) -> bool {
+    if host.is_empty() {
+        return false;
+    }
+    if host == "::1" || host.contains(':') {
+        return true;
+    }
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+    parts.iter().all(|p| {
+        if p.is_empty() || p.len() > 3 || !p.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        p.parse::<u16>().is_ok_and(|n| n <= 255)
+    })
+}
+
 pub fn canonical_summary(op: &str, binding: &Value) -> String {
     match op {
         "release_put_commit" => {
@@ -450,7 +476,7 @@ fn apply_sign_count(
             }),
         );
         tracing::error!(
-            target: "vcp_storage_alert",
+            target: crate::storage::STORE_ALERT_TARGET,
             stored = row.sign_count,
             presented = new_count,
             "ALERT webauthn sign_count regression"
@@ -755,6 +781,42 @@ fn find_cbor_map_bstr<'a>(data: &'a [u8], key: &[u8]) -> Result<&'a [u8], Storag
     ))
 }
 
+/// Minimal CBOR attestationObject (authData only) for portal enrol E2E / unit tests.
+pub fn test_attestation_object_b64(cred_id: &[u8], cose: &[u8]) -> String {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let mut auth = Vec::with_capacity(55 + cred_id.len() + cose.len());
+    auth.extend_from_slice(&[0u8; 32]); // rpIdHash
+    auth.push(0x40); // AT flag
+    auth.extend_from_slice(&[0u8; 4]); // signCount
+    auth.extend_from_slice(&[0u8; 16]); // aaguid
+    let cred_len = u16::try_from(cred_id.len()).unwrap_or(u16::MAX);
+    auth.extend_from_slice(&cred_len.to_be_bytes());
+    auth.extend_from_slice(cred_id);
+    auth.extend_from_slice(cose);
+
+    let mut cbor = Vec::new();
+    cbor.push(0xa1); // map(1)
+    cbor.push(0x68); // text(8)
+    cbor.extend_from_slice(b"authData");
+    encode_cbor_bstr(&mut cbor, &auth);
+    URL_SAFE_NO_PAD.encode(cbor)
+}
+
+fn encode_cbor_bstr(out: &mut Vec<u8>, bytes: &[u8]) {
+    if bytes.len() < 24 {
+        out.push(0x40 | (bytes.len() as u8));
+    } else if bytes.len() < 256 {
+        out.push(0x58);
+        out.push(bytes.len() as u8);
+    } else {
+        out.push(0x59);
+        out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+    }
+    out.extend_from_slice(bytes);
+}
+
 /// Encode a soft assertion for tests.
 pub fn soft_assertion_json(
     credential_id: &[u8],
@@ -810,6 +872,44 @@ mod tests {
         assert_eq!(fp.len(), 64);
         assert_eq!(fp, credential_fingerprint(b"cred", b"cose"));
         assert_ne!(fp, credential_fingerprint(b"cred", b"cose2"));
+    }
+
+    #[test]
+    fn normalize_admin_label_trims_and_rejects_blank() {
+        assert_eq!(normalize_admin_label(""), None);
+        assert_eq!(normalize_admin_label("   \t\n"), None);
+        assert_eq!(normalize_admin_label("  Yubi-1  "), Some("Yubi-1"));
+    }
+
+    #[test]
+    fn webauthn_host_is_ip_matches_js_contract() {
+        assert!(webauthn_host_is_ip("127.0.0.1"));
+        assert!(webauthn_host_is_ip("::1"));
+        assert!(webauthn_host_is_ip("2001:db8::1"));
+        assert!(!webauthn_host_is_ip("localhost"));
+        assert!(!webauthn_host_is_ip("access.vauban.sh"));
+        assert!(!webauthn_host_is_ip("127.0.0.256"));
+    }
+
+    #[test]
+    fn test_attestation_roundtrip_extract() {
+        let cred = b"cred-e2e-01";
+        let cose = b"cose-bytes";
+        let b64 = test_attestation_object_b64(cred, cose);
+        let (got_id, got_cose) = extract_attested_credential(&b64).unwrap();
+        assert_eq!(got_id, cred);
+        assert_eq!(got_cose, cose);
+    }
+
+    #[test]
+    fn canonical_summary_release_and_delete_shapes() {
+        let release = canonical_summary(
+            "release_put_commit",
+            &json!({"release_id": "42", "digest": "abcdef0123456789"}),
+        );
+        assert_eq!(release, "release_put_commit id=42 sha256=abcdef012345…");
+        let org = canonical_summary("delete_org", &json!({"org_id": "7"}));
+        assert_eq!(org, "delete_org org_id=7");
     }
 
     #[test]

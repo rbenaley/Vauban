@@ -1,0 +1,61 @@
+---
+description: >-
+  Process identity in tracing targets — portal vs vcp-store must never be
+  ambiguous in log lines.
+alwaysApply: true
+---
+
+# Tracing process identity (VCP)
+
+Operators must see **who spoke** in every log line. Never invent ad-hoc
+targets that blur the portal and the storage helper.
+
+## Required prefixes
+
+| Process / surface | Allowed `tracing` target prefix | Examples |
+|-------------------|----------------------------------|----------|
+| Portal (`vcp` binary / `vcp::` library UI path) | `vcp:` or `vcp::…` | `vcp`, `vcp::magic_link`, `vcp::storage::client` |
+| Storage helper (`vcp-store` binary + helper-owned ops) | `vcp-store:` or `vcp-store::…` | `vcp-store`, `vcp-store::alert` |
+
+Use the **hyphenated** product name `vcp-store` in targets (not
+`vcp_store`, not `vcp_storage_*`).
+
+## Forbidden
+
+| Forbidden | Why |
+|-----------|-----|
+| `vcp_storage_alert` / `vcp_storage_*` | Ambiguous; looks like neither process |
+| `vcp_store` (underscore) as a target string | Binary crate name ≠ ops identity; use `vcp-store` |
+| Bare custom targets without `vcp` / `vcp-store` | Ops cannot filter by process |
+| Helper security ALERTs under default `vcp::storage::…` only | Prefer explicit `vcp-store::alert` |
+
+## How to log
+
+```rust
+// Portal (default module path is fine):
+tracing::info!("listening");
+// -> target vcp / vcp::…
+
+// Helper binary — always set target (crate name is vcp_store):
+tracing::info!(target: "vcp-store", path = %listen, "vcp-store listening");
+
+// Helper-owned security / ops alerts (engine, webauthn, …):
+tracing::warn!(
+    target: "vcp-store::alert",
+    cred = %hex,
+    "ALERT ctap2_revoke"
+);
+```
+
+Constants live in `src/storage/mod.rs`:
+`STORE_LOG_TARGET` (`"vcp-store"`), `STORE_ALERT_TARGET` (`"vcp-store::alert"`).
+
+## Docs / runbooks
+
+Ops docs must tell operators to grep `vcp-store::alert` (or
+`target=vcp-store`), never `vcp_storage_alert`.
+
+## Skill
+
+Full detail: `.cursor/skills/rust-best-practices/SKILL.md` §4.10
+(Secure Logging / process identity).

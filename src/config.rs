@@ -402,6 +402,10 @@ pub struct StorageConfig {
     pub webauthn_origin: String,
     #[serde(default = "default_webauthn_challenge_ttl")]
     pub webauthn_challenge_ttl_secs: u64,
+    /// Hours before an unapproved CTAP2 PENDING enrolment becomes `expired`.
+    /// `0` disables auto-expiry. Default 24.
+    #[serde(default = "default_webauthn_pending_ttl_hours")]
+    pub webauthn_pending_ttl_hours: u64,
 }
 
 impl Default for StorageConfig {
@@ -424,6 +428,7 @@ impl Default for StorageConfig {
             webauthn_rp_id: default_webauthn_rp_id(),
             webauthn_origin: default_webauthn_origin(),
             webauthn_challenge_ttl_secs: default_webauthn_challenge_ttl(),
+            webauthn_pending_ttl_hours: default_webauthn_pending_ttl_hours(),
         }
     }
 }
@@ -459,6 +464,8 @@ pub struct StoreHelperConfig {
     pub webauthn_origin: String,
     #[serde(default = "default_webauthn_challenge_ttl")]
     pub webauthn_challenge_ttl_secs: u64,
+    #[serde(default = "default_webauthn_pending_ttl_hours")]
+    pub webauthn_pending_ttl_hours: u64,
 }
 
 impl StoreHelperConfig {
@@ -528,6 +535,7 @@ impl StoreHelperConfig {
             webauthn_rp_id: self.webauthn_rp_id.clone(),
             webauthn_origin: self.webauthn_origin.clone(),
             webauthn_challenge_ttl_secs: self.webauthn_challenge_ttl_secs,
+            webauthn_pending_ttl_hours: self.webauthn_pending_ttl_hours,
         }
     }
 }
@@ -583,6 +591,10 @@ fn default_webauthn_origin() -> String {
 
 fn default_webauthn_challenge_ttl() -> u64 {
     300
+}
+
+fn default_webauthn_pending_ttl_hours() -> u64 {
+    24
 }
 
 impl Config {
@@ -1057,6 +1069,14 @@ mod tests {
         assert_eq!(helper.listen, "/var/run/vcp/store.sock");
         assert_eq!(helper.expected_peer_uid, Some(800));
         assert!(helper.max_artifact_bytes > 0);
+        assert_eq!(helper.webauthn_pending_ttl_hours, 24);
+    }
+
+    #[test]
+    fn development_storage_pending_ttl_matches_helper_default() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+        let cfg = Config::load_with_environment(&dir, Environment::Development).unwrap();
+        assert_eq!(cfg.storage.webauthn_pending_ttl_hours, 24);
     }
 }
 

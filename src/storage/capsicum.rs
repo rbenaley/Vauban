@@ -4,6 +4,8 @@
 use tracing::info;
 use tracing::warn;
 
+use super::STORE_LOG_TARGET;
+
 /// Display name for log lines (`macOS`, `FreeBSD`, `Linux`, …).
 fn os_display_name() -> &'static str {
     match std::env::consts::OS {
@@ -30,26 +32,37 @@ pub fn enter_capability_mode(production: bool) {
         #[allow(unsafe_code)]
         let rc = unsafe { libc::cap_enter() };
         if rc == 0 {
-            info!("Capsicum: entered capability mode via cap_enter");
+            info!(
+                target: STORE_LOG_TARGET,
+                "Capsicum: entered capability mode via cap_enter"
+            );
         } else {
             let err = std::io::Error::last_os_error();
             warn!(
+                target: STORE_LOG_TARGET,
                 error = %err,
                 "Capsicum: cap_enter unavailable or failed; soft containment only (dirfd + uid)"
             );
             if production {
-                warn!("production deployment without kernel capability mode");
+                warn!(
+                    target: STORE_LOG_TARGET,
+                    "production deployment without kernel capability mode"
+                );
             }
         }
     }
     #[cfg(not(target_os = "freebsd"))]
     {
         warn!(
-            "Capsicum unavailable on {}; storage helper running with soft containment only (dirfd + RESOLVE_BENEATH + uid/permissions)",
+            target: STORE_LOG_TARGET,
+            "Capsicum unavailable on {}; storage helper running with soft containment only",
             os_display_name()
         );
         if production {
-            warn!("production deployment without kernel sandbox");
+            warn!(
+                target: STORE_LOG_TARGET,
+                "production deployment without kernel sandbox"
+            );
         }
     }
 }

@@ -57,6 +57,8 @@ CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_b64
 pub enum CredentialStatus {
     Pending,
     Active,
+    /// PENDING enrolment not approved within `webauthn_pending_ttl_hours`.
+    Expired,
 }
 
 impl CredentialStatus {
@@ -64,12 +66,14 @@ impl CredentialStatus {
         match self {
             Self::Pending => "pending",
             Self::Active => "active",
+            Self::Expired => "expired",
         }
     }
 
     pub fn parse(raw: &str) -> Self {
         match raw {
             "active" => Self::Active,
+            "expired" => Self::Expired,
             _ => Self::Pending,
         }
     }
@@ -224,7 +228,29 @@ impl MetaDb {
         Ok(n as u32)
     }
 
+    /// Insert a credential row. Replaces revoked / expired / pending rows with the
+    /// same `credential_id` (re-enrol after revoke or PENDING retry). Rejects when
+    /// an ACTIVE non-revoked credential already exists.
     pub fn insert_credential(&self, row: &WebauthnCredentialRow) -> Result<(), StorageError> {
+        if let Some(existing) = self.get_credential(&row.credential_id)? {
+            let replaceable = existing.revoked_at.is_some()
+                || existing.status == CredentialStatus::Expired
+                || existing.status == CredentialStatus::Pending;
+            if !replaceable {
+                return Err(StorageError::new(
+                    StorageErrorCode::WebauthnInvalid,
+                    "credential already active",
+                ));
+            }
+            self.conn
+                .execute(
+                    "DELETE FROM webauthn_credentials WHERE credential_id = ?1",
+                    params![row.credential_id],
+                )
+                .map_err(|e| {
+                    StorageError::new(StorageErrorCode::Io, format!("replace credential: {e}"))
+                })?;
+        }
         self.conn
             .execute(
                 r#"
@@ -545,6 +571,30 @@ impl MetaDb {
         Ok(n as u32)
     }
 
+    /// Mark PENDING credentials older than `ttl_hours` as `expired` (no delete).
+    /// `ttl_hours == 0` disables the transition.
+    pub fn expire_stale_pending_credentials(&self, ttl_hours: u64) -> Result<u32, StorageError> {
+        if ttl_hours == 0 {
+            return Ok(0);
+        }
+        let ttl_secs = (ttl_hours as i64).saturating_mul(3600);
+        let cutoff = now_unix().saturating_sub(ttl_secs);
+        let n = self
+            .conn
+            .execute(
+                r#"
+                UPDATE webauthn_credentials
+                SET status = 'expired'
+                WHERE status = 'pending'
+                  AND revoked_at IS NULL
+                  AND created_at < ?1
+                "#,
+                params![cutoff],
+            )
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("expire pending: {e}")))?;
+        Ok(n as u32)
+    }
+
     pub fn delete_challenges_matching_upload(&self, upload_id: &str) -> Result<(), StorageError> {
         // binding_json contains "upload_id":"..."
         let needle = format!("\"upload_id\":\"{upload_id}\"");
@@ -688,5 +738,46 @@ mod tests {
         .unwrap();
         assert_eq!(db.delete_org("9").unwrap(), 1);
         assert!(db.get(StorageScope::Release, "1").unwrap().is_some());
+    }
+
+    #[test]
+    fn expire_stale_pending_credentials_by_ttl_hours() {
+        let dir = tempdir().unwrap();
+        let db = MetaDb::open(dir.path()).unwrap();
+        let old = now_unix().saturating_sub(25 * 3600);
+        db.insert_credential(&WebauthnCredentialRow {
+            credential_id: b"stale-pend".to_vec(),
+            public_key_cose: b"cose".to_vec(),
+            user_handle: "1".into(),
+            admin_label: "old".into(),
+            sign_count: 0,
+            status: CredentialStatus::Pending,
+            is_soft: true,
+            created_at: old,
+            activated_at: None,
+            revoked_at: None,
+        })
+        .unwrap();
+        db.insert_credential(&WebauthnCredentialRow {
+            credential_id: b"fresh-pend".to_vec(),
+            public_key_cose: b"cose2".to_vec(),
+            user_handle: "1".into(),
+            admin_label: "new".into(),
+            sign_count: 0,
+            status: CredentialStatus::Pending,
+            is_soft: true,
+            created_at: now_unix(),
+            activated_at: None,
+            revoked_at: None,
+        })
+        .unwrap();
+        assert_eq!(db.expire_stale_pending_credentials(0).unwrap(), 0);
+        assert_eq!(db.list_pending_credentials().unwrap().len(), 2);
+        assert_eq!(db.expire_stale_pending_credentials(24).unwrap(), 1);
+        let pending = db.list_pending_credentials().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].admin_label, "new");
+        let stale = db.get_credential(b"stale-pend").unwrap().unwrap();
+        assert_eq!(stale.status, CredentialStatus::Expired);
     }
 }

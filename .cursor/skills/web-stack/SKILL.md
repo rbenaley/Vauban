@@ -334,6 +334,9 @@ Fail closed when context is missing. See `portal-security.mdc` and
 
 Use Tower layers (`tower` feature) only for true transport concerns
 (compression, tracing) — not for “load user into extensions”.
+Tracing process identity (`vcp` / `vcp::…` vs `vcp-store` /
+`vcp-store::…`): see `rust-best-practices` §4.10 and
+`.cursor/rules/tracing-process-identity.mdc`.
 
 ## Sessions, CSRF, and cookies
 

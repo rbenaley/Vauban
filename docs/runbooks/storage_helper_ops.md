@@ -159,7 +159,8 @@ Do **not** expect macOS CI to exercise `cap_enter` or jail.
 | Production boot | `--production` + `webauthn_required=false` → **refuse to start** |
 | Audit log | `blob_path/audit/webauthn.log` (JSONL; UID 801 only) |
 | Pending queue | `vcp-store ctap2 pending` — PENDING credentials (E2) + in-flight ceremony challenges (table output) |
-| List keys | `vcp-store ctap2 list` — all credentials (pending / active / revoked) |
+| List keys | `vcp-store ctap2 list` — all credentials (pending / active / expired / revoked) |
+| PENDING TTL | `webauthn_pending_ttl_hours` (default 24) — unapproved PENDING → `expired`; set in `vcp-store.conf` and portal `[storage]` for spawn/dev |
 | Activate key | `vcp-store ctap2 approve --fingerprint <hex>` (fingerprint OOB match). Dev spawn: `VCP_ENVIRONMENT=development` so the CLI uses portal `[storage].blob_path`, not production `/var/db/vcp/storage` |
 | Revoke | Admin `/admin/ctap2` only (no CLI revoke) — ADR 003 |
 | Ceremony channel | C1 (portal relay); C2 deferred — ADR 002 |
@@ -168,11 +169,14 @@ Do **not** expect macOS CI to exercise `cap_enter` or jail.
 
 ### Alerting (ops)
 
-Watch helper / portal logs for `target=vcp_storage_alert`:
+Watch helper logs for `target=vcp-store::alert` (never `vcp_storage_*`):
 
 - `ALERT delete_org ceremony`
 - `ALERT ctap2_revoke` (burst = possible compromised portal DoS)
 - `ALERT webauthn sign_count regression` (only when `webauthn_strict_sign_count=true`)
+
+Helper runtime lines use `target=vcp-store`. Portal lines stay `vcp` /
+`vcp::…` — see `.cursor/rules/tracing-process-identity.mdc`.
 
 ## Related smoke surfaces
 

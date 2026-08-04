@@ -463,6 +463,36 @@ Normative rule: `.cursor/rules/tls-post-quantum.mdc`.
 - Smoke-test negotiated protocol / groups in staging before production
 
 ### 4.10. Secure Logging
+
+#### Process identity (mandatory)
+
+Log lines must show **which process spoke**. Never invent ambiguous
+targets.
+
+| Surface | Allowed target prefix | Forbidden |
+|---------|----------------------|-----------|
+| Portal (`vcp` binary / portal library path) | `vcp:` or `vcp::…` | Custom names without `vcp` |
+| Storage helper (`vcp-store` + helper-owned ops) | `vcp-store:` or `vcp-store::…` | `vcp_store`, `vcp_storage_*`, `vcp_storage_alert` |
+
+- Use the **hyphenated** product name `vcp-store` in targets (crate
+  name `vcp_store` is an implementation detail — always override with
+  `target: "vcp-store"` in the helper binary).
+- Helper security / ops ALERTs: `target: "vcp-store::alert"` via
+  [`STORE_ALERT_TARGET`](../../../src/storage/mod.rs) /
+  [`STORE_LOG_TARGET`](../../../src/storage/mod.rs).
+- Portal code: default module path (`vcp::…`) is fine; do not reuse
+  helper alert targets.
+- Rule: `.cursor/rules/tracing-process-identity.mdc`.
+
+```rust
+// Helper binary / Capsicum / helper ALERTs
+tracing::warn!(target: "vcp-store", "storage helper shares vcp uid (dev mode)");
+tracing::warn!(target: "vcp-store::alert", cred = %hex, "ALERT ctap2_revoke");
+
+// Portal — leave default module target (vcp::…)
+tracing::info!("vcp listening on …");
+```
+
 ```rust
 use tracing::{info, warn, error};
 use serde::Serialize;
@@ -535,6 +565,7 @@ pub fn generate_correlation_id() -> String {
 | DEBUG | Development only | Never enable in production |
 
 **Logging Rules:**
+- Process identity first: `vcp` / `vcp::…` vs `vcp-store` / `vcp-store::…` (see above)
 - Use JSON structured logging for SIEM integration (JSON: require to be enabled via configuration)
 - Wrap sensitive data with `Redacted<T>`
 - Include correlation IDs in all log entries

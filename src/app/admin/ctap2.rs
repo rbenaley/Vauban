@@ -118,6 +118,7 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
             "The WebAuthn ceremony did not return a usable attestation. \
              Retry from a browser with an authenticator attached.",
         ),
+        "label" => Some("Key label is required (non-empty after trimming whitespace)."),
         "enrol" => Some("The storage helper rejected the enrolment. Check helper logs."),
         "revoke" => Some("Revocation failed. The key may already be revoked — reload this page."),
         _ => None,
@@ -189,10 +190,16 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
                     <strong>(row.admin_label.clone())</strong>
                     " is PENDING. Record this fingerprint out-of-band, then approve on the helper host:"
                 </p>
-                <div id="vcp-ctap2-fingerprint" class="vb-pre" style="margin-bottom: 10px;">
+                <div
+                    id="vcp-ctap2-fingerprint"
+                    class="vb-pre"
+                    style="margin-bottom: 10px;"
+                >
                     (fp)
                 </div>
-                <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <div
+                    style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;"
+                >
                     <span class="vb-mono" style="font-size: 12.5px;">(cmd)</span>
                     <button
                         type="button"
@@ -229,6 +236,9 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
                         id="admin_label"
                         name="admin_label"
                         required=""
+                        minlength="1"
+                        pattern=".*\\S.*"
+                        title="Label must contain a non-whitespace character"
                         placeholder="yubikey-alice-1"
                         autocomplete="off"
                     >
@@ -282,13 +292,16 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
                         for row in pending {
                             let fp_full = row.fingerprint.clone();
                             let fp_short = short_fingerprint(&row.fingerprint);
-                            let cmd = approve_command(&row.fingerprint, &blob_path_for_cli);
+                            let cmd = approve_command(
+                                &row.fingerprint,
+                                &blob_path_for_cli,
+                            );
                             <tr>
-                                <td style="font-weight: 700;">(row.admin_label.clone())</td>
-                                <td>(row.user_handle.clone())</td>
-                                <td>
-                                    <span title=(fp_full)>(fp_short)</span>
+                                <td style="font-weight: 700;">
+                                    (row.admin_label.clone())
                                 </td>
+                                <td>(row.user_handle.clone())</td>
+                                <td><span title=(fp_full)>(fp_short)</span></td>
                                 <td>
                                     <span class="vb-badge status-hidden">"PENDING"</span>
                                 </td>
@@ -343,11 +356,11 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
                                 "/admin/ctap2?revoke={}", row.credential_id_hex
                             );
                             <tr>
-                                <td style="font-weight: 700;">(row.admin_label.clone())</td>
-                                <td>(row.user_handle.clone())</td>
-                                <td>
-                                    <span title=(fp_full)>(fp_short)</span>
+                                <td style="font-weight: 700;">
+                                    (row.admin_label.clone())
                                 </td>
+                                <td>(row.user_handle.clone())</td>
+                                <td><span title=(fp_full)>(fp_short)</span></td>
                                 <td>
                                     <span class="vb-badge status-published">"ACTIVE"</span>
                                     if row.is_soft {
@@ -357,9 +370,7 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
                                 </td>
                                 <td class="vb-col-actions">
                                     <div class="vb-row-actions">
-                                        <a class="vb-btn danger" href=(revoke_href)>
-                                            "Revoke"
-                                        </a>
+                                        <a class="vb-btn danger" href=(revoke_href)>"Revoke"</a>
                                     </div>
                                 </td>
                             </tr>
@@ -370,7 +381,9 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
         </div>
         <p class="vb-muted" style="margin-top: 14px;">
             "Enrolments, approvals and revocations are appended to the helper audit log "
-            "(" <span class="vb-mono">"blob_path/audit/webauthn.log"</span> "); "
+            "("
+            <span class="vb-mono">"blob_path/audit/webauthn.log"</span>
+            "); "
             "ops alert on revoke bursts."
         </p>
 
@@ -410,7 +423,9 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
                             autocomplete="off"
                         >
                         <div class="vb-confirm-actions">
-                            <a class="vb-btn muted compact" href="/admin/ctap2">"Cancel"</a>
+                            <a class="vb-btn muted compact" href="/admin/ctap2">
+                                "Cancel"
+                            </a>
                             <button
                                 class="vb-btn danger"
                                 type="submit"
@@ -440,6 +455,11 @@ async fn admin_ctap2_enrol(cx: &Cx, Form(form): Form<EnrolForm>) -> Result<SeeOt
     if !perms.ctap2_manage {
         return Err(capability_denied().into());
     }
+    // Label before attestation: same order as the ceremony JS, and keeps the
+    // empty-label denial path testable without a real WebAuthn payload.
+    let Some(label) = crate::storage::normalize_admin_label(&form.admin_label) else {
+        return Ok(see_other("/admin/ctap2?err=label"));
+    };
     let Ok(att) = serde_json::from_str::<Value>(form.attestation.trim()) else {
         return Ok(see_other("/admin/ctap2?err=attestation"));
     };
@@ -451,13 +471,7 @@ async fn admin_ctap2_enrol(cx: &Cx, Form(form): Form<EnrolForm>) -> Result<SeeOt
         return Ok(see_other("/admin/ctap2?err=attestation"));
     };
     let store = storage(cx);
-    match store.ctap2_enrol_stage(
-        &cred_id,
-        &cose,
-        &staff.user.id.to_string(),
-        form.admin_label.trim(),
-        false,
-    ) {
+    match store.ctap2_enrol_stage(&cred_id, &cose, &staff.user.id.to_string(), label, false) {
         Ok(fp) => Ok(see_other(&format!("/admin/ctap2?enrolled={fp}"))),
         Err(_) => Ok(see_other("/admin/ctap2?err=enrol")),
     }

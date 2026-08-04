@@ -139,6 +139,21 @@
     if (!btn || !input || !form) return;
     btn.addEventListener("click", function (ev) {
       ev.preventDefault();
+      // form.submit() skips HTML5 constraints; enforce label for create (E1).
+      if (mode === "create") {
+        var labelEl = form.querySelector("#admin_label") || form.querySelector("[name=admin_label]");
+        var label = labelEl && labelEl.value ? labelEl.value.trim() : "";
+        if (!label) {
+          if (labelEl && typeof labelEl.reportValidity === "function") {
+            labelEl.setCustomValidity("Key label is required");
+            labelEl.reportValidity();
+            labelEl.setCustomValidity("");
+          } else {
+            alert("Key label is required");
+          }
+          return;
+        }
+      }
       btn.disabled = true;
       var p = mode === "create" ? runCreate(root) : runGet(root);
       p.then(function (json) {

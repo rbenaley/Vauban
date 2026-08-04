@@ -46,6 +46,7 @@ webauthn_strict_sign_count = false
 webauthn_rp_id = "localhost"
 webauthn_origin = "https://localhost:3000"
 webauthn_challenge_ttl_secs = 300
+webauthn_pending_ttl_hours = 24
 
 # Local catch-all (Mailpit / equivalent). Production uses Scaleway TEM in vcp.conf.
 [mail]

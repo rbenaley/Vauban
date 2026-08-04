@@ -5,7 +5,7 @@ environment = "testing"
 [server]
 host = "127.0.0.1"
 port = 3001
-public_origins = ["https://127.0.0.1:3001"]
+public_origins = ["https://localhost:3001"]
 access_log_path = "logs/vcp-access.log"
 
 [server.tls]
@@ -25,9 +25,11 @@ ipc = "inline"
 webauthn_required = false
 webauthn_user_verification = "required"
 webauthn_strict_sign_count = false
-webauthn_rp_id = "127.0.0.1"
-webauthn_origin = "https://127.0.0.1:3001"
+# RP ID must be a DNS name (not an IP); keep origin host aligned.
+webauthn_rp_id = "localhost"
+webauthn_origin = "https://localhost:3001"
 webauthn_challenge_ttl_secs = 300
+webauthn_pending_ttl_hours = 24
 
 # Mailpit (or local SMTP catch-all) for the test suite.
 [mail]

@@ -2,6 +2,13 @@
 //!
 //! See `docs/technical/VCP_Storage_Helper_Architecture_EN(1.2).md`.
 
+/// `tracing` target for the helper binary and helper-owned runtime logs.
+/// Hyphenated on purpose (`vcp-store`, never `vcp_store` / `vcp_storage_*`).
+pub const STORE_LOG_TARGET: &str = "vcp-store";
+
+/// `tracing` target for helper security / ops ALERT lines (revoke, delete_org, …).
+pub const STORE_ALERT_TARGET: &str = "vcp-store::alert";
+
 pub mod audit;
 pub mod capsicum;
 pub mod client;
@@ -28,4 +35,7 @@ pub use objects::{
     release_blob_display, storage_http_status, upsert_image_object, upsert_release_object,
 };
 pub use protocol::{StorageRequest, StorageResponse};
-pub use webauthn::{credential_fingerprint, soft_assertion_json};
+pub use webauthn::{
+    canonical_summary, credential_fingerprint, normalize_admin_label, soft_assertion_json,
+    test_attestation_object_b64, webauthn_host_is_ip,
+};

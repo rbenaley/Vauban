@@ -181,5 +181,33 @@ grep -n 'validate_production_webauthn\|webauthn_required=false' "$BIN" >/dev/nul
   || fail "$BIN must refuse production webauthn_required=false"
 grep -n 'credential_fingerprint\|summary' "$WEBAUTHN" >/dev/null \
   || fail "$WEBAUTHN must implement fingerprint + canonical summary"
+grep -n 'normalize_admin_label' "$WEBAUTHN" >/dev/null \
+  || fail "$WEBAUTHN must normalize/reject empty CTAP2 admin_label"
+grep -n 'normalize_admin_label' "$ENGINE" >/dev/null \
+  || fail "$ENGINE enrol_stage must use normalize_admin_label"
+grep -n 'canonical_summary\|webauthn_host_is_ip\|test_attestation_object_b64' "$WEBAUTHN" >/dev/null \
+  || fail "$WEBAUTHN must expose summary + IP-host contract + test attestation helper"
+grep -n 'load_ctap2_cfg_with_env\|VCP_ENVIRONMENT' "$BIN" >/dev/null \
+  || fail "$BIN must resolve ctap2 blob_path via VCP_ENVIRONMENT (testable helper)"
+DEV_TOML="config/development.toml"
+grep -n 'webauthn_rp_id = "localhost"' "$DEV_TOML" >/dev/null \
+  || fail "$DEV_TOML must set webauthn_rp_id = localhost (not an IP)"
+grep -n 'webauthn_pending_ttl_hours' "$STORE_CONF" >/dev/null \
+  || fail "$STORE_CONF must set webauthn_pending_ttl_hours"
+grep -n 'webauthn_pending_ttl_hours' "$DEV_TOML" config/default.toml >/dev/null \
+  || fail "portal default/development.toml must set webauthn_pending_ttl_hours for spawn/dev"
+grep -n 'expire_stale_pending\|Expired' "$ENGINE" "$META" >/dev/null \
+  || fail "engine/meta must expire stale PENDING enrolments"
+
+# Process identity in tracing (portal = vcp::…, helper = vcp-store / vcp-store::alert).
+MOD="src/storage/mod.rs"
+grep -n 'STORE_LOG_TARGET\|STORE_ALERT_TARGET\|vcp-store::alert' "$MOD" >/dev/null \
+  || fail "$MOD must define STORE_LOG_TARGET / STORE_ALERT_TARGET"
+if grep -n 'vcp_storage_alert\|target: "vcp_store"' \
+  src/storage/*.rs src/bin/vcp_store.rs 2>/dev/null | grep -v '^[^:]*:.*//' >/dev/null; then
+  fail "ambiguous tracing targets (use vcp-store / vcp-store::alert, never vcp_storage_* or vcp_store)"
+fi
+grep -n 'STORE_ALERT_TARGET\|vcp-store::alert' "$ENGINE" "$WEBAUTHN" >/dev/null \
+  || fail "helper ALERTs must use STORE_ALERT_TARGET / vcp-store::alert"
 
 echo "check_storage: OK"

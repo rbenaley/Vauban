@@ -124,7 +124,12 @@ webauthn_strict_sign_count = false   # true => reject + alert on counter regress
 webauthn_rp_id = "access.vauban.sh"
 webauthn_origin = "https://access.vauban.sh"
 webauthn_challenge_ttl_secs = 300
+webauthn_pending_ttl_hours = 24   # PENDING enrol → expired if not approved; 0 = off
 ```
+
+Also present under portal `[storage]` (`default.toml` / `development.toml`) so
+spawn/dev and `vcp-store ctap2` with `VCP_ENVIRONMENT=development` share the
+same knob without reading `vcp-store.conf`.
 
 **Production boot guard:** if the helper is started with `--production` (or
 equivalent production mode) and `webauthn_required = false`, **refuse to
@@ -150,7 +155,8 @@ Pyramid invariant: production conf / boot path never allows the bypass.
 3. Load WebAuthn RP config; **fail** if production and
    `webauthn_required=false`.
 4. Bind listen socket; Capsicum / WARN; accept + `expected_peer_uid` (800).
-5. Opportunistic or scheduled purge of expired `webauthn_challenges` and
+5. Opportunistic purge of expired `webauthn_challenges`, stale PENDING
+   enrolments (`webauthn_pending_ttl_hours` → status `expired`), and
    `tmp/*.partial` (same TTL spirit).
 
 `vcp-store ctap2 …` subcommands run as a **separate invocation** that can
@@ -380,6 +386,10 @@ WebAuthn.
 - **Challenge purge:** delete rows with `expires_at < now` (and optionally
   old consumed rows) on `challenge_begin` / `put_prepare` and/or a periodic
   helper tick; same spirit as `tmp/*.partial` TTL.
+- **PENDING enrolment TTL:** `webauthn_pending_ttl_hours` (default 24; `0`
+  disables). Unapproved `status=pending` rows with `created_at` older than
+  the TTL become `status=expired` (row kept for ops history; not approvable).
+  Runs on helper open and on CTAP2 list / pending / approve / enrol paths.
 - **Breakglass (loss of all admin keys):** official path is physical/ops
   access to the helper host and CLI `ctap2 approve` of new enrolments (E2),
   after E1 from a trusted admin session or emergency procedure. **Every

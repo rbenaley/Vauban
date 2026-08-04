@@ -6,7 +6,7 @@
 //!
 //! Ops CLI (separate invocation, no accept loop):
 //!   vcp-store ctap2 pending   # PENDING credentials (E2) + in-flight challenges
-//!   vcp-store ctap2 list      # all credentials (pending / active / revoked)
+//!   vcp-store ctap2 list      # all credentials (pending / active / expired / revoked)
 //!   vcp-store ctap2 approve --fingerprint <hex>
 //!
 //! Config for the CLI (no accept loop):
@@ -25,6 +25,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use vcp::config::{Config, Environment, StorageConfig, StorageIpcMode, StoreHelperConfig};
+use vcp::storage::STORE_LOG_TARGET;
 use vcp::storage::capsicum;
 use vcp::storage::engine::StorageEngine;
 use vcp::storage::ipc::{bind_socket, peer_uid};
@@ -202,7 +203,10 @@ fn run() -> Result<(), String> {
 
     let engine = StorageEngine::open(&blob_root, cfg).map_err(|e| e.to_string())?;
     if spawn_mode {
-        warn!("storage helper shares vcp uid (dev mode)");
+        warn!(
+            target: STORE_LOG_TARGET,
+            "storage helper shares vcp uid (dev mode)"
+        );
     }
     capsicum::enter_capability_mode(production);
 
@@ -210,18 +214,26 @@ fn run() -> Result<(), String> {
     if spawn_mode {
         let stream = std::os::unix::net::UnixStream::connect(&listen_path)
             .map_err(|e| format!("connect parent: {e}"))?;
-        info!(path = %listen_path, "vcp-store connected (spawn)");
+        info!(
+            target: STORE_LOG_TARGET,
+            path = %listen_path,
+            "vcp-store connected (spawn)"
+        );
         serve_connection(&engine, stream);
         return Ok(());
     }
 
     let listener = bind_socket(&listen_path).map_err(|e| e.to_string())?;
-    info!(path = %listen_path, "vcp-store listening");
+    info!(
+        target: STORE_LOG_TARGET,
+        path = %listen_path,
+        "vcp-store listening"
+    );
     for conn in listener.incoming() {
         let stream = match conn {
             Ok(s) => s,
             Err(err) => {
-                warn!(error = %err, "accept failed");
+                warn!(target: STORE_LOG_TARGET, error = %err, "accept failed");
                 continue;
             }
         };
@@ -229,11 +241,16 @@ fn run() -> Result<(), String> {
             match peer_uid(&stream) {
                 Ok(uid) if uid == want => {}
                 Ok(uid) => {
-                    warn!(uid, expected = want, "reject peer uid");
+                    warn!(
+                        target: STORE_LOG_TARGET,
+                        uid,
+                        expected = want,
+                        "reject peer uid"
+                    );
                     continue;
                 }
                 Err(err) => {
-                    warn!(error = %err, "peercred failed");
+                    warn!(target: STORE_LOG_TARGET, error = %err, "peercred failed");
                     continue;
                 }
             }
@@ -248,7 +265,7 @@ fn ctap2_usage() -> String {
      \n\
      Commands:\n\
        pending                 PENDING credentials (E2) + in-flight challenges\n\
-       list                    all credentials (pending / active / revoked)\n\
+       list                    all credentials (pending / active / expired / revoked)\n\
        approve --fingerprint   activate a PENDING credential (E2)\n\
      \n\
      Options: [--config PATH] [--blob-path PATH] [--fingerprint HEX]\n\
@@ -318,6 +335,8 @@ fn cred_display_status(status: &str, revoked_at: Option<i64>) -> &'static str {
         "revoked"
     } else if status == "pending" {
         "pending"
+    } else if status == "expired" {
+        "expired"
     } else {
         "active"
     }
@@ -327,8 +346,14 @@ fn format_activated_at(v: Option<i64>) -> String {
     v.map(|n| n.to_string()).unwrap_or_else(|| "Pending".into())
 }
 
-fn format_revoked_at(v: Option<i64>) -> String {
-    v.map(|n| n.to_string()).unwrap_or_else(|| "Active".into())
+/// `revoked_at` null means "not revoked". Only label that as Active once the
+/// key was activated — Pending/Expired rows use "Pending" (never "Active").
+fn format_revoked_at(revoked_at: Option<i64>, activated_at: Option<i64>) -> String {
+    match revoked_at {
+        Some(n) => n.to_string(),
+        None if activated_at.is_some() => "Active".into(),
+        None => "Pending".into(),
+    }
 }
 
 /// Print PENDING credentials (E2 approve queue) then in-flight ceremony challenges
@@ -399,7 +424,7 @@ fn print_ctap2_list(engine: &StorageEngine) -> Result<(), String> {
                 row.sign_count.to_string(),
                 row.created_at.to_string(),
                 format_activated_at(row.activated_at),
-                format_revoked_at(row.revoked_at),
+                format_revoked_at(row.revoked_at, row.activated_at),
             ]
         })
         .collect();
@@ -491,6 +516,18 @@ fn load_ctap2_cfg(
     config_path: Option<PathBuf>,
     blob_override: Option<String>,
 ) -> Result<StorageConfig, String> {
+    let env = env::var("VCP_ENVIRONMENT")
+        .map(|e| Environment::parse(&e))
+        .unwrap_or(Environment::Production);
+    load_ctap2_cfg_with_env(config_path, blob_override, env)
+}
+
+/// Testable core of [`load_ctap2_cfg`] (env injected; no process env read).
+fn load_ctap2_cfg_with_env(
+    config_path: Option<PathBuf>,
+    blob_override: Option<String>,
+    env: Environment,
+) -> Result<StorageConfig, String> {
     if let Some(blob) = blob_override {
         let abs = absolute_blob_path(&blob)?;
         return Ok(StorageConfig {
@@ -504,12 +541,10 @@ fn load_ctap2_cfg(
         return Ok(helper.to_storage_config());
     }
 
-    let env = env::var("VCP_ENVIRONMENT")
-        .map(|e| Environment::parse(&e))
-        .unwrap_or(Environment::Production);
     match env {
         Environment::Development | Environment::Testing => {
-            let portal = Config::load().map_err(|e| {
+            let dir = Config::find_config_dir().map_err(|e| e.to_string())?;
+            let portal = Config::load_with_environment(dir, env).map_err(|e| {
                 format!(
                     "load portal config for ctap2 ({env}): {e}\n\
                      hint: run from the VCP repo with config/, or pass --blob-path",
@@ -549,7 +584,12 @@ fn absolute_blob_path(blob: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cred_display_status, format_activated_at, format_ascii_table, format_revoked_at};
+    use super::{
+        absolute_blob_path, cred_display_status, format_activated_at, format_ascii_table,
+        format_revoked_at, load_ctap2_cfg_with_env,
+    };
+    use std::path::PathBuf;
+    use vcp::config::Environment;
 
     #[test]
     fn ascii_table_matches_sqlite_style_frame() {
@@ -577,13 +617,57 @@ mod tests {
         assert_eq!(cred_display_status("active", Some(1)), "revoked");
         assert_eq!(cred_display_status("active", None), "active");
         assert_eq!(cred_display_status("pending", None), "pending");
+        assert_eq!(cred_display_status("expired", None), "expired");
     }
 
     #[test]
     fn timestamp_null_labels() {
         assert_eq!(format_activated_at(None), "Pending");
         assert_eq!(format_activated_at(Some(42)), "42");
-        assert_eq!(format_revoked_at(None), "Active");
-        assert_eq!(format_revoked_at(Some(99)), "99");
+        assert_eq!(format_revoked_at(None, None), "Pending");
+        assert_eq!(format_revoked_at(None, Some(42)), "Active");
+        assert_eq!(format_revoked_at(Some(99), Some(42)), "99");
+    }
+
+    #[test]
+    fn load_ctap2_cfg_blob_override_wins_over_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let abs = dir.path().canonicalize().unwrap();
+        let cfg = load_ctap2_cfg_with_env(
+            None,
+            Some(abs.to_string_lossy().into_owned()),
+            Environment::Production,
+        )
+        .unwrap();
+        assert_eq!(PathBuf::from(&cfg.blob_path), abs);
+    }
+
+    #[test]
+    fn load_ctap2_cfg_testing_uses_portal_blob_path() {
+        let cfg = load_ctap2_cfg_with_env(None, None, Environment::Testing).unwrap();
+        assert!(
+            cfg.blob_path.contains("vcp-storage-test"),
+            "got {}",
+            cfg.blob_path
+        );
+    }
+
+    #[test]
+    fn load_ctap2_cfg_development_uses_portal_blob_path() {
+        let cfg = load_ctap2_cfg_with_env(None, None, Environment::Development).unwrap();
+        assert!(
+            cfg.blob_path.contains("vcp-storage"),
+            "got {}",
+            cfg.blob_path
+        );
+    }
+
+    #[test]
+    fn absolute_blob_path_passthrough_and_relative() {
+        let abs = absolute_blob_path("/tmp/vcp-blobs").unwrap();
+        assert_eq!(abs, "/tmp/vcp-blobs");
+        let rel = absolute_blob_path("relative-blob").unwrap();
+        assert!(rel.ends_with("relative-blob"));
+        assert!(PathBuf::from(&rel).is_absolute());
     }
 }

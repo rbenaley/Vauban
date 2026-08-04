@@ -39,7 +39,7 @@ static DB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static SCHEMA_READY: OnceLock<()> = OnceLock::new();
 
 /// Absolute HTTPS origin used so `__Host-` / `Secure` session cookies apply.
-pub const TEST_ORIGIN: &str = "https://127.0.0.1:3001";
+pub const TEST_ORIGIN: &str = "https://localhost:3001";
 
 fn ensure_tracing() {
     TRACING.get_or_init(|| {

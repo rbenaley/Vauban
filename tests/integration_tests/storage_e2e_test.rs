@@ -6,8 +6,9 @@ use vcp::models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release};
 use vcp::storage::sha256_hex;
 
 use crate::common::{
-    MultipartFile, TINY_PNG, cleanup, create_org_with_membership, db_lock, get, login_cookie,
-    post_form, post_multipart_with_files, status, test_db, test_router, unique_email, unique_slug,
+    MultipartFile, TINY_PNG, cleanup, config_dir, create_org_with_membership, db_lock, get,
+    login_cookie, post_form, post_multipart_with_files, status, test_db, test_router, unique_email,
+    unique_slug, urlencoding_encode,
 };
 
 async fn body_bytes(resp: topcoat::router::Response) -> bytes::Bytes {
@@ -412,6 +413,156 @@ async fn e2e_ctap2_dashboard_staff_ok_member_404_and_revoke_guard() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(loc.contains("err=confirm"), "got location {loc}");
+
+    cleanup(&db).await;
+}
+
+/// Empty / whitespace `admin_label` on enrol must PRG to `err=label` before
+/// attestation parsing (denial path without a real WebAuthn payload).
+#[tokio::test]
+async fn e2e_ctap2_enrol_rejects_empty_admin_label() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let admin_email = unique_email("ctap2-label");
+    let admin_slug = unique_slug("ctap2-label-org");
+    let (_admin, _aorg) =
+        create_org_with_membership(&db, &admin_email, "password", &admin_slug, "admin").await;
+    let admin_cookie = login_cookie(&router, &admin_email).await;
+
+    for (name, form) in [
+        ("empty", "admin_label=&attestation=%7B%7D"),
+        ("spaces", "admin_label=+++&attestation=%7B%7D"),
+        ("tabs", "admin_label=%09%09&attestation=garbage"),
+    ] {
+        let resp = post_form(&router, "/admin/ctap2/enrol", admin_cookie.as_deref(), form).await;
+        assert!(
+            status(&resp).is_redirection(),
+            "{name}: expected redirect, got {:?}",
+            status(&resp)
+        );
+        let loc = resp
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            loc.contains("err=label"),
+            "{name}: expected err=label, got {loc}"
+        );
+        assert!(
+            !loc.contains("err=attestation"),
+            "{name}: label must be checked before attestation"
+        );
+    }
+
+    cleanup(&db).await;
+}
+
+/// Full CTAP2 lifecycle on the portal seam: enrol (fake attestation) → CLI-equivalent
+/// approve on the test blob root → dashboard ACTIVE → typed revoke clears ACTIVE.
+#[tokio::test]
+async fn e2e_ctap2_enrol_approve_revoke_lifecycle() {
+    use vcp::config::{Config, Environment};
+    use vcp::storage::{StorageEngine, credential_fingerprint, test_attestation_object_b64};
+
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let admin_email = unique_email("ctap2-life");
+    let admin_slug = unique_slug("ctap2-life-org");
+    let (_admin, _aorg) =
+        create_org_with_membership(&db, &admin_email, "password", &admin_slug, "admin").await;
+    let admin_cookie = login_cookie(&router, &admin_email).await;
+
+    // Unique per run so parallel / leftover meta.sqlite rows cannot collide.
+    let cred = format!("e2e-ctap2-lifecycle-{}", unique_slug("cred")).into_bytes();
+    let cose = format!("e2e-ctap2-cose-{}", unique_slug("cose")).into_bytes();
+    let fp = credential_fingerprint(&cred, &cose);
+    let att_json = serde_json::json!({
+        "response": { "attestationObject": test_attestation_object_b64(&cred, &cose) }
+    })
+    .to_string();
+    let form = format!(
+        "admin_label=e2e-lifecycle&attestation={}",
+        urlencoding_encode(&att_json)
+    );
+    let enrol = post_form(
+        &router,
+        "/admin/ctap2/enrol",
+        admin_cookie.as_deref(),
+        &form,
+    )
+    .await;
+    assert!(status(&enrol).is_redirection());
+    let loc = enrol
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        loc.contains(&format!("enrolled={fp}")),
+        "expected enrolled fingerprint, got {loc}"
+    );
+
+    let cfg = Config::load_with_environment(config_dir(), Environment::Testing).unwrap();
+    std::fs::create_dir_all(&cfg.storage.blob_path).unwrap();
+    let eng = StorageEngine::open(
+        std::path::Path::new(&cfg.storage.blob_path),
+        cfg.storage.clone(),
+    )
+    .unwrap();
+    let pending = eng.ctap2_list_json("pending").unwrap();
+    assert!(
+        pending.contains(&fp) && pending.contains("e2e-lifecycle"),
+        "pending list: {pending}"
+    );
+    eng.ctap2_approve(&fp).unwrap();
+    let active = eng.ctap2_list_json("active").unwrap();
+    assert!(
+        active.contains(&fp) && active.contains("e2e-lifecycle"),
+        "active list: {active}"
+    );
+    assert!(!eng.ctap2_list_json("pending").unwrap().contains(&fp));
+
+    let page = get(&router, "/admin/ctap2", admin_cookie.as_deref()).await;
+    assert_eq!(status(&page), StatusCode::OK);
+    let html = body_text(page).await;
+    assert!(html.contains("e2e-lifecycle"), "ACTIVE table label");
+    assert!(html.contains(&fp[..12]), "fingerprint prefix in UI");
+
+    let active_json: serde_json::Value = serde_json::from_str(&active).unwrap();
+    let cred_hex = active_json
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|r| r.get("fingerprint").and_then(|v| v.as_str()) == Some(fp.as_str()))
+        .and_then(|r| r.get("credential_id_hex"))
+        .and_then(|v| v.as_str())
+        .expect("credential_id_hex for enrolled fingerprint");
+    let revoke = post_form(
+        &router,
+        "/admin/ctap2/revoke",
+        admin_cookie.as_deref(),
+        &format!("credential_id_hex={cred_hex}&confirm=revoke"),
+    )
+    .await;
+    assert!(status(&revoke).is_redirection());
+    let rloc = revoke
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(!rloc.contains("err="), "revoke must succeed, got {rloc}");
+    let after = eng.ctap2_list_json("active").unwrap();
+    assert!(
+        !after.contains(&fp),
+        "revoked key must leave ACTIVE list: {after}"
+    );
 
     cleanup(&db).await;
 }

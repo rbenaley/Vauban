@@ -27,7 +27,7 @@ use super::meta_db::{
 use super::sniff::sniff_matches_ext;
 use super::webauthn::{
     ChallengeIssued, credential_fingerprint, drop_challenge_for_upload, issue_challenge,
-    verify_and_consume,
+    normalize_admin_label, verify_and_consume,
 };
 
 #[derive(Debug, Clone)]
@@ -108,7 +108,27 @@ impl StorageEngine {
             audit,
         };
         engine.purge_expired_tmp()?;
+        let _ = engine.expire_stale_pending();
         Ok(engine)
+    }
+
+    /// PENDING enrolments older than `webauthn_pending_ttl_hours` → `expired`.
+    pub fn expire_stale_pending(&self) -> Result<u32, StorageError> {
+        let ttl = self.cfg.webauthn_pending_ttl_hours;
+        let db = self.meta.lock().expect("meta mutex");
+        let n = db.expire_stale_pending_credentials(ttl)?;
+        if n > 0 {
+            let _ = self
+                .audit
+                .append("pending_expired", json!({ "count": n, "ttl_hours": ttl }));
+            tracing::info!(
+                target: super::STORE_LOG_TARGET,
+                count = n,
+                ttl_hours = ttl,
+                "expired stale CTAP2 pending enrolments"
+            );
+        }
+        Ok(n)
     }
 
     /// Refuse production boot when WebAuthn is disabled (architecture §3.2).
@@ -644,13 +664,20 @@ impl StorageEngine {
         admin_label: &str,
         is_soft: bool,
     ) -> Result<String, StorageError> {
+        let Some(label) = normalize_admin_label(admin_label) else {
+            return Err(StorageError::new(
+                StorageErrorCode::InvalidId,
+                "admin_label must be non-empty",
+            ));
+        };
+        let _ = self.expire_stale_pending();
         let fp = credential_fingerprint(credential_id, public_key_cose);
         let db = self.meta.lock().expect("meta mutex");
         db.insert_credential(&WebauthnCredentialRow {
             credential_id: credential_id.to_vec(),
             public_key_cose: public_key_cose.to_vec(),
             user_handle: user_handle.to_owned(),
-            admin_label: admin_label.to_owned(),
+            admin_label: label.to_owned(),
             sign_count: 0,
             status: CredentialStatus::Pending,
             is_soft,
@@ -662,7 +689,7 @@ impl StorageEngine {
             "enrol_stage",
             json!({
                 "fingerprint": fp,
-                "admin_label": admin_label,
+                "admin_label": label,
                 "user_handle": user_handle,
             }),
         );
@@ -670,19 +697,32 @@ impl StorageEngine {
     }
 
     pub fn ctap2_approve(&self, expected_fingerprint: &str) -> Result<(), StorageError> {
+        let _ = self.expire_stale_pending();
+        let want = expected_fingerprint.trim().to_ascii_lowercase();
         let db = self.meta.lock().expect("meta mutex");
         let pending = db.list_pending_credentials()?;
         let mut matched = None;
         for row in pending {
             let fp = credential_fingerprint(&row.credential_id, &row.public_key_cose);
-            if ct_eq_hex(&fp, &expected_fingerprint.trim().to_ascii_lowercase())
-                || fp == expected_fingerprint.trim().to_ascii_lowercase()
-            {
+            if ct_eq_hex(&fp, &want) || fp == want {
                 matched = Some(row);
                 break;
             }
         }
         let Some(row) = matched else {
+            // Clearer denial when the fingerprint matches an expired PENDING.
+            for row in db.list_all_credentials()? {
+                if row.status != CredentialStatus::Expired {
+                    continue;
+                }
+                let fp = credential_fingerprint(&row.credential_id, &row.public_key_cose);
+                if ct_eq_hex(&fp, &want) || fp == want {
+                    return Err(StorageError::new(
+                        StorageErrorCode::WebauthnExpired,
+                        "pending enrolment expired",
+                    ));
+                }
+            }
             return Err(StorageError::new(
                 StorageErrorCode::WebauthnInvalid,
                 "fingerprint mismatch",
@@ -710,7 +750,7 @@ impl StorageEngine {
             }),
         );
         tracing::warn!(
-            target: "vcp_storage_alert",
+            target: super::STORE_ALERT_TARGET,
             cred = %hex::encode(credential_id),
             "ALERT ctap2_revoke"
         );
@@ -726,18 +766,21 @@ impl StorageEngine {
 
     /// PENDING credentials awaiting E2 (`ctap2 approve`) — helper-host ops view.
     pub fn list_pending_credentials_cli(&self) -> Result<Vec<WebauthnCredentialRow>, StorageError> {
+        let _ = self.expire_stale_pending();
         let db = self.meta.lock().expect("meta mutex");
         db.list_pending_credentials()
     }
 
-    /// All credentials (pending / active / revoked) for `ctap2 list`.
+    /// All credentials (pending / active / expired / revoked) for `ctap2 list`.
     pub fn list_all_credentials_cli(&self) -> Result<Vec<WebauthnCredentialRow>, StorageError> {
+        let _ = self.expire_stale_pending();
         let db = self.meta.lock().expect("meta mutex");
         db.list_all_credentials()
     }
 
     /// JSON list of pending or active credentials for IPC / CTAP2 UI.
     pub fn ctap2_list_json(&self, kind: &str) -> Result<String, StorageError> {
+        let _ = self.expire_stale_pending();
         let db = self.meta.lock().expect("meta mutex");
         let rows = match kind {
             "pending" => db.list_pending_credentials()?,
@@ -998,7 +1041,7 @@ impl StorageEngine {
             })?;
             let binding = json!({"op": "delete_org", "org_id": org_id});
             tracing::warn!(
-                target: "vcp_storage_alert",
+                target: super::STORE_ALERT_TARGET,
                 org_id,
                 "ALERT delete_org ceremony"
             );
@@ -1284,6 +1327,88 @@ mod tests {
     }
 
     #[test]
+    fn ctap2_approve_rejects_expired_pending() {
+        use crate::storage::meta_db::MetaDb;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut cfg = test_cfg();
+        cfg.webauthn_pending_ttl_hours = 24;
+        let eng = StorageEngine::open(&root, cfg).unwrap();
+        let cred = b"expired-pend";
+        let cose = b"cose-exp";
+        let fp = credential_fingerprint(cred, cose);
+        MetaDb::open(&root)
+            .unwrap()
+            .insert_credential(&WebauthnCredentialRow {
+                credential_id: cred.to_vec(),
+                public_key_cose: cose.to_vec(),
+                user_handle: "1".into(),
+                admin_label: "stale".into(),
+                sign_count: 0,
+                status: CredentialStatus::Pending,
+                is_soft: true,
+                created_at: now_unix().saturating_sub(25 * 3600),
+                activated_at: None,
+                revoked_at: None,
+            })
+            .unwrap();
+        let err = eng.ctap2_approve(&fp).unwrap_err();
+        assert_eq!(err.code, StorageErrorCode::WebauthnExpired);
+        assert!(eng.list_pending_credentials_cli().unwrap().is_empty());
+        let all = eng.list_all_credentials_cli().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].status, CredentialStatus::Expired);
+    }
+
+    #[test]
+    fn ctap2_enrol_rejects_empty_admin_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let eng = StorageEngine::open(&root, test_cfg()).unwrap();
+        for bad in ["", "   ", "\t\n"] {
+            let err = eng
+                .ctap2_enrol_stage(b"cred", b"cose", "1", bad, true)
+                .unwrap_err();
+            assert_eq!(err.code, StorageErrorCode::InvalidId, "label={bad:?}");
+        }
+        assert!(eng.list_pending_credentials_cli().unwrap().is_empty());
+        eng.ctap2_enrol_stage(b"cred", b"cose", "1", "  ok-label  ", true)
+            .unwrap();
+        let pending = eng.list_pending_credentials_cli().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].admin_label, "ok-label");
+    }
+
+    #[test]
+    fn ctap2_enrol_replaces_revoked_and_rejects_active_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let eng = StorageEngine::open(&root, test_cfg()).unwrap();
+        let cred = b"reenrol-cred";
+        let cose = b"reenrol-cose";
+        let fp = eng
+            .ctap2_enrol_stage(cred, cose, "1", "key-v1", true)
+            .unwrap();
+        eng.ctap2_approve(&fp).unwrap();
+        let err = eng
+            .ctap2_enrol_stage(cred, cose, "1", "key-v2", true)
+            .unwrap_err();
+        assert_eq!(err.code, StorageErrorCode::WebauthnInvalid);
+        eng.ctap2_revoke(cred).unwrap();
+        let fp2 = eng
+            .ctap2_enrol_stage(cred, cose, "1", "key-v2", true)
+            .unwrap();
+        assert_eq!(fp, fp2);
+        let pending = eng.list_pending_credentials_cli().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].admin_label, "key-v2");
+        assert!(
+            !eng.ctap2_list_json("active").unwrap().contains(&fp),
+            "revoked key must not remain ACTIVE while PENDING re-enrol exists"
+        );
+    }
+
+    #[test]
     fn ctap2_pending_lists_staged_credentials() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
@@ -1299,6 +1424,8 @@ mod tests {
             credential_fingerprint(&pending[0].credential_id, &pending[0].public_key_cose),
             fp
         );
+        let pending_json = eng.ctap2_list_json("pending").unwrap();
+        assert!(pending_json.contains(&fp) && pending_json.contains("macbook"));
         // Ceremony challenge table stays empty until put_prepare / challenge_begin.
         assert!(eng.list_pending_challenges_cli().unwrap().is_empty());
         eng.ctap2_approve(&fp).unwrap();
@@ -1306,6 +1433,14 @@ mod tests {
         let all = eng.list_all_credentials_cli().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].status, CredentialStatus::Active);
+        let active_json = eng.ctap2_list_json("active").unwrap();
+        assert!(active_json.contains(&fp));
+        assert!(!eng.ctap2_list_json("pending").unwrap().contains(&fp));
+        eng.ctap2_revoke(b"pend-cli").unwrap();
+        assert!(!eng.ctap2_list_json("active").unwrap().contains(&fp));
+        let listed = eng.list_all_credentials_cli().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].revoked_at.is_some(), "revoke sets revoked_at");
     }
 
     #[test]

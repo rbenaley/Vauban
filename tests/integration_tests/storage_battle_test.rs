@@ -6,7 +6,7 @@ use http_body_util::BodyExt;
 use tokio::sync::Barrier;
 use topcoat::router::StatusCode;
 use vcp::config::{StorageConfig, StorageIpcMode};
-use vcp::storage::{StorageEngine, StorageScope, sha256_hex, write_abs_file};
+use vcp::storage::{MetaDb, MetaObject, StorageEngine, StorageScope, sha256_hex, write_abs_file};
 
 use crate::common::{
     MultipartFile, TINY_PNG, cleanup, create_org_with_membership, db_lock, get, login_cookie,
@@ -130,6 +130,130 @@ fn battle_challenge_double_consume() {
     }
     assert_eq!(oks, 1);
     assert_eq!(fails, 1);
+}
+
+/// Digest drift after `challenge_begin_delete`: concurrent deletes must all
+/// fail closed (`object_modified` / challenge gone) — never unlink.
+#[test]
+fn battle_delete_object_modified_under_contention() {
+    use vcp::storage::{StorageErrorCode, soft_assertion_json};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let mut cfg = engine_cfg();
+    cfg.webauthn_required = true;
+    let eng = Arc::new(StorageEngine::open(&root, cfg).unwrap());
+    let cred = b"battle-omod";
+    eng.seed_soft_active_credential(cred, "t").unwrap();
+    let begin = eng
+        .put_begin(StorageScope::Release, Some("77"), None, 4, None)
+        .unwrap();
+    write_abs_file(&eng.partial_abs_path(&begin.upload_id).unwrap(), b"abcd").unwrap();
+    let digest = sha256_hex(b"abcd");
+    let prep = eng.put_prepare(&begin.upload_id, &digest).unwrap();
+    let assertion = soft_assertion_json(cred, &prep.challenge.challenge_id, true, 0);
+    eng.put_commit(&begin.upload_id, &digest, None, Some(&assertion))
+        .unwrap();
+
+    let ch = eng
+        .challenge_begin_delete(StorageScope::Release, Some("77"), None, None, None)
+        .unwrap();
+    // Second SQLite handle (WAL): flip SoT digest while the engine stays open.
+    MetaDb::open(root.as_path())
+        .unwrap()
+        .upsert(&MetaObject {
+            scope: StorageScope::Release,
+            object_key: "77".into(),
+            org_id: String::new(),
+            sha256: "a".repeat(64),
+            size_bytes: 4,
+            content_type: String::new(),
+            ext: String::new(),
+        })
+        .unwrap();
+    let del_assertion = soft_assertion_json(cred, &ch.challenge_id, true, 0);
+    let n = 8usize;
+    let barrier = Arc::new(std::sync::Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for _ in 0..n {
+        let eng = eng.clone();
+        let assertion = del_assertion.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            eng.delete(
+                StorageScope::Release,
+                Some("77"),
+                None,
+                None,
+                None,
+                Some(&assertion),
+            )
+        }));
+    }
+    let mut oks = 0;
+    for h in handles {
+        match h.join().unwrap() {
+            Ok(()) => oks += 1,
+            Err(e) => {
+                assert!(
+                    matches!(
+                        e.code,
+                        StorageErrorCode::ObjectModified
+                            | StorageErrorCode::ChallengeUnknown
+                            | StorageErrorCode::WebauthnInvalid
+                            | StorageErrorCode::WebauthnExpired
+                    ),
+                    "unexpected {:?}",
+                    e.code
+                );
+            }
+        }
+    }
+    assert_eq!(oks, 0, "digest drift must never unlink under contention");
+    let st = eng
+        .get_stat(StorageScope::Release, Some("77"), None, None, None)
+        .expect("blob must remain on disk");
+    assert_eq!(st.sha256, digest);
+    let deny = eng
+        .get_verified(StorageScope::Release, Some("77"), None, None, None, &digest)
+        .unwrap_err();
+    assert_eq!(deny.code, StorageErrorCode::IntegrityMismatch);
+}
+
+/// Concurrent empty / whitespace-only enrol labels must all fail closed
+/// (InvalidId) — no PENDING row under contention.
+#[test]
+fn battle_ctap2_enrol_empty_label_fail_closed() {
+    use vcp::storage::StorageErrorCode;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = Arc::new(dir.path().canonicalize().unwrap());
+    {
+        let _bootstrap = StorageEngine::open(root.as_path(), engine_cfg()).expect("bootstrap");
+    }
+    let n = 8usize;
+    let barrier = Arc::new(std::sync::Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let root = root.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            let eng = StorageEngine::open(root.as_path(), engine_cfg()).expect("open");
+            barrier.wait();
+            let label = if i % 2 == 0 { "" } else { " \t\n " };
+            eng.ctap2_enrol_stage(format!("cred-{i}").as_bytes(), b"cose", "u", label, true)
+        }));
+    }
+    for h in handles {
+        let err = h.join().expect("join").expect_err("empty label");
+        assert_eq!(err.code, StorageErrorCode::InvalidId);
+    }
+    let eng = StorageEngine::open(root.as_path(), engine_cfg()).expect("reopen");
+    assert!(
+        eng.list_pending_credentials_cli().unwrap().is_empty(),
+        "no PENDING credential after blank-label flood"
+    );
 }
 
 #[tokio::test]
