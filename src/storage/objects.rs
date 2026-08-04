@@ -1,4 +1,4 @@
-//! Postgres `storage_objects` helpers (sole SoT for digests / sizes).
+//! Postgres `storage_objects` helpers (portal **mirror** of helper SQLite SoT).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -214,11 +214,14 @@ pub async fn release_blob_display(db: &mut Db, release_id: u64) -> BlobDisplay {
 pub fn storage_http_status(err: &StorageError) -> u16 {
     match err.code {
         StorageErrorCode::NotFound => 404,
-        StorageErrorCode::Busy | StorageErrorCode::Quota | StorageErrorCode::OrgQuota => 503,
+        StorageErrorCode::Busy
+        | StorageErrorCode::Quota
+        | StorageErrorCode::OrgQuota
+        | StorageErrorCode::IntegrityMismatch
+        | StorageErrorCode::Io => 503,
         StorageErrorCode::DigestMismatch
         | StorageErrorCode::BadImage
         | StorageErrorCode::InvalidId => 400,
-        StorageErrorCode::Io => 503,
     }
 }
 
@@ -265,6 +268,10 @@ mod tests {
         assert_eq!(
             storage_http_status(&StorageError::new(StorageErrorCode::DigestMismatch, "x")),
             400
+        );
+        assert_eq!(
+            storage_http_status(&StorageError::new(StorageErrorCode::IntegrityMismatch, "x")),
+            503
         );
     }
 }

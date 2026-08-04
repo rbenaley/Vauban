@@ -28,6 +28,10 @@ staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 [database]
 url = "postgresql://localhost/vcp"
 
+[storage]
+blob_path = "vcp-storage"
+ipc = "spawn"
+
 # Mailpit (or local SMTP catch-all). Override credentials in local.toml if needed.
 [mail]
 smtp_host = "localhost"
@@ -57,7 +61,3 @@ lockout_secs = 900
 [org]
 max_accounts_per_org = 5
 max_lts_subscriptions = 99
-
-[storage]
-blob_path = "target/vcp-storage"
-ipc = "spawn"

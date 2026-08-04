@@ -15,7 +15,7 @@ use topcoat::{
 };
 use uuid::Uuid;
 
-use super::download::DOWNLOAD_UNAVAILABLE;
+use super::download::{DOWNLOAD_UNAVAILABLE, INTEGRITY_MISMATCH};
 use super::find_visible_release_by_version;
 use super::release_ver::ReleaseVer;
 use crate::{
@@ -205,15 +205,20 @@ async fn ephemeral_download_get(cx: &Cx) -> Result<Response> {
     };
 
     let client = storage(cx);
-    let (size, _sha, mut file) = match client.get_release(rel.id) {
+    let (size, _sha, mut file) = match client.get_release(rel.id, &obj.sha256) {
         Ok(v) => v,
         Err(e) => {
             let status = StatusCode::from_u16(storage_http_status(&e))
                 .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+            let body = if e.code == crate::storage::StorageErrorCode::IntegrityMismatch {
+                INTEGRITY_MISMATCH
+            } else {
+                DOWNLOAD_UNAVAILABLE
+            };
             return Ok(Response::builder()
                 .status(status)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from(DOWNLOAD_UNAVAILABLE))?);
+                .body(Body::from(body))?);
         }
     };
     let mut bytes = Vec::with_capacity(size.min(64 * 1024 * 1024) as usize);
@@ -223,7 +228,6 @@ async fn ephemeral_download_get(cx: &Cx) -> Result<Response> {
             .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
             .body(Body::from(DOWNLOAD_UNAVAILABLE))?);
     }
-    let _ = obj;
     let filename = package_file_name(&rel.version, &rel.channel);
     let disposition = format!("attachment; filename=\"{filename}\"");
     Ok(Response::builder()

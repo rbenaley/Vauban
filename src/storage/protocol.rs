@@ -9,6 +9,8 @@ pub const MAX_MSG_BYTES: usize = 4096;
 pub enum StorageRequest {
     Get {
         scope: String,
+        /// Expected digest from the Postgres mirror (required).
+        sha256: String,
         #[serde(default)]
         release_id: Option<String>,
         #[serde(default)]
@@ -46,6 +48,8 @@ pub enum StorageRequest {
     },
     Stat {
         scope: String,
+        /// Expected digest from the Postgres mirror (required).
+        sha256: String,
         #[serde(default)]
         release_id: Option<String>,
         #[serde(default)]
@@ -173,7 +177,7 @@ mod tests {
         #![proptest_config(proptest_util::cases(24))]
 
         #[test]
-        fn prop_err_codes_stable(code in "(not_found|invalid_id|quota|org_quota|bad_image|digest_mismatch|io|busy)") {
+        fn prop_err_codes_stable(code in "(not_found|invalid_id|quota|org_quota|bad_image|digest_mismatch|integrity_mismatch|io|busy)") {
             let resp = StorageResponse::err(code.clone());
             let bytes = serde_json::to_vec(&resp).unwrap();
             prop_assert!(bytes.len() < MAX_MSG_BYTES);

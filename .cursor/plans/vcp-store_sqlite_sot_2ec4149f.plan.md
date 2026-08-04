@@ -4,19 +4,19 @@ overview: Mettre à jour l’architecture 1.0 (sans bump de version) pour faire 
 todos:
   - id: arch-1.0-sqlite-sot
     content: Rewrite Architecture EN(1.0) SoT=SQLite, Postgres mirror, get+verify-on-read, lifecycle/boot; keep version 1.0; touch audit/runbook wording
-    status: pending
+    status: completed
   - id: helper-rusqlite-meta
     content: Add rusqlite meta_db under blob_path; put_commit/delete wire; boot before cap_enter; pyramid unit/battle
-    status: pending
+    status: completed
   - id: ipc-get-expected-sha
     content: IPC get/stat require expected sha256; IntegrityMismatch; client+server verify-on-read
-    status: pending
+    status: completed
   - id: vcp-mirror-wire
     content: Download/ephemeral/images pass Postgres mirror sha; comments SoT; denial E2E on mismatch; check_storage + seeds
-    status: pending
+    status: completed
   - id: ops-validate
     content: Runbook integrity/backup SQLite; fmt clippy check_storage focused tests
-    status: pending
+    status: completed
 isProject: false
 ---
 

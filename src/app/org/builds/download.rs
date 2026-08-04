@@ -24,6 +24,8 @@ use crate::{
 
 /// Artifact routes return this when the helper is unavailable.
 pub const DOWNLOAD_UNAVAILABLE: &str = "download unavailable";
+/// Stable body when mirror/SoT/disk digests disagree.
+pub const INTEGRITY_MISMATCH: &str = "integrity mismatch";
 
 #[route(POST "/{org}/builds/{release_ver}/download")]
 async fn builds_download(cx: &Cx) -> Result<Response> {
@@ -48,23 +50,22 @@ async fn builds_download(cx: &Cx) -> Result<Response> {
     };
 
     let client = storage(cx);
-    let (size, sha, mut file) = match client.get_release(rel.id) {
+    let (size, _sha, mut file) = match client.get_release(rel.id, &obj.sha256) {
         Ok(v) => v,
         Err(e) => {
             let status = StatusCode::from_u16(storage_http_status(&e))
                 .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+            let body = if e.code == crate::storage::StorageErrorCode::IntegrityMismatch {
+                INTEGRITY_MISMATCH
+            } else {
+                DOWNLOAD_UNAVAILABLE
+            };
             return Ok(Response::builder()
                 .status(status)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from(DOWNLOAD_UNAVAILABLE))?);
+                .body(Body::from(body))?);
         }
     };
-    if sha != obj.sha256 || size != obj.size_bytes {
-        tracing::warn!(
-            release_id = rel.id,
-            "storage digest/size drifted from storage_objects row"
-        );
-    }
 
     let mut bytes = Vec::with_capacity(size.min(64 * 1024 * 1024) as usize);
     if file.read_to_end(&mut bytes).is_err() {

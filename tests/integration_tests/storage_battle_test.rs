@@ -61,9 +61,16 @@ fn battle_concurrent_put_commit_under_tempfile() {
                 .put_commit(&begin.upload_id, &digest, None)
                 .expect("put_commit");
             assert_eq!(st.sha256, digest);
-            let got = eng
-                .get_stat(StorageScope::Release, Some(&release_id), None, None, None)
-                .expect("stat");
+            let (got, _) = eng
+                .get_verified(
+                    StorageScope::Release,
+                    Some(&release_id),
+                    None,
+                    None,
+                    None,
+                    &digest,
+                )
+                .expect("get_verified");
             assert_eq!(got.sha256, digest);
         }));
     }

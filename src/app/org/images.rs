@@ -150,15 +150,20 @@ async fn org_image_get(cx: &Cx) -> Result<Response> {
     }
 
     let client = storage(cx);
-    let (size, _sha, mut file) = match client.get_image(ctx.org.id, &image_id, ext) {
+    let (size, _sha, mut file) = match client.get_image(ctx.org.id, &image_id, ext, &obj.sha256) {
         Ok(v) => v,
         Err(e) => {
             let status = StatusCode::from_u16(storage_http_status(&e))
                 .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+            let body = if e.code == crate::storage::StorageErrorCode::IntegrityMismatch {
+                "integrity mismatch"
+            } else {
+                "image unavailable"
+            };
             return Ok(Response::builder()
                 .status(status)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from("image unavailable"))?);
+                .body(Body::from(body))?);
         }
     };
     let mut bytes = Vec::with_capacity(size.min(16 * 1024 * 1024) as usize);

@@ -87,6 +87,7 @@ fn dispatch(
         },
         StorageRequest::Get {
             scope: sc,
+            sha256,
             release_id,
             org_id,
             image_id,
@@ -96,23 +97,15 @@ fn dispatch(
                 Ok(s) => s,
                 Err(resp) => return reply(stream, &resp, None),
             };
-            match engine.get_stat(
+            match engine.get_verified(
                 scope,
                 release_id.as_deref(),
                 org_id.as_deref(),
                 image_id.as_deref(),
                 ext.as_deref(),
+                &sha256,
             ) {
-                Ok(st) => {
-                    let path = engine
-                        .object_abs_path(
-                            scope,
-                            release_id.as_deref(),
-                            org_id.as_deref(),
-                            image_id.as_deref(),
-                            ext.as_deref(),
-                        )
-                        .map_err(|_| ())?;
+                Ok((st, path)) => {
                     let file = File::open(&path).map_err(|_| ())?;
                     reply(
                         stream,
@@ -125,6 +118,7 @@ fn dispatch(
         }
         StorageRequest::Stat {
             scope: sc,
+            sha256,
             release_id,
             org_id,
             image_id,
@@ -134,14 +128,15 @@ fn dispatch(
                 Ok(s) => s,
                 Err(resp) => return reply(stream, &resp, None),
             };
-            match engine.get_stat(
+            match engine.get_verified(
                 scope,
                 release_id.as_deref(),
                 org_id.as_deref(),
                 image_id.as_deref(),
                 ext.as_deref(),
+                &sha256,
             ) {
-                Ok(st) => reply(stream, &StorageResponse::ok_stat(st.size, st.sha256), None),
+                Ok((st, _)) => reply(stream, &StorageResponse::ok_stat(st.size, st.sha256), None),
                 Err(e) => reply(stream, &map_err(e), None),
             }
         }

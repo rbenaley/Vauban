@@ -1,7 +1,7 @@
 //! Property tests for storage IDs, scopes, and image extension catalogue.
 
 use proptest::prelude::*;
-use vcp::storage::{StorageScope, is_uuid_key, normalize_image_ext};
+use vcp::storage::{StorageErrorCode, StorageScope, ct_eq_hex, is_uuid_key, normalize_image_ext};
 
 proptest! {
     #![proptest_config(crate::common::prop_config(48))]
@@ -56,5 +56,21 @@ proptest! {
         prop_assert!(!key.contains(".."));
         prop_assert!(is_uuid_key(&uuid));
         prop_assert!(normalize_image_ext(&ext).is_some());
+    }
+
+    #[test]
+    fn prop_error_code_roundtrip(
+        code in "(not_found|invalid_id|quota|org_quota|bad_image|digest_mismatch|integrity_mismatch|io|busy)"
+    ) {
+        let parsed = StorageErrorCode::parse(&code).expect("closed code");
+        prop_assert_eq!(parsed.as_str(), code.as_str());
+    }
+
+    #[test]
+    fn prop_ct_eq_hex_reflexive(hex in "[0-9a-f]{64}") {
+        prop_assert!(ct_eq_hex(&hex, &hex));
+        let mut other = hex.clone();
+        other.replace_range(63..64, if &hex[63..64] == "0" { "1" } else { "0" });
+        prop_assert!(!ct_eq_hex(&hex, &other));
     }
 }

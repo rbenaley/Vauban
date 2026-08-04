@@ -28,20 +28,40 @@ CFG="src/config.rs"
 [[ -f "$DL" ]] || fail "missing $DL"
 [[ -f "$IMG" ]] || fail "missing $IMG"
 
-# Digests live only in storage_objects — not on Release.
+META="src/storage/meta_db.rs"
+ERR="src/storage/error.rs"
+PROTO="src/storage/protocol.rs"
+
+# Digests SoT = helper SQLite; Postgres storage_objects is mirror only.
+[[ -f "$META" ]] || fail "missing $META"
+grep -n 'META_DB_FILE\|meta.sqlite' "$META" >/dev/null \
+  || fail "$META must open blob_path/meta.sqlite"
+grep -n 'IntegrityMismatch\|integrity_mismatch' "$ERR" >/dev/null \
+  || fail "$ERR must define IntegrityMismatch"
+grep -n 'sha256: String' "$PROTO" >/dev/null \
+  || fail "$PROTO Get/Stat must require expected sha256"
+grep -n 'get_verified' "$ENGINE" >/dev/null \
+  || fail "$ENGINE must implement get_verified (SoT + verify-on-read)"
+grep -n 'MetaDb\|meta.sqlite' "$ENGINE" >/dev/null \
+  || fail "$ENGINE must wire MetaDb on put_commit/get"
+
 if grep -nE 'pub struct Release' -A40 "$MODELS" | grep -qE 'pub sha256|pub size_mb'; then
-  fail "$MODELS Release must not carry sha256 / size_mb (storage_objects SoT)"
+  fail "$MODELS Release must not carry sha256 / size_mb (mirror is storage_objects)"
 fi
 grep -n 'struct StorageObject' "$MODELS" >/dev/null \
   || fail "$MODELS must define StorageObject"
+grep -n 'mirror\|SoT' "$MODELS" >/dev/null \
+  || fail "$MODELS StorageObject docs must mention Postgres mirror / helper SoT"
 grep -n 'STORAGE_SCOPE_RELEASE\|STORAGE_SCOPE_IMAGE' "$MODELS" >/dev/null \
   || fail "$MODELS must define storage scope constants"
 
-# Download is wired to helper + storage_objects (no 501 stub).
+# Download is wired to helper + mirror sha (no 501 stub).
 grep -n 'find_release_object' "$DL" >/dev/null \
   || fail "$DL must require storage_objects row before IPC get"
 grep -n 'get_release\|storage(' "$DL" >/dev/null \
   || fail "$DL must call storage helper get_release"
+grep -n 'obj.sha256\|INTEGRITY_MISMATCH\|integrity mismatch' "$DL" >/dev/null \
+  || fail "$DL must present mirror sha256 and handle integrity mismatch"
 grep -n 'DOWNLOAD_UNAVAILABLE\|download unavailable' "$DL" >/dev/null \
   || fail "$DL must use stable download unavailable message"
 if grep -nE 'NOT_IMPLEMENTED|download not configured' "$DL" >/dev/null; then

@@ -10,6 +10,8 @@ pub enum StorageErrorCode {
     OrgQuota,
     BadImage,
     DigestMismatch,
+    /// Postgres mirror / expected hash vs SQLite SoT or disk re-hash mismatch.
+    IntegrityMismatch,
     Io,
     Busy,
 }
@@ -23,6 +25,7 @@ impl StorageErrorCode {
             Self::OrgQuota => "org_quota",
             Self::BadImage => "bad_image",
             Self::DigestMismatch => "digest_mismatch",
+            Self::IntegrityMismatch => "integrity_mismatch",
             Self::Io => "io",
             Self::Busy => "busy",
         }
@@ -36,6 +39,7 @@ impl StorageErrorCode {
             "org_quota" => Some(Self::OrgQuota),
             "bad_image" => Some(Self::BadImage),
             "digest_mismatch" => Some(Self::DigestMismatch),
+            "integrity_mismatch" => Some(Self::IntegrityMismatch),
             "io" => Some(Self::Io),
             "busy" => Some(Self::Busy),
             _ => None,

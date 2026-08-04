@@ -18,6 +18,7 @@ use super::ids::{
     StorageScope, image_rel_path, is_decimal_id, is_uuid_key, normalize_image_ext,
     release_rel_path, tmp_rel_path,
 };
+use super::meta_db::{MetaDb, MetaObject, ct_eq_hex, image_object_key, release_object_key};
 use super::sniff::sniff_matches_ext;
 
 #[derive(Debug, Clone)]
@@ -45,6 +46,7 @@ pub struct StorageEngine {
     root: PathBuf,
     cfg: StorageConfig,
     inflight: Mutex<HashMap<String, InflightUpload>>,
+    meta: Mutex<MetaDb>,
 }
 
 impl StorageEngine {
@@ -76,11 +78,13 @@ impl StorageEngine {
                 }
             }
         }
+        let meta = MetaDb::open(&root)?;
         let engine = Self {
             dir,
             root,
             cfg,
             inflight: Mutex::new(HashMap::new()),
+            meta: Mutex::new(meta),
         };
         engine.purge_expired_tmp()?;
         Ok(engine)
@@ -92,6 +96,10 @@ impl StorageEngine {
 
     pub fn cfg(&self) -> &StorageConfig {
         &self.cfg
+    }
+
+    pub fn meta_db_path(&self) -> PathBuf {
+        self.meta.lock().expect("meta mutex").path().to_path_buf()
     }
 
     pub fn purge_expired_tmp(&self) -> Result<u32, StorageError> {
@@ -323,6 +331,36 @@ impl StorageEngine {
             StorageError::new(StorageErrorCode::Io, format!("renameat: {e}"))
         })?;
 
+        let (object_key, org_id, content_type, ext) = match meta.scope {
+            StorageScope::Release => {
+                let id = meta.release_id.as_deref().unwrap_or("");
+                (
+                    release_object_key(id),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                )
+            }
+            StorageScope::Image => {
+                let org = meta.org_id.as_deref().unwrap_or("").to_owned();
+                let img = image_id.unwrap_or("");
+                let ext = meta.ext.as_deref().unwrap_or("").to_owned();
+                (image_object_key(&org, img, &ext), org, String::new(), ext)
+            }
+        };
+        {
+            let db = self.meta.lock().expect("meta mutex");
+            db.upsert(&MetaObject {
+                scope: meta.scope,
+                object_key,
+                org_id,
+                sha256: digest.clone(),
+                size_bytes: size,
+                content_type,
+                ext,
+            })?;
+        }
+
         Ok(ObjectStat {
             size,
             sha256: digest,
@@ -373,6 +411,53 @@ impl StorageEngine {
         })
     }
 
+    /// Lookup SQLite SoT, compare expected mirror digest, re-hash disk (verify-on-read).
+    pub fn get_verified(
+        &self,
+        scope: StorageScope,
+        release_id: Option<&str>,
+        org_id: Option<&str>,
+        image_id: Option<&str>,
+        ext: Option<&str>,
+        expected_sha256: &str,
+    ) -> Result<(ObjectStat, PathBuf), StorageError> {
+        let expected = expected_sha256.trim().to_ascii_lowercase();
+        if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(StorageError::new(
+                StorageErrorCode::InvalidId,
+                "expected sha256",
+            ));
+        }
+        let object_key = match scope {
+            StorageScope::Release => release_object_key(release_id.unwrap_or("")),
+            StorageScope::Image => image_object_key(
+                org_id.unwrap_or(""),
+                image_id.unwrap_or(""),
+                ext.unwrap_or(""),
+            ),
+        };
+        let sot = {
+            let db = self.meta.lock().expect("meta mutex");
+            db.get(scope, &object_key)?
+                .ok_or_else(|| StorageError::new(StorageErrorCode::NotFound, "meta"))?
+        };
+        if !ct_eq_hex(&sot.sha256, &expected) {
+            return Err(StorageError::new(
+                StorageErrorCode::IntegrityMismatch,
+                "mirror vs SoT",
+            ));
+        }
+        let st = self.get_stat(scope, release_id, org_id, image_id, ext)?;
+        if !ct_eq_hex(&st.sha256, &sot.sha256) || st.size != sot.size_bytes {
+            return Err(StorageError::new(
+                StorageErrorCode::IntegrityMismatch,
+                "disk vs SoT",
+            ));
+        }
+        let path = self.object_abs_path(scope, release_id, org_id, image_id, ext)?;
+        Ok((st, path))
+    }
+
     pub fn object_abs_path(
         &self,
         scope: StorageScope,
@@ -396,6 +481,18 @@ impl StorageEngine {
         image_id: Option<&str>,
         ext: Option<&str>,
     ) -> Result<(), StorageError> {
+        let object_key = match scope {
+            StorageScope::Release => release_object_key(release_id.unwrap_or("")),
+            StorageScope::Image => image_object_key(
+                org_id.unwrap_or(""),
+                image_id.unwrap_or(""),
+                ext.unwrap_or(""),
+            ),
+        };
+        {
+            let db = self.meta.lock().expect("meta mutex");
+            db.delete(scope, &object_key)?;
+        }
         let rel = self.object_rel(scope, release_id, org_id, image_id, ext)?;
         self.dir
             .remove_file(&rel)
@@ -405,6 +502,10 @@ impl StorageEngine {
     pub fn delete_org(&self, org_id: &str) -> Result<u32, StorageError> {
         if !is_decimal_id(org_id) {
             return Err(StorageError::new(StorageErrorCode::InvalidId, "org_id"));
+        }
+        {
+            let db = self.meta.lock().expect("meta mutex");
+            let _ = db.delete_org(org_id)?;
         }
         let path = format!("images/{org_id}");
         if !self.dir.exists(&path) {
@@ -520,10 +621,21 @@ mod tests {
         let st = eng.put_commit(&begin.upload_id, &digest, None).unwrap();
         assert_eq!(st.size, 11);
         assert_eq!(st.sha256, digest);
-        let got = eng
-            .get_stat(StorageScope::Release, Some("42"), None, None, None)
+        let (got, _) = eng
+            .get_verified(StorageScope::Release, Some("42"), None, None, None, &digest)
             .unwrap();
         assert_eq!(got.sha256, digest);
+        let bad = eng
+            .get_verified(
+                StorageScope::Release,
+                Some("42"),
+                None,
+                None,
+                None,
+                &"0".repeat(64),
+            )
+            .unwrap_err();
+        assert_eq!(bad.code, StorageErrorCode::IntegrityMismatch);
     }
 
     #[test]

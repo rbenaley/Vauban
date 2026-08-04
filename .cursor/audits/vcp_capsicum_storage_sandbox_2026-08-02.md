@@ -7,8 +7,11 @@ release artifacts adds security value versus ordinary in-process I/O.
 **Audience:** engineers designing FreeBSD deploy hardening for uploads
 (admin) and downloads (org / client).  
 **Status:** **implemented** — Option C helper process shipped as `vcp-store`
-(`src/bin/vcp_store.rs`, `src/storage/*`). Portable I/O + SEQPACKET IPC +
-`storage_objects` SoT; FreeBSD attempts real `cap_enter`; soft WARN elsewhere.
+(`src/bin/vcp_store.rs`, `src/storage/*`). Portable I/O + SEQPACKET IPC;
+**digest SoT = SQLite** in the helper (`blob_path/meta.sqlite`); Postgres
+`storage_objects` is a **mirror** for portal UI / publish gates (SQLite SoT
+migration in progress per architecture 1.0, design updated 2026-08-04);
+FreeBSD attempts real `cap_enter`; soft WARN elsewhere.
 **Related:** architecture
 [`docs/technical/VCP_Storage_Helper_Architecture_EN(1.0).md`](../../docs/technical/VCP_Storage_Helper_Architecture_EN(1.0).md);
 ops [`docs/runbooks/storage_helper_ops.md`](../../docs/runbooks/storage_helper_ops.md);
@@ -167,7 +170,7 @@ stick to the Capsicum model: **process + FDs**, or **helper process**.
 | Opaque object keys (UUID / content hash), never client path segments | Kill traversal |
 | Quotas: max size, content-type allowlist, virus/scan hook later | Abuse resistance |
 | Authz on every download (org + entitlement) | Tenant isolation |
-| Metadata in Postgres; blobs only under `storage/` | Clear trust boundary |
+| Digest SoT in helper SQLite (`meta.sqlite`); Postgres `storage_objects` mirror; blobs under `storage/` | Clear trust boundary (UIDs separate) |
 
 **Value:** High relative to cost; works on all platforms; prerequisite for any
 later Capsicum design.
@@ -346,7 +349,8 @@ not a storage thread.
 | Helper binary `vcp-store` | Shipped (`[[bin]]`, spawn + named socket) |
 | Engine (cap-std dirfd, digest, sniff, quotas) | `src/storage/engine.rs` |
 | IPC + SCM_RIGHTS + peercred | `src/storage/ipc.rs`, socket mode in bin |
-| `storage_objects` SoT | Migration `0013_storage_objects.sql`; digests off `Release` |
+| Digest SoT (SQLite in helper) | `blob_path/meta.sqlite` (`objects`); migration in progress |
+| Postgres `storage_objects` mirror | Migration `0013_storage_objects.sql`; digests off `Release` |
 | HTTP releases + images | Admin upload / org download / `/{org}/images` |
 | Prod boot guards | Refuse `ipc=spawn` / writable `blob_path` |
 | Capsicum | FreeBSD `cap_enter` attempt; WARN soft path elsewhere |

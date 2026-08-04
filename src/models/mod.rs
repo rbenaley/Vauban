@@ -226,7 +226,7 @@ pub struct Release {
     pub client_suffix: String,
 }
 
-/// Unified blob metadata (sole source of truth for digests / sizes).
+/// Portal mirror of blob digests/sizes (SoT lives in helper SQLite `meta.sqlite`).
 #[derive(Debug, Clone, Model)]
 #[table = "storage_objects"]
 #[unique(scope, object_key)]

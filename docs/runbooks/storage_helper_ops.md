@@ -1,8 +1,11 @@
 # Runbook -- Storage helper (`vcp-store`) operations
 
 > Operator guide for the sandboxed artifact helper: restart, blob root
-> rotation, digest mismatch, org image purge, Capsicum / FreeBSD jail
-> checklist, and production socket ownership.
+> rotation (include `meta.sqlite`), digest / integrity mismatch, org image
+> purge, Capsicum / FreeBSD jail checklist, and production socket ownership.
+>
+> Digest SoT = SQLite under the helper (`blob_path/meta.sqlite`).
+> Postgres `storage_objects` is a portal mirror only.
 >
 > Audience: staging / production operators.
 > Severity: **BLOCKING** for artifact upload/download incidents.
@@ -24,7 +27,7 @@ rtk cargo test -p vcp --lib production_rejects_storage_ipc_spawn -- --test-threa
 | Item | Typical path / mode |
 |------|---------------------|
 | Config | `/usr/local/etc/vcp/vcp.conf` (`storage.ipc = "socket"`) |
-| Blob root | `/var/db/vcp/storage` owned by `vcp-store:vcp-store`, mode **0700** |
+| Blob root | `/var/db/vcp/storage` owned by `vcp-store:vcp-store`, mode **0700** (includes `meta.sqlite` SoT + `releases/` / `images/` / `tmp/`) |
 | Listen socket | `/var/run/vcp/store.sock` — directory **0700**, socket owned so only `vcp` UID can connect |
 | Helper binary | `/usr/local/sbin/vcp-store` (or `storage.helper_path`) |
 | Portal UID | `vcp` — **must not** write `blob_path` (boot refuses writable root) |
@@ -68,33 +71,65 @@ Pass: helper listens; peercred accepts `vcp`; artifact GET returns 200.
 ## Rotate `blob_path`
 
 1. Provision new directory as `vcp-store:vcp-store` **0700**.
-2. Stop helper; rsync/move `releases/`, `images/`, `tmp/` (drop stale `tmp/*.partial`).
+2. Stop helper; rsync/move **`meta.sqlite`** (digest SoT), `releases/`,
+   `images/`, `tmp/` (drop stale `tmp/*.partial`). Never move blobs without
+   `meta.sqlite` (or the reverse).
 3. Point `storage.blob_path` in `vcp.conf` at the new root; keep `ipc=socket`.
 4. Start helper; confirm portal UID still cannot write the new root.
 5. Restart `vcp` so config reload validates the new path.
 6. Smoke download of a known release + one org image.
 
-Fail: portal boots with writable blob root, or digests 404 after move
-(incomplete copy).
+Fail: portal boots with writable blob root, or downloads fail with
+`integrity_mismatch` / 503 after an incomplete copy.
 
-## Digest mismatch
+## Backup
+
+Always back up **`meta.sqlite` together with** the blob tree under
+`blob_path`. Restoring one without the other yields verify-on-read failures
+on the next `get`. Postgres `storage_objects` can be rebuilt from helper
+stat / re-upload if needed; it is **not** the digest SoT.
+
+## Digest mismatch (`digest_mismatch` — upload)
 
 Symptoms: admin upload stays **HIDDEN**, or helper returns `digest_mismatch`
 during `put_commit`; client sees **400** on image commit.
 
 1. Confirm client hashed the same FD bytes the helper hashed (no truncated body).
-2. Re-upload; do not hand-edit `storage_objects.sha256`.
-3. If DB row drifted from disk, delete the catalog release / image row and
-   re-upload (helper is SoT for bytes; Postgres is SoT for published digests).
+2. Re-upload; do not hand-edit Postgres `storage_objects.sha256` or SQLite
+   digests by hand.
+3. Helper owns bytes on disk + SQLite SoT; after a good `put_commit`, `vcp`
+   upserts the Postgres mirror from the helper response.
+
+## Integrity mismatch (`integrity_mismatch` — download / stat)
+
+Symptoms: authenticated download / image serve returns **503** (stable
+integrity message); helper logs `integrity_mismatch`. No FD is issued.
+
+Causes: forged or stale Postgres mirror digest ≠ SQLite SoT, or on-disk blob
+tampered / drifted vs SQLite (verify-on-read re-hash). There is **no scrub**
+job — deny is immediate.
+
+1. Compare **disk ↔ SQLite (`meta.sqlite`) ↔ Postgres mirror** for that
+   `(scope, object_key)` (`sha256`, `size_bytes`, existence).
+2. Prefer restore from the joint backup or re-upload over hand-editing hashes.
+3. Do not treat Postgres alone as authoritative.
+
+## Fsck / reconcile
+
+Operational check: for each published object, disk blob, SQLite `objects`
+row, and Postgres `storage_objects` mirror row must agree on digest and size.
+Missing SQLite + present disk (or the reverse) is a restore bug; mirror-only
+drift fails closed at IPC.
 
 ## `delete_org` (tenant offboarding)
 
-When an organization is deleted, `vcp` calls helper `delete_org` and removes
-matching `storage_objects` image rows. Operators:
+When an organization is deleted, `vcp` calls helper `delete_org` (disk +
+SQLite rows) and removes matching Postgres mirror image rows. Operators:
 
 1. Confirm companies delete path completed without **503**.
 2. Check disk: `images/<org_id>/` gone under `blob_path`.
-3. SQL: no `storage_objects` rows with that `organization_id` (scope `image`).
+3. SQLite: no `objects` rows for that `org_id` (scope `image`).
+4. Postgres: no `storage_objects` rows with that `organization_id` (scope `image`).
 
 ## Capsicum / FreeBSD checklist (manual)
 

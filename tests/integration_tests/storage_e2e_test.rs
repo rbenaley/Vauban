@@ -231,3 +231,86 @@ async fn e2e_release_upload_download_sha_match() {
 
     cleanup(&db).await;
 }
+
+#[tokio::test]
+async fn e2e_release_mirror_digest_mismatch_is_503() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let admin_email = unique_email("store-mm-admin");
+    let admin_slug = unique_slug("store-mm-admin-org");
+    let (_admin, _aorg) =
+        create_org_with_membership(&db, &admin_email, "password", &admin_slug, "admin").await;
+    let admin_cookie = login_cookie(&router, &admin_email).await;
+
+    let version = unique_slug("vstore-mm");
+    let pkg = b"vcp-storage-mirror-mismatch-bytes";
+
+    let create = post_multipart_with_files(
+        &router,
+        "/admin/releases/new",
+        admin_cookie.as_deref(),
+        &[
+            ("version", &version),
+            ("channel", "LTS"),
+            ("date", "2026-08-01"),
+            ("notes", "FIX: mirror mismatch"),
+        ],
+        &[MultipartFile {
+            field: "package",
+            filename: "vauban.pkg",
+            content_type: "application/octet-stream",
+            bytes: pkg,
+        }],
+    )
+    .await;
+    assert!(
+        status(&create).is_redirection(),
+        "create should PRG, got {}",
+        status(&create)
+    );
+
+    let release_id = {
+        let mut conn = db.clone();
+        let rel = Release::all()
+            .filter(Release::fields().version().eq(version.clone()))
+            .exec(&mut conn)
+            .await
+            .expect("query")
+            .into_iter()
+            .next()
+            .expect("release");
+        // Forge Postgres mirror digest while SQLite SoT + disk stay correct.
+        vcp::storage::upsert_release_object(
+            &mut conn,
+            rel.id,
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            pkg.len() as u64,
+        )
+        .await
+        .expect("forge mirror");
+        rel.id
+    };
+    let _ = release_id;
+
+    let member_email = unique_email("store-mm-member");
+    let member_slug = unique_slug("store-mm-member-org");
+    let (_member, _morg) =
+        create_org_with_membership(&db, &member_email, "password", &member_slug, "member").await;
+    let member_cookie = login_cookie(&router, &member_email).await;
+
+    let dl = post_form(
+        &router,
+        &format!("/{member_slug}/builds/{version}/download"),
+        member_cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert_eq!(status(&dl), StatusCode::SERVICE_UNAVAILABLE);
+    let body = body_text(dl).await;
+    assert_eq!(body.trim(), "integrity mismatch");
+
+    cleanup(&db).await;
+}

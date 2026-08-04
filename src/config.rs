@@ -403,7 +403,7 @@ impl Default for StorageConfig {
 }
 
 fn default_storage_blob_path() -> String {
-    "target/vcp-storage".into()
+    "vcp-storage".into()
 }
 
 fn default_storage_ipc() -> StorageIpcMode {

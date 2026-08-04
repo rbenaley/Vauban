@@ -19,6 +19,10 @@ enabled = false
 # Local-only test credentials (same pattern as Vauban vauban_test).
 url = "postgresql://vcp_test:vcp_test@localhost/vcp_test"
 
+[storage]
+blob_path = "target/vcp-storage-test"
+ipc = "inline"
+
 # Mailpit (or local SMTP catch-all) for the test suite.
 [mail]
 smtp_host = "localhost"
@@ -45,7 +49,3 @@ lockout_secs = 1
 [org]
 max_accounts_per_org = 5
 max_lts_subscriptions = 99
-
-[storage]
-blob_path = "target/vcp-storage-test"
-ipc = "inline"

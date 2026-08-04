@@ -26,6 +26,9 @@ Thumbs.db
 *.db
 *.sqlite
 
+# Local storage helper blob root (dev; survives cargo clean)
+/vcp-storage/
+
 # Local TLS material (self-signed / ACME account)
 certs/**
 !certs/.gitkeep

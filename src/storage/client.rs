@@ -275,14 +275,23 @@ impl StorageClient {
         }
     }
 
-    pub fn get_release(&self, release_id: u64) -> Result<(u64, String, File), StorageError> {
+    pub fn get_release(
+        &self,
+        release_id: u64,
+        expected_sha256: &str,
+    ) -> Result<(u64, String, File), StorageError> {
         match &self.backend {
             Backend::Inline(engine) => {
                 let eng = engine.lock().expect("inline engine");
                 let id = release_id.to_string();
-                let st = eng.get_stat(StorageScope::Release, Some(&id), None, None, None)?;
-                let path =
-                    eng.object_abs_path(StorageScope::Release, Some(&id), None, None, None)?;
+                let (st, path) = eng.get_verified(
+                    StorageScope::Release,
+                    Some(&id),
+                    None,
+                    None,
+                    None,
+                    expected_sha256,
+                )?;
                 let file = File::open(&path).map_err(|e| {
                     StorageError::new(StorageErrorCode::Io, format!("open object: {e}"))
                 })?;
@@ -291,6 +300,7 @@ impl StorageClient {
             Backend::Ipc { .. } => {
                 let req = StorageRequest::Get {
                     scope: StorageScope::Release.as_str().into(),
+                    sha256: expected_sha256.to_owned(),
                     release_id: Some(release_id.to_string()),
                     org_id: None,
                     image_id: None,
@@ -308,24 +318,19 @@ impl StorageClient {
         org_id: u64,
         image_id: &str,
         ext: &str,
+        expected_sha256: &str,
     ) -> Result<(u64, String, File), StorageError> {
         match &self.backend {
             Backend::Inline(engine) => {
                 let eng = engine.lock().expect("inline engine");
                 let org = org_id.to_string();
-                let st = eng.get_stat(
+                let (st, path) = eng.get_verified(
                     StorageScope::Image,
                     None,
                     Some(&org),
                     Some(image_id),
                     Some(ext),
-                )?;
-                let path = eng.object_abs_path(
-                    StorageScope::Image,
-                    None,
-                    Some(&org),
-                    Some(image_id),
-                    Some(ext),
+                    expected_sha256,
                 )?;
                 let file = File::open(&path).map_err(|e| {
                     StorageError::new(StorageErrorCode::Io, format!("open object: {e}"))
@@ -335,6 +340,7 @@ impl StorageClient {
             Backend::Ipc { .. } => {
                 let req = StorageRequest::Get {
                     scope: StorageScope::Image.as_str().into(),
+                    sha256: expected_sha256.to_owned(),
                     release_id: None,
                     org_id: Some(org_id.to_string()),
                     image_id: Some(image_id.to_owned()),

@@ -31,6 +31,7 @@ nix = { version = "0.31.3", features = ["socket", "uio", "user"] }
 passfd = "0.1.6"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 regex = "1.13.1"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 rustls-pki-types = "1"
 secrecy = "0.10.3"

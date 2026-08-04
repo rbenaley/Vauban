@@ -758,12 +758,28 @@ pub fn urlencoding_encode(value: &str) -> String {
     out
 }
 
-/// Upsert a `storage_objects` digest/size row for a release (metadata only).
+/// Upsert Postgres mirror + helper SQLite SoT for a release (metadata only).
+///
+/// Does not write a blob; downloads still need a real artifact via
+/// [`seed_release_artifact`] (or matching bytes on disk).
 pub async fn seed_release_digest(db: &Db, release_id: u64, sha256: &str, size_bytes: u64) {
     let mut conn = db.clone();
     upsert_release_object(&mut conn, release_id, sha256, size_bytes)
         .await
         .expect("upsert storage_objects");
+    let cfg = test_config().await;
+    std::fs::create_dir_all(&cfg.storage.blob_path).expect("blob_path mkdir");
+    let meta = vcp::storage::MetaDb::open(&cfg.storage.blob_path).expect("meta open");
+    meta.upsert(&vcp::storage::MetaObject {
+        scope: vcp::storage::StorageScope::Release,
+        object_key: release_id.to_string(),
+        org_id: String::new(),
+        sha256: sha256.trim().to_ascii_lowercase(),
+        size_bytes,
+        content_type: String::new(),
+        ext: String::new(),
+    })
+    .expect("meta upsert");
 }
 
 /// Write a release blob via inline `StorageClient` and upsert `storage_objects`.

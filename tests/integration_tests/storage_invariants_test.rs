@@ -27,15 +27,51 @@ fn inv_release_model_has_no_digest_columns() {
         .expect("Release struct");
     assert!(
         !release.contains("pub sha256"),
-        "Release must not expose sha256 (storage_objects SoT)"
+        "Release must not expose sha256 (digests live in helper SQLite + Postgres mirror)"
     );
     assert!(
         !release.contains("pub size_mb"),
-        "Release must not expose size_mb (storage_objects SoT)"
+        "Release must not expose size_mb (digests live in helper SQLite + Postgres mirror)"
     );
     assert!(models.contains("struct StorageObject"));
+    assert!(models.contains("mirror") || models.contains("SoT"));
     assert!(models.contains("STORAGE_SCOPE_RELEASE"));
     assert!(models.contains("STORAGE_SCOPE_IMAGE"));
+}
+
+#[test]
+fn inv_meta_sqlite_sot_and_verify_on_read() {
+    let meta = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/storage/meta_db.rs"
+    ));
+    assert!(meta.contains("meta.sqlite"));
+    assert!(meta.contains("CREATE TABLE IF NOT EXISTS objects"));
+
+    let engine = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/storage/engine.rs"
+    ));
+    assert!(engine.contains("get_verified"));
+    assert!(engine.contains("IntegrityMismatch"));
+    assert!(engine.contains("MetaDb"));
+
+    let proto = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/storage/protocol.rs"
+    ));
+    let get = proto.split("Get {").nth(1).expect("Get variant");
+    assert!(
+        get.contains("sha256: String"),
+        "IPC Get must require expected sha256"
+    );
+
+    let dl = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/builds/download.rs"
+    ));
+    assert!(dl.contains("INTEGRITY_MISMATCH") || dl.contains("integrity mismatch"));
+    assert!(dl.contains("obj.sha256"));
 }
 
 #[test]

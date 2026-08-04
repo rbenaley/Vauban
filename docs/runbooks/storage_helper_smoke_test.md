@@ -1,12 +1,13 @@
 # Runbook -- Storage helper smoke test
 
 > Manual validation after shipping **vcp-store** (releases + org images via
-> IPC, `storage_objects` digest SoT, production socket + peercred). CI covers
-> unit / invariants / proptest / battle / in-process E2E against `vcp_test`;
+> IPC; digest SoT = helper SQLite `meta.sqlite`; Postgres `storage_objects`
+> = portal mirror; production socket + peercred). CI covers unit /
+> invariants / proptest / battle / in-process E2E against `vcp_test`;
 > staging proves helper process, socket ownership, and HTTPS artifact paths.
 >
 > Audience: staging / production operators.
-> Severity: **BLOCKING** for artifact storage changes. Do not ship without A–D.
+> Severity: **BLOCKING** for artifact storage changes. Do not ship without A–E.
 
 Related:
 
@@ -41,7 +42,8 @@ rtk cargo test --test integration_tests -- storage_ -- --test-threads=1
 1. Sign in as `support@vauban.sh`.
 2. `/admin/releases/new` — create a GA release with a small `.pkg` file.
 3. Expect list STATUS **PUBLISHED** and SIGNATURE a full 64-hex digest
-   (from `storage_objects`, not a stub).
+   (from the Postgres **mirror** / UI, not a stub). Helper SQLite SoT holds
+   the same digest after `put_commit`.
 4. Sign in as `l.martin@acme.example`; open `/acme-infrastructure/builds`.
 5. **Download** the new version — HTTP **200**,
    `Content-Disposition` attachment, `X-Content-Type-Options: nosniff`.
@@ -60,13 +62,13 @@ rtk cargo test --test integration_tests -- storage_ -- --test-threads=1
 3. `GET /{org}/images/\<uuid\>.\<ext\>` → **200**, correct `Content-Type`,
    `X-Content-Type-Options: nosniff`.
 4. As another org member, GET the same filename under their slug → **404**.
-5. GET a random UUID `.png` with no `storage_objects` row → **404**
+5. GET a random UUID `.png` with no Postgres mirror row → **404**
    (must not depend on helper `not_found` alone).
 
 | Result | Criteria |
 |--------|----------|
-| **Pass** | Own-org 200 + nosniff; cross-tenant / missing row 404. |
-| **Fail** | Cross-org 200, missing nosniff, or 503 when row is absent. |
+| **Pass** | Own-org 200 + nosniff; cross-tenant / missing mirror row 404. |
+| **Fail** | Cross-org 200, missing nosniff, or 503 when mirror row is absent. |
 
 ## C -- Helper down / recovery (Pass / Fail)
 
@@ -79,9 +81,26 @@ rtk cargo test --test integration_tests -- storage_ -- --test-threads=1
 | Result | Criteria |
 |--------|----------|
 | **Pass** | Degraded 503 then recovery. |
-| **Fail** | Portal panic, 501 stub, or hung request with no status. |
+| **Fail** | Portal panic, hung request with no status, or silent 200 while helper is down. |
 
-## D -- Production guards (Pass / Fail)
+## D -- Integrity mismatch (Pass / Fail)
+
+1. With a published release (or org image) that has a mirror row, temporarily
+   forge Postgres `storage_objects.sha256` to a different 64-hex value (or
+   restore a backup where mirror ≠ SQLite).
+2. Attempt download / image GET as an entitled user → **503** (integrity /
+   artifact unavailable). Helper must **not** issue an FD (`integrity_mismatch`).
+3. Restore the correct mirror digest (or re-upload); retry → **200**.
+
+Optional: with matching mirror + SQLite, corrupt the on-disk blob bytes under
+the known key → same deny on verify-on-read.
+
+| Result | Criteria |
+|--------|----------|
+| **Pass** | Forged mirror or tampered blob → 503 / deny; fix → serve again. |
+| **Fail** | Bytes served despite digest drift, or chatty path leak. |
+
+## E -- Production guards (Pass / Fail)
 
 1. Confirm `vcp.conf` has `ipc = "socket"` and absolute `blob_path`.
 2. Confirm blob root not writable by portal UID (`touch` as `vcp` fails).
