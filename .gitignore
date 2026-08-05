@@ -37,6 +37,9 @@ certs/**
 logs/**
 !logs/.gitkeep
 
+# FreeBSD build.rs may symlink pkg tailwindcss here for CSS resolution
+/node_modules/
+
 # Added by cargo
 
 /target

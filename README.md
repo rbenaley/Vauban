@@ -17,9 +17,11 @@ Authenticated customer portal for Vauban.
 - [just](https://github.com/casey/just)
 - PostgreSQL listening locally
 - **FreeBSD staging / build hosts:** `pkg install tailwindcss4` (CLI at
-  `/usr/local/bin/tailwindcss`). Topcoat’s GitHub standalone Tailwind binary
-  has no FreeBSD asset; `build.rs` uses that path (or `PATH` /
-  `TAILWIND_CLI`) instead of downloading.
+  `/usr/local/bin/tailwindcss`, package under
+  `/usr/local/lib/node_modules/tailwindcss`). Topcoat’s GitHub standalone
+  binary has no FreeBSD asset; `build.rs` uses the pkg CLI and symlinks the
+  system package into a gitignored `node_modules/` so `@import "tailwindcss"`
+  resolves (override with `TAILWIND_CLI` if needed).
 
 Create databases:
 
