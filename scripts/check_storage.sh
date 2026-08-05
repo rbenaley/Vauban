@@ -159,8 +159,14 @@ ADR004="docs/adr/004-webauthn-sign-count-policy.md"
 [[ -f "$ADR004" ]] || fail "missing $ADR004"
 grep -n 'webauthn_required\|webauthn_invalid\|webauthn_expired\|challenge_unknown\|object_modified' "$ERR" >/dev/null \
   || fail "$ERR must define WebAuthn closed error codes"
-grep -n 'PutPrepare\|ChallengeBegin\|KeyEnrolStage\|KeyRevoke' "$PROTO" >/dev/null \
+grep -n 'PutPrepare\|ChallengeBegin\|KeyEnrolStage\|KeyRevoke\|KeyList\|KeyGet' "$PROTO" >/dev/null \
   || fail "$PROTO must define put_prepare / challenge_begin / key ops"
+grep -n 'list_pending_credentials_page\|LIMIT ?1 OFFSET ?2' "$META" >/dev/null \
+  || fail "$META must SQL-page KEY credentials (LIMIT/OFFSET)"
+grep -n 'KEY_PAGE_SIZE' src/list_page.rs src/app/admin/key.rs >/dev/null \
+  || fail "KEY dashboard must use KEY_PAGE_SIZE"
+grep -n 'pending_page\|active_page' src/app/admin/key.rs >/dev/null \
+  || fail "KEY dashboard must paginate pending/active independently"
 grep -n 'webauthn_credentials\|webauthn_challenges' "$META" >/dev/null \
   || fail "$META must define webauthn_* tables"
 grep -n 'put_prepare\|validate_production_webauthn' "$ENGINE" >/dev/null \

@@ -379,16 +379,22 @@ async fn e2e_key_dashboard_staff_ok_member_404_and_revoke_guard() {
     let html = body_text(page).await;
     assert!(html.contains("Security keys"), "page title");
     assert!(
-        html.contains("vcp-store key approve"),
-        "E2 CLI instructions (ADR 003)"
+        html.contains("activate it from the server with"),
+        "compact activate hint (E2 on helper host)"
     );
     assert!(
-        html.contains("vcp-store key pending"),
-        "helper-host cross-check hint"
+        html.contains("vcp-store key approve"),
+        "CLI approve command chip in callout"
     );
+    assert!(html.contains("Create key"), "enrol CTA");
     assert!(
         html.contains("data-mode=\"create\""),
         "E1 WebAuthn ceremony root"
+    );
+    // Empty lists: no pager chrome.
+    assert!(
+        !html.contains("pending_page="),
+        "empty KEY lists must not expose pending_page pager links"
     );
 
     let member_email = unique_email("key-member");
@@ -461,6 +467,80 @@ async fn e2e_key_enrol_rejects_empty_admin_label() {
     cleanup(&db).await;
 }
 
+/// PENDING / ACTIVE tables page at KEY_PAGE_SIZE=4 via SQL LIMIT (SSR pager).
+#[tokio::test]
+async fn e2e_key_lists_paginate_four_per_page() {
+    use vcp::config::{Config, Environment};
+    use vcp::list_page::KEY_PAGE_SIZE;
+    use vcp::storage::StorageEngine;
+
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let admin_email = unique_email("key-page");
+    let admin_slug = unique_slug("key-page-org");
+    let (_admin, _aorg) =
+        create_org_with_membership(&db, &admin_email, "password", &admin_slug, "admin").await;
+    let admin_cookie = login_cookie(&router, &admin_email).await;
+
+    let cfg = Config::load_with_environment(config_dir(), Environment::Testing).unwrap();
+    std::fs::create_dir_all(&cfg.storage.blob_path).unwrap();
+    let eng = StorageEngine::open(
+        std::path::Path::new(&cfg.storage.blob_path),
+        cfg.storage.clone(),
+    )
+    .unwrap();
+    let tag = unique_slug("kpg");
+    for i in 0..(KEY_PAGE_SIZE + 1) {
+        let cred = format!("{tag}-cred-{i}");
+        let cose = format!("{tag}-cose-{i}");
+        eng.key_enrol_stage(
+            cred.as_bytes(),
+            cose.as_bytes(),
+            "1",
+            &format!("{tag}-lbl-{i}"),
+            true,
+        )
+        .unwrap();
+    }
+
+    let page1 = get(&router, "/admin/key", admin_cookie.as_deref()).await;
+    assert_eq!(status(&page1), StatusCode::OK);
+    let html1 = body_text(page1).await;
+    assert!(
+        html1.contains("vb-pager"),
+        "pager when > KEY_PAGE_SIZE pending"
+    );
+    assert!(
+        html1.contains("pending_page=2"),
+        "pending Next must link page 2: {html1}"
+    );
+    let page1_labels = (0..=KEY_PAGE_SIZE)
+        .filter(|i| html1.contains(&format!("{tag}-lbl-{i}")))
+        .count();
+    assert_eq!(
+        page1_labels, KEY_PAGE_SIZE,
+        "page 1 must show exactly {KEY_PAGE_SIZE} pending labels"
+    );
+
+    let page2 = get(
+        &router,
+        "/admin/key?pending_page=2",
+        admin_cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&page2), StatusCode::OK);
+    let html2 = body_text(page2).await;
+    let page2_labels = (0..=KEY_PAGE_SIZE)
+        .filter(|i| html2.contains(&format!("{tag}-lbl-{i}")))
+        .count();
+    assert_eq!(page2_labels, 1, "page 2 must show the remainder row");
+
+    cleanup(&db).await;
+}
+
 /// Full KEY lifecycle on the portal seam: enrol (fake attestation) → CLI-equivalent
 /// approve on the test blob root → dashboard ACTIVE → typed revoke clears ACTIVE.
 #[tokio::test]
@@ -510,18 +590,20 @@ async fn e2e_key_enrol_approve_revoke_lifecycle() {
         cfg.storage.clone(),
     )
     .unwrap();
-    let pending = eng.key_list_json("pending").unwrap();
+    let (pending, pending_total) = eng.key_list_json("pending", 1, 4).unwrap();
+    assert_eq!(pending_total, 1);
     assert!(
         pending.contains(&fp) && pending.contains("e2e-lifecycle"),
         "pending list: {pending}"
     );
     eng.key_approve(&fp).unwrap();
-    let active = eng.key_list_json("active").unwrap();
+    let (active, active_total) = eng.key_list_json("active", 1, 4).unwrap();
+    assert_eq!(active_total, 1);
     assert!(
         active.contains(&fp) && active.contains("e2e-lifecycle"),
         "active list: {active}"
     );
-    assert!(!eng.key_list_json("pending").unwrap().contains(&fp));
+    assert!(!eng.key_list_json("pending", 1, 4).unwrap().0.contains(&fp));
 
     let page = get(&router, "/admin/key", admin_cookie.as_deref()).await;
     assert_eq!(status(&page), StatusCode::OK);
@@ -552,7 +634,8 @@ async fn e2e_key_enrol_approve_revoke_lifecycle() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(!rloc.contains("err="), "revoke must succeed, got {rloc}");
-    let after = eng.key_list_json("active").unwrap();
+    let (after, after_total) = eng.key_list_json("active", 1, 4).unwrap();
+    assert_eq!(after_total, 0);
     assert!(
         !after.contains(&fp),
         "revoked key must leave ACTIVE list: {after}"

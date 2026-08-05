@@ -261,9 +261,30 @@ fn dispatch(
                 Err(e) => reply(stream, &map_err(e), None),
             }
         }
-        StorageRequest::KeyList { kind } => match engine.key_list_json(&kind) {
-            Ok(s) => reply(stream, &StorageResponse::ok_summary(s), None),
-            Err(e) => reply(stream, &map_err(e), None),
-        },
+        StorageRequest::KeyList {
+            kind,
+            page,
+            page_size,
+        } => {
+            let page = page.max(1) as usize;
+            let page_size = page_size.clamp(1, 100) as usize;
+            match engine.key_list_json(&kind, page, page_size) {
+                Ok((s, total)) => {
+                    reply(stream, &StorageResponse::ok_key_list(s, total as u64), None)
+                }
+                Err(e) => reply(stream, &map_err(e), None),
+            }
+        }
+        StorageRequest::KeyGet { credential_id_b64 } => {
+            let cred = match URL_SAFE_NO_PAD.decode(credential_id_b64.trim()) {
+                Ok(v) => v,
+                Err(_) => return reply(stream, &StorageResponse::err("invalid_id"), None),
+            };
+            match engine.key_get_json(&cred) {
+                Ok(Some(s)) => reply(stream, &StorageResponse::ok_summary(s), None),
+                Ok(None) => reply(stream, &StorageResponse::err("not_found"), None),
+                Err(e) => reply(stream, &map_err(e), None),
+            }
+        }
     }
 }

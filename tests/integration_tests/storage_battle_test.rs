@@ -6,6 +6,7 @@ use http_body_util::BodyExt;
 use tokio::sync::Barrier;
 use topcoat::router::StatusCode;
 use vcp::config::{StorageConfig, StorageIpcMode};
+use vcp::list_page::KEY_PAGE_SIZE;
 use vcp::storage::{MetaDb, MetaObject, StorageEngine, StorageScope, sha256_hex, write_abs_file};
 
 use crate::common::{
@@ -254,6 +255,47 @@ fn battle_key_enrol_empty_label_fail_closed() {
         eng.list_pending_credentials_cli().unwrap().is_empty(),
         "no PENDING credential after blank-label flood"
     );
+}
+
+#[test]
+fn battle_parallel_key_list_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = Arc::new(dir.path().canonicalize().unwrap());
+    {
+        let eng = StorageEngine::open(root.as_path(), engine_cfg()).expect("bootstrap");
+        for i in 0..12 {
+            eng.key_enrol_stage(
+                format!("battle-cred-{i}").as_bytes(),
+                format!("battle-cose-{i}").as_bytes(),
+                "1",
+                &format!("battle-k{i}"),
+                true,
+            )
+            .unwrap();
+        }
+    }
+    let n = 6usize;
+    let barrier = Arc::new(std::sync::Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for t in 0..n {
+        let root = root.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            let eng = StorageEngine::open(root.as_path(), engine_cfg()).expect("open");
+            let page = (t % 3) + 1;
+            let (json, total) = eng
+                .key_list_json("pending", page, KEY_PAGE_SIZE)
+                .expect("page");
+            assert_eq!(total, 12);
+            let rows: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+            assert!(rows.len() <= KEY_PAGE_SIZE);
+            assert!(!rows.is_empty() || page > 3);
+        }));
+    }
+    for h in handles {
+        h.join().expect("join");
+    }
 }
 
 #[tokio::test]

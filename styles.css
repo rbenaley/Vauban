@@ -651,6 +651,26 @@ a.vb-row:hover { background: #fafbfa; }
   text-align: right;
   vertical-align: middle;
 }
+/* /admin/key — identical colgroup on PENDING + ACTIVE (same gutters). */
+.vb-table.vb-table-key {
+  table-layout: fixed;
+  width: 100%;
+}
+.vb-table.vb-table-key col.vb-key-c-key { width: 22%; }
+.vb-table.vb-table-key col.vb-key-c-by { width: 16%; }
+.vb-table.vb-table-key col.vb-key-c-fp { width: 30%; }
+.vb-table.vb-table-key col.vb-key-c-status { width: 14%; }
+.vb-table.vb-table-key col.vb-key-c-actions { width: 18%; }
+.vb-table.vb-table-key td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Override global ACTIONS width:1% hug so colgroup widths stick. */
+.vb-table.vb-table-key th.vb-col-actions,
+.vb-table.vb-table-key td.vb-col-actions {
+  width: 18%;
+}
 .vb-table tr:last-child td { border-bottom: 0; }
 .vb-table a { color: inherit; text-decoration: none; }
 .vb-table a:hover { color: var(--accent); }

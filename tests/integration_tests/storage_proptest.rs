@@ -2,6 +2,7 @@
 
 use proptest::prelude::*;
 use serde_json::json;
+use vcp::list_page::{KEY_PAGE_SIZE, page_count, page_offset};
 use vcp::storage::{
     StorageErrorCode, StorageScope, canonical_summary, credential_fingerprint, ct_eq_hex,
     is_uuid_key, normalize_admin_label, normalize_image_ext, webauthn_host_is_ip,
@@ -148,5 +149,22 @@ proptest! {
         prop_assert!(!webauthn_host_is_ip("localhost"));
         let host = format!("{dns_label}.example");
         prop_assert!(!webauthn_host_is_ip(&host));
+    }
+
+    #[test]
+    fn prop_key_page_size_is_four_and_offsets_align(total in 0usize..40) {
+        prop_assert_eq!(KEY_PAGE_SIZE, 4);
+        let pages = page_count(total, KEY_PAGE_SIZE);
+        prop_assert!(pages >= 1);
+        if total == 0 {
+            prop_assert_eq!(pages, 1);
+        } else {
+            prop_assert_eq!(pages, total.div_ceil(KEY_PAGE_SIZE));
+        }
+        for page in 1..=pages {
+            let off = page_offset(page, KEY_PAGE_SIZE);
+            prop_assert_eq!(off, (page - 1) * KEY_PAGE_SIZE);
+            prop_assert!(off == 0 || off < total || total == 0);
+        }
     }
 }

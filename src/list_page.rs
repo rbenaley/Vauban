@@ -9,6 +9,9 @@ pub const BUILDS_PAGE_SIZE: usize = LIST_PAGE_SIZE;
 /// Admin companies card list — denser cards than table rows.
 pub const COMPANIES_PAGE_SIZE: usize = 3;
 
+/// Admin KEY pending/active tables (`/admin/key`) — helper SQLite pages.
+pub const KEY_PAGE_SIZE: usize = 4;
+
 /// Parse 1-based page query (default 1, minimum 1).
 pub fn parse_page(raw: Option<u32>) -> usize {
     raw.map(|p| p.max(1) as usize).unwrap_or(1)
@@ -58,8 +61,13 @@ pub fn page_slice<T>(items: &[T], page: usize, page_size: usize) -> &[T] {
 
 /// Append `page=N` when `page > 1`. `parts` are already-encoded `key=value` pairs.
 pub fn with_page_param(parts: &mut Vec<String>, page: usize) {
+    with_named_page_param(parts, "page", page);
+}
+
+/// Append `{name}=N` when `page > 1` (e.g. `pending_page`, `active_page`).
+pub fn with_named_page_param(parts: &mut Vec<String>, name: &str, page: usize) {
     if page > 1 {
-        parts.push(format!("page={page}"));
+        parts.push(format!("{name}={page}"));
     }
 }
 

@@ -138,7 +138,10 @@ Local lab: open **`https://localhost:3000/admin/key`** (not `127.0.0.1`).
 WebAuthn rejects IP hosts; `webauthn_origin` uses `localhost` (RP ID derived).
 Accept the self-signed cert for `localhost` if prompted.
 
-1. `/admin/key` → Create passkey → PENDING fingerprint shown + CLI hint.
+1. `/admin/key` → Create key → PENDING fingerprint shown; activate from the
+   helper host (`vcp-store key approve`, copy from PENDING table if needed).
+   PENDING and ACTIVE tables paginate at **4** rows (`pending_page` /
+   `active_page`); confirm Next when more than four keys exist.
 2. **Empty / whitespace-only key label** (leave label blank or spaces, click
    Create): must **not** open the authenticator dialog; banner / redirect
    `err=label`. No PENDING row in `vcp-store key pending`.

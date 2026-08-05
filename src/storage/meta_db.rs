@@ -93,6 +93,21 @@ pub struct WebauthnCredentialRow {
     pub revoked_at: Option<i64>,
 }
 
+fn map_credential_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<WebauthnCredentialRow> {
+    Ok(WebauthnCredentialRow {
+        credential_id: r.get(0)?,
+        public_key_cose: r.get(1)?,
+        user_handle: r.get(2)?,
+        admin_label: r.get(3)?,
+        sign_count: r.get::<_, i64>(4)? as u32,
+        status: CredentialStatus::parse(&r.get::<_, String>(5)?),
+        is_soft: r.get::<_, i64>(6)? != 0,
+        created_at: r.get(7)?,
+        activated_at: r.get(8)?,
+        revoked_at: r.get(9)?,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct WebauthnChallengeRow {
     pub challenge_id: String,
@@ -315,43 +330,16 @@ impl MetaDb {
     }
 
     pub fn list_active_credentials(&self) -> Result<Vec<WebauthnCredentialRow>, StorageError> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                r#"
+        self.query_credentials(
+            r#"
                 SELECT credential_id, public_key_cose, user_handle, admin_label,
                        sign_count, status, is_soft, created_at, activated_at, revoked_at
                 FROM webauthn_credentials
                 WHERE status = 'active' AND revoked_at IS NULL
                 ORDER BY created_at ASC
                 "#,
-            )
-            .map_err(|e| {
-                StorageError::new(StorageErrorCode::Io, format!("prepare list cred: {e}"))
-            })?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(WebauthnCredentialRow {
-                    credential_id: r.get(0)?,
-                    public_key_cose: r.get(1)?,
-                    user_handle: r.get(2)?,
-                    admin_label: r.get(3)?,
-                    sign_count: r.get::<_, i64>(4)? as u32,
-                    status: CredentialStatus::parse(&r.get::<_, String>(5)?),
-                    is_soft: r.get::<_, i64>(6)? != 0,
-                    created_at: r.get(7)?,
-                    activated_at: r.get(8)?,
-                    revoked_at: r.get(9)?,
-                })
-            })
-            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("list cred: {e}")))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| {
-                StorageError::new(StorageErrorCode::Io, format!("list cred row: {e}"))
-            })?);
-        }
-        Ok(out)
+            "active",
+        )
     }
 
     pub fn list_pending_credentials(&self) -> Result<Vec<WebauthnCredentialRow>, StorageError> {
@@ -364,6 +352,64 @@ impl MetaDb {
                 ORDER BY created_at ASC
                 "#,
             "pending",
+        )
+    }
+
+    /// Count pending credentials (dashboard pager total).
+    pub fn count_pending_credentials(&self) -> Result<usize, StorageError> {
+        self.count_credentials(
+            "SELECT COUNT(*) FROM webauthn_credentials WHERE status = 'pending' AND revoked_at IS NULL",
+            "count pending",
+        )
+    }
+
+    /// Count active credentials (dashboard pager total).
+    pub fn count_active_credentials(&self) -> Result<usize, StorageError> {
+        self.count_credentials(
+            "SELECT COUNT(*) FROM webauthn_credentials WHERE status = 'active' AND revoked_at IS NULL",
+            "count active",
+        )
+    }
+
+    /// Pending page for `/admin/key` (newest first; SQL LIMIT/OFFSET).
+    pub fn list_pending_credentials_page(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<WebauthnCredentialRow>, StorageError> {
+        self.query_credentials_page(
+            r#"
+                SELECT credential_id, public_key_cose, user_handle, admin_label,
+                       sign_count, status, is_soft, created_at, activated_at, revoked_at
+                FROM webauthn_credentials
+                WHERE status = 'pending' AND revoked_at IS NULL
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?1 OFFSET ?2
+                "#,
+            limit,
+            offset,
+            "pending page",
+        )
+    }
+
+    /// Active page for `/admin/key` (newest first; SQL LIMIT/OFFSET).
+    pub fn list_active_credentials_page(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<WebauthnCredentialRow>, StorageError> {
+        self.query_credentials_page(
+            r#"
+                SELECT credential_id, public_key_cose, user_handle, admin_label,
+                       sign_count, status, is_soft, created_at, activated_at, revoked_at
+                FROM webauthn_credentials
+                WHERE status = 'active' AND revoked_at IS NULL
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?1 OFFSET ?2
+                "#,
+            limit,
+            offset,
+            "active page",
         )
     }
 
@@ -380,6 +426,14 @@ impl MetaDb {
         )
     }
 
+    fn count_credentials(&self, sql: &str, what: &str) -> Result<usize, StorageError> {
+        let n: i64 = self
+            .conn
+            .query_row(sql, [], |r| r.get(0))
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("{what}: {e}")))?;
+        Ok(usize::try_from(n.max(0)).unwrap_or(0))
+    }
+
     fn query_credentials(
         &self,
         sql: &str,
@@ -390,20 +444,32 @@ impl MetaDb {
             .prepare(sql)
             .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("prepare {what}: {e}")))?;
         let rows = stmt
-            .query_map([], |r| {
-                Ok(WebauthnCredentialRow {
-                    credential_id: r.get(0)?,
-                    public_key_cose: r.get(1)?,
-                    user_handle: r.get(2)?,
-                    admin_label: r.get(3)?,
-                    sign_count: r.get::<_, i64>(4)? as u32,
-                    status: CredentialStatus::parse(&r.get::<_, String>(5)?),
-                    is_soft: r.get::<_, i64>(6)? != 0,
-                    created_at: r.get(7)?,
-                    activated_at: r.get(8)?,
-                    revoked_at: r.get(9)?,
-                })
-            })
+            .query_map([], map_credential_row)
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("{what}: {e}")))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| {
+                StorageError::new(StorageErrorCode::Io, format!("{what} row: {e}"))
+            })?);
+        }
+        Ok(out)
+    }
+
+    fn query_credentials_page(
+        &self,
+        sql: &str,
+        limit: usize,
+        offset: usize,
+        what: &str,
+    ) -> Result<Vec<WebauthnCredentialRow>, StorageError> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX).max(0);
+        let offset = i64::try_from(offset).unwrap_or(0).max(0);
+        let mut stmt = self
+            .conn
+            .prepare(sql)
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("prepare {what}: {e}")))?;
+        let rows = stmt
+            .query_map(params![limit, offset], map_credential_row)
             .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("{what}: {e}")))?;
         let mut out = Vec::new();
         for row in rows {

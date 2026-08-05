@@ -18,9 +18,13 @@ use topcoat::{
 };
 
 use crate::{
-    app::_components::ico_key,
+    app::_components::{ico_key, list_toolbar},
     app::VCP_WEBAUTHN_JS,
     auth::{capability_denied, config, require_staff, storage},
+    list_page::{
+        KEY_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
+        with_named_page_param,
+    },
     perms::perms_for_user,
     storage::webauthn::extract_attested_credential,
 };
@@ -34,29 +38,54 @@ struct CredRow {
     is_soft: bool,
 }
 
+fn parse_cred_row(v: &Value) -> Option<CredRow> {
+    Some(CredRow {
+        fingerprint: v.get("fingerprint")?.as_str()?.to_owned(),
+        admin_label: v
+            .get("admin_label")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_owned(),
+        user_handle: v
+            .get("user_handle")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_owned(),
+        credential_id_hex: v.get("credential_id_hex")?.as_str()?.to_owned(),
+        is_soft: v.get("is_soft").and_then(|x| x.as_bool()).unwrap_or(false),
+    })
+}
+
 fn parse_cred_list(raw: &str) -> Vec<CredRow> {
     let Ok(arr) = serde_json::from_str::<Vec<Value>>(raw) else {
         return Vec::new();
     };
-    arr.into_iter()
-        .filter_map(|v| {
-            Some(CredRow {
-                fingerprint: v.get("fingerprint")?.as_str()?.to_owned(),
-                admin_label: v
-                    .get("admin_label")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_owned(),
-                user_handle: v
-                    .get("user_handle")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_owned(),
-                credential_id_hex: v.get("credential_id_hex")?.as_str()?.to_owned(),
-                is_soft: v.get("is_soft").and_then(|x| x.as_bool()).unwrap_or(false),
-            })
-        })
-        .collect()
+    arr.iter().filter_map(parse_cred_row).collect()
+}
+
+/// Accept only a SHA-256 hex fingerprint for the E1 success banner (no reflected HTML).
+fn sanitize_enrolled_fingerprint(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(t.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn key_list_href(pending_page: usize, active_page: usize) -> String {
+    let mut parts = Vec::new();
+    with_named_page_param(&mut parts, "pending_page", pending_page);
+    with_named_page_param(&mut parts, "active_page", active_page);
+    href_with_query("/admin/key", &parts)
+}
+
+fn key_revoke_href(pending_page: usize, active_page: usize, credential_id_hex: &str) -> String {
+    let mut parts = Vec::new();
+    with_named_page_param(&mut parts, "pending_page", pending_page);
+    with_named_page_param(&mut parts, "active_page", active_page);
+    parts.push(format!("revoke={credential_id_hex}"));
+    href_with_query("/admin/key", &parts)
 }
 
 /// Compact fingerprint for table cells; full value stays in `title` + CLI command.
@@ -68,16 +97,9 @@ fn short_fingerprint(fp: &str) -> String {
     }
 }
 
-/// CLI line shown after E1. Production helper hosts load `vcp-store.conf`;
-/// local spawn needs the same blob root as `just run` (portal `[storage]`).
-fn approve_command(fp: &str, blob_path: &str) -> String {
-    if blob_path.trim().is_empty() {
-        format!("vcp-store key approve --fingerprint {fp}")
-    } else {
-        format!(
-            "VCP_ENVIRONMENT=development ./target/debug/vcp-store key approve --fingerprint {fp}"
-        )
-    }
+/// CLI line copied from the PENDING table (same wording in every environment).
+fn approve_command(fp: &str) -> String {
+    format!("vcp-store key approve --fingerprint {fp}")
 }
 
 #[query_params]
@@ -87,6 +109,8 @@ struct AdminKeyQuery {
     /// credential_id_hex targeted by the revoke confirmation overlay.
     revoke: Option<String>,
     err: Option<String>,
+    pending_page: Option<u32>,
+    active_page: Option<u32>,
 }
 
 #[page]
@@ -97,20 +121,66 @@ async fn admin_key_page(cx: &Cx) -> Result {
         return Err(capability_denied().into());
     }
     let store = storage(cx);
-    let pending = parse_cred_list(&store.key_list("pending").unwrap_or_else(|_| "[]".into()));
-    let active = parse_cred_list(&store.key_list("active").unwrap_or_else(|_| "[]".into()));
-
     let q = query_params::<AdminKeyQuery>(cx).ok();
-    // Only echo values that resolve to a real helper row (no reflected input).
-    let enrolled = q
+
+    let pending_page_raw = parse_page(q.as_ref().and_then(|q| q.pending_page));
+    let active_page_raw = parse_page(q.as_ref().and_then(|q| q.active_page));
+
+    let (pending_json, pending_total) = store
+        .key_list_page("pending", pending_page_raw, KEY_PAGE_SIZE)
+        .unwrap_or_else(|_| ("[]".into(), 0));
+    let pending_pages = page_count(pending_total, KEY_PAGE_SIZE);
+    let pending_page = clamp_page(pending_page_raw, pending_pages);
+    let (pending_json, _) = if pending_page != pending_page_raw {
+        store
+            .key_list_page("pending", pending_page, KEY_PAGE_SIZE)
+            .unwrap_or_else(|_| ("[]".into(), pending_total))
+    } else {
+        (pending_json, pending_total)
+    };
+    let pending = parse_cred_list(&pending_json);
+
+    let (active_json, active_total) = store
+        .key_list_page("active", active_page_raw, KEY_PAGE_SIZE)
+        .unwrap_or_else(|_| ("[]".into(), 0));
+    let active_pages = page_count(active_total, KEY_PAGE_SIZE);
+    let active_page = clamp_page(active_page_raw, active_pages);
+    let (active_json, _) = if active_page != active_page_raw {
+        store
+            .key_list_page("active", active_page, KEY_PAGE_SIZE)
+            .unwrap_or_else(|_| ("[]".into(), active_total))
+    } else {
+        (active_json, active_total)
+    };
+    let active = parse_cred_list(&active_json);
+
+    let pending_pager = PagerLinks::from_hrefs(pending_page, pending_pages, |n| {
+        key_list_href(n, active_page)
+    });
+    let active_pager = PagerLinks::from_hrefs(active_page, active_pages, |n| {
+        key_list_href(pending_page, n)
+    });
+
+    // Hex-only fingerprint (E1 banner). Not tied to the current pending page.
+    let enrolled_fp = q
         .as_ref()
         .and_then(|q| q.enrolled.as_deref())
-        .and_then(|fp| pending.iter().find(|r| r.fingerprint == fp).cloned());
-    let revoke_target = q
-        .as_ref()
-        .and_then(|q| q.revoke.as_deref())
-        .and_then(|hexid| active.iter().find(|r| r.credential_id_hex == hexid))
-        .cloned();
+        .and_then(sanitize_enrolled_fingerprint);
+    // Resolve revoke target by id so the overlay works off-page.
+    let revoke_target = q.as_ref().and_then(|q| {
+        let hexid = q.revoke.as_deref()?;
+        if !hexid.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let cred = hex::decode(hexid).ok()?;
+        let raw = store.key_get(&cred).ok().flatten()?;
+        let v: Value = serde_json::from_str(&raw).ok()?;
+        if v.get("status").and_then(|s| s.as_str()) != Some("active") {
+            return None;
+        }
+        let row = parse_cred_row(&v)?;
+        (row.credential_id_hex == hexid).then_some(row)
+    });
     let err = q.as_ref().and_then(|q| q.err.clone()).unwrap_or_default();
     let confirm_err = err == "confirm";
     let banner = match err.as_str() {
@@ -126,8 +196,6 @@ async fn admin_key_page(cx: &Cx) -> Result {
 
     let cfg = config(cx);
     let rp_id = cfg.storage.webauthn_rp_id.clone();
-    // Non-empty in spawn/inline (dev); empty in production portal conf.
-    let blob_path_for_cli = cfg.storage.blob_path.clone();
     // E1 registration challenge is portal-local (attestation = "none");
     // trust anchoring happens at E2 via the out-of-band fingerprint match.
     let reg_challenge = {
@@ -137,20 +205,13 @@ async fn admin_key_page(cx: &Cx) -> Result {
     };
     let user_handle = staff.user.id.to_string();
     let user_name = staff.user.email.clone();
+    let pending_page_for_links = pending_page;
+    let active_page_for_links = active_page;
 
     view! {
         cx =>
-        <div
-            style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;"
-        >
-            <div>
-                <h1 class="vb-title">"Security keys"</h1>
-                <p class="vb-lead" style="margin-bottom: 0;">
-                    "Per-admin KEY / WebAuthn keys, verified inside the "
-                    <span class="vb-mono">"vcp-store"</span>
-                    " helper. Release publishes and deletes require an assertion from an ACTIVE key."
-                </p>
-            </div>
+        <div style="margin-bottom: 18px;">
+            <h1 class="vb-title">"Security keys"</h1>
         </div>
 
         if let Some(msg) = banner {
@@ -165,20 +226,18 @@ async fn admin_key_page(cx: &Cx) -> Result {
         <div class="vb-callout">
             (ico_key(cx, 16).await?)
             <div>
-                <strong>"Two-phase enrolment (ADR 003)."</strong>
-                " Creating a passkey here only stages it as PENDING. Record its fingerprint "
-                "out-of-band, then activate it on the helper host with "
-                <span class="vb-mono">"vcp-store key approve"</span>
-                ". On the helper host, "
-                <span class="vb-mono">"vcp-store key pending"</span>
-                " lists PENDING keys (for E2) and in-flight ceremony challenges."
+                "Record its fingerprint out-of-band, then you will have to "
+                "activate it from the server with "
+                <span
+                    class="vb-mono"
+                    style="display: inline-block; max-width: 100%; box-sizing: border-box; margin: 0; padding: 4px 10px; background: #f7f8f6; border: 1px solid #e0e2de; border-radius: 4px; font-size: 12.5px; line-height: 1.5; color: #14171c; vertical-align: middle;"
+                >
+                    "vcp-store key approve"
+                </span>
             </div>
         </div>
 
-        if let Some(row) = enrolled {
-            let fp = row.fingerprint.clone();
-            let cmd = approve_command(&row.fingerprint, &blob_path_for_cli);
-            let cmd_copy = cmd.clone();
+        if let Some(fp) = enrolled_fp {
             <div
                 class="vb-panel"
                 style="padding: 20px 22px; margin-bottom: 18px; border-color: #cfe2d6; background: #f7fbf8;"
@@ -186,30 +245,12 @@ async fn admin_key_page(cx: &Cx) -> Result {
                 <div class="vb-section-label" style="color: #2f7d52;">
                     "KEY STAGED — PHASE E1 COMPLETE"
                 </div>
-                <p style="margin: 0 0 10px; font-size: 14px;">
-                    <strong>(row.admin_label.clone())</strong>
-                    " is PENDING. Record this fingerprint out-of-band, then approve on the helper host:"
-                </p>
                 <div
                     id="vcp-key-fingerprint"
-                    class="vb-pre"
-                    style="margin-bottom: 10px;"
+                    class="vb-mono"
+                    style="display: inline-block; max-width: 100%; box-sizing: border-box; margin: 0; padding: 10px 12px; background: #f7f8f6; border: 1px solid #e0e2de; border-radius: 4px; font-size: 12.5px; line-height: 1.5; color: #14171c; overflow-x: auto; white-space: nowrap;"
                 >
                     (fp)
-                </div>
-                <div
-                    style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;"
-                >
-                    <span class="vb-mono" style="font-size: 12.5px;">(cmd)</span>
-                    <button
-                        type="button"
-                        class="vb-btn ghost"
-                        style="padding: 6px 12px; font-size: 12px;"
-                        data-copy=(cmd_copy)
-                        @click="(e) => { const el = e.current_target.inner; navigator.clipboard.writeText(el.getAttribute('data-copy')); el.textContent = 'Copied'; }"
-                    >
-                        "Copy command"
-                    </button>
                 </div>
             </div>
         }
@@ -229,49 +270,58 @@ async fn admin_key_page(cx: &Cx) -> Result {
                     class="vb-form"
                     method="POST"
                     action="/admin/key/enrol"
-                    style="max-width: 460px;"
+                    style="max-width: 560px;"
                 >
                     <label for="admin_label">"Key label"</label>
-                    <input
-                        id="admin_label"
-                        name="admin_label"
-                        required=""
-                        minlength="1"
-                        pattern=".*\\S.*"
-                        title="Label must contain a non-whitespace character"
-                        placeholder="yubikey-alice-1"
-                        autocomplete="off"
+                    <div
+                        style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;"
                     >
-                    <p class="vb-form-hint">
-                        "User verification (PIN or biometric) is required. The key stays "
-                        "PENDING and cannot authorize anything until CLI approval. "
-                        "In development, open this page as "
-                        <span class="vb-mono">"https://localhost:3000"</span>
-                        " — WebAuthn rejects IP hosts such as "
-                        <span class="vb-mono">"127.0.0.1"</span>
-                        "."
-                    </p>
-                    <input
-                        id="vcp-webauthn-assertion"
-                        type="hidden"
-                        name="attestation"
-                        value=""
-                    >
-                    <button
-                        id="vcp-webauthn-btn"
-                        class="vb-btn"
-                        type="button"
-                        style="margin-top: 12px;"
-                    >
-                        "Create passkey (PENDING)"
-                    </button>
+                        <input
+                            id="admin_label"
+                            name="admin_label"
+                            required=""
+                            minlength="1"
+                            pattern=".*\\S.*"
+                            title="Label must contain a non-whitespace character"
+                            placeholder="yubikey-alice-1"
+                            autocomplete="off"
+                            style="flex: 1; min-width: 180px; margin: 0;"
+                        >
+                        <input
+                            id="vcp-webauthn-assertion"
+                            type="hidden"
+                            name="attestation"
+                            value=""
+                        >
+                        <button
+                            id="vcp-webauthn-btn"
+                            class="vb-btn vb-mono"
+                            type="button"
+                        >
+                            "Create key"
+                        </button>
+                    </div>
                 </form>
             </div>
         </div>
 
-        <div class="vb-section-label">"PENDING — AWAITING CLI APPROVAL (E2)"</div>
+        <div
+            style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px;"
+        >
+            <div class="vb-section-label" style="margin: 0;">
+                "PENDING — AWAITING CLI APPROVAL (E2)"
+            </div>
+            list_toolbar(links: &pending_pager)
+        </div>
         <div class="vb-table-wrap" style="margin-bottom: 24px;">
-            <table class="vb-table">
+            <table class="vb-table vb-table-key">
+                <colgroup>
+                    <col class="vb-key-c-key">
+                    <col class="vb-key-c-by">
+                    <col class="vb-key-c-fp">
+                    <col class="vb-key-c-status">
+                    <col class="vb-key-c-actions">
+                </colgroup>
                 <thead>
                     <tr>
                         <th>"KEY"</th>
@@ -292,14 +342,14 @@ async fn admin_key_page(cx: &Cx) -> Result {
                         for row in pending {
                             let fp_full = row.fingerprint.clone();
                             let fp_short = short_fingerprint(&row.fingerprint);
-                            let cmd = approve_command(
-                                &row.fingerprint,
-                                &blob_path_for_cli,
-                            );
+                            let cmd = approve_command(&row.fingerprint);
+                            let key_label = if row.admin_label.trim().is_empty() {
+                                "—".to_owned()
+                            } else {
+                                row.admin_label.clone()
+                            };
                             <tr>
-                                <td style="font-weight: 700;">
-                                    (row.admin_label.clone())
-                                </td>
+                                <td style="font-weight: 700;">(key_label)</td>
                                 <td>(row.user_handle.clone())</td>
                                 <td><span title=(fp_full)>(fp_short)</span></td>
                                 <td>
@@ -312,10 +362,11 @@ async fn admin_key_page(cx: &Cx) -> Result {
                                             class="vb-btn ghost"
                                             style="padding: 6px 12px; font-size: 12px;"
                                             title=(cmd.clone())
+                                            aria-label="Copy approve command"
                                             data-copy=(cmd)
                                             @click="(e) => { const el = e.current_target.inner; navigator.clipboard.writeText(el.getAttribute('data-copy')); el.textContent = 'Copied'; }"
                                         >
-                                            "Copy approve command"
+                                            "Copy"
                                         </button>
                                     </div>
                                 </td>
@@ -326,9 +377,23 @@ async fn admin_key_page(cx: &Cx) -> Result {
             </table>
         </div>
 
-        <div class="vb-section-label">"ACTIVE — AUTHORIZE HELPER MUTATIONS"</div>
+        <div
+            style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px;"
+        >
+            <div class="vb-section-label" style="margin: 0;">
+                "ACTIVE — AUTHORIZE HELPER MUTATIONS"
+            </div>
+            list_toolbar(links: &active_pager)
+        </div>
         <div class="vb-table-wrap">
-            <table class="vb-table">
+            <table class="vb-table vb-table-key">
+                <colgroup>
+                    <col class="vb-key-c-key">
+                    <col class="vb-key-c-by">
+                    <col class="vb-key-c-fp">
+                    <col class="vb-key-c-status">
+                    <col class="vb-key-c-actions">
+                </colgroup>
                 <thead>
                     <tr>
                         <th>"KEY"</th>
@@ -352,13 +417,18 @@ async fn admin_key_page(cx: &Cx) -> Result {
                         for row in active {
                             let fp_full = row.fingerprint.clone();
                             let fp_short = short_fingerprint(&row.fingerprint);
-                            let revoke_href = format!(
-                                "/admin/key?revoke={}", row.credential_id_hex
+                            let revoke_href = key_revoke_href(
+                                pending_page_for_links,
+                                active_page_for_links,
+                                &row.credential_id_hex,
                             );
+                            let key_label = if row.admin_label.trim().is_empty() {
+                                "—".to_owned()
+                            } else {
+                                row.admin_label.clone()
+                            };
                             <tr>
-                                <td style="font-weight: 700;">
-                                    (row.admin_label.clone())
-                                </td>
+                                <td style="font-weight: 700;">(key_label)</td>
                                 <td>(row.user_handle.clone())</td>
                                 <td><span title=(fp_full)>(fp_short)</span></td>
                                 <td>
@@ -379,13 +449,6 @@ async fn admin_key_page(cx: &Cx) -> Result {
                 </tbody>
             </table>
         </div>
-        <p class="vb-muted" style="margin-top: 14px;">
-            "Enrolments, approvals and revocations are appended to the helper audit log "
-            "("
-            <span class="vb-mono">"blob_path/audit/webauthn.log"</span>
-            "); "
-            "ops alert on revoke bursts."
-        </p>
 
         if let Some(target) = revoke_target {
             let cred = target.credential_id_hex.clone();
@@ -545,11 +608,12 @@ mod tests {
     #[test]
     fn approve_command_matches_cli_contract() {
         assert_eq!(
-            approve_command("ff00", ""),
+            approve_command("ff00"),
             "vcp-store key approve --fingerprint ff00"
         );
         assert!(
-            approve_command("ff00", "/tmp/vcp-storage").contains("VCP_ENVIRONMENT=development")
+            !approve_command("aabb").contains("VCP_ENVIRONMENT"),
+            "UI must not prefix env/path onto the approve command"
         );
     }
 

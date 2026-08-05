@@ -118,10 +118,29 @@ pub enum StorageRequest {
     KeyRevoke {
         credential_id_b64: String,
     },
-    /// List pending or active KEY credentials (JSON in `summary` field).
+    /// List pending or active KEY credentials (JSON array in `summary`;
+    /// matching row count in `size`).
     KeyList {
         kind: String,
+        /// 1-based page (default 1).
+        #[serde(default = "default_key_list_page")]
+        page: u32,
+        /// Page size (default 4, clamped 1..=100 server-side).
+        #[serde(default = "default_key_list_page_size")]
+        page_size: u32,
     },
+    /// Fetch one credential by id (JSON object in `summary`).
+    KeyGet {
+        credential_id_b64: String,
+    },
+}
+
+fn default_key_list_page() -> u32 {
+    1
+}
+
+fn default_key_list_page_size() -> u32 {
+    4
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,6 +285,24 @@ impl StorageResponse {
             ok: true,
             err: None,
             size: None,
+            sha256: None,
+            upload_id: None,
+            deleted: None,
+            challenge_id: None,
+            challenge: None,
+            summary: Some(summary.into()),
+            rp_id: None,
+            allow_credentials: None,
+            fingerprint: None,
+        }
+    }
+
+    /// KEY list page: `summary` = JSON array, `size` = total matching rows.
+    pub fn ok_key_list(summary: impl Into<String>, total: u64) -> Self {
+        Self {
+            ok: true,
+            err: None,
+            size: Some(total),
             sha256: None,
             upload_id: None,
             deleted: None,

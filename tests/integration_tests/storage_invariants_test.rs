@@ -303,16 +303,37 @@ fn inv_key_dashboard_ui_pinned() {
     assert!(page.contains("perms.key_manage"), "Casbin gate");
     assert!(page.contains("vcp-key-fingerprint"), "E1 fingerprint block");
     assert!(
+        page.contains("activate it from the server with"),
+        "compact E1/E2 callout"
+    );
+    assert!(
+        page.contains("vcp-store key approve"),
+        "CLI approve chip in callout"
+    );
+    assert!(
         page.contains("key approve --fingerprint"),
-        "CLI approve command (E2)"
+        "pending-table copy still exposes full approve CLI"
     );
     assert!(
-        page.contains("VCP_ENVIRONMENT=development"),
-        "dev spawn approve command must set VCP_ENVIRONMENT"
+        !page.contains("VCP_ENVIRONMENT=development"),
+        "approve copy must not prefix VCP_ENVIRONMENT / target/debug"
     );
     assert!(
-        page.contains("vcp-store key pending"),
-        "helper-host cross-check hint"
+        !page.contains("target/debug/vcp-store"),
+        "approve copy must be bare vcp-store key approve"
+    );
+    assert!(page.contains("\"Create key\""), "enrol CTA label");
+    assert!(
+        !page.contains("Create passkey (PENDING)"),
+        "enrol CTA must not say Create passkey (PENDING)"
+    );
+    assert!(
+        !page.contains("Per-admin KEY"),
+        "page lead must stay removed"
+    );
+    assert!(
+        !page.contains("blob_path/audit/webauthn.log"),
+        "audit-log footer must stay removed from dashboard copy"
     );
     assert!(
         page.contains("!= \"revoke\""),
@@ -328,8 +349,46 @@ fn inv_key_dashboard_ui_pinned() {
         "portal enrol must share helper label normalization"
     );
     assert!(
-        page.contains("https://localhost:3000"),
-        "dev hint: WebAuthn requires localhost, not 127.0.0.1"
+        page.contains("KEY_PAGE_SIZE") && page.contains("pending_page"),
+        "KEY lists must paginate with KEY_PAGE_SIZE + pending_page"
+    );
+    assert!(
+        page.contains("active_page") && page.contains("list_toolbar"),
+        "ACTIVE list must paginate independently with list_toolbar"
+    );
+    assert!(
+        page.contains("key_list_page"),
+        "dashboard must use paginated key_list_page (not full dump)"
+    );
+    assert!(
+        page.contains("vb-table-key") && page.contains("vb-key-c-key"),
+        "PENDING/ACTIVE must share identical colgroup grid"
+    );
+    let styles = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
+    assert!(
+        styles.contains("col.vb-key-c-key") && styles.contains("table-layout: fixed"),
+        "styles.css must pin KEY colgroup widths"
+    );
+    assert!(
+        !page.contains("key_list(\""),
+        "dashboard must not call unpaginated key_list"
+    );
+
+    let list_page = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/list_page.rs"));
+    assert!(
+        list_page.contains("KEY_PAGE_SIZE: usize = 4"),
+        "KEY_PAGE_SIZE must be 4"
+    );
+
+    let meta = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/storage/meta_db.rs"
+    ));
+    assert!(
+        meta.contains("LIMIT ?1 OFFSET ?2")
+            && meta.contains("list_pending_credentials_page")
+            && meta.contains("count_pending_credentials"),
+        "KEY paging must be SQL LIMIT/OFFSET + COUNT"
     );
 
     let rail = include_str!(concat!(

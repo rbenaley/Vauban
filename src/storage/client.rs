@@ -707,24 +707,62 @@ impl StorageClient {
         }
     }
 
-    pub fn key_list(&self, kind: &str) -> Result<String, StorageError> {
+    /// Paginated KEY list. Returns `(items_json_array, total_rows)`.
+    pub fn key_list_page(
+        &self,
+        kind: &str,
+        page: usize,
+        page_size: usize,
+    ) -> Result<(String, usize), StorageError> {
         match &self.backend {
             Backend::Inline(engine) => {
                 let eng = engine.lock().expect("inline engine");
-                eng.key_list_json(kind)
+                eng.key_list_json(kind, page, page_size)
             }
             Backend::Ipc { .. } => {
                 let req = StorageRequest::KeyList {
                     kind: kind.to_owned(),
+                    page: u32::try_from(page.max(1)).unwrap_or(1),
+                    page_size: u32::try_from(page_size.clamp(1, 100)).unwrap_or(4),
                 };
                 let resp = self.roundtrip(req)?;
                 if resp.ok {
-                    Ok(resp.summary.unwrap_or_else(|| "[]".into()))
+                    let total = resp.size.unwrap_or(0) as usize;
+                    Ok((resp.summary.unwrap_or_else(|| "[]".into()), total))
                 } else {
                     Err(StorageError::new(
                         StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
                             .unwrap_or(StorageErrorCode::Io),
                         "key_list",
+                    ))
+                }
+            }
+        }
+    }
+
+    /// One credential JSON object (for revoke overlay across pages).
+    pub fn key_get(&self, credential_id: &[u8]) -> Result<Option<String>, StorageError> {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                eng.key_get_json(credential_id)
+            }
+            Backend::Ipc { .. } => {
+                let req = StorageRequest::KeyGet {
+                    credential_id_b64: URL_SAFE_NO_PAD.encode(credential_id),
+                };
+                let resp = self.roundtrip(req)?;
+                if resp.ok {
+                    Ok(resp.summary)
+                } else if resp.err.as_deref() == Some("not_found") {
+                    Ok(None)
+                } else {
+                    Err(StorageError::new(
+                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
+                            .unwrap_or(StorageErrorCode::Io),
+                        "key_get",
                     ))
                 }
             }

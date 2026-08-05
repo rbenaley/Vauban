@@ -58,6 +58,17 @@ struct InflightUpload {
     challenge_id: Option<String>,
 }
 
+fn cred_row_json(r: WebauthnCredentialRow) -> serde_json::Value {
+    json!({
+        "credential_id_hex": hex::encode(&r.credential_id),
+        "fingerprint": credential_fingerprint(&r.credential_id, &r.public_key_cose),
+        "admin_label": r.admin_label,
+        "user_handle": r.user_handle,
+        "status": r.status.as_str(),
+        "is_soft": r.is_soft,
+    })
+}
+
 /// In-process storage engine (also used by `vcp-store`).
 pub struct StorageEngine {
     dir: Dir,
@@ -781,28 +792,46 @@ impl StorageEngine {
         db.list_all_credentials()
     }
 
-    /// JSON list of pending or active credentials for IPC / KEY UI.
-    pub fn key_list_json(&self, kind: &str) -> Result<String, StorageError> {
+    /// JSON page of pending or active credentials for IPC / KEY UI.
+    ///
+    /// Returns `(items_json_array, total_matching_rows)`. Paging is SQL
+    /// `LIMIT`/`OFFSET` (newest first). `page` is 1-based.
+    pub fn key_list_json(
+        &self,
+        kind: &str,
+        page: usize,
+        page_size: usize,
+    ) -> Result<(String, usize), StorageError> {
+        use crate::list_page::{clamp_page, page_count, page_offset};
+
         let _ = self.expire_stale_pending();
+        let page_size = page_size.clamp(1, 100);
         let db = self.meta.lock().expect("meta mutex");
-        let rows = match kind {
-            "pending" => db.list_pending_credentials()?,
-            _ => db.list_active_credentials()?,
+        let total = match kind {
+            "pending" => db.count_pending_credentials()?,
+            _ => db.count_active_credentials()?,
         };
-        let items: Vec<serde_json::Value> = rows
-            .into_iter()
-            .map(|r| {
-                json!({
-                    "credential_id_hex": hex::encode(&r.credential_id),
-                    "fingerprint": credential_fingerprint(&r.credential_id, &r.public_key_cose),
-                    "admin_label": r.admin_label,
-                    "user_handle": r.user_handle,
-                    "status": r.status.as_str(),
-                    "is_soft": r.is_soft,
-                })
-            })
-            .collect();
-        Ok(serde_json::to_string(&items).unwrap_or_else(|_| "[]".into()))
+        let pages = page_count(total, page_size);
+        let page = clamp_page(page.max(1), pages);
+        let offset = page_offset(page, page_size);
+        let rows = match kind {
+            "pending" => db.list_pending_credentials_page(page_size, offset)?,
+            _ => db.list_active_credentials_page(page_size, offset)?,
+        };
+        let items: Vec<serde_json::Value> = rows.into_iter().map(cred_row_json).collect();
+        Ok((
+            serde_json::to_string(&items).unwrap_or_else(|_| "[]".into()),
+            total,
+        ))
+    }
+
+    /// Single credential JSON for revoke overlay (any status).
+    pub fn key_get_json(&self, credential_id: &[u8]) -> Result<Option<String>, StorageError> {
+        let db = self.meta.lock().expect("meta mutex");
+        let Some(row) = db.get_credential(credential_id)? else {
+            return Ok(None);
+        };
+        Ok(Some(cred_row_json(row).to_string()))
     }
 
     pub fn seed_soft_active_credential(
@@ -1404,7 +1433,7 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].admin_label, "key-v2");
         assert!(
-            !eng.key_list_json("active").unwrap().contains(&fp),
+            !eng.key_list_json("active", 1, 100).unwrap().0.contains(&fp),
             "revoked key must not remain ACTIVE while PENDING re-enrol exists"
         );
     }
@@ -1425,7 +1454,8 @@ mod tests {
             credential_fingerprint(&pending[0].credential_id, &pending[0].public_key_cose),
             fp
         );
-        let pending_json = eng.key_list_json("pending").unwrap();
+        let (pending_json, pending_total) = eng.key_list_json("pending", 1, 4).unwrap();
+        assert_eq!(pending_total, 1);
         assert!(pending_json.contains(&fp) && pending_json.contains("macbook"));
         // Ceremony challenge table stays empty until put_prepare / challenge_begin.
         assert!(eng.list_pending_challenges_cli().unwrap().is_empty());
@@ -1434,14 +1464,50 @@ mod tests {
         let all = eng.list_all_credentials_cli().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].status, CredentialStatus::Active);
-        let active_json = eng.key_list_json("active").unwrap();
+        let (active_json, active_total) = eng.key_list_json("active", 1, 4).unwrap();
+        assert_eq!(active_total, 1);
         assert!(active_json.contains(&fp));
-        assert!(!eng.key_list_json("pending").unwrap().contains(&fp));
+        assert!(!eng.key_list_json("pending", 1, 4).unwrap().0.contains(&fp));
         eng.key_revoke(b"pend-cli").unwrap();
-        assert!(!eng.key_list_json("active").unwrap().contains(&fp));
+        assert!(!eng.key_list_json("active", 1, 4).unwrap().0.contains(&fp));
         let listed = eng.list_all_credentials_cli().unwrap();
         assert_eq!(listed.len(), 1);
         assert!(listed[0].revoked_at.is_some(), "revoke sets revoked_at");
+    }
+
+    #[test]
+    fn key_list_json_pages_with_sql_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let eng = StorageEngine::open(&root, test_cfg()).unwrap();
+        for i in 0..9 {
+            let cred = format!("cred-{i}");
+            let cose = format!("cose-{i}");
+            eng.key_enrol_stage(
+                cred.as_bytes(),
+                cose.as_bytes(),
+                "1",
+                &format!("k{i}"),
+                true,
+            )
+            .unwrap();
+        }
+        let (page1, total) = eng.key_list_json("pending", 1, 4).unwrap();
+        assert_eq!(total, 9);
+        let rows1: Vec<serde_json::Value> = serde_json::from_str(&page1).unwrap();
+        assert_eq!(rows1.len(), 4);
+        let (page3, _) = eng.key_list_json("pending", 3, 4).unwrap();
+        let rows3: Vec<serde_json::Value> = serde_json::from_str(&page3).unwrap();
+        assert_eq!(rows3.len(), 1);
+        let labels1: std::collections::HashSet<_> = rows1
+            .iter()
+            .filter_map(|r| r.get("admin_label").and_then(|v| v.as_str()))
+            .collect();
+        let label3 = rows3[0]["admin_label"].as_str().unwrap();
+        assert!(
+            !labels1.contains(label3),
+            "page 3 row must not appear on page 1"
+        );
     }
 
     #[test]
