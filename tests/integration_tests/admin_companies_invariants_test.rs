@@ -39,12 +39,17 @@ fn inv_lts_subscription_cap_and_steppers() {
         env!("CARGO_MANIFEST_DIR"),
         "/src/app/admin/companies/form.rs"
     ));
-    assert!(form.contains("lts_inc"));
-    assert!(form.contains("lts_dec"));
-    assert!(form.contains("ind_inc"));
-    assert!(form.contains("ind_dec"));
+    assert!(form.contains("signal lts"));
+    assert!(form.contains("signal industrial"));
+    assert!(form.contains("data-lts-stepper-client"));
+    assert!(form.contains("data-industrial-lts-stepper-client"));
+    assert!(form.contains("@click=$("));
+    assert!(form.contains("type=\"button\""));
+    assert!(!form.contains("lts_inc"));
+    assert!(!form.contains("ind_dec"));
     assert!(form.contains("Vauban LTS subscriptions"));
     assert!(form.contains("name=\"lts_subscriptions\""));
+    assert!(form.contains(":value=$(lts.get())"));
     let accounts = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/companies_accounts.rs"
@@ -72,12 +77,24 @@ fn inv_lts_subscription_cap_and_steppers() {
         "/src/app/admin/companies/new.rs"
     ));
     assert!(new.contains("parse_lts_subscriptions"));
+    assert!(
+        !new.contains("apply_lts_compose_action"),
+        "create POST must not re-render for LTS steppers"
+    );
     let edit = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/app/admin/companies/company_id.rs"
     ));
     assert!(edit.contains(".lts_subscriptions("));
     assert!(edit.contains(".industrial_lts_subscriptions("));
+    assert!(
+        !edit.contains("apply_lts_compose_action"),
+        "edit POST must not re-render for LTS steppers"
+    );
+    assert!(
+        accounts.contains("fn apply_lts_compose_action"),
+        "pure LTS stepper math must remain for unit/proptest/battle"
+    );
 }
 
 #[test]

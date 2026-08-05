@@ -37,13 +37,13 @@ grep -n 'max_accounts_per_org\|sync_org_accounts' "$NEW" >/dev/null \
 grep -n 'parse_lts_subscriptions\|lts_subscriptions:' "$NEW" >/dev/null \
   || fail "$NEW must persist LTS subscription counts"
 grep -n 'apply_lts_compose_action' "$NEW" >/dev/null \
-  || fail "$NEW must handle LTS stepper compose actions"
+  && fail "$NEW must not POST-handle LTS steppers (client signals)"
 grep -n 'lts_subscriptions(' "$EDIT" >/dev/null \
   || fail "$EDIT must update lts_subscriptions"
 grep -n 'industrial_lts_subscriptions(' "$EDIT" >/dev/null \
   || fail "$EDIT must update industrial_lts_subscriptions"
 grep -n 'apply_lts_compose_action' "$EDIT" >/dev/null \
-  || fail "$EDIT must handle LTS stepper compose actions"
+  && fail "$EDIT must not POST-handle LTS steppers (client signals)"
 grep -n 'see_other' "$NEW" >/dev/null || fail "$NEW save must use see_other (303 PRG)"
 grep -nE 'Err\(redirect\(' "$NEW" >/dev/null \
   && fail "$NEW must not Err(redirect) on POST (307 re-POSTs / empties download)"
@@ -68,12 +68,26 @@ grep -n 'Vauban LTS subscriptions' "$FORM" >/dev/null \
   || fail "$FORM must show Vauban LTS subscriptions stepper"
 grep -n 'Vauban Industrial LTS subscriptions' "$FORM" >/dev/null \
   || fail "$FORM must show Industrial LTS stepper"
+grep -n 'signal lts' "$FORM" >/dev/null \
+  || fail "$FORM must use client signal for Vauban LTS stepper"
+grep -n 'signal industrial' "$FORM" >/dev/null \
+  || fail "$FORM must use client signal for Industrial LTS stepper"
+grep -n 'data-lts-stepper-client' "$FORM" >/dev/null \
+  || fail "$FORM must mark LTS steppers as client-side"
+grep -nE 'type="button"' "$FORM" >/dev/null \
+  || fail "$FORM LTS steppers must use type=button (no POST per click)"
+grep -nE '@click=\$\(' "$FORM" >/dev/null \
+  || fail "$FORM LTS steppers must use @click signal handlers"
 grep -n 'lts_inc\|lts_dec\|ind_inc\|ind_dec' "$FORM" >/dev/null \
-  || fail "$FORM must expose LTS compose_action steppers"
+  && fail "$FORM must not use LTS compose_action steppers"
 grep -n 'name="lts_subscriptions"' "$FORM" >/dev/null \
   || fail "$FORM must post lts_subscriptions"
 grep -n 'name="industrial_lts_subscriptions"' "$FORM" >/dev/null \
   || fail "$FORM must post industrial_lts_subscriptions"
+grep -n ':value=\$(lts.get())' "$FORM" >/dev/null \
+  || fail "$FORM must sync lts_subscriptions hidden field from signal"
+grep -n 'fn apply_lts_compose_action' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS must keep pure LTS stepper math for tests"
 grep -n 'fn company_form_response' "$FORM" >/dev/null \
   || fail "$FORM must wrap POST re-renders via company_form_response"
 grep -n 'fn render_admin_page' src/app/admin.rs >/dev/null \

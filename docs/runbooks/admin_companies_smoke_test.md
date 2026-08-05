@@ -49,9 +49,10 @@ just test --test integration_tests -- admin_companies -- --test-threads=1
    USER ACCOUNTS pills, Edit + trash). No reserved `vauban` card.
 3. Click **+ New company**; fill **Technical contact — full name** and
    **Technical contact — email** (two fields), set **Vauban LTS** /
-   **Industrial LTS** steppers (0..N, start at 0), plus up to seat-cap
-   email-only USER ACCOUNTS (no password fields). Save — invitation mail
-   is sent for each new account.
+   **Industrial LTS** steppers with `+` / `-` (client-side signals: no
+   page reload per click; values post on Save only; 0..N, start at 0),
+   plus up to seat-cap email-only USER ACCOUNTS (no password fields).
+   Save — invitation mail is sent for each new account.
 4. Confirm list meta row has ADDRESS / VAT / SUBSCRIPTIONS columns; the
    subscriptions column label is
    `SUBSCRIPTIONS (VAUBAN LTS / VAUBAN INDUSTRIAL LTS)` with ratio `2/1`

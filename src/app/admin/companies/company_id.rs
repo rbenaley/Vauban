@@ -18,9 +18,9 @@ use super::form::{CompanyFormView, company_form_response, render_company_form};
 use crate::{
     auth::{capability_denied, config, db, require_staff},
     companies_accounts::{
-        apply_lts_compose_action, clamp_lts_count, delete_org_with_accounts,
-        emails_from_indexed_map, normalize_contact_email, normalize_emails, parse_lts_field,
-        parse_lts_subscriptions, sync_org_accounts,
+        clamp_lts_count, delete_org_with_accounts, emails_from_indexed_map,
+        normalize_contact_email, normalize_emails, parse_lts_field, parse_lts_subscriptions,
+        sync_org_accounts,
     },
     docs_version::is_delete_confirm,
     models::{Membership, Organization, RESERVED_ORG_SLUG},
@@ -204,25 +204,6 @@ async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
     let mut emails = form.emails();
     let (lts, industrial) = form.lts_counts(max_lts);
     let action = form.compose_action.trim();
-
-    if let Some((next_lts, next_ind)) = apply_lts_compose_action(lts, industrial, action, max_lts) {
-        return company_form_response(
-            cx,
-            edit_view(
-                id,
-                &form,
-                emails,
-                EditFormState {
-                    lts: next_lts,
-                    industrial: next_ind,
-                    max_accounts: max,
-                    max_lts,
-                    error: None,
-                },
-            ),
-        )
-        .await;
-    }
 
     if let Some(idx) = action.strip_prefix("remove:")
         && let Ok(i) = idx.parse::<usize>()

@@ -36,11 +36,16 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
     let emails = ensure_email_rows(&state.emails, max);
     let can_add_row = emails.len() < max;
     let rows_label = emails.len().to_string();
-    let lts_label = state.lts_subscriptions.to_string();
-    let ind_label = state.industrial_lts_subscriptions.to_string();
+    let lts_init = f64::from(state.lts_subscriptions);
+    let ind_init = f64::from(state.industrial_lts_subscriptions);
+    let lts_max = state.max_lts as f64;
 
     view! {
         cx =>
+        signal lts = lts_init;
+        signal industrial = ind_init;
+        signal lts_cap = lts_max;
+
         <div>
             <a
                 class="vb-back"
@@ -63,15 +68,11 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
             <div class="vb-panel" style="padding: 24px;">
                 <form class="vb-form" method="POST" action=(state.action.clone())>
                     <input type="hidden" name="account_rows" value=(rows_label)>
-                    <input
-                        type="hidden"
-                        name="lts_subscriptions"
-                        value=(lts_label.clone())
-                    >
+                    <input type="hidden" name="lts_subscriptions" :value=$(lts.get())>
                     <input
                         type="hidden"
                         name="industrial_lts_subscriptions"
-                        value=(ind_label.clone())
+                        :value=$(industrial.get())
                     >
                     <label for="name">"Company name *"</label>
                     <input id="name" name="name" required="" value=(state.name.clone())>
@@ -112,30 +113,37 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
                             </span>
                             <div
                                 class="vb-lts-stepper"
+                                data-lts-stepper-client="1"
                                 style="display: flex; align-items: center; gap: 8px;"
                             >
                                 <button
                                     class="vb-btn muted compact"
-                                    type="submit"
-                                    name="compose_action"
-                                    value="lts_dec"
+                                    type="button"
                                     aria-label="Decrease Vauban LTS subscriptions"
+                                    @click=$(|_e| {
+                                        if lts.get() > 0.0 {
+                                            lts.decrement();
+                                        }
+                                    })
                                 >
                                     "-"
                                 </button>
                                 <span
                                     class="vb-mono"
-                                    data-lts-subscriptions=(lts_label.clone())
+                                    :data-lts-subscriptions=$(lts.get())
                                     style="min-width: 2ch; text-align: center; font-size: 16px; font-weight: 700;"
                                 >
-                                    (lts_label.clone())
+                                    $(lts.get())
                                 </span>
                                 <button
                                     class="vb-btn muted compact"
-                                    type="submit"
-                                    name="compose_action"
-                                    value="lts_inc"
+                                    type="button"
                                     aria-label="Increase Vauban LTS subscriptions"
+                                    @click=$(|_e| {
+                                        if lts.get() < lts_cap.get() {
+                                            lts.increment();
+                                        }
+                                    })
                                 >
                                     "+"
                                 </button>
@@ -149,30 +157,37 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
                             </span>
                             <div
                                 class="vb-lts-stepper"
+                                data-industrial-lts-stepper-client="1"
                                 style="display: flex; align-items: center; gap: 8px;"
                             >
                                 <button
                                     class="vb-btn muted compact"
-                                    type="submit"
-                                    name="compose_action"
-                                    value="ind_dec"
+                                    type="button"
                                     aria-label="Decrease Vauban Industrial LTS subscriptions"
+                                    @click=$(|_e| {
+                                        if industrial.get() > 0.0 {
+                                            industrial.decrement();
+                                        }
+                                    })
                                 >
                                     "-"
                                 </button>
                                 <span
                                     class="vb-mono"
-                                    data-industrial-lts-subscriptions=(ind_label.clone())
+                                    :data-industrial-lts-subscriptions=$(industrial.get())
                                     style="min-width: 2ch; text-align: center; font-size: 16px; font-weight: 700;"
                                 >
-                                    (ind_label.clone())
+                                    $(industrial.get())
                                 </span>
                                 <button
                                     class="vb-btn muted compact"
-                                    type="submit"
-                                    name="compose_action"
-                                    value="ind_inc"
+                                    type="button"
                                     aria-label="Increase Vauban Industrial LTS subscriptions"
+                                    @click=$(|_e| {
+                                        if industrial.get() < lts_cap.get() {
+                                            industrial.increment();
+                                        }
+                                    })
                                 >
                                     "+"
                                 </button>

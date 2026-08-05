@@ -6,9 +6,9 @@ use vcp::models::{MAX_USERS_PER_COMPANY, Membership, Organization, RESERVED_ORG_
 use vcp::seats::{can_add_member, membership_count};
 
 use crate::common::{
-    cleanup, create_membership, create_org_with_membership, create_test_org, create_test_user,
-    db_lock, get, login_cookie, post_form, status, test_db, test_router, unique_email, unique_slug,
-    urlencoding_encode,
+    assert_topcoat_click_handlers_are_functions, cleanup, create_membership,
+    create_org_with_membership, create_test_org, create_test_user, db_lock, get, login_cookie,
+    post_form, status, test_db, test_router, unique_email, unique_slug, urlencoding_encode,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -490,6 +490,38 @@ async fn e2e_create_rejects_over_cap() {
 }
 
 #[tokio::test]
+async fn e2e_company_form_lts_steppers_are_client_signals() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("co-lts-sig");
+    let slug = unique_slug("co-lts-sig-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let page = get(&router, "/admin/companies/new", cookie.as_deref()).await;
+    assert_eq!(status(&page), StatusCode::OK);
+    let html = body_text(page).await;
+    assert!(
+        html.contains("data-lts-stepper-client"),
+        "new form must mark client LTS steppers: {html}"
+    );
+    assert!(
+        html.contains("data-industrial-lts-stepper-client"),
+        "new form must mark client industrial steppers: {html}"
+    );
+    assert!(
+        !html.contains("compose_action\" value=\"lts_inc\"") && !html.contains("value=\"lts_inc\""),
+        "LTS + must not POST compose_action: {html}"
+    );
+    assert_topcoat_click_handlers_are_functions(&html);
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
 async fn e2e_member_denied_admin_companies() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
@@ -731,9 +763,14 @@ async fn e2e_admin_lts_counters_persist_and_fiche_user_can_login() {
     );
     assert!(
         edit_html.contains("data-industrial-lts-subscriptions=\"1\"")
-            || edit_html.contains("ind_inc"),
+            || edit_html.contains("data-industrial-lts-stepper-client"),
         "edit form must show industrial stepper: {edit_html}"
     );
+    assert!(
+        edit_html.contains("data-lts-stepper-client"),
+        "edit form must expose client LTS steppers: {edit_html}"
+    );
+    assert_topcoat_click_handlers_are_functions(&edit_html);
 
     // Sign out staff; login as fiche-provisioned member via magic link.
     let _ = post_form(&router, "/logout", admin_cookie.as_deref(), "").await;

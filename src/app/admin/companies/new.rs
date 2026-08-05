@@ -13,8 +13,8 @@ use super::form::{CompanyFormView, company_form_response, render_company_form};
 use crate::{
     auth::{capability_denied, config, db, require_staff},
     companies_accounts::{
-        apply_lts_compose_action, emails_from_indexed_map, normalize_contact_email,
-        normalize_emails, parse_lts_field, parse_lts_subscriptions, sync_org_accounts,
+        emails_from_indexed_map, normalize_contact_email, normalize_emails, parse_lts_field,
+        parse_lts_subscriptions, sync_org_accounts,
     },
     models::{Organization, RESERVED_ORG_SLUG},
     perms::perms_for_user,
@@ -134,14 +134,6 @@ async fn admin_companies_create(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
     let mut emails = form.emails();
     let (lts, industrial) = form.lts_counts(max_lts);
     let action = form.compose_action.trim();
-
-    if let Some((next_lts, next_ind)) = apply_lts_compose_action(lts, industrial, action, max_lts) {
-        return company_form_response(
-            cx,
-            form_view(&form, emails, next_lts, next_ind, max, max_lts, None),
-        )
-        .await;
-    }
 
     if let Some(idx) = action.strip_prefix("remove:")
         && let Ok(i) = idx.parse::<usize>()

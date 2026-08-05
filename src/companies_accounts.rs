@@ -49,7 +49,8 @@ pub fn parse_lts_subscriptions(raw: &str, max: usize, label: &str) -> Result<i32
     Ok(v)
 }
 
-/// Apply a compose stepper action; returns updated (lts, industrial) counts.
+/// Pure LTS stepper step (inc/dec + clamp). UI steppers are client signals;
+/// this helper stays the shared math model for unit / proptest / battle.
 pub fn apply_lts_compose_action(
     lts: i32,
     industrial: i32,
