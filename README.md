@@ -16,6 +16,10 @@ Authenticated customer portal for Vauban.
 - Rust 1.95+ (see `rust-toolchain.toml`)
 - [just](https://github.com/casey/just)
 - PostgreSQL listening locally
+- **FreeBSD staging / build hosts:** `pkg install tailwindcss4` (CLI at
+  `/usr/local/bin/tailwindcss`). Topcoat’s GitHub standalone Tailwind binary
+  has no FreeBSD asset; `build.rs` uses that path (or `PATH` /
+  `TAILWIND_CLI`) instead of downloading.
 
 Create databases:
 

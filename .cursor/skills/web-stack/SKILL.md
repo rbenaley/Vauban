@@ -57,6 +57,7 @@ static-asset embedding assumptions unless explicitly requested.
 | Server actions | `#[procedure]` (HTTP RPC; **args are untrusted**) |
 | Styling | `tailwind` + `styles.css` Concept `@theme` / `vb-*` (not Topcoat UI) |
 | Assets | `stylesheet!()` + `AssetBundle::load()`; Fontsource via `font-fontsource` |
+| FreeBSD Tailwind | `pkg install tailwindcss4` → `/usr/local/bin/tailwindcss`; `build.rs` uses local CLI (no GitHub download) |
 | Cookies | `.cookies()`; signed / private (AES-256-GCM) jars; app `Key` in app context |
 | Sessions | `.sessions(SessionConfig)` — BYO storage of **SHA-256 token hash** + expiry |
 | CSRF | Session `OriginLayer` (Sec-Fetch-Site / Origin) — keep mutations on non-GET |
