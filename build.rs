@@ -44,14 +44,13 @@ fn resolve_freebsd_tailwind_cli() -> std::path::PathBuf {
 
 /// The FreeBSD port installs `tailwindcss` under `/usr/local/lib/node_modules`.
 /// The Node CLI resolves `@import "tailwindcss"` from the Cargo package root,
-/// so expose that package via a gitignored symlink (and `NODE_PATH`).
+/// so expose that package via a gitignored symlink.
 #[cfg(target_os = "freebsd")]
 fn ensure_freebsd_tailwind_package() {
     use std::fs;
     use std::os::unix::fs::symlink;
     use std::path::{Path, PathBuf};
 
-    const SYSTEM_NM: &str = "/usr/local/lib/node_modules";
     const SYSTEM_PKG: &str = "/usr/local/lib/node_modules/tailwindcss";
 
     if !Path::new(SYSTEM_PKG).is_dir() {
@@ -60,8 +59,6 @@ fn ensure_freebsd_tailwind_package() {
              Reinstall with `pkg install tailwindcss4`."
         );
     }
-
-    prepend_node_path(SYSTEM_NM);
 
     let manifest = PathBuf::from(
         env::var_os("CARGO_MANIFEST_DIR")
@@ -86,30 +83,6 @@ fn ensure_freebsd_tailwind_package() {
             link.display()
         );
     });
-}
-
-#[cfg(target_os = "freebsd")]
-fn prepend_node_path(dir: &str) {
-    use std::path::{Path, PathBuf};
-
-    let current = env::var_os("NODE_PATH");
-    let already = current
-        .as_ref()
-        .is_some_and(|v| env::split_paths(v).any(|p| p == Path::new(dir)));
-    if already {
-        return;
-    }
-    let mut paths = vec![PathBuf::from(dir)];
-    if let Some(v) = current {
-        paths.extend(env::split_paths(&v));
-    }
-    let joined = env::join_paths(paths).unwrap_or_else(|err| {
-        panic!("failed to build NODE_PATH including {dir}: {err}");
-    });
-    // SAFETY: build script is single-threaded before spawning the Tailwind CLI.
-    unsafe {
-        env::set_var("NODE_PATH", joined);
-    }
 }
 
 #[cfg(target_os = "freebsd")]
