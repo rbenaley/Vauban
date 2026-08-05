@@ -135,7 +135,7 @@ Requires at least one ACTIVE CTAP2 key (see ops breakglass / CTAP2 enrol).
 ## G -- CTAP2 enrol / approve / revoke (Pass / Fail)
 
 Local lab: open **`https://localhost:3000/admin/ctap2`** (not `127.0.0.1`).
-WebAuthn rejects IP hosts; `webauthn_rp_id` / `webauthn_origin` are `localhost`.
+WebAuthn rejects IP hosts; `webauthn_origin` uses `localhost` (RP ID derived).
 Accept the self-signed cert for `localhost` if prompted.
 
 1. `/admin/ctap2` → Create passkey → PENDING fingerprint shown + CLI hint.

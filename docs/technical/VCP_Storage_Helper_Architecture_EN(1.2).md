@@ -121,8 +121,7 @@ upload_ttl_secs = 3600
 webauthn_required = true
 webauthn_user_verification = "required"
 webauthn_strict_sign_count = false   # true => reject + alert on counter regression
-webauthn_rp_id = "access.vauban.sh"
-webauthn_origin = "https://access.vauban.sh"
+webauthn_origin = "https://access.vauban.sh"   # RP ID = origin hostname (derived)
 webauthn_challenge_ttl_secs = 300
 webauthn_pending_ttl_hours = 24   # PENDING enrol → expired if not approved; 0 = off
 ```

@@ -232,19 +232,30 @@ fn inv_webauthn_12_and_adrs_pinned() {
     ));
     assert!(webauthn.contains("canonical_summary"));
     assert!(webauthn.contains("webauthn_host_is_ip"));
+    assert!(webauthn.contains("rp_id_from_webauthn_origin"));
     assert!(webauthn.contains("test_attestation_object_b64"));
+
+    let client = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/storage/client.rs"
+    ));
+    assert!(
+        client.contains("webauthn-origin"),
+        "spawn must pass portal webauthn_origin to the helper"
+    );
 
     let dev = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/config/development.toml"
     ));
     assert!(
-        dev.contains("webauthn_rp_id = \"localhost\""),
-        "dev RP ID must be localhost (not an IP)"
+        dev.contains("webauthn_origin = \"https://localhost:3000\""),
+        "dev webauthn_origin must use localhost (RP ID derived; not an IP)"
     );
     assert!(
-        !dev.contains("webauthn_rp_id = \"127.0.0.1\""),
-        "dev must not use 127.0.0.1 as RP ID"
+        !dev.lines()
+            .any(|l| l.trim_start().starts_with("webauthn_rp_id")),
+        "webauthn_rp_id must not be a config key (derived from origin)"
     );
 
     assert!(

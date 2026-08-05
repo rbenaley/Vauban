@@ -44,7 +44,7 @@ upload_ttl_secs = 3600
 webauthn_required = true
 webauthn_user_verification = "required"
 webauthn_strict_sign_count = false
-webauthn_rp_id = "localhost"
+# RP ID is derived from the origin hostname (not configurable).
 webauthn_origin = "https://localhost:3000"
 webauthn_challenge_ttl_secs = 300
 webauthn_pending_ttl_hours = 24

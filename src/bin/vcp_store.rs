@@ -62,6 +62,7 @@ fn run() -> Result<(), String> {
     let mut max_images_per_org: Option<u32> = None;
     let mut upload_ttl_secs: Option<u64> = None;
     let mut webauthn_required: Option<bool> = None;
+    let mut webauthn_origin: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -112,6 +113,10 @@ fn run() -> Result<(), String> {
                     _ => None,
                 });
             }
+            "--webauthn-origin" => {
+                i += 1;
+                webauthn_origin = args.get(i).cloned();
+            }
             other => return Err(format!("unknown arg: {other}")),
         }
         i += 1;
@@ -125,7 +130,7 @@ fn run() -> Result<(), String> {
             return Err("blob_path must be absolute".into());
         }
         let defaults = StorageConfig::default();
-        let cfg = StorageConfig {
+        let mut cfg = StorageConfig {
             blob_path: blob,
             ipc: StorageIpcMode::Spawn,
             socket_path: listen.clone(),
@@ -138,8 +143,10 @@ fn run() -> Result<(), String> {
             upload_ttl_secs: upload_ttl_secs.unwrap_or(defaults.upload_ttl_secs),
             expected_peer_uid: None,
             webauthn_required: webauthn_required.unwrap_or(defaults.webauthn_required),
+            webauthn_origin: webauthn_origin.unwrap_or(defaults.webauthn_origin),
             ..defaults
         };
+        cfg.derive_webauthn_rp_id().map_err(|e| e.to_string())?;
         (cfg, listen, None)
     } else {
         let path = match config_path {
@@ -173,6 +180,10 @@ fn run() -> Result<(), String> {
         }
         if let Some(v) = webauthn_required {
             cfg.webauthn_required = v;
+        }
+        if let Some(v) = webauthn_origin {
+            cfg.webauthn_origin = v;
+            cfg.derive_webauthn_rp_id().map_err(|e| e.to_string())?;
         }
         let peer = expected_uid.or(helper.expected_peer_uid);
         if production && peer.is_none() {

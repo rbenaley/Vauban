@@ -98,6 +98,46 @@ pub fn webauthn_host_is_ip(host: &str) -> bool {
     })
 }
 
+/// Derive WebAuthn RP ID (DNS hostname, no port) from `webauthn_origin`.
+///
+/// Origin must be `https://host[:port][/…]`. IP hosts are rejected (same rule
+/// as the browser / `webauthn_host_is_ip`).
+pub fn rp_id_from_webauthn_origin(origin: &str) -> Result<String, String> {
+    let origin = origin.trim();
+    let rest = origin
+        .strip_prefix("https://")
+        .ok_or_else(|| format!("webauthn_origin must start with https:// (got {origin})"))?;
+    let hostport = rest.split('/').next().unwrap_or("");
+    if hostport.is_empty() {
+        return Err("webauthn_origin missing host".into());
+    }
+    let host = if let Some(end) = hostport.strip_prefix('[') {
+        // https://[::1]/443 — bracketed IPv6 (always an IP for RP ID purposes).
+        let inner = end
+            .split(']')
+            .next()
+            .ok_or_else(|| format!("webauthn_origin has malformed IPv6 host (got {origin})"))?;
+        if webauthn_host_is_ip(inner) {
+            return Err(format!(
+                "webauthn_origin host must not be an IP (got {inner}); use a DNS name such as localhost"
+            ));
+        }
+        inner
+    } else {
+        hostport
+            .split(':')
+            .next()
+            .filter(|h| !h.is_empty())
+            .ok_or_else(|| format!("webauthn_origin missing host (got {origin})"))?
+    };
+    if webauthn_host_is_ip(host) {
+        return Err(format!(
+            "webauthn_origin host must not be an IP (got {host}); use a DNS name such as localhost"
+        ));
+    }
+    Ok(host.to_owned())
+}
+
 pub fn canonical_summary(op: &str, binding: &Value) -> String {
     match op {
         "release_put_commit" => {
@@ -889,6 +929,21 @@ mod tests {
         assert!(!webauthn_host_is_ip("localhost"));
         assert!(!webauthn_host_is_ip("access.vauban.sh"));
         assert!(!webauthn_host_is_ip("127.0.0.256"));
+    }
+
+    #[test]
+    fn rp_id_from_webauthn_origin_strips_scheme_port_and_path() {
+        assert_eq!(
+            rp_id_from_webauthn_origin("https://localhost:3000").unwrap(),
+            "localhost"
+        );
+        assert_eq!(
+            rp_id_from_webauthn_origin("https://access.vauban.sh/path").unwrap(),
+            "access.vauban.sh"
+        );
+        assert!(rp_id_from_webauthn_origin("http://localhost").is_err());
+        assert!(rp_id_from_webauthn_origin("https://127.0.0.1:3000").is_err());
+        assert!(rp_id_from_webauthn_origin("https://[::1]/3000").is_err());
     }
 
     #[test]

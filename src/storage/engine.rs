@@ -69,7 +69,10 @@ pub struct StorageEngine {
 }
 
 impl StorageEngine {
-    pub fn open(root: impl AsRef<Path>, cfg: StorageConfig) -> Result<Self, StorageError> {
+    pub fn open(root: impl AsRef<Path>, mut cfg: StorageConfig) -> Result<Self, StorageError> {
+        cfg.derive_webauthn_rp_id().map_err(|e| {
+            StorageError::new(StorageErrorCode::Io, format!("webauthn_origin: {e}"))
+        })?;
         let root = root.as_ref().to_path_buf();
         if !root.is_absolute() {
             return Err(StorageError::new(

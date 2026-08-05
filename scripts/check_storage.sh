@@ -190,8 +190,16 @@ grep -n 'canonical_summary\|webauthn_host_is_ip\|test_attestation_object_b64' "$
 grep -n 'load_ctap2_cfg_with_env\|VCP_ENVIRONMENT' "$BIN" >/dev/null \
   || fail "$BIN must resolve ctap2 blob_path via VCP_ENVIRONMENT (testable helper)"
 DEV_TOML="config/development.toml"
-grep -n 'webauthn_rp_id = "localhost"' "$DEV_TOML" >/dev/null \
-  || fail "$DEV_TOML must set webauthn_rp_id = localhost (not an IP)"
+grep -n 'webauthn_origin = "https://localhost:3000"' "$DEV_TOML" >/dev/null \
+  || fail "$DEV_TOML must set webauthn_origin = https://localhost:3000 (RP ID derived)"
+if grep -n 'webauthn_rp_id' "$DEV_TOML" config/default.toml config/testing.toml \
+  "$STORE_CONF" 2>/dev/null | grep -v '^[^:]*:.*#' >/dev/null; then
+  fail "webauthn_rp_id must not appear in config (derived from webauthn_origin)"
+fi
+grep -n 'rp_id_from_webauthn_origin' src/storage/webauthn.rs >/dev/null \
+  || fail "webauthn.rs must derive RP ID from webauthn_origin"
+grep -n 'webauthn-origin' src/storage/client.rs src/bin/vcp_store.rs >/dev/null \
+  || fail "spawn path must pass --webauthn-origin so RP ID matches portal config"
 grep -n 'webauthn_pending_ttl_hours' "$STORE_CONF" >/dev/null \
   || fail "$STORE_CONF must set webauthn_pending_ttl_hours"
 grep -n 'webauthn_pending_ttl_hours' "$DEV_TOML" config/default.toml >/dev/null \

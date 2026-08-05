@@ -25,8 +25,7 @@ ipc = "inline"
 webauthn_required = false
 webauthn_user_verification = "required"
 webauthn_strict_sign_count = false
-# RP ID must be a DNS name (not an IP); keep origin host aligned.
-webauthn_rp_id = "localhost"
+# Origin host becomes the WebAuthn RP ID (must be a DNS name, not an IP).
 webauthn_origin = "https://localhost:3001"
 webauthn_challenge_ttl_secs = 300
 webauthn_pending_ttl_hours = 24

@@ -396,7 +396,8 @@ pub struct StorageConfig {
     pub webauthn_user_verification: String,
     #[serde(default)]
     pub webauthn_strict_sign_count: bool,
-    #[serde(default = "default_webauthn_rp_id")]
+    /// Derived from [`Self::webauthn_origin`] at load time (not a TOML key).
+    #[serde(skip)]
     pub webauthn_rp_id: String,
     #[serde(default = "default_webauthn_origin")]
     pub webauthn_origin: String,
@@ -425,11 +426,20 @@ impl Default for StorageConfig {
             webauthn_required: default_webauthn_required(),
             webauthn_user_verification: default_webauthn_uv(),
             webauthn_strict_sign_count: false,
-            webauthn_rp_id: default_webauthn_rp_id(),
             webauthn_origin: default_webauthn_origin(),
+            webauthn_rp_id: default_webauthn_rp_id_from_origin(),
             webauthn_challenge_ttl_secs: default_webauthn_challenge_ttl(),
             webauthn_pending_ttl_hours: default_webauthn_pending_ttl_hours(),
         }
+    }
+}
+
+impl StorageConfig {
+    /// Set [`Self::webauthn_rp_id`] from [`Self::webauthn_origin`].
+    pub fn derive_webauthn_rp_id(&mut self) -> anyhow::Result<()> {
+        self.webauthn_rp_id = crate::storage::rp_id_from_webauthn_origin(&self.webauthn_origin)
+            .map_err(anyhow::Error::msg)?;
+        Ok(())
     }
 }
 
@@ -458,7 +468,8 @@ pub struct StoreHelperConfig {
     pub webauthn_user_verification: String,
     #[serde(default)]
     pub webauthn_strict_sign_count: bool,
-    #[serde(default = "default_webauthn_rp_id")]
+    /// Derived from [`Self::webauthn_origin`] at load time (not a TOML key).
+    #[serde(skip)]
     pub webauthn_rp_id: String,
     #[serde(default = "default_webauthn_origin")]
     pub webauthn_origin: String,
@@ -475,12 +486,14 @@ impl StoreHelperConfig {
         // `.conf` is not a config-rs format extension; force TOML like `vcp.conf`.
         let contents = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
-        let cfg: Self = ConfigBuilder::builder()
+        let mut cfg: Self = ConfigBuilder::builder()
             .add_source(config::File::from_str(&contents, config::FileFormat::Toml))
             .build()
             .map_err(|e| anyhow::anyhow!("failed to build {}: {e}", path.display()))?
             .try_deserialize()
             .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", path.display()))?;
+        cfg.webauthn_rp_id = crate::storage::rp_id_from_webauthn_origin(&cfg.webauthn_origin)
+            .map_err(anyhow::Error::msg)?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -512,6 +525,12 @@ impl StoreHelperConfig {
         if self.webauthn_user_verification != "required" {
             anyhow::bail!("vcp-store webauthn_user_verification must be \"required\"");
         }
+        if self.webauthn_origin.trim().is_empty() {
+            anyhow::bail!("vcp-store webauthn_origin must not be empty");
+        }
+        if self.webauthn_rp_id.trim().is_empty() {
+            anyhow::bail!("vcp-store webauthn_rp_id must be derived from webauthn_origin");
+        }
         Ok(())
     }
 
@@ -532,8 +551,8 @@ impl StoreHelperConfig {
             webauthn_required: self.webauthn_required,
             webauthn_user_verification: self.webauthn_user_verification.clone(),
             webauthn_strict_sign_count: self.webauthn_strict_sign_count,
-            webauthn_rp_id: self.webauthn_rp_id.clone(),
             webauthn_origin: self.webauthn_origin.clone(),
+            webauthn_rp_id: self.webauthn_rp_id.clone(),
             webauthn_challenge_ttl_secs: self.webauthn_challenge_ttl_secs,
             webauthn_pending_ttl_hours: self.webauthn_pending_ttl_hours,
         }
@@ -581,12 +600,13 @@ fn default_webauthn_uv() -> String {
     "required".into()
 }
 
-fn default_webauthn_rp_id() -> String {
-    "access.vauban.sh".into()
-}
-
 fn default_webauthn_origin() -> String {
     "https://access.vauban.sh".into()
+}
+
+fn default_webauthn_rp_id_from_origin() -> String {
+    crate::storage::rp_id_from_webauthn_origin(&default_webauthn_origin())
+        .expect("default webauthn_origin must yield a valid RP ID")
 }
 
 fn default_webauthn_challenge_ttl() -> u64 {
@@ -647,6 +667,7 @@ impl Config {
 
         cfg.environment = environment;
         cfg.resolve_paths();
+        cfg.storage.derive_webauthn_rp_id()?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -783,6 +804,17 @@ impl Config {
         }
         if self.storage.max_concurrent_uploads == 0 {
             anyhow::bail!("storage.max_concurrent_uploads must be greater than zero");
+        }
+        if self.storage.webauthn_origin.trim().is_empty() {
+            anyhow::bail!("storage.webauthn_origin must not be empty");
+        }
+        if self.storage.webauthn_rp_id.trim().is_empty() {
+            anyhow::bail!(
+                "storage.webauthn_rp_id must be derived from webauthn_origin before validate"
+            );
+        }
+        if self.storage.webauthn_user_verification != "required" {
+            anyhow::bail!("storage.webauthn_user_verification must be \"required\"");
         }
         Ok(())
     }

@@ -36,8 +36,7 @@ ipc = "spawn"
 webauthn_required = true
 webauthn_user_verification = "required"
 webauthn_strict_sign_count = false
-# Must match the browser hostname (not 127.0.0.1 — IPs are invalid RP IDs).
-webauthn_rp_id = "localhost"
+# Origin host becomes the WebAuthn RP ID (must be a DNS name, not an IP).
 webauthn_origin = "https://localhost:3000"
 webauthn_challenge_ttl_secs = 300
 webauthn_pending_ttl_hours = 24

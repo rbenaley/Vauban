@@ -195,6 +195,8 @@ impl StorageClient {
             } else {
                 "false"
             })
+            .arg("--webauthn-origin")
+            .arg(&cfg.webauthn_origin)
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())

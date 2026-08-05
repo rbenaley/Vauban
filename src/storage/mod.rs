@@ -36,6 +36,6 @@ pub use objects::{
 };
 pub use protocol::{StorageRequest, StorageResponse};
 pub use webauthn::{
-    canonical_summary, credential_fingerprint, normalize_admin_label, soft_assertion_json,
-    test_attestation_object_b64, webauthn_host_is_ip,
+    canonical_summary, credential_fingerprint, normalize_admin_label, rp_id_from_webauthn_origin,
+    soft_assertion_json, test_attestation_object_b64, webauthn_host_is_ip,
 };
