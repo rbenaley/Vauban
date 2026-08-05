@@ -27,8 +27,7 @@ directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
 [database]
-# Unix-domain socket (Toasty requires `?host=/socketdir`; no TCP).
-url = "postgresql:///vcp?host=/tmp"
+url = "postgresql://localhost/vcp"
 
 [storage]
 blob_path = "vcp-storage"

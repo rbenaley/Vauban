@@ -27,9 +27,7 @@ directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
 [database]
-# Unix-domain socket via Toasty/libpq `host=/path` (directory containing
-# `.s.PGSQL.*`). FreeBSD ports + macOS Homebrew use `/tmp`. No TCP.
-url = "postgresql:///vcp?host=/tmp"
+url = "postgresql://localhost/vcp"
 
 # Dev/test only: portal owns spawn/inline + blob root. Production splits
 # client settings into vcp.conf and helper settings into vcp-store.conf.

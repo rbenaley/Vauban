@@ -22,8 +22,8 @@ export PATH := cargo_home + "/bin:" + env_var("PATH")
 # Keep in sync with README / topcoat facade pin in Cargo.toml.
 topcoat_cli_version := "0.5.0"
 
-# Match config/testing.toml (Unix socket via ?host=/tmp — no TCP).
-vcp_test_url := "postgresql://vcp_test:vcp_test@/vcp_test?host=/tmp"
+# ensure-vcp-test probe (Unix socket). App tests use config/testing.toml (TCP).
+vcp_test_url := "postgresql://vcp_test:vcp_test@/vcp_test"
 
 # Install pinned topcoat-cli when missing. Used by validate, run, bundle, fmt.
 [private]
