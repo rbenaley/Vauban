@@ -113,7 +113,9 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
             id="issue-discussion"
             style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 22px;"
         >
-            <div style="display: flex; flex-direction: column; align-items: flex-start;">
+            <div
+                style="display: flex; flex-direction: column; align-items: flex-start;"
+            >
                 <div class="vb-bubble">
                     <div
                         style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;"
@@ -224,10 +226,7 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
                                                 data-src=(thumb.src.clone())
                                                 @click="(e) => { const src = e.current_target.inner.getAttribute('data-src'); const box = document.getElementById('issue-lb'); const img = document.getElementById('issue-lb-img'); if (!src || !box || !img) return; img.src = src; if (box.open) return; if (typeof box.showModal === 'function') { box.showModal(); } else { box.setAttribute('open', ''); } }"
                                             >
-                                                <img
-                                                    src=(thumb.src.clone())
-                                                    alt="Issue screenshot"
-                                                >
+                                                <img src=(thumb.src.clone()) alt="Issue screenshot">
                                             </button>
                                         </div>
                                     }
@@ -255,7 +254,11 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
                     ></button>
                 </form>
                 <form method="dialog" class="vb-issue-lightbox-figure">
-                    <img id="issue-lb-img" class="vb-issue-lightbox-img" alt="Issue screenshot">
+                    <img
+                        id="issue-lb-img"
+                        class="vb-issue-lightbox-img"
+                        alt="Issue screenshot"
+                    >
                     <button
                         type="submit"
                         class="vb-issue-lightbox-close"
