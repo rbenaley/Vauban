@@ -171,7 +171,7 @@ pub async fn ico_orgs(cx: &Cx, size: u32) -> Result {
     }
 }
 
-/// Security key (CTAP2 / WebAuthn) — round head, toothed shaft.
+/// Security key (KEY / WebAuthn) — round head, toothed shaft.
 pub async fn ico_key(cx: &Cx, size: u32) -> Result {
     let s = size.to_string();
     let style = box_style(size);

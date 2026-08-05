@@ -43,7 +43,7 @@ tracing::info!(target: "vcp-store", path = %listen, "vcp-store listening");
 tracing::warn!(
     target: "vcp-store::alert",
     cred = %hex,
-    "ALERT ctap2_revoke"
+    "ALERT key_revoke"
 );
 ```
 

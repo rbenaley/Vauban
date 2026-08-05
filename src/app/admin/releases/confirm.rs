@@ -68,7 +68,7 @@ async fn admin_releases_confirm_page(cx: &Cx) -> Result {
             <div class="vb-panel" style="padding: 24px;">
                 <p class="vb-form-hint" style="margin-bottom: 8px;">
                     "Operation summary (from vcp-store). Cross-check with "
-                    <code>"vcp-store ctap2 pending"</code>
+                    <code>"vcp-store key pending"</code>
                     " on the helper host when needed:"
                 </p>
                 <pre

@@ -28,7 +28,7 @@ while the helper binding remains cryptographically valid for the real op.
 2. **1.2 mitigations are mandatory**, not optional UX polish:
    - helper returns a canonical `summary` with every challenge;
    - portal UI must display that summary;
-   - `vcp-store ctap2 pending` lists in-flight challenges on the helper host;
+   - `vcp-store key pending` lists in-flight challenges on the helper host;
    - helper audit log under `blob_path` records issue/consume of challenges.
 3. **C2 is an accepted future hardening**, not scheduled in the 1.2
    implementation train. A new ADR (or amend of this one) is required before
@@ -38,6 +38,6 @@ while the helper binding remains cryptographically valid for the real op.
 
 - Design reviews do not block on C2 for the first WebAuthn-gated release.
 - Residual "deceived consent under compromised `vcp`" remains documented in
-  the 1.2 threat model; operators may use `ctap2 pending` for high-risk ops.
+  the 1.2 threat model; operators may use `key pending` for high-risk ops.
 - Introducing C2 later must preserve digest/op binding and helper-side verify;
   it must not move assertion verification back into `vcp`.

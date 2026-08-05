@@ -231,7 +231,7 @@ fn dispatch(
             Ok(n) => reply(stream, &StorageResponse::ok_deleted(n), None),
             Err(e) => reply(stream, &map_err(e), None),
         },
-        StorageRequest::Ctap2EnrolStage {
+        StorageRequest::KeyEnrolStage {
             credential_id_b64,
             public_key_cose_b64,
             user_handle,
@@ -246,22 +246,22 @@ fn dispatch(
                 Ok(v) => v,
                 Err(_) => return reply(stream, &StorageResponse::err("invalid_id"), None),
             };
-            match engine.ctap2_enrol_stage(&cred, &cose, &user_handle, &admin_label, is_soft) {
+            match engine.key_enrol_stage(&cred, &cose, &user_handle, &admin_label, is_soft) {
                 Ok(fp) => reply(stream, &StorageResponse::ok_fingerprint(fp), None),
                 Err(e) => reply(stream, &map_err(e), None),
             }
         }
-        StorageRequest::Ctap2Revoke { credential_id_b64 } => {
+        StorageRequest::KeyRevoke { credential_id_b64 } => {
             let cred = match URL_SAFE_NO_PAD.decode(credential_id_b64.trim()) {
                 Ok(v) => v,
                 Err(_) => return reply(stream, &StorageResponse::err("invalid_id"), None),
             };
-            match engine.ctap2_revoke(&cred) {
+            match engine.key_revoke(&cred) {
                 Ok(()) => reply(stream, &StorageResponse::ok_empty(), None),
                 Err(e) => reply(stream, &map_err(e), None),
             }
         }
-        StorageRequest::Ctap2List { kind } => match engine.ctap2_list_json(&kind) {
+        StorageRequest::KeyList { kind } => match engine.key_list_json(&kind) {
             Ok(s) => reply(stream, &StorageResponse::ok_summary(s), None),
             Err(e) => reply(stream, &map_err(e), None),
         },

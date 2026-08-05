@@ -21,7 +21,7 @@ pub const TRACKED_PERMS: &[(&str, &str)] = &[
     ("issues", "read"),
     ("issues", "write"),
     ("companies", "manage"),
-    ("ctap2", "manage"),
+    ("key", "manage"),
     ("account", "read"),
     ("admin", "view"),
 ];
@@ -36,7 +36,7 @@ pub struct PermissionContext {
     pub issues_read: bool,
     pub issues_write: bool,
     pub companies_manage: bool,
-    pub ctap2_manage: bool,
+    pub key_manage: bool,
     pub account_read: bool,
     pub admin_view: bool,
 }
@@ -97,7 +97,7 @@ impl PolicyStore {
             issues_read: self.allows(role, "issues", "read"),
             issues_write: self.allows(role, "issues", "write"),
             companies_manage: self.allows(role, "companies", "manage"),
-            ctap2_manage: self.allows(role, "ctap2", "manage"),
+            key_manage: self.allows(role, "key", "manage"),
             account_read: self.allows(role, "account", "read"),
             admin_view: self.allows(role, "admin", "view"),
         }
@@ -149,7 +149,7 @@ mod tests {
         assert!(ctx.docs_read);
         assert!(!ctx.docs_write);
         assert!(!ctx.releases_manage);
-        assert!(!ctx.ctap2_manage);
+        assert!(!ctx.key_manage);
         assert!(!ctx.admin_view);
         assert!(ctx.issues_write);
     }
@@ -161,7 +161,7 @@ mod tests {
         assert!(ctx.admin_view);
         assert!(ctx.releases_manage);
         assert!(ctx.companies_manage);
-        assert!(ctx.ctap2_manage);
+        assert!(ctx.key_manage);
         assert!(ctx.docs_write);
     }
 }

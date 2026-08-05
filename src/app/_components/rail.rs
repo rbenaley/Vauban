@@ -107,10 +107,10 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
                     (ico_orgs(cx, 17).await?)
                     <span class="lbl">"Orgs"</span>
                 </a>
-                if perms.ctap2_manage {
+                if perms.key_manage {
                     <a
-                        href="/admin/ctap2"
-                        class=(rail_class(section == NavSection::AdminCtap2))
+                        href="/admin/key"
+                        class=(rail_class(section == NavSection::AdminKey))
                     >
                         (ico_key(cx, 17).await?)
                         <span class="lbl">"Keys"</span>

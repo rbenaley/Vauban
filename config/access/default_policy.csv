@@ -13,6 +13,6 @@ p, role:admin, releases, manage
 p, role:admin, issues, read
 p, role:admin, issues, write
 p, role:admin, companies, manage
-p, role:admin, ctap2, manage
+p, role:admin, key, manage
 p, role:admin, account, read
 p, role:admin, admin, view

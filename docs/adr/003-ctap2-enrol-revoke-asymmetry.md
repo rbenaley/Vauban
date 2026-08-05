@@ -1,4 +1,4 @@
-# ADR 003: CTAP2 enrolment / revocation asymmetry
+# ADR 003: KEY enrolment / revocation asymmetry
 
 **Status:** Accepted  
 **Date:** 2026-08-04  
@@ -11,7 +11,7 @@
 ## Context
 
 WebAuthn credentials that authorize release publication and deletes are part
-of the helper TCB (SQLite under UID 801). The Admin **CTAP2** dashboard runs
+of the helper TCB (SQLite under UID 801). The Admin **KEY** dashboard runs
 inside `vcp` (UID 800), which is **untrusted** for sensitive mutations (D10).
 
 If enrolment finalize and revocation were both fully portal-driven, a
@@ -22,10 +22,10 @@ during incident response.
 ## Decision
 
 1. **Enrolment is two-phase:** E1 web creates a PENDING artifact and shows a
-   **credential fingerprint**; E2 `vcp-store ctap2 approve` on the helper host
+   **credential fingerprint**; E2 `vcp-store key approve` on the helper host
    recomputes the fingerprint and activates the key only on out-of-band match.
    **Only E2** writes ACTIVE rows into helper SQLite.
-2. **Revocation is dashboard-driven** (plus helper IPC `ctap2_revoke`) with
+2. **Revocation is dashboard-driven** (plus helper IPC `key_revoke`) with
    **no** helper-host CLI requirement.
 3. **Accepted residual:** compromised `vcp` may mass-revoke keys (ops DoS /
    lock-out) but **cannot** enrol new ACTIVE keys without CLI approve.
@@ -36,7 +36,7 @@ during incident response.
 
 - Product and security reviews treat "portal-only enrolment activate" as
   rejected unless this ADR is superseded.
-- CTAP2 UI must surface fingerprints and CLI instructions; approve tooling
+- KEY UI must surface fingerprints and CLI instructions; approve tooling
   must fail closed on fingerprint mismatch.
 - Ops alerting SHOULD watch revoke bursts; recovery runbooks document
   breakglass CLI approve.

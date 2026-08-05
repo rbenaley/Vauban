@@ -1,4 +1,4 @@
-# ADR 004: WebAuthn sign_count policy for storage CTAP2
+# ADR 004: WebAuthn sign_count policy for storage KEY
 
 **Status:** Accepted  
 **Date:** 2026-08-04  
@@ -34,7 +34,7 @@ Ignoring counters entirely would weaken fleets that standardize on YubiKeys.
 3. **Attestation-enforced hardware-only enrolment is not required** for MVP.
    Operators who need that bar use strict mode plus operational policy
    (which authenticators they enrol), or a future ADR for attestation
-   filters at `ctap2 approve`.
+   filters at `key approve`.
 4. **`userVerification: required` remains mandatory** regardless of this flag
    (architecture D13); strict sign_count is orthogonal to UV.
 

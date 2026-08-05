@@ -51,12 +51,13 @@ truth: `config/access/default_policy.csv`.
 | `releases`   | `manage`                        | Admin release manager                     |
 | `issues`     | `read`, `write`                 | Issue tracker / report                    |
 | `companies`  | `manage`                        | Admin client companies                    |
+| `key`        | `manage`                        | Admin security keys (WebAuthn / KEY)      |
 | `account`    | `read`                          | Account & subscription                    |
 | `admin`      | `view`                          | Admin rail / nest entry                   |
 
 Field naming: `docs_read`, `docs_write`, `builds_read`, `builds_download`,
 `releases_manage`, `issues_read`, `issues_write`, `companies_manage`,
-`account_read`, `admin_view`.
+`key_manage`, `account_read`, `admin_view`.
 
 Adding a new field MUST come with:
 

@@ -487,7 +487,7 @@ targets.
 ```rust
 // Helper binary / Capsicum / helper ALERTs
 tracing::warn!(target: "vcp-store", "storage helper shares vcp uid (dev mode)");
-tracing::warn!(target: "vcp-store::alert", cred = %hex, "ALERT ctap2_revoke");
+tracing::warn!(target: "vcp-store::alert", cred = %hex, "ALERT key_revoke");
 
 // Portal — leave default module target (vcp::…)
 tracing::info!("vcp listening on …");

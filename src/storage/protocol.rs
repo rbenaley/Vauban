@@ -107,7 +107,7 @@ pub enum StorageRequest {
         #[serde(default)]
         challenge_id: Option<String>,
     },
-    Ctap2EnrolStage {
+    KeyEnrolStage {
         credential_id_b64: String,
         public_key_cose_b64: String,
         user_handle: String,
@@ -115,11 +115,11 @@ pub enum StorageRequest {
         #[serde(default)]
         is_soft: bool,
     },
-    Ctap2Revoke {
+    KeyRevoke {
         credential_id_b64: String,
     },
-    /// List pending or active CTAP2 credentials (JSON in `summary` field).
-    Ctap2List {
+    /// List pending or active KEY credentials (JSON in `summary` field).
+    KeyList {
         kind: String,
     },
 }

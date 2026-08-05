@@ -144,7 +144,7 @@ grep -n 'cap_std\|Dir::' "$ENGINE" >/dev/null \
 grep -n 'StorageIpcMode::Inline\|StorageIpcMode::Spawn\|StorageIpcMode::Socket' "$CLIENT" >/dev/null \
   || fail "$CLIENT must support spawn/socket/inline backends"
 
-# Architecture 1.2 WebAuthn / CTAP2 (ADR 002–004).
+# Architecture 1.2 WebAuthn / KEY (ADR 002–004).
 WEBAUTHN="src/storage/webauthn.rs"
 AUDIT="src/storage/audit.rs"
 DOC12="docs/technical/VCP_Storage_Helper_Architecture_EN(1.2).md"
@@ -159,8 +159,8 @@ ADR004="docs/adr/004-webauthn-sign-count-policy.md"
 [[ -f "$ADR004" ]] || fail "missing $ADR004"
 grep -n 'webauthn_required\|webauthn_invalid\|webauthn_expired\|challenge_unknown\|object_modified' "$ERR" >/dev/null \
   || fail "$ERR must define WebAuthn closed error codes"
-grep -n 'PutPrepare\|ChallengeBegin\|Ctap2EnrolStage\|Ctap2Revoke' "$PROTO" >/dev/null \
-  || fail "$PROTO must define put_prepare / challenge_begin / ctap2 ops"
+grep -n 'PutPrepare\|ChallengeBegin\|KeyEnrolStage\|KeyRevoke' "$PROTO" >/dev/null \
+  || fail "$PROTO must define put_prepare / challenge_begin / key ops"
 grep -n 'webauthn_credentials\|webauthn_challenges' "$META" >/dev/null \
   || fail "$META must define webauthn_* tables"
 grep -n 'put_prepare\|validate_production_webauthn' "$ENGINE" >/dev/null \
@@ -171,24 +171,24 @@ grep -n 'webauthn_strict_sign_count = false' "$STORE_CONF" >/dev/null \
   || fail "$STORE_CONF must default webauthn_strict_sign_count = false (ADR 004)"
 grep -n 'webauthn_user_verification = "required"' "$STORE_CONF" >/dev/null \
   || fail "$STORE_CONF must require userVerification"
-grep -n 'ctap2 pending\|ctap2 approve\|ctap2 list' "$BIN" >/dev/null \
-  || fail "$BIN must implement ctap2 pending/list/approve CLI (ADR 003)"
+grep -n 'key pending\|key approve\|key list' "$BIN" >/dev/null \
+  || fail "$BIN must implement key pending/list/approve CLI (ADR 003)"
 grep -n 'list_pending_credentials_cli\|PENDING credentials' "$BIN" >/dev/null \
-  || fail "$BIN ctap2 pending must list PENDING credentials (E2 queue), not only challenges"
+  || fail "$BIN key pending must list PENDING credentials (E2 queue), not only challenges"
 grep -n 'list_all_credentials_cli\|format_ascii_table' "$BIN" >/dev/null \
-  || fail "$BIN must table-format ctap2 list/pending output"
+  || fail "$BIN must table-format key list/pending output"
 grep -n 'validate_production_webauthn\|webauthn_required=false' "$BIN" >/dev/null \
   || fail "$BIN must refuse production webauthn_required=false"
 grep -n 'credential_fingerprint\|summary' "$WEBAUTHN" >/dev/null \
   || fail "$WEBAUTHN must implement fingerprint + canonical summary"
 grep -n 'normalize_admin_label' "$WEBAUTHN" >/dev/null \
-  || fail "$WEBAUTHN must normalize/reject empty CTAP2 admin_label"
+  || fail "$WEBAUTHN must normalize/reject empty KEY admin_label"
 grep -n 'normalize_admin_label' "$ENGINE" >/dev/null \
   || fail "$ENGINE enrol_stage must use normalize_admin_label"
 grep -n 'canonical_summary\|webauthn_host_is_ip\|test_attestation_object_b64' "$WEBAUTHN" >/dev/null \
   || fail "$WEBAUTHN must expose summary + IP-host contract + test attestation helper"
-grep -n 'load_ctap2_cfg_with_env\|VCP_ENVIRONMENT' "$BIN" >/dev/null \
-  || fail "$BIN must resolve ctap2 blob_path via VCP_ENVIRONMENT (testable helper)"
+grep -n 'load_key_cfg_with_env\|VCP_ENVIRONMENT' "$BIN" >/dev/null \
+  || fail "$BIN must resolve key blob_path via VCP_ENVIRONMENT (testable helper)"
 DEV_TOML="config/development.toml"
 grep -n 'webauthn_origin = "https://localhost:3000"' "$DEV_TOML" >/dev/null \
   || fail "$DEV_TOML must set webauthn_origin = https://localhost:3000 (RP ID derived)"

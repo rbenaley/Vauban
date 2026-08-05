@@ -7,7 +7,7 @@
 addresses
 [`.cursor/audits/vcp_storage_1.1_architecture_review_2026-08-04.md`](../../.cursor/audits/vcp_storage_1.1_architecture_review_2026-08-04.md).
 The 1.0 helper + SQLite digest SoT remain shipped; 1.1 introduced
-helper-side WebAuthn/CTAP2 gates; **1.2 hardens consent, enrolment,
+helper-side WebAuthn/KEY gates; **1.2 hardens consent, enrolment,
 UV, sign-count policy, delete binding, purge, and ops breakglass**.  
 **Scope:** on-disk storage under a helper-owned root (`blob_path` in
 `vcp-store.conf`) for **release artifacts** and **tenant images**, served by
@@ -22,7 +22,7 @@ SQLite `meta.sqlite`; Postgres `storage_objects` = portal mirror.
 
 | Review | 1.2 change |
 |--------|------------|
-| §3.1 Presence vs consent | Canonical challenge `summary`; UI must display it; `vcp-store ctap2 pending`; helper audit log under `blob_path`; ops alerts on `delete_org` / revoke bursts. C2 deferred → ADR 002 |
+| §3.1 Presence vs consent | Canonical challenge `summary`; UI must display it; `vcp-store key pending`; helper audit log under `blob_path`; ops alerts on `delete_org` / revoke bursts. C2 deferred → ADR 002 |
 | §3.4 E1→E2 substitution | Mandatory credential **fingerprint** at E1 and CLI approve |
 | §3.3 userVerification | `webauthn_user_verification = "required"`; UV flag checked at verify |
 | §3.6 Bypass in prod | Boot refuses `webauthn_required=false` when production |
@@ -48,7 +48,7 @@ SQLite `meta.sqlite`; Postgres `storage_objects` = portal mirror.
 | D9 | Digest SoT = SQLite; Postgres = mirror; `get`/`stat` present expected sha256 + verify-on-read | Forged mirror / tampered disk fail closed |
 | **D10** | **For sensitive mutations, `vcp` is untrusted:** WebAuthn assertions are **verified inside `vcp-store`** before materializing release packages or performing deletes | Peercred only proves UID 800 |
 | **D11** | Ceremony channel **C1** (browser ↔ `vcp` ↔ helper); mitigations for informed consent in §6.6; **C2 deferred** ([ADR 002](../adr/002-storage-webauthn-ceremony-channel-c1.md)) | MVP without a second HTTPS surface |
-| **D12** | **CTAP2** Admin UI: enrolment pending in portal; **ACTIVE only via helper-host CLI**; **revocation via dashboard** ([ADR 003](../adr/003-ctap2-enrol-revoke-asymmetry.md)) | Fail-secure on enrol; accept revoke-DoS |
+| **D12** | **KEY** Admin UI: enrolment pending in portal; **ACTIVE only via helper-host CLI**; **revocation via dashboard** ([ADR 003](../adr/003-ctap2-enrol-revoke-asymmetry.md)) | Fail-secure on enrol; accept revoke-DoS |
 | **D13** | **`userVerification: required`** enforced helper-side | PIN/biometric, not presence-only tap |
 | **D14** | **`sign_count`**: default permissive (synced passkeys); optional strict regression policy ([ADR 004](../adr/004-webauthn-sign-count-policy.md)) | Touch ID / iCloud / GPM keep counter at 0 |
 
@@ -60,7 +60,7 @@ SQLite `meta.sqlite`; Postgres `storage_objects` = portal mirror.
                  ┌─────────────────────────────────────────────┐
                  │  vcp (UID 800)                              │
                  │  HTTPS · Casbin · sessions · ACME · DB      │
-                 │  Postgres mirror + CTAP2 pending UX         │
+                 │  Postgres mirror + KEY pending UX         │
                  │  WebAuthn ceremony relay (C1) + summary UI  │
                  └────────┼────────────────────────────────────┘
                           │  SOCK_SEQPACKET + SCM_RIGHTS
@@ -85,9 +85,9 @@ SQLite `meta.sqlite`; Postgres `storage_objects` = portal mirror.
 Helper-host CLI:
 
 ```text
-vcp-store ctap2 pending          # PENDING credentials (E2) + in-flight challenges/summaries
-vcp-store ctap2 list             # all credentials (pending / active / revoked)
-vcp-store ctap2 approve …        # E2: activate credential after fingerprint match
+vcp-store key pending          # PENDING credentials (E2) + in-flight challenges/summaries
+vcp-store key list             # all credentials (pending / active / revoked)
+vcp-store key approve …        # E2: activate credential after fingerprint match
 ```
 
 ---
@@ -117,7 +117,7 @@ max_concurrent_uploads = 4
 max_images_per_org = 1000
 upload_ttl_secs = 3600
 
-# WebAuthn / CTAP2 (Relying Party inside the helper)
+# WebAuthn / KEY (Relying Party inside the helper)
 webauthn_required = true
 webauthn_user_verification = "required"
 webauthn_strict_sign_count = false   # true => reject + alert on counter regression
@@ -127,7 +127,7 @@ webauthn_pending_ttl_hours = 24   # PENDING enrol → expired if not approved; 0
 ```
 
 Also present under portal `[storage]` (`default.toml` / `development.toml`) so
-spawn/dev and `vcp-store ctap2` with `VCP_ENVIRONMENT=development` share the
+spawn/dev and `vcp-store key` with `VCP_ENVIRONMENT=development` share the
 same knob without reading `vcp-store.conf`.
 
 **Production boot guard:** if the helper is started with `--production` (or
@@ -158,7 +158,7 @@ Pyramid invariant: production conf / boot path never allows the bypass.
    enrolments (`webauthn_pending_ttl_hours` → status `expired`), and
    `tmp/*.partial` (same TTL spirit).
 
-`vcp-store ctap2 …` subcommands run as a **separate invocation** that can
+`vcp-store key …` subcommands run as a **separate invocation** that can
 write SQLite / read pending challenges outside the sandboxed accept loop as
 needed for ops.
 
@@ -198,17 +198,17 @@ webauthn_challenges
 fingerprint = hex(SHA-256(credential_id || public_key_cose))
 ```
 
-Displayed at E1; independently recomputed by `ctap2 approve` before ACTIVE
+Displayed at E1; independently recomputed by `key approve` before ACTIVE
 insert.
 
 **Audit log** (under `blob_path`, not writable by UID 800): every challenge
 issued/consumed with full binding + summary; every verify success/failure;
-every revoke; every `ctap2 approve`. Ops SHOULD alert on `delete_org` and on
-bursts of `ctap2_revoke`.
+every revoke; every `key approve`. Ops SHOULD alert on `delete_org` and on
+bursts of `key_revoke`.
 
 ---
 
-## 6. WebAuthn / CTAP2 (D10–D14)
+## 6. WebAuthn / KEY (D10–D14)
 
 ### 6.1 When the helper requires WebAuthn
 
@@ -234,7 +234,7 @@ put_begin → write FD → put_prepare → (C1 ceremony) → put_commit+assertio
    **`summary`** (e.g. `release_put_commit id=42 sha256=abcd1234…`); returns
    `{digest, challenge, summary, rp_id, allowCredentials}`.
 3. **Ceremony (C1)** — portal **must display `summary`** prominently before
-   `credentials.get`; admin may cross-check via `vcp-store ctap2 pending`.
+   `credentials.get`; admin may cross-check via `vcp-store key pending`.
 4. **`put_commit`** — verify assertion: COSE, ACTIVE cred, UV required,
    challenge consume, binding including helper digest, sign_count policy
    (§6.7); then rename + SQLite upsert. Mirror upsert in `vcp` afterward.
@@ -271,24 +271,24 @@ delete is idempotent success after valid assertion.
 5. `sign_count` policy (§6.7).
 6. Consume challenge; append audit line.
 
-### 6.5 CTAP2 admin dashboard (portal)
+### 6.5 KEY admin dashboard (portal)
 
-- Sidebar **CTAP2** under **Orgs**; Casbin-gated; non-staff **404**.
+- Sidebar **KEY** under **Orgs**; Casbin-gated; non-staff **404**.
 - Per-admin keys (model B).
 
 #### Enrolment (two-phase) — fingerprint mandatory
 
 | Phase | Where | Effect |
 |-------|-------|--------|
-| E1 Web | `/admin/ctap2` | `credentials.create`; PENDING in portal DB; show **fingerprint** + CLI instructions; admin records fingerprint out-of-band |
-| E2 CLI | Helper host | `vcp-store ctap2 approve` recomputes fingerprint from artifact; operator confirms OOB match; only then INSERT ACTIVE |
+| E1 Web | `/admin/key` | `credentials.create`; PENDING in portal DB; show **fingerprint** + CLI instructions; admin records fingerprint out-of-band |
+| E2 CLI | Helper host | `vcp-store key approve` recomputes fingerprint from artifact; operator confirms OOB match; only then INSERT ACTIVE |
 
 Without fingerprint match, approve **must fail**. Compromised `vcp` cannot
 complete E2.
 
 #### Revocation
 
-Dashboard + IPC `ctap2_revoke` only (no helper CLI). Audit + alert on bursts.
+Dashboard + IPC `key_revoke` only (no helper CLI). Audit + alert on bursts.
 Compromise of `vcp` may DoS via mass revoke; cannot enrol ACTIVE keys
 ([ADR 003](../adr/003-ctap2-enrol-revoke-asymmetry.md)).
 
@@ -299,7 +299,7 @@ normative in 1.2:
 
 1. Helper returns **canonical `summary`** with every challenge; portal UI
    **must** show it (not only a soft label invented by `vcp`).
-2. **`vcp-store ctap2 pending`** lists PENDING credentials awaiting E2
+2. **`vcp-store key pending`** lists PENDING credentials awaiting E2
    approve (fingerprint / label) **and** in-flight ceremony challenges with
    bindings / summaries for independent check on the helper host.
 3. **Helper audit log** under `blob_path` (out of UID 800 write reach).
@@ -342,7 +342,7 @@ See [ADR 004](../adr/004-webauthn-sign-count-policy.md).
 | `challenge_begin` (delete*) | ok `challenge`, `summary`, … | — | emits challenge |
 | `delete` + assertion | ok or `object_modified` | — | **verify** |
 | `delete_org` + assertion | ok `deleted` | — | **verify** |
-| `ctap2_revoke` | ok | — | no |
+| `key_revoke` | ok | — | no |
 
 Control JSON remains under 4 KiB; enrolment attestation blobs stay in portal
 PENDING storage for E1.
@@ -370,7 +370,7 @@ WebAuthn.
 | Compromised `vcp` calls IPC without human | WebAuthn + UV on release finalize + deletes |
 | Compromised `vcp` swaps package after ceremony | Challenge bound to **helper digest** |
 | Compromised `vcp` substitutes PENDING enrol key | Fingerprint OOB check at CLI approve |
-| Compromised `vcp` deceives UI meaning (C1) | Canonical `summary` + `ctap2 pending` + audit; residual → ADR 002 / C2 |
+| Compromised `vcp` deceives UI meaning (C1) | Canonical `summary` + `key pending` + audit; residual → ADR 002 / C2 |
 | Compromised `vcp` revokes keys | Accepted residual (ADR 003) |
 | Delete after content replace | Digest binding + `object_modified` |
 | Synced passkey cloning | Not detected when counter stays 0; strict mode for HW keys (ADR 004) |
@@ -388,9 +388,9 @@ WebAuthn.
 - **PENDING enrolment TTL:** `webauthn_pending_ttl_hours` (default 24; `0`
   disables). Unapproved `status=pending` rows with `created_at` older than
   the TTL become `status=expired` (row kept for ops history; not approvable).
-  Runs on helper open and on CTAP2 list / pending / approve / enrol paths.
+  Runs on helper open and on KEY list / pending / approve / enrol paths.
 - **Breakglass (loss of all admin keys):** official path is physical/ops
-  access to the helper host and CLI `ctap2 approve` of new enrolments (E2),
+  access to the helper host and CLI `key approve` of new enrolments (E2),
   after E1 from a trusted admin session or emergency procedure. **Every
   breakglass approve MUST be logged** in the helper audit log. Access to
   the helper host remains the root of trust for credential SoT.
@@ -400,7 +400,7 @@ WebAuthn.
 ## 11. Tests (1.2 additions on top of 1.1 pyramid)
 
 - UV missing → reject; summary present on challenge responses.
-- Fingerprint mismatch → `ctap2 approve` fails.
+- Fingerprint mismatch → `key approve` fails.
 - `object_modified` when delete digest drifted.
 - Production boot refuses `webauthn_required=false`.
 - `webauthn_strict_sign_count=true` + counter regression → reject + audit.
@@ -418,7 +418,7 @@ WebAuthn.
 | B | Protocol/types + conf knobs + SQLite webauthn_* + UV/sign_count/purge |
 | C | Release prepare/commit + summary UI (C1) |
 | D | Delete / delete_org with digest binding |
-| E | CTAP2 dashboard + fingerprint + CLI approve/pending + revoke IPC |
+| E | KEY dashboard + fingerprint + CLI approve/pending + revoke IPC |
 | F | Audit log, alerts, runbooks, breakglass drill |
 
 ---

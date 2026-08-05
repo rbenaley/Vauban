@@ -5,9 +5,9 @@
 //! quota flags (same UID, no peercred filter).
 //!
 //! Ops CLI (separate invocation, no accept loop):
-//!   vcp-store ctap2 pending   # PENDING credentials (E2) + in-flight challenges
-//!   vcp-store ctap2 list      # all credentials (pending / active / expired / revoked)
-//!   vcp-store ctap2 approve --fingerprint <hex>
+//!   vcp-store key pending   # PENDING credentials (E2) + in-flight challenges
+//!   vcp-store key list      # all credentials (pending / active / expired / revoked)
+//!   vcp-store key approve --fingerprint <hex>
 //!
 //! Config for the CLI (no accept loop):
 //! - `--blob-path PATH` — open that root (dev spawn SoT is usually
@@ -46,8 +46,8 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("ctap2") {
-        return run_ctap2(&args[1..]);
+    if args.first().map(String::as_str) == Some("key") {
+        return run_key(&args[1..]);
     }
 
     let mut config_path: Option<PathBuf> = None;
@@ -274,8 +274,8 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn ctap2_usage() -> String {
-    "usage: vcp-store ctap2 <pending|list|approve> [options]\n\
+fn key_usage() -> String {
+    "usage: vcp-store key <pending|list|approve> [options]\n\
      \n\
      Commands:\n\
        pending                 PENDING credentials (E2) + in-flight challenges\n\
@@ -290,14 +290,14 @@ fn ctap2_usage() -> String {
         .into()
 }
 
-fn run_ctap2(args: &[String]) -> Result<(), String> {
+fn run_key(args: &[String]) -> Result<(), String> {
     let mut config_path: Option<PathBuf> = None;
     let mut blob_path: Option<String> = None;
     let mut fingerprint: Option<String> = None;
     let cmd = args.first().map(String::as_str).unwrap_or("");
     let mut i = if cmd.is_empty() { 0 } else { 1 };
     if !matches!(cmd, "pending" | "list" | "approve") {
-        return Err(ctap2_usage());
+        return Err(key_usage());
     }
     while i < args.len() {
         match args[i].as_str() {
@@ -313,30 +313,30 @@ fn run_ctap2(args: &[String]) -> Result<(), String> {
                 i += 1;
                 fingerprint = args.get(i).cloned();
             }
-            other => return Err(format!("unknown ctap2 arg: {other}\n\n{}", ctap2_usage())),
+            other => return Err(format!("unknown key arg: {other}\n\n{}", key_usage())),
         }
         i += 1;
     }
-    let cfg = load_ctap2_cfg(config_path, blob_path)?;
+    let cfg = load_key_cfg(config_path, blob_path)?;
     let blob = cfg.blob_path.clone();
     let engine = StorageEngine::open(&blob, cfg).map_err(|e| {
         format!(
             "{e}\n\
-             hint: ctap2 opens the helper blob root (meta.sqlite). Bare invoke without\n\
+             hint: key opens the helper blob root (meta.sqlite). Bare invoke without\n\
              VCP_ENVIRONMENT loads production vcp-store.conf ({prod}).\n\
-             Local spawn: VCP_ENVIRONMENT=development {bin} ctap2 {cmd} …\n\
-             or: {bin} ctap2 {cmd} --blob-path <repo>/vcp-storage …",
+             Local spawn: VCP_ENVIRONMENT=development {bin} key {cmd} …\n\
+             or: {bin} key {cmd} --blob-path <repo>/vcp-storage …",
             prod = "/var/db/vcp/storage",
             bin = "./target/debug/vcp-store",
             cmd = cmd,
         )
     })?;
     match cmd {
-        "pending" => print_ctap2_pending(&engine),
-        "list" => print_ctap2_list(&engine),
+        "pending" => print_key_pending(&engine),
+        "list" => print_key_list(&engine),
         "approve" => {
             let fp = fingerprint.ok_or_else(|| "--fingerprint required for approve".to_string())?;
-            engine.ctap2_approve(&fp).map_err(|e| e.to_string())?;
+            engine.key_approve(&fp).map_err(|e| e.to_string())?;
             println!("activated fingerprint={fp}");
             Ok(())
         }
@@ -372,13 +372,13 @@ fn format_revoked_at(revoked_at: Option<i64>, activated_at: Option<i64>) -> Stri
 
 /// Print PENDING credentials (E2 approve queue) then in-flight ceremony challenges
 /// (architecture 1.2 §6.6 cross-check).
-fn print_ctap2_pending(engine: &StorageEngine) -> Result<(), String> {
+fn print_key_pending(engine: &StorageEngine) -> Result<(), String> {
     use vcp::storage::webauthn::credential_fingerprint;
 
     let creds = engine
         .list_pending_credentials_cli()
         .map_err(|e| e.to_string())?;
-    println!("PENDING credentials (awaiting: ctap2 approve --fingerprint …)");
+    println!("PENDING credentials (awaiting: key approve --fingerprint …)");
     let rows: Vec<Vec<String>> = creds
         .iter()
         .map(|row| {
@@ -421,7 +421,7 @@ fn print_ctap2_pending(engine: &StorageEngine) -> Result<(), String> {
     Ok(())
 }
 
-fn print_ctap2_list(engine: &StorageEngine) -> Result<(), String> {
+fn print_key_list(engine: &StorageEngine) -> Result<(), String> {
     use vcp::storage::webauthn::credential_fingerprint;
 
     let creds = engine
@@ -526,18 +526,18 @@ fn format_ascii_table(headers: &[&str], rows: &[Vec<String>]) -> String {
 }
 
 /// Resolve blob root for the ops CLI (not the accept-loop serve path).
-fn load_ctap2_cfg(
+fn load_key_cfg(
     config_path: Option<PathBuf>,
     blob_override: Option<String>,
 ) -> Result<StorageConfig, String> {
     let env = env::var("VCP_ENVIRONMENT")
         .map(|e| Environment::parse(&e))
         .unwrap_or(Environment::Production);
-    load_ctap2_cfg_with_env(config_path, blob_override, env)
+    load_key_cfg_with_env(config_path, blob_override, env)
 }
 
-/// Testable core of [`load_ctap2_cfg`] (env injected; no process env read).
-fn load_ctap2_cfg_with_env(
+/// Testable core of [`load_key_cfg`] (env injected; no process env read).
+fn load_key_cfg_with_env(
     config_path: Option<PathBuf>,
     blob_override: Option<String>,
     env: Environment,
@@ -560,7 +560,7 @@ fn load_ctap2_cfg_with_env(
             let dir = Config::find_config_dir().map_err(|e| e.to_string())?;
             let portal = Config::load_with_environment(dir, env).map_err(|e| {
                 format!(
-                    "load portal config for ctap2 ({env}): {e}\n\
+                    "load portal config for key ({env}): {e}\n\
                      hint: run from the VCP repo with config/, or pass --blob-path",
                     env = env.as_str()
                 )
@@ -572,7 +572,7 @@ fn load_ctap2_cfg_with_env(
                 ));
             }
             eprintln!(
-                "vcp-store ctap2: using {} blob_path={}",
+                "vcp-store key: using {} blob_path={}",
                 env.as_str(),
                 portal.storage.blob_path
             );
@@ -600,7 +600,7 @@ fn absolute_blob_path(blob: &str) -> Result<String, String> {
 mod tests {
     use super::{
         absolute_blob_path, cred_display_status, format_activated_at, format_ascii_table,
-        format_revoked_at, load_ctap2_cfg_with_env,
+        format_revoked_at, load_key_cfg_with_env,
     };
     use std::path::PathBuf;
     use vcp::config::Environment;
@@ -644,10 +644,10 @@ mod tests {
     }
 
     #[test]
-    fn load_ctap2_cfg_blob_override_wins_over_env() {
+    fn load_key_cfg_blob_override_wins_over_env() {
         let dir = tempfile::tempdir().unwrap();
         let abs = dir.path().canonicalize().unwrap();
-        let cfg = load_ctap2_cfg_with_env(
+        let cfg = load_key_cfg_with_env(
             None,
             Some(abs.to_string_lossy().into_owned()),
             Environment::Production,
@@ -657,8 +657,8 @@ mod tests {
     }
 
     #[test]
-    fn load_ctap2_cfg_testing_uses_portal_blob_path() {
-        let cfg = load_ctap2_cfg_with_env(None, None, Environment::Testing).unwrap();
+    fn load_key_cfg_testing_uses_portal_blob_path() {
+        let cfg = load_key_cfg_with_env(None, None, Environment::Testing).unwrap();
         assert!(
             cfg.blob_path.contains("vcp-storage-test"),
             "got {}",
@@ -667,8 +667,8 @@ mod tests {
     }
 
     #[test]
-    fn load_ctap2_cfg_development_uses_portal_blob_path() {
-        let cfg = load_ctap2_cfg_with_env(None, None, Environment::Development).unwrap();
+    fn load_key_cfg_development_uses_portal_blob_path() {
+        let cfg = load_key_cfg_with_env(None, None, Environment::Development).unwrap();
         assert!(
             cfg.blob_path.contains("vcp-storage"),
             "got {}",

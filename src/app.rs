@@ -38,7 +38,7 @@ const FAVICON_32: Asset = asset!("assets/favicon-32x32.png");
 const APPLE_TOUCH_ICON: Asset = asset!("assets/apple-touch-icon.png");
 /// First-party script: persist browser IANA zone as `vcp_tz` for SSR dates.
 const VCP_TZ_JS: Asset = asset!("assets/vcp_tz.js");
-/// First-party WebAuthn ceremony helper (C1 / CTAP2).
+/// First-party WebAuthn ceremony helper (C1 / KEY).
 /// Declared once here so Topcoat does not register duplicate asset routes.
 pub const VCP_WEBAUTHN_JS: Asset = asset!("assets/vcp_webauthn.js");
 

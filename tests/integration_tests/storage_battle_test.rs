@@ -224,7 +224,7 @@ fn battle_delete_object_modified_under_contention() {
 /// Concurrent empty / whitespace-only enrol labels must all fail closed
 /// (InvalidId) — no PENDING row under contention.
 #[test]
-fn battle_ctap2_enrol_empty_label_fail_closed() {
+fn battle_key_enrol_empty_label_fail_closed() {
     use vcp::storage::StorageErrorCode;
 
     let dir = tempfile::tempdir().unwrap();
@@ -242,7 +242,7 @@ fn battle_ctap2_enrol_empty_label_fail_closed() {
             let eng = StorageEngine::open(root.as_path(), engine_cfg()).expect("open");
             barrier.wait();
             let label = if i % 2 == 0 { "" } else { " \t\n " };
-            eng.ctap2_enrol_stage(format!("cred-{i}").as_bytes(), b"cose", "u", label, true)
+            eng.key_enrol_stage(format!("cred-{i}").as_bytes(), b"cose", "u", label, true)
         }));
     }
     for h in handles {

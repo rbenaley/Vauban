@@ -1,8 +1,8 @@
-//! Admin CTAP2 security-key dashboard (`/admin/ctap2`) — architecture 1.2 §6.5, ADR 003.
+//! Admin KEY security-key dashboard (`/admin/key`) — architecture 1.2 §6.5, ADR 003.
 //!
 //! Two-phase enrolment: E1 stages a PENDING credential here (fingerprint shown,
-//! recorded out-of-band); E2 activates it via `vcp-store ctap2 approve` on the
-//! helper host. Revocation is dashboard-driven (IPC `ctap2_revoke`).
+//! recorded out-of-band); E2 activates it via `vcp-store key approve` on the
+//! helper host. Revocation is dashboard-driven (IPC `key_revoke`).
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -72,16 +72,16 @@ fn short_fingerprint(fp: &str) -> String {
 /// local spawn needs the same blob root as `just run` (portal `[storage]`).
 fn approve_command(fp: &str, blob_path: &str) -> String {
     if blob_path.trim().is_empty() {
-        format!("vcp-store ctap2 approve --fingerprint {fp}")
+        format!("vcp-store key approve --fingerprint {fp}")
     } else {
         format!(
-            "VCP_ENVIRONMENT=development ./target/debug/vcp-store ctap2 approve --fingerprint {fp}"
+            "VCP_ENVIRONMENT=development ./target/debug/vcp-store key approve --fingerprint {fp}"
         )
     }
 }
 
 #[query_params]
-struct AdminCtap2Query {
+struct AdminKeyQuery {
     /// Fingerprint of a freshly staged (E1) credential — success feedback.
     enrolled: Option<String>,
     /// credential_id_hex targeted by the revoke confirmation overlay.
@@ -90,17 +90,17 @@ struct AdminCtap2Query {
 }
 
 #[page]
-async fn admin_ctap2_page(cx: &Cx) -> Result {
+async fn admin_key_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
-    if !perms.ctap2_manage {
+    if !perms.key_manage {
         return Err(capability_denied().into());
     }
     let store = storage(cx);
-    let pending = parse_cred_list(&store.ctap2_list("pending").unwrap_or_else(|_| "[]".into()));
-    let active = parse_cred_list(&store.ctap2_list("active").unwrap_or_else(|_| "[]".into()));
+    let pending = parse_cred_list(&store.key_list("pending").unwrap_or_else(|_| "[]".into()));
+    let active = parse_cred_list(&store.key_list("active").unwrap_or_else(|_| "[]".into()));
 
-    let q = query_params::<AdminCtap2Query>(cx).ok();
+    let q = query_params::<AdminKeyQuery>(cx).ok();
     // Only echo values that resolve to a real helper row (no reflected input).
     let enrolled = q
         .as_ref()
@@ -146,7 +146,7 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
             <div>
                 <h1 class="vb-title">"Security keys"</h1>
                 <p class="vb-lead" style="margin-bottom: 0;">
-                    "Per-admin CTAP2 / WebAuthn keys, verified inside the "
+                    "Per-admin KEY / WebAuthn keys, verified inside the "
                     <span class="vb-mono">"vcp-store"</span>
                     " helper. Release publishes and deletes require an assertion from an ACTIVE key."
                 </p>
@@ -168,9 +168,9 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
                 <strong>"Two-phase enrolment (ADR 003)."</strong>
                 " Creating a passkey here only stages it as PENDING. Record its fingerprint "
                 "out-of-band, then activate it on the helper host with "
-                <span class="vb-mono">"vcp-store ctap2 approve"</span>
+                <span class="vb-mono">"vcp-store key approve"</span>
                 ". On the helper host, "
-                <span class="vb-mono">"vcp-store ctap2 pending"</span>
+                <span class="vb-mono">"vcp-store key pending"</span>
                 " lists PENDING keys (for E2) and in-flight ceremony challenges."
             </div>
         </div>
@@ -191,7 +191,7 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
                     " is PENDING. Record this fingerprint out-of-band, then approve on the helper host:"
                 </p>
                 <div
-                    id="vcp-ctap2-fingerprint"
+                    id="vcp-key-fingerprint"
                     class="vb-pre"
                     style="margin-bottom: 10px;"
                 >
@@ -228,7 +228,7 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
                     id="vcp-webauthn-form"
                     class="vb-form"
                     method="POST"
-                    action="/admin/ctap2/enrol"
+                    action="/admin/key/enrol"
                     style="max-width: 460px;"
                 >
                     <label for="admin_label">"Key label"</label>
@@ -353,7 +353,7 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
                             let fp_full = row.fingerprint.clone();
                             let fp_short = short_fingerprint(&row.fingerprint);
                             let revoke_href = format!(
-                                "/admin/ctap2?revoke={}", row.credential_id_hex
+                                "/admin/key?revoke={}", row.credential_id_hex
                             );
                             <tr>
                                 <td style="font-weight: 700;">
@@ -412,7 +412,7 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
                             "."
                         </p>
                     }
-                    <form class="vb-form" method="POST" action="/admin/ctap2/revoke">
+                    <form class="vb-form" method="POST" action="/admin/key/revoke">
                         <input type="hidden" name="credential_id_hex" value=(cred)>
                         <label for="confirm">"Confirm"</label>
                         <input
@@ -423,7 +423,7 @@ async fn admin_ctap2_page(cx: &Cx) -> Result {
                             autocomplete="off"
                         >
                         <div class="vb-confirm-actions">
-                            <a class="vb-btn muted compact" href="/admin/ctap2">
+                            <a class="vb-btn muted compact" href="/admin/key">
                                 "Cancel"
                             </a>
                             <button
@@ -448,32 +448,32 @@ struct EnrolForm {
     attestation: String,
 }
 
-#[route(POST "/admin/ctap2/enrol")]
-async fn admin_ctap2_enrol(cx: &Cx, Form(form): Form<EnrolForm>) -> Result<SeeOther> {
+#[route(POST "/admin/key/enrol")]
+async fn admin_key_enrol(cx: &Cx, Form(form): Form<EnrolForm>) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
-    if !perms.ctap2_manage {
+    if !perms.key_manage {
         return Err(capability_denied().into());
     }
     // Label before attestation: same order as the ceremony JS, and keeps the
     // empty-label denial path testable without a real WebAuthn payload.
     let Some(label) = crate::storage::normalize_admin_label(&form.admin_label) else {
-        return Ok(see_other("/admin/ctap2?err=label"));
+        return Ok(see_other("/admin/key?err=label"));
     };
     let Ok(att) = serde_json::from_str::<Value>(form.attestation.trim()) else {
-        return Ok(see_other("/admin/ctap2?err=attestation"));
+        return Ok(see_other("/admin/key?err=attestation"));
     };
     let att_obj = att
         .pointer("/response/attestationObject")
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let Ok((cred_id, cose)) = extract_attested_credential(att_obj) else {
-        return Ok(see_other("/admin/ctap2?err=attestation"));
+        return Ok(see_other("/admin/key?err=attestation"));
     };
     let store = storage(cx);
-    match store.ctap2_enrol_stage(&cred_id, &cose, &staff.user.id.to_string(), label, false) {
-        Ok(fp) => Ok(see_other(&format!("/admin/ctap2?enrolled={fp}"))),
-        Err(_) => Ok(see_other("/admin/ctap2?err=enrol")),
+    match store.key_enrol_stage(&cred_id, &cose, &staff.user.id.to_string(), label, false) {
+        Ok(fp) => Ok(see_other(&format!("/admin/key?enrolled={fp}"))),
+        Err(_) => Ok(see_other("/admin/key?err=enrol")),
     }
 }
 
@@ -483,30 +483,28 @@ struct RevokeForm {
     confirm: String,
 }
 
-#[route(POST "/admin/ctap2/revoke")]
-async fn admin_ctap2_revoke(cx: &Cx, Form(form): Form<RevokeForm>) -> Result<SeeOther> {
+#[route(POST "/admin/key/revoke")]
+async fn admin_key_revoke(cx: &Cx, Form(form): Form<RevokeForm>) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
-    if !perms.ctap2_manage {
+    if !perms.key_manage {
         return Err(capability_denied().into());
     }
     let hexid = form.credential_id_hex.trim();
     if form.confirm.trim() != "revoke" {
         // Only hex reaches the redirect (decode gate below re-validates on POST).
         if hexid.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Ok(see_other(&format!(
-                "/admin/ctap2?revoke={hexid}&err=confirm"
-            )));
+            return Ok(see_other(&format!("/admin/key?revoke={hexid}&err=confirm")));
         }
-        return Ok(see_other("/admin/ctap2?err=revoke"));
+        return Ok(see_other("/admin/key?err=revoke"));
     }
     let Ok(cred) = hex::decode(hexid) else {
-        return Ok(see_other("/admin/ctap2?err=revoke"));
+        return Ok(see_other("/admin/key?err=revoke"));
     };
     let store = storage(cx);
-    match store.ctap2_revoke(&cred) {
-        Ok(()) => Ok(see_other("/admin/ctap2")),
-        Err(_) => Ok(see_other("/admin/ctap2?err=revoke")),
+    match store.key_revoke(&cred) {
+        Ok(()) => Ok(see_other("/admin/key")),
+        Err(_) => Ok(see_other("/admin/key?err=revoke")),
     }
 }
 
@@ -548,7 +546,7 @@ mod tests {
     fn approve_command_matches_cli_contract() {
         assert_eq!(
             approve_command("ff00", ""),
-            "vcp-store ctap2 approve --fingerprint ff00"
+            "vcp-store key approve --fingerprint ff00"
         );
         assert!(
             approve_command("ff00", "/tmp/vcp-storage").contains("VCP_ENVIRONMENT=development")

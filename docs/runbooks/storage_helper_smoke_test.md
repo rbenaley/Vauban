@@ -117,12 +117,12 @@ the known key → same deny on verify-on-read.
 
 ## F -- WebAuthn C1 release publish (Pass / Fail)
 
-Requires at least one ACTIVE CTAP2 key (see ops breakglass / CTAP2 enrol).
+Requires at least one ACTIVE KEY key (see ops breakglass / KEY enrol).
 
 1. Admin → Publish release with package. Confirm redirect to
    `/admin/releases/confirm?token=…` showing **helper** summary
    (`release_put_commit id=… sha256=…`).
-2. On helper host: `vcp-store ctap2 pending` shows the same summary/binding.
+2. On helper host: `vcp-store key pending` shows the same summary/binding.
 3. Complete WebAuthn (UV required). Release becomes PUBLISHED; download
    matches digest.
 4. Negative: abort ceremony / refuse UV → release stays HIDDEN; no rename.
@@ -132,30 +132,30 @@ Requires at least one ACTIVE CTAP2 key (see ops breakglass / CTAP2 enrol).
 | **Pass** | Summary is helper-issued; publish only after valid assertion. |
 | **Fail** | Publish without ceremony, or UI invents its own summary label. |
 
-## G -- CTAP2 enrol / approve / revoke (Pass / Fail)
+## G -- KEY enrol / approve / revoke (Pass / Fail)
 
-Local lab: open **`https://localhost:3000/admin/ctap2`** (not `127.0.0.1`).
+Local lab: open **`https://localhost:3000/admin/key`** (not `127.0.0.1`).
 WebAuthn rejects IP hosts; `webauthn_origin` uses `localhost` (RP ID derived).
 Accept the self-signed cert for `localhost` if prompted.
 
-1. `/admin/ctap2` → Create passkey → PENDING fingerprint shown + CLI hint.
+1. `/admin/key` → Create passkey → PENDING fingerprint shown + CLI hint.
 2. **Empty / whitespace-only key label** (leave label blank or spaces, click
    Create): must **not** open the authenticator dialog; banner / redirect
-   `err=label`. No PENDING row in `vcp-store ctap2 pending`.
+   `err=label`. No PENDING row in `vcp-store key pending`.
 3. **PENDING TTL** (`webauthn_pending_ttl_hours`, default 24): an unapproved
-   PENDING older than the TTL must show as `expired` in `ctap2 list` and
-   leave the `ctap2 pending` queue; `ctap2 approve` for that fingerprint
+   PENDING older than the TTL must show as `expired` in `key list` and
+   leave the `key pending` queue; `key approve` for that fingerprint
    fails closed (`webauthn_expired`).
 4. Activate (E2) with OOB fingerprint match:
    - **Local spawn (`just run`):** from the repo root,
-     `VCP_ENVIRONMENT=development ./target/debug/vcp-store ctap2 approve --fingerprint <hex>`
+     `VCP_ENVIRONMENT=development ./target/debug/vcp-store key approve --fingerprint <hex>`
      (loads the same `[storage].blob_path` as the portal, typically
      `<repo>/vcp-storage`). Bare `vcp-store` without the env var reads
      production `vcp-store.conf` (`/var/db/vcp/storage`) and fails on Mac.
-   - **Production helper host:** `vcp-store ctap2 approve --fingerprint <hex>`
+   - **Production helper host:** `vcp-store key approve --fingerprint <hex>`
 5. Cross-check listing:
-   - `vcp-store ctap2 pending` shows the PENDING credential (not only challenges).
-   - After approve: `vcp-store ctap2 list` shows ACTIVE; pending queue empty.
+   - `vcp-store key pending` shows the PENDING credential (not only challenges).
+   - After approve: `vcp-store key list` shows ACTIVE; pending queue empty.
 6. Dashboard lists ACTIVE; revoke from dashboard (no CLI revoke).
 7. Wrong fingerprint on approve → fail closed; no ACTIVE insert.
 

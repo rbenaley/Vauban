@@ -14,7 +14,7 @@ pub enum NavSection {
     AdminDocs,
     AdminReleases,
     AdminCompanies,
-    AdminCtap2,
+    AdminKey,
 }
 
 /// Derive rail highlight and topbar crumb from the request path.
@@ -68,7 +68,7 @@ pub fn nav_from_path(path: &str) -> (NavSection, String) {
                     (NavSection::AdminCompanies, "admin / companies".to_owned())
                 }
             }
-            Some("ctap2") => (NavSection::AdminCtap2, "admin / ctap2".to_owned()),
+            Some("key") => (NavSection::AdminKey, "admin / key".to_owned()),
             _ => (NavSection::AdminHome, "admin".to_owned()),
         };
     }
@@ -182,8 +182,8 @@ mod tests {
             )
         );
         assert_eq!(
-            nav_from_path("/admin/ctap2"),
-            (NavSection::AdminCtap2, "admin / ctap2".to_owned())
+            nav_from_path("/admin/key"),
+            (NavSection::AdminKey, "admin / key".to_owned())
         );
         assert_eq!(
             nav_from_path("/admin/unknown"),

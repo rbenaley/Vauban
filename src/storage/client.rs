@@ -664,7 +664,7 @@ impl StorageClient {
         }
     }
 
-    pub fn ctap2_enrol_stage(
+    pub fn key_enrol_stage(
         &self,
         credential_id: &[u8],
         public_key_cose: &[u8],
@@ -677,7 +677,7 @@ impl StorageClient {
         match &self.backend {
             Backend::Inline(engine) => {
                 let eng = engine.lock().expect("inline engine");
-                eng.ctap2_enrol_stage(
+                eng.key_enrol_stage(
                     credential_id,
                     public_key_cose,
                     user_handle,
@@ -686,7 +686,7 @@ impl StorageClient {
                 )
             }
             Backend::Ipc { .. } => {
-                let req = StorageRequest::Ctap2EnrolStage {
+                let req = StorageRequest::KeyEnrolStage {
                     credential_id_b64: URL_SAFE_NO_PAD.encode(credential_id),
                     public_key_cose_b64: URL_SAFE_NO_PAD.encode(public_key_cose),
                     user_handle: user_handle.to_owned(),
@@ -707,14 +707,14 @@ impl StorageClient {
         }
     }
 
-    pub fn ctap2_list(&self, kind: &str) -> Result<String, StorageError> {
+    pub fn key_list(&self, kind: &str) -> Result<String, StorageError> {
         match &self.backend {
             Backend::Inline(engine) => {
                 let eng = engine.lock().expect("inline engine");
-                eng.ctap2_list_json(kind)
+                eng.key_list_json(kind)
             }
             Backend::Ipc { .. } => {
-                let req = StorageRequest::Ctap2List {
+                let req = StorageRequest::KeyList {
                     kind: kind.to_owned(),
                 };
                 let resp = self.roundtrip(req)?;
@@ -724,23 +724,23 @@ impl StorageClient {
                     Err(StorageError::new(
                         StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
                             .unwrap_or(StorageErrorCode::Io),
-                        "ctap2_list",
+                        "key_list",
                     ))
                 }
             }
         }
     }
 
-    pub fn ctap2_revoke(&self, credential_id: &[u8]) -> Result<(), StorageError> {
+    pub fn key_revoke(&self, credential_id: &[u8]) -> Result<(), StorageError> {
         use base64::Engine;
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         match &self.backend {
             Backend::Inline(engine) => {
                 let eng = engine.lock().expect("inline engine");
-                eng.ctap2_revoke(credential_id)
+                eng.key_revoke(credential_id)
             }
             Backend::Ipc { .. } => {
-                let req = StorageRequest::Ctap2Revoke {
+                let req = StorageRequest::KeyRevoke {
                     credential_id_b64: URL_SAFE_NO_PAD.encode(credential_id),
                 };
                 let resp = self.roundtrip(req)?;

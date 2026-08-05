@@ -205,10 +205,10 @@ fn inv_webauthn_12_and_adrs_pinned() {
     }
 
     let bin = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/vcp_store.rs"));
-    assert!(bin.contains("ctap2"));
+    assert!(bin.contains("key"));
     assert!(bin.contains("approve"));
-    assert!(bin.contains("ctap2 list") || bin.contains("\"list\""));
-    assert!(bin.contains("load_ctap2_cfg_with_env"));
+    assert!(bin.contains("key list") || bin.contains("\"list\""));
+    assert!(bin.contains("load_key_cfg_with_env"));
     assert!(bin.contains("VCP_ENVIRONMENT"));
     assert!(bin.contains("validate_production_webauthn"));
     assert!(bin.contains("format_ascii_table"));
@@ -292,24 +292,18 @@ fn inv_webauthn_12_and_adrs_pinned() {
         "/src/app/admin/releases/confirm.rs"
     ));
     assert!(confirm.contains("vcp-webauthn-summary"));
-    assert!(confirm.contains("vcp-store ctap2 pending"));
+    assert!(confirm.contains("vcp-store key pending"));
 }
 
 /// §6.5 / ADR 003 dashboard contract: fingerprint at E1, CLI approve
 /// instructions, pending cross-check hint, Casbin gate, typed revoke confirm.
 #[test]
-fn inv_ctap2_dashboard_ui_pinned() {
-    let page = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/app/admin/ctap2.rs"
-    ));
-    assert!(page.contains("perms.ctap2_manage"), "Casbin gate");
+fn inv_key_dashboard_ui_pinned() {
+    let page = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/admin/key.rs"));
+    assert!(page.contains("perms.key_manage"), "Casbin gate");
+    assert!(page.contains("vcp-key-fingerprint"), "E1 fingerprint block");
     assert!(
-        page.contains("vcp-ctap2-fingerprint"),
-        "E1 fingerprint block"
-    );
-    assert!(
-        page.contains("ctap2 approve --fingerprint"),
+        page.contains("key approve --fingerprint"),
         "CLI approve command (E2)"
     );
     assert!(
@@ -317,12 +311,12 @@ fn inv_ctap2_dashboard_ui_pinned() {
         "dev spawn approve command must set VCP_ENVIRONMENT"
     );
     assert!(
-        page.contains("vcp-store ctap2 pending"),
+        page.contains("vcp-store key pending"),
         "helper-host cross-check hint"
     );
     assert!(
         page.contains("!= \"revoke\""),
-        "typed confirmation gates ctap2_revoke"
+        "typed confirmation gates key_revoke"
     );
     assert!(page.contains("data-mode=\"create\""), "E1 ceremony root");
     assert!(
@@ -344,7 +338,7 @@ fn inv_ctap2_dashboard_ui_pinned() {
     ));
     assert!(
         rail.contains("ico_key(cx"),
-        "rail must use the dedicated key icon for /admin/ctap2"
+        "rail must use the dedicated key icon for /admin/key"
     );
 
     let js = include_str!(concat!(

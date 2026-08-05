@@ -1,4 +1,4 @@
-//! Helper-side WebAuthn / CTAP2 challenge issue + assertion verify (architecture 1.2).
+//! Helper-side WebAuthn / KEY challenge issue + assertion verify (architecture 1.2).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -72,7 +72,7 @@ pub fn credential_fingerprint(credential_id: &[u8], public_key_cose: &[u8]) -> S
     hex::encode(hasher.finalize())
 }
 
-/// CTAP2 admin key label: trim; reject empty / whitespace-only.
+/// KEY admin key label: trim; reject empty / whitespace-only.
 pub fn normalize_admin_label(raw: &str) -> Option<&str> {
     let label = raw.trim();
     if label.is_empty() { None } else { Some(label) }

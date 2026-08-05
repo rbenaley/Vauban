@@ -403,7 +403,7 @@ pub struct StorageConfig {
     pub webauthn_origin: String,
     #[serde(default = "default_webauthn_challenge_ttl")]
     pub webauthn_challenge_ttl_secs: u64,
-    /// Hours before an unapproved CTAP2 PENDING enrolment becomes `expired`.
+    /// Hours before an unapproved KEY PENDING enrolment becomes `expired`.
     /// `0` disables auto-expiry. Default 24.
     #[serde(default = "default_webauthn_pending_ttl_hours")]
     pub webauthn_pending_ttl_hours: u64,
