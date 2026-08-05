@@ -2,8 +2,8 @@
 # Loaded only in development, after default.toml + development.toml.
 
 [database]
-# Empty host => Unix-domain socket (no TCP).
-url = "postgresql:///vcp"
+# Unix-domain socket (Toasty requires `?host=/socketdir`; no TCP).
+url = "postgresql:///vcp?host=/tmp"
 
 # Optional: point at Scaleway TEM instead of local Mailpit.
 # [mail]

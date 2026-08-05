@@ -17,8 +17,8 @@ enabled = false
 
 [database]
 # Local-only test credentials (same pattern as Vauban vauban_test).
-# Empty host => Unix-domain socket (no TCP).
-url = "postgresql://vcp_test:vcp_test@/vcp_test"
+# Unix-domain socket (Toasty requires `?host=/socketdir`; no TCP).
+url = "postgresql://vcp_test:vcp_test@/vcp_test?host=/tmp"
 
 [storage]
 blob_path = "target/vcp-storage-test"

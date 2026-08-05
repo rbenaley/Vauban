@@ -33,8 +33,9 @@ just db-create-test   # automated tests DB `vcp_test` (or: bash scripts/setup_te
 `just validate` / `just test` call `ensure-vcp-test` and provision
 `vcp_test` (role + DB) on first use when the connection check fails.
 Manual `just db-create-test` remains available. Postgres uses the
-**Unix-domain socket** only (no TCP / no `localhost` host in URLs).
-Provisioning connects as superuser `postgres` (override with
+**Unix-domain socket** only (no TCP). Toasty URLs must set the socket
+directory explicitly, e.g. `postgresql:///vcp?host=/tmp` (FreeBSD ports /
+Homebrew). Provisioning connects as superuser `postgres` (override with
 `VCP_PG_ADMIN_USER`); set `PGPASSWORD` / `VCP_PG_ADMIN_PASSWORD` or
 `~/.pgpass` when password auth is required (typical on FreeBSD staging).
 

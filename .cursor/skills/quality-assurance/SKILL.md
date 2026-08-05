@@ -111,8 +111,8 @@ production code, `scripts/check_auth_tenant.sh`, and
 - Provision: `just db-create-test` / `scripts/setup_test_db.sh`, or
   automatically via `ensure-vcp-test` when running `just test` /
   `just validate`. Admin DDL uses role `postgres` over the Unix-domain
-  socket only — no TCP (`VCP_PG_ADMIN_USER` override; `PGPASSWORD` /
-  `VCP_PG_ADMIN_PASSWORD` / `~/.pgpass`).
+  socket only — no TCP. App URLs use `?host=/tmp` (Toasty cannot omit
+  host; `VCP_PG_ADMIN_USER` / `PGPASSWORD` / `~/.pgpass` as needed).
 - Schema: Toasty migrations under `toasty/` applied on `db::connect`
   (`vcp-cli migration generate|apply`; not Diesel / not `push_schema`).
 - Run tests single-threaded: `just test` / `--test-threads=1`.
