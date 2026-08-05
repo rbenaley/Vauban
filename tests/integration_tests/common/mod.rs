@@ -257,6 +257,28 @@ fn is_seed_release_version(version: &str) -> bool {
     )
 }
 
+/// Revoke every WebAuthn credential in the shared test blob store.
+///
+/// `target/vcp-storage-test` is shared across tests and runs just like
+/// `vcp_test`, but [`cleanup`] only truncates Postgres. KEY tests stage
+/// credentials that otherwise leak into later tests (and later runs), so
+/// count / empty-list assertions depend on execution order. Call this next
+/// to `cleanup` in any test that asserts on KEY lists.
+pub async fn cleanup_key_store() {
+    let cfg = test_config().await;
+    if cfg.storage.blob_path.is_empty() {
+        return;
+    }
+    let Ok(meta) = vcp::storage::MetaDb::open(&cfg.storage.blob_path) else {
+        return;
+    };
+    let rows = meta.list_all_credentials().unwrap_or_default();
+    for row in rows {
+        // Already-revoked rows report NotFound; they are out of the lists.
+        let _ = meta.revoke_credential(&row.credential_id);
+    }
+}
+
 pub async fn cleanup(db: &Db) {
     let mut db = db.clone();
 

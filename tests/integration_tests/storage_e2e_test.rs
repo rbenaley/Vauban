@@ -6,10 +6,10 @@ use vcp::models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release};
 use vcp::storage::sha256_hex;
 
 use crate::common::{
-    MultipartFile, TINY_PNG, cleanup, config_dir, create_membership, create_org_with_membership,
-    create_test_user_with_portal_role, db_lock, ensure_reserved_org, get, login_cookie, post_form,
-    post_multipart_with_files, status, test_db, test_router, unique_email, unique_slug,
-    urlencoding_encode,
+    MultipartFile, TINY_PNG, cleanup, cleanup_key_store, config_dir, create_membership,
+    create_org_with_membership, create_test_user_with_portal_role, db_lock, ensure_reserved_org,
+    get, login_cookie, post_form, post_multipart_with_files, status, test_db, test_router,
+    unique_email, unique_slug, urlencoding_encode,
 };
 use vcp::models::{MEMBERSHIP_ROLE_ORG, PORTAL_ROLE_ADMIN};
 
@@ -424,6 +424,7 @@ async fn e2e_key_dashboard_staff_ok_member_404_and_revoke_guard() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
+    cleanup_key_store().await;
     let router = test_router().await;
 
     let admin_email = unique_email("key-admin");
@@ -488,6 +489,7 @@ async fn e2e_key_enrol_rejects_empty_admin_label() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
+    cleanup_key_store().await;
     let router = test_router().await;
 
     let admin_email = unique_email("key-label");
@@ -535,6 +537,7 @@ async fn e2e_key_lists_paginate_four_per_page() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
+    cleanup_key_store().await;
     let router = test_router().await;
 
     let admin_email = unique_email("key-page");
@@ -609,6 +612,7 @@ async fn e2e_key_enrol_approve_revoke_lifecycle() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
+    cleanup_key_store().await;
     let router = test_router().await;
 
     let admin_email = unique_email("key-life");
