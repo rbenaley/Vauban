@@ -2,7 +2,9 @@
 # Loaded only in development, after default.toml + development.toml.
 
 [database]
-url = "postgresql://localhost/vcp"
+# Optional password when pg_hba requires it (gitignored local.toml):
+# url = "postgresql://postgres:YOUR_PASSWORD@localhost/vcp"
+url = "postgresql://postgres@localhost/vcp"
 
 # Optional: point at Scaleway TEM instead of local Mailpit.
 # [mail]

@@ -27,7 +27,8 @@ directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
 [database]
-url = "postgresql://localhost/vcp"
+# Explicit user: without it libpq defaults to the OS login (e.g. ec2-user).
+url = "postgresql://postgres@localhost/vcp"
 
 [storage]
 blob_path = "vcp-storage"

@@ -33,11 +33,12 @@ just db-create-test   # automated tests DB `vcp_test` (or: bash scripts/setup_te
 `just validate` / `just test` call `ensure-vcp-test` and provision
 `vcp_test` (role + DB) on first use when the connection check fails.
 Manual `just db-create-test` remains available. App config URLs
-(`config/*.toml`, `vcp.conf`) use TCP (`localhost`). DDL / `ensure-vcp-test`
-provisioning uses the **Unix-domain socket** as superuser `postgres`
-(override with `VCP_PG_ADMIN_USER`); set `PGPASSWORD` /
-`VCP_PG_ADMIN_PASSWORD` or `~/.pgpass` when password auth is required
-(typical on FreeBSD staging).
+(`config/*.toml`) use TCP as user `postgres`
+(`postgresql://postgres@localhost/vcp`); put the password in gitignored
+`config/local.toml` when `pg_hba` requires it. DDL / `ensure-vcp-test`
+provisioning uses the **Unix-domain socket** as `postgres` (override with
+`VCP_PG_ADMIN_USER`); set `PGPASSWORD` / `VCP_PG_ADMIN_PASSWORD` or
+`~/.pgpass` for those client tools.
 
 ## Configuration
 
