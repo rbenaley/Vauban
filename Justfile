@@ -22,8 +22,8 @@ export PATH := cargo_home + "/bin:" + env_var("PATH")
 # Keep in sync with README / topcoat facade pin in Cargo.toml.
 topcoat_cli_version := "0.5.0"
 
-# Match config/testing.toml (user/password/db host).
-vcp_test_url := "postgresql://vcp_test:vcp_test@localhost/vcp_test"
+# Match config/testing.toml (Unix socket; empty host — no TCP).
+vcp_test_url := "postgresql://vcp_test:vcp_test@/vcp_test"
 
 # Install pinned topcoat-cli when missing. Used by validate, run, bundle, fmt.
 [private]
@@ -52,14 +52,16 @@ ensure-vcp-test:
       echo "error: psql required to provision vcp_test (install PostgreSQL client tools)" >&2
       exit 1
     fi
-    if PGPASSWORD=vcp_test psql -h localhost -U vcp_test -d vcp_test -Atc 'SELECT 1' >/dev/null 2>&1; then
+    # Unix-domain socket only (do not pass -h / PGHOST hostname — that forces TCP).
+    unset PGHOST 2>/dev/null || true
+    if PGPASSWORD=vcp_test psql -U vcp_test -d vcp_test -Atc 'SELECT 1' >/dev/null 2>&1; then
       exit 0
     fi
     echo "Postgres vcp_test role/DB missing; running db-create-test…" >&2
     just db-create-test
-    if ! PGPASSWORD=vcp_test psql -h localhost -U vcp_test -d vcp_test -Atc 'SELECT 1' >/dev/null 2>&1; then
+    if ! PGPASSWORD=vcp_test psql -U vcp_test -d vcp_test -Atc 'SELECT 1' >/dev/null 2>&1; then
       echo "error: could not connect as vcp_test after setup ({{vcp_test_url}})" >&2
-      echo "hint: ensure PostgreSQL is running and your OS user can createdb/createuser" >&2
+      echo "hint: ensure PostgreSQL is running; provisioning uses -U postgres over the Unix socket (set PGPASSWORD or ~/.pgpass)" >&2
       exit 1
     fi
     echo "vcp_test ready" >&2
@@ -226,14 +228,14 @@ run *ARGS: (build ARGS)
 dev *ARGS: ensure-topcoat
     topcoat dev {{ARGS}}
 
-# Create local Postgres database `vcp` if missing
+# Create local Postgres database `vcp` if missing (admin: postgres, Unix socket)
 db-create:
-    createdb vcp || true
+    env -u PGHOST PGUSER="${VCP_PG_ADMIN_USER:-postgres}" createdb vcp || true
 
 # Drop and recreate local Postgres database `vcp` (destructive), then apply migrations
 db-reset:
-    dropdb --if-exists vcp
-    createdb vcp
+    env -u PGHOST PGUSER="${VCP_PG_ADMIN_USER:-postgres}" dropdb --if-exists vcp
+    env -u PGHOST PGUSER="${VCP_PG_ADMIN_USER:-postgres}" createdb vcp
     just db-migrate
 
 # Apply pending Toasty migrations (development URL from layered TOML)
@@ -250,7 +252,7 @@ db-create-test:
 
 # Drop and recreate `vcp_test` (destructive), then re-grant (schema via db::connect)
 db-reset-test:
-    dropdb --if-exists vcp_test || true
+    env -u PGHOST PGUSER="${VCP_PG_ADMIN_USER:-postgres}" dropdb --if-exists vcp_test || true
     bash scripts/setup_test_db.sh
 
 # Update Cargo.lock

@@ -2,7 +2,8 @@
 # Loaded only in development, after default.toml + development.toml.
 
 [database]
-url = "postgresql://localhost/vcp"
+# Empty host => Unix-domain socket (no TCP).
+url = "postgresql:///vcp"
 
 # Optional: point at Scaleway TEM instead of local Mailpit.
 # [mail]

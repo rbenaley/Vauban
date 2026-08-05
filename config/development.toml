@@ -27,7 +27,8 @@ directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
 [database]
-url = "postgresql://localhost/vcp"
+# Empty host => Unix-domain socket (no TCP).
+url = "postgresql:///vcp"
 
 [storage]
 blob_path = "vcp-storage"
