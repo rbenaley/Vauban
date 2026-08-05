@@ -1,11 +1,10 @@
 //! Issue detail at `/{org}/issues/{issue_key}`.
 
-use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
     router::{
-        content::Form,
+        content::multipart::Multipart,
         error::{SeeOther, not_found, redirect, see_other},
         page, path_param, route,
     },
@@ -15,12 +14,18 @@ use topcoat::{
 use crate::{
     app::_components::{ico_check, ico_hourglass, ico_paperclip, severity_badge, status_badge},
     app::org::Org,
-    auth::{capability_denied, db, require_org},
+    app::{DiscussionPane, DiscussionRow, issue_discussion, shot_file_input, thumbs_for_comment},
+    auth::{capability_denied, config, db, require_org, storage},
     db::now_unix,
+    issue_attachments::{
+        ScreenshotUpload, attach_many, issue_attachment_list_limit, list_for_issue,
+        screenshot_from_part, store_screenshot_uploads,
+    },
     issue_status::{close_issue_status, issue_is_closed, reopen_issue_status},
     models::{
-        ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_REPORTER,
-        ISSUE_ROLE_SUPPORT, ISSUE_ROLE_SYSTEM, Issue, IssueComment, RESERVED_ORG_SLUG, User,
+        ISSUE_ATTACHMENT_OPENER_COMMENT_ID, ISSUE_COMMENT_KIND_COMMENT, ISSUE_ROLE_REPORTER,
+        ISSUE_ROLE_SUPPORT, ISSUE_ROLE_SYSTEM, Issue, IssueAttachment, IssueComment,
+        RESERVED_ORG_SLUG, User,
     },
     perms::perms_for_user,
     tz::{browser_tz, format_relative, format_unix_local, unix_rfc3339},
@@ -79,16 +84,27 @@ async fn issue_detail_page(cx: &Cx) -> Result {
     let updated_rfc = unix_rfc3339(issue.updated_at);
     let opener_created = format_relative(issue.created_at, now, tz);
 
+    let max_att = config(cx).issues.max_attachments_per_comment.max(1);
+    let attachments = list_for_issue(
+        &mut database,
+        ctx.org.id,
+        issue.id,
+        issue_attachment_list_limit(max_att),
+    )
+    .await
+    .unwrap_or_default();
+    let opener_thumbs =
+        thumbs_for_comment(org_slug, &attachments, ISSUE_ATTACHMENT_OPENER_COMMENT_ID);
+
     let list_href = format!("/{org_slug}/issues");
     let reply_action = format!("/{org_slug}/issues/{}/reply", issue.key);
     let close_action = format!("/{org_slug}/issues/{}/close", issue.key);
     let reopen_action = format!("/{org_slug}/issues/{}/reopen", issue.key);
     let closed = issue_is_closed(&issue.status);
 
-    let timeline = build_timeline_rows(&issue, &comments, &users, now, tz);
-
+    let timeline = build_discussion_rows(&comments, &users, &attachments, org_slug, now, tz);
     view! {
-        <div>
+        <div class="vb-issue-pane">
             <a
                 class="vb-back"
                 href=(list_href)
@@ -158,44 +174,17 @@ async fn issue_detail_page(cx: &Cx) -> Result {
             </div>
 
             <div class="vb-section-label">"DISCUSSION"</div>
-            <div
-                style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 22px;"
-            >
-                <div
-                    style="display: flex; flex-direction: column; align-items: flex-start;"
-                >
-                    <div class="vb-bubble">
-                        <div
-                            style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;"
-                        >
-                            <span style="font-size: 12.5px; font-weight: 700;">
-                                (opener_name)
-                            </span>
-                            <span
-                                class="vb-mono"
-                                style="font-size: 9.5px; color: #fff; background: #5a5f66; padding: 1px 6px; border-radius: 3px;"
-                            >
-                                (ISSUE_ROLE_REPORTER)
-                            </span>
-                            <span
-                                class="vb-mono"
-                                style="font-size: 10px; color: #9aa0a6;"
-                            >
-                                (opener_created)
-                            </span>
-                        </div>
-                        <div
-                            style="font-size: 13.5px; line-height: 1.55; color: #3a3f46; white-space: pre-wrap;"
-                        >
-                            (issue.details.clone())
-                        </div>
-                    </div>
-                </div>
-                for row in timeline {
-                    (render_timeline_row(cx, row).await?)
+            issue_discussion(
+                pane: DiscussionPane {
+                    opener_name,
+                    opener_role: ISSUE_ROLE_REPORTER.to_owned(),
+                    opener_when: opener_created,
+                    opener_body: issue.details.clone(),
+                    opener_thumbs,
+                    timeline,
+                    has_lightbox: !attachments.is_empty(),
                 }
-            </div>
-
+            )
             if closed {
                 <div
                     class="vb-panel"
@@ -223,41 +212,76 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                 </div>
             } else if perms.issues_write {
                 <div class="vb-panel" style="padding: 14px;">
-                    <form method="POST" action=(reply_action) id="issue-reply">
+                    <form
+                        method="POST"
+                        action=(close_action)
+                        id="issue-close"
+                        style="display: none;"
+                    ></form>
+                    <form
+                        method="POST"
+                        action=(reply_action)
+                        id="issue-reply"
+                        enctype="multipart/form-data"
+                    >
                         <textarea
                             name="body"
                             required=""
                             placeholder="Add a reply…"
                             style="width: 100%; min-height: 76px; font-size: 14px; padding: 10px 12px; border: 1px solid #e0e2de; border-radius: 4px; background: #fbfcfb; resize: vertical; font-family: 'Hanken Grotesk', sans-serif; line-height: 1.5; margin-bottom: 12px;"
                         ></textarea>
-                    </form>
-                    <div
-                        style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;"
-                    >
-                        <span class="vb-btn muted vb-btn-ico">
-                            (ico_paperclip(cx, 13).await?)
-                            <span>"Attach screenshot"</span>
-                        </span>
-                        <div style="display: flex; gap: 10px;">
-                            <form method="POST" action=(close_action)>
-                                <button class="vb-btn muted" type="submit">
-                                    "Close issue"
-                                </button>
-                            </form>
-                            <button class="vb-btn" type="submit" form="issue-reply">
-                                "Reply"
+                        shot_file_input(
+                            label: view! {
+                                cx =>
+                                (ico_paperclip(cx, 13).await?)
+                                <span>"Attach screenshot"</span>
+                            },
+                            max: max_att
+                        )
+                        <div
+                            style="display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 12px;"
+                        >
+                            <button
+                                class="vb-btn muted"
+                                type="submit"
+                                form="issue-close"
+                            >
+                                "Close issue"
                             </button>
+                            <button class="vb-btn" type="submit">"Reply"</button>
                         </div>
-                    </div>
+                    </form>
                 </div>
             }
         </div>
     }
 }
 
-#[derive(Deserialize)]
-struct ReplyForm {
+struct ReplyMultipart {
     body: String,
+    screenshots: Vec<ScreenshotUpload>,
+}
+
+async fn parse_reply_multipart(mut multipart: Multipart) -> Result<ReplyMultipart> {
+    let mut body = String::new();
+    let mut screenshots = Vec::new();
+    while let Some(field) = multipart.next_field().await? {
+        match field.name() {
+            Some("body") => body = field.text().await?,
+            Some("screenshots") | Some("screenshot") | Some("image") => {
+                let fname = field.file_name().unwrap_or("").to_owned();
+                let ctype = field.content_type().map(|s| s.to_owned());
+                let data = field.bytes().await?.to_vec();
+                if let Some(shot) = screenshot_from_part(&fname, ctype.as_deref(), data) {
+                    screenshots.push(shot);
+                }
+            }
+            _ => {
+                let _ = field.bytes().await?;
+            }
+        }
+    }
+    Ok(ReplyMultipart { body, screenshots })
 }
 
 #[route(GET "/vauban/issues/{issue_key}")]
@@ -292,7 +316,7 @@ async fn redirect_reserved_issue_reopen(cx: &Cx) -> Result<SeeOther> {
 }
 
 #[route(POST "/{org}/issues/{issue_key}/reply")]
-async fn reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOther> {
+async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let org_slug = path_param::<Org>(cx);
     let key = path_param::<IssueKey>(cx);
     if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
@@ -306,9 +330,14 @@ async fn reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOther> {
         return Err(capability_denied().into());
     }
 
+    let form = parse_reply_multipart(multipart).await?;
     let body = form.body.trim().to_owned();
     if body.is_empty() {
         return Ok(see_other(&format!("/{org_slug}/issues/{key}")));
+    }
+    let max_att = config(cx).issues.max_attachments_per_comment.max(1);
+    if form.screenshots.len() > max_att {
+        return Ok(see_other(&format!("/{org_slug}/issues/{key}?err=attach")));
     }
 
     let mut database = db(cx);
@@ -331,6 +360,26 @@ async fn reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOther> {
         return Ok(see_other(&format!("/{org_slug}/issues/{key}")));
     }
 
+    let client = storage(cx);
+    let tokens = if form.screenshots.is_empty() {
+        Vec::new()
+    } else {
+        match store_screenshot_uploads(
+            &mut database,
+            &client,
+            ctx.org.id,
+            &form.screenshots,
+            max_att,
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(_) => {
+                return Ok(see_other(&format!("/{org_slug}/issues/{key}?err=attach")));
+            }
+        }
+    };
+
     let now = now_unix();
     let role = if perms.admin_view {
         ISSUE_ROLE_SUPPORT
@@ -338,7 +387,7 @@ async fn reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOther> {
         ISSUE_ROLE_REPORTER
     };
 
-    let _ = toasty::create!(IssueComment {
+    let Ok(comment) = toasty::create!(IssueComment {
         issue_id: issue.id,
         author_user_id: ctx.user.id,
         author_role: role.to_owned(),
@@ -347,7 +396,31 @@ async fn reply_issue(cx: &Cx, Form(form): Form<ReplyForm>) -> Result<SeeOther> {
         created_at: now,
     })
     .exec(&mut database)
-    .await;
+    .await
+    else {
+        return Ok(see_other(&format!("/{org_slug}/issues/{key}?err=reply")));
+    };
+
+    if !tokens.is_empty()
+        && let Err(err) = attach_many(
+            &mut database,
+            ctx.org.id,
+            issue.id,
+            comment.id,
+            ctx.user.id,
+            &tokens,
+            max_att,
+        )
+        .await
+    {
+        tracing::warn!(
+            org = %org_slug,
+            key = %key,
+            error = %err,
+            "issue reply attach_many failed"
+        );
+        return Ok(see_other(&format!("/{org_slug}/issues/{key}?err=attach")));
+    }
 
     let _ = issue.update().updated_at(now).exec(&mut database).await;
 
@@ -424,22 +497,14 @@ async fn reopen_issue(cx: &Cx) -> Result<SeeOther> {
     Ok(see_other(&format!("/{org_slug}/issues/{key}")))
 }
 
-struct TimelineRow {
-    kind: String,
-    author_name: String,
-    author_role: String,
-    body: String,
-    when: String,
-    support_side: bool,
-}
-
-fn build_timeline_rows(
-    _issue: &Issue,
+fn build_discussion_rows(
     comments: &[IssueComment],
     users: &[User],
+    attachments: &[IssueAttachment],
+    org_slug: &str,
     now: i64,
     tz: chrono_tz::Tz,
-) -> Vec<TimelineRow> {
+) -> Vec<DiscussionRow> {
     comments
         .iter()
         .map(|c| {
@@ -451,78 +516,21 @@ fn build_timeline_rows(
             } else {
                 user_display(users, c.author_user_id)
             };
-            TimelineRow {
+            DiscussionRow {
                 kind: c.kind.clone(),
                 author_name,
                 author_role: c.author_role.clone(),
                 body: c.body.clone(),
                 when: format_relative(c.created_at, now, tz),
                 support_side,
+                thumbs: if c.kind == ISSUE_COMMENT_KIND_COMMENT {
+                    thumbs_for_comment(org_slug, attachments, c.id)
+                } else {
+                    Vec::new()
+                },
             }
         })
         .collect()
-}
-
-async fn render_timeline_row(cx: &Cx, row: TimelineRow) -> Result {
-    if row.kind == ISSUE_COMMENT_KIND_STATUS {
-        let label = format!("{} · {}", row.body, row.when);
-        return view! {
-            cx =>
-            <div style="display: flex; align-items: center; gap: 12px; padding: 2px 0;">
-                <div style="flex: 1; height: 1px; background: #eef0ed;"></div>
-                <span
-                    class="vb-mono"
-                    style="font-size: 11px; color: #8a8f96; white-space: nowrap;"
-                >
-                    (label)
-                </span>
-                <div style="flex: 1; height: 1px; background: #eef0ed;"></div>
-            </div>
-        };
-    }
-
-    let bubble_class = if row.support_side {
-        "vb-bubble support"
-    } else {
-        "vb-bubble"
-    };
-    let align = if row.support_side {
-        "display: flex; flex-direction: column; align-items: flex-end;"
-    } else {
-        "display: flex; flex-direction: column; align-items: flex-start;"
-    };
-    let name_style = if row.support_side {
-        "font-size: 12.5px; font-weight: 700; color: var(--accent);"
-    } else {
-        "font-size: 12.5px; font-weight: 700;"
-    };
-    let badge_bg = if row.support_side {
-        "font-size: 9.5px; color: #fff; background: var(--accent); padding: 1px 6px; border-radius: 3px;"
-    } else {
-        "font-size: 9.5px; color: #fff; background: #5a5f66; padding: 1px 6px; border-radius: 3px;"
-    };
-
-    view! {
-        cx =>
-        <div style=(align)>
-            <div class=(bubble_class)>
-                <div
-                    style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;"
-                >
-                    <span style=(name_style)>(row.author_name)</span>
-                    <span class="vb-mono" style=(badge_bg)>(row.author_role)</span>
-                    <span class="vb-mono" style="font-size: 10px; color: #9aa0a6;">
-                        (row.when)
-                    </span>
-                </div>
-                <div
-                    style="font-size: 13.5px; line-height: 1.55; color: #3a3f46; white-space: pre-wrap;"
-                >
-                    (row.body)
-                </div>
-            </div>
-        </div>
-    }
 }
 
 fn user_display(users: &[User], id: u64) -> String {

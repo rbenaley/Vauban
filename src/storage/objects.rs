@@ -1,13 +1,17 @@
 //! Postgres `storage_objects` helpers (portal **mirror** of helper SQLite SoT).
 
+use std::io::Cursor;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use toasty::Db;
+use uuid::Uuid;
 
 use crate::models::{STORAGE_ORG_NONE, STORAGE_SCOPE_IMAGE, STORAGE_SCOPE_RELEASE, StorageObject};
 use crate::release_pkg::size_mb_from_bytes;
 
+use super::client::{StorageClient, write_and_hash};
 use super::error::{StorageError, StorageErrorCode};
+use super::ids::normalize_image_ext;
 
 fn now_unix() -> i64 {
     SystemTime::now()
@@ -97,6 +101,39 @@ pub async fn upsert_release_object(
     .exec(db)
     .await
     .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("db create: {e}")))
+}
+
+/// Put one tenant image through the helper and mirror it in Postgres.
+/// Returns the canonical token `{uuid}.{ext}` (`jpg` normalized to `jpeg`).
+pub async fn put_tenant_image(
+    db: &mut Db,
+    client: &StorageClient,
+    org_id: u64,
+    bytes: &[u8],
+    ext: &str,
+) -> Result<String, StorageError> {
+    let Some(ext) = normalize_image_ext(ext) else {
+        return Err(StorageError::new(
+            StorageErrorCode::BadImage,
+            "unsupported image type",
+        ));
+    };
+    if bytes.is_empty() {
+        return Err(StorageError::new(StorageErrorCode::BadImage, "empty image"));
+    }
+    let image_id = Uuid::new_v4().to_string();
+    let (upload_id, mut file) = client.put_begin_image(org_id, bytes.len() as u64, ext)?;
+    let (size, sha) = match write_and_hash(&mut file, Cursor::new(bytes)) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = client.put_abort(&upload_id);
+            return Err(e);
+        }
+    };
+    drop(file);
+    client.put_commit_image(&upload_id, org_id, &image_id, ext, &sha)?;
+    upsert_image_object(db, org_id, &image_id, ext, &sha, size).await?;
+    Ok(format!("{image_id}.{ext}"))
 }
 
 /// Upsert image digest/size after a successful helper `put_commit`.

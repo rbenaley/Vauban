@@ -32,9 +32,11 @@ pub use ids::{StorageScope, is_uuid_key, normalize_image_ext};
 pub use meta_db::{META_DB_FILE, MetaDb, MetaObject, ct_eq_hex};
 pub use objects::{
     BlobDisplay, delete_org_objects, delete_release_object, find_image_object, find_release_object,
-    release_blob_display, storage_http_status, upsert_image_object, upsert_release_object,
+    put_tenant_image, release_blob_display, storage_http_status, upsert_image_object,
+    upsert_release_object,
 };
 pub use protocol::{StorageRequest, StorageResponse};
+pub use sniff::{ImageKind, sniff_image};
 pub use webauthn::{
     canonical_summary, credential_fingerprint, normalize_admin_label, rp_id_from_webauthn_origin,
     soft_assertion_json, test_attestation_object_b64, webauthn_host_is_ip,

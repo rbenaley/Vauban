@@ -335,6 +335,52 @@ pub struct IssueComment {
     pub created_at: i64,
 }
 
+/// Default for `[issues].max_attachments_per_comment` (liaison rows; blobs
+/// stay under org quota). Prefer the live config value at request time.
+pub const DEFAULT_MAX_ATTACHMENTS_PER_COMMENT: usize = 5;
+
+/// Backward-compatible alias used by older tests / call sites.
+pub const MAX_ISSUE_ATTACHMENTS: usize = DEFAULT_MAX_ATTACHMENTS_PER_COMMENT;
+
+/// `issue_attachments.issue_comment_id` for images on the opening description
+/// (not a real `issue_comments` row).
+pub const ISSUE_ATTACHMENT_OPENER_COMMENT_ID: u64 = 0;
+
+/// Join row: issue ↔ tenant image already stored via `storage_objects` / helper.
+#[derive(Debug, Clone, Model)]
+#[table = "issue_attachments"]
+#[unique(issue_id, image_id)]
+pub struct IssueAttachment {
+    #[key]
+    #[auto]
+    pub id: u64,
+
+    #[index]
+    pub issue_id: u64,
+
+    #[index]
+    pub organization_id: u64,
+
+    /// Owning comment id, or [`ISSUE_ATTACHMENT_OPENER_COMMENT_ID`] for the
+    /// opening description bubble.
+    #[index]
+    pub issue_comment_id: u64,
+
+    /// Lowercase UUID image id (matches helper / `storage_objects` key).
+    pub image_id: String,
+
+    /// Normalized ext: `png` / `jpeg` / `webp`.
+    pub ext: String,
+
+    pub uploaded_by_user_id: u64,
+
+    /// Unix timestamp (seconds).
+    pub created_at: i64,
+
+    /// Display order within the issue (ascending).
+    pub sort_order: i64,
+}
+
 /// TTL for Concept-style ephemeral download links (seconds).
 pub const EPH_DOWNLOAD_TTL_SECS: i64 = 5 * 60;
 

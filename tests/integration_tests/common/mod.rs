@@ -25,9 +25,9 @@ use vcp::{
     db::{self, now_unix},
     magic_link::{active_user_by_email, issue_token},
     models::{
-        AuthSession, DOC_STATUS_PUBLISHED, DocArticle, EphemeralDownload, Issue,
+        AuthSession, DOC_STATUS_PUBLISHED, DocArticle, EphemeralDownload, Issue, IssueAttachment,
         MEMBERSHIP_ROLE_ORG, MagicLinkToken, Membership, Organization, PORTAL_ROLE_ADMIN,
-        PORTAL_ROLE_ORG, RESERVED_ORG_SLUG, Release, USER_NOT_DELETED, User,
+        PORTAL_ROLE_ORG, RESERVED_ORG_SLUG, Release, STORAGE_SCOPE_IMAGE, USER_NOT_DELETED, User,
     },
     perms::PolicyStore,
     storage::{StorageClient, upsert_release_object, write_and_hash},
@@ -299,10 +299,34 @@ pub async fn cleanup(db: &Db) {
         }
     }
 
+    let attachments = IssueAttachment::all()
+        .exec(&mut db)
+        .await
+        .unwrap_or_default();
+    for row in attachments {
+        if test_org_ids.contains(&row.organization_id) {
+            let _ = row.delete().exec(&mut db).await;
+        }
+    }
+
     let issues = Issue::all().exec(&mut db).await.unwrap_or_default();
     for issue in issues {
         if test_org_ids.contains(&issue.organization_id) || issue.key.starts_with("TEST-") {
             let _ = Issue::delete_by_id(&mut db, issue.id).await;
+        }
+    }
+
+    // Drop test-org image mirror rows (scope=image, object_key prefix `{org_id}/`).
+    let objects = vcp::models::StorageObject::all()
+        .exec(&mut db)
+        .await
+        .unwrap_or_default();
+    for obj in objects {
+        if obj.scope != STORAGE_SCOPE_IMAGE {
+            continue;
+        }
+        if test_org_ids.contains(&obj.organization_id) {
+            let _ = obj.delete().exec(&mut db).await;
         }
     }
 

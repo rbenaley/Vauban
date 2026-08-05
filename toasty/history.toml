@@ -69,3 +69,13 @@ snapshot_name = "0012_snapshot.toml"
 id = 7803975605783727579
 name = "0013_storage_objects.sql"
 snapshot_name = "0013_snapshot.toml"
+
+[[migrations]]
+id = 4200618237929265980
+name = "0014_issue_attachments.sql"
+snapshot_name = "0014_snapshot.toml"
+
+[[migrations]]
+id = 8667971414787680271
+name = "0015_issue_attachment_comment_id.sql"
+snapshot_name = "0015_snapshot.toml"

@@ -14,6 +14,7 @@ Related:
 - Pyramid: `.cursor/rules/vcp-test-pyramid.mdc`
 - Filter: `cargo test --test integration_tests -- portal_issues -- --test-threads=1`
 - Auth denials: [`auth_tenant_smoke_test.md`](auth_tenant_smoke_test.md)
+- Image upload helper: [`storage_helper_smoke_test.md`](storage_helper_smoke_test.md) (§ B + gallery follow-on)
 
 ## Automated prerequisites
 
@@ -91,11 +92,45 @@ Pass: no lost ticket; no redirect to a missing detail after “success”.
 
 Fail: two submits share one key, or Location points at a 404 detail.
 
+## F -- Screenshot attachments (Pass / Fail)
+
+Prerequisites: `vcp-store` running (same as
+[`storage_helper_smoke_test.md`](storage_helper_smoke_test.md) § B).
+
+1. As org member with `issues_write`, open `/{org}/issues/new`.
+2. Choose up to `issues.max_attachments_per_comment` PNGs (default 5)
+   via the screenshot control (native file input / multipart submit —
+   no custom upload JS). There is no separate Upload step: files ride
+   with **Submit report**.
+3. Before submit, choosing files must show previews (Topcoat `@change`,
+   not a custom `.js` asset). Submit the report: thumbs appear **inside**
+   the opener bubble; `src` = `/{org}/images/<uuid>.<ext>` (200).
+4. Click a thumb: the `#issue-lb` `<dialog>` opens centered over the
+   viewport (dimmed backdrop only around the image — no page-height grey
+   slab) without leaving the page. The × overlays the image's top-right
+   corner and follows it: on a narrow screenshot it stays next to the
+   image, on a full-width one it lands near the viewport corner. It is
+   translucent, so the pixels under it stay readable, and it must remain
+   legible over both a dark and a light screenshot. Closing works three
+   ways: the ×, a click on the backdrop, and `Escape`. There is **no**
+   remove (×) control on published thumbs.
+5. On an open issue, attach + reply: thumbs sit **in that reply bubble**
+   (another up-to-cap set is allowed on that comment).
+6. As **Vauban Support** on `/admin/issues/{key}`, the same image URLs
+   load (Casbin `admin_view` + issues access; no client membership).
+7. Selecting more than the configured cap on create → redirect
+   `?err=attach` (no issue).
+
+| Result | Criteria |
+|--------|----------|
+| **Pass** | Previews + lightbox; thumbs in the owning bubble; first-party URLs for member + staff; per-comment cap from config; no post-publish remove; no first-party JS asset. |
+| **Fail** | Flat end-of-thread gallery; navigate-away on click; 404 on staff view; custom JS file; markdown URLs; remove × after publish; or over-cap links persist. |
+
 ## Related automated coverage
 
 | Layer | Filter / artifact |
 |-------|-------------------|
 | Invariants | `inv_`, `scripts/check_portal_issues.sh` |
-| Proptest | `prop_` |
-| Battle | `battle_` (incl. `battle_concurrent_report_issue_http_posts`) |
-| E2E | `e2e_` (`--test integration_tests`) |
+| Proptest | `prop_` (incl. attachment token round-trip) |
+| Battle | `battle_` (incl. `battle_parallel_attach_respects_cap`) |
+| E2E | `e2e_` (`--test integration_tests`, incl. image gallery) |

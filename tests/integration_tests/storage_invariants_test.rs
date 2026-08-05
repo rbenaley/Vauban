@@ -96,6 +96,13 @@ fn inv_image_routes_gate_before_ipc() {
     ));
     assert!(src.contains("find_image_object"));
     assert!(src.contains("require_org"));
+    assert!(
+        src.contains("authorize_image_org_id")
+            && src.contains("admin_view")
+            && src.contains("perms_for_user")
+            && !src.contains("require_staff"),
+        "GET cross-tenant read must use Casbin admin_view+issues_*, not require_staff"
+    );
     assert!(src.contains("X-Content-Type-Options"));
     assert!(src.contains("normalize_image_ext"));
     assert!(src.contains("is_uuid_key"));

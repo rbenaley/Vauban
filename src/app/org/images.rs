@@ -1,6 +1,6 @@
 //! Tenant image upload / serve via the storage helper (`png` / `jpeg` / `webp`).
 
-use std::io::{Cursor, Read};
+use std::io::Read;
 
 use topcoat::{
     Result,
@@ -10,15 +10,14 @@ use topcoat::{
         path_param, route,
     },
 };
-use uuid::Uuid;
 
 use crate::{
     app::org::Org,
-    auth::{capability_denied, db, require_org, storage},
+    auth::{AuthUser, capability_denied, current_user, db, require_org, storage},
+    models::Organization,
     perms::perms_for_user,
     storage::{
-        find_image_object, is_uuid_key, normalize_image_ext, storage_http_status,
-        upsert_image_object, write_and_hash,
+        find_image_object, is_uuid_key, normalize_image_ext, put_tenant_image, storage_http_status,
     },
 };
 
@@ -43,6 +42,51 @@ fn parse_image_file(raw: &str) -> Option<(String, &'static str)> {
     Some((id.to_owned(), ext))
 }
 
+/// Resolve org id for image read: org member with issues access, **or**
+/// Casbin `admin_view` + `issues_read|write` (support gallery without membership).
+/// Cross-tenant clients stay 404 (anti-enumeration).
+async fn authorize_image_org_id(cx: &Cx, org_slug: &str) -> Result<u64> {
+    if let Ok(ctx) = require_org(cx, org_slug).await {
+        let perms = perms_for_user(cx, &ctx.user).await;
+        if !perms.issues_read && !perms.issues_write {
+            return Err(capability_denied().into());
+        }
+        return Ok(ctx.org.id);
+    }
+
+    // Admin issue detail embeds `<img src="/{org}/images/…">` for support
+    // users who are not client-org members. Gate only via PermissionContext.
+    let Some(user) = current_user(cx).await else {
+        return Err(not_found().into());
+    };
+    let auth = AuthUser {
+        id: user.id,
+        email: user.email.clone(),
+        display_name: user.display_name.clone(),
+        role: user.portal_role.clone(),
+        portal_role: user.portal_role.clone(),
+    };
+    let perms = perms_for_user(cx, &auth).await;
+    if !perms.admin_view || (!perms.issues_read && !perms.issues_write) {
+        return Err(not_found().into());
+    }
+
+    let mut database = db(cx);
+    let slug = org_slug.to_owned();
+    let org = Organization::all()
+        .filter(Organization::fields().slug().eq(slug))
+        .limit(1)
+        .exec(&mut database)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .next();
+    let Some(org) = org else {
+        return Err(not_found().into());
+    };
+    Ok(org.id)
+}
+
 /// Upload one image for the path org. AuthZ (membership) before any IPC.
 #[route(POST "/{org}/images")]
 async fn org_image_upload(cx: &Cx, mut multipart: Multipart) -> Result<Response> {
@@ -59,13 +103,21 @@ async fn org_image_upload(cx: &Cx, mut multipart: Multipart) -> Result<Response>
         let name = field.name().unwrap_or("").to_owned();
         if name == "image" || name == "file" || name == "screenshot" {
             let fname = field.file_name().unwrap_or("").to_owned();
+            let ctype = field.content_type().map(|s| s.to_owned());
             let data = field.bytes().await?.to_vec();
-            if let Some(ext) = fname
+            declared_ext = fname
                 .rsplit_once('.')
                 .and_then(|(_, e)| normalize_image_ext(e))
-            {
-                declared_ext = Some(ext);
-            }
+                .or_else(|| {
+                    ctype.as_deref().and_then(|ct| {
+                        match ct.split(';').next().unwrap_or("").trim() {
+                            "image/png" => Some("png"),
+                            "image/jpeg" | "image/jpg" => Some("jpeg"),
+                            "image/webp" => Some("webp"),
+                            _ => None,
+                        }
+                    })
+                });
             file_bytes = Some(data);
         }
     }
@@ -82,43 +134,20 @@ async fn org_image_upload(cx: &Cx, mut multipart: Multipart) -> Result<Response>
             .body(Body::from("unsupported image type"))?);
     };
 
-    let image_id = Uuid::new_v4().to_string();
     let client = storage(cx);
-    let (upload_id, mut file) = match client.put_begin_image(ctx.org.id, bytes.len() as u64, ext) {
-        Ok(v) => v,
+    let mut database = db(cx);
+    let body = match put_tenant_image(&mut database, &client, ctx.org.id, &bytes, ext).await {
+        Ok(token) => token,
         Err(e) => {
             let status = StatusCode::from_u16(storage_http_status(&e))
                 .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
             return Ok(Response::builder()
                 .status(status)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from("upload unavailable"))?);
+                .body(Body::from(e.code.as_str()))?);
         }
     };
-    let (size, sha) = match write_and_hash(&mut file, Cursor::new(&bytes)) {
-        Ok(v) => v,
-        Err(_) => {
-            let _ = client.put_abort(&upload_id);
-            return Ok(Response::builder()
-                .status(StatusCode::SERVICE_UNAVAILABLE)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from("upload unavailable"))?);
-        }
-    };
-    drop(file);
-    if let Err(e) = client.put_commit_image(&upload_id, ctx.org.id, &image_id, ext, &sha) {
-        let status =
-            StatusCode::from_u16(storage_http_status(&e)).unwrap_or(StatusCode::BAD_REQUEST);
-        return Ok(Response::builder()
-            .status(status)
-            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Body::from(e.code.as_str()))?);
-    }
 
-    let mut database = db(cx);
-    let _ = upsert_image_object(&mut database, ctx.org.id, &image_id, ext, &sha, size).await;
-
-    let body = format!("{image_id}.{ext}");
     Ok(Response::builder()
         .status(StatusCode::CREATED)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -126,7 +155,8 @@ async fn org_image_upload(cx: &Cx, mut multipart: Multipart) -> Result<Response>
         .body(Body::from(body))?)
 }
 
-/// Serve an org image. Cross-tenant / missing DB row -> 404 **before** IPC.
+/// Serve an org image. Cross-tenant client / missing DB row -> 404 **before** IPC.
+/// Casbin `admin_view` + issues access may fetch without org membership.
 #[route(GET "/{org}/images/{image_file}")]
 async fn org_image_get(cx: &Cx) -> Result<Response> {
     let org_slug = path_param::<Org>(cx);
@@ -135,22 +165,18 @@ async fn org_image_get(cx: &Cx) -> Result<Response> {
         return Err(not_found().into());
     };
 
-    let ctx = require_org(cx, org_slug).await.map_err(|_| not_found())?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.issues_read && !perms.issues_write {
-        return Err(capability_denied().into());
-    }
+    let org_id = authorize_image_org_id(cx, org_slug).await?;
 
     let mut database = db(cx);
-    let Some(obj) = find_image_object(&mut database, ctx.org.id, &image_id, ext).await else {
+    let Some(obj) = find_image_object(&mut database, org_id, &image_id, ext).await else {
         return Err(not_found().into());
     };
-    if obj.organization_id != ctx.org.id {
+    if obj.organization_id != org_id {
         return Err(not_found().into());
     }
 
     let client = storage(cx);
-    let (size, _sha, mut file) = match client.get_image(ctx.org.id, &image_id, ext, &obj.sha256) {
+    let (size, _sha, mut file) = match client.get_image(org_id, &image_id, ext, &obj.sha256) {
         Ok(v) => v,
         Err(e) => {
             let status = StatusCode::from_u16(storage_http_status(&e))

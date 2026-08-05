@@ -70,6 +70,10 @@ rtk cargo test --test integration_tests -- storage_ -- --test-threads=1
 | **Pass** | Own-org 200 + nosniff; cross-tenant / missing mirror row 404. |
 | **Fail** | Cross-org 200, missing nosniff, or 503 when mirror row is absent. |
 
+Follow-on (issue gallery): after upload, attach the token to a new issue
+and confirm the detail gallery — see
+[`portal_issues_smoke_test.md`](portal_issues_smoke_test.md) § F.
+
 ## C -- Helper down / recovery (Pass / Fail)
 
 1. Stop `vcp-store` (socket mode) while `vcp` keeps running.

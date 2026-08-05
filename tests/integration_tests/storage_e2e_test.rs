@@ -6,10 +6,12 @@ use vcp::models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release};
 use vcp::storage::sha256_hex;
 
 use crate::common::{
-    MultipartFile, TINY_PNG, cleanup, config_dir, create_org_with_membership, db_lock, get,
-    login_cookie, post_form, post_multipart_with_files, status, test_db, test_router, unique_email,
-    unique_slug, urlencoding_encode,
+    MultipartFile, TINY_PNG, cleanup, config_dir, create_membership, create_org_with_membership,
+    create_test_user_with_portal_role, db_lock, ensure_reserved_org, get, login_cookie, post_form,
+    post_multipart_with_files, status, test_db, test_router, unique_email, unique_slug,
+    urlencoding_encode,
 };
+use vcp::models::{MEMBERSHIP_ROLE_ORG, PORTAL_ROLE_ADMIN};
 
 async fn body_bytes(resp: topcoat::router::Response) -> bytes::Bytes {
     resp.into_body().collect().await.expect("body").to_bytes()
@@ -141,6 +143,62 @@ async fn e2e_image_wrong_org_is_404() {
     )
     .await;
     assert_eq!(status(&resp), StatusCode::NOT_FOUND);
+
+    cleanup(&db).await;
+}
+
+/// Support views admin issue HTML with `<img src="/{client}/images/…">`
+/// but has no client membership — GET must still serve via Casbin
+/// `admin_view` + `issues_*` (not org membership / require_staff).
+#[tokio::test]
+async fn e2e_image_staff_get_without_client_membership() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let member_email = unique_email("img-staff-mem");
+    let slug = unique_slug("img-staff-org");
+    let (_member, _org) =
+        create_org_with_membership(&db, &member_email, "password", &slug, "member").await;
+    let member_cookie = login_cookie(&router, &member_email).await;
+
+    let upload = post_multipart_with_files(
+        &router,
+        &format!("/{slug}/images"),
+        member_cookie.as_deref(),
+        &[],
+        &[MultipartFile {
+            field: "image",
+            filename: "staff-view.png",
+            content_type: "image/png",
+            bytes: TINY_PNG,
+        }],
+    )
+    .await;
+    assert_eq!(status(&upload), StatusCode::CREATED);
+    let name = body_text(upload).await.trim().to_owned();
+
+    let staff_email = unique_email("img-staff");
+    let staff =
+        create_test_user_with_portal_role(&db, &staff_email, "password", PORTAL_ROLE_ADMIN).await;
+    let vauban = ensure_reserved_org(&db).await;
+    create_membership(&db, staff.id, vauban.id, MEMBERSHIP_ROLE_ORG).await;
+    let staff_cookie = login_cookie(&router, &staff_email).await;
+
+    let resp = get(
+        &router,
+        &format!("/{slug}/images/{name}"),
+        staff_cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(
+        status(&resp),
+        StatusCode::OK,
+        "staff without client membership must fetch issue images"
+    );
+    let bytes = body_bytes(resp).await;
+    assert_eq!(bytes.as_ref(), TINY_PNG);
 
     cleanup(&db).await;
 }

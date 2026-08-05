@@ -42,7 +42,9 @@ is planned._
 | Companies LTS account login | [`companies_lts_account_login_ab2fc8c3.plan.md`](companies_lts_account_login_ab2fc8c3.plan.md) | Done |
 | Companies page size search | [`companies_page_size_search_cff9b1d5.plan.md`](companies_page_size_search_cff9b1d5.plan.md) | Done |
 | DB-backed editorial content | [`db-backed_editorial_content_b6911b21.plan.md`](db-backed_editorial_content_b6911b21.plan.md) | Done |
+| FreeBSD Tailwind CLI | [`freebsd_tailwind_cli_d526732f.plan.md`](freebsd_tailwind_cli_d526732f.plan.md) | Done |
 | Issue close reopen | [`issue_close_reopen_954c4a67.plan.md`](issue_close_reopen_954c4a67.plan.md) | Done |
+| Issue image attachments | [`issue_image_attachments_98d24998.plan.md`](issue_image_attachments_98d24998.plan.md) | Done |
 | Issues live search shards | [`issues_live_search_shards_d44946a2.plan.md`](issues_live_search_shards_d44946a2.plan.md) | Done |
 | List pagination standard | [`list_pagination_standard_4c1f389a.plan.md`](list_pagination_standard_4c1f389a.plan.md) | Done |
 | Login signal UX | [`login_signal_ux_5fb30469.plan.md`](login_signal_ux_5fb30469.plan.md) | Done |
@@ -56,12 +58,14 @@ is planned._
 | Pyramid compliance backfill | [`pyramid_compliance_backfill_c0557c49.plan.md`](pyramid_compliance_backfill_c0557c49.plan.md) | Done |
 | Release semver SQL sort | [`release_semver_sql_sort_29d7d2b8.plan.md`](release_semver_sql_sort_29d7d2b8.plan.md) | Done |
 | Request SQL dedup | [`request_sql_dedup_46a6151e.plan.md`](request_sql_dedup_46a6151e.plan.md) | Done |
+| Storage 1.2 WebAuthn | [`storage_1.2_webauthn_70559c95.plan.md`](storage_1.2_webauthn_70559c95.plan.md) | Done |
+| Storage arch 1.2 review | [`storage_arch_1.2_review_70fe67f6.plan.md`](storage_arch_1.2_review_70fe67f6.plan.md) | Done |
 | Toasty query debt fix | [`toasty_query_debt_fix_d9c552ec.plan.md`](toasty_query_debt_fix_d9c552ec.plan.md) | Done |
 | Topcoat 0.5 migration | [`topcoat_0.5_migration_60d77b42.plan.md`](topcoat_0.5_migration_60d77b42.plan.md) | Done |
 | Topcoat idiomatic adoption | [`topcoat_idiomatic_adoption_820f64e6.plan.md`](topcoat_idiomatic_adoption_820f64e6.plan.md) | Done |
 | UI polish CSS pyramid | [`ui_polish_css_pyramid_40fa6ffc.plan.md`](ui_polish_css_pyramid_40fa6ffc.plan.md) | Done |
 | vcp-store helper impl | [`vcp-store_helper_impl_0af4c10d.plan.md`](vcp-store_helper_impl_0af4c10d.plan.md) | Done |
-| vcp-store SQLite SoT | [`vcp-store_sqlite_sot_2ec4149f.plan.md`](vcp-store_sqlite_sot_2ec4149f.plan.md) | Open |
+| vcp-store SQLite SoT | [`vcp-store_sqlite_sot_2ec4149f.plan.md`](vcp-store_sqlite_sot_2ec4149f.plan.md) | Done |
 | VCP HTTPS TLS ACME | [`vcp_https_tls_acme_b5efb33c.plan.md`](vcp_https_tls_acme_b5efb33c.plan.md) | Done |
 | VCP test pyramid | [`vcp_test_pyramid_c64572e6.plan.md`](vcp_test_pyramid_c64572e6.plan.md) | Done |
 | VCP Topcoat Scaffold | [`vcp_topcoat_scaffold_8eafdb31.plan.md`](vcp_topcoat_scaffold_8eafdb31.plan.md) | Done |

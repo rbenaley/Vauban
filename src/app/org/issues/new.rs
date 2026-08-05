@@ -9,7 +9,8 @@ use topcoat::{
 
 use crate::{
     app::org::Org,
-    auth::{capability_denied, require_org},
+    app::shot_file_input,
+    auth::{capability_denied, config, require_org},
     models::RESERVED_ORG_SLUG,
     perms::perms_for_user,
 };
@@ -33,6 +34,8 @@ async fn new_issue_page(cx: &Cx) -> Result {
 
     let list_href = format!("/{slug}/issues");
     let action = format!("/{slug}/issues");
+    let max_att = config(cx).issues.max_attachments_per_comment.max(1);
+    let max_hint = format!("PNG, JPEG, WebP · max {max_att} · sent when you submit the report");
 
     view! {
         <div>
@@ -49,7 +52,12 @@ async fn new_issue_page(cx: &Cx) -> Result {
             </p>
 
             <div class="vb-panel" style="padding: 24px;">
-                <form class="vb-form" method="POST" action=(action)>
+                <form
+                    class="vb-form"
+                    method="POST"
+                    action=(action)
+                    enctype="multipart/form-data"
+                >
                     <label
                         for="title"
                         class="vb-mono"
@@ -123,17 +131,23 @@ async fn new_issue_page(cx: &Cx) -> Result {
                     >
                         "SCREENSHOTS"
                     </label>
-                    <div class="vb-drop">
-                        <span style="font-size: 22px; color: var(--accent);">
-                            "⇪"
-                        </span>
-                        <span>"Click to upload or drop images here"</span>
-                        <span
-                            class="vb-mono"
-                            style="font-size: 10.5px; color: #9aa0a6;"
-                        >
-                            "PNG, JPEG, WebP · up to 10 MB · POST /{org}/images"
-                        </span>
+                    <div class="vb-drop" style="display: block;">
+                        shot_file_input(
+                            label: view! {
+                                cx =>
+                                <span style="font-size: 22px; color: var(--accent);">
+                                    "⇪"
+                                </span>
+                                <span>"Click to choose images"</span>
+                                <span
+                                    class="vb-mono"
+                                    style="font-size: 10.5px; color: #9aa0a6;"
+                                >
+                                    (max_hint.clone())
+                                </span>
+                            },
+                            max: max_att
+                        )
                     </div>
 
                     <div

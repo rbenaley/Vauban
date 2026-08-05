@@ -4,13 +4,13 @@ use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
 use vcp::models::{
     ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_SUPPORT, ISSUE_STATUS_CLOSED,
-    ISSUE_STATUS_OPEN, Issue, IssueComment, RESERVED_ORG_SLUG,
+    ISSUE_STATUS_OPEN, Issue, IssueComment, MAX_ISSUE_ATTACHMENTS, RESERVED_ORG_SLUG,
 };
 
 use crate::common::{
-    cleanup, create_org_with_membership, create_test_org, db_lock, ensure_reserved_org, get,
-    login_cookie, post_form, status, test_db, test_router, unique_email, unique_slug,
-    urlencoding_encode,
+    MultipartFile, TINY_PNG, cleanup, create_org_with_membership, create_test_org, db_lock,
+    ensure_reserved_org, get, login_cookie, post_form, post_multipart_with_files, status, test_db,
+    test_router, unique_email, unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -35,16 +35,17 @@ async fn e2e_report_issue_persists_and_shows_details() {
     let cookie = login(&router, &email).await;
 
     let details = "Steps to reproduce: click download then boom";
-    let form = format!(
-        "title={}&component=Portal&severity=Major&details={}",
-        urlencoding_encode("Test portal latency"),
-        urlencoding_encode(details)
-    );
-    let report = post_form(
+    let report = post_multipart_with_files(
         &router,
         &format!("/{slug}/issues"),
         cookie.as_deref(),
-        &form,
+        &[
+            ("title", "Test portal latency"),
+            ("component", "Portal"),
+            ("severity", "Major"),
+            ("details", details),
+        ],
+        &[],
     )
     .await;
     assert!(
@@ -90,8 +91,19 @@ async fn e2e_report_issue_empty_title_skips_create() {
     let (_user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
     let cookie = login(&router, &email).await;
 
-    let form = "title=&component=Portal&severity=Minor&details=ignored";
-    let report = post_form(&router, &format!("/{slug}/issues"), cookie.as_deref(), form).await;
+    let report = post_multipart_with_files(
+        &router,
+        &format!("/{slug}/issues"),
+        cookie.as_deref(),
+        &[
+            ("title", ""),
+            ("component", "Portal"),
+            ("severity", "Minor"),
+            ("details", "ignored"),
+        ],
+        &[],
+    )
+    .await;
     assert!(status(&report).is_redirection());
     let location = report
         .headers()
@@ -176,12 +188,12 @@ async fn e2e_issue_detail_shows_seeded_comment_and_reply() {
     );
 
     let reply = "Follow-up metrics attached.";
-    let form = format!("body={}", urlencoding_encode(reply));
-    let posted = post_form(
+    let posted = post_multipart_with_files(
         &router,
         &format!("/{slug}/issues/{key}/reply"),
         cookie.as_deref(),
-        &form,
+        &[("body", reply)],
+        &[],
     )
     .await;
     assert!(
@@ -392,11 +404,12 @@ async fn e2e_member_close_blocks_reply_and_reopen_restores() {
     );
     assert!(!html.contains("Add a reply"), "reply form must be hidden");
 
-    let blocked = post_form(
+    let blocked = post_multipart_with_files(
         &router,
         &format!("/{slug}/issues/{key}/reply"),
         cookie.as_deref(),
-        &format!("body={}", urlencoding_encode("should not persist")),
+        &[("body", "should not persist")],
+        &[],
     )
     .await;
     assert!(status(&blocked).is_redirection());
@@ -434,11 +447,12 @@ async fn e2e_member_close_blocks_reply_and_reopen_restores() {
     }
 
     let reply = "Back in business.";
-    let posted = post_form(
+    let posted = post_multipart_with_files(
         &router,
         &format!("/{slug}/issues/{key}/reply"),
         cookie.as_deref(),
-        &format!("body={}", urlencoding_encode(reply)),
+        &[("body", reply)],
+        &[],
     )
     .await;
     assert!(status(&posted).is_redirection());
@@ -567,6 +581,258 @@ async fn e2e_admin_close_reopen_and_member_denied_admin_close() {
             rows[0].status, ISSUE_STATUS_OPEN,
             "wrong-org close must not change status"
         );
+    }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_issue_create_with_image_attachment_gallery() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("iss-img");
+    let slug = unique_slug("iss-img-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let cookie = login(&router, &email).await;
+
+    let report = post_multipart_with_files(
+        &router,
+        &format!("/{slug}/issues"),
+        cookie.as_deref(),
+        &[
+            ("title", "Screenshot issue"),
+            ("component", "Portal"),
+            ("severity", "Major"),
+            ("details", "See attached"),
+        ],
+        &[MultipartFile {
+            field: "screenshots",
+            filename: "shot.png",
+            content_type: "image/png",
+            bytes: TINY_PNG,
+        }],
+    )
+    .await;
+    assert!(status(&report).is_redirection());
+    let location = report
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned())
+        .expect("Location");
+    assert!(
+        location.starts_with(&format!("/{slug}/issues/VBN-")),
+        "{location}"
+    );
+    assert!(!location.contains("err="), "{location}");
+
+    let detail = get(&router, &location, cookie.as_deref()).await;
+    assert_eq!(status(&detail), StatusCode::OK);
+    let html = body_text(detail).await;
+    let needle = format!("/{slug}/images/");
+    assert!(
+        html.contains(&needle) && html.contains(".png"),
+        "detail gallery must include /{slug}/images/…png; html={html}"
+    );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_issue_reply_attaches_screenshot_to_gallery() {
+    use vcp::issue_attachments::list_for_issue;
+
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("iss-reply-img");
+    let slug = unique_slug("iss-reply-img");
+    let (_user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let cookie = login(&router, &email).await;
+
+    let created = post_multipart_with_files(
+        &router,
+        &format!("/{slug}/issues"),
+        cookie.as_deref(),
+        &[
+            ("title", "Reply attach"),
+            ("component", "Portal"),
+            ("severity", "Minor"),
+            ("details", "no image yet"),
+        ],
+        &[],
+    )
+    .await;
+    assert!(status(&created).is_redirection());
+    let location = created
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned())
+        .expect("Location");
+    let key = location.rsplit('/').next().expect("issue key").to_owned();
+
+    let before = get(&router, &location, cookie.as_deref()).await;
+    let before_html = body_text(before).await;
+    assert!(
+        !before_html.contains(&format!("/{slug}/images/")),
+        "fresh issue must not show a gallery yet"
+    );
+
+    let reply = post_multipart_with_files(
+        &router,
+        &format!("/{slug}/issues/{key}/reply"),
+        cookie.as_deref(),
+        &[("body", "Here is a screenshot")],
+        &[MultipartFile {
+            field: "screenshots",
+            filename: "reply-shot.png",
+            content_type: "image/png",
+            bytes: TINY_PNG,
+        }],
+    )
+    .await;
+    assert!(
+        status(&reply).is_redirection(),
+        "reply+screenshot must PRG, got {}",
+        status(&reply)
+    );
+    let reply_loc = reply
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        !reply_loc.contains("err=attach"),
+        "reply attach must not fail: {reply_loc}"
+    );
+
+    let detail = get(&router, &location, cookie.as_deref()).await;
+    assert_eq!(status(&detail), StatusCode::OK);
+    let html = body_text(detail).await;
+    assert!(
+        html.contains("Here is a screenshot"),
+        "reply body missing: {html}"
+    );
+    assert!(
+        html.contains(&format!("/{slug}/images/")) && html.contains(".png"),
+        "gallery must show attached image after reply: {html}"
+    );
+    let reply_at = html
+        .find("Here is a screenshot")
+        .expect("reply body in html");
+    // Image must sit in the same comment bubble as the reply body (not a
+    // separate end-of-thread gallery / opener-only strip).
+    let after_reply = &html[reply_at..];
+    let next_bubble_end = after_reply.find("vb-bubble").unwrap_or(after_reply.len());
+    let in_same_region = after_reply[..next_bubble_end].contains(&format!("/{slug}/images/"))
+        || after_reply[..800.min(after_reply.len())].contains(&format!("/{slug}/images/"));
+    assert!(
+        in_same_region || html.contains("vb-issue-thumb"),
+        "reply screenshot must render as a thumb near the reply body: {html}"
+    );
+    assert!(
+        html.contains("vb-issue-lightbox") && html.contains("data-topcoat"),
+        "detail must ship Topcoat lightbox wiring"
+    );
+    // Lightbox is a native <dialog>: closable without JS (method="dialog"),
+    // and the close button is anchored to the image, not to the backdrop.
+    assert!(
+        html.contains("<dialog") && html.contains("method=\"dialog\""),
+        "lightbox must render as a dialog with a JS-free dismiss: {html}"
+    );
+    let figure_at = html
+        .find("vb-issue-lightbox-figure")
+        .expect("lightbox figure in rendered html");
+    let figure_end = html[figure_at..]
+        .find("</form>")
+        .expect("figure form closes");
+    let figure = &html[figure_at..figure_at + figure_end];
+    assert!(
+        figure.contains("issue-lb-img") && figure.contains("vb-issue-lightbox-close"),
+        "close button must render inside the image figure: {figure}"
+    );
+
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().organization_id().eq(org.id))
+            .filter(Issue::fields().key().eq(key.clone()))
+            .limit(1)
+            .exec(&mut conn)
+            .await
+            .expect("issue");
+        let atts = list_for_issue(
+            &mut conn,
+            org.id,
+            rows[0].id,
+            vcp::issue_attachments::issue_attachment_list_limit(MAX_ISSUE_ATTACHMENTS),
+        )
+        .await
+        .expect("atts");
+        assert_eq!(atts.len(), 1, "exactly one liaison after reply attach");
+        assert_eq!(atts[0].ext, "png");
+    }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_issue_attachment_over_cap_rejected() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("iss-att-cap");
+    let slug = unique_slug("iss-att-cap");
+    let (_u, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let cookie = login(&router, &email).await;
+
+    let files: Vec<MultipartFile<'_>> = (0..(MAX_ISSUE_ATTACHMENTS + 1))
+        .map(|_| MultipartFile {
+            field: "screenshots",
+            filename: "shot.png",
+            content_type: "image/png",
+            bytes: TINY_PNG,
+        })
+        .collect();
+    let over = post_multipart_with_files(
+        &router,
+        &format!("/{slug}/issues"),
+        cookie.as_deref(),
+        &[
+            ("title", "Over cap"),
+            ("component", "Portal"),
+            ("severity", "Minor"),
+            ("details", "cap"),
+        ],
+        &files,
+    )
+    .await;
+    assert!(status(&over).is_redirection());
+    let loc = over
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        loc.contains("err=attach"),
+        "over-cap must fail closed: {loc}"
+    );
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().organization_id().eq(org.id))
+            .exec(&mut conn)
+            .await
+            .expect("list");
+        assert!(rows.is_empty(), "over-cap must not create an issue");
     }
 
     cleanup(&db).await;

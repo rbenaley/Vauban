@@ -371,6 +371,7 @@ pub async fn open(database_url: &str) -> anyhow::Result<Db> {
             crate::models::StorageObject,
             crate::models::Issue,
             crate::models::IssueComment,
+            crate::models::IssueAttachment,
             crate::models::EphemeralDownload,
         ))
         .connect(database_url)

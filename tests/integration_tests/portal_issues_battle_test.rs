@@ -10,8 +10,8 @@ use vcp::models::{
 };
 
 use crate::common::{
-    cleanup, create_org_with_membership, db_lock, get, login_cookie, post_form, status, test_db,
-    test_router, unique_email, unique_slug, urlencoding_encode,
+    MultipartFile, TINY_PNG, cleanup, create_org_with_membership, db_lock, get, login_cookie,
+    post_form, post_multipart_with_files, status, test_db, test_router, unique_email, unique_slug,
 };
 
 #[tokio::test]
@@ -41,12 +41,20 @@ async fn battle_concurrent_report_issue_http_posts() {
         handles.push(tokio::spawn(async move {
             barrier.wait().await;
             let title = format!("HTTP battle {marker} {i}");
-            let form = format!(
-                "title={}&component=Portal&severity=Minor&details=battle-{}",
-                urlencoding_encode(&title),
-                i
-            );
-            let resp = post_form(&router, &format!("/{slug}/issues"), Some(&cookie), &form).await;
+            let details = format!("battle-{i}");
+            let resp = post_multipart_with_files(
+                &router,
+                &format!("/{slug}/issues"),
+                Some(&cookie),
+                &[
+                    ("title", title.as_str()),
+                    ("component", "Portal"),
+                    ("severity", "Minor"),
+                    ("details", details.as_str()),
+                ],
+                &[],
+            )
+            .await;
             assert!(
                 status(&resp).is_redirection(),
                 "expected redirect, got {}",
@@ -359,6 +367,199 @@ async fn battle_parallel_close_reopen_under_detail_reads() {
             status_rows <= 2,
             "at most one close + one reopen status_change under race, got {status_rows}"
         );
+    }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn battle_parallel_attach_respects_cap() {
+    use vcp::issue_attachments::{attach_many, issue_attachment_list_limit, list_for_issue};
+    use vcp::models::MAX_ISSUE_ATTACHMENTS;
+    use vcp::storage::upsert_image_object;
+
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-att");
+    let slug = unique_slug("battle-att-org");
+    let (user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let mut conn = db.clone();
+    let now = vcp::db::now_unix();
+    let issue = toasty::create!(Issue {
+        key: format!("TEST-{}", unique_slug("batt")),
+        title: "Attach race".to_owned(),
+        component: "Portal".to_owned(),
+        severity: "Minor".to_owned(),
+        status: ISSUE_STATUS_OPEN.to_owned(),
+        organization_id: org.id,
+        details: "race".to_owned(),
+        opened_by_user_id: user.id,
+        created_at: now,
+        updated_at: now,
+    })
+    .exec(&mut conn)
+    .await
+    .expect("issue");
+
+    let cap = MAX_ISSUE_ATTACHMENTS;
+    let list_limit = issue_attachment_list_limit(cap);
+    let sha = "ab".repeat(32);
+    let mut tokens = Vec::new();
+    for _ in 0..(cap + 3) {
+        let id = uuid::Uuid::new_v4().to_string();
+        upsert_image_object(&mut conn, org.id, &id, "png", &sha, 12)
+            .await
+            .expect("upsert image");
+        tokens.push(format!("{id}.png"));
+    }
+
+    let wave1: Vec<String> = tokens.iter().take(cap).cloned().collect();
+    let n = wave1.len();
+    let barrier = Arc::new(Barrier::new(n));
+    let url = crate::common::database_url();
+    let org_id = org.id;
+    let issue_id = issue.id;
+    let user_id = user.id;
+    let mut handles = Vec::with_capacity(n);
+    for token in wave1 {
+        let barrier = barrier.clone();
+        let url = url.clone();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let db = vcp::db::connect(&url).await.expect("connect");
+            let mut conn = db.clone();
+            attach_many(&mut conn, org_id, issue_id, 0, user_id, &[token], cap)
+                .await
+                .expect("wave1 attach");
+        }));
+    }
+    for h in handles {
+        h.await.expect("join");
+    }
+
+    let rows = list_for_issue(&mut conn, org.id, issue.id, list_limit)
+        .await
+        .expect("list");
+    assert_eq!(
+        rows.len(),
+        cap,
+        "exactly cap attachments after parallel wave on opener"
+    );
+
+    for token in tokens.iter().skip(cap) {
+        let err = attach_many(
+            &mut conn,
+            org.id,
+            issue.id,
+            0,
+            user.id,
+            std::slice::from_ref(token),
+            cap,
+        )
+        .await
+        .expect_err("over-cap");
+        assert_eq!(err, vcp::issue_attachments::AttachError::CapExceeded);
+    }
+    let rows = list_for_issue(&mut conn, org.id, issue.id, list_limit)
+        .await
+        .expect("list");
+    assert_eq!(rows.len(), cap);
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn battle_concurrent_create_with_attachments() {
+    use vcp::issue_attachments::list_for_issue;
+
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-cr-att");
+    let slug = unique_slug("battle-cr-att");
+    let (_user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let mut conn = db.clone();
+    let router = test_router().await;
+    let cookie = login_cookie(&router, &email).await.expect("login");
+    let n = 6usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let marker = unique_slug("cr-att");
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let barrier = barrier.clone();
+        let cookie = cookie.clone();
+        let slug = slug.clone();
+        let marker = marker.clone();
+        let router = test_router().await;
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let title = format!("Attach create {marker} {i}");
+            let details = format!("att-{i}");
+            let resp = post_multipart_with_files(
+                &router,
+                &format!("/{slug}/issues"),
+                Some(&cookie),
+                &[
+                    ("title", title.as_str()),
+                    ("component", "Portal"),
+                    ("severity", "Minor"),
+                    ("details", details.as_str()),
+                ],
+                &[MultipartFile {
+                    field: "screenshots",
+                    filename: "shot.png",
+                    content_type: "image/png",
+                    bytes: TINY_PNG,
+                }],
+            )
+            .await;
+            assert!(status(&resp).is_redirection(), "{}", status(&resp));
+            let location = resp
+                .headers()
+                .get(topcoat::router::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_owned())
+                .expect("Location");
+            assert!(
+                !location.contains("err="),
+                "create+attach must succeed: {location}"
+            );
+            location
+        }));
+    }
+    let mut locations = Vec::with_capacity(n);
+    for h in handles {
+        locations.push(h.await.expect("join"));
+    }
+    locations.sort();
+    locations.dedup();
+    assert_eq!(locations.len(), n);
+
+    let rows = Issue::all()
+        .filter(Issue::fields().organization_id().eq(org.id))
+        .exec(&mut conn)
+        .await
+        .expect("issues");
+    let ours: Vec<_> = rows
+        .into_iter()
+        .filter(|i| i.title.contains(&marker))
+        .collect();
+    assert_eq!(ours.len(), n);
+    for issue in &ours {
+        let atts = list_for_issue(
+            &mut conn,
+            org.id,
+            issue.id,
+            vcp::issue_attachments::issue_attachment_list_limit(vcp::models::MAX_ISSUE_ATTACHMENTS),
+        )
+        .await
+        .expect("atts");
+        assert_eq!(atts.len(), 1, "each create should carry one attachment");
     }
 
     cleanup(&db).await;

@@ -6,12 +6,11 @@ mod search_shard;
 
 pub(super) use search_shard::issues_search_results;
 
-use serde::Deserialize;
 use topcoat::{
     Result,
     context::{Cx, memoize},
     router::{
-        content::Form,
+        content::multipart::Multipart,
         error::{SeeOther, not_found, redirect, see_other},
         page, path_param, query_params, route,
     },
@@ -21,8 +20,11 @@ use topcoat::{
 use crate::{
     app::_components::{filter_row, ico_plus},
     app::org::Org,
-    auth::{capability_denied, db, require_org},
+    auth::{capability_denied, config, db, require_org, storage},
     db::now_unix,
+    issue_attachments::{
+        ScreenshotUpload, attach_many, screenshot_from_part, store_screenshot_uploads,
+    },
     issue_key::{
         ISSUE_KEY_CREATE_ATTEMPTS, ISSUE_KEY_PREFIX, allocate_issue_key, is_unique_violation,
         parse_vbn_suffix,
@@ -32,7 +34,7 @@ use crate::{
         LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_offset,
         parse_page, with_page_param,
     },
-    models::{Issue, RESERVED_ORG_SLUG},
+    models::{ISSUE_ATTACHMENT_OPENER_COMMENT_ID, Issue, RESERVED_ORG_SLUG},
     perms::perms_for_user,
     sql_search::ilike_contains,
 };
@@ -239,16 +241,52 @@ pub(super) async fn load_filtered_issues_page(
         .unwrap_or_default()
 }
 
-#[derive(Deserialize)]
-struct ReportForm {
+struct ReportMultipart {
     title: String,
     component: String,
     severity: String,
     details: String,
+    screenshots: Vec<ScreenshotUpload>,
+}
+
+async fn parse_report_multipart(mut multipart: Multipart) -> Result<ReportMultipart> {
+    let mut title = String::new();
+    let mut component = String::new();
+    let mut severity = String::new();
+    let mut details = String::new();
+    let mut screenshots = Vec::new();
+
+    while let Some(field) = multipart.next_field().await? {
+        match field.name() {
+            Some("title") => title = field.text().await?,
+            Some("component") => component = field.text().await?,
+            Some("severity") => severity = field.text().await?,
+            Some("details") => details = field.text().await?,
+            Some("screenshots") | Some("screenshot") | Some("image") => {
+                let fname = field.file_name().unwrap_or("").to_owned();
+                let ctype = field.content_type().map(|s| s.to_owned());
+                let data = field.bytes().await?.to_vec();
+                if let Some(shot) = screenshot_from_part(&fname, ctype.as_deref(), data) {
+                    screenshots.push(shot);
+                }
+            }
+            _ => {
+                let _ = field.bytes().await?;
+            }
+        }
+    }
+
+    Ok(ReportMultipart {
+        title,
+        component,
+        severity,
+        details,
+        screenshots,
+    })
 }
 
 #[route(POST "/{org}/issues")]
-async fn report_issue(cx: &Cx, Form(form): Form<ReportForm>) -> Result<SeeOther> {
+async fn report_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let slug = path_param::<Org>(cx);
     if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
         return Ok(see_other("/admin/issues"));
@@ -259,6 +297,7 @@ async fn report_issue(cx: &Cx, Form(form): Form<ReportForm>) -> Result<SeeOther>
         return Ok(see_other(&format!("/{slug}/issues")));
     }
 
+    let form = parse_report_multipart(multipart).await?;
     let title = form.title.trim().to_owned();
     let component = form.component.trim().to_owned();
     let severity = form.severity.trim().to_owned();
@@ -267,8 +306,31 @@ async fn report_issue(cx: &Cx, Form(form): Form<ReportForm>) -> Result<SeeOther>
     if title.is_empty() {
         return Ok(see_other(&format!("/{slug}/issues")));
     }
+    let max_att = config(cx).issues.max_attachments_per_comment.max(1);
+    if form.screenshots.len() > max_att {
+        return Ok(see_other(&format!("/{slug}/issues/new?err=attach")));
+    }
 
     let mut database = db(cx);
+    let client = storage(cx);
+    // Fail-closed: store screenshots before creating the issue.
+    let tokens = if form.screenshots.is_empty() {
+        Vec::new()
+    } else {
+        match store_screenshot_uploads(
+            &mut database,
+            &client,
+            ctx.org.id,
+            &form.screenshots,
+            max_att,
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(_) => return Ok(see_other(&format!("/{slug}/issues/new?err=attach"))),
+        }
+    };
+
     let now = now_unix();
     let mut last_err: Option<String> = None;
     let mut candidate: Option<String> = None;
@@ -293,7 +355,29 @@ async fn report_issue(cx: &Cx, Form(form): Form<ReportForm>) -> Result<SeeOther>
         .exec(&mut database)
         .await
         {
-            Ok(_) => return Ok(see_other(&format!("/{slug}/issues/{key}"))),
+            Ok(created) => {
+                if !tokens.is_empty()
+                    && let Err(err) = attach_many(
+                        &mut database,
+                        ctx.org.id,
+                        created.id,
+                        ISSUE_ATTACHMENT_OPENER_COMMENT_ID,
+                        ctx.user.id,
+                        &tokens,
+                        max_att,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        org = %slug,
+                        key = %key,
+                        error = %err,
+                        "issue create attach_many failed after insert"
+                    );
+                    return Ok(see_other(&format!("/{slug}/issues/{key}?err=attach")));
+                }
+                return Ok(see_other(&format!("/{slug}/issues/{key}")));
+            }
             Err(err) if is_unique_violation(&err) && attempt + 1 < ISSUE_KEY_CREATE_ATTEMPTS => {
                 tracing::warn!(
                     org = %slug,

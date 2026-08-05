@@ -1,12 +1,14 @@
 //! Property tests for issue details bounds / key shaping / comment roles.
 
 use proptest::prelude::*;
+use vcp::issue_attachments::{AttachmentToken, gallery_src, parse_attachment_token};
 use vcp::issue_key::{next_issue_key_from_keys, parse_vbn_suffix};
 use vcp::issue_status::issue_is_closed;
 use vcp::models::{
-    ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_REPORTER, ISSUE_ROLE_SUPPORT,
-    ISSUE_ROLE_SYSTEM, ISSUE_STATUS_CLOSED, ISSUE_STATUS_IN_ANALYSIS, ISSUE_STATUS_OPEN,
-    ISSUE_STATUS_RESOLVED,
+    ISSUE_ATTACHMENT_OPENER_COMMENT_ID, ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS,
+    ISSUE_ROLE_REPORTER, ISSUE_ROLE_SUPPORT, ISSUE_ROLE_SYSTEM, ISSUE_STATUS_CLOSED,
+    ISSUE_STATUS_IN_ANALYSIS, ISSUE_STATUS_OPEN, ISSUE_STATUS_RESOLVED, IssueAttachment,
+    MAX_ISSUE_ATTACHMENTS,
 };
 
 proptest! {
@@ -100,5 +102,97 @@ proptest! {
             // Reopen target is always Open.
             prop_assert_eq!(ISSUE_STATUS_OPEN, "Open");
         }
+    }
+}
+
+fn uuid_v4_hyphenated() -> impl Strategy<Value = String> {
+    "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(48))]
+
+    #[test]
+    fn prop_attachment_token_round_trip(
+        id in uuid_v4_hyphenated(),
+        ext in prop_oneof![Just("png"), Just("jpg"), Just("jpeg"), Just("webp"), Just("PNG"), Just("JPG")]
+    ) {
+        let raw = format!("{id}.{ext}");
+        let parsed = parse_attachment_token(&raw).expect("canonical token");
+        let expect_ext = match ext.to_ascii_lowercase().as_str() {
+            "jpg" | "jpeg" => "jpeg",
+            "png" => "png",
+            "webp" => "webp",
+            _ => unreachable!(),
+        };
+        prop_assert_eq!(&parsed.image_id, &id);
+        prop_assert_eq!(parsed.ext, expect_ext);
+        let again = parse_attachment_token(&parsed.as_filename());
+        prop_assert_eq!(again.as_ref().map(|t| t.ext), Some(expect_ext));
+        prop_assert_eq!(again.map(|t| t.image_id), Some(id));
+    }
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(48))]
+
+    #[test]
+    fn prop_attachment_garbage_rejected(
+        junk in prop::collection::vec(prop::char::any(), 0..64)
+    ) {
+        let raw: String = junk.into_iter().collect();
+        // Almost all random strings fail; accept only if they happen to match.
+        if let Some(tok) = parse_attachment_token(&raw) {
+            prop_assert!(vcp::storage::is_uuid_key(&tok.image_id));
+            prop_assert!(matches!(tok.ext, "png" | "jpeg" | "webp"));
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(48))]
+
+    /// The lightbox copies this path into `data-src` and then into `img.src`,
+    /// so it must stay a same-origin portal path for every org / image pair.
+    #[test]
+    fn prop_gallery_src_is_first_party(
+        slug in "[a-z0-9][a-z0-9-]{0,24}",
+        id in "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        ext in prop::sample::select(vec!["png", "jpeg", "webp"]),
+    ) {
+        let att = IssueAttachment {
+            id: 1,
+            issue_id: 2,
+            organization_id: 3,
+            issue_comment_id: ISSUE_ATTACHMENT_OPENER_COMMENT_ID,
+            image_id: id.clone(),
+            ext: ext.to_owned(),
+            uploaded_by_user_id: 4,
+            created_at: 0,
+            sort_order: 0,
+        };
+        let src = gallery_src(&slug, &att);
+        prop_assert_eq!(&src, &format!("/{slug}/images/{id}.{ext}"));
+        prop_assert!(src.starts_with('/'));
+        prop_assert!(!src.starts_with("//"), "must not become protocol-relative");
+        prop_assert!(!src.contains("://"), "must stay same-origin");
+        prop_assert!(!src.contains(".."), "must not traverse");
+    }
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(24))]
+
+    #[test]
+    fn prop_attachment_cap_is_five(_n in 0u8..10) {
+        prop_assert_eq!(MAX_ISSUE_ATTACHMENTS, 5);
+        prop_assert_eq!(
+            MAX_ISSUE_ATTACHMENTS,
+            vcp::models::DEFAULT_MAX_ATTACHMENTS_PER_COMMENT
+        );
+        let _ = AttachmentToken {
+            image_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            ext: "png",
+        };
     }
 }

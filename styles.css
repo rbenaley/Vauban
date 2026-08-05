@@ -403,6 +403,7 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
 }
 .vb-ephemeral-expired-copy { font-size: 13px; color: #8a8f96; }
 .vb-drop {
+  position: relative;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
   border: 1.5px dashed #cdd1cb; border-radius: 6px; padding: 22px; background: #fbfcfb;
   color: #5a5f66; font-size: 13px; text-align: center;
@@ -448,6 +449,93 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
   max-width: 78%; border-radius: 6px; padding: 13px 15px; background: #f5f6f4; border: 1px solid #e8ebe6;
 }
 .vb-bubble.support { background: #eef7f4; border-color: #d7e3df; }
+
+/* Issue pane: signal lightbox stays inside this box (not over the rail). */
+.vb-issue-pane { position: relative; }
+.vb-issue-thumbs {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
+}
+.vb-issue-thumb-wrap {
+  position: relative; width: 96px; height: 96px;
+}
+.vb-issue-thumb {
+  display: block; width: 100%; height: 100%; padding: 0; margin: 0;
+  border: 1px solid #e0e2de; border-radius: 4px; overflow: hidden;
+  background: #f6f7f5; cursor: zoom-in; box-sizing: border-box;
+}
+.vb-issue-thumb img {
+  width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none;
+}
+.vb-shot-preview {
+  display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px;
+}
+.vb-shot-preview[hidden] { display: none !important; }
+.vb-shot-preview-item {
+  position: relative; width: 72px; height: 72px; border: 1px solid #e0e2de;
+  border-radius: 4px; overflow: hidden; background: #f6f7f5;
+}
+.vb-shot-preview-item img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.vb-shot-preview-remove {
+  position: absolute; top: 2px; right: 2px; width: 20px; height: 20px;
+  border: 0; border-radius: 3px; background: rgba(30, 34, 38, 0.72);
+  color: #fff; font-size: 14px; line-height: 1; cursor: pointer; padding: 0;
+}
+/* Screenshot lightbox: native <dialog> in the top layer, sized to the
+   viewport (not the issue pane) so the backdrop never stretches with the
+   thread. The dialog box itself is transparent: only the image reads as
+   the surface, and the close button overlays that image (proximity), which
+   converges on the viewport corner once a screenshot fills the frame. */
+.vb-issue-lightbox {
+  --vb-lb-pad: clamp(14px, 4vw, 48px);
+  display: none; position: fixed; inset: 0; z-index: 60;
+  width: 100%; max-width: 100%; height: 100%; max-height: 100%;
+  margin: 0; padding: var(--vb-lb-pad);
+  border: 0; background: transparent; box-sizing: border-box; overflow: hidden;
+}
+.vb-issue-lightbox[open] { display: grid; place-items: center; }
+.vb-issue-lightbox::backdrop { background: rgba(16, 19, 23, 0.74); }
+.vb-issue-lightbox-dismiss { position: fixed; inset: 0; margin: 0; }
+.vb-issue-lightbox-backdrop {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  border: 0; padding: 0; margin: 0; background: transparent; cursor: zoom-out;
+}
+/* Shrink-wraps the rendered image so the close button can hug its corner. */
+.vb-issue-lightbox-figure {
+  position: relative; z-index: 1; margin: 0;
+  width: fit-content; max-width: 100%; max-height: 100%;
+}
+.vb-issue-lightbox-img {
+  display: block; width: auto; height: auto; object-fit: contain;
+  max-width: min(100%, 1180px);
+  max-height: calc(100vh - (2 * var(--vb-lb-pad)));
+  max-height: calc(100dvh - (2 * var(--vb-lb-pad)));
+  border-radius: 6px; background: #0f1216;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  animation: vbIn 0.18s ease both;
+}
+/* Overlays the image top-right corner: translucent so the pixels underneath
+   stay readable, with a light ring to hold contrast on dark screenshots. */
+.vb-issue-lightbox-close {
+  position: absolute; top: 12px; right: 12px;
+  width: 44px; height: 44px; border: 0; border-radius: 999px;
+  background: rgba(16, 19, 23, 0.55); color: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22), 0 2px 10px rgba(0, 0, 0, 0.35);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  font-size: 20px; line-height: 1; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background 0.15s ease;
+}
+.vb-issue-lightbox-close:hover { background: rgba(16, 19, 23, 0.78); }
+.vb-issue-lightbox-backdrop:focus-visible,
+.vb-issue-lightbox-close:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .vb-issue-lightbox-img { animation: none; }
+  .vb-issue-lightbox-close { transition: none; }
+}
 .vb-company-list {
   width: 100%;
 }

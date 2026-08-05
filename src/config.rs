@@ -77,6 +77,9 @@ pub struct Config {
     pub org: OrgConfig,
 
     #[serde(default)]
+    pub issues: IssuesConfig,
+
+    #[serde(default)]
     pub storage: StorageConfig,
 }
 
@@ -333,6 +336,26 @@ fn default_max_accounts_per_org() -> usize {
 
 fn default_max_lts_subscriptions() -> usize {
     crate::models::MAX_LTS_SUBSCRIPTIONS_DEFAULT
+}
+
+/// Issue tracker limits (`[issues]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct IssuesConfig {
+    /// Max screenshots linked to one comment (or the opening description).
+    #[serde(default = "default_max_attachments_per_comment")]
+    pub max_attachments_per_comment: usize,
+}
+
+impl Default for IssuesConfig {
+    fn default() -> Self {
+        Self {
+            max_attachments_per_comment: default_max_attachments_per_comment(),
+        }
+    }
+}
+
+fn default_max_attachments_per_comment() -> usize {
+    crate::models::DEFAULT_MAX_ATTACHMENTS_PER_COMMENT
 }
 
 /// Blob helper IPC mode (`[storage].ipc`).
@@ -909,6 +932,7 @@ mod tests {
         assert_eq!(cfg.login.lockout_secs, 900);
         assert_eq!(cfg.org.max_accounts_per_org, 5);
         assert_eq!(cfg.org.max_lts_subscriptions, 99);
+        assert_eq!(cfg.issues.max_attachments_per_comment, 5);
         assert_eq!(cfg.mail.smtp_host, "localhost");
         assert_eq!(cfg.mail.smtp_port, 1025);
         assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Plaintext);
@@ -938,6 +962,7 @@ mod tests {
         assert_eq!(cfg.login.lockout_secs, 900);
         assert_eq!(cfg.org.max_accounts_per_org, 5);
         assert_eq!(cfg.org.max_lts_subscriptions, 99);
+        assert_eq!(cfg.issues.max_attachments_per_comment, 5);
         assert_eq!(cfg.mail.smtp_host, "smtp.tem.scaleway.com");
         assert_eq!(cfg.mail.smtp_port, 587);
         assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Starttls);

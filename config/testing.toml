@@ -56,3 +56,6 @@ lockout_secs = 1
 [org]
 max_accounts_per_org = 5
 max_lts_subscriptions = 99
+
+[issues]
+max_attachments_per_comment = 5

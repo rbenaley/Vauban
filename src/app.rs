@@ -2,8 +2,13 @@
 
 mod _components;
 mod admin;
+mod issue_thumbs;
 mod login;
 mod org;
+
+pub(crate) use issue_thumbs::{
+    DiscussionPane, DiscussionRow, issue_discussion, shot_file_input, thumbs_for_comment,
+};
 
 pub use crate::list_page::{
     BUILDS_PAGE_SIZE, LIST_PAGE_SIZE, clamp_page, page_count, page_slice, parse_page,
@@ -41,7 +46,6 @@ const VCP_TZ_JS: Asset = asset!("assets/vcp_tz.js");
 /// First-party WebAuthn ceremony helper (C1 / KEY).
 /// Declared once here so Topcoat does not register duplicate asset routes.
 pub const VCP_WEBAUTHN_JS: Asset = asset!("assets/vcp_webauthn.js");
-
 /// Well-known OS/browser probe paths (fixed URLs; not content-hashed).
 /// Layout `<link rel="icon">` still uses `asset!` above — do not generalize.
 const FAVICON_ICO_BYTES: &[u8] =
