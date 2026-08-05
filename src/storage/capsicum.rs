@@ -6,11 +6,12 @@ use tracing::warn;
 
 use super::STORE_LOG_TARGET;
 
-/// Display name for log lines (`macOS`, `FreeBSD`, `Linux`, …).
+/// Display name for log lines (`macOS`, `Linux`, …). FreeBSD uses the
+/// `cap_enter` path and never formats this helper.
+#[cfg(not(target_os = "freebsd"))]
 fn os_display_name() -> &'static str {
     match std::env::consts::OS {
         "macos" => "macOS",
-        "freebsd" => "FreeBSD",
         "linux" => "Linux",
         "ios" => "iOS",
         "android" => "Android",
@@ -77,12 +78,12 @@ mod tests {
         enter_capability_mode(true);
     }
 
+    #[cfg(not(target_os = "freebsd"))]
     #[test]
     fn os_display_name_uses_product_casing() {
         let name = os_display_name();
         match std::env::consts::OS {
             "macos" => assert_eq!(name, "macOS"),
-            "freebsd" => assert_eq!(name, "FreeBSD"),
             "linux" => assert_eq!(name, "Linux"),
             _ => assert!(!name.is_empty()),
         }
