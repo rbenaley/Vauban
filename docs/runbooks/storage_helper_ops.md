@@ -145,6 +145,8 @@ CI on macOS/Linux keeps the soft-containment WARN path. On FreeBSD hosts:
       with only the blob mount + socket path visible — validate upload and
       download still succeed; confirm helper cannot open paths outside the
       jail root.
+- [ ] Listen / spawn connect happens **before** `cap_enter` (path-based
+      `connect`/`bind` after capability mode fails with os error 94).
 - [ ] After `cap_enter`, helper must not need fresh global `open` of the
       blob tree (dirfd already held).
 - [ ] Portal process itself is **not** under Capsicum (by design).

@@ -208,9 +208,10 @@ fn run() -> Result<(), String> {
             "storage helper shares vcp uid (dev mode)"
         );
     }
-    capsicum::enter_capability_mode(production);
 
-    // Spawn-mode: parent listens; we connect to --listen path.
+    // Capsicum forbids open/connect/bind by path after cap_enter. Pre-open the
+    // IPC endpoint (connect to parent in spawn mode, or bind the listen sock),
+    // then enter capability mode before serving.
     if spawn_mode {
         let stream = std::os::unix::net::UnixStream::connect(&listen_path)
             .map_err(|e| format!("connect parent: {e}"))?;
@@ -219,6 +220,7 @@ fn run() -> Result<(), String> {
             path = %listen_path,
             "vcp-store connected (spawn)"
         );
+        capsicum::enter_capability_mode(production);
         serve_connection(&engine, stream);
         return Ok(());
     }
@@ -229,6 +231,7 @@ fn run() -> Result<(), String> {
         path = %listen_path,
         "vcp-store listening"
     );
+    capsicum::enter_capability_mode(production);
     for conn in listener.incoming() {
         let stream = match conn {
             Ok(s) => s,

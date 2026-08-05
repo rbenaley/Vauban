@@ -112,6 +112,28 @@ fn inv_vcp_store_pins_peercred_and_capsicum() {
     assert!(bin.contains("peercred failed") || bin.contains("reject peer uid"));
     assert!(bin.contains("enter_capability_mode"));
 
+    // Capsicum: path-based connect/bind must precede cap_enter (os error 94).
+    let connect = bin
+        .find("connect parent")
+        .expect("spawn connect parent error label");
+    let bind = bin.find("bind_socket").expect("bind_socket");
+    let enter_spawn_branch = bin[connect..]
+        .find("enter_capability_mode")
+        .expect("enter_capability_mode after spawn connect")
+        + connect;
+    let enter_bind_branch = bin[bind..]
+        .find("enter_capability_mode")
+        .expect("enter_capability_mode after bind")
+        + bind;
+    assert!(
+        connect < enter_spawn_branch,
+        "UnixStream::connect must happen before enter_capability_mode in spawn mode"
+    );
+    assert!(
+        bind < enter_bind_branch,
+        "bind_socket must happen before enter_capability_mode in socket mode"
+    );
+
     let cap = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/storage/capsicum.rs"
