@@ -10,7 +10,7 @@ todos:
     status: completed
   - id: validate
     content: fmt, clippy, check_storage, focused bin/lib/integration tests
-    status: completed
+    status: in_progress
 isProject: false
 ---
 
