@@ -25,23 +25,40 @@ topcoat_cli_version := "0.5.0"
 # ensure-vcp-test probe (Unix socket). App tests use config/testing.toml (TCP).
 vcp_test_url := "postgresql://vcp_test:vcp_test@/vcp_test"
 
-# Install pinned topcoat-cli when missing. Used by validate, run, bundle, fmt.
+# Install / upgrade pinned topcoat-cli. Used by validate, run, bundle, fmt.
+# A stale CLI (e.g. grammar 0.4 with `todo!()` on `signal` pretty-print) panics
+# mid-`topcoat fmt`; always enforce {{topcoat_cli_version}}.
 [private]
 ensure-topcoat:
     #!/usr/bin/env bash
     set -euo pipefail
+    want="{{topcoat_cli_version}}"
+    have=""
     if command -v topcoat >/dev/null 2>&1; then
+      # `topcoat fmt -V` prints e.g. "topcoat-fmt 0.5.0"
+      have=$(topcoat fmt -V 2>/dev/null | awk '{print $NF}' || true)
+    fi
+    if [[ "$have" == "$want" ]]; then
       exit 0
     fi
-    echo "topcoat CLI not found; installing topcoat-cli {{topcoat_cli_version}}…" >&2
-    echo "(one-time; needs network + write access to {{cargo_home}}/bin)" >&2
-    cargo install topcoat-cli --version "{{topcoat_cli_version}}"
+    if [[ -n "$have" ]]; then
+      echo "topcoat CLI $have != pin $want; upgrading topcoat-cli…" >&2
+    else
+      echo "topcoat CLI not found; installing topcoat-cli $want…" >&2
+    fi
+    echo "(needs network + write access to {{cargo_home}}/bin)" >&2
+    cargo install topcoat-cli --version "$want" --force
     if ! command -v topcoat >/dev/null 2>&1; then
       echo "error: topcoat-cli installed but 'topcoat' is still not on PATH" >&2
       echo "hint: add {{cargo_home}}/bin to PATH, then re-run" >&2
       exit 1
     fi
-    echo "topcoat CLI ready: $(command -v topcoat)" >&2
+    have=$(topcoat fmt -V 2>/dev/null | awk '{print $NF}' || true)
+    if [[ "$have" != "$want" ]]; then
+      echo "error: expected topcoat-cli $want after install, got '${have:-unknown}'" >&2
+      exit 1
+    fi
+    echo "topcoat CLI ready: $(command -v topcoat) ($have)" >&2
 
 # Provision Postgres role/DB vcp_test when missing. Used by validate / test.
 [private]

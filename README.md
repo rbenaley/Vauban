@@ -112,10 +112,11 @@ just db-reset-test    # drop/recreate `vcp_test` (destructive)
 ```
 
 Recipes that need the Topcoat CLI (`run`, `bundle`, `release`, `fmt`,
-`validate`, `dev`, …) call `ensure-topcoat`, which installs the pinned
-`topcoat-cli` 0.5.0 on first use when `topcoat` is missing from `PATH` /
-`$CARGO_HOME/bin`. No manual `cargo install` and no prior `just validate`
-are required before `just run`.
+`validate`, `dev`, …) call `ensure-topcoat`, which installs or upgrades the
+pinned `topcoat-cli` 0.5.0 when `topcoat` is missing or the wrong version on
+`PATH` / `$CARGO_HOME/bin` (a stale CLI panics on `signal` pretty-print).
+No manual `cargo install` and no prior `just validate` are required before
+`just run`.
 
 `just run` / `just build` keep the asset catalog in sync: they rebundle
 when `target/{debug,release}/vcp` is newer than
