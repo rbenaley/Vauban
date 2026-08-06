@@ -460,27 +460,76 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
 }
 .vb-issue-thumb {
   display: block; width: 100%; height: 100%; padding: 0; margin: 0;
-  border: 1px solid #e0e2de; border-radius: 4px; overflow: hidden;
+  border: 1px solid #e0e2de; border-radius: 6px; overflow: hidden;
   background: #f6f7f5; cursor: zoom-in; box-sizing: border-box;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
+.vb-issue-thumb:hover {
+  transform: translateY(-1px); border-color: #cdd1cb;
+  box-shadow: 0 4px 12px rgba(16, 19, 23, 0.14);
+}
+.vb-issue-thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .vb-issue-thumb img {
   width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none;
 }
+/* Screenshot picker: trigger + cap hint on one row, previews below, and a
+   polite live region for the running count. */
+.vb-shot-picker {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+}
+.vb-shot-picker-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+}
+.vb-shot-add { position: relative; margin: 0; cursor: pointer; }
+/* `.vb-btn.muted` only targets a / button / span, and the trigger is a
+   <label>: restate the secondary face so it never competes with Reply.
+   Padding drops 1px to absorb the border and keep the same box. */
+label.vb-btn.vb-shot-add {
+  background: #fff; color: #5a5f66; border: 1px solid #e0e2de;
+  padding: 9px 15px; font-weight: 500;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+label.vb-btn.vb-shot-add:hover { background: #fbfcfb; border-color: #cdd1cb; }
+.vb-shot-add:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.vb-shot-add[aria-disabled="true"] { opacity: 0.55; pointer-events: none; }
+/* Visually hidden but focusable, so keyboard users reach the picker. */
+.vb-shot-input {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); border: 0;
+}
+.vb-shot-hint, .vb-shot-status {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10.5px; line-height: 1.5; margin: 0;
+}
+.vb-shot-hint { color: #9aa0a6; }
+.vb-shot-status { color: #5a5f66; }
+.vb-shot-status:empty { display: none; }
+/* Compose page keeps the dashed dropzone look: stack and center instead. */
+.vb-drop .vb-shot-picker { align-items: center; }
+.vb-drop .vb-shot-picker-row { flex-direction: column; gap: 8px; }
 .vb-shot-preview {
-  display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px;
+  display: flex; flex-wrap: wrap; gap: 8px; margin: 0;
 }
 .vb-shot-preview[hidden] { display: none !important; }
 .vb-shot-preview-item {
-  position: relative; width: 72px; height: 72px; border: 1px solid #e0e2de;
-  border-radius: 4px; overflow: hidden; background: #f6f7f5;
+  position: relative; width: 76px; height: 76px; border: 1px solid #e0e2de;
+  border-radius: 6px; overflow: hidden; background: #f6f7f5;
+  animation: vbIn 0.16s ease both;
 }
 .vb-shot-preview-item img {
   width: 100%; height: 100%; object-fit: cover; display: block;
 }
 .vb-shot-preview-remove {
-  position: absolute; top: 2px; right: 2px; width: 20px; height: 20px;
-  border: 0; border-radius: 3px; background: rgba(30, 34, 38, 0.72);
+  position: absolute; top: 4px; right: 4px; width: 22px; height: 22px;
+  border: 0; border-radius: 999px; background: rgba(16, 19, 23, 0.62);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.24);
   color: #fff; font-size: 14px; line-height: 1; cursor: pointer; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  opacity: 0.9; transition: opacity 0.15s ease, background 0.15s ease;
+}
+.vb-shot-preview-remove:hover { opacity: 1; background: rgba(16, 19, 23, 0.82); }
+.vb-shot-preview-remove:focus-visible {
+  opacity: 1; outline: 2px solid var(--accent); outline-offset: 2px;
 }
 /* Screenshot lightbox: native <dialog> in the top layer, sized to the
    viewport (not the issue pane) so the backdrop never stretches with the
@@ -489,28 +538,40 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
    converges on the viewport corner once a screenshot fills the frame. */
 .vb-issue-lightbox {
   --vb-lb-pad: clamp(14px, 4vw, 48px);
+  /* Viewport-based caps only: a percentage max-width would resolve against
+     the shrink-wrapping figure and let it stay wider than the image. */
+  --vb-lb-max-w: min(calc(100vw - (2 * var(--vb-lb-pad))), 1180px);
+  --vb-lb-max-h: calc(100vh - (2 * var(--vb-lb-pad)));
   display: none; position: fixed; inset: 0; z-index: 60;
   width: 100%; max-width: 100%; height: 100%; max-height: 100%;
   margin: 0; padding: var(--vb-lb-pad);
   border: 0; background: transparent; box-sizing: border-box; overflow: hidden;
 }
+@supports (height: 100dvh) {
+  .vb-issue-lightbox { --vb-lb-max-h: calc(100dvh - (2 * var(--vb-lb-pad))); }
+}
 .vb-issue-lightbox[open] { display: grid; place-items: center; }
 .vb-issue-lightbox::backdrop { background: rgba(16, 19, 23, 0.74); }
+/* No scroll bleed behind the top-layer dialog. */
+html:has(.vb-issue-lightbox[open]) { overflow: hidden; }
 .vb-issue-lightbox-dismiss { position: fixed; inset: 0; margin: 0; }
 .vb-issue-lightbox-backdrop {
   position: absolute; inset: 0; width: 100%; height: 100%;
   border: 0; padding: 0; margin: 0; background: transparent; cursor: zoom-out;
 }
-/* Shrink-wraps the rendered image so the close button can hug its corner. */
+/* Wraps the rendered image exactly, so the close button hugs its corner.
+   `width: fit-content` is the pre-load fallback; `@load` then pins width /
+   height to the measured image box (engines do not reliably shrink-wrap an
+   image whose width comes from a max-height constraint). */
 .vb-issue-lightbox-figure {
-  position: relative; z-index: 1; margin: 0;
-  width: fit-content; max-width: 100%; max-height: 100%;
+  position: relative; z-index: 1; margin: 0; line-height: 0;
+  width: fit-content;
+  max-width: var(--vb-lb-max-w); max-height: var(--vb-lb-max-h);
 }
 .vb-issue-lightbox-img {
   display: block; width: auto; height: auto; object-fit: contain;
-  max-width: min(100%, 1180px);
-  max-height: calc(100vh - (2 * var(--vb-lb-pad)));
-  max-height: calc(100dvh - (2 * var(--vb-lb-pad)));
+  max-width: var(--vb-lb-max-w);
+  max-height: var(--vb-lb-max-h);
   border-radius: 6px; background: #0f1216;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
   animation: vbIn 0.18s ease both;
@@ -525,7 +586,15 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
   -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   font-size: 20px; line-height: 1; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, opacity 0.12s ease;
+  /* Revealed once @load has pinned the figure, so the corner never flashes
+     at a stale position. The lightbox only opens from a handler anyway. */
+  opacity: 0;
+}
+.vb-issue-lightbox-figure.is-fit .vb-issue-lightbox-close { opacity: 1; }
+/* Thumbnail-sized screenshots: keep the same corner, smaller footprint. */
+.vb-issue-lightbox-figure.is-tiny .vb-issue-lightbox-close {
+  top: 6px; right: 6px; width: 30px; height: 30px; font-size: 16px;
 }
 .vb-issue-lightbox-close:hover { background: rgba(16, 19, 23, 0.78); }
 .vb-issue-lightbox-backdrop:focus-visible,
@@ -535,6 +604,9 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
 @media (prefers-reduced-motion: reduce) {
   .vb-issue-lightbox-img { animation: none; }
   .vb-issue-lightbox-close { transition: none; }
+  .vb-shot-preview-item { animation: none; }
+  .vb-issue-thumb, label.vb-btn.vb-shot-add { transition: none; }
+  .vb-issue-thumb:hover { transform: none; }
 }
 .vb-company-list {
   width: 100%;

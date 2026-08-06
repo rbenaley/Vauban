@@ -35,7 +35,6 @@ async fn new_issue_page(cx: &Cx) -> Result {
     let list_href = format!("/{slug}/issues");
     let action = format!("/{slug}/issues");
     let max_att = config(cx).issues.max_attachments_per_comment.max(1);
-    let max_hint = format!("PNG, JPEG, WebP · max {max_att} · sent when you submit the report");
 
     view! {
         <div>
@@ -139,12 +138,6 @@ async fn new_issue_page(cx: &Cx) -> Result {
                                     "⇪"
                                 </span>
                                 <span>"Click to choose images"</span>
-                                <span
-                                    class="vb-mono"
-                                    style="font-size: 10.5px; color: #9aa0a6;"
-                                >
-                                    (max_hint.clone())
-                                </span>
                             },
                             max: max_att
                         )

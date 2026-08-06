@@ -4,7 +4,7 @@ mod topcoat_click;
 
 pub use topcoat_click::{
     assert_topcoat_click_handlers_are_functions, assert_topcoat_submit_handlers_are_functions,
-    data_topcoat_on_click_values, is_topcoat_function_handler,
+    data_topcoat_on_click_values, data_topcoat_on_event_values, is_topcoat_function_handler,
 };
 
 use std::path::PathBuf;

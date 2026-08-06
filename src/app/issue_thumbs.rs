@@ -13,7 +13,7 @@ use topcoat::{
 };
 
 use crate::{
-    issue_attachments::gallery_src,
+    issue_attachments::{attachment_cap_hint, gallery_src},
     models::{ISSUE_COMMENT_KIND_STATUS, IssueAttachment},
 };
 
@@ -55,27 +55,43 @@ pub const SHOT_PREVIEW_CHANGE: &str = "data-shot-preview";
 /// Hidden file input + preview host (`@change` function expression).
 ///
 /// `max` is `[issues].max_attachments_per_comment` (also enforced server-side).
+///
+/// A native `multiple` input **replaces** its `FileList` on every pick, so a
+/// second trip to the file dialog would silently drop the first screenshot.
+/// The handler therefore keeps its own accumulated list on the input
+/// (`vcpShots`) and writes it back through a `DataTransfer` — picking one image
+/// at a time still fills the whole per-message cap.
 #[component]
 pub async fn shot_file_input(cx: &Cx, label: Result, max: usize) -> Result {
     let _pin = SHOT_PREVIEW_CHANGE;
     let max = max.max(1);
     let max_attr = max.to_string();
+    let hint = attachment_cap_hint(max);
     view! {
         cx =>
         <div class="vb-shot-picker">
-            <label class="vb-btn muted vb-btn-ico" style="cursor: pointer; margin: 0;">
-                <input
-                    type="file"
-                    name="screenshots"
-                    accept="image/png,image/jpeg,image/webp"
-                    multiple=""
-                    data-max=(max_attr)
-                    style="position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0;"
-                    @change="(e) => { const input = e.current_target.inner; const form = input.form; if (!form) return; const host = form.querySelector('[data-shot-preview]'); if (!host) return; host.querySelectorAll('img[data-preview-url]').forEach((img) => { try { URL.revokeObjectURL(img.getAttribute('data-preview-url')); } catch (_e) {} }); host.innerHTML = ''; const max = parseInt(input.getAttribute('data-max') || '5', 10) || 5; const files = input.files ? Array.from(input.files).slice(0, max) : []; if (!files.length) { host.hidden = true; return; } host.hidden = false; files.forEach((file, index) => { if (!file.type || file.type.indexOf('image/') !== 0) return; const url = URL.createObjectURL(file); const wrap = document.createElement('div'); wrap.className = 'vb-shot-preview-item'; const img = document.createElement('img'); img.src = url; img.alt = file.name || 'Screenshot preview'; img.setAttribute('data-preview-url', url); const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'vb-shot-preview-remove'; btn.setAttribute('aria-label', 'Remove screenshot'); btn.textContent = '×'; btn.addEventListener('click', () => { try { const dt = new DataTransfer(); Array.from(input.files || []).forEach((f, i) => { if (i !== index) dt.items.add(f); }); input.files = dt.files; } catch (_e) {} input.dispatchEvent(new Event('change', { bubbles: true })); }); wrap.appendChild(img); wrap.appendChild(btn); host.appendChild(wrap); }); }"
-                >
-                (label?)
-            </label>
+            <div class="vb-shot-picker-row">
+                <label class="vb-btn muted vb-btn-ico vb-shot-add" data-shot-add="">
+                    <input
+                        class="vb-shot-input"
+                        type="file"
+                        name="screenshots"
+                        accept="image/png,image/jpeg,image/webp"
+                        multiple=""
+                        data-max=(max_attr)
+                        @change="(e) => { const input = e.current_target.inner; const form = input.form; if (!form) return; const host = form.querySelector('[data-shot-preview]'); if (!host) return; const max = parseInt(input.getAttribute('data-max') || '5', 10) || 5; const keyOf = (f) => f.name + '|' + f.size + '|' + f.lastModified; const kept = input.vcpShots || []; const seen = {}; kept.forEach((f) => { seen[keyOf(f)] = true; }); let skipped = 0; Array.from(input.files || []).forEach((f) => { if (!f.type || f.type.indexOf('image/') !== 0) return; if (seen[keyOf(f)]) return; if (kept.length >= max) { skipped = skipped + 1; return; } seen[keyOf(f)] = true; kept.push(f); }); input.vcpShots = kept; const sync = () => { try { const dt = new DataTransfer(); (input.vcpShots || []).forEach((f) => dt.items.add(f)); input.files = dt.files; } catch (_e) {} }; sync(); host.querySelectorAll('img[data-preview-url]').forEach((img) => { try { URL.revokeObjectURL(img.getAttribute('data-preview-url')); } catch (_e) {} }); host.innerHTML = ''; host.hidden = kept.length === 0; kept.forEach((file, index) => { const url = URL.createObjectURL(file); const wrap = document.createElement('div'); wrap.className = 'vb-shot-preview-item'; wrap.title = file.name || 'Screenshot'; const img = document.createElement('img'); img.src = url; img.alt = file.name || 'Screenshot preview'; img.setAttribute('data-preview-url', url); const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'vb-shot-preview-remove'; btn.setAttribute('aria-label', 'Remove ' + (file.name || 'screenshot')); btn.textContent = '×'; btn.addEventListener('click', () => { const list = input.vcpShots || []; list.splice(index, 1); input.vcpShots = list; sync(); input.dispatchEvent(new Event('change', { bubbles: true })); }); wrap.appendChild(img); wrap.appendChild(btn); host.appendChild(wrap); }); const status = form.querySelector('[data-shot-status]'); if (status) { let msg = kept.length ? (kept.length + ' of ' + max + ' attached') : ''; if (skipped) { msg = (msg ? msg + ' · ' : '') + skipped + ' ignored (limit ' + max + ')'; } status.textContent = msg; } const add = form.querySelector('[data-shot-add]'); if (add) { const full = kept.length >= max; add.setAttribute('aria-disabled', full ? 'true' : 'false'); input.tabIndex = full ? -1 : 0; } }"
+                    >
+                    (label?)
+                </label>
+                <span class="vb-shot-hint">(hint)</span>
+            </div>
             <div class="vb-shot-preview" data-shot-preview="" hidden=""></div>
+            <p
+                class="vb-shot-status"
+                data-shot-status=""
+                role="status"
+                aria-live="polite"
+            ></p>
             <span style="display:none" aria-hidden="true">(_pin)</span>
         </div>
     }
@@ -147,7 +163,7 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
                                         class="vb-issue-thumb"
                                         aria-label="Open screenshot"
                                         data-src=(thumb.src.clone())
-                                        @click="(e) => { const src = e.current_target.inner.getAttribute('data-src'); const box = document.getElementById('issue-lb'); const img = document.getElementById('issue-lb-img'); if (!src || !box || !img) return; img.src = src; if (box.open) return; if (typeof box.showModal === 'function') { box.showModal(); } else { box.setAttribute('open', ''); } }"
+                                        @click="(e) => { const src = e.current_target.inner.getAttribute('data-src'); const box = document.getElementById('issue-lb'); const img = document.getElementById('issue-lb-img'); if (!src || !box || !img) return; const fig = img.closest('.vb-issue-lightbox-figure'); if (fig) { fig.classList.remove('is-fit'); fig.style.width = ''; fig.style.height = ''; } if (!box.open) { if (typeof box.showModal === 'function') { box.showModal(); } else { box.setAttribute('open', ''); } } if (img.getAttribute('src') !== src) { img.setAttribute('src', src); } else if (img.complete) { img.dispatchEvent(new Event('load')); } }"
                                     >
                                         <img src=(thumb.src.clone()) alt="Issue screenshot">
                                     </button>
@@ -224,7 +240,7 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
                                                 class="vb-issue-thumb"
                                                 aria-label="Open screenshot"
                                                 data-src=(thumb.src.clone())
-                                                @click="(e) => { const src = e.current_target.inner.getAttribute('data-src'); const box = document.getElementById('issue-lb'); const img = document.getElementById('issue-lb-img'); if (!src || !box || !img) return; img.src = src; if (box.open) return; if (typeof box.showModal === 'function') { box.showModal(); } else { box.setAttribute('open', ''); } }"
+                                                @click="(e) => { const src = e.current_target.inner.getAttribute('data-src'); const box = document.getElementById('issue-lb'); const img = document.getElementById('issue-lb-img'); if (!src || !box || !img) return; const fig = img.closest('.vb-issue-lightbox-figure'); if (fig) { fig.classList.remove('is-fit'); fig.style.width = ''; fig.style.height = ''; } if (!box.open) { if (typeof box.showModal === 'function') { box.showModal(); } else { box.setAttribute('open', ''); } } if (img.getAttribute('src') !== src) { img.setAttribute('src', src); } else if (img.complete) { img.dispatchEvent(new Event('load')); } }"
                                             >
                                                 <img src=(thumb.src.clone()) alt="Issue screenshot">
                                             </button>
@@ -243,7 +259,10 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
             // issues), Escape + focus trap for free. Both dismiss controls
             // are `method="dialog"` submits, so closing never depends on JS.
             // The close button lives in the figure so it overlays the rendered
-            // image corner instead of floating in the backdrop.
+            // image corner instead of floating in the backdrop. Shrink-wrapping
+            // a two-axis-constrained <img> is not reliable across engines, so
+            // `@load` pins the figure to the measured image box: the close
+            // button then keeps its fixed 12px inset on the pixels themselves.
             <dialog id="issue-lb" class="vb-issue-lightbox" aria-label="Screenshot">
                 <form method="dialog" class="vb-issue-lightbox-dismiss">
                     <button
@@ -258,6 +277,7 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
                         id="issue-lb-img"
                         class="vb-issue-lightbox-img"
                         alt="Issue screenshot"
+                        @load="(e) => { const img = e.current_target.inner; const fig = img.closest('.vb-issue-lightbox-figure'); if (!fig) return; const fit = () => { fig.style.width = ''; fig.style.height = ''; const r = img.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { fig.style.width = r.width + 'px'; fig.style.height = r.height + 'px'; fig.classList.toggle('is-tiny', r.width < 220 || r.height < 160); } fig.classList.add('is-fit'); }; fit(); if (!img.vcpFitBound) { img.vcpFitBound = true; window.addEventListener('resize', fit); } }"
                     >
                     <button
                         type="submit"

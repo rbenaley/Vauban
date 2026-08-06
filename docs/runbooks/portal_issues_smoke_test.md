@@ -105,26 +105,37 @@ Prerequisites: `vcp-store` running (same as
 3. Before submit, choosing files must show previews (Topcoat `@change`,
    not a custom `.js` asset). Submit the report: thumbs appear **inside**
    the opener bubble; `src` = `/{org}/images/<uuid>.<ext>` (200).
-4. Click a thumb: the `#issue-lb` `<dialog>` opens centered over the
+4. **Repeat picks accumulate.** Choose one image, then open the file
+   dialog again and choose a second: both previews stay, and the status
+   line reads `2 of 5 attached`. Repeat up to the cap — the trigger then
+   dims (`aria-disabled`) and further picks report `… ignored (limit 5)`.
+   Remove one via its × and the trigger becomes active again. Submit and
+   confirm **every** kept screenshot reaches the bubble (a browser that
+   replaced the selection on the second pick is a Fail).
+5. Click a thumb: the `#issue-lb` `<dialog>` opens centered over the
    viewport (dimmed backdrop only around the image — no page-height grey
    slab) without leaving the page. The × overlays the image's top-right
-   corner and follows it: on a narrow screenshot it stays next to the
-   image, on a full-width one it lands near the viewport corner. It is
+   corner at a fixed 12px inset **on the pixels**, never in the grey
+   backdrop. Verify with at least: a wide landscape screenshot, a tall
+   portrait one (height-constrained — this is where a drifting × shows
+   up), and a small thumbnail-sized image. Resize the window with the
+   dialog open: the × must re-anchor to the new image corner. It is
    translucent, so the pixels under it stay readable, and it must remain
    legible over both a dark and a light screenshot. Closing works three
    ways: the ×, a click on the backdrop, and `Escape`. There is **no**
    remove (×) control on published thumbs.
-5. On an open issue, attach + reply: thumbs sit **in that reply bubble**
+6. On an open issue, attach + reply: thumbs sit **in that reply bubble**
    (another up-to-cap set is allowed on that comment).
-6. As **Vauban Support** on `/admin/issues/{key}`, the same image URLs
-   load (Casbin `admin_view` + issues access; no client membership).
-7. Selecting more than the configured cap on create → redirect
+7. As **Vauban Support** on `/admin/issues/{key}`, the same image URLs
+   load (Casbin `admin_view` + issues access; no client membership), and
+   the reply picker accumulates exactly as in step 4.
+8. Selecting more than the configured cap on create → redirect
    `?err=attach` (no issue).
 
 | Result | Criteria |
 |--------|----------|
-| **Pass** | Previews + lightbox; thumbs in the owning bubble; first-party URLs for member + staff; per-comment cap from config; no post-publish remove; no first-party JS asset. |
-| **Fail** | Flat end-of-thread gallery; navigate-away on click; 404 on staff view; custom JS file; markdown URLs; remove × after publish; or over-cap links persist. |
+| **Pass** | Previews + lightbox; successive picks accumulate to the cap; status line tracks the count; × stays inset on the image at every aspect ratio and after resize; thumbs in the owning bubble; first-party URLs for member + staff; per-comment cap from config; no post-publish remove; no first-party JS asset. |
+| **Fail** | A second pick drops the first file; status line stuck or wrong; × lands in the backdrop or off the image; flat end-of-thread gallery; navigate-away on click; 404 on staff view; custom JS file; markdown URLs; remove × after publish; or over-cap links persist. |
 
 ## Related automated coverage
 

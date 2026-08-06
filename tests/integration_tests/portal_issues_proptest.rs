@@ -1,7 +1,9 @@
 //! Property tests for issue details bounds / key shaping / comment roles.
 
 use proptest::prelude::*;
-use vcp::issue_attachments::{AttachmentToken, gallery_src, parse_attachment_token};
+use vcp::issue_attachments::{
+    AttachmentToken, attachment_cap_hint, gallery_src, parse_attachment_token,
+};
 use vcp::issue_key::{next_issue_key_from_keys, parse_vbn_suffix};
 use vcp::issue_status::issue_is_closed;
 use vcp::models::{
@@ -194,5 +196,26 @@ proptest! {
             image_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             ext: "png",
         };
+    }
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(48))]
+
+    /// The picker hint is the only place a reporter learns how many
+    /// screenshots fit, so it must state the effective cap for any config
+    /// value — including a misconfigured 0, which the server clamps to 1.
+    #[test]
+    fn prop_cap_hint_states_the_effective_cap(max in 0usize..64) {
+        let hint = attachment_cap_hint(max);
+        let effective = max.max(1);
+        prop_assert!(hint.contains(&effective.to_string()), "hint: {hint}");
+        prop_assert!(hint.contains("PNG") && hint.contains("JPEG") && hint.contains("WebP"));
+        prop_assert!(!hint.contains("up to 0"), "never advertise a zero cap: {hint}");
+        if effective == 1 {
+            prop_assert!(hint.contains("1 screenshot per"), "singular: {hint}");
+        } else {
+            prop_assert!(hint.contains("screenshots"), "plural: {hint}");
+        }
     }
 }

@@ -8,9 +8,10 @@ use vcp::models::{
 };
 
 use crate::common::{
-    MultipartFile, TINY_PNG, cleanup, create_org_with_membership, create_test_org, db_lock,
-    ensure_reserved_org, get, login_cookie, post_form, post_multipart_with_files, status, test_db,
-    test_router, unique_email, unique_slug,
+    MultipartFile, TINY_PNG, cleanup, create_org_with_membership, create_test_org,
+    data_topcoat_on_event_values, db_lock, ensure_reserved_org, get, is_topcoat_function_handler,
+    login_cookie, post_form, post_multipart_with_files, status, test_db, test_router, unique_email,
+    unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -746,8 +747,10 @@ async fn e2e_issue_reply_attaches_screenshot_to_gallery() {
         html.contains("<dialog") && html.contains("method=\"dialog\""),
         "lightbox must render as a dialog with a JS-free dismiss: {html}"
     );
+    // Anchor on the element, not on the `img.closest('.vb-issue-lightbox-figure')`
+    // lookup that thumb handlers also carry.
     let figure_at = html
-        .find("vb-issue-lightbox-figure")
+        .find("class=\"vb-issue-lightbox-figure\"")
         .expect("lightbox figure in rendered html");
     let figure_end = html[figure_at..]
         .find("</form>")
@@ -777,6 +780,141 @@ async fn e2e_issue_reply_attaches_screenshot_to_gallery() {
         .expect("atts");
         assert_eq!(atts.len(), 1, "exactly one liaison after reply attach");
         assert_eq!(atts[0].ext, "png");
+    }
+
+    cleanup(&db).await;
+}
+
+/// Several screenshots on one reply: the picker accumulates picks client-side,
+/// so the reply seam must carry (and render) more than one file per comment.
+#[tokio::test]
+async fn e2e_issue_reply_attaches_several_screenshots() {
+    use vcp::issue_attachments::list_for_issue;
+
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("iss-multi-img");
+    let slug = unique_slug("iss-multi-img");
+    let (_user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let cookie = login(&router, &email).await;
+
+    let created = post_multipart_with_files(
+        &router,
+        &format!("/{slug}/issues"),
+        cookie.as_deref(),
+        &[
+            ("title", "Multi attach"),
+            ("component", "Portal"),
+            ("severity", "Minor"),
+            ("details", "several shots incoming"),
+        ],
+        &[],
+    )
+    .await;
+    let location = created
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned())
+        .expect("Location");
+    let key = location.rsplit('/').next().expect("issue key").to_owned();
+
+    let shots: Vec<MultipartFile<'_>> = ["one.png", "two.png", "three.png"]
+        .into_iter()
+        .map(|filename| MultipartFile {
+            field: "screenshots",
+            filename,
+            content_type: "image/png",
+            bytes: TINY_PNG,
+        })
+        .collect();
+    let reply = post_multipart_with_files(
+        &router,
+        &format!("/{slug}/issues/{key}/reply"),
+        cookie.as_deref(),
+        &[("body", "Three screenshots")],
+        &shots,
+    )
+    .await;
+    let reply_loc = reply
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        status(&reply).is_redirection() && !reply_loc.contains("err=attach"),
+        "reply with 3 screenshots must succeed: {reply_loc}"
+    );
+
+    let detail = get(&router, &location, cookie.as_deref()).await;
+    assert_eq!(status(&detail), StatusCode::OK);
+    let html = body_text(detail).await;
+    assert_eq!(
+        html.matches("vb-issue-thumb\"").count(),
+        3,
+        "every attached screenshot must render its own thumb: {html}"
+    );
+
+    // Picker affordances: cap wiring, add trigger state, live count.
+    assert!(
+        html.contains(&format!("data-max=\"{MAX_ISSUE_ATTACHMENTS}\"")),
+        "picker must publish the configured cap"
+    );
+    assert!(
+        html.contains("data-shot-add") && html.contains("data-shot-status"),
+        "picker must ship the cap-state and live-count hooks: {html}"
+    );
+    assert!(
+        html.contains("screenshots per message"),
+        "picker must state the cap in plain words"
+    );
+    for handler in data_topcoat_on_event_values(&html, "change")
+        .into_iter()
+        .chain(data_topcoat_on_event_values(&html, "load"))
+    {
+        assert!(
+            is_topcoat_function_handler(&handler),
+            "Topcoat binds handlers with `return <js>`: {handler}"
+        );
+    }
+    let fit = data_topcoat_on_event_values(&html, "load");
+    assert!(
+        fit.iter()
+            .any(|js| js.contains("getBoundingClientRect") && js.contains("style.width")),
+        "lightbox must pin the figure to the measured image box: {fit:?}"
+    );
+    assert!(
+        data_topcoat_on_event_values(&html, "change")
+            .iter()
+            .any(|js| js.contains("vcpShots") && js.contains("DataTransfer")),
+        "picker must accumulate picks instead of replacing the FileList"
+    );
+
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().organization_id().eq(org.id))
+            .filter(Issue::fields().key().eq(key.clone()))
+            .limit(1)
+            .exec(&mut conn)
+            .await
+            .expect("issue");
+        let atts = list_for_issue(
+            &mut conn,
+            org.id,
+            rows[0].id,
+            vcp::issue_attachments::issue_attachment_list_limit(MAX_ISSUE_ATTACHMENTS),
+        )
+        .await
+        .expect("atts");
+        assert_eq!(atts.len(), 3, "one liaison per screenshot");
+        let mut ids: Vec<&str> = atts.iter().map(|a| a.image_id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 3, "liaisons must point at distinct blobs");
     }
 
     cleanup(&db).await;

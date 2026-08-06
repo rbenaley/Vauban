@@ -254,7 +254,7 @@ fn inv_issue_attachments_o_k_and_wired() {
     );
     // Close button overlays the image corner, not the backdrop.
     let figure_at = thumbs
-        .find("vb-issue-lightbox-figure")
+        .find("class=\"vb-issue-lightbox-figure\"")
         .expect("lightbox figure");
     let figure_end = thumbs[figure_at..]
         .find("</form>")
@@ -293,6 +293,68 @@ fn inv_issue_attachments_o_k_and_wired() {
     assert!(
         history.contains("0015_issue_attachment_comment_id.sql"),
         "history must record comment_id migration"
+    );
+}
+
+/// A native `multiple` input replaces its `FileList` on every pick, so the
+/// picker must keep its own accumulated list; and the lightbox figure must be
+/// pinned to the measured image box, or the close button drifts into the
+/// backdrop whenever a screenshot is height-constrained.
+#[test]
+fn inv_shot_picker_accumulates_and_lightbox_tracks_image() {
+    let thumbs = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/issue_thumbs.rs"
+    ));
+    assert!(
+        thumbs.contains("input.vcpShots") && thumbs.contains("new DataTransfer()"),
+        "picker must accumulate picks across file dialogs (vcpShots + DataTransfer)"
+    );
+    assert!(
+        !thumbs.contains("Array.from(input.files).slice(0, max)"),
+        "picker must merge with kept files, not slice the fresh FileList"
+    );
+    assert!(
+        thumbs.contains("data-shot-add") && thumbs.contains("data-shot-status"),
+        "picker must expose the add trigger + live count hooks"
+    );
+    assert!(
+        thumbs.contains("aria-live=\"polite\""),
+        "attachment count must be announced politely"
+    );
+    assert!(
+        thumbs.contains("attachment_cap_hint"),
+        "cap wording must come from the shared helper (compose + reply)"
+    );
+    assert!(
+        thumbs.contains("@load") && thumbs.contains("getBoundingClientRect"),
+        "lightbox must size the figure from the rendered image on load"
+    );
+    assert!(
+        thumbs.contains("window.addEventListener('resize'"),
+        "lightbox figure must be refitted when the viewport changes"
+    );
+
+    let css = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
+    assert!(
+        !css.contains("max-width: min(100%, 1180px)"),
+        "percentage caps resolve against the shrink-wrapping figure: use viewport units"
+    );
+    assert!(
+        css.contains("--vb-lb-max-w:") && css.contains("--vb-lb-max-h:"),
+        "lightbox caps must live in viewport-based custom properties"
+    );
+    assert!(
+        css.contains(".vb-issue-lightbox-figure.is-fit .vb-issue-lightbox-close"),
+        "close button must stay hidden until the figure is pinned to the image"
+    );
+    assert!(
+        css.contains(".vb-shot-add:focus-within") && css.contains(".vb-shot-status"),
+        "picker needs a visible keyboard focus ring and a status line"
+    );
+    assert!(
+        css.contains(".vb-shot-add[aria-disabled=\"true\"]"),
+        "picker trigger must render a disabled state at the cap"
     );
 }
 

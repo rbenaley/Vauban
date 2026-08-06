@@ -564,3 +564,84 @@ async fn battle_concurrent_create_with_attachments() {
 
     cleanup(&db).await;
 }
+
+/// The picker and the lightbox are rendered per request. Under parallel
+/// detail loads every response must still carry its own complete wiring —
+/// no half-rendered figure, no picker that lost its cap.
+#[tokio::test]
+async fn battle_concurrent_detail_renders_keep_picker_and_lightbox() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-shot-ui");
+    let slug = unique_slug("battle-shot-ui");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let router = test_router().await;
+    let cookie = login_cookie(&router, &email).await.expect("login");
+    let created = post_multipart_with_files(
+        &router,
+        &format!("/{slug}/issues"),
+        Some(&cookie),
+        &[
+            ("title", "Picker under load"),
+            ("component", "Portal"),
+            ("severity", "Minor"),
+            ("details", "with a screenshot"),
+        ],
+        &[MultipartFile {
+            field: "screenshots",
+            filename: "shot.png",
+            content_type: "image/png",
+            bytes: TINY_PNG,
+        }],
+    )
+    .await;
+    let location = created
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned())
+        .expect("Location");
+
+    let n = 8usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for _ in 0..n {
+        let barrier = barrier.clone();
+        let cookie = cookie.clone();
+        let location = location.clone();
+        let router = test_router().await;
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let resp = get(&router, &location, Some(&cookie)).await;
+            assert_eq!(status(&resp), StatusCode::OK);
+            let bytes = http_body_util::BodyExt::collect(resp.into_body())
+                .await
+                .expect("body")
+                .to_bytes();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }));
+    }
+    for h in handles {
+        let html = h.await.expect("join");
+        assert!(
+            html.contains(&format!(
+                "data-max=\"{}\"",
+                vcp::models::MAX_ISSUE_ATTACHMENTS
+            )),
+            "every concurrent render must publish the cap"
+        );
+        assert!(
+            html.contains("data-shot-add") && html.contains("data-shot-status"),
+            "every concurrent render must ship the picker hooks"
+        );
+        assert!(
+            html.contains("vb-issue-lightbox-figure") && html.contains("vb-issue-lightbox-close"),
+            "every concurrent render must ship a complete lightbox figure"
+        );
+    }
+
+    cleanup(&db).await;
+}

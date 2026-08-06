@@ -91,7 +91,7 @@ if grep -nE 'preventDefault|stopPropagation' src/app/issue_thumbs.rs >/dev/null 
   fail "Topcoat handlers must use prevent_default/stop_propagation, not camelCase DOM methods"
 fi
 # Close button must live in the figure so it tracks the image corner.
-if awk '/vb-issue-lightbox-figure/,/<\/form>/' src/app/issue_thumbs.rs \
+if awk '/class="vb-issue-lightbox-figure"/,/<\/form>/' src/app/issue_thumbs.rs \
   | grep -q 'vb-issue-lightbox-close'; then
   :
 else
@@ -107,6 +107,30 @@ grep -A3 '\.vb-issue-lightbox-close {' styles.css | grep -qE 'width: 4[4-9]px|wi
   || fail ".vb-issue-lightbox-close must keep a >=44px touch target"
 grep -A4 '\.vb-issue-lightbox-close {' styles.css | grep -qE 'background: rgba\([0-9]+, [0-9]+, [0-9]+, 0\.[0-9]+\)' \
   || fail ".vb-issue-lightbox-close must stay translucent over the screenshot"
+# The figure only hugs the image if the image caps are viewport-based (a
+# percentage resolves against the shrink-wrapping figure) and if @load pins
+# the figure to the measured box.
+if grep -n 'max-width: min(100%, 1180px)' styles.css >/dev/null 2>&1; then
+  fail "lightbox image caps must be viewport-based (--vb-lb-max-w), not percentages"
+fi
+grep -n -- '--vb-lb-max-w' styles.css >/dev/null \
+  || fail "styles.css must define --vb-lb-max-w / --vb-lb-max-h lightbox caps"
+grep -n '@load' src/app/issue_thumbs.rs >/dev/null \
+  || fail "lightbox image must bind @load to size the figure to the image"
+grep -n 'getBoundingClientRect' src/app/issue_thumbs.rs >/dev/null \
+  || fail "lightbox figure must be pinned to the measured image box"
+# Picking a second image must add to the selection, not replace it.
+grep -n 'input.vcpShots' src/app/issue_thumbs.rs >/dev/null \
+  || fail "screenshot picker must accumulate picks (input.vcpShots)"
+grep -n 'new DataTransfer()' src/app/issue_thumbs.rs >/dev/null \
+  || fail "screenshot picker must write the accumulated list back via DataTransfer"
+if grep -n 'Array.from(input.files).slice(0, max)' src/app/issue_thumbs.rs >/dev/null 2>&1; then
+  fail "screenshot picker must merge with kept files, not slice the fresh FileList"
+fi
+grep -n 'data-shot-add' src/app/issue_thumbs.rs >/dev/null \
+  || fail "screenshot picker must expose data-shot-add (cap state)"
+grep -n 'data-shot-status' src/app/issue_thumbs.rs >/dev/null \
+  || fail "screenshot picker must expose data-shot-status (live count)"
 grep -n 'ISSUE_ATTACHMENT_OPENER_COMMENT_ID\|issue_comment_id' "$DETAIL" src/issue_attachments.rs >/dev/null \
   || fail "attachments must link to comment id (or opener sentinel)"
 grep -n 'attach_many\|store_screenshot_uploads' "$DETAIL" >/dev/null \

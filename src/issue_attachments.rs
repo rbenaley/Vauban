@@ -21,6 +21,16 @@ pub fn issue_attachment_list_limit(max_per_comment: usize) -> usize {
     max_per_comment.saturating_mul(64).clamp(16, 256)
 }
 
+/// Picker copy for the per-message cap (compose + reply share one wording).
+pub fn attachment_cap_hint(max_per_comment: usize) -> String {
+    let max = max_per_comment.max(1);
+    if max == 1 {
+        "PNG, JPEG or WebP · 1 screenshot per message".to_owned()
+    } else {
+        format!("PNG, JPEG or WebP · up to {max} screenshots per message")
+    }
+}
+
 /// One screenshot taken from a multipart form field.
 #[derive(Debug, Clone)]
 pub struct ScreenshotUpload {
@@ -322,6 +332,18 @@ mod tests {
     fn default_cap_is_five() {
         assert_eq!(crate::models::DEFAULT_MAX_ATTACHMENTS_PER_COMMENT, 5);
         assert_eq!(issue_attachment_list_limit(5), 256);
+    }
+
+    #[test]
+    fn cap_hint_states_the_cap_and_formats() {
+        let five = attachment_cap_hint(5);
+        assert!(five.contains('5'), "hint must state the cap: {five}");
+        assert!(five.contains("PNG") && five.contains("WebP"));
+        assert!(five.contains("screenshots"), "plural above one: {five}");
+        let one = attachment_cap_hint(1);
+        assert!(one.contains("1 screenshot per"), "singular at one: {one}");
+        // A misconfigured 0 must never advertise "up to 0".
+        assert_eq!(attachment_cap_hint(0), one);
     }
 
     #[test]
