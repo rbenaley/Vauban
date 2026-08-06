@@ -2,6 +2,7 @@
 
 use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
+use vcp::issue_anchor::ISSUE_REPLY_ANCHOR;
 use vcp::models::{
     ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_SUPPORT, ISSUE_STATUS_CLOSED,
     ISSUE_STATUS_OPEN, Issue, IssueComment, MAX_ISSUE_ATTACHMENTS, RESERVED_ORG_SLUG,
@@ -207,6 +208,129 @@ async fn e2e_issue_detail_shows_seeded_comment_and_reply() {
     assert_eq!(status(&after), StatusCode::OK);
     let html = body_text(after).await;
     assert!(html.contains(reply), "reply missing after POST: {html}");
+
+    cleanup(&db).await;
+}
+
+/// After a reply / close / reopen the browser must land on the reply box, not
+/// on the page header. The portal scrolls inside `.vb-scroll`, so the only
+/// no-JS lever is the fragment on the `303` — and the anchor has to exist in
+/// the closed rendering too, where the reply form is replaced by a panel.
+#[tokio::test]
+async fn e2e_issue_post_actions_redirect_to_the_reply_anchor() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("iss-anchor");
+    let slug = unique_slug("iss-anchor-org");
+    let (user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let cookie = login(&router, &email).await;
+
+    let now = vcp::db::now_unix();
+    let key = format!("VBN-{}", unique_slug("an").replace('-', ""));
+    {
+        let mut conn = db.clone();
+        toasty::create!(Issue {
+            key: key.clone(),
+            title: "Anchor e2e".to_owned(),
+            component: "Portal".to_owned(),
+            severity: "Minor".to_owned(),
+            status: ISSUE_STATUS_OPEN.to_owned(),
+            organization_id: org.id,
+            details: "Scroll me to the bottom".to_owned(),
+            opened_by_user_id: user.id,
+            created_at: now,
+            updated_at: now,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("issue");
+    }
+
+    let expected = format!("/{slug}/issues/{key}#{ISSUE_REPLY_ANCHOR}");
+
+    let posted = post_multipart_with_files(
+        &router,
+        &format!("/{slug}/issues/{key}/reply"),
+        cookie.as_deref(),
+        &[("body", "Landing at the bottom, please.")],
+        &[],
+    )
+    .await;
+    assert!(status(&posted).is_redirection());
+    let reply_loc = posted
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(reply_loc, expected, "reply must anchor on the reply box");
+
+    // The fragment only works if the target id is actually rendered.
+    let open_html = body_text(get(&router, &reply_loc, cookie.as_deref()).await).await;
+    assert!(
+        open_html.contains(&format!("id=\"{ISSUE_REPLY_ANCHOR}\"")),
+        "open pane must render the reply anchor: {open_html}"
+    );
+
+    let closed = post_form(
+        &router,
+        &format!("/{slug}/issues/{key}/close"),
+        cookie.as_deref(),
+        "",
+    )
+    .await;
+    let close_loc = closed
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(close_loc, expected, "close must anchor on the reply box");
+
+    let closed_html = body_text(get(&router, &close_loc, cookie.as_deref()).await).await;
+    assert!(
+        closed_html.contains("This issue is closed"),
+        "expected the closed panel: {closed_html}"
+    );
+    assert!(
+        closed_html.contains(&format!("id=\"{ISSUE_REPLY_ANCHOR}\"")),
+        "closed panel must keep the anchor alive: {closed_html}"
+    );
+
+    let reopened = post_form(
+        &router,
+        &format!("/{slug}/issues/{key}/reopen"),
+        cookie.as_deref(),
+        "",
+    )
+    .await;
+    let reopen_loc = reopened
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(reopen_loc, expected, "reopen must anchor on the reply box");
+
+    // An empty body is a no-op redirect: it must still land at the bottom.
+    let empty = post_multipart_with_files(
+        &router,
+        &format!("/{slug}/issues/{key}/reply"),
+        cookie.as_deref(),
+        &[("body", "   ")],
+        &[],
+    )
+    .await;
+    let empty_loc = empty
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(empty_loc, expected, "empty reply must still anchor");
 
     cleanup(&db).await;
 }

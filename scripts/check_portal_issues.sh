@@ -145,7 +145,7 @@ grep -n 'enctype="multipart/form-data"' "$DETAIL" >/dev/null \
 grep -n 'shot_file_input\|data-shot-preview' "$DETAIL" >/dev/null \
   || fail "$DETAIL reply must wire Topcoat screenshot preview"
 # File input / shot_file_input must live inside the reply form.
-if awk '/id="issue-reply"/,/<\/form>/' "$DETAIL" | grep -qE 'name="screenshots"|shot_file_input'; then
+if awk '/id=\(ISSUE_REPLY_ANCHOR\)/,/<\/form>/' "$DETAIL" | grep -qE 'name="screenshots"|shot_file_input'; then
   :
 else
   fail "$DETAIL screenshots input must be inside #issue-reply form"
@@ -225,5 +225,35 @@ fi
 # Meta strip: admin has 5 cells (incl. ORGANIZATION); fixed 4-col grids orphan UPDATED.
 grep -A4 '\.vb-meta-grid {' styles.css | grep -q 'auto-fit' \
   || fail "styles.css .vb-meta-grid must use auto-fit so UPDATED stays on one row"
+
+# Post-action redirects must land on the reply box. The portal scrolls inside
+# .vb-scroll, not the window, so only a fragment brings the newest message
+# into view after the 303.
+ANCHOR="src/issue_anchor.rs"
+[[ -f "$ANCHOR" ]] || fail "missing $ANCHOR"
+grep -n 'ISSUE_REPLY_ANCHOR: &str = "issue-reply"' "$ANCHOR" >/dev/null \
+  || fail "$ANCHOR must pin the reply anchor id"
+grep -n 'fn with_reply_anchor' "$ANCHOR" >/dev/null \
+  || fail "$ANCHOR must expose with_reply_anchor"
+for f in "$DETAIL" "$ADMIN_DETAIL"; do
+  grep -n 'with_reply_anchor' "$f" >/dev/null \
+    || fail "$f post-action redirects must go through with_reply_anchor"
+  grep -n 'id=(ISSUE_REPLY_ANCHOR)' "$f" >/dev/null \
+    || fail "$f must anchor the reply box on ISSUE_REPLY_ANCHOR"
+  # Closed issues drop the reply form: the panel that replaces it carries the
+  # same id, otherwise close/reopen redirects resolve to nothing.
+  awk '/if closed \{/,/} else if perms.issues_write \{/' "$f" \
+    | grep -q 'id=(ISSUE_REPLY_ANCHOR)' \
+    || fail "$f closed-issue panel must carry the reply anchor id"
+  if grep -nE 'see_other\(&format!\("/\{org_slug\}/issues/\{key\}' "$f" >/dev/null 2>&1; then
+    fail "$f must not redirect to an unanchored detail URL"
+  fi
+done
+grep -n 'fn admin_reply_target' "$ADMIN_DETAIL" >/dev/null \
+  || fail "$ADMIN_DETAIL must build post-action targets via admin_reply_target"
+# Plain list / navigation links stay anchor-free.
+if grep -n 'with_reply_anchor' src/app/admin/issues/search_shard.rs >/dev/null 2>&1; then
+  fail "list hrefs must not carry the reply anchor"
+fi
 
 echo "check_portal_issues: OK"

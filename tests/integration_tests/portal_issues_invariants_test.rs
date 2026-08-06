@@ -223,7 +223,9 @@ fn inv_issue_attachments_o_k_and_wired() {
         "compose must wire Topcoat shot_file_input preview"
     );
     // screenshots field must appear before the reply form closes (not form= outside).
-    let reply_idx = detail.find("id=\"issue-reply\"").expect("reply form id");
+    let reply_idx = detail
+        .find("id=(ISSUE_REPLY_ANCHOR)")
+        .expect("reply form id");
     assert!(
         detail[reply_idx..].contains("shot_file_input")
             || detail[reply_idx..].contains("name=\"screenshots\""),
@@ -355,6 +357,70 @@ fn inv_shot_picker_accumulates_and_lightbox_tracks_image() {
     assert!(
         css.contains(".vb-shot-add[aria-disabled=\"true\"]"),
         "picker trigger must render a disabled state at the cap"
+    );
+}
+
+/// The portal body scrolls inside `.vb-scroll`, so a bare `303` back to the
+/// detail URL re-renders at the page header. Every post-action redirect must
+/// carry the reply-box fragment, and the anchor must exist in both the open
+/// and the closed rendering of the pane.
+#[test]
+fn inv_issue_post_actions_anchor_on_the_reply_box() {
+    let anchor = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/issue_anchor.rs"));
+    let detail = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/issues/issue_key.rs"
+    ));
+    let admin = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/issues/issue_key.rs"
+    ));
+    let shard = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/issues/search_shard.rs"
+    ));
+    let css = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
+
+    assert!(
+        anchor.contains("ISSUE_REPLY_ANCHOR: &str = \"issue-reply\"")
+            && anchor.contains("fn with_reply_anchor"),
+        "shared anchor helper must pin the id and expose with_reply_anchor"
+    );
+    assert!(
+        css.contains(".vb-scroll { flex: 1; overflow-y: auto; }"),
+        "anchor navigation is the only no-JS way to reach the bottom of .vb-scroll"
+    );
+
+    for (name, src) in [("org", detail), ("admin", admin)] {
+        assert!(
+            src.contains("with_reply_anchor"),
+            "{name} detail must build post-action targets with with_reply_anchor"
+        );
+        assert_eq!(
+            src.matches("id=(ISSUE_REPLY_ANCHOR)").count(),
+            2,
+            "{name} detail must anchor both the reply form and the closed panel"
+        );
+        assert!(
+            !src.contains("id=\"issue-reply\""),
+            "{name} detail must not hardcode the anchor id next to the constant"
+        );
+        assert!(
+            !src.contains("see_other(&format!(\"/{org_slug}/issues/{key}"),
+            "{name} detail must not redirect to an unanchored detail URL"
+        );
+    }
+    assert!(
+        detail.contains("fn org_reply_target") && detail.contains("fn reserved_admin_reply_target"),
+        "org detail must route reply / close / reopen through anchored helpers"
+    );
+    assert!(
+        admin.contains("fn admin_reply_target"),
+        "admin detail must route reply / close / reopen through an anchored helper"
+    );
+    assert!(
+        !shard.contains("with_reply_anchor"),
+        "list hrefs must stay anchor-free"
     );
 }
 

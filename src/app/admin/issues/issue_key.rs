@@ -17,6 +17,7 @@ use crate::{
     auth::{capability_denied, config, db, require_staff, storage},
     db::now_unix,
     id_lookups::{orgs_by_ids, users_by_ids},
+    issue_anchor::{ISSUE_REPLY_ANCHOR, with_reply_anchor},
     issue_attachments::{
         ScreenshotUpload, attach_many, issue_attachment_list_limit, list_for_issue,
         screenshot_from_part, store_screenshot_uploads,
@@ -207,6 +208,7 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
             if closed {
                 <div
                     class="vb-panel"
+                    id=(ISSUE_REPLY_ANCHOR)
                     style="background: #fafbf9; display: flex; align-items: center; justify-content: space-between; gap: 16px;"
                 >
                     <div style="display: flex; align-items: center; gap: 11px;">
@@ -240,7 +242,7 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
                     <form
                         method="POST"
                         action=(reply_action)
-                        id="issue-reply"
+                        id=(ISSUE_REPLY_ANCHOR)
                         enctype="multipart/form-data"
                     >
                         <textarea
@@ -312,7 +314,7 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
         .ok()
         .and_then(|q| q.org.clone())
         .unwrap_or_default();
-    let detail = admin_issue_detail_href(key, &org_hint);
+    let detail = admin_reply_target(key, &org_hint, None);
     if !perms.issues_write {
         return Ok(see_other(&detail));
     }
@@ -324,8 +326,11 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     }
     let max_att = config(cx).issues.max_attachments_per_comment.max(1);
     if form.screenshots.len() > max_att {
-        let sep = if detail.contains('?') { '&' } else { '?' };
-        return Ok(see_other(&format!("{detail}{sep}err=attach")));
+        return Ok(see_other(&admin_reply_target(
+            key,
+            &org_hint,
+            Some("attach"),
+        )));
     }
 
     let mut database = db(cx);
@@ -353,8 +358,11 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
             Ok(t) => t,
             Err(err) => {
                 crate::storage::log::portal_attach_failed("admin_reply_screenshots", &err);
-                let sep = if detail.contains('?') { '&' } else { '?' };
-                return Ok(see_other(&format!("{detail}{sep}err=attach")));
+                return Ok(see_other(&admin_reply_target(
+                    key,
+                    &org_hint,
+                    Some("attach"),
+                )));
             }
         }
     };
@@ -371,8 +379,11 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     .exec(&mut database)
     .await
     else {
-        let sep = if detail.contains('?') { '&' } else { '?' };
-        return Ok(see_other(&format!("{detail}{sep}err=reply")));
+        return Ok(see_other(&admin_reply_target(
+            key,
+            &org_hint,
+            Some("reply"),
+        )));
     };
 
     if !tokens.is_empty()
@@ -388,8 +399,11 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
         .await
     {
         tracing::warn!(key = %key, error = %err, "admin reply attach_many failed");
-        let sep = if detail.contains('?') { '&' } else { '?' };
-        return Ok(see_other(&format!("{detail}{sep}err=attach")));
+        return Ok(see_other(&admin_reply_target(
+            key,
+            &org_hint,
+            Some("attach"),
+        )));
     }
 
     let _ = issue.update().updated_at(now).exec(&mut database).await;
@@ -406,7 +420,7 @@ async fn admin_close_issue(cx: &Cx) -> Result<SeeOther> {
         .ok()
         .and_then(|q| q.org.clone())
         .unwrap_or_default();
-    let detail = admin_issue_detail_href(key, &org_hint);
+    let detail = admin_reply_target(key, &org_hint, None);
     if !perms.issues_write {
         return Ok(see_other(&detail));
     }
@@ -430,7 +444,7 @@ async fn admin_reopen_issue(cx: &Cx) -> Result<SeeOther> {
         .ok()
         .and_then(|q| q.org.clone())
         .unwrap_or_default();
-    let detail = admin_issue_detail_href(key, &org_hint);
+    let detail = admin_reply_target(key, &org_hint, None);
     if !perms.issues_write {
         return Ok(see_other(&detail));
     }
@@ -451,6 +465,22 @@ fn admin_issue_action(key: &str, action: &str, org_slug: &str) -> String {
     } else {
         format!("/admin/issues/{key}/{action}?org={org_slug}")
     }
+}
+
+/// Detail target after a reply / close / reopen, anchored on the reply box so
+/// the browser lands on the newest message instead of the page header.
+///
+/// Any `err` code is appended to the query string, before the fragment.
+fn admin_reply_target(key: &str, org_hint: &str, err: Option<&str>) -> String {
+    let detail = admin_issue_detail_href(key, org_hint);
+    let href = match err {
+        Some(code) => {
+            let sep = if detail.contains('?') { '&' } else { '?' };
+            format!("{detail}{sep}err={code}")
+        }
+        None => detail,
+    };
+    with_reply_anchor(&href)
 }
 
 /// Detail URL for an admin issue. Always include `?org=` when known so

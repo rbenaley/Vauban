@@ -1,6 +1,7 @@
 //! Property tests for issue details bounds / key shaping / comment roles.
 
 use proptest::prelude::*;
+use vcp::issue_anchor::{ISSUE_REPLY_ANCHOR, with_reply_anchor};
 use vcp::issue_attachments::{
     AttachmentToken, attachment_cap_hint, gallery_src, parse_attachment_token,
 };
@@ -196,6 +197,42 @@ proptest! {
             image_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             ext: "png",
         };
+    }
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(64))]
+
+    /// A `Location` header only scrolls the browser when the fragment comes
+    /// last: `?err=` codes and `?org=` hints must never end up behind the `#`.
+    #[test]
+    fn prop_reply_anchor_stays_last(
+        slug in "[a-z0-9][a-z0-9-]{0,24}",
+        key in "VBN-[0-9]{1,5}",
+        err in prop::option::of(prop::sample::select(vec!["attach", "reply", "create"])),
+        org_hint in prop::option::of("[a-z0-9-]{1,24}"),
+    ) {
+        let mut href = format!("/{slug}/issues/{key}");
+        if let Some(hint) = &org_hint {
+            href.push_str(&format!("?org={hint}"));
+        }
+        if let Some(code) = &err {
+            let sep = if href.contains('?') { '&' } else { '?' };
+            href.push(sep);
+            href.push_str(&format!("err={code}"));
+        }
+        let target = with_reply_anchor(&href);
+
+        prop_assert_eq!(target.matches('#').count(), 1, "exactly one fragment: {}", &target);
+        prop_assert!(target.ends_with(&format!("#{ISSUE_REPLY_ANCHOR}")), "{}", &target);
+        let (path, fragment) = target.split_once('#').expect("fragment");
+        prop_assert_eq!(path, &href, "path must survive untouched");
+        prop_assert_eq!(fragment, ISSUE_REPLY_ANCHOR);
+        if let Some(q) = path.find('?') {
+            prop_assert!(q < target.find('#').expect("fragment"), "query before fragment");
+        }
+        // Re-anchoring a target is a no-op, so nested helpers cannot stack `#`.
+        prop_assert_eq!(with_reply_anchor(&target), target.clone());
     }
 }
 

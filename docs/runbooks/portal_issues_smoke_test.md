@@ -50,6 +50,28 @@ rtk cargo test --test integration_tests -- portal_issues -- --test-threads=1
 
 Pass: client issue timeline, replies, close, and reopen work under the org slug.
 
+## A2 -- Landing position after a post (Pass / Fail)
+
+Use a thread long enough to overflow the viewport (roughly ten comments,
+or a narrow window), otherwise there is nothing to scroll and the check
+proves nothing.
+
+1. Scroll to the bottom, post a reply, and let the redirect settle. The
+   view must show the reply box and the newest comment — **not** the
+   issue title. The address bar ends with `#issue-reply`.
+2. Repeat on a **closed** issue: after **Close issue**, the browser must
+   land on the "This issue is closed" panel, not at the top. Same after
+   **Reopen issue**.
+3. Submit an empty reply (whitespace only): the no-op redirect must land
+   at the bottom too, not at the header.
+4. Repeat step 1 as staff on `/admin/issues/{key}?org=…` — the `?org=`
+   hint must survive and the fragment stay last in the URL.
+
+| Result | Criteria |
+|--------|----------|
+| **Pass** | Every reply / close / reopen lands on the reply box or closed panel; URL ends with `#issue-reply`; any `?org=` / `?err=` stays before the `#`. |
+| **Fail** | The page reappears at the title after posting; the fragment is missing or sits before the query string; the closed panel is reachable only by manual scrolling. |
+
 ## B -- Staff aggregate
 
 1. Sign in as `support@vauban.sh` / `password`.

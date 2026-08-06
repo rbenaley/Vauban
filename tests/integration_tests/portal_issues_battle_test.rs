@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::Barrier;
 use topcoat::router::StatusCode;
+use vcp::issue_anchor::ISSUE_REPLY_ANCHOR;
 use vcp::models::{
     ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_REPORTER,
     ISSUE_STATUS_CLOSED, ISSUE_STATUS_OPEN, Issue, IssueComment,
@@ -312,23 +313,36 @@ async fn battle_parallel_close_reopen_under_detail_reads() {
     let reopen_path_b = reopen_path;
     let detail_path_c = detail_path;
 
+    // Whichever way the race resolves, the operator must land back on the
+    // reply box: the anchor cannot depend on who won.
+    fn assert_anchored(resp: &topcoat::router::Response, what: &str) {
+        assert!(
+            status(resp).is_redirection() || status(resp) == StatusCode::OK,
+            "{what} got {}",
+            status(resp)
+        );
+        if status(resp).is_redirection() {
+            let location = resp
+                .headers()
+                .get(topcoat::router::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            assert!(
+                location.ends_with(&format!("#{ISSUE_REPLY_ANCHOR}")),
+                "{what} must redirect to the reply anchor, got {location}"
+            );
+        }
+    }
+
     let h1 = tokio::spawn(async move {
         barrier_a.wait().await;
         let resp = post_form(router_a.as_ref(), &close_path_a, Some(&cookie_a), "").await;
-        assert!(
-            status(&resp).is_redirection() || status(&resp) == StatusCode::OK,
-            "close got {}",
-            status(&resp)
-        );
+        assert_anchored(&resp, "close");
     });
     let h2 = tokio::spawn(async move {
         barrier_b.wait().await;
         let resp = post_form(router_b.as_ref(), &reopen_path_b, Some(&cookie_b), "").await;
-        assert!(
-            status(&resp).is_redirection() || status(&resp) == StatusCode::OK,
-            "reopen got {}",
-            status(&resp)
-        );
+        assert_anchored(&resp, "reopen");
     });
     let h3 = tokio::spawn(async move {
         barrier_c.wait().await;
