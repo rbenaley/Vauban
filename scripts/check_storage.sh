@@ -177,12 +177,12 @@ grep -n 'webauthn_strict_sign_count = false' "$STORE_CONF" >/dev/null \
   || fail "$STORE_CONF must default webauthn_strict_sign_count = false (ADR 004)"
 grep -n 'webauthn_user_verification = "required"' "$STORE_CONF" >/dev/null \
   || fail "$STORE_CONF must require userVerification"
-grep -n 'key pending\|key approve\|key list' "$BIN" >/dev/null \
-  || fail "$BIN must implement key pending/list/approve CLI (ADR 003)"
+grep -n 'pending-keys\|list-keys\|approve-key' "$BIN" >/dev/null \
+  || fail "$BIN must implement pending-keys/list-keys/approve-key CLI (ADR 003)"
 grep -n 'list_pending_credentials_cli\|PENDING credentials' "$BIN" >/dev/null \
-  || fail "$BIN key pending must list PENDING credentials (E2 queue), not only challenges"
+  || fail "$BIN pending-keys must list PENDING credentials (E2 queue), not only challenges"
 grep -n 'list_all_credentials_cli\|format_ascii_table' "$BIN" >/dev/null \
-  || fail "$BIN must table-format key list/pending output"
+  || fail "$BIN must table-format list-keys/pending-keys output"
 grep -n 'validate_production_webauthn\|webauthn_required=false' "$BIN" >/dev/null \
   || fail "$BIN must refuse production webauthn_required=false"
 grep -n 'credential_fingerprint\|summary' "$WEBAUTHN" >/dev/null \

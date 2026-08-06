@@ -165,10 +165,10 @@ Do **not** expect macOS CI to exercise `cap_enter` or jail.
 | Conf knobs | `vcp-store.conf`: `webauthn_required`, `webauthn_user_verification=required`, `webauthn_strict_sign_count` (default **false**, ADR 004), RP id/origin, challenge TTL |
 | Production boot | `--production` + `webauthn_required=false` → **refuse to start** |
 | Audit log | `blob_path/audit/webauthn.log` (JSONL; UID 801 only) |
-| Pending queue | `vcp-store key pending` — PENDING credentials (E2) + in-flight ceremony challenges (table output) |
-| List keys | `vcp-store key list` — all credentials (pending / active / expired / revoked) |
-| PENDING TTL | `webauthn_pending_ttl_hours` (default 24) — unapproved PENDING → `expired`; set in `vcp-store.conf` and portal `[storage]` for spawn/dev |
-| Activate key | `vcp-store key approve --fingerprint <hex>` (fingerprint OOB match). Dev spawn: `VCP_ENVIRONMENT=development` so the CLI uses portal `[storage].blob_path`, not production `/var/db/vcp/storage` |
+| Pending queue | `vcp-store pending-keys` — PENDING credentials (E2) + in-flight ceremony challenges (table output) |
+| List keys | `vcp-store list-keys` — all credentials (pending / active / expired / revoked) |
+| PENDING TTL | `webauthn_pending_ttl_hours` (default 24) — unapproved PENDING → `expired`; set in `vcp-store.conf` and portal `[storage]` |
+| Activate key | `vcp-store approve-key --fingerprint <hex>` (fingerprint OOB match). Pass `--blob-path` / `--config` when not using the default `vcp-store.conf` |
 | Revoke | Admin `/admin/key` only (no CLI revoke) — ADR 003 |
 | Ceremony channel | C1 (portal relay); C2 deferred — ADR 002 |
 | Backup | Always joint: `meta.sqlite` + blobs + WebAuthn credential rows. Credentials cannot be rebuilt from blobs. |

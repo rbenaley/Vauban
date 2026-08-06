@@ -447,7 +447,7 @@ async fn e2e_key_dashboard_staff_ok_member_404_and_revoke_guard() {
         "compact activate hint (E2 on helper host)"
     );
     assert!(
-        html.contains("vcp-store key approve"),
+        html.contains("vcp-store approve-key"),
         "CLI approve command chip in callout"
     );
     assert!(html.contains("Create key"), "enrol CTA");

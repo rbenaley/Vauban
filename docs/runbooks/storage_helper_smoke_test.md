@@ -130,7 +130,7 @@ Requires at least one ACTIVE KEY key (see ops breakglass / KEY enrol).
 1. Admin → Publish release with package. Confirm redirect to
    `/admin/releases/confirm?token=…` showing **helper** summary
    (`release_put_commit id=… sha256=…`).
-2. On helper host: `vcp-store key pending` shows the same summary/binding.
+2. On helper host: `vcp-store pending-keys` shows the same summary/binding.
 3. Complete WebAuthn (UV required). Release becomes PUBLISHED; download
    matches digest.
 4. Negative: abort ceremony / refuse UV → release stays HIDDEN; no rename.
@@ -147,26 +147,22 @@ WebAuthn rejects IP hosts; `webauthn_origin` uses `localhost` (RP ID derived).
 Accept the self-signed cert for `localhost` if prompted.
 
 1. `/admin/key` → Create key → PENDING fingerprint shown; activate from the
-   helper host (`vcp-store key approve`, copy from PENDING table if needed).
+   helper host (`vcp-store approve-key`, copy from PENDING table if needed).
    PENDING and ACTIVE tables paginate at **4** rows (`pending_page` /
    `active_page`); confirm Next when more than four keys exist.
 2. **Empty / whitespace-only key label** (leave label blank or spaces, click
    Create): must **not** open the authenticator dialog; banner / redirect
-   `err=label`. No PENDING row in `vcp-store key pending`.
+   `err=label`. No PENDING row in `vcp-store pending-keys`.
 3. **PENDING TTL** (`webauthn_pending_ttl_hours`, default 24): an unapproved
-   PENDING older than the TTL must show as `expired` in `key list` and
-   leave the `key pending` queue; `key approve` for that fingerprint
+   PENDING older than the TTL must show as `expired` in `list-keys` and
+   leave the `pending-keys` queue; `approve-key` for that fingerprint
    fails closed (`webauthn_expired`).
 4. Activate (E2) with OOB fingerprint match:
-   - **Local spawn (`just run`):** from the repo root,
-     `VCP_ENVIRONMENT=development ./target/debug/vcp-store key approve --fingerprint <hex>`
-     (loads the same `[storage].blob_path` as the portal, typically
-     `<repo>/vcp-storage`). Bare `vcp-store` without the env var reads
-     production `vcp-store.conf` (`/var/db/vcp/storage`) and fails on Mac.
-   - **Production helper host:** `vcp-store key approve --fingerprint <hex>`
+   `vcp-store approve-key --fingerprint <hex>` (pass `--blob-path` or
+   `--config` when not using the default `vcp-store.conf`).
 5. Cross-check listing:
-   - `vcp-store key pending` shows the PENDING credential (not only challenges).
-   - After approve: `vcp-store key list` shows ACTIVE; pending queue empty.
+   - `vcp-store pending-keys` shows the PENDING credential (not only challenges).
+   - After approve: `vcp-store list-keys` shows ACTIVE; pending queue empty.
 6. Dashboard lists ACTIVE; revoke from dashboard (no CLI revoke).
 7. Wrong fingerprint on approve → fail closed; no ACTIVE insert.
 

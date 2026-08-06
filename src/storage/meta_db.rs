@@ -413,7 +413,7 @@ impl MetaDb {
         )
     }
 
-    /// All credential rows (pending, active, revoked) for ops CLI `key list`.
+    /// All credential rows (pending, active, revoked) for ops CLI `list-keys`.
     pub fn list_all_credentials(&self) -> Result<Vec<WebauthnCredentialRow>, StorageError> {
         self.query_credentials(
             r#"

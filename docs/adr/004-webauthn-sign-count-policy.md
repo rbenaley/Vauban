@@ -34,7 +34,7 @@ Ignoring counters entirely would weaken fleets that standardize on YubiKeys.
 3. **Attestation-enforced hardware-only enrolment is not required** for MVP.
    Operators who need that bar use strict mode plus operational policy
    (which authenticators they enrol), or a future ADR for attestation
-   filters at `key approve`.
+   filters at `approve-key`.
 4. **`userVerification: required` remains mandatory** regardless of this flag
    (architecture D13); strict sign_count is orthogonal to UV.
 

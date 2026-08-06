@@ -212,11 +212,17 @@ fn inv_webauthn_12_and_adrs_pinned() {
     }
 
     let bin = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/vcp_store.rs"));
-    assert!(bin.contains("key"));
-    assert!(bin.contains("approve"));
-    assert!(bin.contains("key list") || bin.contains("\"list\""));
+    assert!(bin.contains("pending-keys"));
+    assert!(bin.contains("list-keys"));
+    assert!(bin.contains("approve-key"));
     assert!(bin.contains("load_key_cfg_with_env"));
     assert!(bin.contains("VCP_ENVIRONMENT"));
+    assert!(
+        !bin.contains("Development (spawn)")
+            && !bin.contains("VCP_ENVIRONMENT=development")
+            && !bin.contains("./target/debug/vcp-store"),
+        "ops CLI usage/hints must not advertise development recipes"
+    );
     assert!(bin.contains("validate_production_webauthn"));
     assert!(bin.contains("format_ascii_table"));
     assert!(
@@ -299,7 +305,7 @@ fn inv_webauthn_12_and_adrs_pinned() {
         "/src/app/admin/releases/confirm.rs"
     ));
     assert!(confirm.contains("vcp-webauthn-summary"));
-    assert!(confirm.contains("vcp-store key pending"));
+    assert!(confirm.contains("vcp-store pending-keys"));
 }
 
 /// §6.5 / ADR 003 dashboard contract: fingerprint at E1, CLI approve
@@ -314,11 +320,11 @@ fn inv_key_dashboard_ui_pinned() {
         "compact E1/E2 callout"
     );
     assert!(
-        page.contains("vcp-store key approve"),
+        page.contains("vcp-store approve-key"),
         "CLI approve chip in callout"
     );
     assert!(
-        page.contains("key approve --fingerprint"),
+        page.contains("approve-key --fingerprint"),
         "pending-table copy still exposes full approve CLI"
     );
     assert!(
@@ -327,7 +333,7 @@ fn inv_key_dashboard_ui_pinned() {
     );
     assert!(
         !page.contains("target/debug/vcp-store"),
-        "approve copy must be bare vcp-store key approve"
+        "approve copy must be bare vcp-store approve-key"
     );
     assert!(page.contains("\"Create key\""), "enrol CTA label");
     assert!(

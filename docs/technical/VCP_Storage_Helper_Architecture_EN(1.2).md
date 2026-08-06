@@ -22,7 +22,7 @@ SQLite `meta.sqlite`; Postgres `storage_objects` = portal mirror.
 
 | Review | 1.2 change |
 |--------|------------|
-| §3.1 Presence vs consent | Canonical challenge `summary`; UI must display it; `vcp-store key pending`; helper audit log under `blob_path`; ops alerts on `delete_org` / revoke bursts. C2 deferred → ADR 002 |
+| §3.1 Presence vs consent | Canonical challenge `summary`; UI must display it; `vcp-store pending-keys`; helper audit log under `blob_path`; ops alerts on `delete_org` / revoke bursts. C2 deferred → ADR 002 |
 | §3.4 E1→E2 substitution | Mandatory credential **fingerprint** at E1 and CLI approve |
 | §3.3 userVerification | `webauthn_user_verification = "required"`; UV flag checked at verify |
 | §3.6 Bypass in prod | Boot refuses `webauthn_required=false` when production |
@@ -85,9 +85,9 @@ SQLite `meta.sqlite`; Postgres `storage_objects` = portal mirror.
 Helper-host CLI:
 
 ```text
-vcp-store key pending          # PENDING credentials (E2) + in-flight challenges/summaries
-vcp-store key list             # all credentials (pending / active / revoked)
-vcp-store key approve …        # E2: activate credential after fingerprint match
+vcp-store pending-keys          # PENDING credentials (E2) + in-flight challenges/summaries
+vcp-store list-keys             # all credentials (pending / active / revoked)
+vcp-store approve-key …        # E2: activate credential after fingerprint match
 ```
 
 ---
@@ -127,8 +127,8 @@ webauthn_pending_ttl_hours = 24   # PENDING enrol → expired if not approved; 0
 ```
 
 Also present under portal `[storage]` (`default.toml` / `development.toml`) so
-spawn/dev and `vcp-store key` with `VCP_ENVIRONMENT=development` share the
-same knob without reading `vcp-store.conf`.
+spawn accept path and the ops CLI (via portal layered config or `--blob-path`)
+share the same knob without reading `vcp-store.conf`.
 
 **Production boot guard:** if the helper is started with `--production` (or
 equivalent production mode) and `webauthn_required = false`, **refuse to
@@ -158,7 +158,7 @@ Pyramid invariant: production conf / boot path never allows the bypass.
    enrolments (`webauthn_pending_ttl_hours` → status `expired`), and
    `tmp/*.partial` (same TTL spirit).
 
-`vcp-store key …` subcommands run as a **separate invocation** that can
+`vcp-store pending-keys` / `list-keys` / `approve-key` subcommands run as a **separate invocation** that can
 write SQLite / read pending challenges outside the sandboxed accept loop as
 needed for ops.
 
@@ -198,12 +198,12 @@ webauthn_challenges
 fingerprint = hex(SHA-256(credential_id || public_key_cose))
 ```
 
-Displayed at E1; independently recomputed by `key approve` before ACTIVE
+Displayed at E1; independently recomputed by `approve-key` before ACTIVE
 insert.
 
 **Audit log** (under `blob_path`, not writable by UID 800): every challenge
 issued/consumed with full binding + summary; every verify success/failure;
-every revoke; every `key approve`. Ops SHOULD alert on `delete_org` and on
+every revoke; every `approve-key`. Ops SHOULD alert on `delete_org` and on
 bursts of `key_revoke`.
 
 ---
@@ -234,7 +234,7 @@ put_begin → write FD → put_prepare → (C1 ceremony) → put_commit+assertio
    **`summary`** (e.g. `release_put_commit id=42 sha256=abcd1234…`); returns
    `{digest, challenge, summary, rp_id, allowCredentials}`.
 3. **Ceremony (C1)** — portal **must display `summary`** prominently before
-   `credentials.get`; admin may cross-check via `vcp-store key pending`.
+   `credentials.get`; admin may cross-check via `vcp-store pending-keys`.
 4. **`put_commit`** — verify assertion: COSE, ACTIVE cred, UV required,
    challenge consume, binding including helper digest, sign_count policy
    (§6.7); then rename + SQLite upsert. Mirror upsert in `vcp` afterward.
@@ -281,7 +281,7 @@ delete is idempotent success after valid assertion.
 | Phase | Where | Effect |
 |-------|-------|--------|
 | E1 Web | `/admin/key` | `credentials.create`; PENDING in portal DB; show **fingerprint** + CLI instructions; admin records fingerprint out-of-band |
-| E2 CLI | Helper host | `vcp-store key approve` recomputes fingerprint from artifact; operator confirms OOB match; only then INSERT ACTIVE |
+| E2 CLI | Helper host | `vcp-store approve-key` recomputes fingerprint from artifact; operator confirms OOB match; only then INSERT ACTIVE |
 
 Without fingerprint match, approve **must fail**. Compromised `vcp` cannot
 complete E2.
@@ -299,7 +299,7 @@ normative in 1.2:
 
 1. Helper returns **canonical `summary`** with every challenge; portal UI
    **must** show it (not only a soft label invented by `vcp`).
-2. **`vcp-store key pending`** lists PENDING credentials awaiting E2
+2. **`vcp-store pending-keys`** lists PENDING credentials awaiting E2
    approve (fingerprint / label) **and** in-flight ceremony challenges with
    bindings / summaries for independent check on the helper host.
 3. **Helper audit log** under `blob_path` (out of UID 800 write reach).
@@ -370,7 +370,7 @@ WebAuthn.
 | Compromised `vcp` calls IPC without human | WebAuthn + UV on release finalize + deletes |
 | Compromised `vcp` swaps package after ceremony | Challenge bound to **helper digest** |
 | Compromised `vcp` substitutes PENDING enrol key | Fingerprint OOB check at CLI approve |
-| Compromised `vcp` deceives UI meaning (C1) | Canonical `summary` + `key pending` + audit; residual → ADR 002 / C2 |
+| Compromised `vcp` deceives UI meaning (C1) | Canonical `summary` + `pending-keys` + audit; residual → ADR 002 / C2 |
 | Compromised `vcp` revokes keys | Accepted residual (ADR 003) |
 | Delete after content replace | Digest binding + `object_modified` |
 | Synced passkey cloning | Not detected when counter stays 0; strict mode for HW keys (ADR 004) |
@@ -390,7 +390,7 @@ WebAuthn.
   the TTL become `status=expired` (row kept for ops history; not approvable).
   Runs on helper open and on KEY list / pending / approve / enrol paths.
 - **Breakglass (loss of all admin keys):** official path is physical/ops
-  access to the helper host and CLI `key approve` of new enrolments (E2),
+  access to the helper host and CLI `approve-key` of new enrolments (E2),
   after E1 from a trusted admin session or emergency procedure. **Every
   breakglass approve MUST be logged** in the helper audit log. Access to
   the helper host remains the root of trust for credential SoT.
@@ -400,7 +400,7 @@ WebAuthn.
 ## 11. Tests (1.2 additions on top of 1.1 pyramid)
 
 - UV missing → reject; summary present on challenge responses.
-- Fingerprint mismatch → `key approve` fails.
+- Fingerprint mismatch → `approve-key` fails.
 - `object_modified` when delete digest drifted.
 - Production boot refuses `webauthn_required=false`.
 - `webauthn_strict_sign_count=true` + counter regression → reject + audit.

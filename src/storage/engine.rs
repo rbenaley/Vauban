@@ -823,14 +823,14 @@ impl StorageEngine {
         db.list_pending_challenges()
     }
 
-    /// PENDING credentials awaiting E2 (`key approve`) — helper-host ops view.
+    /// PENDING credentials awaiting E2 (`approve-key`) — helper-host ops view.
     pub fn list_pending_credentials_cli(&self) -> Result<Vec<WebauthnCredentialRow>, StorageError> {
         let _ = self.expire_stale_pending();
         let db = self.meta.lock().expect("meta mutex");
         db.list_pending_credentials()
     }
 
-    /// All credentials (pending / active / expired / revoked) for `key list`.
+    /// All credentials (pending / active / expired / revoked) for `list-keys`.
     pub fn list_all_credentials_cli(&self) -> Result<Vec<WebauthnCredentialRow>, StorageError> {
         let _ = self.expire_stale_pending();
         let db = self.meta.lock().expect("meta mutex");

@@ -1,20 +1,17 @@
 //! `vcp-store` — sandboxed artifact helper (architecture 1.2).
 //!
 //! Production: load `vcp-store.conf` (`--config` or default beside portal
-//! config). Development spawn: parent passes `--blob-path` / `--listen` /
+//! config). Spawn accept path: parent passes `--blob-path` / `--listen` /
 //! quota flags (same UID, no peercred filter).
 //!
 //! Ops CLI (separate invocation, no accept loop):
-//!   vcp-store key pending   # PENDING credentials (E2) + in-flight challenges
-//!   vcp-store key list      # all credentials (pending / active / expired / revoked)
-//!   vcp-store key approve --fingerprint <hex>
+//!   vcp-store pending-keys                 # PENDING + in-flight challenges
+//!   vcp-store list-keys                    # pending / active / expired / revoked
+//!   vcp-store approve-key --fingerprint <hex>
 //!
-//! Config for the CLI (no accept loop):
-//! - `--blob-path PATH` — open that root (dev spawn SoT is usually
-//!   `<repo>/vcp-storage`)
+//! Config for the ops CLI:
+//! - `--blob-path PATH` — open that root
 //! - `--config PATH` — load a `vcp-store.conf`-shaped helper TOML
-//! - else if `VCP_ENVIRONMENT=development|testing` — portal layered
-//!   `[storage].blob_path` (same root the spawned helper uses)
 //! - else — production `vcp-store.conf` (`/var/db/vcp/storage`, …)
 
 use std::env;
@@ -46,8 +43,11 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("key") {
-        return run_key(&args[1..]);
+    match args.first().map(String::as_str) {
+        Some("pending-keys") | Some("list-keys") | Some("approve-key") => {
+            return run_ops_cli(&args);
+        }
+        _ => {}
     }
 
     let mut config_path: Option<PathBuf> = None;
@@ -274,30 +274,26 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn key_usage() -> String {
-    "usage: vcp-store key <pending|list|approve> [options]\n\
+fn ops_cli_usage() -> String {
+    "usage: vcp-store <pending-keys|list-keys|approve-key> [options]\n\
      \n\
      Commands:\n\
-       pending                 PENDING credentials (E2) + in-flight challenges\n\
-       list                    all credentials (pending / active / expired / revoked)\n\
-       approve --fingerprint   activate a PENDING credential (E2)\n\
+       pending-keys                 PENDING credentials (E2) + in-flight challenges\n\
+       list-keys                    all credentials (pending / active / expired / revoked)\n\
+       approve-key --fingerprint    activate a PENDING credential (E2)\n\
      \n\
-     Options: [--config PATH] [--blob-path PATH] [--fingerprint HEX]\n\
-     \n\
-     Development (spawn): set VCP_ENVIRONMENT=development so the CLI uses the\n\
-     same [storage].blob_path as `just run` (typically <repo>/vcp-storage),\n\
-     or pass --blob-path explicitly."
+     Options: [--config PATH] [--blob-path PATH] [--fingerprint HEX]"
         .into()
 }
 
-fn run_key(args: &[String]) -> Result<(), String> {
+fn run_ops_cli(args: &[String]) -> Result<(), String> {
     let mut config_path: Option<PathBuf> = None;
     let mut blob_path: Option<String> = None;
     let mut fingerprint: Option<String> = None;
     let cmd = args.first().map(String::as_str).unwrap_or("");
     let mut i = if cmd.is_empty() { 0 } else { 1 };
-    if !matches!(cmd, "pending" | "list" | "approve") {
-        return Err(key_usage());
+    if !matches!(cmd, "pending-keys" | "list-keys" | "approve-key") {
+        return Err(ops_cli_usage());
     }
     while i < args.len() {
         match args[i].as_str() {
@@ -313,7 +309,7 @@ fn run_key(args: &[String]) -> Result<(), String> {
                 i += 1;
                 fingerprint = args.get(i).cloned();
             }
-            other => return Err(format!("unknown key arg: {other}\n\n{}", key_usage())),
+            other => return Err(format!("unknown arg: {other}\n\n{}", ops_cli_usage())),
         }
         i += 1;
     }
@@ -322,20 +318,18 @@ fn run_key(args: &[String]) -> Result<(), String> {
     let engine = StorageEngine::open(&blob, cfg).map_err(|e| {
         format!(
             "{e}\n\
-             hint: key opens the helper blob root (meta.sqlite). Bare invoke without\n\
-             VCP_ENVIRONMENT loads production vcp-store.conf ({prod}).\n\
-             Local spawn: VCP_ENVIRONMENT=development {bin} key {cmd} …\n\
-             or: {bin} key {cmd} --blob-path <repo>/vcp-storage …",
+             hint: ops CLI opens the helper blob root (meta.sqlite). Pass \
+             --blob-path PATH or --config PATH, or rely on the default \
+             vcp-store.conf ({prod}).",
             prod = "/var/db/vcp/storage",
-            bin = "./target/debug/vcp-store",
-            cmd = cmd,
         )
     })?;
     match cmd {
-        "pending" => print_key_pending(&engine),
-        "list" => print_key_list(&engine),
-        "approve" => {
-            let fp = fingerprint.ok_or_else(|| "--fingerprint required for approve".to_string())?;
+        "pending-keys" => print_key_pending(&engine),
+        "list-keys" => print_key_list(&engine),
+        "approve-key" => {
+            let fp =
+                fingerprint.ok_or_else(|| "--fingerprint required for approve-key".to_string())?;
             engine.key_approve(&fp).map_err(|e| e.to_string())?;
             println!("activated fingerprint={fp}");
             Ok(())
@@ -378,7 +372,7 @@ fn print_key_pending(engine: &StorageEngine) -> Result<(), String> {
     let creds = engine
         .list_pending_credentials_cli()
         .map_err(|e| e.to_string())?;
-    println!("PENDING credentials (awaiting: key approve --fingerprint …)");
+    println!("PENDING credentials (awaiting: approve-key --fingerprint …)");
     let rows: Vec<Vec<String>> = creds
         .iter()
         .map(|row| {
@@ -559,23 +553,11 @@ fn load_key_cfg_with_env(
         Environment::Development | Environment::Testing => {
             let dir = Config::find_config_dir().map_err(|e| e.to_string())?;
             let portal = Config::load_with_environment(dir, env).map_err(|e| {
-                format!(
-                    "load portal config for key ({env}): {e}\n\
-                     hint: run from the VCP repo with config/, or pass --blob-path",
-                    env = env.as_str()
-                )
+                format!("load portal config: {e}\nhint: pass --blob-path or --config")
             })?;
             if portal.storage.blob_path.trim().is_empty() {
-                return Err(format!(
-                    "storage.blob_path empty under VCP_ENVIRONMENT={} (pass --blob-path)",
-                    env.as_str()
-                ));
+                return Err("storage.blob_path empty (pass --blob-path)".into());
             }
-            eprintln!(
-                "vcp-store key: using {} blob_path={}",
-                env.as_str(),
-                portal.storage.blob_path
-            );
             Ok(portal.storage)
         }
         Environment::Production => {

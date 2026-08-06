@@ -22,7 +22,7 @@ during incident response.
 ## Decision
 
 1. **Enrolment is two-phase:** E1 web creates a PENDING artifact and shows a
-   **credential fingerprint**; E2 `vcp-store key approve` on the helper host
+   **credential fingerprint**; E2 `vcp-store approve-key` on the helper host
    recomputes the fingerprint and activates the key only on out-of-band match.
    **Only E2** writes ACTIVE rows into helper SQLite.
 2. **Revocation is dashboard-driven** (plus helper IPC `key_revoke`) with

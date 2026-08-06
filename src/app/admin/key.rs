@@ -1,7 +1,7 @@
 //! Admin KEY security-key dashboard (`/admin/key`) — architecture 1.2 §6.5, ADR 003.
 //!
 //! Two-phase enrolment: E1 stages a PENDING credential here (fingerprint shown,
-//! recorded out-of-band); E2 activates it via `vcp-store key approve` on the
+//! recorded out-of-band); E2 activates it via `vcp-store approve-key` on the
 //! helper host. Revocation is dashboard-driven (IPC `key_revoke`).
 
 use serde::Deserialize;
@@ -99,7 +99,7 @@ fn short_fingerprint(fp: &str) -> String {
 
 /// CLI line copied from the PENDING table (same wording in every environment).
 fn approve_command(fp: &str) -> String {
-    format!("vcp-store key approve --fingerprint {fp}")
+    format!("vcp-store approve-key --fingerprint {fp}")
 }
 
 #[query_params]
@@ -232,7 +232,7 @@ async fn admin_key_page(cx: &Cx) -> Result {
                     class="vb-mono"
                     style="display: inline-block; max-width: 100%; box-sizing: border-box; margin: 0; padding: 4px 10px; background: #f7f8f6; border: 1px solid #e0e2de; border-radius: 4px; font-size: 12.5px; line-height: 1.5; color: #14171c; vertical-align: middle;"
                 >
-                    "vcp-store key approve"
+                    "vcp-store approve-key"
                 </span>
             </div>
         </div>
@@ -612,7 +612,7 @@ mod tests {
     fn approve_command_matches_cli_contract() {
         assert_eq!(
             approve_command("ff00"),
-            "vcp-store key approve --fingerprint ff00"
+            "vcp-store approve-key --fingerprint ff00"
         );
         assert!(
             !approve_command("aabb").contains("VCP_ENVIRONMENT"),
