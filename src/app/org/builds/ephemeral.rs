@@ -36,8 +36,10 @@ struct EphRedirectForm {
 #[derive(Debug, Clone)]
 pub(super) struct EphPanel {
     pub url: String,
-    /// Remaining seconds at render time (Topcoat `signal` seed for live countdown).
+    /// Remaining seconds at render time (SSR label seed).
     pub remaining_secs: f64,
+    /// Absolute unix expiry — client countdown syncs from `Date.now()` against this.
+    pub expires_at: i64,
 }
 
 pub(super) use crate::release_pkg::package_file_name;
@@ -102,6 +104,7 @@ pub(super) fn panel_from_row(
     EphPanel {
         url,
         remaining_secs,
+        expires_at: row.expires_at,
     }
 }
 

@@ -177,12 +177,17 @@ grep -n 'webauthn_strict_sign_count = false' "$STORE_CONF" >/dev/null \
   || fail "$STORE_CONF must default webauthn_strict_sign_count = false (ADR 004)"
 grep -n 'webauthn_user_verification = "required"' "$STORE_CONF" >/dev/null \
   || fail "$STORE_CONF must require userVerification"
-grep -n 'pending-keys\|list-keys\|approve-key' "$BIN" >/dev/null \
-  || fail "$BIN must implement pending-keys/list-keys/approve-key CLI (ADR 003)"
-grep -n 'list_pending_credentials_cli\|PENDING credentials' "$BIN" >/dev/null \
-  || fail "$BIN pending-keys must list PENDING credentials (E2 queue), not only challenges"
+grep -n 'pending-ops\|list-keys\|approve-key' "$BIN" >/dev/null \
+  || fail "$BIN must implement pending-ops/list-keys/approve-key CLI (ADR 003)"
+grep -n 'wants_help\|cli_usage\|--help' "$BIN" >/dev/null \
+  || fail "$BIN must accept -h/--help (cli_usage)"
+grep -n 'list_pending_credentials_cli\|Pending credentials' "$BIN" >/dev/null \
+  || fail "$BIN pending-ops must list Pending credentials (E2 queue), not only challenges"
 grep -n 'list_all_credentials_cli\|format_ascii_table' "$BIN" >/dev/null \
-  || fail "$BIN must table-format list-keys/pending-keys output"
+  || fail "$BIN must table-format list-keys/pending-ops output"
+if grep -n 'println!("binding' "$BIN" >/dev/null 2>&1; then
+  fail "$BIN pending-ops must not dump binding JSON (summary column only)"
+fi
 grep -n 'validate_production_webauthn\|webauthn_required=false' "$BIN" >/dev/null \
   || fail "$BIN must refuse production webauthn_required=false"
 grep -n 'credential_fingerprint\|summary' "$WEBAUTHN" >/dev/null \

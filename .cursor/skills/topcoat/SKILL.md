@@ -463,8 +463,8 @@ the smoke runbook (no headless browser in the pyramid).
   (proven). Prefer this over fragile `:class` when toggling visibility.
 - **Bool / number signals:** `signal x = false;` / `f64` for countdown;
   client `if` uses `.dehydrate()` under the hood.
-- **Ticks:** `@animationiteration=$(|_e| { … set … })` + tiny CSS
-  `animation` (see `.vb-eph-tick`).
+- **Ticks:** `.vb-eph-tick` CSS + `@animationiteration`; countdown math must
+  use `data-expires-at` + `Date.now()` (raw handler) — never `remaining -= 1`.
 - **Tabs without navigation:** one `signal use_curl = false` +
   `@click=$(|_e| use_curl.set(true/false))` + reactive cmd text /
   `:data-copy` — never `?tool=` round-trips.

@@ -87,11 +87,21 @@ fn inv_builds_concept_ephemeral_server_side() {
     assert!(builds.contains("vb-ephemeral"));
     assert!(builds.contains("EPHEMERAL DOWNLOAD LINK"));
     assert!(builds.contains("Generate new link"));
-    assert!(builds.contains("signal remaining"));
     assert!(builds.contains("signal use_curl"));
     assert!(builds.contains("use_curl.set(true)"));
     assert!(builds.contains("use_curl.set(false)"));
-    assert!(builds.contains("@animationiteration"));
+    assert!(
+        builds.contains("data-expires-at")
+            && builds.contains("Date.now()")
+            && builds.contains("@animationiteration"),
+        "ephemeral countdown must sync from data-expires-at + Date.now (CSS ticks pause off-focus)"
+    );
+    assert!(
+        !builds.contains("signal remaining")
+            && !builds.contains("remaining.set(next)")
+            && !builds.contains("let next = r - 1.0"),
+        "must not decrement a remaining signal on each animation tick"
+    );
     assert!(builds.contains("navigator.clipboard.writeText"));
     assert!(
         builds.contains("current_target.inner"),

@@ -5,7 +5,7 @@
 //! quota flags (same UID, no peercred filter).
 //!
 //! Ops CLI (separate invocation, no accept loop):
-//!   vcp-store pending-keys                 # PENDING + in-flight challenges
+//!   vcp-store pending-ops                  # pending credentials + in-flight challenges
 //!   vcp-store list-keys                    # pending / active / expired / revoked
 //!   vcp-store approve-key --fingerprint <hex>
 //!
@@ -43,8 +43,12 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
+    if wants_help(&args) {
+        print!("{}", cli_usage());
+        return Ok(());
+    }
     match args.first().map(String::as_str) {
-        Some("pending-keys") | Some("list-keys") | Some("approve-key") => {
+        Some("pending-ops") | Some("list-keys") | Some("approve-key") => {
             return run_ops_cli(&args);
         }
         _ => {}
@@ -117,7 +121,12 @@ fn run() -> Result<(), String> {
                 i += 1;
                 webauthn_origin = args.get(i).cloned();
             }
-            other => return Err(format!("unknown arg: {other}")),
+            other => {
+                return Err(format!(
+                    "unknown arg: {other}\n\n{}",
+                    cli_usage().trim_end()
+                ));
+            }
         }
         i += 1;
     }
@@ -274,15 +283,52 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+/// True when the invocation asked for help (`-h`, `--help`, or `help`).
+fn wants_help(args: &[String]) -> bool {
+    args.iter()
+        .any(|a| matches!(a.as_str(), "-h" | "--help" | "help"))
+}
+
+/// Full CLI usage for the daemon accept loop and the ops KEY commands.
+fn cli_usage() -> &'static str {
+    "usage: vcp-store [options]\n\
+     \n\
+     Sandboxed artifact helper. With no ops command, loads vcp-store.conf\n\
+     (or --config) and accepts Unix SEQPACKET connections on --listen.\n\
+     \n\
+     Daemon options:\n\
+       --config PATH                 helper TOML (default: beside portal config)\n\
+       --blob-path PATH              absolute blob root\n\
+       --listen PATH                 Unix SEQPACKET socket path\n\
+       --spawn-mode                  parent-spawned accept path (no peercred filter)\n\
+       --production                  require expected_peer_uid / --expected-uid\n\
+       --expected-uid UID            peercred allow-list (socket mode)\n\
+       --max-artifact-bytes N\n\
+       --max-image-bytes N\n\
+       --max-concurrent-uploads N\n\
+       --max-images-per-org N\n\
+       --upload-ttl-secs N\n\
+       --webauthn-required true|false\n\
+       --webauthn-origin URL\n\
+     \n\
+     Ops CLI (separate invocation; opens meta.sqlite under the blob root):\n\
+       vcp-store pending-ops [--config PATH] [--blob-path PATH]\n\
+       vcp-store list-keys [--config PATH] [--blob-path PATH]\n\
+       vcp-store approve-key --fingerprint HEX [--config PATH] [--blob-path PATH]\n\
+     \n\
+     Help: -h, --help, help\n"
+}
+
 fn ops_cli_usage() -> String {
-    "usage: vcp-store <pending-keys|list-keys|approve-key> [options]\n\
+    "usage: vcp-store <pending-ops|list-keys|approve-key> [options]\n\
      \n\
      Commands:\n\
-       pending-keys                 PENDING credentials (E2) + in-flight challenges\n\
+       pending-ops                  pending credentials (E2) + in-flight challenges\n\
        list-keys                    all credentials (pending / active / expired / revoked)\n\
        approve-key --fingerprint    activate a PENDING credential (E2)\n\
      \n\
-     Options: [--config PATH] [--blob-path PATH] [--fingerprint HEX]"
+     Options: [--config PATH] [--blob-path PATH] [--fingerprint HEX]\n\
+     Help: -h, --help"
         .into()
 }
 
@@ -292,7 +338,7 @@ fn run_ops_cli(args: &[String]) -> Result<(), String> {
     let mut fingerprint: Option<String> = None;
     let cmd = args.first().map(String::as_str).unwrap_or("");
     let mut i = if cmd.is_empty() { 0 } else { 1 };
-    if !matches!(cmd, "pending-keys" | "list-keys" | "approve-key") {
+    if !matches!(cmd, "pending-ops" | "list-keys" | "approve-key") {
         return Err(ops_cli_usage());
     }
     while i < args.len() {
@@ -325,7 +371,7 @@ fn run_ops_cli(args: &[String]) -> Result<(), String> {
         )
     })?;
     match cmd {
-        "pending-keys" => print_key_pending(&engine),
+        "pending-ops" => print_pending_ops(&engine),
         "list-keys" => print_key_list(&engine),
         "approve-key" => {
             let fp =
@@ -364,15 +410,16 @@ fn format_revoked_at(revoked_at: Option<i64>, activated_at: Option<i64>) -> Stri
     }
 }
 
-/// Print PENDING credentials (E2 approve queue) then in-flight ceremony challenges
-/// (architecture 1.2 §6.6 cross-check).
-fn print_key_pending(engine: &StorageEngine) -> Result<(), String> {
+/// Print pending credentials (E2 approve queue) then in-flight ceremony challenges
+/// (architecture 1.2 §6.6 cross-check). Binding JSON stays in SQLite; the CLI
+/// surfaces the canonical `summary` column only.
+fn print_pending_ops(engine: &StorageEngine) -> Result<(), String> {
     use vcp::storage::webauthn::credential_fingerprint;
 
     let creds = engine
         .list_pending_credentials_cli()
         .map_err(|e| e.to_string())?;
-    println!("PENDING credentials (awaiting: approve-key --fingerprint …)");
+    println!("Pending credentials (awaiting: approve-key --fingerprint …)");
     let rows: Vec<Vec<String>> = creds
         .iter()
         .map(|row| {
@@ -406,12 +453,6 @@ fn print_key_pending(engine: &StorageEngine) -> Result<(), String> {
         })
         .collect();
     print_ascii_table(&["challenge_id", "op", "summary", "expires_at"], &ch_rows);
-    if !challenges.is_empty() {
-        println!();
-        for row in &challenges {
-            println!("binding {}: {}", row.challenge_id, row.binding_json);
-        }
-    }
     Ok(())
 }
 
@@ -581,8 +622,8 @@ fn absolute_blob_path(blob: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        absolute_blob_path, cred_display_status, format_activated_at, format_ascii_table,
-        format_revoked_at, load_key_cfg_with_env,
+        absolute_blob_path, cli_usage, cred_display_status, format_activated_at,
+        format_ascii_table, format_revoked_at, load_key_cfg_with_env, wants_help,
     };
     use std::path::PathBuf;
     use vcp::config::Environment;
@@ -665,5 +706,36 @@ mod tests {
         let rel = absolute_blob_path("relative-blob").unwrap();
         assert!(rel.ends_with("relative-blob"));
         assert!(PathBuf::from(&rel).is_absolute());
+    }
+
+    #[test]
+    fn wants_help_recognizes_common_forms() {
+        assert!(wants_help(&["--help".into()]));
+        assert!(wants_help(&["-h".into()]));
+        assert!(wants_help(&["help".into()]));
+        assert!(wants_help(&[
+            "approve-key".into(),
+            "--fingerprint".into(),
+            "ab".into(),
+            "--help".into(),
+        ]));
+        assert!(!wants_help(&["pending-ops".into()]));
+        assert!(!wants_help(&["--config".into(), "x".into()]));
+    }
+
+    #[test]
+    fn cli_usage_covers_daemon_and_ops() {
+        let u = cli_usage();
+        assert!(u.contains("--spawn-mode"));
+        assert!(u.contains("pending-ops"));
+        assert!(u.contains("list-keys"));
+        assert!(u.contains("approve-key"));
+        assert!(u.contains("--help"));
+        // Keep usage free of local-dev recipes (same contract as storage
+        // invariants on this file). Build the needles so the forbidden
+        // literals never appear as contiguous source text here.
+        let debug_bin = format!("./{}/{}/{}", "target", "debug", "vcp-store");
+        let env_dev = format!("{}_ENVIRONMENT={}", "VCP", "development");
+        assert!(!u.contains(&debug_bin) && !u.contains(&env_dev));
     }
 }

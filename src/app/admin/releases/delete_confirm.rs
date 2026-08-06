@@ -56,7 +56,7 @@ async fn admin_releases_delete_confirm_page(cx: &Cx) -> Result {
             <h1 class="vb-title">"Confirm release delete"</h1>
             <p class="vb-lead">
                 "Helper-issued summary (verify with "
-                <code>"vcp-store pending-keys"</code>
+                <code>"vcp-store pending-ops"</code>
                 "):"
             </p>
             <div class="vb-panel" style="padding: 24px;">

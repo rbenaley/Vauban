@@ -22,7 +22,7 @@ SQLite `meta.sqlite`; Postgres `storage_objects` = portal mirror.
 
 | Review | 1.2 change |
 |--------|------------|
-| §3.1 Presence vs consent | Canonical challenge `summary`; UI must display it; `vcp-store pending-keys`; helper audit log under `blob_path`; ops alerts on `delete_org` / revoke bursts. C2 deferred → ADR 002 |
+| §3.1 Presence vs consent | Canonical challenge `summary`; UI must display it; `vcp-store pending-ops`; helper audit log under `blob_path`; ops alerts on `delete_org` / revoke bursts. C2 deferred → ADR 002 |
 | §3.4 E1→E2 substitution | Mandatory credential **fingerprint** at E1 and CLI approve |
 | §3.3 userVerification | `webauthn_user_verification = "required"`; UV flag checked at verify |
 | §3.6 Bypass in prod | Boot refuses `webauthn_required=false` when production |
@@ -85,7 +85,7 @@ SQLite `meta.sqlite`; Postgres `storage_objects` = portal mirror.
 Helper-host CLI:
 
 ```text
-vcp-store pending-keys          # PENDING credentials (E2) + in-flight challenges/summaries
+vcp-store pending-ops          # pending credentials (E2) + in-flight challenges/summaries
 vcp-store list-keys             # all credentials (pending / active / revoked)
 vcp-store approve-key …        # E2: activate credential after fingerprint match
 ```
@@ -158,7 +158,7 @@ Pyramid invariant: production conf / boot path never allows the bypass.
    enrolments (`webauthn_pending_ttl_hours` → status `expired`), and
    `tmp/*.partial` (same TTL spirit).
 
-`vcp-store pending-keys` / `list-keys` / `approve-key` subcommands run as a **separate invocation** that can
+`vcp-store pending-ops` / `list-keys` / `approve-key` subcommands run as a **separate invocation** that can
 write SQLite / read pending challenges outside the sandboxed accept loop as
 needed for ops.
 
@@ -234,7 +234,7 @@ put_begin → write FD → put_prepare → (C1 ceremony) → put_commit+assertio
    **`summary`** (e.g. `release_put_commit id=42 sha256=abcd1234…`); returns
    `{digest, challenge, summary, rp_id, allowCredentials}`.
 3. **Ceremony (C1)** — portal **must display `summary`** prominently before
-   `credentials.get`; admin may cross-check via `vcp-store pending-keys`.
+   `credentials.get`; admin may cross-check via `vcp-store pending-ops`.
 4. **`put_commit`** — verify assertion: COSE, ACTIVE cred, UV required,
    challenge consume, binding including helper digest, sign_count policy
    (§6.7); then rename + SQLite upsert. Mirror upsert in `vcp` afterward.
@@ -299,9 +299,10 @@ normative in 1.2:
 
 1. Helper returns **canonical `summary`** with every challenge; portal UI
    **must** show it (not only a soft label invented by `vcp`).
-2. **`vcp-store pending-keys`** lists PENDING credentials awaiting E2
+2. **`vcp-store pending-ops`** lists pending credentials awaiting E2
    approve (fingerprint / label) **and** in-flight ceremony challenges with
-   bindings / summaries for independent check on the helper host.
+   canonical `summary` for independent check on the helper host
+   (`binding_json` stays in SQLite; not dumped by the CLI).
 3. **Helper audit log** under `blob_path` (out of UID 800 write reach).
 
 Hardening to a separate ceremony channel (**C2**) is deferred
@@ -370,7 +371,7 @@ WebAuthn.
 | Compromised `vcp` calls IPC without human | WebAuthn + UV on release finalize + deletes |
 | Compromised `vcp` swaps package after ceremony | Challenge bound to **helper digest** |
 | Compromised `vcp` substitutes PENDING enrol key | Fingerprint OOB check at CLI approve |
-| Compromised `vcp` deceives UI meaning (C1) | Canonical `summary` + `pending-keys` + audit; residual → ADR 002 / C2 |
+| Compromised `vcp` deceives UI meaning (C1) | Canonical `summary` + `pending-ops` + audit; residual → ADR 002 / C2 |
 | Compromised `vcp` revokes keys | Accepted residual (ADR 003) |
 | Delete after content replace | Digest binding + `object_modified` |
 | Synced passkey cloning | Not detected when counter stays 0; strict mode for HW keys (ADR 004) |

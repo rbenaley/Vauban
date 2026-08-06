@@ -159,8 +159,12 @@ grep -n 'signal use_curl' "$BUILDS" >/dev/null \
 if grep -nE 'tool=fetch|tool=curl|\?tool=' "$BUILDS" >/dev/null; then
   fail "$BUILDS must not navigate for fetch/cURL tabs"
 fi
-grep -n 'signal remaining' "$BUILDS" >/dev/null \
-  || fail "$BUILDS must use Topcoat signal remaining for countdown"
+grep -n 'data-expires-at' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must seed data-expires-at for wall-clock countdown"
+grep -n 'Date.now()' "$BUILDS" >/dev/null \
+  || fail "$BUILDS countdown must use Date.now() (CSS ticks pause off-focus)"
+grep -n 'signal remaining\|remaining.set(next)\|r - 1.0' "$BUILDS" >/dev/null \
+  && fail "$BUILDS must not decrement a remaining signal on each tick" || true
 grep -n '@animationiteration' "$BUILDS" >/dev/null \
   || fail "$BUILDS must tick countdown via Topcoat @animationiteration"
 grep -n 'navigator.clipboard.writeText' "$BUILDS" >/dev/null \

@@ -130,7 +130,8 @@ Requires at least one ACTIVE KEY key (see ops breakglass / KEY enrol).
 1. Admin → Publish release with package. Confirm redirect to
    `/admin/releases/confirm?token=…` showing **helper** summary
    (`release_put_commit id=… sha256=…`).
-2. On helper host: `vcp-store pending-keys` shows the same summary/binding.
+2. On helper host: `vcp-store pending-ops` shows the same canonical `summary`
+   in the in-flight challenges table.
 3. Complete WebAuthn (UV required). Release becomes PUBLISHED; download
    matches digest.
 4. Negative: abort ceremony / refuse UV → release stays HIDDEN; no rename.
@@ -152,16 +153,16 @@ Accept the self-signed cert for `localhost` if prompted.
    `active_page`); confirm Next when more than four keys exist.
 2. **Empty / whitespace-only key label** (leave label blank or spaces, click
    Create): must **not** open the authenticator dialog; banner / redirect
-   `err=label`. No PENDING row in `vcp-store pending-keys`.
+   `err=label`. No PENDING row in `vcp-store pending-ops`.
 3. **PENDING TTL** (`webauthn_pending_ttl_hours`, default 24): an unapproved
    PENDING older than the TTL must show as `expired` in `list-keys` and
-   leave the `pending-keys` queue; `approve-key` for that fingerprint
+   leave the `pending-ops` queue; `approve-key` for that fingerprint
    fails closed (`webauthn_expired`).
 4. Activate (E2) with OOB fingerprint match:
    `vcp-store approve-key --fingerprint <hex>` (pass `--blob-path` or
    `--config` when not using the default `vcp-store.conf`).
 5. Cross-check listing:
-   - `vcp-store pending-keys` shows the PENDING credential (not only challenges).
+   - `vcp-store pending-ops` shows the pending credential (not only challenges).
    - After approve: `vcp-store list-keys` shows ACTIVE; pending queue empty.
 6. Dashboard lists ACTIVE; revoke from dashboard (no CLI revoke).
 7. Wrong fingerprint on approve → fail closed; no ACTIVE insert.

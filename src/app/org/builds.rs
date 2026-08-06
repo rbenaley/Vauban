@@ -429,51 +429,41 @@ async fn build_download_actions(cx: &Cx, actions: BuildDownloadActions) -> Resul
 #[component]
 async fn ephemeral_link_panel(cx: &Cx, panel: EphPanel, chrome: EphPanelChrome) -> Result {
     let url = panel.url;
-    let remaining_secs = panel.remaining_secs;
+    let expires_at = panel.expires_at;
     let EphPanelChrome {
         eph_action,
         revoke_action,
         channel,
     } = chrome;
-    let whole_secs = remaining_secs as i64;
+    let whole_secs = panel.remaining_secs.max(0.0) as i64;
     let initially_live = whole_secs > 0;
     let initially_warn = whole_secs > 0 && whole_secs < 60;
-    let init_mins = (whole_secs / 60) as f64;
-    let init_secs = (whole_secs % 60) as f64;
-    let remaining_secs = whole_secs as f64;
+    let now_seed = expires_at.saturating_sub(whole_secs);
+    let (countdown_label, _, _) = self::ephemeral::format_countdown(expires_at, now_seed);
+    let countdown_style = if !initially_live || initially_warn {
+        "color:#b5403a"
+    } else {
+        "color:#117a6b"
+    };
+    let expires_at_attr = expires_at.to_string();
+    let live_display = if initially_live { "" } else { "display:none" };
+    let expired_display = if initially_live { "display:none" } else { "" };
     let fetch_cmd = format!("fetch {url}");
     let curl_cmd = format!("curl -fLO {url}");
 
     view! {
         cx =>
-        signal remaining = remaining_secs;
-        signal mins = init_mins;
-        signal secs = init_secs;
-        signal live = initially_live;
-        signal warn = initially_warn;
         signal use_curl = false;
 
-        <div class="vb-ephemeral">
+        <div class="vb-ephemeral" data-expires-at=(expires_at_attr.clone())>
             <div class="vb-ephemeral-bar">
                 <div class="vb-ephemeral-title">"EPHEMERAL DOWNLOAD LINK"</div>
                 <div class="vb-ephemeral-bar-actions">
                     <span
                         class="vb-mono vb-ephemeral-countdown"
-                        :style=$(if live.get() {
-                            if warn.get() { "color:#b5403a" } else { "color:#117a6b" }
-                        } else {
-                            "color:#b5403a"
-                        })
+                        style=(countdown_style)
                     >
-                        $(if live.get() { "expires in " } else { "expired" })
-                        $(if live.get() { mins.get() } else { 0.0 })
-                        $(if live.get() { ":" } else { "" })
-                        $(if live.get() {
-                            if secs.get() < 10.0 { "0" } else { "" }
-                        } else {
-                            ""
-                        })
-                        $(if live.get() { secs.get() } else { 0.0 })
+                        (countdown_label.clone())
                     </span>
                     <form method="POST" action=(revoke_action.clone())>
                         if !channel.is_empty() {
@@ -490,39 +480,16 @@ async fn ephemeral_link_panel(cx: &Cx, panel: EphPanel, chrome: EphPanelChrome) 
                 </div>
             </div>
 
+            // Wall-clock sync: CSS animations pause off-focus, so never remaining -= 1.
+            // `$()` cannot call Date.now(); raw handler reads data-expires-at instead.
             <span
                 class="vb-eph-tick"
                 aria-hidden="true"
-                :style=$(if live.get() { "" } else { "display:none" })
-                @animationiteration=$(|_e| {
-                    let r = remaining.get();
-                    if r > 0.0 {
-                        let next = r - 1.0;
-                        remaining.set(next);
-                        let s = secs.get();
-                        if s > 0.0 {
-                            secs.set(s - 1.0);
-                        } else {
-                            secs.set(59.0);
-                            let m = mins.get();
-                            if m > 0.0 {
-                                mins.set(m - 1.0);
-                            }
-                        }
-                        if next < 60.0 {
-                            warn.set(true);
-                        }
-                        if next <= 0.0 {
-                            live.set(false);
-                        }
-                    }
-                })
+                style=(live_display)
+                @animationiteration="(e) => { const tick = e.current_target.inner; const root = tick.closest('.vb-ephemeral'); const rem = Math.max(0, Number(root.getAttribute('data-expires-at')) - Math.floor(Date.now() / 1000)); const label = root.querySelector('.vb-ephemeral-countdown'); const body = root.querySelector('.vb-ephemeral-body'); const expired = root.querySelector('.vb-ephemeral-expired'); if (rem <= 0) { if (label) { label.textContent = 'expired'; label.style.color = '#b5403a'; } if (body) body.style.display = 'none'; if (expired) expired.style.display = ''; tick.style.display = 'none'; return; } const m = Math.floor(rem / 60); const s = rem % 60; if (label) { label.textContent = 'expires in ' + m + ':' + (s < 10 ? '0' : '') + s; label.style.color = rem < 60 ? '#b5403a' : '#117a6b'; } if (body) body.style.display = ''; if (expired) expired.style.display = 'none'; }"
             ></span>
 
-            <div
-                class="vb-ephemeral-body"
-                :style=$(if live.get() { "" } else { "display:none" })
-            >
+            <div class="vb-ephemeral-body" style=(live_display)>
                 <div class="vb-ephemeral-url-row">
                     <div class="vb-ephemeral-url vb-mono">(url.clone())</div>
                     <button
@@ -588,10 +555,7 @@ async fn ephemeral_link_panel(cx: &Cx, panel: EphPanel, chrome: EphPanelChrome) 
                 </div>
             </div>
 
-            <div
-                class="vb-ephemeral-expired"
-                :style=$(if live.get() { "display:none" } else { "" })
-            >
+            <div class="vb-ephemeral-expired" style=(expired_display)>
                 <div class="vb-ephemeral-expired-copy">
                     "This link has expired. Tokens are valid for 5 minutes only."
                 </div>

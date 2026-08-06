@@ -212,9 +212,14 @@ fn inv_webauthn_12_and_adrs_pinned() {
     }
 
     let bin = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/vcp_store.rs"));
-    assert!(bin.contains("pending-keys"));
+    assert!(bin.contains("pending-ops"));
     assert!(bin.contains("list-keys"));
     assert!(bin.contains("approve-key"));
+    assert!(bin.contains("Pending credentials"));
+    assert!(!bin.contains("PENDING credentials"));
+    assert!(!bin.contains("println!(\"binding"));
+    assert!(bin.contains("wants_help"));
+    assert!(bin.contains("cli_usage"));
     assert!(bin.contains("load_key_cfg_with_env"));
     assert!(bin.contains("VCP_ENVIRONMENT"));
     assert!(
@@ -305,7 +310,7 @@ fn inv_webauthn_12_and_adrs_pinned() {
         "/src/app/admin/releases/confirm.rs"
     ));
     assert!(confirm.contains("vcp-webauthn-summary"));
-    assert!(confirm.contains("vcp-store pending-keys"));
+    assert!(confirm.contains("vcp-store pending-ops"));
 }
 
 /// §6.5 / ADR 003 dashboard contract: fingerprint at E1, CLI approve

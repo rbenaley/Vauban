@@ -165,7 +165,7 @@ Do **not** expect macOS CI to exercise `cap_enter` or jail.
 | Conf knobs | `vcp-store.conf`: `webauthn_required`, `webauthn_user_verification=required`, `webauthn_strict_sign_count` (default **false**, ADR 004), RP id/origin, challenge TTL |
 | Production boot | `--production` + `webauthn_required=false` → **refuse to start** |
 | Audit log | `blob_path/audit/webauthn.log` (JSONL; UID 801 only) |
-| Pending queue | `vcp-store pending-keys` — PENDING credentials (E2) + in-flight ceremony challenges (table output) |
+| Pending queue | `vcp-store pending-ops` — pending credentials (E2) + in-flight ceremony challenges (table output) |
 | List keys | `vcp-store list-keys` — all credentials (pending / active / expired / revoked) |
 | PENDING TTL | `webauthn_pending_ttl_hours` (default 24) — unapproved PENDING → `expired`; set in `vcp-store.conf` and portal `[storage]` |
 | Activate key | `vcp-store approve-key --fingerprint <hex>` (fingerprint OOB match). Pass `--blob-path` / `--config` when not using the default `vcp-store.conf` |

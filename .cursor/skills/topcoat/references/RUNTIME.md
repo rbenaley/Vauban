@@ -88,8 +88,11 @@ swapped; keep a static `class=` only if you understand bind replaces it.
 
 ### Countdown / interval without `setInterval`
 
-CSS animation + `@animationiteration` (see builds ephemeral `.vb-eph-tick`):
-one tick per second, update `remaining` / `mins` / `secs` / `live` signals.
+CSS animation + `@animationiteration` (`.vb-eph-tick`) paces the UI about
+once per second **while visible**. Animations pause off-focus, so never
+`remaining -= 1`. Seed `data-expires-at` (unix) and recompute with
+`Date.now()` in a raw handler ( `$()` cannot call `Date.now` ). See builds
+ephemeral panel.
 
 ## Shards and path params
 
