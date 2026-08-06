@@ -374,7 +374,8 @@ async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
         .await
         {
             Ok(t) => t,
-            Err(_) => {
+            Err(err) => {
+                crate::storage::log::portal_attach_failed("org_reply_screenshots", &err);
                 return Ok(see_other(&format!("/{org_slug}/issues/{key}?err=attach")));
             }
         }

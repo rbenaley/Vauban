@@ -114,7 +114,7 @@ async fn acme_workflow(
         let key_auth = challenge.key_authorization();
         let key_auth_digest = Sha256::digest(key_auth.as_str().as_bytes());
         let (challenge_cert_der, challenge_key_der) =
-            generate_challenge_cert(&domain, key_auth_digest.as_slice())?;
+            generate_challenge_cert(&domain, &key_auth_digest)?;
 
         let certified = certified_key_from_der(&challenge_cert_der, &challenge_key_der)
             .map_err(|e| anyhow::anyhow!("challenge cert: {e}"))?;

@@ -224,4 +224,28 @@ fi
 grep -n 'STORE_ALERT_TARGET\|vcp-store::alert' "$ENGINE" "$WEBAUTHN" >/dev/null \
   || fail "helper ALERTs must use STORE_ALERT_TARGET / vcp-store::alert"
 
+# Ops logging: helper must WARN on FD handoff / op failures; portal must not
+# swallow storage denials silently (Capsicum ENOTCAPABLE is otherwise invisible).
+LOG="src/storage/log.rs"
+SERVER="src/storage/server.rs"
+CLIENT="src/storage/client.rs"
+[[ -f "$LOG" ]] || fail "missing $LOG"
+grep -n 'fd_handoff_failed\|op_failed\|wire_failed\|portal_storage_failed' "$LOG" >/dev/null \
+  || fail "$LOG must define helper/portal storage log helpers"
+grep -n 'STORE_LOG_TARGET' "$LOG" >/dev/null \
+  || fail "$LOG helper lines must use STORE_LOG_TARGET (vcp-store)"
+grep -n 'fd_handoff_failed\|open_abs_for_handoff' "$SERVER" >/dev/null \
+  || fail "$SERVER must WARN on SCM_RIGHTS absolute-path open failures"
+grep -n 'op_failed\|reply_engine_err' "$SERVER" >/dev/null \
+  || fail "$SERVER must WARN on engine/IPC op failures"
+grep -n 'ipc_denied\|portal_storage_failed' "$CLIENT" >/dev/null \
+  || fail "$CLIENT must WARN on denied IPC responses"
+grep -n 'portal_storage_failed\|admin_key_enrol' src/app/admin/key.rs >/dev/null \
+  || fail "admin KEY enrol must WARN before err=enrol redirect"
+grep -n 'portal_attach_failed' \
+  src/app/admin/issues/issue_key.rs \
+  src/app/org/issues/issue_key.rs \
+  src/app/org/issues.rs >/dev/null \
+  || fail "issue screenshot denial paths must WARN before err=attach redirect"
+
 echo "check_storage: OK"

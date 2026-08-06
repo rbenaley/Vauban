@@ -536,7 +536,10 @@ async fn admin_key_enrol(cx: &Cx, Form(form): Form<EnrolForm>) -> Result<SeeOthe
     let store = storage(cx);
     match store.key_enrol_stage(&cred_id, &cose, &staff.user.id.to_string(), label, false) {
         Ok(fp) => Ok(see_other(&format!("/admin/key?enrolled={fp}"))),
-        Err(_) => Ok(see_other("/admin/key?err=enrol")),
+        Err(err) => {
+            crate::storage::log::portal_storage_failed("admin_key_enrol", &err);
+            Ok(see_other("/admin/key?err=enrol"))
+        }
     }
 }
 

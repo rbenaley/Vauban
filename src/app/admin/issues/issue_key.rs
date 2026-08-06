@@ -351,7 +351,8 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
         .await
         {
             Ok(t) => t,
-            Err(_) => {
+            Err(err) => {
+                crate::storage::log::portal_attach_failed("admin_reply_screenshots", &err);
                 let sep = if detail.contains('?') { '&' } else { '?' };
                 return Ok(see_other(&format!("{detail}{sep}err=attach")));
             }

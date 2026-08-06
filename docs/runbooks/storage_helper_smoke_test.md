@@ -171,11 +171,34 @@ Accept the self-signed cert for `localhost` if prompted.
 | **Pass** | Blank label fails closed; stale PENDING becomes `expired`; pending/list reflect E2 queue; only CLI approve activates; revoke is dashboard-only (ADR 003). |
 | **Fail** | Empty label reaches `credentials.create`, stale PENDING stays approvable, pending omits staged keys, portal-only activate, or approve without fingerprint match. |
 
+## H -- Storage denial logging (Pass / Fail)
+
+When an artifact / issue-image upload fails (including FreeBSD Capsicum
+`ENOTCAPABLE` on absolute-path SCM_RIGHTS open), operators must see
+**WARN/ERROR** lines — not a silent UI redirect.
+
+1. Set `RUST_LOG=vcp=debug,vcp-store=debug` (or at least `warn`) on both
+   portal and helper consoles.
+2. Force a known denial (issue reply with screenshot while helper is
+   Capsicum-constrained, or stop the helper mid-flight).
+3. Expect helper lines such as:
+   - `WARN vcp-store … failed to open path for SCM_RIGHTS handoff`
+   - `WARN vcp-store … storage op failed` with `code=io` (or other closed code)
+4. Expect portal lines such as:
+   - `WARN … portal storage call failed` with `surface=put_begin` (or op)
+   - `WARN … portal attach failed` with `surface=…_screenshots` on issue routes
+
+| Result | Criteria |
+|--------|----------|
+| **Pass** | Denial produces WARN on helper and portal; UI may still soft-redirect (`err=attach`). |
+| **Fail** | UI fails with empty console (no `vcp-store` / portal storage WARN). |
+
 ## Related automated coverage
 
 | Layer | Filter / artifact |
 |-------|-------------------|
 | Invariants | `storage_invariants_`, `scripts/check_storage.sh` |
-| Proptest | `storage_proptest` |
-| Battle | `storage_battle_` |
-| E2E | `storage_e2e_` |
+| Proptest | `storage_proptest`, `storage::log` proptest |
+| Battle | `storage_battle_`, `storage::log` battle |
+| E2E | `storage_e2e_`, `open_abs_for_handoff` missing-path |
+| Smoke | This runbook §H (logging) |

@@ -17,7 +17,18 @@ use super::engine::StorageEngine;
 use super::error::{StorageError, StorageErrorCode};
 use super::ids::StorageScope;
 use super::ipc::{encode_request, recv_fd, recv_response, send_bytes};
+use super::log as store_log;
 use super::protocol::{StorageRequest, StorageResponse};
+
+/// Map a denied IPC response to [`StorageError`] and WARN on the portal.
+fn ipc_denied(op: &str, resp: &StorageResponse) -> StorageError {
+    let code = StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
+        .unwrap_or(StorageErrorCode::Io);
+    let detail = resp.err.clone().unwrap_or_else(|| op.to_owned());
+    let err = StorageError::new(code, detail);
+    store_log::portal_storage_failed(op, &err);
+    err
+}
 
 enum Backend {
     Ipc {
@@ -430,11 +441,7 @@ impl StorageClient {
                 if resp.ok {
                     Ok(())
                 } else {
-                    Err(StorageError::new(
-                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
-                            .unwrap_or(StorageErrorCode::Io),
-                        "put_abort",
-                    ))
+                    Err(ipc_denied("put_abort", &resp))
                 }
             }
         }
@@ -620,11 +627,7 @@ impl StorageClient {
                 if resp.ok {
                     Ok(())
                 } else {
-                    Err(StorageError::new(
-                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
-                            .unwrap_or(StorageErrorCode::Io),
-                        "delete",
-                    ))
+                    Err(ipc_denied("delete", &resp))
                 }
             }
         }
@@ -654,11 +657,7 @@ impl StorageClient {
                 if resp.ok {
                     Ok(resp.deleted.unwrap_or(0))
                 } else {
-                    Err(StorageError::new(
-                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
-                            .unwrap_or(StorageErrorCode::Io),
-                        "delete_org",
-                    ))
+                    Err(ipc_denied("delete_org", &resp))
                 }
             }
         }
@@ -697,11 +696,7 @@ impl StorageClient {
                 if resp.ok {
                     Ok(resp.fingerprint.unwrap_or_default())
                 } else {
-                    Err(StorageError::new(
-                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
-                            .unwrap_or(StorageErrorCode::Io),
-                        "enrol_stage",
-                    ))
+                    Err(ipc_denied("enrol_stage", &resp))
                 }
             }
         }
@@ -730,11 +725,7 @@ impl StorageClient {
                     let total = resp.size.unwrap_or(0) as usize;
                     Ok((resp.summary.unwrap_or_else(|| "[]".into()), total))
                 } else {
-                    Err(StorageError::new(
-                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
-                            .unwrap_or(StorageErrorCode::Io),
-                        "key_list",
-                    ))
+                    Err(ipc_denied("key_list", &resp))
                 }
             }
         }
@@ -759,11 +750,7 @@ impl StorageClient {
                 } else if resp.err.as_deref() == Some("not_found") {
                     Ok(None)
                 } else {
-                    Err(StorageError::new(
-                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
-                            .unwrap_or(StorageErrorCode::Io),
-                        "key_get",
-                    ))
+                    Err(ipc_denied("key_get", &resp))
                 }
             }
         }
@@ -785,11 +772,7 @@ impl StorageClient {
                 if resp.ok {
                     Ok(())
                 } else {
-                    Err(StorageError::new(
-                        StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
-                            .unwrap_or(StorageErrorCode::Io),
-                        "revoke",
-                    ))
+                    Err(ipc_denied("revoke", &resp))
                 }
             }
         }
@@ -811,11 +794,7 @@ impl StorageClient {
     fn roundtrip_with_fd(&self, req: StorageRequest) -> Result<(String, File), StorageError> {
         let (resp, file) = self.roundtrip_with_fd_file(req)?;
         if !resp.ok {
-            return Err(StorageError::new(
-                StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
-                    .unwrap_or(StorageErrorCode::Io),
-                "put_begin",
-            ));
+            return Err(ipc_denied("put_begin", &resp));
         }
         let upload_id = resp
             .upload_id
@@ -838,11 +817,7 @@ impl StorageClient {
         send_bytes(&mut stream, &bytes)?;
         let resp = recv_response(&mut stream)?;
         if !resp.ok {
-            return Err(StorageError::new(
-                StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
-                    .unwrap_or(StorageErrorCode::Io),
-                resp.err.unwrap_or_else(|| "error".into()),
-            ));
+            return Err(ipc_denied("put_begin", &resp));
         }
         let owned: OwnedFd = recv_fd(&stream)?;
         let file = File::from(owned);
@@ -863,22 +838,14 @@ pub struct PrepareClientOk {
 
 fn ok_stat(resp: StorageResponse) -> Result<(u64, String), StorageError> {
     if !resp.ok {
-        return Err(StorageError::new(
-            StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
-                .unwrap_or(StorageErrorCode::Io),
-            "stat",
-        ));
+        return Err(ipc_denied("stat", &resp));
     }
     Ok((resp.size.unwrap_or(0), resp.sha256.unwrap_or_default()))
 }
 
 fn ok_challenge(resp: StorageResponse) -> Result<PrepareClientOk, StorageError> {
     if !resp.ok {
-        return Err(StorageError::new(
-            StorageErrorCode::parse(resp.err.as_deref().unwrap_or("io"))
-                .unwrap_or(StorageErrorCode::Io),
-            "challenge",
-        ));
+        return Err(ipc_denied("challenge", &resp));
     }
     Ok(PrepareClientOk {
         digest: resp.sha256.unwrap_or_default(),

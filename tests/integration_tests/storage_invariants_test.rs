@@ -436,3 +436,54 @@ fn inv_normalize_image_ext_and_uuid_exported() {
     ));
     assert!(!vcp::storage::is_uuid_key("../x"));
 }
+
+#[test]
+fn inv_storage_ops_logging_not_silent() {
+    let log = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/storage/log.rs"));
+    assert!(log.contains("STORE_LOG_TARGET"));
+    assert!(log.contains("fd_handoff_failed"));
+    assert!(log.contains("op_failed"));
+    assert!(log.contains("portal_storage_failed"));
+    assert!(
+        !log.contains("vcp_storage_alert") && !log.contains("target: \"vcp_store\""),
+        "forbidden ambiguous tracing targets in storage log helpers"
+    );
+
+    let server = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/storage/server.rs"
+    ));
+    assert!(server.contains("fd_handoff_failed") || server.contains("open_abs_for_handoff"));
+    assert!(server.contains("reply_engine_err") || server.contains("op_failed"));
+    assert!(
+        !server.contains(".map_err(|_| ())?"),
+        "server must not swallow FD/open errors as silent ()"
+    );
+
+    let client = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/storage/client.rs"
+    ));
+    assert!(client.contains("ipc_denied"));
+    assert!(client.contains("portal_storage_failed"));
+
+    let key = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/admin/key.rs"));
+    assert!(key.contains("portal_storage_failed"));
+    assert!(key.contains("admin_key_enrol"));
+
+    let admin_issue = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/issues/issue_key.rs"
+    ));
+    let org_issue = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/issues/issue_key.rs"
+    ));
+    let org_new = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/issues.rs"
+    ));
+    assert!(admin_issue.contains("portal_attach_failed"));
+    assert!(org_issue.contains("portal_attach_failed"));
+    assert!(org_new.contains("portal_attach_failed"));
+}
