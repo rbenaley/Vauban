@@ -453,11 +453,43 @@ fn inv_storage_ops_logging_not_silent() {
         env!("CARGO_MANIFEST_DIR"),
         "/src/storage/server.rs"
     ));
-    assert!(server.contains("fd_handoff_failed") || server.contains("open_abs_for_handoff"));
+    assert!(server.contains("open_partial_for_handoff"));
+    assert!(server.contains("open_object_for_handoff"));
     assert!(server.contains("reply_engine_err") || server.contains("op_failed"));
     assert!(
         !server.contains(".map_err(|_| ())?"),
         "server must not swallow FD/open errors as silent ()"
+    );
+    assert!(
+        !server.contains("File::open(") && !server.contains("File::options("),
+        "server must not absolute-open for SCM_RIGHTS (dirfd handoff only)"
+    );
+    assert!(
+        !server.contains("open_abs_for_handoff"),
+        "open_abs_for_handoff must be gone"
+    );
+
+    let engine = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/storage/engine.rs"
+    ));
+    assert!(engine.contains("open_partial_for_handoff"));
+    assert!(engine.contains("open_object_for_handoff"));
+    assert!(engine.contains("into_std"));
+    // rustfmt may split `entry.metadata()` across lines — pin the dirfd call.
+    assert!(
+        engine.contains(".metadata()") && engine.contains("DirEntry metadata"),
+        "purge must use DirEntry dirfd metadata, not absolute std::fs::metadata"
+    );
+    assert!(
+        !engine.contains("std::fs::metadata("),
+        "purge must not call absolute std::fs::metadata"
+    );
+
+    let audit = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/storage/audit.rs"));
+    assert!(
+        audit.contains("Mutex<File>") || audit.contains("file: Mutex"),
+        "audit must hold an open FD across Capsicum enter"
     );
 
     let client = include_str!(concat!(
@@ -466,6 +498,8 @@ fn inv_storage_ops_logging_not_silent() {
     ));
     assert!(client.contains("ipc_denied"));
     assert!(client.contains("portal_storage_failed"));
+    assert!(client.contains("open_partial_for_handoff"));
+    assert!(client.contains("open_object_for_handoff"));
 
     let key = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/admin/key.rs"));
     assert!(key.contains("portal_storage_failed"));

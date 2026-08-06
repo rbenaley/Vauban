@@ -1,9 +1,14 @@
 //! E2E: image upload/serve + release upload→download sha match via storage helper.
 
+use std::io::Cursor;
+use std::path::PathBuf;
+
 use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
+use uuid::Uuid;
+use vcp::config::{StorageConfig, StorageIpcMode};
 use vcp::models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release};
-use vcp::storage::sha256_hex;
+use vcp::storage::{StorageClient, sha256_hex, write_and_hash};
 
 use crate::common::{
     MultipartFile, TINY_PNG, cleanup, cleanup_key_store, config_dir, create_membership,
@@ -704,4 +709,54 @@ async fn e2e_key_enrol_approve_revoke_lifecycle() {
     );
 
     cleanup(&db).await;
+}
+
+/// Real `vcp-store --spawn-mode` SCM_RIGHTS path (soft Capsicum on CI hosts).
+#[test]
+fn e2e_spawn_ipc_image_put_get_scm_rights() {
+    // Cargo keeps hyphens in `CARGO_BIN_EXE_<bin>` (binary name `vcp-store`).
+    let helper = PathBuf::from(env!("CARGO_BIN_EXE_vcp-store"));
+    assert!(
+        helper.is_file(),
+        "helper binary missing: {}",
+        helper.display()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let mut cfg = StorageConfig {
+        blob_path: root.to_string_lossy().into_owned(),
+        ipc: StorageIpcMode::Spawn,
+        helper_path: helper.to_string_lossy().into_owned(),
+        webauthn_required: false,
+        max_image_bytes: 64 * 1024,
+        max_images_per_org: 100,
+        webauthn_origin: "https://localhost:3000".into(),
+        ..StorageConfig::default()
+    };
+    cfg.derive_webauthn_rp_id().expect("rp id");
+
+    let client = StorageClient::connect(&cfg).expect("spawn vcp-store");
+    let png = TINY_PNG;
+    let (upload_id, mut file) = client
+        .put_begin_image(42, png.len() as u64, "png")
+        .expect("put_begin_image SCM_RIGHTS");
+    let (size, sha) = write_and_hash(&mut file, Cursor::new(png)).expect("write fd");
+    drop(file);
+    assert_eq!(size, png.len() as u64);
+    let image_id = Uuid::new_v4().to_string();
+    let (committed_size, committed_sha) = client
+        .put_commit_image(&upload_id, 42, &image_id, "png", &sha)
+        .expect("put_commit_image");
+    assert_eq!(committed_size, size);
+    assert_eq!(committed_sha, sha);
+
+    let (got_size, got_sha, mut got_file) = client
+        .get_image(42, &image_id, "png", &sha)
+        .expect("get_image SCM_RIGHTS");
+    assert_eq!(got_size, size);
+    assert_eq!(got_sha, sha);
+    let mut body = Vec::new();
+    std::io::Read::read_to_end(&mut got_file, &mut body).expect("read");
+    assert_eq!(body.as_slice(), png);
 }

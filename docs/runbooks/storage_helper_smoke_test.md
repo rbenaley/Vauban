@@ -113,11 +113,15 @@ the known key → same deny on verify-on-read.
    another user → helper logs reject / drops).
 4. On FreeBSD: helper log shows `cap_enter` success **or** documented soft
    path; see Capsicum checklist in [`storage_helper_ops.md`](storage_helper_ops.md).
+5. On FreeBSD after `cap_enter`: admin issue reply with screenshot **and**
+   release package upload must succeed (SCM_RIGHTS via dirfd reopen — not
+   absolute `File::open`). Expect **no**
+   `Not permitted in capability mode` on happy-path `put_begin` / `get`.
 
 | Result | Criteria |
 |--------|----------|
-| **Pass** | Socket mode, helper conf owns blob root, peercred enforced. |
-| **Fail** | Portal accepts `ipc=spawn` in production, or shared writable storage. |
+| **Pass** | Socket mode, helper conf owns blob root, peercred enforced; Capsicum hosts serve uploads/downloads. |
+| **Fail** | Portal accepts `ipc=spawn` in production, shared writable storage, or Capsicum `ENOTCAPABLE` on image/release handoff. |
 
 ## F -- WebAuthn C1 release publish (Pass / Fail)
 
@@ -173,32 +177,29 @@ Accept the self-signed cert for `localhost` if prompted.
 
 ## H -- Storage denial logging (Pass / Fail)
 
-When an artifact / issue-image upload fails (including FreeBSD Capsicum
-`ENOTCAPABLE` on absolute-path SCM_RIGHTS open), operators must see
-**WARN/ERROR** lines — not a silent UI redirect.
+When an artifact / issue-image upload fails for a **real** denial (helper
+down, quota, bad image), operators must see **WARN/ERROR** lines — not a
+silent UI redirect. Happy-path Capsicum uploads must **not** emit
+`ENOTCAPABLE` (dirfd handoff).
 
 1. Set `RUST_LOG=vcp=debug,vcp-store=debug` (or at least `warn`) on both
    portal and helper consoles.
-2. Force a known denial (issue reply with screenshot while helper is
-   Capsicum-constrained, or stop the helper mid-flight).
-3. Expect helper lines such as:
-   - `WARN vcp-store … failed to open path for SCM_RIGHTS handoff`
-   - `WARN vcp-store … storage op failed` with `code=io` (or other closed code)
-4. Expect portal lines such as:
-   - `WARN … portal storage call failed` with `surface=put_begin` (or op)
-   - `WARN … portal attach failed` with `surface=…_screenshots` on issue routes
+2. Force a known denial (stop the helper mid-flight, or exceed image quota).
+3. Expect helper / portal WARN lines with closed `code=` / `surface=`.
+4. Negative (regression): under Capsicum, a normal screenshot upload must
+   **not** log `Not permitted in capability mode` on `put_begin`.
 
 | Result | Criteria |
 |--------|----------|
-| **Pass** | Denial produces WARN on helper and portal; UI may still soft-redirect (`err=attach`). |
-| **Fail** | UI fails with empty console (no `vcp-store` / portal storage WARN). |
+| **Pass** | Intentional denial produces WARN; Capsicum happy path is quiet + succeeds. |
+| **Fail** | UI fails with empty console, or Capsicum happy path still logs ENOTCAPABLE. |
 
 ## Related automated coverage
 
 | Layer | Filter / artifact |
 |-------|-------------------|
-| Invariants | `storage_invariants_`, `scripts/check_storage.sh` |
-| Proptest | `storage_proptest`, `storage::log` proptest |
-| Battle | `storage_battle_`, `storage::log` battle |
-| E2E | `storage_e2e_`, `open_abs_for_handoff` missing-path |
-| Smoke | This runbook §H (logging) |
+| Invariants | `storage_invariants_`, `scripts/check_storage.sh` (dirfd handoff pins) |
+| Proptest | `storage_proptest` (handoff rel paths), `storage::log` proptest |
+| Battle | `battle_concurrent_dirfd_handoff_write_commit`, `storage::log` battle |
+| E2E | `storage_e2e_`, `e2e_spawn_ipc_image_put_get_scm_rights` |
+| Smoke | This runbook §E/§H (Capsicum happy path + denial logging) |

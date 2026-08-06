@@ -20,6 +20,7 @@ use super::ids::{
     StorageScope, image_rel_path, is_decimal_id, is_uuid_key, normalize_image_ext,
     release_rel_path, tmp_rel_path,
 };
+use super::log as store_log;
 use super::meta_db::{
     CredentialStatus, MetaDb, MetaObject, WebauthnCredentialRow, ct_eq_hex, image_object_key,
     release_object_key,
@@ -187,10 +188,11 @@ impl StorageEngine {
             if !name.ends_with(".partial") {
                 continue;
             }
-            let abs = self.root.join(format!("tmp/{name}"));
-            let stale = std::fs::metadata(&abs)
+            // DirEntry metadata is relative to the blob dirfd (Capsicum-safe).
+            let stale = entry
+                .metadata()
                 .and_then(|m| m.modified())
-                .map(|m| now.duration_since(m).unwrap_or_default() > ttl)
+                .map(|m| now.duration_since(m.into_std()).unwrap_or_default() > ttl)
                 .unwrap_or(true);
             if stale {
                 let _ = self.dir.remove_file(format!("tmp/{name}"));
@@ -385,11 +387,54 @@ impl StorageEngine {
         Ok((hex::encode(hasher.finalize()), size))
     }
 
-    /// Absolute path to the partial file (for FD handoff / streaming tests).
+    /// Absolute path to the partial file (tests / legacy helpers only).
+    ///
+    /// Production SCM_RIGHTS handoff must use [`Self::open_partial_for_handoff`]
+    /// (dirfd reopen) — absolute `File::open` fails after Capsicum `cap_enter`.
     pub fn partial_abs_path(&self, upload_id: &str) -> Result<PathBuf, StorageError> {
         let rel = tmp_rel_path(upload_id)
             .ok_or_else(|| StorageError::new(StorageErrorCode::InvalidId, "upload_id"))?;
         Ok(self.root.join(rel))
+    }
+
+    /// Reopen a staged partial via dirfd for SCM_RIGHTS handoff (write-only).
+    pub fn open_partial_for_handoff(&self, upload_id: &str) -> Result<std::fs::File, StorageError> {
+        let rel = tmp_rel_path(upload_id)
+            .ok_or_else(|| StorageError::new(StorageErrorCode::InvalidId, "upload_id"))?;
+        let mut opts = OpenOptions::new();
+        opts.write(true);
+        match self.dir.open_with(&rel, &opts) {
+            Ok(f) => Ok(f.into_std()),
+            Err(e) => {
+                store_log::fd_handoff_failed("put_begin", Path::new(&rel), &e);
+                Err(StorageError::new(
+                    StorageErrorCode::Io,
+                    format!("SCM_RIGHTS open {rel}: {e}"),
+                ))
+            }
+        }
+    }
+
+    /// Reopen a committed object via dirfd for SCM_RIGHTS handoff (read-only).
+    pub fn open_object_for_handoff(
+        &self,
+        scope: StorageScope,
+        release_id: Option<&str>,
+        org_id: Option<&str>,
+        image_id: Option<&str>,
+        ext: Option<&str>,
+    ) -> Result<std::fs::File, StorageError> {
+        let rel = self.object_rel(scope, release_id, org_id, image_id, ext)?;
+        match self.dir.open(&rel) {
+            Ok(f) => Ok(f.into_std()),
+            Err(e) => {
+                store_log::fd_handoff_failed("get", Path::new(&rel), &e);
+                Err(StorageError::new(
+                    StorageErrorCode::Io,
+                    format!("SCM_RIGHTS open {rel}: {e}"),
+                ))
+            }
+        }
     }
 
     pub fn put_commit(
@@ -1222,6 +1267,75 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(bad.code, StorageErrorCode::IntegrityMismatch);
+    }
+
+    #[test]
+    fn unit_dirfd_partial_handoff_write_then_object_read() {
+        use std::io::{Read, Write};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let eng = StorageEngine::open(&root, test_cfg()).unwrap();
+        let data = b"handoff-bytes";
+        let begin = eng
+            .put_begin(
+                StorageScope::Release,
+                Some("99"),
+                None,
+                data.len() as u64,
+                None,
+            )
+            .unwrap();
+        let mut file = eng
+            .open_partial_for_handoff(&begin.upload_id)
+            .expect("dirfd partial handoff");
+        file.write_all(data).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let digest = sha256_hex(data);
+        let st = eng
+            .put_commit(&begin.upload_id, &digest, None, None)
+            .unwrap();
+        assert_eq!(st.sha256, digest);
+        let mut obj = eng
+            .open_object_for_handoff(StorageScope::Release, Some("99"), None, None, None)
+            .expect("dirfd object handoff");
+        let mut got = Vec::new();
+        obj.read_to_end(&mut got).unwrap();
+        assert_eq!(got.as_slice(), data.as_slice());
+    }
+
+    #[test]
+    fn unit_open_partial_for_handoff_missing_is_io() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let eng = StorageEngine::open(&root, test_cfg()).unwrap();
+        let err = eng
+            .open_partial_for_handoff("550e8400-e29b-41d4-a716-446655440099")
+            .expect_err("missing partial");
+        assert_eq!(err.code, StorageErrorCode::Io);
+        assert!(
+            err.message.contains("SCM_RIGHTS"),
+            "message={}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn unit_purge_expired_tmp_uses_dirfd_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut cfg = test_cfg();
+        cfg.upload_ttl_secs = 1;
+        let eng = StorageEngine::open(&root, cfg).unwrap();
+        let begin = eng
+            .put_begin(StorageScope::Release, Some("1"), None, 1, None)
+            .unwrap();
+        assert!(eng.partial_abs_path(&begin.upload_id).unwrap().exists());
+        std::thread::sleep(Duration::from_secs(2));
+        let n = eng.purge_expired_tmp().unwrap();
+        assert!(n >= 1, "stale partial must be purged via dirfd metadata");
+        assert!(!eng.partial_abs_path(&begin.upload_id).unwrap().exists());
     }
 
     #[test]

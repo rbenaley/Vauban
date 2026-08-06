@@ -148,7 +148,12 @@ CI on macOS/Linux keeps the soft-containment WARN path. On FreeBSD hosts:
 - [ ] Listen / spawn connect happens **before** `cap_enter` (path-based
       `connect`/`bind` after capability mode fails with os error 94).
 - [ ] After `cap_enter`, helper must not need fresh global `open` of the
-      blob tree (dirfd already held).
+      blob tree (dirfd already held; SCM_RIGHTS reopen via
+      `open_partial_for_handoff` / `open_object_for_handoff`).
+- [ ] After `cap_enter`, issue screenshot upload + release package upload
+      succeed (no `ENOTCAPABLE` / os error 94 on `put_begin` / `get`).
+- [ ] Audit append still works (`blob_path/audit/webauthn.log` held FD from
+      boot — no absolute reopen).
 - [ ] Portal process itself is **not** under Capsicum (by design).
 
 Do **not** expect macOS CI to exercise `cap_enter` or jail.

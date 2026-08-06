@@ -5,7 +5,8 @@ use serde_json::json;
 use vcp::list_page::{KEY_PAGE_SIZE, page_count, page_offset};
 use vcp::storage::{
     StorageErrorCode, StorageScope, canonical_summary, credential_fingerprint, ct_eq_hex,
-    is_uuid_key, normalize_admin_label, normalize_image_ext, webauthn_host_is_ip,
+    image_rel_path, is_uuid_key, normalize_admin_label, normalize_image_ext, release_rel_path,
+    tmp_rel_path, webauthn_host_is_ip,
 };
 
 proptest! {
@@ -166,5 +167,33 @@ proptest! {
             prop_assert_eq!(off, (page - 1) * KEY_PAGE_SIZE);
             prop_assert!(off == 0 || off < total || total == 0);
         }
+    }
+
+    /// Dirfd handoff paths stay relative (never absolute / traversal / NUL).
+    #[test]
+    fn prop_handoff_rel_paths_are_capability_safe(
+        release_id in "[1-9][0-9]{0,7}",
+        org in "[1-9][0-9]{0,5}",
+        uuid in "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        ext in "(png|jpeg|webp)",
+    ) {
+        let tmp = tmp_rel_path(&uuid).expect("uuid tmp");
+        prop_assert!(tmp.starts_with("tmp/"));
+        prop_assert!(tmp.ends_with(".partial"));
+        prop_assert!(!tmp.starts_with('/'));
+        prop_assert!(!tmp.contains(".."));
+        prop_assert!(!tmp.contains('\0'));
+
+        let rel = release_rel_path(&release_id).expect("release");
+        prop_assert_eq!(&rel, &format!("releases/{release_id}.pkg"));
+        prop_assert!(!rel.starts_with('/'));
+        prop_assert!(!rel.contains(".."));
+
+        let img = image_rel_path(&org, &uuid, &ext).expect("image");
+        prop_assert_eq!(&img, &format!("images/{org}/{uuid}.{ext}"));
+        prop_assert!(!img.starts_with('/'));
+        prop_assert!(!img.contains(".."));
+        prop_assert!(!img.contains('\0'));
+        let _ = StorageScope::Image;
     }
 }

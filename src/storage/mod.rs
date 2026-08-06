@@ -29,7 +29,9 @@ pub use client::{
 };
 pub use engine::{ObjectStat, PrepareOk, PutBeginOk, StorageEngine, sha256_hex, write_abs_file};
 pub use error::{StorageError, StorageErrorCode};
-pub use ids::{StorageScope, is_uuid_key, normalize_image_ext};
+pub use ids::{
+    StorageScope, image_rel_path, is_uuid_key, normalize_image_ext, release_rel_path, tmp_rel_path,
+};
 pub use meta_db::{META_DB_FILE, MetaDb, MetaObject, ct_eq_hex};
 pub use objects::{
     BlobDisplay, delete_org_objects, delete_release_object, find_image_object, find_release_object,

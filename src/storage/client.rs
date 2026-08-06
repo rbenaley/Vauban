@@ -1,7 +1,7 @@
 //! Storage client used by `vcp` (spawn, named socket, or inline engine).
 
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
@@ -259,14 +259,7 @@ impl StorageClient {
                     declared_size,
                     None,
                 )?;
-                let path = eng.partial_abs_path(&ok.upload_id)?;
-                let file = OpenOptions::new()
-                    .write(true)
-                    .read(true)
-                    .open(&path)
-                    .map_err(|e| {
-                        StorageError::new(StorageErrorCode::Io, format!("open tmp: {e}"))
-                    })?;
+                let file = eng.open_partial_for_handoff(&ok.upload_id)?;
                 Ok((ok.upload_id, file))
             }
             Backend::Ipc { .. } => {
@@ -298,14 +291,7 @@ impl StorageClient {
                     declared_size,
                     Some(ext),
                 )?;
-                let path = eng.partial_abs_path(&ok.upload_id)?;
-                let file = OpenOptions::new()
-                    .write(true)
-                    .read(true)
-                    .open(&path)
-                    .map_err(|e| {
-                        StorageError::new(StorageErrorCode::Io, format!("open tmp: {e}"))
-                    })?;
+                let file = eng.open_partial_for_handoff(&ok.upload_id)?;
                 Ok((ok.upload_id, file))
             }
             Backend::Ipc { .. } => {
@@ -456,7 +442,7 @@ impl StorageClient {
             Backend::Inline(engine) => {
                 let eng = engine.lock().expect("inline engine");
                 let id = release_id.to_string();
-                let (st, path) = eng.get_verified(
+                let (st, _) = eng.get_verified(
                     StorageScope::Release,
                     Some(&id),
                     None,
@@ -464,9 +450,13 @@ impl StorageClient {
                     None,
                     expected_sha256,
                 )?;
-                let file = File::open(&path).map_err(|e| {
-                    StorageError::new(StorageErrorCode::Io, format!("open object: {e}"))
-                })?;
+                let file = eng.open_object_for_handoff(
+                    StorageScope::Release,
+                    Some(&id),
+                    None,
+                    None,
+                    None,
+                )?;
                 Ok((st.size, st.sha256, file))
             }
             Backend::Ipc { .. } => {
@@ -496,7 +486,7 @@ impl StorageClient {
             Backend::Inline(engine) => {
                 let eng = engine.lock().expect("inline engine");
                 let org = org_id.to_string();
-                let (st, path) = eng.get_verified(
+                let (st, _) = eng.get_verified(
                     StorageScope::Image,
                     None,
                     Some(&org),
@@ -504,9 +494,13 @@ impl StorageClient {
                     Some(ext),
                     expected_sha256,
                 )?;
-                let file = File::open(&path).map_err(|e| {
-                    StorageError::new(StorageErrorCode::Io, format!("open object: {e}"))
-                })?;
+                let file = eng.open_object_for_handoff(
+                    StorageScope::Image,
+                    None,
+                    Some(&org),
+                    Some(image_id),
+                    Some(ext),
+                )?;
                 Ok((st.size, st.sha256, file))
             }
             Backend::Ipc { .. } => {

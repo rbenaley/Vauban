@@ -1,9 +1,7 @@
 //! Helper request dispatch against [`StorageEngine`].
 
-use std::fs::File;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -68,29 +66,6 @@ fn challenge_resp(
     )
 }
 
-/// Open an absolute path for SCM_RIGHTS handoff. Logs WARN on failure.
-///
-/// Note: absolute `open` after `cap_enter` fails on FreeBSD Capsicum; the
-/// Capsicum fix (dirfd reopen) is intentionally separate from logging.
-pub(crate) fn open_abs_for_handoff(
-    op: &str,
-    path: &Path,
-    writable: bool,
-) -> Result<File, StorageError> {
-    let opened = if writable {
-        File::options().write(true).read(false).open(path)
-    } else {
-        File::open(path)
-    };
-    opened.map_err(|e| {
-        store_log::fd_handoff_failed(op, path, &e);
-        StorageError::new(
-            StorageErrorCode::Io,
-            format!("SCM_RIGHTS open {}: {e}", path.display()),
-        )
-    })
-}
-
 /// Handle one client connection to completion.
 pub fn serve_connection(engine: &StorageEngine, mut stream: UnixStream) {
     while let Ok(req) = recv_request(&mut stream) {
@@ -129,30 +104,24 @@ fn dispatch(
                 declared_size,
                 ext.as_deref(),
             ) {
-                Ok(ok) => {
-                    let path = match engine.partial_abs_path(&ok.upload_id) {
-                        Ok(p) => p,
-                        Err(e) => return reply_engine_err(stream, op, e),
-                    };
-                    match open_abs_for_handoff(op, &path, true) {
-                        Ok(file) => {
-                            tracing::debug!(
-                                target: super::STORE_LOG_TARGET,
-                                op,
-                                upload_id = %ok.upload_id,
-                                "SCM_RIGHTS handoff ready"
-                            );
-                            let resp = StorageResponse::ok_upload(ok.upload_id);
-                            reply(stream, op, &resp, Some(file.as_raw_fd()))
-                        }
-                        Err(e) => {
-                            // Already WARNed in open_abs_for_handoff.
-                            // Keep connection; portal sees `io` and can WARN.
-                            // Orphan 0-byte partial may remain until abort/TTL.
-                            reply(stream, op, &map_err(e), None)
-                        }
+                Ok(ok) => match engine.open_partial_for_handoff(&ok.upload_id) {
+                    Ok(file) => {
+                        tracing::debug!(
+                            target: super::STORE_LOG_TARGET,
+                            op,
+                            upload_id = %ok.upload_id,
+                            "SCM_RIGHTS handoff ready"
+                        );
+                        let resp = StorageResponse::ok_upload(ok.upload_id);
+                        reply(stream, op, &resp, Some(file.as_raw_fd()))
                     }
-                }
+                    Err(e) => {
+                        // Already WARNed in open_partial_for_handoff.
+                        // Keep connection; portal sees `io` and can WARN.
+                        // Orphan 0-byte partial may remain until abort/TTL.
+                        reply(stream, op, &map_err(e), None)
+                    }
+                },
                 Err(e) => reply_engine_err(stream, op, e),
             }
         }
@@ -214,15 +183,23 @@ fn dispatch(
                 ext.as_deref(),
                 &sha256,
             ) {
-                Ok((st, path)) => match open_abs_for_handoff(op, &path, false) {
-                    Ok(file) => reply(
-                        stream,
-                        op,
-                        &StorageResponse::ok_stat(st.size, st.sha256),
-                        Some(file.as_raw_fd()),
-                    ),
-                    Err(e) => reply(stream, op, &map_err(e), None),
-                },
+                Ok((st, _)) => {
+                    match engine.open_object_for_handoff(
+                        scope,
+                        release_id.as_deref(),
+                        org_id.as_deref(),
+                        image_id.as_deref(),
+                        ext.as_deref(),
+                    ) {
+                        Ok(file) => reply(
+                            stream,
+                            op,
+                            &StorageResponse::ok_stat(st.size, st.sha256),
+                            Some(file.as_raw_fd()),
+                        ),
+                        Err(e) => reply(stream, op, &map_err(e), None),
+                    }
+                }
                 Err(e) => reply_engine_err(stream, op, e),
             }
         }
@@ -440,10 +417,7 @@ fn request_op(req: &StorageRequest) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
-    use super::{open_abs_for_handoff, request_op};
-    use crate::storage::error::StorageErrorCode;
+    use super::request_op;
     use crate::storage::protocol::StorageRequest;
 
     #[test]
@@ -464,21 +438,5 @@ mod tests {
             is_soft: false,
         };
         assert_eq!(request_op(&enrol), "key_enrol_stage");
-    }
-
-    #[test]
-    fn e2e_open_abs_for_handoff_missing_path_is_io() {
-        let err = open_abs_for_handoff(
-            "put_begin",
-            Path::new("/no/such/vcp/tmp/missing.partial"),
-            true,
-        )
-        .expect_err("missing path must fail");
-        assert_eq!(err.code, StorageErrorCode::Io);
-        assert!(
-            err.message.contains("SCM_RIGHTS"),
-            "message={}",
-            err.message
-        );
     }
 }

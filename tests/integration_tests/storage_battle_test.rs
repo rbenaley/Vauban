@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use http_body_util::BodyExt;
+use std::io::Write;
 use tokio::sync::Barrier;
 use topcoat::router::StatusCode;
 use vcp::config::{StorageConfig, StorageIpcMode};
@@ -24,6 +25,60 @@ fn engine_cfg() -> StorageConfig {
         max_images_per_org: 100,
         webauthn_required: false,
         ..StorageConfig::default()
+    }
+}
+
+#[test]
+fn battle_concurrent_dirfd_handoff_write_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = Arc::new(dir.path().canonicalize().unwrap());
+    {
+        let _bootstrap = StorageEngine::open(root.as_path(), engine_cfg()).expect("bootstrap");
+    }
+    let n = 8usize;
+    let barrier = Arc::new(std::sync::Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let root = root.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            let opened = StorageEngine::open(root.as_path(), engine_cfg());
+            barrier.wait();
+            let eng = opened.expect("open engine");
+            let release_id = format!("{}", 20_000 + i);
+            let data = format!("dirfd-handoff-{i}").into_bytes();
+            let digest = sha256_hex(&data);
+            let begin = eng
+                .put_begin(
+                    StorageScope::Release,
+                    Some(&release_id),
+                    None,
+                    data.len() as u64,
+                    None,
+                )
+                .expect("put_begin");
+            let mut file = eng
+                .open_partial_for_handoff(&begin.upload_id)
+                .expect("dirfd handoff");
+            file.write_all(&data).expect("write fd");
+            file.sync_all().expect("fsync");
+            drop(file);
+            let st = eng
+                .put_commit(&begin.upload_id, &digest, None, None)
+                .expect("put_commit");
+            assert_eq!(st.sha256, digest);
+            let mut obj = eng
+                .open_object_for_handoff(StorageScope::Release, Some(&release_id), None, None, None)
+                .expect("object handoff");
+            let mut got = Vec::new();
+            std::io::Read::read_to_end(&mut obj, &mut got).expect("read");
+            assert_eq!(got, data);
+        }));
+    }
+
+    for h in handles {
+        h.join().expect("join");
     }
 }
 

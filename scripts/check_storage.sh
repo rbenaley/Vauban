@@ -225,7 +225,7 @@ grep -n 'STORE_ALERT_TARGET\|vcp-store::alert' "$ENGINE" "$WEBAUTHN" >/dev/null 
   || fail "helper ALERTs must use STORE_ALERT_TARGET / vcp-store::alert"
 
 # Ops logging: helper must WARN on FD handoff / op failures; portal must not
-# swallow storage denials silently (Capsicum ENOTCAPABLE is otherwise invisible).
+# swallow storage denials silently.
 LOG="src/storage/log.rs"
 SERVER="src/storage/server.rs"
 CLIENT="src/storage/client.rs"
@@ -234,8 +234,6 @@ grep -n 'fd_handoff_failed\|op_failed\|wire_failed\|portal_storage_failed' "$LOG
   || fail "$LOG must define helper/portal storage log helpers"
 grep -n 'STORE_LOG_TARGET' "$LOG" >/dev/null \
   || fail "$LOG helper lines must use STORE_LOG_TARGET (vcp-store)"
-grep -n 'fd_handoff_failed\|open_abs_for_handoff' "$SERVER" >/dev/null \
-  || fail "$SERVER must WARN on SCM_RIGHTS absolute-path open failures"
 grep -n 'op_failed\|reply_engine_err' "$SERVER" >/dev/null \
   || fail "$SERVER must WARN on engine/IPC op failures"
 grep -n 'ipc_denied\|portal_storage_failed' "$CLIENT" >/dev/null \
@@ -247,5 +245,24 @@ grep -n 'portal_attach_failed' \
   src/app/org/issues/issue_key.rs \
   src/app/org/issues.rs >/dev/null \
   || fail "issue screenshot denial paths must WARN before err=attach redirect"
+
+# Capsicum: SCM_RIGHTS handoff must reopen via dirfd (never absolute File::open).
+grep -n 'open_partial_for_handoff\|open_object_for_handoff' "$ENGINE" >/dev/null \
+  || fail "$ENGINE must expose dirfd SCM_RIGHTS handoff openers"
+grep -n 'open_partial_for_handoff\|open_object_for_handoff' "$SERVER" >/dev/null \
+  || fail "$SERVER PutBegin/Get must use engine dirfd handoff openers"
+if grep -nE 'File::open\(|File::options\(' "$SERVER" >/dev/null; then
+  fail "$SERVER must not absolute-open files for SCM_RIGHTS (use dirfd handoff)"
+fi
+if grep -n 'open_abs_for_handoff' "$SERVER" "$ENGINE" >/dev/null; then
+  fail "open_abs_for_handoff must be removed (Capsicum ENOTCAPABLE)"
+fi
+grep -n 'into_std' "$ENGINE" >/dev/null \
+  || fail "$ENGINE handoff must convert cap_std::File via into_std"
+grep -n 'entry.metadata()\|DirEntry' "$ENGINE" >/dev/null \
+  || fail "$ENGINE purge_expired_tmp must use dirfd DirEntry metadata"
+AUDIT="src/storage/audit.rs"
+grep -n 'Mutex<File>\|file: Mutex' "$AUDIT" >/dev/null \
+  || fail "$AUDIT must keep a held FD for append (no reopen after cap_enter)"
 
 echo "check_storage: OK"
