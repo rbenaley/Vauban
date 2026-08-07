@@ -56,6 +56,10 @@ SQLite `meta.sqlite`; Postgres `storage_objects` = portal mirror.
 
 ## 2. Architecture
 
+Picture-oriented walkthrough (Capsicum, SEQPACKET socket, WebAuthn C1
+E2E):
+[`vcp_store_privsep_webauthn_visualization.md`](vcp_store_privsep_webauthn_visualization.md).
+
 ```text
                  ┌─────────────────────────────────────────────┐
                  │  vcp (UID 800)                              │

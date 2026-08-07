@@ -11,6 +11,8 @@
 > Severity: **BLOCKING** for artifact upload/download incidents.
 >
 > Design: [VCP_Storage_Helper_Architecture_EN(1.2).md](../technical/VCP_Storage_Helper_Architecture_EN(1.2).md)
+> Visualization (privsep / socket / WebAuthn E2E):
+> [`vcp_store_privsep_webauthn_visualization.md`](../technical/vcp_store_privsep_webauthn_visualization.md)
 > Smoke: [`storage_helper_smoke_test.md`](storage_helper_smoke_test.md)
 > Audit: [`.cursor/audits/vcp_capsicum_storage_sandbox_2026-08-02.md`](../../.cursor/audits/vcp_capsicum_storage_sandbox_2026-08-02.md)
 
