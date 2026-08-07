@@ -16,6 +16,7 @@ use topcoat::{
 use super::staging::{STAGING_TTL_SECS, rollback_staged_release, sweep_staged_releases};
 use crate::{
     auth::{capability_denied, db, require_staff, storage},
+    freebsd_pkg,
     models::{
         Organization, RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, RELEASE_STATUS_STAGING, Release,
     },
@@ -33,6 +34,10 @@ fn create_error_message(err: Option<&str>) -> Option<&'static str> {
     match err? {
         "version" => Some("Version is required."),
         "package" => Some("A package is required: a release is never created without its binary."),
+        "not_pkg" => Some(
+            "The uploaded file is not a FreeBSD package. Publish was refused and nothing was \
+             created.",
+        ),
         "upload" => Some(
             "Upload was not completed, so nothing was published. The release was rolled back \
              — try again.",
@@ -136,7 +141,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                     </label>
                     <input id="package" name="package" type="file" required="">
                     <p class="vb-form-hint">
-                        "Required. The release only exists once the binary is stored and the signature completes. SHA-256 is computed server-side."
+                        "Required FreeBSD package (.pkg). The release only exists once the binary is stored and the signature completes. SHA-256 is computed server-side."
                     </p>
                     <div style="display: flex; gap: 12px; margin-top: 18px;">
                         <button class="vb-btn" type="submit">"Publish"</button>
@@ -219,6 +224,12 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
     let Some(package) = form.package else {
         return Ok(see_other("/admin/releases/new?err=package"));
     };
+    // Fail closed before STAGING / put_begin: only a real FreeBSD package may
+    // open an upload ceremony.
+    let pkg_info = match freebsd_pkg::inspect(&package) {
+        Ok(info) => info,
+        Err(_) => return Ok(see_other("/admin/releases/new?err=not_pkg")),
+    };
     let channel = form.channel.trim().to_owned();
     let released_on = {
         let d = form.date.trim();
@@ -296,6 +307,7 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
             rp_id: prep.rp_id,
             allow_credentials: prep.allow_credentials,
             expires_at: StorageClient::ceremony_ttl_unix(STAGING_TTL_SECS),
+            pkg_info,
         });
         return Ok(see_other(&format!("/admin/releases/confirm?token={token}")));
     }

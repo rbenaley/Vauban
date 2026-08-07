@@ -222,8 +222,8 @@ async fn e2e_release_upload_download_sha_match() {
     let admin_cookie = login_cookie(&router, &admin_email).await;
 
     let version = unique_slug("vstore");
-    let pkg = b"vcp-storage-e2e-package-bytes";
-    let expected_sha = sha256_hex(pkg);
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
+    let expected_sha = sha256_hex(&pkg);
 
     let create = post_multipart_with_files(
         &router,
@@ -239,7 +239,7 @@ async fn e2e_release_upload_download_sha_match() {
             field: "package",
             filename: "vauban.pkg",
             content_type: "application/octet-stream",
-            bytes: pkg,
+            bytes: &pkg,
         }],
     )
     .await;
@@ -290,7 +290,7 @@ async fn e2e_release_upload_download_sha_match() {
         .unwrap_or("");
     assert_eq!(nosniff, "nosniff");
     let bytes = body_bytes(dl).await;
-    assert_eq!(bytes.as_ref(), pkg);
+    assert_eq!(bytes.as_ref(), pkg.as_slice());
     assert_eq!(sha256_hex(&bytes), expected_sha);
 
     cleanup(&db).await;
@@ -312,7 +312,7 @@ async fn e2e_release_mirror_digest_mismatch_redirects_with_integrity_modal() {
     let admin_cookie = login_cookie(&router, &admin_email).await;
 
     let version = unique_slug("vstore-mm");
-    let pkg = b"vcp-storage-mirror-mismatch-bytes";
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
 
     let create = post_multipart_with_files(
         &router,
@@ -328,7 +328,7 @@ async fn e2e_release_mirror_digest_mismatch_redirects_with_integrity_modal() {
             field: "package",
             filename: "vauban.pkg",
             content_type: "application/octet-stream",
-            bytes: pkg,
+            bytes: &pkg,
         }],
     )
     .await;

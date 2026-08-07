@@ -18,6 +18,7 @@ pub mod docs_body;
 pub mod docs_search;
 pub mod docs_version;
 pub mod fonts;
+pub mod freebsd_pkg;
 pub mod http_canonical;
 pub mod id_lookups;
 pub mod issue_anchor;

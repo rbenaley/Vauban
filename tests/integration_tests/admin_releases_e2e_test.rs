@@ -52,6 +52,7 @@ async fn e2e_admin_creates_release() {
     let cookie = login(&router, &email).await;
 
     let version = unique_slug("v");
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
     let create = post_multipart_with_files(
         &router,
         "/admin/releases/new",
@@ -62,7 +63,7 @@ async fn e2e_admin_creates_release() {
             ("date", "2026-07-01"),
             ("notes", "FIX: test release"),
         ],
-        &[package_part(b"vcp-create-release-bytes")],
+        &[package_part(&pkg)],
     )
     .await;
     assert!(
@@ -83,6 +84,67 @@ async fn e2e_admin_creates_release() {
 
     let list = get(&router, "/admin/releases", cookie.as_deref()).await;
     assert_eq!(status(&list), StatusCode::OK);
+
+    cleanup(&db).await;
+}
+
+/// A non-FreeBSD blob must never open a STAGING row or helper upload.
+#[tokio::test]
+async fn e2e_admin_create_rejects_non_freebsd_package() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("rel-notpkg");
+    let slug = unique_slug("rel-notpkg-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let version = unique_slug("v-notpkg");
+    let create = post_multipart_with_files(
+        &router,
+        "/admin/releases/new",
+        cookie.as_deref(),
+        &[
+            ("version", &version),
+            ("channel", "LTS"),
+            ("date", "2026-07-01"),
+            ("notes", "FIX: not a pkg"),
+        ],
+        &[package_part(b"this-is-not-a-freebsd-package")],
+    )
+    .await;
+    assert!(status(&create).is_redirection());
+    assert_eq!(
+        create
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some("/admin/releases/new?err=not_pkg")
+    );
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("releases");
+        assert!(
+            !rows.iter().any(|r| r.version == version),
+            "invalid package must create no release row"
+        );
+    }
+
+    let form = get(
+        &router,
+        "/admin/releases/new?err=not_pkg",
+        cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&form), StatusCode::OK);
+    let html = body_text(form).await;
+    assert!(
+        html.contains("not a FreeBSD package"),
+        "compose page must explain the refusal: {html}"
+    );
 
     cleanup(&db).await;
 }
@@ -180,6 +242,7 @@ async fn e2e_admin_creates_org_targeted_release() {
     let cookie = login(&router, &email).await;
 
     let version = unique_slug("v-priv");
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
     let org_id = org.id.to_string();
     let create = post_multipart_with_files(
         &router,
@@ -192,7 +255,7 @@ async fn e2e_admin_creates_org_targeted_release() {
             ("notes", "FIX: private hotfix"),
             ("organization_id", &org_id),
         ],
-        &[package_part(b"vcp-private-hotfix-bytes")],
+        &[package_part(&pkg)],
     )
     .await;
     assert!(status(&create).is_redirection());
@@ -425,8 +488,20 @@ async fn e2e_admin_releases_list_pagination() {
     assert_eq!(rows_p1, 10, "page 1 must show 10 rows: {p1}");
     assert!(p1.contains("vb-pager"), "pager when >10: {p1}");
     assert!(
-        p1.contains("vb-list-toolbar"),
-        "toolbar pager (no chips): {p1}"
+        p1.contains("vb-chip-row") && p1.contains("vb-chip"),
+        "channel chips + pager row: {p1}"
+    );
+    assert!(
+        p1.contains("vb-rel-head") && p1.contains("vb-rel-row"),
+        "catalog grid on every page: {p1}"
+    );
+    for label in ["All", "LTS", "Stable", "EOL"] {
+        assert!(p1.contains(label), "missing channel chip {label}: {p1}");
+    }
+    assert!(
+        p1.contains("/admin/releases?channel=LTS")
+            && !p1.contains("/admin/releases?channel=LTS&page="),
+        "channel chip must reset page: {p1}"
     );
     assert!(
         p1.contains("/admin/releases?page=2") || p1.contains("href=\"/admin/releases?page=2\""),
@@ -442,8 +517,121 @@ async fn e2e_admin_releases_list_pagination() {
         "page 2 row count: {rows_p2} in {p2}"
     );
     assert!(
+        p2.contains("vb-rel-head") && p2.contains("vb-rel-row"),
+        "page 2 must keep the same catalog grid: {p2}"
+    );
+    assert!(
         p2.contains("v99.page.") || p1.contains("v99.page."),
         "pagination fixtures appear across pages: p1={p1} p2={p2}"
+    );
+
+    cleanup(&db).await;
+}
+
+/// Channel chips filter SQL-side like `/{org}/builds`: Stable hides LTS rows,
+/// and pager links keep the active channel without sticky `page` on chips.
+#[tokio::test]
+async fn e2e_admin_releases_channel_filter_hides_other_channels() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("rel-chan");
+    let slug = unique_slug("rel-chan-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let lts = "v99.chan.lts";
+    let stable = "v99.chan.stable";
+    let eol = "v99.chan.eol";
+    {
+        let mut conn = db.clone();
+        for (version, channel) in [(lts, "LTS"), (stable, "Stable"), (eol, "EOL")] {
+            let sort = vcp::release_pkg::version_sort_fields(version);
+            let _ = toasty::create!(Release {
+                version: version.to_owned(),
+                channel: channel.to_owned(),
+                released_on: "2026-08-01".to_owned(),
+                status: RELEASE_STATUS_PUBLISHED.to_owned(),
+                notes: "FIX: channel filter".to_owned(),
+                organization_id: RELEASE_GA_ORG_ID,
+                v_major: sort.v_major,
+                v_minor: sort.v_minor,
+                v_patch: sort.v_patch,
+                has_client_suffix: sort.has_client_suffix,
+                client_suffix: sort.client_suffix,
+            })
+            .exec(&mut conn)
+            .await
+            .expect("release");
+        }
+    }
+
+    let all = get(&router, "/admin/releases", cookie.as_deref()).await;
+    assert_eq!(status(&all), StatusCode::OK);
+    let all_html = body_text(all).await;
+    assert!(all_html.contains(lts) && all_html.contains(stable) && all_html.contains(eol));
+
+    let filtered = get(&router, "/admin/releases?channel=Stable", cookie.as_deref()).await;
+    assert_eq!(status(&filtered), StatusCode::OK);
+    let html = body_text(filtered).await;
+    assert!(
+        html.contains(stable),
+        "Stable filter must keep Stable: {html}"
+    );
+    assert!(
+        !html.contains(lts) && !html.contains(eol),
+        "Stable filter must hide LTS/EOL: {html}"
+    );
+    assert!(
+        html.contains("vb-chip active") || html.contains("class=\"vb-chip active\""),
+        "active channel chip: {html}"
+    );
+    assert!(
+        html.contains("/admin/releases?channel=LTS") && !html.contains("channel=LTS&page="),
+        "chip hrefs omit page: {html}"
+    );
+
+    // Enough Stable rows to force a pager that must keep `channel=Stable`.
+    {
+        let mut conn = db.clone();
+        for i in 0..11u32 {
+            let version = format!("v99.chan.stable.page.{i}");
+            let sort = vcp::release_pkg::version_sort_fields(&version);
+            let _ = toasty::create!(Release {
+                version,
+                channel: "Stable".to_owned(),
+                released_on: "2026-08-01".to_owned(),
+                status: RELEASE_STATUS_PUBLISHED.to_owned(),
+                notes: "FIX: channel page".to_owned(),
+                organization_id: RELEASE_GA_ORG_ID,
+                v_major: sort.v_major,
+                v_minor: sort.v_minor,
+                v_patch: sort.v_patch,
+                has_client_suffix: sort.has_client_suffix,
+                client_suffix: sort.client_suffix,
+            })
+            .exec(&mut conn)
+            .await
+            .expect("stable page fixture");
+        }
+    }
+    let paged = get(
+        &router,
+        "/admin/releases?channel=Stable&page=2",
+        cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&paged), StatusCode::OK);
+    let paged_html = body_text(paged).await;
+    assert!(
+        paged_html.contains("channel=Stable"),
+        "pager under a channel filter must keep channel: {paged_html}"
+    );
+    assert!(
+        !paged_html.contains(lts),
+        "paged Stable view must still hide LTS: {paged_html}"
     );
 
     cleanup(&db).await;
@@ -1032,6 +1220,7 @@ async fn e2e_publish_cancelled_at_signature_rolls_everything_back() {
     let cookie = login(&router, &email).await;
 
     let version = unique_slug("v-cancel");
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
     let create = post_multipart_with_files(
         &router,
         "/admin/releases/new",
@@ -1042,7 +1231,7 @@ async fn e2e_publish_cancelled_at_signature_rolls_everything_back() {
             ("date", "2026-08-01"),
             ("notes", "FIX: cancelled publish"),
         ],
-        &[package_part(b"vcp-cancelled-publish-bytes")],
+        &[package_part(&pkg)],
     )
     .await;
     assert!(status(&create).is_redirection());
@@ -1079,6 +1268,13 @@ async fn e2e_publish_cancelled_at_signature_rolls_everything_back() {
         confirm_html.contains("/admin/releases/confirm/cancel")
             && confirm_html.contains("Cancel publish"),
         "confirm page must offer an explicit cancel: {confirm_html}"
+    );
+    assert!(
+        confirm_html.contains("id=\"vcp-pkg-info\"")
+            && confirm_html.contains("Name           : vauban")
+            && confirm_html.contains("Architecture   : FreeBSD:15:amd64")
+            && confirm_html.contains("Origin         : security/vauban"),
+        "confirm page must show FreeBSD package metadata: {confirm_html}"
     );
 
     let cancel = post_form(
@@ -1173,6 +1369,7 @@ async fn e2e_staged_release_is_not_reachable_by_id() {
     let cookie = login(&router, &email).await;
 
     let version = unique_slug("v-staged-id");
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
     let create = post_multipart_with_files(
         &router,
         "/admin/releases/new",
@@ -1183,7 +1380,7 @@ async fn e2e_staged_release_is_not_reachable_by_id() {
             ("date", "2026-08-01"),
             ("notes", "FIX: staged id"),
         ],
-        &[package_part(b"vcp-staged-id-bytes")],
+        &[package_part(&pkg)],
     )
     .await;
     assert!(status(&create).is_redirection());

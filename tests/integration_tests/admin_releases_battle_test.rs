@@ -137,8 +137,8 @@ async fn battle_parallel_admin_releases_page_pagination() {
     let page2 = h2.await.expect("join page2");
     assert!(page1.contains("vb-pager"), "page1 pager: {page1}");
     assert!(
-        page1.contains("vb-list-toolbar"),
-        "toolbar under contention: {page1}"
+        page1.contains("vb-chip-row") && page1.contains("vb-rel-head"),
+        "chip row + catalog grid under contention: {page1}"
     );
     assert_eq!(count_channel_badges(&page1), 10, "page1 rows: {page1}");
     assert!(
@@ -394,7 +394,7 @@ async fn battle_staged_publishes_survive_concurrent_list_sweeps() {
         let version = format!("{base}-{i}");
         uploads.push(tokio::spawn(async move {
             upload_barrier.wait().await;
-            let bytes = format!("vcp-battle-staged-{i}").into_bytes();
+            let bytes = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
             let resp = crate::common::post_multipart_with_files(
                 upload_router.as_ref(),
                 "/admin/releases/new",
@@ -476,6 +476,233 @@ async fn battle_staged_publishes_survive_concurrent_list_sweeps() {
             "cancelled publishes must leave nothing behind"
         );
     }
+
+    cleanup(&db).await;
+}
+
+/// Concurrent garbage uploads must never leave STAGING rows; interleaved
+/// valid packages must still reach the confirm ceremony.
+#[tokio::test]
+async fn battle_parallel_invalid_packages_never_stage() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let mut cfg = crate::common::test_config().await;
+    cfg.storage.webauthn_required = true;
+    cfg.storage.max_concurrent_uploads = 16;
+    let router = Arc::new(crate::common::test_router_with_config(cfg).await);
+
+    let email = unique_email("battle-notpkg");
+    let slug = unique_slug("battle-notpkg");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
+
+    let n = 4usize;
+    let base_bad = unique_slug("v-bad");
+    let base_ok = unique_slug("v-ok");
+    let barrier = Arc::new(Barrier::new(n * 2));
+    let mut bad = Vec::with_capacity(n);
+    let mut ok = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let upload_router = router.clone();
+        let upload_cookie = cookie.clone();
+        let upload_barrier = barrier.clone();
+        let version = format!("{base_bad}-{i}");
+        bad.push(tokio::spawn(async move {
+            upload_barrier.wait().await;
+            let garbage = format!("not-a-pkg-{i}").into_bytes();
+            let resp = crate::common::post_multipart_with_files(
+                upload_router.as_ref(),
+                "/admin/releases/new",
+                Some(&upload_cookie),
+                &[
+                    ("version", &version),
+                    ("channel", "LTS"),
+                    ("date", "2026-08-01"),
+                    ("notes", "FIX: battle not pkg"),
+                ],
+                &[crate::common::MultipartFile {
+                    field: "package",
+                    filename: "vauban.pkg",
+                    content_type: "application/octet-stream",
+                    bytes: &garbage,
+                }],
+            )
+            .await;
+            assert!(status(&resp).is_redirection());
+            resp.headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned()
+        }));
+
+        let upload_router = router.clone();
+        let upload_cookie = cookie.clone();
+        let upload_barrier = barrier.clone();
+        let version = format!("{base_ok}-{i}");
+        ok.push(tokio::spawn(async move {
+            upload_barrier.wait().await;
+            let bytes = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
+            let resp = crate::common::post_multipart_with_files(
+                upload_router.as_ref(),
+                "/admin/releases/new",
+                Some(&upload_cookie),
+                &[
+                    ("version", &version),
+                    ("channel", "Stable"),
+                    ("date", "2026-08-01"),
+                    ("notes", "FIX: battle ok pkg"),
+                ],
+                &[crate::common::MultipartFile {
+                    field: "package",
+                    filename: "vauban.pkg",
+                    content_type: "application/octet-stream",
+                    bytes: &bytes,
+                }],
+            )
+            .await;
+            assert!(status(&resp).is_redirection());
+            resp.headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned()
+        }));
+    }
+
+    for h in bad {
+        let loc = h.await.expect("join bad");
+        assert_eq!(loc, "/admin/releases/new?err=not_pkg");
+    }
+    let mut tokens = Vec::with_capacity(n);
+    for h in ok {
+        let loc = h.await.expect("join ok");
+        let token = loc
+            .strip_prefix("/admin/releases/confirm?token=")
+            .expect("confirm redirect");
+        tokens.push(token.to_owned());
+    }
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("all");
+        assert!(
+            !rows.iter().any(|r| r.version.starts_with(&base_bad)),
+            "invalid packages must never stage"
+        );
+        let staged: Vec<_> = rows
+            .iter()
+            .filter(|r| r.version.starts_with(&base_ok))
+            .collect();
+        assert_eq!(staged.len(), n);
+        assert!(staged.iter().all(|r| r.status == "STAGING"));
+    }
+
+    for token in tokens {
+        let resp = crate::common::post_form(
+            router.as_ref(),
+            "/admin/releases/confirm/cancel",
+            Some(&cookie),
+            &format!("token={token}"),
+        )
+        .await;
+        assert!(status(&resp).is_redirection());
+    }
+
+    cleanup(&db).await;
+}
+
+/// Parallel All / LTS list reads under a mixed catalog must never leak the
+/// wrong channel into a filtered page, and both responses keep the chip row
+/// plus the fixed colgroup.
+#[tokio::test]
+async fn battle_parallel_channel_filter_under_list_reads() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-rel-chan");
+    let slug = unique_slug("battle-rel-chan");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+
+    {
+        let mut conn = db.clone();
+        for i in 0..6u32 {
+            for channel in ["LTS", "Stable"] {
+                let version = format!("v99.battle.chan.{channel}.{i}");
+                let sort = vcp::release_pkg::version_sort_fields(&version);
+                let _ = toasty::create!(Release {
+                    version,
+                    channel: channel.to_owned(),
+                    released_on: "2026-08-01".to_owned(),
+                    status: "PUBLISHED".to_owned(),
+                    notes: "FIX: battle channel".to_owned(),
+                    organization_id: RELEASE_GA_ORG_ID,
+                    v_major: sort.v_major,
+                    v_minor: sort.v_minor,
+                    v_patch: sort.v_patch,
+                    has_client_suffix: sort.has_client_suffix,
+                    client_suffix: sort.client_suffix,
+                })
+                .exec(&mut conn)
+                .await
+                .expect("release");
+            }
+        }
+    }
+
+    let router = Arc::new(test_router().await);
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
+    let barrier = Arc::new(Barrier::new(2));
+
+    let cookie_a = cookie.clone();
+    let cookie_b = cookie;
+    let router_a = router.clone();
+    let router_b = router;
+    let barrier_a = barrier.clone();
+    let barrier_b = barrier;
+
+    let h_all = tokio::spawn(async move {
+        barrier_a.wait().await;
+        let resp = get(router_a.as_ref(), "/admin/releases", Some(&cookie_a)).await;
+        assert_eq!(status(&resp), StatusCode::OK);
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+        String::from_utf8_lossy(&body).into_owned()
+    });
+    let h_lts = tokio::spawn(async move {
+        barrier_b.wait().await;
+        let resp = get(
+            router_b.as_ref(),
+            "/admin/releases?channel=LTS",
+            Some(&cookie_b),
+        )
+        .await;
+        assert_eq!(status(&resp), StatusCode::OK);
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+        String::from_utf8_lossy(&body).into_owned()
+    });
+
+    let all_html = h_all.await.expect("join all");
+    let lts_html = h_lts.await.expect("join lts");
+    assert!(
+        all_html.contains("vb-chip-row") && all_html.contains("vb-rel-head"),
+        "all view chrome: {all_html}"
+    );
+    assert!(
+        lts_html.contains("vb-chip-row") && lts_html.contains("vb-rel-head"),
+        "lts view chrome: {lts_html}"
+    );
+    assert!(
+        all_html.contains("v99.battle.chan.Stable.") && all_html.contains("v99.battle.chan.LTS."),
+        "all must show both channels: {all_html}"
+    );
+    assert!(
+        lts_html.contains("v99.battle.chan.LTS.") && !lts_html.contains("v99.battle.chan.Stable."),
+        "LTS filter must hide Stable under contention: {lts_html}"
+    );
 
     cleanup(&db).await;
 }

@@ -39,23 +39,27 @@ rtk cargo test --test integration_tests -- builds_entitlement_ -- --test-threads
 
 1. Sign in as `support@vauban.sh` / `password`.
 2. Open `/admin/releases/new` and publish a GA release (empty target org)
-   **with a package file** so `vcp-store` commits the blob and
+   **with a real FreeBSD `.pkg`** so `vcp-store` commits the blob and
    `storage_objects` is upserted. The package is mandatory: submitting
-   without one is refused and creates nothing.
-3. On `/admin/releases`, confirm STATUS shows a green **PUBLISHED** badge,
+   without one is refused and creates nothing. A random binary / non-pkg
+   upload is refused with **“not a FreeBSD package”** and creates nothing.
+3. With WebAuthn enabled, confirm `/admin/releases/confirm` shows the
+   parsed package summary (`Name`, `Version`, `Origin`, `Architecture`,
+   …) **before** you sign — then complete the ceremony.
+4. On `/admin/releases`, confirm STATUS shows a green **PUBLISHED** badge,
    SIGNATURE shows a full 64-hex digest from `storage_objects`, and
    ACTIONS has **Edit** / **Unpublish** / Delete (trash).
-4. Publish an org-targeted hotfix; confirm TARGET column on the list.
-5. Click **Unpublish** — STATUS becomes amber **HIDDEN**. Confirm the version is
+5. Publish an org-targeted hotfix; confirm TARGET column on the list.
+6. Click **Unpublish** — STATUS becomes amber **HIDDEN**. Confirm the version is
    absent under `/{org}/builds`, `/vauban/builds`, and the dashboard latest-build
    card on `/vauban` (and `/{org}`). Manage HIDDEN rows only on `/admin/releases`.
    List order is SQL semver (`ORDER BY` sort columns) — publish toggle must not
    reshuffle relative version order among remaining rows.
-6. Click **Publish** — builds + dashboard show the version again.
-7. Open **Edit** (`/admin/releases/{id}`), change notes/channel, Save — list
+7. Click **Publish** — builds + dashboard show the version again.
+8. Open **Edit** (`/admin/releases/{id}`), change notes/channel, Save — list
    reflects the update.
-8. Delete via trash → type `delete` → **Delete permanently**; row is gone.
-9. Interrupted publish (WebAuthn enabled): start a publish, then hit **Cancel
+9. Delete via trash → type `delete` → **Delete permanently**; row is gone.
+10. Interrupted publish (WebAuthn enabled): start a publish, then hit **Cancel
    publish** on `/admin/releases/confirm` — the list must show **no** row for
    that version. Repeat by closing the tab instead: still no row, and the
    staged upload is dropped on a later Release manager visit.
@@ -69,19 +73,26 @@ leaves no trace.
 2. Member POSTs to `/admin/releases/{id}/publish|unpublish|delete` → **404**.
 3. While authenticated, open a non-member org slug — expect **404**.
 4. Anonymous / expired session must not leak tenant data.
+5. As staff, upload a non-`.pkg` / random file on `/admin/releases/new` —
+   expect redirect `?err=not_pkg`, no new row on `/admin/releases`.
 
-Pass: Casbin + tenant fail-closed.
+Pass: Casbin + tenant + FreeBSD package gate fail-closed.
 
-## C -- Pagination
+## C -- Channel chips + pagination
 
-SSR list paging (10 rows per page, shareable `?page=`).
+SSR list paging (10 rows per page) with Builds-style channel chips.
 
-1. With **11+** releases in `/admin/releases`, expect at most **10** table
-   rows and a right-aligned **toolbar pager** above the table.
-2. Follow **Next** (or `?page=2`) — expect the remainder only.
-3. Pager links must **not** sticky-carry `?delete=` / `err=`.
+1. On `/admin/releases`, expect chips **[All][LTS][Stable][EOL]** on the left
+   and (when 11+ rows) a pager on the right of the same chip row.
+2. Click **Stable** — only Stable rows remain; chip hrefs must **not** carry
+   `?page=` (filter resets to page 1). Column gutters must match page 1 / page 2
+   (CSS grid tracks — no column jump between pages) and match the inter-column
+   spacing on `/{org}/builds` (`--vb-catalog-gap`).
+3. With **11+** Stable releases, open `?channel=Stable&page=2` — remainder only,
+   pager keeps `channel=Stable`.
+4. Pager links must **not** sticky-carry `?delete=` / `err=`.
 
-Pass: 10 max per page; toolbar pager.
+Pass: chips filter SQL-side; 10 max per page; Builds-matching column gutters.
 
 ## Related automated coverage
 

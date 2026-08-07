@@ -226,7 +226,7 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
 
         filter_row(chips: &chips, pager: &pager_opt)
 
-        <div class="vb-table-wrap">
+        <div class="vb-table-wrap vb-catalog-wrap">
             <div class="vb-build-head">
                 <div>"VERSION"</div>
                 <div>"CHANNEL"</div>

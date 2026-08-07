@@ -259,6 +259,37 @@ FILTER_LINE="$(grep -n 'filter_row' "$BUILDS" | head -1 | cut -d: -f1)"
 TABLE_LINE="$(grep -n 'vb-table-wrap' "$BUILDS" | head -1 | cut -d: -f1)"
 [[ -n "$FILTER_LINE" && -n "$TABLE_LINE" && "$FILTER_LINE" -lt "$TABLE_LINE" ]] \
   || fail "$BUILDS filter_row must sit before builds table"
+# Shared catalog gutters with /admin/releases (same inter-column spacing).
+grep -n -- '--vb-catalog-gap' styles.css >/dev/null \
+  || fail "styles.css must define --vb-catalog-gap for Builds/Releases"
+grep -n 'column-gap: var(--vb-catalog-gap)' styles.css >/dev/null \
+  || fail "styles.css Builds/Releases grids must use var(--vb-catalog-gap)"
+grep -n -- '--vb-col-version' styles.css >/dev/null \
+  || fail "styles.css must share --vb-col-* tracks between Builds and Releases"
+grep -n 'vb-catalog-wrap' src/app/org/builds.rs >/dev/null \
+  || fail "builds.rs wrapper must be vb-catalog-wrap (fixed tracks scroll)"
+# Content-sized tracks drift page to page; fractions with rem floors do not.
+BUILD_TRACKS="$(awk '/--vb-build-cols:/{f=1} f{print} f&&/;/{exit}' styles.css)"
+if grep -qE '(^|[^-])(auto|min-content|max-content|fit-content)' \
+  <<<"$BUILD_TRACKS"; then
+  fail "styles.css Builds columns must not size on content"
+fi
+BUILD_SHARED="$(grep -o 'var(--vb-col-' <<<"$BUILD_TRACKS" | wc -l | tr -d ' ')"
+[[ "$BUILD_SHARED" == "6" ]] \
+  || fail "styles.css Builds must reuse the shared column tokens (got $BUILD_SHARED)"
+# 64 hex chars * 0.6em advance * 11.5px = 442px of glyphs, plus the check
+# mark: a shorter floor wraps the digest onto a second line.
+SIG_FLOOR="$(grep -oE -- '--vb-col-signature: *minmax\([0-9.]+rem' styles.css \
+  | grep -oE '[0-9.]+' | tail -1)"
+[[ -n "$SIG_FLOOR" ]] \
+  || fail "styles.css must define --vb-col-signature: minmax(<rem floor>, 1fr)"
+awk -v f="$SIG_FLOOR" 'BEGIN { exit !(f >= 29) }' \
+  || fail "styles.css SIGNATURE floor ${SIG_FLOOR}rem truncates a 64-hex digest"
+# Equal growth: an oversized fraction would hoard the surplus width and open
+# a hole between SIGNATURE and SIZE.
+BUILD_UNEVEN="$(grep -oE '[0-9.]+fr' <<<"$BUILD_TRACKS" | grep -v '^1fr$' || true)"
+[[ -z "$BUILD_UNEVEN" ]] \
+  || fail "styles.css Builds columns must all grow by 1fr (got: $BUILD_UNEVEN)"
 # Channel chip hrefs omit page= (builds_list_href for chips uses channel only).
 if grep -nE 'format!\("\{base\}\?channel=\{ch\}&page=|channel=\{ch\}&page=' "$BUILDS" >/dev/null; then
   fail "$BUILDS channel chip hrefs must not sticky-bind page="

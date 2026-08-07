@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::{StorageConfig, StorageIpcMode};
+use crate::freebsd_pkg::FreeBsdPkgInfo;
 use uuid::Uuid;
 
 use super::engine::StorageEngine;
@@ -51,6 +52,8 @@ pub struct PendingReleaseCeremony {
     pub rp_id: String,
     pub allow_credentials: Vec<String>,
     pub expires_at: i64,
+    /// Parsed FreeBSD package metadata (validated before STAGING).
+    pub pkg_info: FreeBsdPkgInfo,
 }
 
 /// Portal-side pending gated delete (C1).

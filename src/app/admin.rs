@@ -6,6 +6,8 @@ mod issues;
 mod key;
 mod releases;
 
+pub use releases::admin_releases_list_href;
+
 use topcoat::{
     Result,
     context::Cx,

@@ -413,4 +413,26 @@ fn inv_builds_concept_ephemeral_server_side() {
         chip_css.contains("padding: 6px 12px"),
         "chips must keep padding 6px 12px for pager parity: {chip_css}"
     );
+    signature_column_fits_a_full_digest(styles);
+}
+
+/// The SIGNATURE column floor is what keeps a SHA-256 on one line.
+///
+/// `prop_ga_sha256_digests_are_64_hex` guarantees the digest length, and
+/// JetBrains Mono advances 0.6em, so the glyphs need
+/// `64 * 0.6 * 11.5px = 442px` plus the check mark and its gap. A smaller
+/// floor silently wraps the digest onto a second row.
+fn signature_column_fits_a_full_digest(styles: &str) {
+    let floor = styles
+        .split("--vb-col-signature: minmax(")
+        .nth(1)
+        .and_then(|rest| rest.split("rem").next())
+        .and_then(|rem| rem.trim().parse::<f32>().ok())
+        .expect("--vb-col-signature: minmax(<rem floor>, 1fr)");
+    let glyphs_px = 64.0 * 0.6 * 11.5;
+    assert!(
+        floor * 16.0 >= glyphs_px,
+        "SIGNATURE floor {floor}rem is under the {glyphs_px}px a 64-hex \
+         digest needs: it would wrap"
+    );
 }

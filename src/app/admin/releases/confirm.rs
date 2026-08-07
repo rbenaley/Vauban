@@ -16,6 +16,7 @@ use super::staging::rollback_staged_release;
 use crate::{
     app::VCP_WEBAUTHN_JS,
     auth::{capability_denied, db, require_staff, storage},
+    freebsd_pkg::format_pkg_info,
     models::{RELEASE_STATUS_PUBLISHED, Release},
     perms::perms_for_user,
     storage::upsert_release_object,
@@ -48,6 +49,7 @@ async fn admin_releases_confirm_page(cx: &Cx) -> Result {
     };
 
     let summary = pending.summary.clone();
+    let pkg_summary = format_pkg_info(&pending.pkg_info);
     let challenge = pending.challenge.clone();
     let rp_id = pending.rp_id.clone();
     let allow = serde_json::to_string(&pending.allow_credentials).unwrap_or_else(|_| "[]".into());
@@ -64,9 +66,18 @@ async fn admin_releases_confirm_page(cx: &Cx) -> Result {
             </a>
             <h1 class="vb-title">"Confirm release publish"</h1>
             <p class="vb-lead">
-                "Review the helper-issued summary, then complete WebAuthn user verification."
+                "Review the package metadata and the helper-issued summary, then complete WebAuthn user verification."
             </p>
             <div class="vb-panel" style="padding: 24px;">
+                <p class="vb-form-hint" style="margin-bottom: 8px;">
+                    "FreeBSD package (parsed from the upload before staging):"
+                </p>
+                <pre
+                    id="vcp-pkg-info"
+                    style="padding: 12px; background: var(--panel-2, #f4f4f5); border-radius: 6px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 18px;"
+                >
+                    (pkg_summary)
+                </pre>
                 <p class="vb-form-hint" style="margin-bottom: 8px;">
                     "Operation summary (from vcp-store). Cross-check with "
                     <code>"vcp-store pending-ops"</code>

@@ -48,6 +48,43 @@ grep -nE 'name="package" type="file" required=""' "$NEW" >/dev/null \
   || fail "$NEW package input must be required (no release without a binary)"
 grep -n 'err=package' "$NEW" >/dev/null \
   || fail "$NEW must refuse a create without a package"
+grep -n 'freebsd_pkg::inspect' "$NEW" >/dev/null \
+  || fail "$NEW must inspect FreeBSD packages before staging"
+grep -n 'err=not_pkg' "$NEW" >/dev/null \
+  || fail "$NEW must refuse non-FreeBSD packages with err=not_pkg"
+# Gate must run before the STAGING insert / put_begin (fail closed, no row).
+# Match the create site (`status: RELEASE_STATUS_STAGING`), not the import.
+INSPECT_LINE="$(grep -n 'freebsd_pkg::inspect' "$NEW" | head -1 | cut -d: -f1)"
+STAGING_LINE="$(grep -n 'status: RELEASE_STATUS_STAGING' "$NEW" | head -1 | cut -d: -f1)"
+PUT_BEGIN_LINE="$(grep -n 'put_begin_release' "$NEW" | head -1 | cut -d: -f1)"
+[[ -n "$INSPECT_LINE" && -n "$STAGING_LINE" && -n "$PUT_BEGIN_LINE" ]] \
+  || fail "$NEW must contain inspect, STAGING create, and put_begin"
+[[ "$INSPECT_LINE" -lt "$STAGING_LINE" && "$INSPECT_LINE" -lt "$PUT_BEGIN_LINE" ]] \
+  || fail "$NEW must call freebsd_pkg::inspect before STAGING/put_begin"
+
+PKG_MOD="src/freebsd_pkg.rs"
+[[ -f "$PKG_MOD" ]] || fail "missing $PKG_MOD"
+grep -n 'pub fn inspect' "$PKG_MOD" >/dev/null \
+  || fail "$PKG_MOD must export inspect"
+grep -n 'pub fn format_pkg_info' "$PKG_MOD" >/dev/null \
+  || fail "$PKG_MOD must export format_pkg_info"
+grep -n 'pub fn craft_minimal_pkg\|pub fn craft_test_vauban_pkg' "$PKG_MOD" >/dev/null \
+  || fail "$PKG_MOD must expose craft helpers for tests"
+# No shell-out to pkg(8) / pkg-static.
+if grep -nE 'Command::new\("(pkg|pkg-static)"\)|std::process::Command' "$PKG_MOD" >/dev/null; then
+  fail "$PKG_MOD must not shell out to pkg(8)"
+fi
+for dep in tar zstd xz2 flate2 bzip2; do
+  grep -nE "^${dep}( |=)" Cargo.toml >/dev/null \
+    || fail "Cargo.toml must depend on ${dep} for pkg parsing"
+done
+
+grep -n 'format_pkg_info' "$CONFIRM" >/dev/null \
+  || fail "$CONFIRM must render format_pkg_info"
+grep -n 'vcp-pkg-info' "$CONFIRM" >/dev/null \
+  || fail "$CONFIRM must expose #vcp-pkg-info for the package summary"
+grep -n 'pkg_info' "$NEW" >/dev/null \
+  || fail "$NEW must stash pkg_info on the pending ceremony"
 
 grep -n 'rollback_staged_release' "$STAGING" >/dev/null \
   || fail "$STAGING must define rollback_staged_release"
@@ -100,13 +137,63 @@ grep -n 'status-hidden' "$CSS" >/dev/null \
 if [[ -f "$LIST" ]]; then
   grep -n 'releases_manage\|admin_view' "$LIST" >/dev/null \
     || fail "$LIST must gate on releases_manage / admin_view"
-  # SSR list pagination (shared list_page + toolbar pager).
+  # SSR list pagination + channel chips (same pattern as /{org}/builds).
   grep -nE 'LIST_PAGE_SIZE' "$LIST" >/dev/null \
     || fail "$LIST must use LIST_PAGE_SIZE"
-  grep -n 'list_toolbar' "$LIST" >/dev/null \
-    || fail "$LIST must use list_toolbar for pager"
+  grep -n 'filter_row' "$LIST" >/dev/null \
+    || fail "$LIST must use filter_row (channel chips + pager)"
+  if grep -n 'list_toolbar' "$LIST" >/dev/null; then
+    fail "$LIST must not use list_toolbar once channel chips are present"
+  fi
+  grep -n 'channel: Option<String>' "$LIST" >/dev/null \
+    || fail "$LIST AdminReleasesQuery must include channel: Option<String>"
   grep -n 'page: Option<u32>' "$LIST" >/dev/null \
     || fail "$LIST AdminReleasesQuery must include page: Option<u32>"
+  grep -n 'admin_releases_list_href' "$LIST" >/dev/null \
+    || fail "$LIST must share admin_releases_list_href for chips/pager"
+  grep -n 'CHANNEL_CHIPS' "$LIST" >/dev/null \
+    || fail "$LIST must define CHANNEL_CHIPS (All/LTS/Stable/EOL)"
+  grep -n 'vb-rel-head' "$LIST" >/dev/null \
+    || fail "$LIST must use vb-rel-head catalog grid (not HTML table)"
+  grep -n 'vb-rel-row' "$LIST" >/dev/null \
+    || fail "$LIST must use vb-rel-row catalog grid"
+  grep -n 'vb-catalog-wrap' "$LIST" >/dev/null \
+    || fail "$LIST wrapper must be vb-catalog-wrap (fixed tracks scroll)"
+  grep -n 'vb-rel-cols' "$CSS" >/dev/null \
+    || fail "$CSS must pin --vb-rel-cols tracks"
+  grep -n -- '--vb-catalog-gap' "$CSS" >/dev/null \
+    || fail "$CSS must share --vb-catalog-gap with Builds"
+  # Builds + releases share the same inter-column gap token.
+  grep -n 'column-gap: var(--vb-catalog-gap)' "$CSS" >/dev/null \
+    || fail "$CSS catalog grids must use var(--vb-catalog-gap)"
+  # Shared columns must reuse the same rem tokens on both surfaces.
+  for tok in version channel date size; do
+    n="$(grep -c -- "var(--vb-col-$tok)" "$CSS" || true)"
+    [[ "$n" -ge 2 ]] \
+      || fail "$CSS --vb-col-$tok must be shared by Builds and Releases"
+  done
+  # Content-sized tracks make page 1 and page N drift apart; fractions with
+  # constant rem floors do not.
+  REL_TRACKS="$(awk '/--vb-rel-cols:/{f=1} f{print} f&&/;/{exit}' "$CSS")"
+  if grep -qE '(^|[^-])(auto|min-content|max-content|fit-content)' \
+    <<<"$REL_TRACKS"; then
+    fail "$CSS releases columns must not size on content"
+  fi
+  REL_SHARED="$(grep -o 'var(--vb-col-' <<<"$REL_TRACKS" | wc -l | tr -d ' ')"
+  [[ "$REL_SHARED" == "6" ]] \
+    || fail "$CSS releases must reuse the 6 shared tokens (got $REL_SHARED)"
+  grep -qE 'minmax\([0-9.]+rem, *1fr\)' <<<"$REL_TRACKS" \
+    || fail "$CSS releases ACTIONS track must be minmax(<rem floor>, 1fr)"
+  for tok in version channel target date size status; do
+    grep -qE -- "--vb-col-$tok: *minmax\([0-9.]+rem, *1fr\)" "$CSS" \
+      || fail "$CSS --vb-col-$tok must be minmax(<rem floor>, 1fr)"
+  done
+  # Unequal fractions pile the whole surplus width into the widest column,
+  # which reads as a hole before SIZE / ACTIONS. Growth must be even.
+  UNEVEN="$(awk '/--vb-col-|--vb-rel-cols:|--vb-build-cols:/,/;/' "$CSS" \
+    | grep -oE '[0-9.]+fr' | grep -v '^1fr$' || true)"
+  [[ -z "$UNEVEN" ]] \
+    || fail "$CSS catalog columns must all grow by 1fr (got: $UNEVEN)"
   grep -n 'page_offset' "$LIST" >/dev/null \
     || fail "$LIST must use page_offset for SQL limit/offset"
   grep -n 'v_major().desc()' "$LIST" >/dev/null \
@@ -120,12 +207,10 @@ if [[ -f "$LIST" ]]; then
     || fail "$LIST must color STATUS via release_status_badge_class"
   grep -n 'vb-row-actions' "$LIST" >/dev/null \
     || fail "$LIST must use vb-row-actions"
-  grep -n 'vb-col-actions' "$LIST" >/dev/null \
-    || fail "$LIST must use vb-col-actions so ACTIONS hugs controls"
+  grep -n 'vb-rel-actions' "$LIST" >/dev/null \
+    || fail "$LIST must use vb-rel-actions for the ACTIONS track"
   grep -n 'vb-row-actions .vb-btn.outline.compact' "$CSS" >/dev/null \
     || fail "$CSS must equalize Publish/Unpublish width in vb-row-actions"
-  grep -n 'vb-col-actions' "$CSS" >/dev/null \
-    || fail "$CSS must define .vb-col-actions (no STATUS/ACTIONS gap)"
   grep -n 'flex-wrap: nowrap' "$CSS" >/dev/null \
     || fail "$CSS .vb-row-actions must nowrap (no stacked Edit/Unpublish)"
   grep -n 'RELEASE_STATUS_STAGING' "$LIST" >/dev/null \
@@ -146,10 +231,10 @@ if [[ -f "$LIST" ]]; then
   # STATUS must be a badge span, not bare text only.
   grep -n 'status_badge' "$LIST" >/dev/null \
     || fail "$LIST STATUS cell must use status_badge class"
-  # TARGET cells use default .vb-table td face (not a smaller vb-mono span).
-  # Pin the exact table cell only — overlay uses `(target.version…)` elsewhere.
-  if ! grep -nE '<td>\(target\)</td>' "$LIST" >/dev/null; then
-    fail "$LIST TARGET cell must be plain <td>(target)</td>"
+  # TARGET uses the shared catalog cell face (not a smaller vb-mono span).
+  # Pin the exact grid cell — overlay uses `(target.version…)` elsewhere.
+  if ! grep -nE '<div>\(target\)</div>' "$LIST" >/dev/null; then
+    fail "$LIST TARGET cell must be plain <div>(target)</div>"
   fi
 fi
 
