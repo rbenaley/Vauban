@@ -2,12 +2,27 @@
 
 use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
-use vcp::models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED, Release};
+use vcp::models::{
+    RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED, RELEASE_STATUS_STAGING,
+    Release,
+};
 
 use crate::common::{
-    cleanup, create_org_with_membership, db_lock, get, login_cookie, post_form, post_multipart,
-    status, test_db, test_router, unique_email, unique_slug, urlencoding_encode,
+    MultipartFile, cleanup, create_org_with_membership, db_lock, get, login_cookie, post_form,
+    post_multipart, post_multipart_with_files, status, test_config, test_db, test_router,
+    test_router_with_config, unique_email, unique_slug, urlencoding_encode,
 };
+
+/// Every create now carries its binary: the portal refuses a release row
+/// without one, and rolls the row back when the upload does not complete.
+fn package_part(bytes: &[u8]) -> MultipartFile<'_> {
+    MultipartFile {
+        field: "package",
+        filename: "vauban.pkg",
+        content_type: "application/octet-stream",
+        bytes,
+    }
+}
 
 async fn body_text(resp: topcoat::router::Response) -> String {
     let bytes = resp.into_body().collect().await.expect("body").to_bytes();
@@ -37,7 +52,7 @@ async fn e2e_admin_creates_release() {
     let cookie = login(&router, &email).await;
 
     let version = unique_slug("v");
-    let create = post_multipart(
+    let create = post_multipart_with_files(
         &router,
         "/admin/releases/new",
         cookie.as_deref(),
@@ -47,6 +62,7 @@ async fn e2e_admin_creates_release() {
             ("date", "2026-07-01"),
             ("notes", "FIX: test release"),
         ],
+        &[package_part(b"vcp-create-release-bytes")],
     )
     .await;
     assert!(
@@ -55,8 +71,66 @@ async fn e2e_admin_creates_release() {
         status(&create)
     );
 
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("releases");
+        let found = rows.iter().find(|r| r.version == version).expect("created");
+        assert_eq!(
+            found.status, RELEASE_STATUS_PUBLISHED,
+            "a completed upload publishes the release"
+        );
+    }
+
     let list = get(&router, "/admin/releases", cookie.as_deref()).await;
     assert_eq!(status(&list), StatusCode::OK);
+
+    cleanup(&db).await;
+}
+
+/// A release row is worthless without its binary: the create is refused
+/// outright and leaves nothing behind.
+#[tokio::test]
+async fn e2e_admin_create_without_package_creates_nothing() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("rel-nopkg");
+    let slug = unique_slug("rel-nopkg-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let version = unique_slug("v-nopkg");
+    let create = post_multipart(
+        &router,
+        "/admin/releases/new",
+        cookie.as_deref(),
+        &[
+            ("version", &version),
+            ("channel", "LTS"),
+            ("date", "2026-07-01"),
+            ("notes", "FIX: no package"),
+        ],
+    )
+    .await;
+    assert!(status(&create).is_redirection());
+    assert_eq!(
+        create
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some("/admin/releases/new?err=package")
+    );
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("releases");
+        assert!(
+            !rows.iter().any(|r| r.version == version),
+            "no package must mean no release row"
+        );
+    }
 
     cleanup(&db).await;
 }
@@ -107,7 +181,7 @@ async fn e2e_admin_creates_org_targeted_release() {
 
     let version = unique_slug("v-priv");
     let org_id = org.id.to_string();
-    let create = post_multipart(
+    let create = post_multipart_with_files(
         &router,
         "/admin/releases/new",
         cookie.as_deref(),
@@ -118,6 +192,7 @@ async fn e2e_admin_creates_org_targeted_release() {
             ("notes", "FIX: private hotfix"),
             ("organization_id", &org_id),
         ],
+        &[package_part(b"vcp-private-hotfix-bytes")],
     )
     .await;
     assert!(status(&create).is_redirection());
@@ -901,7 +976,9 @@ async fn e2e_admin_releases_sql_semver_order_and_sort_columns() {
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
     let cookie = login(&router, &email).await;
 
-    let versions = ["v0.9.0", "v0.10.0", "v0.9.0-acme"];
+    // High majors stay on page 1 even if a leftover demo catalog is present
+    // (`cleanup` preserves seed GA versions such as v1.0.2).
+    let versions = ["v99.9.0", "v99.10.0", "v99.9.0-acme"];
     {
         let mut conn = db.clone();
         for version in versions {
@@ -927,12 +1004,225 @@ async fn e2e_admin_releases_sql_semver_order_and_sort_columns() {
     let list = get(&router, "/admin/releases", cookie.as_deref()).await;
     assert_eq!(status(&list), StatusCode::OK);
     let html = body_text(list).await;
-    let i10 = html.find("v0.10.0").expect("v0.10.0");
-    let i_acme = html.find("v0.9.0-acme").expect("acme");
+    let i10 = html.find("v99.10.0").expect("v99.10.0");
+    let i_acme = html.find("v99.9.0-acme").expect("acme");
     let i_plain = html
-        .find(">v0.9.0<")
-        .expect("plain v0.9.0 cell (not substring of -acme)");
+        .find(">v99.9.0<")
+        .expect("plain v99.9.0 cell (not substring of -acme)");
     assert!(i10 < i_acme && i_acme < i_plain, "SQL semver order: {html}");
+
+    cleanup(&db).await;
+}
+
+/// Abandoning the WebAuthn signature must publish nothing: the staged row is
+/// invisible while the ceremony is in flight and disappears on cancel.
+#[tokio::test]
+async fn e2e_publish_cancelled_at_signature_rolls_everything_back() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let mut cfg = test_config().await;
+    cfg.storage.webauthn_required = true;
+    let router = test_router_with_config(cfg).await;
+
+    let email = unique_email("rel-cancel");
+    let slug = unique_slug("rel-cancel-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let version = unique_slug("v-cancel");
+    let create = post_multipart_with_files(
+        &router,
+        "/admin/releases/new",
+        cookie.as_deref(),
+        &[
+            ("version", &version),
+            ("channel", "LTS"),
+            ("date", "2026-08-01"),
+            ("notes", "FIX: cancelled publish"),
+        ],
+        &[package_part(b"vcp-cancelled-publish-bytes")],
+    )
+    .await;
+    assert!(status(&create).is_redirection());
+    let location = create
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("redirect")
+        .to_owned();
+    let token = location
+        .strip_prefix("/admin/releases/confirm?token=")
+        .expect("confirm redirect")
+        .to_owned();
+
+    // In flight: the row exists only to key the blob, and stays out of sight.
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("releases");
+        let staged = rows.iter().find(|r| r.version == version).expect("staged");
+        assert_eq!(staged.status, RELEASE_STATUS_STAGING);
+    }
+    let list = get(&router, "/admin/releases", cookie.as_deref()).await;
+    assert_eq!(status(&list), StatusCode::OK);
+    let html = body_text(list).await;
+    assert!(
+        !html.contains(&version),
+        "staged release must not show in the release manager: {html}"
+    );
+
+    let confirm = get(&router, &location, cookie.as_deref()).await;
+    assert_eq!(status(&confirm), StatusCode::OK);
+    let confirm_html = body_text(confirm).await;
+    assert!(
+        confirm_html.contains("/admin/releases/confirm/cancel")
+            && confirm_html.contains("Cancel publish"),
+        "confirm page must offer an explicit cancel: {confirm_html}"
+    );
+
+    let cancel = post_form(
+        &router,
+        "/admin/releases/confirm/cancel",
+        cookie.as_deref(),
+        &format!("token={}", urlencoding_encode(&token)),
+    )
+    .await;
+    assert!(status(&cancel).is_redirection());
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("releases");
+        assert!(
+            !rows.iter().any(|r| r.version == version),
+            "cancelled publish must leave no release row"
+        );
+    }
+
+    cleanup(&db).await;
+}
+
+/// Portal restarted mid-ceremony: no reservation survives, so the staged row
+/// is an orphan and the next Release manager visit rolls it back.
+#[tokio::test]
+async fn e2e_orphan_staged_release_is_swept_from_release_manager() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("rel-orphan");
+    let slug = unique_slug("rel-orphan-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let version = unique_slug("v-orphan");
+    {
+        let mut conn = db.clone();
+        let sort = vcp::release_pkg::version_sort_fields(&version);
+        let _ = toasty::create!(Release {
+            version: version.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-08-01".to_owned(),
+            status: RELEASE_STATUS_STAGING.to_owned(),
+            notes: "FIX: orphan".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: sort.v_major,
+            v_minor: sort.v_minor,
+            v_patch: sort.v_patch,
+            has_client_suffix: sort.has_client_suffix,
+            client_suffix: sort.client_suffix,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("staged release");
+    }
+
+    let list = get(&router, "/admin/releases", cookie.as_deref()).await;
+    assert_eq!(status(&list), StatusCode::OK);
+    let html = body_text(list).await;
+    assert!(!html.contains(&version), "orphan must not be listed");
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("releases");
+        assert!(
+            !rows.iter().any(|r| r.version == version),
+            "orphan staged row must be swept"
+        );
+    }
+
+    cleanup(&db).await;
+}
+
+/// A staged release is not an admin object: edit / publish / delete must 404
+/// instead of letting an id guess promote a half-uploaded build.
+#[tokio::test]
+async fn e2e_staged_release_is_not_reachable_by_id() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let mut cfg = test_config().await;
+    cfg.storage.webauthn_required = true;
+    let router = test_router_with_config(cfg).await;
+
+    let email = unique_email("rel-staged-id");
+    let slug = unique_slug("rel-staged-id-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let version = unique_slug("v-staged-id");
+    let create = post_multipart_with_files(
+        &router,
+        "/admin/releases/new",
+        cookie.as_deref(),
+        &[
+            ("version", &version),
+            ("channel", "LTS"),
+            ("date", "2026-08-01"),
+            ("notes", "FIX: staged id"),
+        ],
+        &[package_part(b"vcp-staged-id-bytes")],
+    )
+    .await;
+    assert!(status(&create).is_redirection());
+
+    let staged_id = {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("releases");
+        rows.iter()
+            .find(|r| r.version == version)
+            .expect("staged")
+            .id
+    };
+
+    let edit = get(
+        &router,
+        &format!("/admin/releases/{staged_id}"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&edit), StatusCode::NOT_FOUND);
+
+    let publish = post_form(
+        &router,
+        &format!("/admin/releases/{staged_id}/publish"),
+        cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert_eq!(status(&publish), StatusCode::NOT_FOUND);
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("releases");
+        let staged = rows
+            .iter()
+            .find(|r| r.id == staged_id)
+            .expect("still staged");
+        assert_eq!(staged.status, RELEASE_STATUS_STAGING);
+    }
 
     cleanup(&db).await;
 }

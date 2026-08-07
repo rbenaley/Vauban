@@ -252,6 +252,31 @@ fn inv_webauthn_12_and_adrs_pinned() {
     assert!(webauthn.contains("webauthn_host_is_ip"));
     assert!(webauthn.contains("rp_id_from_webauthn_origin"));
     assert!(webauthn.contains("test_attestation_object_b64"));
+    assert!(
+        !webauthn.contains("sha256={short}") && !webauthn.contains("&s[..12]"),
+        "C1 summaries must carry the full digest for operator comparison"
+    );
+
+    // The confirm panels must show that digest whole (wrap, never clip).
+    for src in [
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/app/admin/releases/confirm.rs"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/app/admin/releases/delete_confirm.rs"
+        )),
+    ] {
+        assert!(
+            src.contains("vcp-webauthn-summary"),
+            "ceremony page must render the helper summary"
+        );
+        assert!(
+            src.contains("white-space: pre-wrap") && src.contains("overflow-wrap: anywhere"),
+            "summary must wrap instead of clipping the 64-hex digest"
+        );
+    }
 
     let client = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

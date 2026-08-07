@@ -60,7 +60,10 @@ async fn admin_releases_delete_confirm_page(cx: &Cx) -> Result {
                 "):"
             </p>
             <div class="vb-panel" style="padding: 24px;">
-                <pre id="vcp-webauthn-summary" style="padding: 12px; font-size: 14px;">
+                <pre
+                    id="vcp-webauthn-summary"
+                    style="padding: 12px; background: var(--panel-2, #f4f4f5); border-radius: 6px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere;"
+                >
                     (summary)
                 </pre>
                 <div

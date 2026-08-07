@@ -149,21 +149,16 @@ pub fn canonical_summary(op: &str, binding: &Value) -> String {
                 .get("digest")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            let short = if sha.len() >= 12 { &sha[..12] } else { sha };
-            format!("release_put_commit id={id} sha256={short}…")
+            // Full digest: operators compare it against `vcp-store pending-ops`,
+            // and a 12-hex prefix is too weak for that check.
+            format!("release_put_commit id={id} sha256={sha}")
         }
         "delete" => {
             let scope = binding.get("scope").and_then(|v| v.as_str()).unwrap_or("?");
             let sha = binding
                 .get("sha256")
                 .and_then(|v| v.as_str())
-                .map(|s| {
-                    if s.len() >= 12 {
-                        format!(" sha256={}…", &s[..12])
-                    } else {
-                        format!(" sha256={s}")
-                    }
-                })
+                .map(|s| format!(" sha256={s}"))
                 .unwrap_or_default();
             if scope == "release" {
                 let id = binding
@@ -962,7 +957,7 @@ mod tests {
             "release_put_commit",
             &json!({"release_id": "42", "digest": "abcdef0123456789"}),
         );
-        assert_eq!(release, "release_put_commit id=42 sha256=abcdef012345…");
+        assert_eq!(release, "release_put_commit id=42 sha256=abcdef0123456789");
         let org = canonical_summary("delete_org", &json!({"org_id": "7"}));
         assert_eq!(org, "delete_org org_id=7");
     }

@@ -40,7 +40,8 @@ rtk cargo test --test integration_tests -- builds_entitlement_ -- --test-threads
 1. Sign in as `support@vauban.sh` / `password`.
 2. Open `/admin/releases/new` and publish a GA release (empty target org)
    **with a package file** so `vcp-store` commits the blob and
-   `storage_objects` is upserted (no package → row stays **HIDDEN**).
+   `storage_objects` is upserted. The package is mandatory: submitting
+   without one is refused and creates nothing.
 3. On `/admin/releases`, confirm STATUS shows a green **PUBLISHED** badge,
    SIGNATURE shows a full 64-hex digest from `storage_objects`, and
    ACTIONS has **Edit** / **Unpublish** / Delete (trash).
@@ -54,8 +55,13 @@ rtk cargo test --test integration_tests -- builds_entitlement_ -- --test-threads
 7. Open **Edit** (`/admin/releases/{id}`), change notes/channel, Save — list
    reflects the update.
 8. Delete via trash → type `delete` → **Delete permanently**; row is gone.
+9. Interrupted publish (WebAuthn enabled): start a publish, then hit **Cancel
+   publish** on `/admin/releases/confirm` — the list must show **no** row for
+   that version. Repeat by closing the tab instead: still no row, and the
+   staged upload is dropped on a later Release manager visit.
 
-Pass: surface behaves as in the focused E2E suite.
+Pass: surface behaves as in the focused E2E suite; an unfinished publish
+leaves no trace.
 
 ## B -- Denial paths
 

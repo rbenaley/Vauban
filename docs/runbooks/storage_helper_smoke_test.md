@@ -52,7 +52,7 @@ rtk cargo test --test integration_tests -- storage_ -- --test-threads=1
 | Result | Criteria |
 |--------|----------|
 | **Pass** | Upload publishes; download bytes hash matches UI digest. |
-| **Fail** | Row stays HIDDEN, download **404**/**503**, or digest mismatch. |
+| **Fail** | No release row is created, download **404**/**503**, or digest mismatch. |
 
 ## B -- Org image upload / serve (Pass / Fail)
 
@@ -135,17 +135,25 @@ Requires at least one ACTIVE KEY key (see ops breakglass / KEY enrol).
 
 1. Admin → Publish release with package. Confirm redirect to
    `/admin/releases/confirm?token=…` showing **helper** summary
-   (`release_put_commit id=… sha256=…`).
+   (`release_put_commit id=… sha256=…`) with the **full 64-hex** digest
+   visible (wrapped if needed, never elided).
 2. On helper host: `vcp-store pending-ops` shows the same canonical `summary`
-   in the in-flight challenges table.
+   in the in-flight challenges table; the digests must match character for
+   character.
 3. Complete WebAuthn (UV required). Release becomes PUBLISHED; download
    matches digest.
-4. Negative: abort ceremony / refuse UV → release stays HIDDEN; no rename.
+4. Negative — **Cancel publish** on the confirm page: no rename, and
+   `/admin/releases` shows **no** row for that version (the staged row is
+   deleted, not left unpublished).
+5. Negative — walk away instead (close the tab, refuse UV). The version must
+   never appear on `/admin/releases`; after the ceremony TTL (300 s) the next
+   Release manager visit drops the staged row and frees the upload slot.
+   Restarting the portal mid-ceremony has the same effect on the next visit.
 
 | Result | Criteria |
 |--------|----------|
-| **Pass** | Summary is helper-issued; publish only after valid assertion. |
-| **Fail** | Publish without ceremony, or UI invents its own summary label. |
+| **Pass** | Summary is helper-issued with the full digest; publish only after valid assertion; an abandoned ceremony leaves no release row and no committed blob. |
+| **Fail** | Publish without ceremony, UI invents its own summary label, the digest is truncated / clipped out of the panel, or a cancelled publish leaves a row on `/admin/releases`. |
 
 ## G -- KEY enrol / approve / revoke (Pass / Fail)
 

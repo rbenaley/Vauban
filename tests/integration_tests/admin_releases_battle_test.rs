@@ -267,6 +267,7 @@ async fn battle_parallel_semver_list_order_under_concurrent_creates() {
     let slug = unique_slug("battle-semver");
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
 
+    // High majors stay on page 1 even if a leftover demo catalog is present.
     let barrier = Arc::new(Barrier::new(4));
     let mut handles = Vec::new();
     for (i, suffix) in ["acme", "beta", "zenith"].into_iter().enumerate() {
@@ -274,7 +275,7 @@ async fn battle_parallel_semver_list_order_under_concurrent_creates() {
         let barrier = barrier.clone();
         handles.push(tokio::spawn(async move {
             barrier.wait().await;
-            let version = format!("v0.7.1-{suffix}");
+            let version = format!("v99.7.1-{suffix}");
             let mut conn = db.clone();
             let _ = toasty::create!(Release {
                 version: version.clone(),
@@ -300,7 +301,7 @@ async fn battle_parallel_semver_list_order_under_concurrent_creates() {
         let barrier = barrier.clone();
         handles.push(tokio::spawn(async move {
             barrier.wait().await;
-            let version = "v0.7.1".to_owned();
+            let version = "v99.7.1".to_owned();
             let mut conn = db.clone();
             let _ = toasty::create!(Release {
                 version: version.clone(),
@@ -343,16 +344,136 @@ async fn battle_parallel_semver_list_order_under_concurrent_creates() {
     }
     for h in readers {
         let html = h.await.expect("join read");
-        let i_acme = html.find("v0.7.1-acme").expect("acme");
-        let i_beta = html.find("v0.7.1-beta").expect("beta");
-        let i_zen = html.find("v0.7.1-zenith").expect("zenith");
+        let i_acme = html.find("v99.7.1-acme").expect("acme");
+        let i_beta = html.find("v99.7.1-beta").expect("beta");
+        let i_zen = html.find("v99.7.1-zenith").expect("zenith");
         let i_plain = html
-            .find(">v0.7.1<")
-            .or_else(|| html.find("v0.7.1"))
+            .find(">v99.7.1<")
+            .or_else(|| html.find("v99.7.1"))
             .expect("plain");
         assert!(
             i_acme < i_beta && i_beta < i_zen && i_zen < i_plain,
             "stable SQL order under contention: {html}"
+        );
+    }
+
+    cleanup(&db).await;
+}
+
+/// Sweeping abandoned ceremonies must never touch a publish that is still in
+/// flight: parallel uploads and Release manager reads keep every staged row
+/// alive and hidden, and cancels remove exactly those rows.
+#[tokio::test]
+async fn battle_staged_publishes_survive_concurrent_list_sweeps() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let mut cfg = crate::common::test_config().await;
+    cfg.storage.webauthn_required = true;
+    // Every staged publish holds an in-flight upload slot until it commits or
+    // is rolled back; keep the helper cap above the storm size.
+    cfg.storage.max_concurrent_uploads = 16;
+    let router = Arc::new(crate::common::test_router_with_config(cfg).await);
+
+    let email = unique_email("battle-staged");
+    let slug = unique_slug("battle-staged");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
+
+    let n = 6usize;
+    let base = unique_slug("v-staged");
+    let barrier = Arc::new(Barrier::new(n * 2));
+    let mut uploads = Vec::with_capacity(n);
+    let mut readers = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let upload_router = router.clone();
+        let upload_cookie = cookie.clone();
+        let upload_barrier = barrier.clone();
+        let version = format!("{base}-{i}");
+        uploads.push(tokio::spawn(async move {
+            upload_barrier.wait().await;
+            let bytes = format!("vcp-battle-staged-{i}").into_bytes();
+            let resp = crate::common::post_multipart_with_files(
+                upload_router.as_ref(),
+                "/admin/releases/new",
+                Some(&upload_cookie),
+                &[
+                    ("version", &version),
+                    ("channel", "LTS"),
+                    ("date", "2026-08-01"),
+                    ("notes", "FIX: battle staged"),
+                ],
+                &[crate::common::MultipartFile {
+                    field: "package",
+                    filename: "vauban.pkg",
+                    content_type: "application/octet-stream",
+                    bytes: &bytes,
+                }],
+            )
+            .await;
+            assert!(status(&resp).is_redirection());
+            resp.headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|l| l.strip_prefix("/admin/releases/confirm?token="))
+                .expect("confirm redirect")
+                .to_owned()
+        }));
+
+        let read_router = router.clone();
+        let read_cookie = cookie.clone();
+        let read_barrier = barrier.clone();
+        readers.push(tokio::spawn(async move {
+            read_barrier.wait().await;
+            let resp = get(read_router.as_ref(), "/admin/releases", Some(&read_cookie)).await;
+            assert_eq!(status(&resp), StatusCode::OK);
+            let body = resp.into_body().collect().await.expect("body").to_bytes();
+            String::from_utf8_lossy(&body).into_owned()
+        }));
+    }
+
+    let mut tokens = Vec::with_capacity(n);
+    for h in uploads {
+        tokens.push(h.await.expect("join upload"));
+    }
+    for h in readers {
+        let html = h.await.expect("join reader");
+        assert!(
+            !html.contains(&base),
+            "in-flight publish must stay out of the release manager: {html}"
+        );
+    }
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("all");
+        let staged: Vec<_> = rows
+            .iter()
+            .filter(|r| r.version.starts_with(&base))
+            .collect();
+        assert_eq!(staged.len(), n, "no live ceremony may be swept");
+        assert!(staged.iter().all(|r| r.status == "STAGING"));
+    }
+
+    for token in tokens {
+        let resp = crate::common::post_form(
+            router.as_ref(),
+            "/admin/releases/confirm/cancel",
+            Some(&cookie),
+            &format!("token={token}"),
+        )
+        .await;
+        assert!(status(&resp).is_redirection());
+    }
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("all");
+        assert!(
+            !rows.iter().any(|r| r.version.starts_with(&base)),
+            "cancelled publishes must leave nothing behind"
         );
     }
 

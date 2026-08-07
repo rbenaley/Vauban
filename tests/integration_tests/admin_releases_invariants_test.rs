@@ -31,8 +31,48 @@ fn inv_admin_releases_create_is_post_and_gated() {
     assert!(src.contains("releases_manage"));
     assert!(src.contains("toasty::create!(Release"));
     assert!(src.contains("RELEASE_STATUS_PUBLISHED"));
-    assert!(src.contains("RELEASE_STATUS_HIDDEN"));
     assert!(src.contains("upsert_release_object"));
+    // Publishing is all-or-nothing: staged until the ceremony commits, and
+    // never left behind as a half-created HIDDEN row.
+    assert!(src.contains("RELEASE_STATUS_STAGING"));
+    assert!(!src.contains("RELEASE_STATUS_HIDDEN"));
+    assert!(src.contains("rollback_staged_release"));
+    assert!(src.contains("sweep_staged_releases"));
+    assert!(src.contains("name=\"package\" type=\"file\" required=\"\""));
+    assert!(src.contains("err=package"));
+}
+
+#[test]
+fn inv_admin_releases_staged_rows_are_transactional() {
+    let staging = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/releases/staging.rs"
+    ));
+    assert!(staging.contains("fn rollback_staged_release"));
+    assert!(staging.contains("fn sweep_staged_releases"));
+    assert!(staging.contains("fn orphan_staged_ids"));
+    assert!(staging.contains("RELEASE_STATUS_STAGING"));
+
+    let confirm = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/releases/confirm.rs"
+    ));
+    assert!(confirm.contains("#[route(POST \"/admin/releases/confirm/cancel\")]"));
+    assert!(confirm.contains("rollback_staged_release"));
+    assert!(confirm.contains("Cancel publish"));
+
+    let list = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/releases.rs"
+    ));
+    assert!(list.contains("RELEASE_STATUS_STAGING"));
+    assert!(list.contains("sweep_staged_releases"));
+
+    let edit = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/releases/release_id.rs"
+    ));
+    assert!(edit.contains("RELEASE_STATUS_STAGING"));
 }
 
 #[test]

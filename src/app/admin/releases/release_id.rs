@@ -16,7 +16,8 @@ use crate::{
     auth::{capability_denied, db, require_staff, storage},
     docs_version::is_delete_confirm,
     models::{
-        Organization, RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED, Release,
+        Organization, RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED,
+        RELEASE_STATUS_STAGING, Release,
     },
     perms::perms_for_user,
     storage::{delete_release_object, find_release_object},
@@ -44,8 +45,15 @@ struct DeleteReleaseForm {
 
 async fn load_release_by_id(cx: &Cx, id: u64) -> Option<Release> {
     let mut database = db(cx);
+    // A STAGING row belongs to an in-flight ceremony, not to the admin:
+    // treat it as absent so edit / publish / delete cannot reach it.
     Release::all()
         .filter(Release::fields().id().eq(id))
+        .filter(
+            Release::fields()
+                .status()
+                .ne(RELEASE_STATUS_STAGING.to_owned()),
+        )
         .exec(&mut database)
         .await
         .ok()

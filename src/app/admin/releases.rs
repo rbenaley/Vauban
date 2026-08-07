@@ -4,6 +4,7 @@ mod confirm;
 mod delete_confirm;
 mod new;
 mod release_id;
+mod staging;
 
 use topcoat::{
     Result,
@@ -19,7 +20,7 @@ use crate::{
         LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_offset,
         parse_page, with_page_param,
     },
-    models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release},
+    models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, RELEASE_STATUS_STAGING, Release},
     perms::perms_for_user,
     storage::{BlobDisplay, release_blob_display},
     ui::{channel_badge_class, release_status_badge_class},
@@ -41,8 +42,17 @@ async fn admin_releases_page(cx: &Cx) -> Result {
         return Err(capability_denied().into());
     }
 
+    // Landing here means any signature prompt was walked away from: undo the
+    // abandoned ceremonies before the list is read.
+    staging::sweep_staged_releases(cx).await;
+
     let mut database = crate::auth::db(cx);
     let total = Release::all()
+        .filter(
+            Release::fields()
+                .status()
+                .ne(RELEASE_STATUS_STAGING.to_owned()),
+        )
         .count()
         .exec(&mut database)
         .await
@@ -60,6 +70,11 @@ async fn admin_releases_page(cx: &Cx) -> Result {
     let delete_target = if let Some(id) = delete_id {
         Release::all()
             .filter(Release::fields().id().eq(id))
+            .filter(
+                Release::fields()
+                    .status()
+                    .ne(RELEASE_STATUS_STAGING.to_owned()),
+            )
             .exec(&mut database)
             .await
             .ok()
@@ -72,6 +87,11 @@ async fn admin_releases_page(cx: &Cx) -> Result {
     let pages = page_count(total, LIST_PAGE_SIZE);
     page = clamp_page(page, pages);
     let page_releases = Release::all()
+        .filter(
+            Release::fields()
+                .status()
+                .ne(RELEASE_STATUS_STAGING.to_owned()),
+        )
         .order_by((
             Release::fields().v_major().desc(),
             Release::fields().v_minor().desc(),

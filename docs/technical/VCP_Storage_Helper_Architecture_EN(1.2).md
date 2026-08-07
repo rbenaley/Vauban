@@ -235,13 +235,25 @@ put_begin → write FD → put_prepare → (C1 ceremony) → put_commit+assertio
 2. **`put_prepare`** (release) — helper hashes its FD; compares client
    expected sha256; **no** `renameat`; emits one-shot challenge bound to
    `{op=release_put_commit, release_id, upload_id, digest, exp}` plus
-   **`summary`** (e.g. `release_put_commit id=42 sha256=abcd1234…`); returns
+   **`summary`** (e.g. `release_put_commit id=42 sha256=<64-hex>`, digest
+   never elided so operators can compare it byte for byte); returns
    `{digest, challenge, summary, rp_id, allowCredentials}`.
 3. **Ceremony (C1)** — portal **must display `summary`** prominently before
    `credentials.get`; admin may cross-check via `vcp-store pending-ops`.
 4. **`put_commit`** — verify assertion: COSE, ACTIVE cred, UV required,
    challenge consume, binding including helper digest, sign_count policy
    (§6.7); then rename + SQLite upsert. Mirror upsert in `vcp` afterward.
+
+**Portal-side atomicity.** The helper keys the blob on `release_id`, so `vcp`
+inserts the Postgres row before `put_begin` — as `status=STAGING`, which is
+excluded from the Release manager, from `/{org}/builds`, and from lookups by
+id. The publish is all-or-nothing: `put_commit` flips the row to `PUBLISHED`,
+while cancelling, any failed step, an expired ceremony, or a portal restart
+mid-ceremony triggers `put_abort` plus deletion of the staged row. Staged rows
+are reservation-backed in `vcp`; a staged row with no live reservation is an
+abandoned ceremony and is swept on the next Release manager read. An admin who
+walks away therefore publishes nothing and, after the ceremony TTL, stops
+holding a `max_concurrent_uploads` slot.
 
 ### 6.3 Deletes (digest-bound when object exists)
 
@@ -262,7 +274,7 @@ equivalent closed code); admin must start over. If the object was already
 absent and challenge was issued without digest (gone before challenge),
 delete is idempotent success after valid assertion.
 
-`summary` examples: `delete release id=42 sha256=abcd1234…`,
+`summary` examples: `delete release id=42 sha256=<64-hex>`,
 `delete_org org_id=9`.
 
 ### 6.4 Verify checks (every gated assertion)

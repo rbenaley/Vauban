@@ -115,8 +115,11 @@ proptest! {
     }
 
     /// Helper-issued C1 summaries stay digest-bound and operator-readable.
+    ///
+    /// The digest is printed in full: operators compare the line with
+    /// `vcp-store pending-ops`, which a truncated prefix cannot support.
     #[test]
-    fn prop_canonical_summary_release_embeds_id_and_digest_prefix(
+    fn prop_canonical_summary_release_embeds_id_and_full_digest(
         release_id in "[0-9]{1,8}",
         digest in "[0-9a-f]{64}",
     ) {
@@ -124,10 +127,28 @@ proptest! {
             "release_put_commit",
             &json!({"release_id": release_id, "digest": digest}),
         );
-        prop_assert!(summary.starts_with("release_put_commit id="));
-        prop_assert!(summary.contains(&release_id));
-        prop_assert!(summary.contains(&digest[..12]));
-        prop_assert!(summary.contains('…'));
+        prop_assert_eq!(
+            &summary,
+            &format!("release_put_commit id={release_id} sha256={digest}")
+        );
+        prop_assert!(!summary.contains('…'), "digest must not be elided");
+    }
+
+    /// Delete summaries carry the whole digest too (release and image scopes).
+    #[test]
+    fn prop_canonical_summary_delete_keeps_full_digest(
+        release_id in "[0-9]{1,8}",
+        digest in "[0-9a-f]{64}",
+    ) {
+        let summary = canonical_summary(
+            "delete",
+            &json!({"scope": "release", "release_id": release_id, "sha256": digest}),
+        );
+        prop_assert_eq!(
+            &summary,
+            &format!("delete release id={release_id} sha256={digest}")
+        );
+        prop_assert!(!summary.contains('…'), "digest must not be elided");
     }
 
     #[test]

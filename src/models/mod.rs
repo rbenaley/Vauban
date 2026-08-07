@@ -48,6 +48,10 @@ pub const DOC_STATUS_PUBLISHED: &str = "PUBLISHED";
 pub const RELEASE_STATUS_PUBLISHED: &str = "PUBLISHED";
 /// `Release.status` when unpublished (admin-only; hidden from customers).
 pub const RELEASE_STATUS_HIDDEN: &str = "HIDDEN";
+/// `Release.status` while the C1 upload ceremony is in flight: the row only
+/// exists to key the helper blob and is rolled back unless the ceremony
+/// commits. Never listed in the admin Release manager, never sent to clients.
+pub const RELEASE_STATUS_STAGING: &str = "STAGING";
 
 /// Category options for admin compose (Concept select).
 pub const DOC_CATEGORIES: &[&str] = &[

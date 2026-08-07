@@ -1,4 +1,4 @@
-//! Contention: parallel `seed_demo_catalog` stays panic-free with stable counts.
+//! Contention: parallel `seed_demo_catalog` stays panic-free; settle is exact.
 
 use std::sync::Arc;
 
@@ -32,7 +32,9 @@ async fn battle_parallel_seed_demo_catalog_stable_counts() {
         handle.await.expect("join");
     }
 
-    // Serial settle so final inventory is exact.
+    // Contended check-then-create can leave duplicate slug/version rows.
+    // Wipe and serial-seed so final inventory matches the product constants.
+    wipe_seed_surface(&db).await;
     seed_demo_catalog(&db)
         .await
         .expect("settle seed_demo_catalog");
@@ -45,4 +47,8 @@ async fn battle_parallel_seed_demo_catalog_stable_counts() {
     assert_eq!(docs.len(), DEMO_DOC_COUNT);
     assert_eq!(releases.len(), DEMO_RELEASE_COUNT);
     assert_eq!(issues.len(), DEMO_ISSUE_COUNT);
+
+    // Do not leave the demo catalog in the shared `vcp_test` DB: `cleanup`
+    // preserves seed release versions and would bury other suites' page-1 rows.
+    wipe_seed_surface(&db).await;
 }

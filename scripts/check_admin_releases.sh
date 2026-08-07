@@ -13,11 +13,15 @@ fail() {
 NEW="src/app/admin/releases/new.rs"
 LIST="src/app/admin/releases.rs"
 EDIT="src/app/admin/releases/release_id.rs"
+STAGING="src/app/admin/releases/staging.rs"
+CONFIRM="src/app/admin/releases/confirm.rs"
 UI="src/ui.rs"
 CSS="styles.css"
 
 [[ -f "$NEW" ]] || fail "missing $NEW"
 [[ -f "$EDIT" ]] || fail "missing $EDIT"
+[[ -f "$STAGING" ]] || fail "missing $STAGING"
+[[ -f "$CONFIRM" ]] || fail "missing $CONFIRM"
 
 grep -n 'method="POST"' "$NEW" >/dev/null || fail "$NEW must POST compose form"
 grep -n 'enctype="multipart/form-data"' "$NEW" >/dev/null \
@@ -27,12 +31,32 @@ grep -nE '#\[route\(POST' "$NEW" >/dev/null || fail "$NEW must define POST creat
 grep -n 'Multipart' "$NEW" >/dev/null || fail "$NEW must parse Multipart on create"
 grep -n 'releases_manage' "$NEW" >/dev/null || fail "$NEW must gate on releases_manage"
 grep -n 'toasty::create!(Release' "$NEW" >/dev/null || fail "$NEW must create Release rows"
-grep -n 'RELEASE_STATUS_HIDDEN' "$NEW" >/dev/null \
-  || fail "$NEW must create as RELEASE_STATUS_HIDDEN until package upload"
+grep -n 'RELEASE_STATUS_STAGING' "$NEW" >/dev/null \
+  || fail "$NEW must create as RELEASE_STATUS_STAGING until the ceremony commits"
+if grep -n 'RELEASE_STATUS_HIDDEN' "$NEW" >/dev/null; then
+  fail "$NEW must not create HIDDEN rows (an unfinished publish is rolled back)"
+fi
 grep -n 'RELEASE_STATUS_PUBLISHED' "$NEW" >/dev/null \
   || fail "$NEW must publish as RELEASE_STATUS_PUBLISHED after package"
 grep -n 'upsert_release_object' "$NEW" >/dev/null \
   || fail "$NEW must upsert storage_objects after package commit"
+grep -n 'rollback_staged_release' "$NEW" >/dev/null \
+  || fail "$NEW must roll back the staged row on every failed upload path"
+grep -n 'sweep_staged_releases' "$NEW" >/dev/null \
+  || fail "$NEW must sweep abandoned ceremonies before staging a new one"
+grep -nE 'name="package" type="file" required=""' "$NEW" >/dev/null \
+  || fail "$NEW package input must be required (no release without a binary)"
+grep -n 'err=package' "$NEW" >/dev/null \
+  || fail "$NEW must refuse a create without a package"
+
+grep -n 'rollback_staged_release' "$STAGING" >/dev/null \
+  || fail "$STAGING must define rollback_staged_release"
+grep -n 'orphan_staged_ids' "$STAGING" >/dev/null \
+  || fail "$STAGING must derive orphans from live reservations"
+grep -nE '#\[route\(POST "/admin/releases/confirm/cancel"\)' "$CONFIRM" >/dev/null \
+  || fail "$CONFIRM must offer an explicit cancel route"
+grep -n 'rollback_staged_release' "$CONFIRM" >/dev/null \
+  || fail "$CONFIRM must roll back when the signature does not commit"
 grep -n 'find_release_object' "$EDIT" >/dev/null \
   || fail "$EDIT must require storage row before publish"
 grep -n 'delete_release' "$EDIT" >/dev/null \
@@ -54,6 +78,8 @@ grep -n 'RELEASE_STATUS_PUBLISHED' "$EDIT" >/dev/null \
   || fail "$EDIT must set RELEASE_STATUS_PUBLISHED"
 grep -n 'RELEASE_STATUS_HIDDEN' "$EDIT" >/dev/null \
   || fail "$EDIT must set RELEASE_STATUS_HIDDEN"
+grep -n 'RELEASE_STATUS_STAGING' "$EDIT" >/dev/null \
+  || fail "$EDIT must treat STAGING rows as absent (no edit/publish/delete)"
 # Boolean selected=(…) omits the attr when false. String "" emits selected="" on
 # every option and browsers keep the last one (wrong target org / channel on Save).
 grep -nE 'selected=\(org\.id == org_id\)' "$EDIT" >/dev/null \
@@ -102,6 +128,10 @@ if [[ -f "$LIST" ]]; then
     || fail "$CSS must define .vb-col-actions (no STATUS/ACTIONS gap)"
   grep -n 'flex-wrap: nowrap' "$CSS" >/dev/null \
     || fail "$CSS .vb-row-actions must nowrap (no stacked Edit/Unpublish)"
+  grep -n 'RELEASE_STATUS_STAGING' "$LIST" >/dev/null \
+    || fail "$LIST must exclude STAGING rows from count and page query"
+  grep -n 'sweep_staged_releases' "$LIST" >/dev/null \
+    || fail "$LIST must sweep abandoned ceremonies before listing"
   grep -n 'delete=' "$LIST" >/dev/null \
     || fail "$LIST must offer delete= confirm query"
   grep -n 'ico_trash' "$LIST" >/dev/null \

@@ -8,6 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::{StorageConfig, StorageIpcMode};
@@ -70,7 +71,24 @@ pub struct StorageClient {
     backend: Backend,
     pending_release: Mutex<HashMap<String, PendingReleaseCeremony>>,
     pending_delete: Mutex<HashMap<String, PendingDeleteCeremony>>,
+    /// Release rows staged for an in-flight upload: `release_id -> expires_at`.
+    /// A staged row is only legitimate while its reservation is live; anything
+    /// else is an abandoned ceremony to roll back.
+    staged_releases: Mutex<HashMap<u64, i64>>,
+    creates_in_flight: AtomicUsize,
     webauthn_required: bool,
+}
+
+/// Held from the staged insert until the reservation exists; sweeps stand
+/// down while any guard is alive.
+pub struct StagingCreateGuard {
+    client: std::sync::Arc<StorageClient>,
+}
+
+impl Drop for StagingCreateGuard {
+    fn drop(&mut self) {
+        self.client.creates_in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl StorageClient {
@@ -84,6 +102,8 @@ impl StorageClient {
                     backend: Backend::Inline(Box::new(Mutex::new(engine))),
                     pending_release: Mutex::new(HashMap::new()),
                     pending_delete: Mutex::new(HashMap::new()),
+                    staged_releases: Mutex::new(HashMap::new()),
+                    creates_in_flight: AtomicUsize::new(0),
                     webauthn_required: cfg.webauthn_required,
                 })
             }
@@ -142,6 +162,73 @@ impl StorageClient {
             .cloned()
     }
 
+    /// Reserve a staged release row for the duration of an upload ceremony.
+    /// Must be called before the bytes are streamed so a concurrent sweep
+    /// cannot mistake the fresh row for an abandoned one.
+    pub fn mark_staged_release(&self, release_id: u64, expires_at: i64) {
+        self.staged_releases
+            .lock()
+            .expect("staged mutex")
+            .insert(release_id, expires_at);
+    }
+
+    /// Release a reservation once the ceremony committed or rolled back.
+    pub fn unmark_staged_release(&self, release_id: u64) {
+        self.staged_releases
+            .lock()
+            .expect("staged mutex")
+            .remove(&release_id);
+    }
+
+    /// Release ids still covered by a live reservation at `now`.
+    pub fn live_staged_release_ids(&self, now: i64) -> Vec<u64> {
+        self.staged_releases
+            .lock()
+            .expect("staged mutex")
+            .iter()
+            .filter(|(_, expires_at)| **expires_at > now)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Drop every reservation and pending finalize that expired at `now`,
+    /// returning the ceremonies so the caller can abort their uploads.
+    pub fn take_expired_pending_releases(&self, now: i64) -> Vec<PendingReleaseCeremony> {
+        self.staged_releases
+            .lock()
+            .expect("staged mutex")
+            .retain(|_, expires_at| *expires_at > now);
+        let mut pending = self.pending_release.lock().expect("pending mutex");
+        let expired: Vec<String> = pending
+            .iter()
+            .filter(|(_, p)| p.expires_at <= now)
+            .map(|(token, _)| token.clone())
+            .collect();
+        expired
+            .into_iter()
+            .filter_map(|token| pending.remove(&token))
+            .collect()
+    }
+
+    /// Wall-clock seconds since the epoch (ceremony clock).
+    pub fn now_unix() -> i64 {
+        Self::ceremony_ttl_unix(0)
+    }
+
+    /// Cover the window between inserting a staged release row and reserving
+    /// it: a sweep running inside that window would see a row nobody claims.
+    pub fn begin_staging_create(self: &std::sync::Arc<Self>) -> StagingCreateGuard {
+        self.creates_in_flight.fetch_add(1, Ordering::SeqCst);
+        StagingCreateGuard {
+            client: self.clone(),
+        }
+    }
+
+    /// True while some request is between the insert and the reservation.
+    pub fn staging_creates_in_flight(&self) -> bool {
+        self.creates_in_flight.load(Ordering::SeqCst) > 0
+    }
+
     fn connect_socket(cfg: &StorageConfig) -> Result<Self, StorageError> {
         if cfg.socket_path.is_empty() {
             return Err(StorageError::new(
@@ -160,6 +247,8 @@ impl StorageClient {
             },
             pending_release: Mutex::new(HashMap::new()),
             pending_delete: Mutex::new(HashMap::new()),
+            staged_releases: Mutex::new(HashMap::new()),
+            creates_in_flight: AtomicUsize::new(0),
             webauthn_required: cfg.webauthn_required,
         })
     }
@@ -232,6 +321,8 @@ impl StorageClient {
             },
             pending_release: Mutex::new(HashMap::new()),
             pending_delete: Mutex::new(HashMap::new()),
+            staged_releases: Mutex::new(HashMap::new()),
+            creates_in_flight: AtomicUsize::new(0),
             webauthn_required: cfg.webauthn_required,
         })
     }

@@ -54,4 +54,8 @@ async fn e2e_minimal_then_demo_catalog_counts() {
     assert_eq!(docs.len(), DEMO_DOC_COUNT);
     assert_eq!(releases.len(), DEMO_RELEASE_COUNT);
     assert_eq!(issues.len(), DEMO_ISSUE_COUNT);
+
+    // Leave `vcp_test` without the demo catalog: ordinary `cleanup` preserves
+    // seed release versions and would push other suites' fixtures off page 1.
+    wipe_seed_surface(&db).await;
 }
