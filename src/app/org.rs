@@ -22,6 +22,7 @@ use crate::{
     db::now_unix,
     models::{DOC_STATUS_PUBLISHED, DocArticle, Issue, RESERVED_ORG_SLUG},
     nav::nav_from_cx,
+    release_pkg::version_for_display,
     tz::{browser_tz, format_relative, format_unix_local},
     ui::{channel_badge_class, note_tag_color},
 };
@@ -96,7 +97,7 @@ async fn dashboard(cx: &Cx) -> Result {
 
     let latest_release = releases.first();
     let build_version = latest_release
-        .map(|r| r.version.clone())
+        .map(|r| version_for_display(&r.version).to_owned())
         .unwrap_or_else(|| "—".to_owned());
     let build_channel = latest_release
         .map(|r| r.channel.clone())

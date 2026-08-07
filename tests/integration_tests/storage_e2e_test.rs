@@ -221,20 +221,19 @@ async fn e2e_release_upload_download_sha_match() {
         create_org_with_membership(&db, &admin_email, "password", &admin_slug, "admin").await;
     let admin_cookie = login_cookie(&router, &admin_email).await;
 
-    let version = unique_slug("vstore");
-    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
+    // Version + channel come from the FreeBSD manifeste (+LTS → LTS).
+    let craft_ver = format!("{}+LTS", unique_slug("vstore"));
+    let identity = vcp::release_pkg::derive_release_identity(craft_ver.trim_start_matches('v'))
+        .expect("craft version must derive");
+    let version = identity.version;
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&craft_ver);
     let expected_sha = sha256_hex(&pkg);
 
     let create = post_multipart_with_files(
         &router,
         "/admin/releases/new",
         admin_cookie.as_deref(),
-        &[
-            ("version", &version),
-            ("channel", "LTS"),
-            ("date", "2026-08-01"),
-            ("notes", "FIX: storage e2e"),
-        ],
+        &[("date", "2026-08-01"), ("notes", "FIX: storage e2e")],
         &[MultipartFile {
             field: "package",
             filename: "vauban.pkg",
@@ -261,6 +260,7 @@ async fn e2e_release_upload_download_sha_match() {
             .next()
             .expect("release");
         assert_eq!(rel.status, RELEASE_STATUS_PUBLISHED);
+        assert_eq!(rel.channel, "LTS");
         assert_eq!(rel.organization_id, RELEASE_GA_ORG_ID);
         let obj = vcp::storage::find_release_object(&mut conn, rel.id)
             .await
@@ -311,19 +311,17 @@ async fn e2e_release_mirror_digest_mismatch_redirects_with_integrity_modal() {
         create_org_with_membership(&db, &admin_email, "password", &admin_slug, "admin").await;
     let admin_cookie = login_cookie(&router, &admin_email).await;
 
-    let version = unique_slug("vstore-mm");
-    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
+    let craft_ver = format!("{}+LTS", unique_slug("vstore-mm"));
+    let identity = vcp::release_pkg::derive_release_identity(craft_ver.trim_start_matches('v'))
+        .expect("craft version must derive");
+    let version = identity.version;
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&craft_ver);
 
     let create = post_multipart_with_files(
         &router,
         "/admin/releases/new",
         admin_cookie.as_deref(),
-        &[
-            ("version", &version),
-            ("channel", "LTS"),
-            ("date", "2026-08-01"),
-            ("notes", "FIX: mirror mismatch"),
-        ],
+        &[("date", "2026-08-01"), ("notes", "FIX: mirror mismatch")],
         &[MultipartFile {
             field: "package",
             filename: "vauban.pkg",
@@ -416,7 +414,7 @@ async fn e2e_release_mirror_digest_mismatch_redirects_with_integrity_modal() {
             .expect("ephemeral token")
             .token
     };
-    let pkg = vcp::release_pkg::package_file_name(&version, "LTS");
+    let pkg = vcp::release_pkg::package_file_name(&version, identity.channel);
     let public = get(&router, &format!("/releases/{token}/{pkg}"), None).await;
     assert_eq!(status(&public), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body_text(public).await.trim(), "integrity mismatch");

@@ -1012,6 +1012,14 @@ a.vb-btn.vb-btn-build, button.vb-btn.vb-btn-build, span.vb-btn.vb-btn-build {
   border: 1px solid #d8dbd6; background: #fff; color: var(--text);
   font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 14px;
 }
+/* Native date widgets paint taller than <select> with the same padding — lock both. */
+.vb-form input[type="date"],
+.vb-form select {
+  height: 40px;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 38px;
+}
 .vb-form textarea { min-height: 110px; resize: vertical; }
 .vb-login-body {
   margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;

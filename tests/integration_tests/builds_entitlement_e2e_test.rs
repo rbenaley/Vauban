@@ -75,6 +75,139 @@ async fn e2e_authorized_download_returns_200_with_blob() {
     cleanup(&db).await;
 }
 
+/// VERSION labels omit `+LTS`; download / verify / ephemeral keep the LTS basename.
+#[tokio::test]
+async fn e2e_builds_lts_marker_display_vs_package_basename() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("dl-ltsmark");
+    let slug = unique_slug("dl-ltsmark");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "org").await;
+
+    let stored = "v98.1.0+LTS".to_owned();
+    let display = vcp::release_pkg::version_for_display(&stored).to_owned();
+    let pkg = vcp::release_pkg::package_file_name(&stored, "LTS");
+    assert_eq!(display, "v98.1.0");
+    assert_eq!(pkg, "vauban-98.1.0+LTS.pkg");
+    let payload = b"vcp-lts-marker-fixture";
+    {
+        let mut conn = db.clone();
+        let id = toasty::create!(Release {
+            version: stored.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-08-01".to_owned(),
+            status: RELEASE_STATUS_PUBLISHED.to_owned(),
+            notes: "FIX: lts marker".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&stored).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&stored).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&stored).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&stored).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&stored).client_suffix,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("release")
+        .id;
+        // Real blob + matching digest (do not overwrite with a fake sha).
+        let _ = seed_release_artifact(&db, id, payload).await;
+    }
+
+    let router = test_router().await;
+    let cookie = login(&router, &email).await;
+
+    let list = get(&router, &format!("/{slug}/builds"), cookie.as_deref()).await;
+    assert!(status(&list).is_success());
+    let body = body_text(list).await;
+    assert!(
+        body.contains(&display) && body.contains(&format!("RELEASE NOTES · {display}")),
+        "VERSION labels must strip +LTS: {body}"
+    );
+    assert!(
+        body.contains("font-weight: 700; color: #14171c;"),
+        "expected version cell chrome: {body}"
+    );
+
+    assert!(
+        body.contains(&format!("sha256 {pkg}")),
+        "verify cmd must keep LTS basename: {body}"
+    );
+
+    let dash = get(&router, &format!("/{slug}"), cookie.as_deref()).await;
+    assert!(status(&dash).is_success());
+    let dash_html = body_text(dash).await;
+    assert!(
+        dash_html.contains(&display) && !dash_html.contains(&stored),
+        "dashboard must strip +LTS marker from CURRENT BUILD"
+    );
+
+    let dl_path = format!(
+        "/{}/builds/{}/download",
+        slug,
+        crate::common::urlencoding_encode(&stored)
+    );
+    let resp = post_form(&router, &dl_path, cookie.as_deref(), "").await;
+    assert_eq!(status(&resp), StatusCode::OK);
+    let disposition = resp
+        .headers()
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let filename_needle = ["filename=\"", pkg.as_str(), "\""].concat();
+    assert!(
+        disposition.contains(&filename_needle),
+        "Content-Disposition must use LTS basename, got {disposition}"
+    );
+
+    let eol_stored = "v98.0.9+LTS".to_owned();
+    let eol_pkg = vcp::release_pkg::package_file_name(&eol_stored, "EOL");
+    assert_eq!(eol_pkg, "vauban-98.0.9+LTS.pkg");
+    {
+        let mut conn = db.clone();
+        let id = toasty::create!(Release {
+            version: eol_stored.clone(),
+            channel: "EOL".to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            status: RELEASE_STATUS_PUBLISHED.to_owned(),
+            notes: "FIX: eol lts".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&eol_stored).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&eol_stored).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&eol_stored).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&eol_stored).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&eol_stored).client_suffix,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("eol release")
+        .id;
+        let _ = seed_release_artifact(&db, id, b"eol-lts-bytes").await;
+    }
+    let eol_path = format!(
+        "/{}/builds/{}/download",
+        slug,
+        crate::common::urlencoding_encode(&eol_stored)
+    );
+    let eol_resp = post_form(&router, &eol_path, cookie.as_deref(), "").await;
+    assert_eq!(status(&eol_resp), StatusCode::OK);
+    let eol_disp = eol_resp
+        .headers()
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let eol_needle = ["filename=\"", eol_pkg.as_str(), "\""].concat();
+    assert!(
+        eol_disp.contains(&eol_needle),
+        "EOL LTS-track basename must keep +LTS marker"
+    );
+
+    cleanup(&db).await;
+}
+
 /// A visible build without an artifact must keep the visitor on Builds: the
 /// POST redirects back to the open row and the page raises the Concept modal.
 #[tokio::test]

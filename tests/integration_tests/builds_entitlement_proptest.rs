@@ -7,7 +7,8 @@ use vcp::app::{
 };
 use vcp::config::{Config, Environment};
 use vcp::release_pkg::{
-    cmp_sort_fields_desc, cmp_version_desc, package_file_name, sha256_cmd, version_sort_fields,
+    cmp_sort_fields_desc, cmp_version_desc, package_file_name, sha256_cmd, version_for_display,
+    version_sort_fields,
 };
 
 const MSG: &str = "download unavailable";
@@ -25,6 +26,7 @@ const PACKAGE_CASES: &[(&str, &str, &str)] = &[
     ("v1.0.2", "LTS", "vauban-1.0.2+LTS.pkg"),
     ("v0.9.35", "Stable", "vauban-0.9.35.pkg"),
     ("v0.8.6", "EOL", "vauban-0.8.6.pkg"),
+    ("v1.0.0+LTS", "EOL", "vauban-1.0.0+LTS.pkg"),
     ("1.2.3", "LTS", "vauban-1.2.3+LTS.pkg"),
 ];
 
@@ -98,6 +100,14 @@ proptest! {
             sha256_cmd(expected),
             format!("sha256 {expected}")
         );
+        let display = version_for_display(ver);
+        prop_assert!(!display.to_ascii_uppercase().ends_with("+LTS"));
+        if expected.ends_with("+LTS.pkg") {
+            prop_assert!(
+                !display.contains("+LTS") && !display.contains("+lts"),
+                "display must omit marker while basename keeps it: {display} / {expected}"
+            );
+        }
     }
 
     #[test]

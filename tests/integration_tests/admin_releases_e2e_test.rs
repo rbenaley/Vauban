@@ -8,9 +8,10 @@ use vcp::models::{
 };
 
 use crate::common::{
-    MultipartFile, cleanup, create_org_with_membership, db_lock, get, login_cookie, post_form,
-    post_multipart, post_multipart_with_files, status, test_config, test_db, test_router,
-    test_router_with_config, unique_email, unique_slug, urlencoding_encode,
+    MultipartFile, assert_topcoat_click_handlers_are_functions,
+    assert_topcoat_submit_handlers_are_functions, cleanup, create_org_with_membership, db_lock,
+    get, login_cookie, post_form, post_multipart, post_multipart_with_files, status, test_config,
+    test_db, test_router, test_router_with_config, unique_email, unique_slug, urlencoding_encode,
 };
 
 /// Every create now carries its binary: the portal refuses a release row
@@ -27,6 +28,12 @@ fn package_part(bytes: &[u8]) -> MultipartFile<'_> {
 async fn body_text(resp: topcoat::router::Response) -> String {
     let bytes = resp.into_body().collect().await.expect("body").to_bytes();
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn expected_identity(craft_version: &str) -> vcp::release_pkg::DerivedReleaseIdentity {
+    // craft_test_vauban_pkg strips one leading `v` before writing the manifeste.
+    vcp::release_pkg::derive_release_identity(craft_version.trim_start_matches('v'))
+        .expect("craft version must derive")
 }
 
 fn count_channel_badges(html: &str) -> usize {
@@ -51,18 +58,14 @@ async fn e2e_admin_creates_release() {
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
     let cookie = login(&router, &email).await;
 
-    let version = unique_slug("v");
-    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
+    let craft_ver = format!("{}+LTS", unique_slug("v"));
+    let identity = expected_identity(&craft_ver);
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&craft_ver);
     let create = post_multipart_with_files(
         &router,
         "/admin/releases/new",
         cookie.as_deref(),
-        &[
-            ("version", &version),
-            ("channel", "LTS"),
-            ("date", "2026-07-01"),
-            ("notes", "FIX: test release"),
-        ],
+        &[("date", "2026-07-01"), ("notes", "FIX: test release")],
         &[package_part(&pkg)],
     )
     .await;
@@ -75,7 +78,11 @@ async fn e2e_admin_creates_release() {
     {
         let mut conn = db.clone();
         let rows = Release::all().exec(&mut conn).await.expect("releases");
-        let found = rows.iter().find(|r| r.version == version).expect("created");
+        let found = rows
+            .iter()
+            .find(|r| r.version == identity.version)
+            .expect("created");
+        assert_eq!(found.channel, "LTS");
         assert_eq!(
             found.status, RELEASE_STATUS_PUBLISHED,
             "a completed upload publishes the release"
@@ -106,12 +113,7 @@ async fn e2e_admin_create_rejects_non_freebsd_package() {
         &router,
         "/admin/releases/new",
         cookie.as_deref(),
-        &[
-            ("version", &version),
-            ("channel", "LTS"),
-            ("date", "2026-07-01"),
-            ("notes", "FIX: not a pkg"),
-        ],
+        &[("date", "2026-07-01"), ("notes", "FIX: not a pkg")],
         &[package_part(b"this-is-not-a-freebsd-package")],
     )
     .await;
@@ -142,9 +144,105 @@ async fn e2e_admin_create_rejects_non_freebsd_package() {
     assert_eq!(status(&form), StatusCode::OK);
     let html = body_text(form).await;
     assert!(
-        html.contains("not a FreeBSD package"),
-        "compose page must explain the refusal: {html}"
+        html.contains("vb-confirm-root")
+            && html.contains("aria-modal=\"true\"")
+            && html.contains("Not a FreeBSD package")
+            && html.contains("nothing was created")
+            && html.contains("href=\"/admin/releases/new\"")
+            && html.contains("Close"),
+        "compose page must raise the Concept confirm modal: {html}"
     );
+    assert!(
+        !html.contains("style=\"color: #b5403a"),
+        "not_pkg must not fall back to the inline red banner: {html}"
+    );
+    assert!(
+        html.contains("id=\"vcp-not-pkg-open\"")
+            && html.contains("id=\"vcp-release-create\"")
+            && html.contains("validate-pkg"),
+        "compose page must wire submit preflight + signal bridge: {html}"
+    );
+    assert_topcoat_submit_handlers_are_functions(&html);
+    assert_topcoat_click_handlers_are_functions(&html);
+
+    cleanup(&db).await;
+}
+
+/// Preflight validate-pkg never stages; garbage → 422, crafted pkg → 204.
+#[tokio::test]
+async fn e2e_admin_validate_pkg_preflight() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("rel-valpkg");
+    let slug = unique_slug("rel-valpkg-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let before = {
+        let mut conn = db.clone();
+        Release::all()
+            .exec(&mut conn)
+            .await
+            .expect("releases")
+            .len()
+    };
+
+    let bad = post_multipart_with_files(
+        &router,
+        "/admin/releases/new/validate-pkg",
+        cookie.as_deref(),
+        &[],
+        &[package_part(b"definitely-not-a-freebsd-pkg")],
+    )
+    .await;
+    assert_eq!(status(&bad), StatusCode::UNPROCESSABLE_ENTITY);
+    let bad_body = body_text(bad).await;
+    assert!(
+        bad_body.contains("\"code\":\"not_pkg\"") && bad_body.contains("\"ok\":false"),
+        "stable not_pkg JSON: {bad_body}"
+    );
+
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg("0.1.0");
+    let good = post_multipart_with_files(
+        &router,
+        "/admin/releases/new/validate-pkg",
+        cookie.as_deref(),
+        &[],
+        &[package_part(&pkg)],
+    )
+    .await;
+    assert_eq!(status(&good), StatusCode::NO_CONTENT);
+
+    {
+        let mut conn = db.clone();
+        let after = Release::all()
+            .exec(&mut conn)
+            .await
+            .expect("releases")
+            .len();
+        assert_eq!(
+            after, before,
+            "validate-pkg must never create a release row"
+        );
+    }
+
+    let member_email = unique_email("rel-valpkg-member");
+    let member_slug = unique_slug("rel-valpkg-member");
+    let (_mu, _mo) =
+        create_org_with_membership(&db, &member_email, "password", &member_slug, "member").await;
+    let member_cookie = login(&router, &member_email).await;
+    let denied = post_multipart_with_files(
+        &router,
+        "/admin/releases/new/validate-pkg",
+        member_cookie.as_deref(),
+        &[],
+        &[package_part(&pkg)],
+    )
+    .await;
+    assert_eq!(status(&denied), StatusCode::NOT_FOUND);
 
     cleanup(&db).await;
 }
@@ -168,12 +266,7 @@ async fn e2e_admin_create_without_package_creates_nothing() {
         &router,
         "/admin/releases/new",
         cookie.as_deref(),
-        &[
-            ("version", &version),
-            ("channel", "LTS"),
-            ("date", "2026-07-01"),
-            ("notes", "FIX: no package"),
-        ],
+        &[("date", "2026-07-01"), ("notes", "FIX: no package")],
     )
     .await;
     assert!(status(&create).is_redirection());
@@ -216,12 +309,7 @@ async fn e2e_member_denied_admin_releases() {
         &router,
         "/admin/releases/new",
         cookie.as_deref(),
-        &[
-            ("version", "test-1.0.0"),
-            ("channel", "LTS"),
-            ("date", "2026-07-01"),
-            ("notes", "x"),
-        ],
+        &[("date", "2026-07-01"), ("notes", "x")],
     )
     .await;
     assert_eq!(status(&create), StatusCode::NOT_FOUND);
@@ -241,16 +329,15 @@ async fn e2e_admin_creates_org_targeted_release() {
     let (_user, org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
     let cookie = login(&router, &email).await;
 
-    let version = unique_slug("v-priv");
-    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
+    let craft_ver = unique_slug("v-priv");
+    let identity = expected_identity(&craft_ver);
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&craft_ver);
     let org_id = org.id.to_string();
     let create = post_multipart_with_files(
         &router,
         "/admin/releases/new",
         cookie.as_deref(),
         &[
-            ("version", &version),
-            ("channel", "LTS"),
             ("date", "2026-07-01"),
             ("notes", "FIX: private hotfix"),
             ("organization_id", &org_id),
@@ -263,8 +350,12 @@ async fn e2e_admin_creates_org_targeted_release() {
     {
         let mut conn = db.clone();
         let rows = Release::all().exec(&mut conn).await.expect("releases");
-        let found = rows.iter().find(|r| r.version == version).expect("created");
+        let found = rows
+            .iter()
+            .find(|r| r.version == identity.version)
+            .expect("created");
         assert_eq!(found.organization_id, org.id);
+        assert_eq!(found.channel, "Stable");
     }
 
     cleanup(&db).await;
@@ -335,8 +426,7 @@ async fn e2e_admin_releases_edit_preserves_target_org_selection() {
     );
 
     let form = format!(
-        "version={}&channel=LTS&date=2026-07-01&notes={}&organization_id={}",
-        urlencoding_encode(&version),
+        "channel=LTS&notes={}&organization_id={}",
         urlencoding_encode("FIX: private"),
         target.id
     );
@@ -412,8 +502,12 @@ async fn e2e_admin_releases_edit_preserves_channel_selection() {
         "saved channel must be selected; select={select}"
     );
     assert!(
-        !option_is_selected(select, "LTS") && !option_is_selected(select, "EOL"),
-        "other channels must not be selected; select={select}"
+        !option_is_selected(select, "EOL"),
+        "EOL must not be selected; select={select}"
+    );
+    assert!(
+        !select.contains("value=\"LTS\""),
+        "Stable track must not offer LTS; select={select}"
     );
     assert_eq!(
         select.matches("selected").count(),
@@ -1118,11 +1212,20 @@ async fn e2e_admin_releases_edit_updates_row() {
     .await;
     assert_eq!(status(&page), StatusCode::OK);
     let html = body_text(page).await;
-    assert!(html.contains("Edit release"), "edit form: {html}");
+    assert!(
+        html.contains("Edit v95.edit.0")
+            && !html.contains("id=\"version\"")
+            && !html.contains("id=\"date\"")
+            && html.contains("id=\"channel\"")
+            && html.contains("id=\"organization_id\"")
+            && html.contains("id=\"notes\""),
+        "edit form: channel/org/notes only: {html}"
+    );
 
+    // LTS track may only move to EOL (not Stable); version gains +LTS so the
+    // download basename stays LTS after EOL. Date is immutable.
     let form = format!(
-        "version={}&channel=Stable&date=2026-08-01&notes={}&organization_id=",
-        urlencoding_encode("v95.edit.1"),
+        "channel=EOL&notes={}&organization_id=",
         urlencoding_encode("FEAT: after")
     );
     let save = post_form(
@@ -1141,13 +1244,214 @@ async fn e2e_admin_releases_edit_updates_row() {
             .exec(&mut conn)
             .await
             .expect("lookup");
-        assert_eq!(rows[0].version, "v95.edit.1");
-        assert_eq!(rows[0].channel, "Stable");
+        assert_eq!(rows[0].version, "v95.edit.0+LTS");
+        assert_eq!(rows[0].channel, "EOL");
         assert_eq!(rows[0].notes, "FEAT: after");
+        assert_eq!(rows[0].released_on, "2026-07-01");
         assert_eq!(rows[0].v_major, 95);
         assert_eq!(rows[0].v_minor, 0);
-        assert_eq!(rows[0].v_patch, 1);
+        assert_eq!(rows[0].v_patch, 0);
     }
+
+    cleanup(&db).await;
+}
+
+/// VERSION column and delete overlay must hide the storage `+LTS` marker.
+#[tokio::test]
+async fn e2e_admin_releases_list_strips_lts_marker_from_version() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("rel-disp");
+    let (_user, _org) =
+        create_org_with_membership(&db, &email, "password", &unique_slug("rel-disp"), "admin")
+            .await;
+    let cookie = login(&router, &email).await;
+
+    let stored = format!("{}+LTS", unique_slug("v96.disp"));
+    let display = vcp::release_pkg::version_for_display(&stored).to_owned();
+    let sort = vcp::release_pkg::version_sort_fields(&stored);
+    let release_id = {
+        let mut conn = db.clone();
+        toasty::create!(Release {
+            version: stored.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-08-01".to_owned(),
+            status: RELEASE_STATUS_PUBLISHED.to_owned(),
+            notes: "FIX: display".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: sort.v_major,
+            v_minor: sort.v_minor,
+            v_patch: sort.v_patch,
+            has_client_suffix: sort.has_client_suffix,
+            client_suffix: sort.client_suffix,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("release")
+        .id
+    };
+
+    let list = get(&router, "/admin/releases", cookie.as_deref()).await;
+    assert_eq!(status(&list), StatusCode::OK);
+    let html = body_text(list).await;
+    assert!(
+        html.contains(&display) && !html.contains(&stored),
+        "VERSION column must strip +LTS: display={display} stored={stored} html={html}"
+    );
+
+    let del = get(
+        &router,
+        &format!("/admin/releases?delete={release_id}"),
+        cookie.as_deref(),
+    )
+    .await;
+    let del_html = body_text(del).await;
+    assert!(
+        del_html.contains(&display) && !del_html.contains(&stored),
+        "delete overlay must strip +LTS: {del_html}"
+    );
+
+    cleanup(&db).await;
+}
+
+/// Forced LTS→Stable POST must not mutate the row (track is sealed).
+#[tokio::test]
+async fn e2e_admin_releases_edit_rejects_lts_to_stable() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("rel-reject");
+    let (_user, _org) =
+        create_org_with_membership(&db, &email, "password", &unique_slug("rel-reject"), "admin")
+            .await;
+    let cookie = login(&router, &email).await;
+
+    let version = unique_slug("v96.reject");
+    let sort = vcp::release_pkg::version_sort_fields(&version);
+    let release_id = {
+        let mut conn = db.clone();
+        toasty::create!(Release {
+            version: version.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-08-01".to_owned(),
+            status: RELEASE_STATUS_PUBLISHED.to_owned(),
+            notes: "FIX: stay lts".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: sort.v_major,
+            v_minor: sort.v_minor,
+            v_patch: sort.v_patch,
+            has_client_suffix: sort.has_client_suffix,
+            client_suffix: sort.client_suffix,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("release")
+        .id
+    };
+
+    let save = post_form(
+        &router,
+        &format!("/admin/releases/{release_id}"),
+        cookie.as_deref(),
+        &format!(
+            "channel=Stable&notes={}&organization_id=",
+            urlencoding_encode("FIX: should not apply")
+        ),
+    )
+    .await;
+    assert!(status(&save).is_redirection());
+    let expected_loc = format!("/admin/releases/{release_id}");
+    assert_eq!(
+        save.headers().get("location").and_then(|v| v.to_str().ok()),
+        Some(expected_loc.as_str())
+    );
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all()
+            .filter(Release::fields().id().eq(release_id))
+            .exec(&mut conn)
+            .await
+            .expect("lookup");
+        assert_eq!(rows[0].channel, "LTS");
+        assert_eq!(rows[0].notes, "FIX: stay lts");
+        assert_eq!(rows[0].version, version);
+    }
+
+    cleanup(&db).await;
+}
+
+/// Manifeste Version that cannot derive an identity refuses create (no row).
+#[tokio::test]
+async fn e2e_admin_create_rejects_unusable_manifeste_version() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("rel-ident");
+    let (_user, _org) =
+        create_org_with_membership(&db, &email, "password", &unique_slug("rel-ident"), "admin")
+            .await;
+    let cookie = login(&router, &email).await;
+
+    // Valid FreeBSD package whose Version is only `+LTS` — inspect ok, identity no.
+    let pkg = vcp::freebsd_pkg::craft_minimal_pkg(&vcp::freebsd_pkg::FreeBsdPkgInfo {
+        name: "vauban".into(),
+        version: "+LTS".into(),
+        origin: "security/vauban".into(),
+        architecture: "FreeBSD:15:amd64".into(),
+        prefix: "/usr/local".into(),
+        categories: vec!["security".into()],
+        licenses: vec!["BSD2CLAUSE".into()],
+        maintainer: "none@freebsd.org".into(),
+        www: "https://vauban.sh".into(),
+        comment: "bad version".into(),
+        shlibs_required: vec![],
+        freebsd_version: Some("1501000".into()),
+        flatsize_bytes: Some(1),
+    });
+    let create = post_multipart_with_files(
+        &router,
+        "/admin/releases/new",
+        cookie.as_deref(),
+        &[("date", "2026-08-01"), ("notes", "FIX: identity")],
+        &[package_part(&pkg)],
+    )
+    .await;
+    assert!(status(&create).is_redirection());
+    assert_eq!(
+        create
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some("/admin/releases/new?err=identity")
+    );
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("releases");
+        assert!(
+            !rows.iter().any(|r| r.notes.contains("identity")),
+            "unusable manifeste Version must create no row"
+        );
+    }
+
+    let form = get(
+        &router,
+        "/admin/releases/new?err=identity",
+        cookie.as_deref(),
+    )
+    .await;
+    let html = body_text(form).await;
+    assert!(
+        html.contains("no usable Version") || html.contains("manifeste"),
+        "identity banner: {html}"
+    );
 
     cleanup(&db).await;
 }
@@ -1219,18 +1523,14 @@ async fn e2e_publish_cancelled_at_signature_rolls_everything_back() {
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
     let cookie = login(&router, &email).await;
 
-    let version = unique_slug("v-cancel");
-    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
+    let craft_ver = unique_slug("v-cancel");
+    let identity = expected_identity(&craft_ver);
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&craft_ver);
     let create = post_multipart_with_files(
         &router,
         "/admin/releases/new",
         cookie.as_deref(),
-        &[
-            ("version", &version),
-            ("channel", "LTS"),
-            ("date", "2026-08-01"),
-            ("notes", "FIX: cancelled publish"),
-        ],
+        &[("date", "2026-08-01"), ("notes", "FIX: cancelled publish")],
         &[package_part(&pkg)],
     )
     .await;
@@ -1250,14 +1550,17 @@ async fn e2e_publish_cancelled_at_signature_rolls_everything_back() {
     {
         let mut conn = db.clone();
         let rows = Release::all().exec(&mut conn).await.expect("releases");
-        let staged = rows.iter().find(|r| r.version == version).expect("staged");
+        let staged = rows
+            .iter()
+            .find(|r| r.version == identity.version)
+            .expect("staged");
         assert_eq!(staged.status, RELEASE_STATUS_STAGING);
     }
     let list = get(&router, "/admin/releases", cookie.as_deref()).await;
     assert_eq!(status(&list), StatusCode::OK);
     let html = body_text(list).await;
     assert!(
-        !html.contains(&version),
+        !html.contains(&identity.version),
         "staged release must not show in the release manager: {html}"
     );
 
@@ -1290,7 +1593,7 @@ async fn e2e_publish_cancelled_at_signature_rolls_everything_back() {
         let mut conn = db.clone();
         let rows = Release::all().exec(&mut conn).await.expect("releases");
         assert!(
-            !rows.iter().any(|r| r.version == version),
+            !rows.iter().any(|r| r.version == identity.version),
             "cancelled publish must leave no release row"
         );
     }
@@ -1368,18 +1671,14 @@ async fn e2e_staged_release_is_not_reachable_by_id() {
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
     let cookie = login(&router, &email).await;
 
-    let version = unique_slug("v-staged-id");
-    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
+    let craft_ver = unique_slug("v-staged-id");
+    let identity = expected_identity(&craft_ver);
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&craft_ver);
     let create = post_multipart_with_files(
         &router,
         "/admin/releases/new",
         cookie.as_deref(),
-        &[
-            ("version", &version),
-            ("channel", "LTS"),
-            ("date", "2026-08-01"),
-            ("notes", "FIX: staged id"),
-        ],
+        &[("date", "2026-08-01"), ("notes", "FIX: staged id")],
         &[package_part(&pkg)],
     )
     .await;
@@ -1389,7 +1688,7 @@ async fn e2e_staged_release_is_not_reachable_by_id() {
         let mut conn = db.clone();
         let rows = Release::all().exec(&mut conn).await.expect("releases");
         rows.iter()
-            .find(|r| r.version == version)
+            .find(|r| r.version == identity.version)
             .expect("staged")
             .id
     };

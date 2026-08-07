@@ -65,6 +65,27 @@ fn inv_download_route_gates_and_streams_via_storage() {
     assert!(!src.contains("download not configured"));
     assert!(src.contains("forbidden"));
     assert!(src.contains("require_org"));
+    assert!(
+        src.contains("package_file_name") && src.contains("CONTENT_DISPOSITION"),
+        "download must set Content-Disposition from package_file_name"
+    );
+}
+
+#[test]
+fn inv_builds_and_dashboard_use_version_for_display() {
+    let builds = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/builds.rs"
+    ));
+    assert!(
+        builds.contains("version_for_display"),
+        "builds list must strip +LTS via version_for_display"
+    );
+    let org = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
+    assert!(
+        org.contains("version_for_display"),
+        "org dashboard must strip +LTS via version_for_display"
+    );
 }
 
 #[test]

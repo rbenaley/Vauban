@@ -23,7 +23,7 @@ use crate::{
     list_page::{PagerLinks, href_with_query, page_offset, with_page_param},
     models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, RESERVED_ORG_SLUG, Release},
     perms::perms_for_user,
-    release_pkg::{package_file_name, sha256_cmd},
+    release_pkg::{package_file_name, sha256_cmd, version_for_display},
     storage::{BlobDisplay, release_blob_display},
     ui::channel_badge_class,
 };
@@ -264,11 +264,12 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
                     );
                     let open_panel = if is_open { eph_model.clone() } else { None };
                     let sha256 = blob.sha256.clone();
+                    let version_label = version_for_display(&rel.version).to_owned();
 
                     <div>
                         <a class=(row_class) href=(row_href)>
                             <div style="font-weight: 700; color: #14171c;">
-                                (rel.version.clone())
+                                (version_label.clone())
                             </div>
                             <div>
                                 <span class=(channel_badge)>(rel.channel.clone())</span>
@@ -293,7 +294,7 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
                             <div class="vb-build-panel">
                                 <div class="vb-section-label">
                                     "RELEASE NOTES · "
-                                    (rel.version.clone())
+                                    (version_label.clone())
                                 </div>
                                 for (tag, color, text) in notes {
                                     let tag_style = format!(

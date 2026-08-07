@@ -52,15 +52,50 @@ grep -n 'freebsd_pkg::inspect' "$NEW" >/dev/null \
   || fail "$NEW must inspect FreeBSD packages before staging"
 grep -n 'err=not_pkg' "$NEW" >/dev/null \
   || fail "$NEW must refuse non-FreeBSD packages with err=not_pkg"
-# Gate must run before the STAGING insert / put_begin (fail closed, no row).
-# Match the create site (`status: RELEASE_STATUS_STAGING`), not the import.
-INSPECT_LINE="$(grep -n 'freebsd_pkg::inspect' "$NEW" | head -1 | cut -d: -f1)"
-STAGING_LINE="$(grep -n 'status: RELEASE_STATUS_STAGING' "$NEW" | head -1 | cut -d: -f1)"
-PUT_BEGIN_LINE="$(grep -n 'put_begin_release' "$NEW" | head -1 | cut -d: -f1)"
-[[ -n "$INSPECT_LINE" && -n "$STAGING_LINE" && -n "$PUT_BEGIN_LINE" ]] \
-  || fail "$NEW must contain inspect, STAGING create, and put_begin"
+grep -n 'derive_release_identity' "$NEW" >/dev/null \
+  || fail "$NEW must derive version/channel from the package manifeste"
+grep -n 'err=identity' "$NEW" >/dev/null \
+  || fail "$NEW must refuse empty manifeste Version with err=identity"
+# Compose must not collect Version / Channel — manifeste is SoT.
+if grep -nE 'name="version"|name="channel"' "$NEW" >/dev/null; then
+  fail "$NEW compose form must not include version or channel fields"
+fi
+grep -n 'vb-confirm-root' "$NEW" >/dev/null \
+  || fail "$NEW not_pkg modal must reuse vb-confirm-root"
+grep -n '\"not_pkg\" => None' "$NEW" >/dev/null \
+  || fail "$NEW must keep not_pkg off the inline red banner"
+grep -nE '#\[route\(POST "/admin/releases/new/validate-pkg"\)\]' "$NEW" >/dev/null \
+  || fail "$NEW must expose POST validate-pkg preflight"
+grep -n 'fn admin_releases_validate_pkg' "$NEW" >/dev/null \
+  || fail "$NEW must define admin_releases_validate_pkg"
+# validate-pkg must never stage or open helper I/O.
+VALIDATE_FN="$(awk '/fn admin_releases_validate_pkg/,/^}$/' "$NEW")"
+echo "$VALIDATE_FN" | grep -q 'freebsd_pkg::inspect' \
+  || fail "validate-pkg must call freebsd_pkg::inspect"
+if echo "$VALIDATE_FN" | grep -qE 'RELEASE_STATUS_STAGING|put_begin|stash_pending_release|toasty::create!'; then
+  fail "validate-pkg must not stage or put_begin"
+fi
+grep -n 'id="vcp-not-pkg-open"' "$NEW" >/dev/null \
+  || fail "$NEW must expose #vcp-not-pkg-open signal bridge"
+grep -n 'id="vcp-release-create"' "$NEW" >/dev/null \
+  || fail "$NEW form must be id=vcp-release-create"
+grep -n '@submit="(async (e)' "$NEW" >/dev/null \
+  || fail "$NEW must intercept submit with an async function expression"
+grep -n 'signal not_pkg_open' "$NEW" >/dev/null \
+  || fail "$NEW must drive the modal from signal not_pkg_open"
+grep -n 'StatusCode::NO_CONTENT' "$NEW" >/dev/null \
+  || fail "$NEW validate-pkg must return 204 NO_CONTENT on success"
+grep -n 'UNPROCESSABLE_ENTITY' "$NEW" >/dev/null \
+  || fail "$NEW validate-pkg must return 422 on not_pkg"
+# Gate must run before the STAGING insert / put_begin on *create* (not validate-pkg).
+CREATE_LINE="$(grep -n 'async fn admin_releases_create' "$NEW" | head -1 | cut -d: -f1)"
+INSPECT_LINE="$(awk -v s="$CREATE_LINE" 'NR>=s && /freebsd_pkg::inspect/{print NR; exit}' "$NEW")"
+STAGING_LINE="$(awk -v s="$CREATE_LINE" 'NR>=s && /status: RELEASE_STATUS_STAGING/{print NR; exit}' "$NEW")"
+PUT_BEGIN_LINE="$(awk -v s="$CREATE_LINE" 'NR>=s && /put_begin_release/{print NR; exit}' "$NEW")"
+[[ -n "$CREATE_LINE" && -n "$INSPECT_LINE" && -n "$STAGING_LINE" && -n "$PUT_BEGIN_LINE" ]] \
+  || fail "$NEW create must contain inspect, STAGING create, and put_begin"
 [[ "$INSPECT_LINE" -lt "$STAGING_LINE" && "$INSPECT_LINE" -lt "$PUT_BEGIN_LINE" ]] \
-  || fail "$NEW must call freebsd_pkg::inspect before STAGING/put_begin"
+  || fail "$NEW create must call freebsd_pkg::inspect before STAGING/put_begin"
 
 PKG_MOD="src/freebsd_pkg.rs"
 [[ -f "$PKG_MOD" ]] || fail "missing $PKG_MOD"
@@ -121,10 +156,26 @@ grep -n 'RELEASE_STATUS_STAGING' "$EDIT" >/dev/null \
 # every option and browsers keep the last one (wrong target org / channel on Save).
 grep -nE 'selected=\(org\.id == org_id\)' "$EDIT" >/dev/null \
   || fail "$EDIT must use boolean selected=(org.id == org_id) for target org"
-grep -n 'selected=(channel_stable)' "$EDIT" >/dev/null \
-  || fail "$EDIT must use boolean selected=(channel_stable) for Channel"
+grep -n 'selected=(track_selected)' "$EDIT" >/dev/null \
+  || fail "$EDIT must use boolean selected=(track_selected) for track channel"
+grep -n 'selected=(channel_eol)' "$EDIT" >/dev/null \
+  || fail "$EDIT must use boolean selected=(channel_eol) for EOL"
+grep -n 'channel_track' "$EDIT" >/dev/null \
+  || fail "$EDIT must scope Channel options via channel_track"
+grep -n 'apply_edit_channel' "$EDIT" >/dev/null \
+  || fail "$EDIT must validate channel transitions with apply_edit_channel"
+# Edit mutates channel / org / notes only — never version or date fields.
+if grep -nE 'name="version"|name="date"|id="version"|id="date"' "$EDIT" >/dev/null; then
+  fail "$EDIT must not expose version or date fields"
+fi
 if grep -nE 'selected=\(if .* \{ "selected" \} else \{ "" \}\)' "$EDIT" >/dev/null; then
   fail "$EDIT must not use string selected=\"\"/\"selected\" (boolean attrs only)"
+fi
+# Edit select is track-scoped: never offer both LTS and Stable at once.
+EDIT_CHANNEL="$(awk '/id="channel"/,/<\/select>/' "$EDIT")"
+if echo "$EDIT_CHANNEL" | grep -q 'value="LTS"' \
+  && echo "$EDIT_CHANNEL" | grep -q 'value="Stable"'; then
+  fail "$EDIT Channel select must not list both LTS and Stable"
 fi
 
 grep -n 'fn release_status_badge_class' "$UI" >/dev/null \
@@ -223,6 +274,13 @@ if [[ -f "$LIST" ]]; then
     || fail "$LIST must use ico_trash for Delete"
   grep -n 'Delete permanently' "$LIST" >/dev/null \
     || fail "$LIST must show delete confirm overlay"
+  grep -n 'version_for_display' "$LIST" >/dev/null \
+    || fail "$LIST must render VERSION via version_for_display (no +LTS in column)"
+  grep -n 'delete_err_webauthn' "$LIST" >/dev/null \
+    || fail "$LIST must surface err=webauthn on the delete overlay"
+  if grep -n 'later slice' "$LIST" >/dev/null; then
+    fail "$LIST must not claim upload/signing ships in a later slice"
+  fi
   grep -n '+ New release' "$LIST" >/dev/null \
     || fail "$LIST CTA must be + New release"
   if grep -n 'vb-badge soft' "$LIST" | grep -q 'rel.channel'; then
@@ -232,7 +290,7 @@ if [[ -f "$LIST" ]]; then
   grep -n 'status_badge' "$LIST" >/dev/null \
     || fail "$LIST STATUS cell must use status_badge class"
   # TARGET uses the shared catalog cell face (not a smaller vb-mono span).
-  # Pin the exact grid cell — overlay uses `(target.version…)` elsewhere.
+  # Pin the exact grid cell — delete overlay uses version_for_display.
   if ! grep -nE '<div>\(target\)</div>' "$LIST" >/dev/null; then
     fail "$LIST TARGET cell must be plain <div>(target)</div>"
   fi

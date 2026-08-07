@@ -161,6 +161,11 @@ fi
 # Dashboard uses the shared ordered loader.
 grep -n 'load_releases_for_org' src/app/org.rs >/dev/null \
   || fail "org dashboard must load releases via load_releases_for_org (SQL-ordered)"
+# VERSION labels omit +LTS (channel badge / package basename keep LTS track).
+grep -n 'version_for_display' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must render VERSION via version_for_display"
+grep -n 'version_for_display' src/app/org.rs >/dev/null \
+  || fail "org dashboard must render build version via version_for_display"
 grep -n 'RESERVED_ORG_SLUG' "$BUILDS" >/dev/null \
   || fail "$BUILDS release visibility must special-case RESERVED_ORG_SLUG"
 grep -n 'has_client_suffix' src/release_pkg.rs >/dev/null \

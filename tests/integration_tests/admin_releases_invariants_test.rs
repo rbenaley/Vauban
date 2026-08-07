@@ -42,14 +42,66 @@ fn inv_admin_releases_create_is_post_and_gated() {
     assert!(src.contains("err=package"));
     assert!(src.contains("freebsd_pkg::inspect"));
     assert!(src.contains("err=not_pkg"));
-    let inspect_at = src.find("freebsd_pkg::inspect").expect("inspect");
-    let staging_at = src
+    assert!(
+        src.contains("derive_release_identity"),
+        "create must derive version/channel from the package manifeste"
+    );
+    assert!(src.contains("err=identity"));
+    assert!(
+        !src.contains("name=\"version\"") && !src.contains("name=\"channel\""),
+        "compose form must not collect version or channel"
+    );
+    assert!(
+        src.contains("vb-confirm-root")
+            && src.contains("aria-modal=\"true\"")
+            && src.contains("signal not_pkg_open")
+            && src.contains("id=\"vcp-not-pkg-open\"")
+            && src.contains("id=\"vcp-release-create\"")
+            && src.contains("@submit=\"(async (e)"),
+        "not_pkg must use signal modal + submit preflight (Builds confirm chrome)"
+    );
+    assert!(
+        src.contains("\"not_pkg\" => None"),
+        "not_pkg must not use the inline red banner"
+    );
+    assert!(
+        src.contains("fn admin_releases_validate_pkg")
+            && src.contains("/admin/releases/new/validate-pkg")
+            && src.contains("StatusCode::NO_CONTENT")
+            && src.contains("UNPROCESSABLE_ENTITY"),
+        "validate-pkg preflight must exist (204/422)"
+    );
+    let validate_at = src
+        .find("fn admin_releases_validate_pkg")
+        .expect("validate fn");
+    let validate_end = src[validate_at..]
+        .find("\n#[route(POST \"/admin/releases/new\")]")
+        .map(|i| validate_at + i)
+        .expect("create route after validate");
+    let validate_body = &src[validate_at..validate_end];
+    assert!(
+        validate_body.contains("freebsd_pkg::inspect"),
+        "validate-pkg must inspect"
+    );
+    assert!(
+        !validate_body.contains("RELEASE_STATUS_STAGING")
+            && !validate_body.contains("put_begin")
+            && !validate_body.contains("stash_pending_release")
+            && !validate_body.contains("toasty::create!"),
+        "validate-pkg must never stage or put_begin"
+    );
+    let create_at = src
+        .find("async fn admin_releases_create")
+        .expect("create fn");
+    let create_body = &src[create_at..];
+    let inspect_at = create_body.find("freebsd_pkg::inspect").expect("inspect");
+    let staging_at = create_body
         .find("status: RELEASE_STATUS_STAGING")
         .expect("staging create");
-    let put_begin_at = src.find("put_begin_release").expect("put_begin");
+    let put_begin_at = create_body.find("put_begin_release").expect("put_begin");
     assert!(
         inspect_at < staging_at && inspect_at < put_begin_at,
-        "FreeBSD inspect must run before STAGING / put_begin"
+        "FreeBSD inspect must run before STAGING / put_begin on create"
     );
 }
 
@@ -137,6 +189,17 @@ fn inv_admin_releases_mutation_routes() {
     assert!(src.contains("releases_manage"));
     assert!(src.contains("RELEASE_STATUS_PUBLISHED"));
     assert!(src.contains("RELEASE_STATUS_HIDDEN"));
+    assert!(src.contains("channel_track"));
+    assert!(src.contains("apply_edit_channel"));
+    assert!(
+        !src.contains("name=\"version\"")
+            && !src.contains("name=\"date\"")
+            && !src.contains("id=\"version\"")
+            && !src.contains("id=\"date\""),
+        "edit must only expose channel, organization, and notes"
+    );
+    assert!(src.contains("selected=(track_selected)"));
+    assert!(src.contains("selected=(channel_eol)"));
 }
 
 #[test]
@@ -161,6 +224,18 @@ fn inv_admin_releases_list_actions_and_badges() {
     assert!(
         src.contains("format!(\"/admin/releases/{}\", rel.id)"),
         "Edit must link by release id"
+    );
+    assert!(
+        src.contains("version_for_display"),
+        "list VERSION / delete overlay must use version_for_display"
+    );
+    assert!(
+        src.contains("delete_err_webauthn"),
+        "list must surface err=webauthn on delete overlay"
+    );
+    assert!(
+        !src.contains("later slice"),
+        "list must not claim upload/signing is a later slice"
     );
     let css = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
     assert!(

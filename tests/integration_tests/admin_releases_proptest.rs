@@ -6,6 +6,10 @@ use vcp::{
     docs_version::is_delete_confirm,
     freebsd_pkg::{FreeBsdPkgInfo, craft_minimal_pkg, inspect},
     models::{RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED},
+    release_pkg::{
+        apply_edit_channel, channel_track, derive_release_identity, package_file_name,
+        version_for_display,
+    },
     ui::release_status_badge_class,
 };
 
@@ -42,20 +46,90 @@ proptest! {
     #![proptest_config(crate::common::prop_config(32))]
 
     #[test]
-    fn prop_release_version_trim(raw in " *test-[a-z0-9.]{1,24} *") {
-        let version = raw.trim().to_owned();
-        prop_assume!(!version.is_empty());
-        prop_assert!(version.starts_with("test-"));
-        prop_assert_eq!(version.as_str(), version.trim());
+    fn prop_derive_identity_stable_or_lts(
+        major in 0u32..20,
+        minor in 0u32..40,
+        patch in 0u32..40,
+        lts in any::<bool>(),
+    ) {
+        let core = format!("{major}.{minor}.{patch}");
+        let raw = if lts {
+            format!("{core}+LTS")
+        } else {
+            core.clone()
+        };
+        let id = derive_release_identity(&raw).expect("identity");
+        prop_assert!(id.version.starts_with('v'));
+        prop_assert_eq!(id.channel, if lts { "LTS" } else { "Stable" });
+        if lts {
+            prop_assert!(id.version.ends_with("+LTS"));
+        } else {
+            prop_assert!(!id.version.to_ascii_uppercase().ends_with("+LTS"));
+        }
+    }
+
+    #[test]
+    fn prop_edit_channel_stays_on_track(
+        major in 1u32..10,
+        patch in 0u32..20,
+        want_eol in any::<bool>(),
+        start_lts in any::<bool>(),
+    ) {
+        let version = format!("v{major}.0.{patch}");
+        let channel = if start_lts { "LTS" } else { "Stable" };
+        let requested = if want_eol {
+            "EOL"
+        } else if start_lts {
+            "LTS"
+        } else {
+            "Stable"
+        };
+        let (v, c) = apply_edit_channel(&version, channel, requested).expect("allowed");
+        prop_assert_eq!(c.as_str(), requested);
+        if start_lts {
+            prop_assert!(v.ends_with("+LTS"));
+            prop_assert!(apply_edit_channel(&version, channel, "Stable").is_none());
+        } else {
+            prop_assert!(!v.to_ascii_uppercase().ends_with("+LTS"));
+            prop_assert!(apply_edit_channel(&version, channel, "LTS").is_none());
+        }
     }
 }
 
 proptest! {
-    #![proptest_config(crate::common::prop_config(16))]
+    #![proptest_config(crate::common::prop_config(32))]
 
+    /// Display never shows `+LTS`; LTS-track package basenames always keep it.
     #[test]
-    fn prop_channel_is_known(channel in prop_oneof!["LTS", "Stable", "EOL"]) {
-        prop_assert!(matches!(channel.as_str(), "LTS" | "Stable" | "EOL"));
+    fn prop_display_strips_lts_basename_keeps_track(
+        major in 0u32..20,
+        minor in 0u32..40,
+        patch in 0u32..40,
+        channel in prop_oneof![Just("LTS"), Just("Stable"), Just("EOL")],
+        store_marker in any::<bool>(),
+    ) {
+        let core = format!("v{major}.{minor}.{patch}");
+        let version = if store_marker || channel == "LTS" {
+            format!("{core}+LTS")
+        } else {
+            core.clone()
+        };
+        let display = version_for_display(&version);
+        prop_assert!(!display.to_ascii_uppercase().ends_with("+LTS"));
+        prop_assert!(!display.contains('+'));
+        let track = channel_track(&version, channel);
+        let pkg = package_file_name(&version, channel);
+        if track == "LTS" {
+            prop_assert!(
+                pkg.ends_with("+LTS.pkg"),
+                "LTS track basename must keep +LTS: {pkg}"
+            );
+        } else {
+            prop_assert!(
+                !pkg.contains("+LTS"),
+                "Stable/EOL-without-marker must not add +LTS: {pkg}"
+            );
+        }
     }
 }
 
@@ -107,6 +181,10 @@ proptest! {
         // Tiny crafted pkgs are well under 512 bytes of entropy odds; still,
         // a random corpus must not parse as a valid package.
         prop_assert!(inspect(&bytes).is_err());
+        // validate-pkg maps every inspect Err to this stable JSON body.
+        let body = r#"{"ok":false,"code":"not_pkg"}"#;
+        prop_assert!(body.contains("\"code\":\"not_pkg\""));
+        prop_assert!(body.contains("\"ok\":false"));
     }
 }
 

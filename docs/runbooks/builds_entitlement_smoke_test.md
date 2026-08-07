@@ -49,7 +49,10 @@ rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=
    same `X.Y.Z`, `X.Y.Z-client` rows sit above plain `X.Y.Z`, A→Z by
    client name. Pager must not reshuffle when toggling publish.
    SIGNATURE column shows the **full** 64-hex SHA-256 (not a 7-char
-   prefix). Column gaps look even across VERSION…SIZE.
+   prefix). VERSION omits a trailing `+LTS` (channel badge carries LTS);
+   verify / ephemeral / download basenames still use `vauban-…+LTS.pkg`
+   for the LTS track. Column gaps look even across VERSION…SIZE.
+   Dashboard `/{org}` CURRENT BUILD / latest must also omit `+LTS`.
 3. Action row: **Download (size)**, **5-minute download link**,
    **Verify signature** (no Collapse).
 4. Submit **5-minute download link** — server issues a UUID token and

@@ -40,15 +40,21 @@ rtk cargo test --test integration_tests -- builds_entitlement_ -- --test-threads
 1. Sign in as `support@vauban.sh` / `password`.
 2. Open `/admin/releases/new` and publish a GA release (empty target org)
    **with a real FreeBSD `.pkg`** so `vcp-store` commits the blob and
-   `storage_objects` is upserted. The package is mandatory: submitting
-   without one is refused and creates nothing. A random binary / non-pkg
-   upload is refused with **“not a FreeBSD package”** and creates nothing.
+   `storage_objects` is upserted. There are no Version / Channel fields —
+   both are read from the package manifeste (`Version` ending in `+LTS`
+   → LTS, otherwise Stable). The package is mandatory: submitting without
+   one is refused and creates nothing. A random binary / non-pkg upload
+   raises the Concept confirm modal (**Not a FreeBSD package**) **without
+   wiping Date / Org / Notes** (Topcoat runtime preflight to
+   `validate-pkg`); re-pick a real `.pkg` and Publish again. Creates
+   nothing until a valid package is accepted.
 3. With WebAuthn enabled, confirm `/admin/releases/confirm` shows the
    parsed package summary (`Name`, `Version`, `Origin`, `Architecture`,
    …) **before** you sign — then complete the ceremony.
 4. On `/admin/releases`, confirm STATUS shows a green **PUBLISHED** badge,
-   SIGNATURE shows a full 64-hex digest from `storage_objects`, and
-   ACTIONS has **Edit** / **Unpublish** / Delete (trash).
+   SIZE reflects the stored blob, VERSION omits a trailing `+LTS` (channel
+   badge carries LTS), and ACTIONS has **Edit** / **Unpublish** / Delete
+   (trash).
 5. Publish an org-targeted hotfix; confirm TARGET column on the list.
 6. Click **Unpublish** — STATUS becomes amber **HIDDEN**. Confirm the version is
    absent under `/{org}/builds`, `/vauban/builds`, and the dashboard latest-build
@@ -56,8 +62,10 @@ rtk cargo test --test integration_tests -- builds_entitlement_ -- --test-threads
    List order is SQL semver (`ORDER BY` sort columns) — publish toggle must not
    reshuffle relative version order among remaining rows.
 7. Click **Publish** — builds + dashboard show the version again.
-8. Open **Edit** (`/admin/releases/{id}`), change notes/channel, Save — list
-   reflects the update.
+8. Open **Edit** (`/admin/releases/{id}`): only Channel (LTS+EOL or
+   Stable+EOL), Target organization, and Release notes. Flip channel /
+   org / notes, Save — list reflects the update. Version and date stay
+   fixed from publish.
 9. Delete via trash → type `delete` → **Delete permanently**; row is gone.
 10. Interrupted publish (WebAuthn enabled): start a publish, then hit **Cancel
    publish** on `/admin/releases/confirm` — the list must show **no** row for
@@ -73,8 +81,11 @@ leaves no trace.
 2. Member POSTs to `/admin/releases/{id}/publish|unpublish|delete` → **404**.
 3. While authenticated, open a non-member org slug — expect **404**.
 4. Anonymous / expired session must not leak tenant data.
-5. As staff, upload a non-`.pkg` / random file on `/admin/releases/new` —
-   expect redirect `?err=not_pkg`, no new row on `/admin/releases`.
+5. As staff, on `/admin/releases/new` fill Date / notes, attach a random
+   file, Publish — expect the **Not a FreeBSD package** modal, Date / Org /
+   Notes still filled, no new row. Re-pick a real `.pkg` and succeed.
+   (Without the Topcoat runtime, the PRG `?err=not_pkg` fallback still
+   shows the modal but fields are cleared.)
 
 Pass: Casbin + tenant + FreeBSD package gate fail-closed.
 

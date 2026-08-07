@@ -34,7 +34,9 @@ EDIT="src/app/admin/releases/release_id.rs"
 [[ -f "$EDIT" ]] || fail "missing $EDIT"
 grep -nE 'selected=\(org\.id == org_id\)' "$EDIT" >/dev/null \
   || fail "$EDIT must use selected=(org.id == org_id)"
-grep -n 'selected=(channel_stable)' "$EDIT" >/dev/null \
-  || fail "$EDIT must use selected=(channel_stable)"
+grep -n 'selected=(track_selected)' "$EDIT" >/dev/null \
+  || fail "$EDIT must use selected=(track_selected)"
+grep -n 'selected=(channel_eol)' "$EDIT" >/dev/null \
+  || fail "$EDIT must use selected=(channel_eol)"
 
 echo "check_topcoat_boolean_attrs: OK"

@@ -399,12 +399,7 @@ async fn battle_staged_publishes_survive_concurrent_list_sweeps() {
                 upload_router.as_ref(),
                 "/admin/releases/new",
                 Some(&upload_cookie),
-                &[
-                    ("version", &version),
-                    ("channel", "LTS"),
-                    ("date", "2026-08-01"),
-                    ("notes", "FIX: battle staged"),
-                ],
+                &[("date", "2026-08-01"), ("notes", "FIX: battle staged")],
                 &[crate::common::MultipartFile {
                     field: "package",
                     filename: "vauban.pkg",
@@ -449,10 +444,7 @@ async fn battle_staged_publishes_survive_concurrent_list_sweeps() {
     {
         let mut conn = db.clone();
         let rows = Release::all().exec(&mut conn).await.expect("all");
-        let staged: Vec<_> = rows
-            .iter()
-            .filter(|r| r.version.starts_with(&base))
-            .collect();
+        let staged: Vec<_> = rows.iter().filter(|r| r.version.contains(&base)).collect();
         assert_eq!(staged.len(), n, "no live ceremony may be swept");
         assert!(staged.iter().all(|r| r.status == "STAGING"));
     }
@@ -472,9 +464,103 @@ async fn battle_staged_publishes_survive_concurrent_list_sweeps() {
         let mut conn = db.clone();
         let rows = Release::all().exec(&mut conn).await.expect("all");
         assert!(
-            !rows.iter().any(|r| r.version.starts_with(&base)),
+            !rows.iter().any(|r| r.version.contains(&base)),
             "cancelled publishes must leave nothing behind"
         );
+    }
+
+    cleanup(&db).await;
+}
+
+/// Parallel validate-pkg preflights: garbage stays 422 with no rows; crafted
+/// packages return 204 under contention.
+#[tokio::test]
+async fn battle_parallel_validate_pkg_preflight() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let router = Arc::new(test_router().await);
+    let email = unique_email("battle-valpkg");
+    let slug = unique_slug("battle-valpkg");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
+
+    let before = {
+        let mut conn = db.clone();
+        Release::all()
+            .exec(&mut conn)
+            .await
+            .expect("releases")
+            .len()
+    };
+
+    let n = 4usize;
+    let barrier = Arc::new(Barrier::new(n * 2));
+    let mut bad = Vec::with_capacity(n);
+    let mut ok = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let upload_router = router.clone();
+        let upload_cookie = cookie.clone();
+        let upload_barrier = barrier.clone();
+        bad.push(tokio::spawn(async move {
+            upload_barrier.wait().await;
+            let garbage = format!("not-a-pkg-preflight-{i}").into_bytes();
+            let resp = crate::common::post_multipart_with_files(
+                upload_router.as_ref(),
+                "/admin/releases/new/validate-pkg",
+                Some(&upload_cookie),
+                &[],
+                &[crate::common::MultipartFile {
+                    field: "package",
+                    filename: "vauban.pkg",
+                    content_type: "application/octet-stream",
+                    bytes: &garbage,
+                }],
+            )
+            .await;
+            status(&resp)
+        }));
+
+        let upload_router = router.clone();
+        let upload_cookie = cookie.clone();
+        let upload_barrier = barrier.clone();
+        ok.push(tokio::spawn(async move {
+            upload_barrier.wait().await;
+            let bytes = vcp::freebsd_pkg::craft_test_vauban_pkg(&format!("1.0.{i}"));
+            let resp = crate::common::post_multipart_with_files(
+                upload_router.as_ref(),
+                "/admin/releases/new/validate-pkg",
+                Some(&upload_cookie),
+                &[],
+                &[crate::common::MultipartFile {
+                    field: "package",
+                    filename: "vauban.pkg",
+                    content_type: "application/octet-stream",
+                    bytes: &bytes,
+                }],
+            )
+            .await;
+            status(&resp)
+        }));
+    }
+
+    for h in bad {
+        assert_eq!(h.await.expect("join bad"), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    for h in ok {
+        assert_eq!(h.await.expect("join ok"), StatusCode::NO_CONTENT);
+    }
+
+    {
+        let mut conn = db.clone();
+        let after = Release::all()
+            .exec(&mut conn)
+            .await
+            .expect("releases")
+            .len();
+        assert_eq!(after, before, "validate-pkg must never create rows");
     }
 
     cleanup(&db).await;
@@ -509,7 +595,6 @@ async fn battle_parallel_invalid_packages_never_stage() {
         let upload_router = router.clone();
         let upload_cookie = cookie.clone();
         let upload_barrier = barrier.clone();
-        let version = format!("{base_bad}-{i}");
         bad.push(tokio::spawn(async move {
             upload_barrier.wait().await;
             let garbage = format!("not-a-pkg-{i}").into_bytes();
@@ -517,12 +602,7 @@ async fn battle_parallel_invalid_packages_never_stage() {
                 upload_router.as_ref(),
                 "/admin/releases/new",
                 Some(&upload_cookie),
-                &[
-                    ("version", &version),
-                    ("channel", "LTS"),
-                    ("date", "2026-08-01"),
-                    ("notes", "FIX: battle not pkg"),
-                ],
+                &[("date", "2026-08-01"), ("notes", "FIX: battle not pkg")],
                 &[crate::common::MultipartFile {
                     field: "package",
                     filename: "vauban.pkg",
@@ -550,12 +630,7 @@ async fn battle_parallel_invalid_packages_never_stage() {
                 upload_router.as_ref(),
                 "/admin/releases/new",
                 Some(&upload_cookie),
-                &[
-                    ("version", &version),
-                    ("channel", "Stable"),
-                    ("date", "2026-08-01"),
-                    ("notes", "FIX: battle ok pkg"),
-                ],
+                &[("date", "2026-08-01"), ("notes", "FIX: battle ok pkg")],
                 &[crate::common::MultipartFile {
                     field: "package",
                     filename: "vauban.pkg",
@@ -590,12 +665,12 @@ async fn battle_parallel_invalid_packages_never_stage() {
         let mut conn = db.clone();
         let rows = Release::all().exec(&mut conn).await.expect("all");
         assert!(
-            !rows.iter().any(|r| r.version.starts_with(&base_bad)),
+            !rows.iter().any(|r| r.version.contains(&base_bad)),
             "invalid packages must never stage"
         );
         let staged: Vec<_> = rows
             .iter()
-            .filter(|r| r.version.starts_with(&base_ok))
+            .filter(|r| r.version.contains(&base_ok))
             .collect();
         assert_eq!(staged.len(), n);
         assert!(staged.iter().all(|r| r.status == "STAGING"));

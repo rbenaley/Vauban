@@ -20,6 +20,7 @@ use crate::{
         RELEASE_STATUS_STAGING, Release,
     },
     perms::perms_for_user,
+    release_pkg::version_for_display,
     storage::{delete_release_object, find_release_object},
 };
 
@@ -28,10 +29,7 @@ struct ReleaseId(str);
 
 #[derive(Deserialize)]
 struct UpdateReleaseForm {
-    version: String,
     channel: String,
-    #[serde(default)]
-    date: String,
     #[serde(default)]
     notes: String,
     #[serde(default)]
@@ -100,11 +98,14 @@ async fn admin_releases_edit_page(cx: &Cx) -> Result {
     let action = format!("/admin/releases/{id}");
     let org_id = rel.organization_id;
     let ga_selected = org_id == RELEASE_GA_ORG_ID;
+    // Track-scoped channel select: LTS↔EOL or Stable↔EOL (never LTS↔Stable).
+    let track_channel = crate::release_pkg::channel_track(&rel.version, &rel.channel);
+    let track_label = track_channel.to_owned();
     // Precompute outside view!: avoid string selected="" on every option (browser
     // keeps the last marked channel) and make comparisons borrow-stable.
-    let channel_lts = rel.channel == "LTS";
-    let channel_stable = rel.channel == "Stable";
+    let track_selected = rel.channel == track_channel;
     let channel_eol = rel.channel == "EOL";
+    let version_label = version_for_display(&rel.version).to_owned();
 
     view! {
         <div>
@@ -115,62 +116,49 @@ async fn admin_releases_edit_page(cx: &Cx) -> Result {
             >
                 "Release manager"
             </a>
-            <h1 class="vb-title">"Edit release"</h1>
+            <h1 class="vb-title">
+                "Edit "
+                (version_label)
+            </h1>
             <p class="vb-lead">
-                "Update channel metadata and notes. Binary upload ships later."
+                "Change channel, target organization, or release notes."
             </p>
             <div class="vb-panel" style="padding: 24px;">
                 <form class="vb-form" method="POST" action=(action)>
                     <div
-                        style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;"
+                        style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end;"
                     >
-                        <div>
-                            <label for="version">"Version"</label>
-                            <input
-                                id="version"
-                                name="version"
-                                required=""
-                                value=(rel.version.clone())
-                            >
-                        </div>
-                        <div>
+                        <div style="width: 8rem;">
                             <label for="channel">"Channel"</label>
-                            <select id="channel" name="channel">
-                                <option value="LTS" selected=(channel_lts)>"LTS"</option>
-                                <option value="Stable" selected=(channel_stable)>
-                                    "Stable"
+                            <select id="channel" name="channel" style="width: 8rem;">
+                                <option value=(track_channel) selected=(track_selected)>
+                                    (track_label)
                                 </option>
                                 <option value="EOL" selected=(channel_eol)>"EOL"</option>
                             </select>
                         </div>
-                        <div>
-                            <label for="date">"Date"</label>
-                            <input
-                                id="date"
-                                name="date"
-                                type="date"
-                                value=(rel.released_on.clone())
+                        <div style="width: 20rem; max-width: 100%;">
+                            <label for="organization_id">"Target organization"</label>
+                            <select
+                                id="organization_id"
+                                name="organization_id"
+                                style="width: 20rem; max-width: 100%;"
                             >
+                                <option value="" selected=(ga_selected)>
+                                    "Generally available (all orgs)"
+                                </option>
+                                for org in orgs {
+                                    let value = org.id.to_string();
+                                    let label = format!("{} ({})", org.name, org.slug);
+                                    // Boolean attrs only: string "" still emits selected="" and
+                                    // the browser keeps the *last* marked option (wrong org).
+                                    <option value=(value) selected=(org.id == org_id)>
+                                        (label)
+                                    </option>
+                                }
+                            </select>
                         </div>
                     </div>
-                    <label for="organization_id">"Target organization"</label>
-                    <select id="organization_id" name="organization_id">
-                        <option value="" selected=(ga_selected)>
-                            "Generally available (all orgs)"
-                        </option>
-                        for org in orgs {
-                            let value = org.id.to_string();
-                            let label = format!("{} ({})", org.name, org.slug);
-                            // Boolean attrs only: string "" still emits selected="" and
-                            // the browser keeps the *last* marked option (wrong org).
-                            <option value=(value) selected=(org.id == org_id)>
-                                (label)
-                            </option>
-                        }
-                    </select>
-                    <p class="vb-form-hint">
-                        "Leave empty for a GA build visible to every organization. Pick an org for a private hotfix."
-                    </p>
                     <label for="notes">"Release notes (TAG: text)"</label>
                     <textarea id="notes" name="notes" style="min-height: 120px;">
                         (rel.notes.clone())
@@ -203,18 +191,11 @@ async fn admin_releases_update(cx: &Cx, Form(form): Form<UpdateReleaseForm>) -> 
         return Err(not_found().into());
     };
 
-    let version = form.version.trim().to_owned();
-    if version.is_empty() {
+    let Some((version, channel)) =
+        crate::release_pkg::apply_edit_channel(&rel.version, &rel.channel, &form.channel)
+    else {
+        // Illegal LTS↔Stable (or unknown channel): keep the edit form.
         return Ok(see_other(&format!("/admin/releases/{id}")));
-    }
-    let channel = form.channel.trim().to_owned();
-    let released_on = {
-        let d = form.date.trim();
-        if d.is_empty() {
-            rel.released_on.clone()
-        } else {
-            d.to_owned()
-        }
     };
     let notes = form.notes.trim().to_owned();
     let organization_id = {
@@ -226,13 +207,14 @@ async fn admin_releases_update(cx: &Cx, Form(form): Form<UpdateReleaseForm>) -> 
         }
     };
 
+    // Version string may gain `+LTS` when leaving the LTS track for EOL; date
+    // is immutable (set at publish).
     let sort = crate::release_pkg::version_sort_fields(&version);
     let mut database = db(cx);
     let _ = rel
         .update()
         .version(version)
         .channel(channel)
-        .released_on(released_on)
         .notes(notes)
         .organization_id(organization_id)
         .v_major(sort.v_major)

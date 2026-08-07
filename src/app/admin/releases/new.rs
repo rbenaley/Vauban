@@ -6,10 +6,12 @@ use topcoat::{
     Result,
     context::Cx,
     router::{
+        Body, Response, StatusCode,
         content::multipart::Multipart,
         error::{SeeOther, see_other},
-        page, query_params, route,
+        header, page, query_params, route,
     },
+    runtime::Event,
     view::view,
 };
 
@@ -24,26 +26,43 @@ use crate::{
     storage::{StorageClient, upsert_release_object, write_and_hash},
 };
 
+/// Stable JSON body when validate-pkg rejects a non-FreeBSD upload.
+const NOT_PKG_JSON: &str = r#"{"ok":false,"code":"not_pkg"}"#;
+
 #[query_params]
 struct NewReleaseQuery {
     err: Option<String>,
 }
 
 /// Compose-page banner for a create that was rolled back or refused.
+///
+/// `not_pkg` is raised as a Concept confirm modal instead (same pattern as
+/// the Builds download-unavailable dialog).
 fn create_error_message(err: Option<&str>) -> Option<&'static str> {
     match err? {
-        "version" => Some("Version is required."),
-        "package" => Some("A package is required: a release is never created without its binary."),
-        "not_pkg" => Some(
-            "The uploaded file is not a FreeBSD package. Publish was refused and nothing was \
-             created.",
+        "identity" => Some(
+            "The package manifeste has no usable Version. Publish was refused — use a real \
+             Vauban .pkg.",
         ),
+        "package" => Some("A package is required: a release is never created without its binary."),
+        "not_pkg" => None,
         "upload" => Some(
             "Upload was not completed, so nothing was published. The release was rolled back \
              — try again.",
         ),
         _ => None,
     }
+}
+
+fn is_not_pkg_error(err: Option<&str>) -> bool {
+    err == Some("not_pkg")
+}
+
+fn not_pkg_response() -> Result<Response> {
+    Ok(Response::builder()
+        .status(StatusCode::UNPROCESSABLE_ENTITY)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(NOT_PKG_JSON))?)
 }
 
 #[page]
@@ -55,7 +74,9 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
     }
 
     let q = query_params::<NewReleaseQuery>(cx).ok();
-    let create_err = create_error_message(q.as_ref().and_then(|q| q.err.as_deref()));
+    let err_code = q.as_ref().and_then(|q| q.err.as_deref());
+    let create_err = create_error_message(err_code);
+    let show_not_pkg = is_not_pkg_error(err_code);
 
     let mut database = db(cx);
     let orgs = Organization::all()
@@ -69,7 +90,12 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
         .await
         .unwrap_or_default();
 
+    let not_pkg_init = show_not_pkg;
+
     view! {
+        cx =>
+        signal not_pkg_open = not_pkg_init;
+
         <div>
             <a
                 class="vb-back"
@@ -80,55 +106,82 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
             </a>
             <h1 class="vb-title">"Publish release"</h1>
             <p class="vb-lead">
-                "Channel metadata, notes, and the signed package. Publishing is all-or-nothing: an interrupted signature publishes nothing."
+                "Notes, target org, and the signed FreeBSD package. Version and channel (LTS or Stable) are read from the package manifeste. Publishing is all-or-nothing: an interrupted signature publishes nothing."
             </p>
             if let Some(message) = create_err {
                 <p style="color: #b5403a; margin-bottom: 14px;">(message)</p>
             }
+            <button
+                type="button"
+                id="vcp-not-pkg-open"
+                style="display: none"
+                @click=$(|_e| not_pkg_open.set(true))
+            ></button>
+            <div
+                class="vb-confirm-root"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Not a FreeBSD package"
+                :style=$(if not_pkg_open.get() { "" } else { "display: none" })
+            >
+                <div class="vb-confirm">
+                    <h2>"Not a FreeBSD package"</h2>
+                    <p>
+                        "The uploaded file is not a FreeBSD package. Publish was refused and nothing was created."
+                        <br />
+                        "Choose a real .pkg produced by pkg create, then try again."
+                    </p>
+                    <div class="vb-confirm-actions">
+                        <a
+                            class="vb-btn muted compact"
+                            href="/admin/releases/new"
+                            @click=$(|e: Event| {
+                                e.prevent_default();
+                                not_pkg_open.set(false);
+                            })
+                        >
+                            "Close"
+                        </a>
+                    </div>
+                </div>
+            </div>
             <div class="vb-panel" style="padding: 24px;">
                 <form
+                    id="vcp-release-create"
                     class="vb-form"
                     method="POST"
                     action="/admin/releases/new"
                     enctype="multipart/form-data"
+                    @submit="(async (e) => { e.prevent_default(); const form = e.current_target.inner; const input = form.querySelector('#package'); const file = input && input.files && input.files[0]; if (!file) { form.reportValidity(); return; } const fd = new FormData(); fd.append('package', file, file.name || 'upload.pkg'); const res = await fetch('/admin/releases/new/validate-pkg', { method: 'POST', body: fd, credentials: 'same-origin' }); if (res.status === 204) { HTMLFormElement.prototype.submit.call(form); return; } input.value = ''; const bridge = document.getElementById('vcp-not-pkg-open'); if (bridge) { bridge.click(); } })"
                 >
                     <div
-                        style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;"
+                        style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end;"
                     >
-                        <div>
-                            <label for="version">"Version"</label>
+                        <div style="width: 11rem;">
+                            <label for="date">"Date"</label>
                             <input
-                                id="version"
-                                name="version"
-                                required=""
-                                placeholder="v1.1.0"
+                                id="date"
+                                name="date"
+                                type="date"
+                                style="width: 11rem;"
                             >
                         </div>
-                        <div>
-                            <label for="channel">"Channel"</label>
-                            <select id="channel" name="channel">
-                                <option>"LTS"</option>
-                                <option>"Stable"</option>
-                                <option>"EOL"</option>
+                        <div style="width: 20rem; max-width: 100%;">
+                            <label for="organization_id">"Target organization"</label>
+                            <select
+                                id="organization_id"
+                                name="organization_id"
+                                style="width: 20rem; max-width: 100%;"
+                            >
+                                <option value="">"Generally available (all orgs)"</option>
+                                for org in orgs {
+                                    let value = org.id.to_string();
+                                    let label = format!("{} ({})", org.name, org.slug);
+                                    <option value=(value)>(label)</option>
+                                }
                             </select>
                         </div>
-                        <div>
-                            <label for="date">"Date"</label>
-                            <input id="date" name="date" type="date">
-                        </div>
                     </div>
-                    <label for="organization_id">"Target organization"</label>
-                    <select id="organization_id" name="organization_id">
-                        <option value="">"Generally available (all orgs)"</option>
-                        for org in orgs {
-                            let value = org.id.to_string();
-                            let label = format!("{} ({})", org.name, org.slug);
-                            <option value=(value)>(label)</option>
-                        }
-                    </select>
-                    <p class="vb-form-hint">
-                        "Leave empty for a GA build visible to every organization. Pick an org for a private hotfix."
-                    </p>
                     <label for="notes">"Release notes (TAG: text)"</label>
                     <textarea
                         id="notes"
@@ -140,9 +193,6 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                         "Package (.pkg)"
                     </label>
                     <input id="package" name="package" type="file" required="">
-                    <p class="vb-form-hint">
-                        "Required FreeBSD package (.pkg). The release only exists once the binary is stored and the signature completes. SHA-256 is computed server-side."
-                    </p>
                     <div style="display: flex; gap: 12px; margin-top: 18px;">
                         <button class="vb-btn" type="submit">"Publish"</button>
                         <a
@@ -160,17 +210,32 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
 }
 
 struct CreateReleaseFields {
-    version: String,
-    channel: String,
     date: String,
     notes: String,
     organization_id: String,
     package: Option<Vec<u8>>,
 }
 
+/// Read the `package` field from a multipart body (ignore other parts).
+async fn parse_package_only(mut multipart: Multipart) -> Result<Option<Vec<u8>>> {
+    let mut package: Option<Vec<u8>> = None;
+    while let Some(field) = multipart.next_field().await? {
+        match field.name() {
+            Some("package") => {
+                let data = field.bytes().await?;
+                if !data.is_empty() {
+                    package = Some(data.to_vec());
+                }
+            }
+            _ => {
+                let _ = field.bytes().await?;
+            }
+        }
+    }
+    Ok(package)
+}
+
 async fn parse_create_multipart(mut multipart: Multipart) -> Result<CreateReleaseFields> {
-    let mut version = String::new();
-    let mut channel = String::new();
     let mut date = String::new();
     let mut notes = String::new();
     let mut organization_id = String::new();
@@ -178,8 +243,6 @@ async fn parse_create_multipart(mut multipart: Multipart) -> Result<CreateReleas
 
     while let Some(field) = multipart.next_field().await? {
         match field.name() {
-            Some("version") => version = field.text().await?,
-            Some("channel") => channel = field.text().await?,
             Some("date") => date = field.text().await?,
             Some("notes") => notes = field.text().await?,
             Some("organization_id") => organization_id = field.text().await?,
@@ -196,13 +259,32 @@ async fn parse_create_multipart(mut multipart: Multipart) -> Result<CreateReleas
     }
 
     Ok(CreateReleaseFields {
-        version,
-        channel,
         date,
         notes,
         organization_id,
         package,
     })
+}
+
+/// Preflight: is this upload a FreeBSD package? Never stages or opens helper I/O.
+#[route(POST "/admin/releases/new/validate-pkg")]
+async fn admin_releases_validate_pkg(cx: &Cx, multipart: Multipart) -> Result<Response> {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.releases_manage {
+        return Err(capability_denied().into());
+    }
+
+    let Some(package) = parse_package_only(multipart).await? else {
+        return not_pkg_response();
+    };
+    if freebsd_pkg::inspect(&package).is_err() {
+        return not_pkg_response();
+    }
+
+    Ok(Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(Body::from(""))?)
 }
 
 #[route(POST "/admin/releases/new")]
@@ -215,10 +297,6 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
 
     let form = parse_create_multipart(multipart).await?;
 
-    let version = form.version.trim().to_owned();
-    if version.is_empty() {
-        return Ok(see_other("/admin/releases/new?err=version"));
-    }
     // A release without its binary is never worth a row: refuse before any
     // write so the compose form stays the only place to retry.
     let Some(package) = form.package else {
@@ -230,7 +308,12 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
         Ok(info) => info,
         Err(_) => return Ok(see_other("/admin/releases/new?err=not_pkg")),
     };
-    let channel = form.channel.trim().to_owned();
+    // Version + LTS/Stable come from the manifeste — never from form fields.
+    let Some(identity) = crate::release_pkg::derive_release_identity(&pkg_info.version) else {
+        return Ok(see_other("/admin/releases/new?err=identity"));
+    };
+    let version = identity.version;
+    let channel = identity.channel.to_owned();
     let released_on = {
         let d = form.date.trim();
         if d.is_empty() {
@@ -336,4 +419,33 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
     store.unmark_staged_release(created.id);
 
     Ok(see_other("/admin/releases"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NOT_PKG_JSON, is_not_pkg_error};
+
+    #[test]
+    fn not_pkg_json_is_stable() {
+        assert!(NOT_PKG_JSON.contains(r#""code":"not_pkg""#));
+        assert!(NOT_PKG_JSON.contains(r#""ok":false"#));
+    }
+
+    #[test]
+    fn validate_submit_source_pins_preflight() {
+        let src = include_str!("new.rs");
+        assert!(src.contains("validate-pkg"));
+        assert!(src.contains("@submit=\"(async (e)"));
+        assert!(src.contains("FormData"));
+        assert!(src.contains("HTMLFormElement.prototype.submit"));
+        assert!(src.contains("vcp-not-pkg-open"));
+        assert!(src.contains("id=\"vcp-release-create\""));
+    }
+
+    #[test]
+    fn not_pkg_error_code_detection() {
+        assert!(is_not_pkg_error(Some("not_pkg")));
+        assert!(!is_not_pkg_error(Some("package")));
+        assert!(!is_not_pkg_error(None));
+    }
 }

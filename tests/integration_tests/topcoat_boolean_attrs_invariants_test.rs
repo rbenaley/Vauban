@@ -29,7 +29,11 @@ fn inv_no_stringly_selected_in_src() {
         "release edit must pin boolean org selected"
     );
     assert!(
-        edit.contains("selected=(channel_stable)"),
+        edit.contains("selected=(track_selected)"),
         "release edit must pin boolean channel selected"
+    );
+    assert!(
+        edit.contains("selected=(channel_eol)"),
+        "release edit must pin boolean EOL selected"
     );
 }

@@ -103,10 +103,9 @@ async fn admin_releases_page(cx: &Cx) -> Result {
         .as_ref()
         .and_then(|q| q.delete.as_deref())
         .and_then(|s| s.parse::<u64>().ok());
-    let delete_err = q
-        .as_ref()
-        .and_then(|q| q.err.as_deref())
-        .is_some_and(|e| e == "confirm");
+    let delete_err = q.as_ref().and_then(|q| q.err.as_deref());
+    let delete_err_confirm = delete_err == Some("confirm");
+    let delete_err_webauthn = delete_err == Some("webauthn");
     let delete_target = if let Some(id) = delete_id {
         Release::all()
             .filter(Release::fields().id().eq(id))
@@ -240,7 +239,12 @@ async fn admin_releases_page(cx: &Cx) -> Result {
                     let is_published = rel.status == RELEASE_STATUS_PUBLISHED;
                     let size_label = format!("{} MB", blob.size_mb);
                     <div class="vb-rel-row">
-                        <div class="vb-rel-version">(rel.version.clone())</div>
+                        <div class="vb-rel-version">
+                            (crate::release_pkg::version_for_display(
+                                    &rel.version,
+                                )
+                                .to_owned())
+                        </div>
                         <div>
                             <span class=(channel_badge)>(rel.channel.clone())</span>
                         </div>
@@ -280,10 +284,6 @@ async fn admin_releases_page(cx: &Cx) -> Result {
                 }
             }
         </div>
-        <p class="vb-muted" style="margin-top: 14px;">
-            "Upload and signing workflow ships in a later slice."
-        </p>
-
         if let Some(target) = delete_target {
             let cancel = admin_releases_list_href(&channel_owned, page);
             let action = format!("/admin/releases/{}/delete", target.id);
@@ -297,16 +297,26 @@ async fn admin_releases_page(cx: &Cx) -> Result {
                     <h2>"Delete this release?"</h2>
                     <p>
                         "This permanently removes "
-                        <strong>(target.version.clone())</strong>
+                        <strong>
+                            (crate::release_pkg::version_for_display(
+                                    &target.version,
+                                )
+                                .to_owned())
+                        </strong>
                         ". Type "
                         <span class="vb-mono">"delete"</span>
                         " to confirm."
                     </p>
-                    if delete_err {
+                    if delete_err_confirm {
                         <p style="color: #b5403a; margin-bottom: 14px;">
                             "Confirmation text must be exactly "
                             <span class="vb-mono">"delete"</span>
                             "."
+                        </p>
+                    }
+                    if delete_err_webauthn {
+                        <p style="color: #b5403a; margin-bottom: 14px;">
+                            "Security key challenge failed. Try Delete again."
                         </p>
                     }
                     <form class="vb-form" method="POST" action=(action)>
