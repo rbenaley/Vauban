@@ -68,6 +68,60 @@ fn inv_download_route_gates_and_streams_via_storage() {
 }
 
 #[test]
+fn inv_failed_download_redirects_to_builds_modal() {
+    let src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/builds/download.rs"
+    ));
+    assert!(
+        src.contains("SEE_OTHER") && src.contains("download_error_href"),
+        "failed download must PRG back to Builds"
+    );
+    assert!(
+        src.contains("dl_error"),
+        "redirect must carry a dl_error code"
+    );
+    assert!(
+        !src.contains("text/plain"),
+        "session download must not render a plain-text error page"
+    );
+    for code in ["missing", "unavailable", "integrity"] {
+        assert!(src.contains(code), "DlError must expose the {code} code");
+    }
+
+    // Public cURL surface keeps machine-readable text + status.
+    let eph = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/builds/ephemeral.rs"
+    ));
+    assert!(
+        eph.contains("text/plain") && eph.contains("SERVICE_UNAVAILABLE"),
+        "public ephemeral GET must stay a 503 text surface"
+    );
+
+    let builds = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/builds.rs"
+    ));
+    assert!(
+        builds.contains("pub dl_error:") && builds.contains("DlError::from_code"),
+        "BuildsQuery must map dl_error through the enum (never echo raw query text)"
+    );
+    assert!(
+        builds.contains("download_error_modal")
+            && builds.contains("vb-confirm-root")
+            && builds.contains("aria-modal=\"true\""),
+        "builds must raise the Concept confirm modal on download failure"
+    );
+
+    let styles = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
+    assert!(
+        styles.contains(".vb-confirm-root") && styles.contains(".vb-confirm-actions"),
+        "modal must reuse existing Concept confirm CSS (no new stylesheet)"
+    );
+}
+
+#[test]
 fn inv_builds_concept_ephemeral_server_side() {
     let builds = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

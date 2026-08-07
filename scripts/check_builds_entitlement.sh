@@ -31,6 +31,31 @@ fi
 grep -n 'require_org' "$DL" >/dev/null || fail "$DL must call require_org"
 grep -n 'forbidden' "$DL" >/dev/null || fail "$DL must fail closed with forbidden when missing perm"
 
+# Failed session download stays on Builds (PRG) instead of a plain-text page.
+grep -n 'SEE_OTHER' "$DL" >/dev/null \
+  || fail "$DL must redirect failures with 303 SEE_OTHER (stay on Builds)"
+grep -n 'download_error_href' "$DL" >/dev/null \
+  || fail "$DL must build the redirect via download_error_href"
+grep -n 'dl_error' "$DL" >/dev/null \
+  || fail "$DL must carry the dl_error code back to the page"
+if grep -n 'text/plain' "$DL" >/dev/null; then
+  fail "$DL session POST must not render a plain-text error page (use the modal redirect)"
+fi
+# Public cURL surface keeps machine-readable text + status.
+grep -n 'text/plain' "$EPH" >/dev/null \
+  || fail "$EPH public GET must keep plain-text helper errors (machine surface)"
+grep -n 'SERVICE_UNAVAILABLE' "$EPH" >/dev/null \
+  || fail "$EPH public GET must keep 503 on helper failure"
+
+grep -n 'dl_error' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must read the dl_error query param"
+grep -n 'download_error_modal' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must render download_error_modal after a failed download"
+grep -n 'vb-confirm-root' "$BUILDS" >/dev/null \
+  || fail "$BUILDS download modal must reuse Concept vb-confirm chrome"
+grep -n 'aria-modal="true"' "$BUILDS" >/dev/null \
+  || fail "$BUILDS download modal must set role dialog / aria-modal"
+
 grep -n '/download' "$BUILDS" >/dev/null || fail "$BUILDS UI must post to download route"
 grep -n 'builds_download' "$BUILDS" >/dev/null || fail "$BUILDS must consult builds_download"
 grep -n 'release_visible_to_org\|load_releases_for_org' "$BUILDS" >/dev/null \

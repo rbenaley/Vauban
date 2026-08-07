@@ -80,6 +80,82 @@ async fn battle_parallel_download_posts() {
     cleanup(&db).await;
 }
 
+/// A wave of downloads on an artifact-less build must all PRG identically:
+/// same 303, same Location, empty bodies, no partial stream, no panic.
+#[tokio::test]
+async fn battle_parallel_download_posts_without_blob_redirect() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-dl-miss");
+    let slug = unique_slug("battle-dl-miss");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let version = unique_slug("dl-miss-ver");
+    {
+        let mut conn = db.clone();
+        let _ = toasty::create!(Release {
+            version: version.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            status: "PUBLISHED".to_owned(),
+            notes: "FIX: no blob".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("release");
+    }
+
+    let cookie = {
+        let router = test_router().await;
+        login_cookie(&router, &email).await.expect("cookie")
+    };
+
+    let n = 8usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    let path = format!("/{slug}/builds/{version}/download");
+
+    for _ in 0..n {
+        let barrier = barrier.clone();
+        let cookie = cookie.clone();
+        let path = path.clone();
+        let router = test_router().await;
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let resp = post_form(&router, &path, Some(&cookie), "channel=LTS").await;
+            assert_eq!(status(&resp), StatusCode::SEE_OTHER);
+            let location = resp
+                .headers()
+                .get(topcoat::router::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+                .expect("Location");
+            let body = resp.into_body().collect().await.expect("body").to_bytes();
+            assert!(body.is_empty(), "redirect must not stream partial bytes");
+            location
+        }));
+    }
+
+    let expected = format!("/{slug}/builds/{version}?channel=LTS&dl_error=missing");
+    for h in handles {
+        let location = h.await.expect("join");
+        assert_eq!(
+            location, expected,
+            "every failure must PRG to the same view"
+        );
+    }
+
+    cleanup(&db).await;
+}
+
 #[tokio::test]
 async fn battle_parallel_ephemeral_generate() {
     let _guard = db_lock().lock().await;

@@ -75,8 +75,10 @@ async fn e2e_authorized_download_returns_200_with_blob() {
     cleanup(&db).await;
 }
 
+/// A visible build without an artifact must keep the visitor on Builds: the
+/// POST redirects back to the open row and the page raises the Concept modal.
 #[tokio::test]
-async fn e2e_download_without_storage_row_is_404() {
+async fn e2e_download_without_storage_row_redirects_to_builds_modal() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
@@ -111,10 +113,65 @@ async fn e2e_download_without_storage_row_is_404() {
         &router,
         &format!("/{slug}/builds/{version}/download"),
         cookie.as_deref(),
-        "",
+        "channel=LTS",
     )
     .await;
-    assert_eq!(status(&resp), StatusCode::NOT_FOUND);
+    assert_eq!(status(&resp), StatusCode::SEE_OTHER);
+    let location = resp
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .expect("Location");
+    assert_eq!(
+        location,
+        format!("/{slug}/builds/{version}?channel=LTS&dl_error=missing"),
+        "failed download must return to the open build row"
+    );
+
+    let page = get(&router, &location, cookie.as_deref()).await;
+    assert_eq!(status(&page), StatusCode::OK);
+    let html = body_text(page).await;
+    assert!(
+        html.contains("vb-confirm-root") && html.contains("Package not available"),
+        "redirect target must raise the download modal: {html}"
+    );
+    assert!(
+        html.contains("aria-modal=\"true\"") && html.contains("role=\"dialog\""),
+        "modal must stay accessible"
+    );
+    assert!(
+        html.contains(&format!("/{slug}/builds/{version}?channel=LTS\"")),
+        "Close must land on the same view without dl_error: {html}"
+    );
+
+    // Clean URL: same page, no modal.
+    let clean = get(
+        &router,
+        &format!("/{slug}/builds/{version}?channel=LTS"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&clean), StatusCode::OK);
+    let clean_html = body_text(clean).await;
+    assert!(
+        !clean_html.contains("vb-confirm-root"),
+        "modal must only appear after a failed download"
+    );
+
+    // Unknown codes are ignored (never echoed into HTML).
+    let bogus = get(
+        &router,
+        &format!("/{slug}/builds/{version}?dl_error=%3Cscript%3E"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&bogus), StatusCode::OK);
+    let bogus_html = body_text(bogus).await;
+    assert!(
+        !bogus_html.contains("vb-confirm-root") && !bogus_html.contains("<script>"),
+        "unknown dl_error must not render a modal or reflect input"
+    );
 
     cleanup(&db).await;
 }

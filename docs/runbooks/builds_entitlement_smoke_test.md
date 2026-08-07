@@ -63,8 +63,10 @@ rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=
 6. Regenerate / Revoke via POST forms. After expiry, expect
    **Generate new link** (no custom JS asset — Topcoat runtime only).
 7. Download POST on a visible version with a `storage_objects` row + blob
-   returns **200** and the package bytes. Missing storage row → **404**.
-   Helper failure → **503** (`download unavailable`).
+   returns **200** and the package bytes. Any failure (missing storage row,
+   helper down, digest drift) keeps the visitor **on Builds**: **303** back to
+   `/{org}/builds/{version}?…&dl_error=…` and a Concept modal — never a
+   plain-text `download unavailable` page. See § G.
 8. As `support@vauban.sh` on `/vauban/builds`, confirm **all published**
    `X.Y.Z-client` private builds are visible (not only GA). `HIDDEN` rows stay
    off the Builds list (admin-only).
@@ -138,6 +140,33 @@ SSR list paging (10 rows per page, shareable `?page=`).
 
 Pass: 10 max per page; chip-row pager; next/prev; channel resets page;
 deep-link keeps the open build on-page.
+
+## G -- Download failure modal (Pass / Fail)
+
+The session POST is PRG: a failure returns to the same view with a
+`dl_error` code and raises the `vb-confirm` modal. Codes and titles:
+
+| Cause | `dl_error` | Modal title |
+|---|---|---|
+| Visible release with no artifact | `missing` | Package not available |
+| Helper down / blob unreadable | `unavailable` | Download unavailable |
+| Mirror / SoT / disk digest drift | `integrity` | Signature check failed |
+
+1. Pick a published build with **no** `storage_objects` row (or stop
+   `vcp-store` for the `unavailable` case) and submit **Download**.
+2. Expect the browser to stay on `/{org}/builds/{version}` with the channel
+   filter preserved, the release panel still open, and the modal on top.
+3. Click **Close** — modal disappears without a reload; the URL fallback
+   (JS disabled) reloads the same view without `dl_error`.
+4. Hand-edit the URL to `?dl_error=nope` (or inject markup) — no modal, no
+   reflected text.
+5. Fix the cause (restart helper / attach artifact) and retry — **200** and
+   the package bytes.
+
+| Result | Criteria |
+|--------|----------|
+| **Pass** | 303 back to Builds, matching modal title, Close dismisses, unknown codes ignored, retry serves bytes. |
+| **Fail** | Navigation to a plain-text `download unavailable` page, blank page, modal on a clean URL, reflected query text, or partial bytes on failure. |
 
 ## Related automated coverage
 

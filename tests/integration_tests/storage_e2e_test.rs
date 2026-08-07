@@ -7,7 +7,7 @@ use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
 use uuid::Uuid;
 use vcp::config::{StorageConfig, StorageIpcMode};
-use vcp::models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release};
+use vcp::models::{EphemeralDownload, RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, Release};
 use vcp::storage::{StorageClient, sha256_hex, write_and_hash};
 
 use crate::common::{
@@ -296,8 +296,10 @@ async fn e2e_release_upload_download_sha_match() {
     cleanup(&db).await;
 }
 
+/// Digest divergence never serves bytes. The portal POST keeps the visitor on
+/// Builds with the integrity modal; the public cURL surface stays a 503 text.
 #[tokio::test]
-async fn e2e_release_mirror_digest_mismatch_is_503() {
+async fn e2e_release_mirror_digest_mismatch_redirects_with_integrity_modal() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
@@ -372,9 +374,52 @@ async fn e2e_release_mirror_digest_mismatch_is_503() {
         "",
     )
     .await;
-    assert_eq!(status(&dl), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(status(&dl), StatusCode::SEE_OTHER);
+    let location = dl
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .expect("Location");
+    assert_eq!(
+        location,
+        format!("/{member_slug}/builds/{version}?dl_error=integrity")
+    );
     let body = body_text(dl).await;
-    assert_eq!(body.trim(), "integrity mismatch");
+    assert!(body.is_empty(), "redirect must not leak bytes: {body}");
+
+    let page = get(&router, &location, member_cookie.as_deref()).await;
+    assert_eq!(status(&page), StatusCode::OK);
+    let html = body_text(page).await;
+    assert!(
+        html.contains("vb-confirm-root") && html.contains("Signature check failed"),
+        "integrity failure must raise the Builds modal: {html}"
+    );
+
+    // Machine surface is unchanged: cURL still gets a plain-text 503.
+    let mint = post_form(
+        &router,
+        &format!("/{member_slug}/builds/{version}/ephemeral"),
+        member_cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert!(status(&mint).is_redirection(), "mint should PRG");
+    let token = {
+        let mut conn = db.clone();
+        EphemeralDownload::all()
+            .exec(&mut conn)
+            .await
+            .expect("tokens")
+            .into_iter()
+            .find(|t| t.release_version == version)
+            .expect("ephemeral token")
+            .token
+    };
+    let pkg = vcp::release_pkg::package_file_name(&version, "LTS");
+    let public = get(&router, &format!("/releases/{token}/{pkg}"), None).await;
+    assert_eq!(status(&public), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_text(public).await.trim(), "integrity mismatch");
 
     cleanup(&db).await;
 }

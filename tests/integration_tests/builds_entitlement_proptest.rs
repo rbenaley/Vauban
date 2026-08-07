@@ -1,13 +1,23 @@
 //! Property tests for download entitlement + package / ephemeral URL shape.
 
 use proptest::prelude::*;
-use vcp::app::{BUILDS_PAGE_SIZE, clamp_page, page_count, page_slice, parse_page};
+use vcp::app::{
+    BUILDS_PAGE_SIZE, DL_ERROR_PARAM, DownloadError, clamp_page, download_error_href, page_count,
+    page_slice, parse_page,
+};
 use vcp::config::{Config, Environment};
 use vcp::release_pkg::{
     cmp_sort_fields_desc, cmp_version_desc, package_file_name, sha256_cmd, version_sort_fields,
 };
 
 const MSG: &str = "download unavailable";
+
+/// Every download failure code carried back to the Builds modal.
+const DL_ERRORS: &[DownloadError] = &[
+    DownloadError::Missing,
+    DownloadError::Unavailable,
+    DownloadError::Integrity,
+];
 
 /// (version, channel, expected package basename)
 const PACKAGE_CASES: &[(&str, &str, &str)] = &[
@@ -45,6 +55,39 @@ proptest! {
         ));
         prop_assert!(src.contains("DOWNLOAD_UNAVAILABLE"));
         prop_assert!(src.contains(MSG));
+    }
+
+    #[test]
+    fn prop_download_error_href_returns_to_open_build(
+        ix in 0usize..DL_ERRORS.len(),
+        slug in "[a-z][a-z0-9-]{2,20}",
+        ver in "v[0-9]\\.[0-9]{1,2}\\.[0-9]{1,2}",
+        channel in prop::option::of(prop::sample::select(vec!["LTS", "Stable", "EOL"])),
+    ) {
+        let err = DL_ERRORS[ix];
+        let channel = channel.unwrap_or("");
+        let href = download_error_href(&slug, &ver, channel, err);
+        let open_prefix = format!("/{slug}/builds/{ver}?");
+        let code_suffix = format!("{DL_ERROR_PARAM}={}", err.as_code());
+        let channel_part = format!("channel={channel}");
+
+        prop_assert!(href.starts_with(&open_prefix));
+        prop_assert_eq!(href.matches('?').count(), 1);
+        prop_assert_eq!(href.matches(DL_ERROR_PARAM).count(), 1);
+        prop_assert!(href.ends_with(&code_suffix));
+        prop_assert_eq!(href.contains("channel="), !channel.is_empty());
+        if !channel.is_empty() {
+            prop_assert!(href.contains(&channel_part));
+        }
+        prop_assert!(!href.contains(' '));
+        // Round-trip: the page can only resolve codes the handler emits.
+        prop_assert_eq!(DownloadError::from_code(err.as_code()), Some(err));
+    }
+
+    #[test]
+    fn prop_unknown_dl_error_codes_never_open_the_modal(code in "[a-zA-Z<>/ ]{0,12}") {
+        let known = DL_ERRORS.iter().any(|e| e.as_code() == code);
+        prop_assert_eq!(DownloadError::from_code(&code).is_some(), known);
     }
 
     #[test]

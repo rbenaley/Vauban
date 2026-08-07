@@ -8,6 +8,7 @@ use topcoat::{
     Result,
     context::Cx,
     router::{page, path_param, query_params},
+    runtime::Event,
     view::{component, view},
 };
 
@@ -27,7 +28,12 @@ use crate::{
     ui::channel_badge_class,
 };
 
+use self::download::DlError;
 use self::ephemeral::{EphPanel, load_eph_for, panel_from_row};
+
+pub use self::download::DlError as DownloadError;
+/// Download failure surface shared with the page + integration pins.
+pub use self::download::{DL_ERROR_PARAM, download_error_href};
 
 #[allow(unused_imports)] // retained for test / API stability pins
 pub use crate::list_page::page_slice;
@@ -43,6 +49,8 @@ pub(super) struct BuildsQuery {
     pub open: Option<String>,
     /// 1-based page index; omitted means page 1.
     pub page: Option<u32>,
+    /// Failure code from a download POST redirect (see `download::DlError`).
+    pub dl_error: Option<String>,
 }
 
 /// Shareable builds list URL (`page=1` and empty channel omitted).
@@ -90,32 +98,53 @@ async fn builds_page(cx: &Cx) -> Result {
 
     render_builds(
         cx,
-        slug,
-        channel,
-        &page_releases,
-        open_version,
-        perms.builds_download,
-        ctx.user.id,
-        ctx.org.id,
-        page,
-        pages,
+        BuildsRender {
+            org_slug: slug,
+            channel,
+            releases: &page_releases,
+            open_version,
+            can_download: perms.builds_download,
+            user_id: ctx.user.id,
+            org_id: ctx.org.id,
+            page,
+            page_count: pages,
+            dl_error: q
+                .as_ref()
+                .and_then(|q| q.dl_error.as_deref())
+                .and_then(DlError::from_code),
+        },
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn render_builds(
-    cx: &Cx,
-    org_slug: &str,
-    channel: &str,
-    releases: &[Release],
-    open_version: Option<&str>,
-    can_download: bool,
-    user_id: u64,
-    org_id: u64,
-    page: usize,
-    page_count: usize,
-) -> Result {
+/// Everything the Builds list body needs for one request.
+pub(super) struct BuildsRender<'a> {
+    pub org_slug: &'a str,
+    pub channel: &'a str,
+    pub releases: &'a [Release],
+    pub open_version: Option<&'a str>,
+    pub can_download: bool,
+    pub user_id: u64,
+    pub org_id: u64,
+    pub page: usize,
+    pub page_count: usize,
+    /// Set after a failed download POST redirect; raises the Concept modal.
+    pub dl_error: Option<DlError>,
+}
+
+pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
+    let BuildsRender {
+        org_slug,
+        channel,
+        releases,
+        open_version,
+        can_download,
+        user_id,
+        org_id,
+        page,
+        page_count,
+        dl_error,
+    } = args;
     let base = format!("/{org_slug}/builds");
     let org = org_slug.to_owned();
     let channel_owned = channel.to_owned();
@@ -175,6 +204,18 @@ pub(super) async fn render_builds(
         blobs.push(release_blob_display(&mut database, rel.id).await);
     }
     let rows: Vec<(&Release, &BlobDisplay)> = releases.iter().zip(blobs.iter()).collect();
+
+    // Dismissing the modal without JS lands on the same view, minus dl_error.
+    let dismiss_href = match open_version {
+        Some(ver) => {
+            let mut parts = Vec::with_capacity(1);
+            if !channel_owned.is_empty() {
+                parts.push(format!("channel={channel_owned}"));
+            }
+            href_with_query(&format!("/{org}/builds/{ver}"), &parts)
+        }
+        None => builds_list_href(&org, &channel_owned, page, false),
+    };
 
     view! {
         cx =>
@@ -287,6 +328,55 @@ pub(super) async fn render_builds(
                 }
             }
         </div>
+
+        if let Some(err) = dl_error {
+            download_error_modal(err: err, dismiss_href: dismiss_href.clone())
+        }
+    }
+}
+
+/// Concept confirm dialog raised on the Builds page after a failed download.
+///
+/// The POST redirects here (PRG) instead of navigating to a plain-text error,
+/// so the visitor keeps the list and the open release panel.
+#[component]
+async fn download_error_modal(cx: &Cx, err: DlError, dismiss_href: String) -> Result {
+    let title = err.title();
+    let aria = title.to_owned();
+    let [message, next_step] = err.message_lines();
+
+    view! {
+        cx =>
+        signal open = true;
+
+        <div
+            class="vb-confirm-root"
+            role="dialog"
+            aria-modal="true"
+            aria-label=(aria)
+            :style=$(if open.get() { "" } else { "display: none" })
+        >
+            <div class="vb-confirm">
+                <h2>(title)</h2>
+                <p>
+                    (message)
+                    <br />
+                    (next_step)
+                </p>
+                <div class="vb-confirm-actions">
+                    <a
+                        class="vb-btn muted compact"
+                        href=(dismiss_href)
+                        @click=$(|e: Event| {
+                            e.prevent_default();
+                            open.set(false);
+                        })
+                    >
+                        "Close"
+                    </a>
+                </div>
+            </div>
+        </div>
     }
 }
 
@@ -336,7 +426,11 @@ async fn build_download_actions(cx: &Cx, actions: BuildDownloadActions) -> Resul
         signal verify_open = false;
 
         <div class="vb-btn-row">
+            // Carries the channel so a failed download redirects back to this view.
             <form method="POST" action=(dl_action)>
+                if !list_channel.is_empty() {
+                    <input type="hidden" name="channel" value=(list_channel.clone()) />
+                }
                 <button class="vb-btn vb-btn-ico vb-btn-build" type="submit">
                     (ico_arrow_down(cx, 14).await?)
                     <span>(dl_label)</span>

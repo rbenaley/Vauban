@@ -7,6 +7,7 @@ mod images;
 mod issues;
 
 pub use builds::builds_list_href;
+pub use builds::{DL_ERROR_PARAM, DownloadError, download_error_href};
 
 use topcoat::{
     Result,

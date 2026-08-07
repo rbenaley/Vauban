@@ -14,6 +14,7 @@ pub use crate::list_page::{
     BUILDS_PAGE_SIZE, LIST_PAGE_SIZE, clamp_page, page_count, page_slice, parse_page,
 };
 pub use org::builds_list_href;
+pub use org::{DL_ERROR_PARAM, DownloadError, download_error_href};
 
 use std::sync::Arc;
 

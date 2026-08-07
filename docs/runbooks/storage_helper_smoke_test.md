@@ -77,23 +77,29 @@ and confirm the detail gallery — see
 ## C -- Helper down / recovery (Pass / Fail)
 
 1. Stop `vcp-store` (socket mode) while `vcp` keeps running.
-2. Download or image upload on artifact routes → **503**
-   (`download unavailable` / upload unavailable) — not a silent 200.
-3. Restart helper; retry → success without restarting portal (or after
+2. Portal **Download** button (`POST /{org}/builds/{ver}/download`) → **303**
+   back to `/{org}/builds/{ver}?…&dl_error=unavailable`, and the page raises
+   the **Download unavailable** modal (never a plain-text page). Image upload
+   on artifact routes → **503** (upload unavailable) — not a silent 200.
+3. Machine surface unchanged: `curl -i https://…/releases/{token}/{pkg}` →
+   **503** with body `download unavailable`.
+4. Restart helper; retry → success without restarting portal (or after
    one reconnect if the client held a dead FD).
 
 | Result | Criteria |
 |--------|----------|
-| **Pass** | Degraded 503 then recovery. |
-| **Fail** | Portal panic, hung request with no status, or silent 200 while helper is down. |
+| **Pass** | Portal modal on Builds, 503 text for cURL, then recovery. |
+| **Fail** | Portal panic, plain-text error page in the browser, hung request with no status, or silent 200 while helper is down. |
 
 ## D -- Integrity mismatch (Pass / Fail)
 
 1. With a published release (or org image) that has a mirror row, temporarily
    forge Postgres `storage_objects.sha256` to a different 64-hex value (or
    restore a backup where mirror ≠ SQLite).
-2. Attempt download / image GET as an entitled user → **503** (integrity /
-   artifact unavailable). Helper must **not** issue an FD (`integrity_mismatch`).
+2. Attempt the portal download as an entitled user → **303** to
+   `?dl_error=integrity` and the **Signature check failed** modal. Image GET
+   and `curl /releases/{token}/{pkg}` → **503** (`integrity mismatch`).
+   Helper must **not** issue an FD (`integrity_mismatch`).
 3. Restore the correct mirror digest (or re-upload); retry → **200**.
 
 Optional: with matching mirror + SQLite, corrupt the on-disk blob bytes under
@@ -101,7 +107,7 @@ the known key → same deny on verify-on-read.
 
 | Result | Criteria |
 |--------|----------|
-| **Pass** | Forged mirror or tampered blob → 503 / deny; fix → serve again. |
+| **Pass** | Forged mirror or tampered blob → modal (portal) / 503 (cURL); fix → serve again. |
 | **Fail** | Bytes served despite digest drift, or chatty path leak. |
 
 ## E -- Production guards (Pass / Fail)

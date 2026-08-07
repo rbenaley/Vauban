@@ -6,8 +6,9 @@ use topcoat::{
     router::{error::not_found, page, path_param, query_params},
 };
 
+use super::download::DlError;
 use super::{
-    BUILDS_PAGE_SIZE, BuildsQuery, clamp_page, count_releases_for_org,
+    BUILDS_PAGE_SIZE, BuildsQuery, BuildsRender, clamp_page, count_releases_for_org,
     find_visible_release_by_version, load_releases_page_for_org, page_count, render_builds,
 };
 use crate::{
@@ -66,15 +67,21 @@ async fn build_detail_page(cx: &Cx) -> Result {
 
     render_builds(
         cx,
-        org_slug,
-        channel,
-        &page_releases,
-        Some(ver),
-        perms.builds_download,
-        ctx.user.id,
-        ctx.org.id,
-        page,
-        pages,
+        BuildsRender {
+            org_slug,
+            channel,
+            releases: &page_releases,
+            open_version: Some(ver),
+            can_download: perms.builds_download,
+            user_id: ctx.user.id,
+            org_id: ctx.org.id,
+            page,
+            page_count: pages,
+            dl_error: q
+                .as_ref()
+                .and_then(|q| q.dl_error.as_deref())
+                .and_then(DlError::from_code),
+        },
     )
     .await
 }
