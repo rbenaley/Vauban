@@ -8,6 +8,7 @@
 pub mod acme;
 pub mod app;
 pub mod auth;
+pub mod cli;
 pub mod companies_accounts;
 pub mod companies_search;
 pub mod config;

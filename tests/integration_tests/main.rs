@@ -24,6 +24,7 @@
 //! - `cargo test --test integration_tests -- choose_org -- --test-threads=1`
 //! - `cargo test --test integration_tests -- topcoat_boolean_attrs -- --test-threads=1`
 //! - `cargo test --test integration_tests -- storage_ -- --test-threads=1`
+//! - `cargo test --test integration_tests -- seed_data -- --test-threads=1`
 
 mod admin_companies_battle_test;
 mod admin_companies_e2e_test;
@@ -97,6 +98,10 @@ mod request_sql_dedup_battle_test;
 mod request_sql_dedup_e2e_test;
 mod request_sql_dedup_invariants_test;
 mod request_sql_dedup_proptest;
+mod seed_data_battle_test;
+mod seed_data_e2e_test;
+mod seed_data_invariants_test;
+mod seed_data_proptest;
 mod storage_battle_test;
 mod storage_e2e_test;
 mod storage_invariants_test;

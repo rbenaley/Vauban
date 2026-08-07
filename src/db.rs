@@ -20,6 +20,80 @@ use crate::models::{
 use crate::release_pkg::version_sort_fields;
 use crate::storage::upsert_release_object;
 
+/// Doc row used by minimal / full demo seed: (title, summary, category, slug).
+pub type SeedDocSpec = (&'static str, &'static str, &'static str, &'static str);
+
+/// Only doc slug created on empty-DB server boot.
+pub const MINIMAL_DOC_SLUG: &str = "quick-start";
+
+/// Expected published docs after `seed_demo_catalog` (includes Quick start).
+pub const DEMO_DOC_COUNT: usize = 7;
+
+/// GA rows in [`ga_release_catalog`] (Acme private hotfix is extra).
+pub const DEMO_GA_RELEASE_COUNT: usize = 23;
+
+/// Total releases after full demo seed (23 GA + 1 Acme-private).
+pub const DEMO_RELEASE_COUNT: usize = DEMO_GA_RELEASE_COUNT + 1;
+
+/// Demo issues created by [`seed_demo_catalog`].
+pub const DEMO_ISSUE_COUNT: usize = 2;
+
+/// Full demo documentation catalog (Quick start first).
+pub fn demo_doc_catalog() -> [SeedDocSpec; DEMO_DOC_COUNT] {
+    [
+        (
+            "Quick start — deploy Vauban in 15 minutes",
+            "Install the bastion, enroll a host, and open a supervised SSH session.",
+            "Getting started",
+            "quick-start",
+        ),
+        (
+            "Bastion architecture: SSH proxy & RDP gateway",
+            "How the control plane, proxies, and audit path fit together.",
+            "Getting started",
+            "bastion-architecture",
+        ),
+        (
+            "High-availability (HA) deployment",
+            "Multi-node layout, failover expectations, and health checks.",
+            "Deployment",
+            "ha-deployment",
+        ),
+        (
+            "Configuring RBAC: roles, groups, and policies",
+            "Casbin model, role nesting, and least-privilege patterns.",
+            "Security",
+            "configuring-rbac",
+        ),
+        (
+            "Enabling MFA (TOTP, WebAuthn)",
+            "Require a second factor for interactive and API access.",
+            "Security",
+            "enabling-mfa",
+        ),
+        (
+            "Session recording & replay",
+            "Retention, storage, and forensic replay of supervised sessions.",
+            "Operations",
+            "session-recording",
+        ),
+        (
+            "API reference — REST & audit events",
+            "Machine endpoints, authentication, and event schemas.",
+            "API",
+            "api-reference",
+        ),
+    ]
+}
+
+/// Docs beyond Quick start (created only by [`seed_demo_catalog`]).
+pub fn extra_demo_doc_catalog() -> Vec<SeedDocSpec> {
+    demo_doc_catalog()
+        .into_iter()
+        .filter(|(_, _, _, slug)| *slug != MINIMAL_DOC_SLUG)
+        .collect()
+}
+
 /// GA release catalog: (version, channel, released_on, bytes, sha256, notes).
 fn ga_release_catalog() -> Vec<(
     &'static str,
@@ -428,173 +502,32 @@ pub async fn apply_pending_migrations(db: &Db) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
+/// Empty-DB boot seed: demo login tenant + reserved `vauban` + Quick start only.
+///
+/// No GA/private releases and no demo issues. Full catalog: [`seed_demo_catalog`].
+pub async fn seed_minimal_if_empty(db: &Db) -> anyhow::Result<()> {
     let mut db = db.clone();
     let users = User::all().exec(&mut db).await?;
     if !users.is_empty() {
         return Ok(());
     }
 
-    // Staff (`vcp_admin`) is JIT-created on first magic-link login — not seeded.
-    let member = toasty::create!(User {
-        email: "l.martin@acme.example".to_owned(),
-        display_name: "L. Martin".to_owned(),
-        portal_role: PORTAL_ROLE_ORG.to_owned(),
-        deleted_at: USER_NOT_DELETED,
-    })
-    .exec(&mut db)
-    .await?;
+    let (member, org) = create_demo_tenants(&mut db).await?;
+    let _ = (member, org);
 
-    let _vauban = toasty::create!(Organization {
-        slug: RESERVED_ORG_SLUG.to_owned(),
-        name: "Vauban".to_owned(),
-        address: "Vauban — reserved preview tenant".to_owned(),
-        vat: "BE0508613560".to_owned(),
-        plan_label: "Internal · Vauban Support".to_owned(),
-        supported_builds: "LTS".to_owned(),
-        lts_subscriptions: 0,
-        industrial_lts_subscriptions: 0,
-        technical_contact_name: "Vauban Support".to_owned(),
-        technical_contact_email: "support@vauban.sh".to_owned(),
-        status: "INTERNAL".to_owned(),
-    })
-    .exec(&mut db)
-    .await?;
-
-    let org = toasty::create!(Organization {
-        slug: "acme-infrastructure".to_owned(),
-        name: "ACME Infrastructure".to_owned(),
-        address: "12 Rue de la Citadelle, 59000 Lille, France".to_owned(),
-        vat: "FR 12 345678901".to_owned(),
-        plan_label: "Sovereign plan · Long Term Support (LTS)".to_owned(),
-        supported_builds: "LTS 0.8.x".to_owned(),
-        lts_subscriptions: 2,
-        industrial_lts_subscriptions: 1,
-        technical_contact_name: "L. Martin".to_owned(),
-        technical_contact_email: "l.martin@acme.example".to_owned(),
-        status: "ACTIVE".to_owned(),
-    })
-    .exec(&mut db)
-    .await?;
-
-    toasty::create!(Membership {
-        user_id: member.id,
-        organization_id: org.id,
-        role: MEMBERSHIP_ROLE_ORG.to_owned(),
-    })
-    .exec(&mut db)
-    .await?;
-
-    for (title, summary, category, slug) in [
-        (
-            "Quick start — deploy Vauban in 15 minutes",
-            "Install the bastion, enroll a host, and open a supervised SSH session.",
-            "Getting started",
-            "quick-start",
-        ),
-        (
-            "Bastion architecture: SSH proxy & RDP gateway",
-            "How the control plane, proxies, and audit path fit together.",
-            "Getting started",
-            "bastion-architecture",
-        ),
-        (
-            "High-availability (HA) deployment",
-            "Multi-node layout, failover expectations, and health checks.",
-            "Deployment",
-            "ha-deployment",
-        ),
-        (
-            "Configuring RBAC: roles, groups, and policies",
-            "Casbin model, role nesting, and least-privilege patterns.",
-            "Security",
-            "configuring-rbac",
-        ),
-        (
-            "Enabling MFA (TOTP, WebAuthn)",
-            "Require a second factor for interactive and API access.",
-            "Security",
-            "enabling-mfa",
-        ),
-        (
-            "Session recording & replay",
-            "Retention, storage, and forensic replay of supervised sessions.",
-            "Operations",
-            "session-recording",
-        ),
-        (
-            "API reference — REST & audit events",
-            "Machine endpoints, authentication, and event schemas.",
-            "API",
-            "api-reference",
-        ),
-    ] {
-        toasty::create!(DocArticle {
-            title: title.to_owned(),
-            summary: summary.to_owned(),
-            category: category.to_owned(),
-            slug: slug.to_owned(),
-            version: "v1".to_owned(),
-            status: "PUBLISHED".to_owned(),
-            body: seed_doc_body(slug, summary),
-            updated_at: now_unix(),
-        })
-        .exec(&mut db)
-        .await?;
-    }
-
-    upsert_ga_releases(&mut db).await?;
-    upsert_acme_private_release(&mut db).await?;
-
-    let now = now_unix();
-    let issue_214 = toasty::create!(Issue {
-        key: "VBN-214".to_owned(),
-        title: "Intermittent SSH proxy latency under heavy load".to_owned(),
-        component: "SSH Proxy".to_owned(),
-        severity: "Major".to_owned(),
-        status: "In analysis".to_owned(),
-        organization_id: org.id,
-        details: "Seeing intermittent latency spikes on the SSH proxy under load. Happy to share metrics.".to_owned(),
-        opened_by_user_id: member.id,
-        created_at: now - 86_400,
-        updated_at: now - 7_200,
-    })
-    .exec(&mut db)
-    .await?;
-
-    toasty::create!(IssueComment {
-        issue_id: issue_214.id,
-        author_user_id: 0,
-        author_role: ISSUE_ROLE_SYSTEM.to_owned(),
-        body: "Moved to analysis".to_owned(),
-        kind: ISSUE_COMMENT_KIND_STATUS.to_owned(),
-        created_at: now - 10_800,
-    })
-    .exec(&mut db)
-    .await?;
-
-    toasty::create!(IssueComment {
-        issue_id: issue_214.id,
-        author_user_id: 0,
-        author_role: ISSUE_ROLE_SYSTEM.to_owned(),
-        body: "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway.".to_owned(),
-        kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
-        created_at: now - 7_200,
-    })
-    .exec(&mut db)
-    .await?;
-
-    toasty::create!(Issue {
-        key: "VBN-208".to_owned(),
-        title: "RDP clipboard sync drops large payloads".to_owned(),
-        component: "RDP Gateway".to_owned(),
-        severity: "Minor".to_owned(),
-        status: "Open".to_owned(),
-        organization_id: org.id,
-        details: "Large clipboard payloads fail to sync over RDP.".to_owned(),
-        opened_by_user_id: member.id,
-        created_at: now - 172_800,
-        updated_at: now - 172_800,
+    let (title, summary, category, slug) = demo_doc_catalog()
+        .into_iter()
+        .find(|(_, _, _, s)| *s == MINIMAL_DOC_SLUG)
+        .expect("quick-start is in demo_doc_catalog");
+    toasty::create!(DocArticle {
+        title: title.to_owned(),
+        summary: summary.to_owned(),
+        category: category.to_owned(),
+        slug: slug.to_owned(),
+        version: "v1".to_owned(),
+        status: "PUBLISHED".to_owned(),
+        body: seed_doc_body(slug, summary),
+        updated_at: now_unix(),
     })
     .exec(&mut db)
     .await?;
@@ -602,50 +535,18 @@ pub async fn seed_if_empty(db: &Db) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Top up missing Concept catalog rows when the DB already had a sparse seed.
-pub async fn ensure_demo_catalog(db: &Db) -> anyhow::Result<()> {
+/// Idempotent full demo catalog (docs, builds, issues). Used by `vcp seed-data`.
+///
+/// Ensures demo tenants exist, tops up missing docs, upserts GA + Acme releases,
+/// inserts demo issues when absent, refreshes thin bodies, and backfills comments.
+pub async fn seed_demo_catalog(db: &Db) -> anyhow::Result<()> {
     let mut db = db.clone();
-    let existing = DocArticle::all().exec(&mut db).await?;
-    let have: std::collections::HashSet<String> = existing.into_iter().map(|a| a.slug).collect();
+    let (member, org) = ensure_demo_tenants(&mut db).await?;
 
-    for (title, summary, category, slug) in [
-        (
-            "Bastion architecture: SSH proxy & RDP gateway",
-            "How the control plane, proxies, and audit path fit together.",
-            "Getting started",
-            "bastion-architecture",
-        ),
-        (
-            "High-availability (HA) deployment",
-            "Multi-node layout, failover expectations, and health checks.",
-            "Deployment",
-            "ha-deployment",
-        ),
-        (
-            "Configuring RBAC: roles, groups, and policies",
-            "Casbin model, role nesting, and least-privilege patterns.",
-            "Security",
-            "configuring-rbac",
-        ),
-        (
-            "Enabling MFA (TOTP, WebAuthn)",
-            "Require a second factor for interactive and API access.",
-            "Security",
-            "enabling-mfa",
-        ),
-        (
-            "Session recording & replay",
-            "Retention, storage, and forensic replay of supervised sessions.",
-            "Operations",
-            "session-recording",
-        ),
-        (
-            "API reference — REST & audit events",
-            "Machine endpoints, authentication, and event schemas.",
-            "API",
-            "api-reference",
-        ),
-    ] {
+    let existing = DocArticle::all().exec(&mut db).await?;
+    let have: HashSet<String> = existing.into_iter().map(|a| a.slug).collect();
+
+    for (title, summary, category, slug) in demo_doc_catalog() {
         if have.contains(slug) {
             continue;
         }
@@ -665,15 +566,167 @@ pub async fn ensure_demo_catalog(db: &Db) -> anyhow::Result<()> {
 
     upsert_ga_releases(&mut db).await?;
     upsert_acme_private_release(&mut db).await?;
-
+    ensure_demo_issues(&mut db, org.id, member.id).await?;
     refresh_thin_doc_bodies(&mut db).await?;
     ensure_demo_issue_comments(&mut db).await?;
     Ok(())
 }
 
+/// Create `l.martin` + `acme-infrastructure` + reserved `vauban` (empty DB only).
+async fn create_demo_tenants(db: &mut Db) -> anyhow::Result<(User, Organization)> {
+    // Staff (`vcp_admin`) is JIT-created on first magic-link login — not seeded.
+    let member = toasty::create!(User {
+        email: "l.martin@acme.example".to_owned(),
+        display_name: "L. Martin".to_owned(),
+        portal_role: PORTAL_ROLE_ORG.to_owned(),
+        deleted_at: USER_NOT_DELETED,
+    })
+    .exec(db)
+    .await?;
+
+    let _vauban = toasty::create!(Organization {
+        slug: RESERVED_ORG_SLUG.to_owned(),
+        name: "Vauban".to_owned(),
+        address: "Vauban — reserved preview tenant".to_owned(),
+        vat: "BE0508613560".to_owned(),
+        plan_label: "Internal · Vauban Support".to_owned(),
+        supported_builds: "LTS".to_owned(),
+        lts_subscriptions: 0,
+        industrial_lts_subscriptions: 0,
+        technical_contact_name: "Vauban Support".to_owned(),
+        technical_contact_email: "support@vauban.sh".to_owned(),
+        status: "INTERNAL".to_owned(),
+    })
+    .exec(db)
+    .await?;
+
+    let org = toasty::create!(Organization {
+        slug: ACME_ORG_SLUG.to_owned(),
+        name: "ACME Infrastructure".to_owned(),
+        address: "12 Rue de la Citadelle, 59000 Lille, France".to_owned(),
+        vat: "FR 12 345678901".to_owned(),
+        plan_label: "Sovereign plan · Long Term Support (LTS)".to_owned(),
+        supported_builds: "LTS 0.8.x".to_owned(),
+        lts_subscriptions: 2,
+        industrial_lts_subscriptions: 1,
+        technical_contact_name: "L. Martin".to_owned(),
+        technical_contact_email: "l.martin@acme.example".to_owned(),
+        status: "ACTIVE".to_owned(),
+    })
+    .exec(db)
+    .await?;
+
+    toasty::create!(Membership {
+        user_id: member.id,
+        organization_id: org.id,
+        role: MEMBERSHIP_ROLE_ORG.to_owned(),
+    })
+    .exec(db)
+    .await?;
+
+    Ok((member, org))
+}
+
+/// Resolve Acme demo tenant; create the minimal demo tenants if the DB is empty.
+async fn ensure_demo_tenants(db: &mut Db) -> anyhow::Result<(User, Organization)> {
+    let users = User::all().exec(db).await?;
+    if users.is_empty() {
+        return create_demo_tenants(db).await;
+    }
+
+    let orgs = Organization::all().exec(db).await?;
+    let org = orgs
+        .into_iter()
+        .find(|o| o.slug.eq_ignore_ascii_case(ACME_ORG_SLUG))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "seed-data: organization `{ACME_ORG_SLUG}` missing; reset DB or create tenants first"
+            )
+        })?;
+
+    let member = users
+        .into_iter()
+        .find(|u| u.email.eq_ignore_ascii_case("l.martin@acme.example"))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "seed-data: user `l.martin@acme.example` missing; reset DB or create tenants first"
+            )
+        })?;
+
+    Ok((member, org))
+}
+
+/// Insert VBN-214 / VBN-208 when those keys are absent (idempotent).
+async fn ensure_demo_issues(db: &mut Db, org_id: u64, member_id: u64) -> anyhow::Result<()> {
+    let existing = Issue::all().exec(db).await?;
+    let keys: HashSet<String> = existing.into_iter().map(|i| i.key).collect();
+    let now = now_unix();
+
+    if !keys.contains("VBN-214") {
+        let issue_214 = toasty::create!(Issue {
+            key: "VBN-214".to_owned(),
+            title: "Intermittent SSH proxy latency under heavy load".to_owned(),
+            component: "SSH Proxy".to_owned(),
+            severity: "Major".to_owned(),
+            status: "In analysis".to_owned(),
+            organization_id: org_id,
+            details: "Seeing intermittent latency spikes on the SSH proxy under load. Happy to share metrics.".to_owned(),
+            opened_by_user_id: member_id,
+            created_at: now - 86_400,
+            updated_at: now - 7_200,
+        })
+        .exec(db)
+        .await?;
+
+        toasty::create!(IssueComment {
+            issue_id: issue_214.id,
+            author_user_id: 0,
+            author_role: ISSUE_ROLE_SYSTEM.to_owned(),
+            body: "Moved to analysis".to_owned(),
+            kind: ISSUE_COMMENT_KIND_STATUS.to_owned(),
+            created_at: now - 10_800,
+        })
+        .exec(db)
+        .await?;
+
+        toasty::create!(IssueComment {
+            issue_id: issue_214.id,
+            author_user_id: 0,
+            author_role: ISSUE_ROLE_SYSTEM.to_owned(),
+            body: "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway.".to_owned(),
+            kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
+            created_at: now - 7_200,
+        })
+        .exec(db)
+        .await?;
+    }
+
+    if !keys.contains("VBN-208") {
+        toasty::create!(Issue {
+            key: "VBN-208".to_owned(),
+            title: "RDP clipboard sync drops large payloads".to_owned(),
+            component: "RDP Gateway".to_owned(),
+            severity: "Minor".to_owned(),
+            status: "Open".to_owned(),
+            organization_id: org_id,
+            details: "Large clipboard payloads fail to sync over RDP.".to_owned(),
+            opened_by_user_id: member_id,
+            created_at: now - 172_800,
+            updated_at: now - 172_800,
+        })
+        .exec(db)
+        .await?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod seed_digest_tests {
-    use super::ACME_PRIVATE_SHA256;
+    use super::{
+        ACME_PRIVATE_SHA256, DEMO_DOC_COUNT, DEMO_GA_RELEASE_COUNT, MINIMAL_DOC_SLUG,
+        demo_doc_catalog, extra_demo_doc_catalog, ga_release_catalog,
+    };
 
     #[test]
     fn acme_private_sha256_is_full_digest() {
@@ -686,6 +739,23 @@ mod seed_digest_tests {
             ACME_PRIVATE_SHA256.starts_with("b7e4d01"),
             "keep legacy signature_prefix seed prefix"
         );
+    }
+
+    #[test]
+    fn demo_doc_inventory_matches_constants() {
+        let catalog = demo_doc_catalog();
+        assert_eq!(catalog.len(), DEMO_DOC_COUNT);
+        assert_eq!(catalog[0].3, MINIMAL_DOC_SLUG);
+        assert!(
+            catalog.iter().any(|(_, _, _, s)| *s == MINIMAL_DOC_SLUG),
+            "demo catalog must include quick-start"
+        );
+        assert_eq!(extra_demo_doc_catalog().len(), DEMO_DOC_COUNT - 1);
+    }
+
+    #[test]
+    fn ga_release_inventory_matches_constant() {
+        assert_eq!(ga_release_catalog().len(), DEMO_GA_RELEASE_COUNT);
     }
 }
 

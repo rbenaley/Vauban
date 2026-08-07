@@ -109,6 +109,7 @@ just dev              # topcoat HMR (no custom TLS); prefer just run for HTTPS
 just db-migrate       # apply pending Toasty migrations (dev DB)
 just db-reset         # drop/recreate local `vcp` + migrate (destructive)
 just db-reset-test    # drop/recreate `vcp_test` (destructive)
+just seed-data        # full demo catalog (docs, builds, issues); boot is minimal
 ```
 
 Recipes that need the Topcoat CLI (`run`, `bundle`, `release`, `fmt`,
@@ -160,7 +161,15 @@ landing rules.
 | `magiclinks.vcp_admin` (default `support@vauban.sh`) | JIT-created on first sign-in as `portal_role=admin`, display name `Vauban Support`; lands on `/vauban` |
 | Company account emails | Provisioned from `/admin/companies` (invitation on create/revive; org-scoped revocation mail on remove; soft-deleted when orphaned) |
 
-Demo seed (empty DB) still creates `l.martin@acme.example` on `acme-infrastructure` for catalog samples — sign in via magic link.
+Empty-DB boot seed creates `l.martin@acme.example` on `acme-infrastructure`, the reserved `vauban` tenant, and a single **Quick start** doc (no builds, no issues). Sign in via magic link.
+
+Full demo catalog (7 docs, GA + Acme-private releases, sample issues):
+
+```bash
+just seed-data
+```
+
+Ops smoke: [`docs/runbooks/seed_data_smoke_test.md`](docs/runbooks/seed_data_smoke_test.md).
 
 Slug **`vauban`** is reserved (not a billable client). Client companies cannot create or rename to that slug.
 

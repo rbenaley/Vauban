@@ -30,12 +30,14 @@ rtk cargo test --test integration_tests -- portal_issues -- --test-threads=1
 
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
 - Browser or `curl -k` willing to accept the local self-signed cert.
-- Seed users: staff `support@vauban.sh` / `password`; client
-  `l.martin@acme.example` / `password` on `acme-infrastructure`.
+- Demo client `l.martin@acme.example` on `acme-infrastructure` (empty-DB boot).
+- Sample issues (`VBN-214`, `VBN-208`): require `just seed-data` after reset
+  (boot alone does **not** insert issues).
+- Staff: magic link for `magiclinks.vcp_admin`.
 
 ## A -- Client happy path
 
-1. Sign in as `l.martin@acme.example` / `password`.
+1. Sign in as `l.martin@acme.example` (magic link).
 2. Open `/acme-infrastructure/issues/VBN-214` and confirm discussion
    comments / status dividers come from the DB.
 3. Confirm support replies display as **Vauban Support**.

@@ -34,9 +34,10 @@ rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=
 
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
 - Browser or `curl -k` willing to accept the local self-signed cert.
-- Seed users: staff `support@vauban.sh` / `password`; client
-  `l.martin@acme.example` / `password` on `acme-infrastructure`.
-- Seed includes GA releases plus an Acme-private hotfix (`v0.8.6-acme1`).
+- Demo client `l.martin@acme.example` on `acme-infrastructure` (empty-DB boot
+  seed); staff via magic link (`magiclinks.vcp_admin`).
+- Full Builds catalog (GA + Acme-private `v0.8.6-acme1`): run `just seed-data`
+  after `just db-reset` / empty boot (boot alone does **not** upsert releases).
 - Schema includes `ephemeral_downloads` (apply migrations / `just db-reset` if needed).
 
 ## A -- Happy path + Concept chrome

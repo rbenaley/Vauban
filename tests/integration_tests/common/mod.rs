@@ -26,8 +26,9 @@ use vcp::{
     magic_link::{active_user_by_email, issue_token},
     models::{
         AuthSession, DOC_STATUS_PUBLISHED, DocArticle, EphemeralDownload, Issue, IssueAttachment,
-        MEMBERSHIP_ROLE_ORG, MagicLinkToken, Membership, Organization, PORTAL_ROLE_ADMIN,
-        PORTAL_ROLE_ORG, RESERVED_ORG_SLUG, Release, STORAGE_SCOPE_IMAGE, USER_NOT_DELETED, User,
+        IssueComment, MEMBERSHIP_ROLE_ORG, MagicLinkToken, Membership, Organization,
+        PORTAL_ROLE_ADMIN, PORTAL_ROLE_ORG, RESERVED_ORG_SLUG, Release, STORAGE_SCOPE_IMAGE,
+        USER_NOT_DELETED, User,
     },
     perms::PolicyStore,
     storage::{StorageClient, upsert_release_object, write_and_hash},
@@ -225,7 +226,8 @@ pub async fn create_org_with_membership(
     (user, org)
 }
 
-/// Versions upserted by `db::seed` / GA catalog — must survive test cleanup.
+/// Versions upserted by `db::seed_demo_catalog` / GA catalog fixtures.
+/// Appear only after full demo seed or explicit test inserts; survive cleanup.
 fn is_seed_release_version(version: &str) -> bool {
     matches!(
         version,
@@ -386,6 +388,69 @@ pub async fn cleanup(db: &Db) {
     }
     for o in test_orgs {
         let _ = Organization::delete_by_id(&mut db, o.id).await;
+    }
+}
+
+/// Wipe catalog rows and all tenants (shared `vcp_test` absolute seed counts).
+///
+/// Unlike [`cleanup`], this also removes demo docs / GA releases / seed issues
+/// so `seed_minimal_if_empty` / `seed_demo_catalog` E2E can assert exact sizes.
+pub async fn wipe_seed_surface(db: &Db) {
+    let mut conn = db.clone();
+
+    for row in IssueAttachment::all()
+        .exec(&mut conn)
+        .await
+        .unwrap_or_default()
+    {
+        let _ = row.delete().exec(&mut conn).await;
+    }
+    for row in IssueComment::all()
+        .exec(&mut conn)
+        .await
+        .unwrap_or_default()
+    {
+        let _ = row.delete().exec(&mut conn).await;
+    }
+    for issue in Issue::all().exec(&mut conn).await.unwrap_or_default() {
+        let _ = Issue::delete_by_id(&mut conn, issue.id).await;
+    }
+    for row in EphemeralDownload::all()
+        .exec(&mut conn)
+        .await
+        .unwrap_or_default()
+    {
+        let _ = row.delete().exec(&mut conn).await;
+    }
+    for doc in DocArticle::all().exec(&mut conn).await.unwrap_or_default() {
+        let _ = DocArticle::delete_by_id(&mut conn, doc.id).await;
+    }
+    for rel in Release::all().exec(&mut conn).await.unwrap_or_default() {
+        let _ = vcp::storage::delete_release_object(&mut conn, rel.id).await;
+        let _ = Release::delete_by_id(&mut conn, rel.id).await;
+    }
+    for s in AuthSession::all().exec(&mut conn).await.unwrap_or_default() {
+        let _ = AuthSession::delete_by_token_hash(&mut conn, &s.token_hash).await;
+    }
+    for t in MagicLinkToken::all()
+        .exec(&mut conn)
+        .await
+        .unwrap_or_default()
+    {
+        let _ = MagicLinkToken::delete_by_token_hash(&mut conn, &t.token_hash).await;
+    }
+    for m in Membership::all().exec(&mut conn).await.unwrap_or_default() {
+        let _ = Membership::delete_by_id(&mut conn, m.id).await;
+    }
+    for u in User::all().exec(&mut conn).await.unwrap_or_default() {
+        let _ = User::delete_by_id(&mut conn, u.id).await;
+    }
+    for o in Organization::all()
+        .exec(&mut conn)
+        .await
+        .unwrap_or_default()
+    {
+        let _ = Organization::delete_by_id(&mut conn, o.id).await;
     }
 }
 

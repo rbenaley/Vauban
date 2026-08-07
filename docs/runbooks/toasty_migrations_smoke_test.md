@@ -51,7 +51,16 @@ just db-reset
 just run
 ```
 
-**Pass:** seed users exist; docs list loads.
+**Pass:** demo login tenant exists (`l.martin@acme.example`); docs list shows
+**Quick start** only (no GA builds until `just seed-data`).
+
+Optional full demo catalog:
+
+```bash
+just seed-data
+```
+
+**Pass:** 7 docs, seeded GA + Acme-private releases, sample issues.
 
 ## C -- Staging
 

@@ -263,6 +263,11 @@ db-migrate:
 db-migrate-generate NAME="migration":
     cargo run --bin vcp-cli -- migration generate --name {{NAME}}
 
+# Seed full demo catalog (docs, GA builds, sample issues). Boot alone is minimal.
+# Respects VCP_ENVIRONMENT (default development). Does not start HTTPS.
+seed-data:
+    cargo run -- seed-data
+
 # Create Postgres `vcp_test` + role for automated tests
 db-create-test:
     bash scripts/setup_test_db.sh
