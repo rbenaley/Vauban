@@ -39,6 +39,18 @@ fn inv_admin_releases_create_is_post_and_gated() {
     assert!(src.contains("rollback_staged_release"));
     assert!(src.contains("sweep_staged_releases"));
     assert!(src.contains("name=\"package\" type=\"file\" required=\"\""));
+    assert!(
+        src.contains("name=\"date\"")
+            && src.contains("type=\"date\"")
+            && src.contains("required=\"\""),
+        "compose Date must be a required HTML date input"
+    );
+    assert!(
+        !src.contains("\"1970-01-01\".to_owned()") && !src.contains("\"1970-01-01\".into()"),
+        "create must not invent a Unix-epoch default for released_on"
+    );
+    assert!(src.contains("err=date"));
+    assert!(src.contains("parse_released_on"));
     assert!(src.contains("err=package"));
     assert!(src.contains("freebsd_pkg::inspect"));
     assert!(src.contains("err=not_pkg"));
@@ -61,8 +73,18 @@ fn inv_admin_releases_create_is_post_and_gated() {
         "not_pkg must use signal modal + submit preflight (Builds confirm chrome)"
     );
     assert!(
-        src.contains("\"not_pkg\" => None"),
-        "not_pkg must not use the inline red banner"
+        src.contains("signal no_key_open")
+            && src.contains("id=\"vcp-no-key-open\"")
+            && src.contains("require-active-key")
+            && src.contains("err=no_active_key")
+            && src.contains("has_active_key")
+            && src.contains("No active security key"),
+        "publish must modal-gate on zero ACTIVE keys before WebAuthn"
+    );
+    assert!(
+        src.contains("\"not_pkg\" | \"no_active_key\" => None")
+            || (src.contains("\"not_pkg\" => None") && src.contains("\"no_active_key\" => None")),
+        "not_pkg / no_active_key must not use the inline red banner"
     );
     assert!(
         src.contains("fn admin_releases_validate_pkg")

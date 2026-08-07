@@ -29,6 +29,9 @@ use crate::{
 /// Stable JSON body when validate-pkg rejects a non-FreeBSD upload.
 const NOT_PKG_JSON: &str = r#"{"ok":false,"code":"not_pkg"}"#;
 
+/// Stable JSON when publish is refused because vcp-store has no ACTIVE key.
+const NO_ACTIVE_KEY_JSON: &str = r#"{"ok":false,"code":"no_active_key"}"#;
+
 #[query_params]
 struct NewReleaseQuery {
     err: Option<String>,
@@ -36,16 +39,17 @@ struct NewReleaseQuery {
 
 /// Compose-page banner for a create that was rolled back or refused.
 ///
-/// `not_pkg` is raised as a Concept confirm modal instead (same pattern as
-/// the Builds download-unavailable dialog).
+/// `not_pkg` and `no_active_key` use Concept confirm modals instead (same
+/// pattern as the Builds download-unavailable dialog).
 fn create_error_message(err: Option<&str>) -> Option<&'static str> {
     match err? {
         "identity" => Some(
             "The package manifeste has no usable Version. Publish was refused — use a real \
              Vauban .pkg.",
         ),
+        "date" => Some("A release date is required (YYYY-MM-DD). Publish was refused."),
         "package" => Some("A package is required: a release is never created without its binary."),
-        "not_pkg" => None,
+        "not_pkg" | "no_active_key" => None,
         "upload" => Some(
             "Upload was not completed, so nothing was published. The release was rolled back \
              — try again.",
@@ -54,8 +58,23 @@ fn create_error_message(err: Option<&str>) -> Option<&'static str> {
     }
 }
 
+/// Parse a required calendar release date (`YYYY-MM-DD`). Empty / invalid → `None`.
+fn parse_released_on(raw: &str) -> Option<String> {
+    let d = raw.trim();
+    if d.is_empty() {
+        return None;
+    }
+    chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+        .ok()
+        .map(|date| date.format("%Y-%m-%d").to_string())
+}
+
 fn is_not_pkg_error(err: Option<&str>) -> bool {
     err == Some("not_pkg")
+}
+
+fn is_no_active_key_error(err: Option<&str>) -> bool {
+    err == Some("no_active_key")
 }
 
 fn not_pkg_response() -> Result<Response> {
@@ -63,6 +82,21 @@ fn not_pkg_response() -> Result<Response> {
         .status(StatusCode::UNPROCESSABLE_ENTITY)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(NOT_PKG_JSON))?)
+}
+
+fn no_active_key_response() -> Result<Response> {
+    Ok(Response::builder()
+        .status(StatusCode::UNPROCESSABLE_ENTITY)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(NO_ACTIVE_KEY_JSON))?)
+}
+
+/// Fail closed when WebAuthn is required and vcp-store has no ACTIVE key.
+fn missing_active_key_for_publish(store: &StorageClient) -> bool {
+    if !store.webauthn_required() {
+        return false;
+    }
+    !store.has_active_key().unwrap_or(false)
 }
 
 #[page]
@@ -77,6 +111,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
     let err_code = q.as_ref().and_then(|q| q.err.as_deref());
     let create_err = create_error_message(err_code);
     let show_not_pkg = is_not_pkg_error(err_code);
+    let show_no_key = is_no_active_key_error(err_code);
 
     let mut database = db(cx);
     let orgs = Organization::all()
@@ -91,10 +126,12 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
         .unwrap_or_default();
 
     let not_pkg_init = show_not_pkg;
+    let no_key_init = show_no_key;
 
     view! {
         cx =>
         signal not_pkg_open = not_pkg_init;
+        signal no_key_open = no_key_init;
 
         <div>
             <a
@@ -116,6 +153,12 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                 id="vcp-not-pkg-open"
                 style="display: none"
                 @click=$(|_e| not_pkg_open.set(true))
+            ></button>
+            <button
+                type="button"
+                id="vcp-no-key-open"
+                style="display: none"
+                @click=$(|_e| no_key_open.set(true))
             ></button>
             <div
                 class="vb-confirm-root"
@@ -145,6 +188,36 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                     </div>
                 </div>
             </div>
+            <div
+                class="vb-confirm-root"
+                role="dialog"
+                aria-modal="true"
+                aria-label="No active security key"
+                :style=$(if no_key_open.get() { "" } else { "display: none" })
+            >
+                <div class="vb-confirm">
+                    <h2>"No active security key"</h2>
+                    <p>
+                        "Publishing a release requires at least one active security key in vcp-store. WebAuthn was not started and nothing was created."
+                        <br />
+                        "Enrol a key under Admin → Security keys, approve it with "
+                        <code>"vcp-store approve-key"</code>
+                        ", then try again."
+                    </p>
+                    <div class="vb-confirm-actions">
+                        <a
+                            class="vb-btn muted compact"
+                            href="/admin/releases/new"
+                            @click=$(|e: Event| {
+                                e.prevent_default();
+                                no_key_open.set(false);
+                            })
+                        >
+                            "Close"
+                        </a>
+                    </div>
+                </div>
+            </div>
             <div class="vb-panel" style="padding: 24px;">
                 <form
                     id="vcp-release-create"
@@ -152,7 +225,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                     method="POST"
                     action="/admin/releases/new"
                     enctype="multipart/form-data"
-                    @submit="(async (e) => { e.prevent_default(); const form = e.current_target.inner; const input = form.querySelector('#package'); const file = input && input.files && input.files[0]; if (!file) { form.reportValidity(); return; } const fd = new FormData(); fd.append('package', file, file.name || 'upload.pkg'); const res = await fetch('/admin/releases/new/validate-pkg', { method: 'POST', body: fd, credentials: 'same-origin' }); if (res.status === 204) { HTMLFormElement.prototype.submit.call(form); return; } input.value = ''; const bridge = document.getElementById('vcp-not-pkg-open'); if (bridge) { bridge.click(); } })"
+                    @submit="(async (e) => { e.prevent_default(); const form = e.current_target.inner; if (!form.reportValidity()) { return; } const keyRes = await fetch('/admin/releases/new/require-active-key', { method: 'GET', credentials: 'same-origin' }); if (keyRes.status === 422) { const bridge = document.getElementById('vcp-no-key-open'); if (bridge) { bridge.click(); } return; } if (!keyRes.ok) { return; } const input = form.querySelector('#package'); const file = input && input.files && input.files[0]; if (!file) { return; } const fd = new FormData(); fd.append('package', file, file.name || 'upload.pkg'); const res = await fetch('/admin/releases/new/validate-pkg', { method: 'POST', body: fd, credentials: 'same-origin' }); if (res.status === 204) { HTMLFormElement.prototype.submit.call(form); return; } input.value = ''; const bridge = document.getElementById('vcp-not-pkg-open'); if (bridge) { bridge.click(); } })"
                 >
                     <div
                         style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end;"
@@ -163,6 +236,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                                 id="date"
                                 name="date"
                                 type="date"
+                                required=""
                                 style="width: 11rem;"
                             >
                         </div>
@@ -287,6 +361,28 @@ async fn admin_releases_validate_pkg(cx: &Cx, multipart: Multipart) -> Result<Re
         .body(Body::from(""))?)
 }
 
+/// Preflight: when WebAuthn is required, vcp-store must have ≥1 ACTIVE key.
+///
+/// Runs on Publish click before validate-pkg / WebAuthn so the browser never
+/// opens a passkey prompt against an empty allowCredentials list.
+#[route(GET "/admin/releases/new/require-active-key")]
+async fn admin_releases_require_active_key(cx: &Cx) -> Result<Response> {
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    if !perms.releases_manage {
+        return Err(capability_denied().into());
+    }
+
+    let store = storage(cx);
+    if missing_active_key_for_publish(store.as_ref()) {
+        return no_active_key_response();
+    }
+
+    Ok(Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(Body::from(""))?)
+}
+
 #[route(POST "/admin/releases/new")]
 async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
@@ -295,8 +391,17 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
         return Err(capability_denied().into());
     }
 
+    let store = storage(cx);
+    if missing_active_key_for_publish(store.as_ref()) {
+        return Ok(see_other("/admin/releases/new?err=no_active_key"));
+    }
+
     let form = parse_create_multipart(multipart).await?;
 
+    // Date is mandatory — never invent a default (no Unix-epoch placeholder).
+    let Some(released_on) = parse_released_on(&form.date) else {
+        return Ok(see_other("/admin/releases/new?err=date"));
+    };
     // A release without its binary is never worth a row: refuse before any
     // write so the compose form stays the only place to retry.
     let Some(package) = form.package else {
@@ -314,14 +419,6 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
     };
     let version = identity.version;
     let channel = identity.channel.to_owned();
-    let released_on = {
-        let d = form.date.trim();
-        if d.is_empty() {
-            "1970-01-01".to_owned()
-        } else {
-            d.to_owned()
-        }
-    };
     let notes = form.notes.trim().to_owned();
     let organization_id = {
         let raw = form.organization_id.trim();
@@ -334,7 +431,6 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
 
     sweep_staged_releases(cx).await;
 
-    let store = storage(cx);
     let create_guard = store.begin_staging_create();
 
     let sort = crate::release_pkg::version_sort_fields(&version);
@@ -423,7 +519,12 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
 
 #[cfg(test)]
 mod tests {
-    use super::{NOT_PKG_JSON, is_not_pkg_error};
+    use super::{
+        NO_ACTIVE_KEY_JSON, NOT_PKG_JSON, create_error_message, is_no_active_key_error,
+        is_not_pkg_error, parse_released_on,
+    };
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     #[test]
     fn not_pkg_json_is_stable() {
@@ -432,14 +533,33 @@ mod tests {
     }
 
     #[test]
+    fn no_active_key_json_is_stable() {
+        assert!(NO_ACTIVE_KEY_JSON.contains(r#""code":"no_active_key""#));
+        assert!(NO_ACTIVE_KEY_JSON.contains(r#""ok":false"#));
+    }
+
+    #[test]
     fn validate_submit_source_pins_preflight() {
         let src = include_str!("new.rs");
         assert!(src.contains("validate-pkg"));
+        assert!(src.contains("require-active-key"));
         assert!(src.contains("@submit=\"(async (e)"));
+        assert!(src.contains("form.reportValidity()"));
         assert!(src.contains("FormData"));
         assert!(src.contains("HTMLFormElement.prototype.submit"));
         assert!(src.contains("vcp-not-pkg-open"));
+        assert!(src.contains("vcp-no-key-open"));
+        assert!(src.contains("signal no_key_open"));
         assert!(src.contains("id=\"vcp-release-create\""));
+        assert!(src.contains("name=\"date\""));
+        assert!(src.contains("type=\"date\""));
+        assert!(src.contains("required=\"\""));
+        assert!(!src.contains("\"1970-01-01\".to_owned()"));
+        // Active-key gate runs before validate-pkg in the submit handler.
+        let submit = src.split_once("@submit=\"(async (e)").expect("submit").1;
+        let key_at = submit.find("require-active-key").expect("key preflight");
+        let pkg_at = submit.find("validate-pkg").expect("pkg preflight");
+        assert!(key_at < pkg_at);
     }
 
     #[test]
@@ -447,5 +567,89 @@ mod tests {
         assert!(is_not_pkg_error(Some("not_pkg")));
         assert!(!is_not_pkg_error(Some("package")));
         assert!(!is_not_pkg_error(None));
+    }
+
+    #[test]
+    fn no_active_key_error_code_detection() {
+        assert!(is_no_active_key_error(Some("no_active_key")));
+        assert!(!is_no_active_key_error(Some("not_pkg")));
+        assert!(create_error_message(Some("no_active_key")).is_none());
+    }
+
+    #[test]
+    fn parse_released_on_requires_calendar_date() {
+        assert_eq!(
+            parse_released_on("2026-07-01"),
+            Some("2026-07-01".to_owned())
+        );
+        assert_eq!(
+            parse_released_on(" 2026-07-01\n"),
+            Some("2026-07-01".to_owned())
+        );
+        assert_eq!(parse_released_on(""), None);
+        assert_eq!(parse_released_on("   "), None);
+        assert_eq!(parse_released_on("07/01/2026"), None);
+        assert_eq!(parse_released_on("2026-13-01"), None);
+        assert_eq!(parse_released_on("not-a-date"), None);
+    }
+
+    #[test]
+    fn create_error_message_covers_missing_date() {
+        assert!(
+            create_error_message(Some("date"))
+                .unwrap()
+                .contains("date is required")
+        );
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(crate::proptest_util::cases(48))]
+        fn parse_released_on_round_trips_valid_naive_dates(
+            y in 1971i32..2100,
+            m in 1u32..=12,
+            d in 1u32..=28,
+        ) {
+            let raw = format!("{y:04}-{m:02}-{d:02}");
+            let parsed = parse_released_on(&raw);
+            prop_assert_eq!(parsed, Some(raw));
+        }
+
+        fn parse_released_on_rejects_non_iso(
+            s in prop::sample::select(vec![
+                "".to_string(),
+                " ".to_string(),
+                "1970-01-01T00:00:00Z".to_string(),
+                "01/01/1970".to_string(),
+                "2026-13-40".to_string(),
+                "not-a-date".to_string(),
+                "2026/07/01".to_string(),
+            ]),
+        ) {
+            prop_assert_eq!(parse_released_on(&s), None);
+        }
+    }
+
+    #[test]
+    fn battle_parse_released_on_under_contention() {
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..200 {
+                    assert_eq!(parse_released_on(""), None);
+                    assert_eq!(
+                        parse_released_on("2026-08-01"),
+                        Some("2026-08-01".to_owned())
+                    );
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("battle thread");
+        }
     }
 }

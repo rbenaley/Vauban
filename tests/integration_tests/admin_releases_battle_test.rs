@@ -374,6 +374,7 @@ async fn battle_staged_publishes_survive_concurrent_list_sweeps() {
     // Every staged publish holds an in-flight upload slot until it commits or
     // is rolled back; keep the helper cap above the storm size.
     cfg.storage.max_concurrent_uploads = 16;
+    crate::common::seed_active_soft_key(&cfg);
     let router = Arc::new(crate::common::test_router_with_config(cfg).await);
 
     let email = unique_email("battle-staged");
@@ -577,6 +578,7 @@ async fn battle_parallel_invalid_packages_never_stage() {
     let mut cfg = crate::common::test_config().await;
     cfg.storage.webauthn_required = true;
     cfg.storage.max_concurrent_uploads = 16;
+    crate::common::seed_active_soft_key(&cfg);
     let router = Arc::new(crate::common::test_router_with_config(cfg).await);
 
     let email = unique_email("battle-notpkg");
@@ -685,6 +687,151 @@ async fn battle_parallel_invalid_packages_never_stage() {
         )
         .await;
         assert!(status(&resp).is_redirection());
+    }
+
+    cleanup(&db).await;
+}
+
+/// Concurrent publishes with WebAuthn required and zero ACTIVE keys must all
+/// PRG to `err=no_active_key` and never stage.
+#[tokio::test]
+async fn battle_parallel_missing_active_key_never_stages() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let blob = tempfile::tempdir().expect("blob dir");
+    let mut cfg = crate::common::test_config().await;
+    cfg.storage.webauthn_required = true;
+    cfg.storage.blob_path = blob
+        .path()
+        .canonicalize()
+        .expect("canon")
+        .to_string_lossy()
+        .into_owned();
+    let router = Arc::new(crate::common::test_router_with_config(cfg).await);
+
+    let email = unique_email("battle-nokey");
+    let slug = unique_slug("battle-nokey");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
+
+    let n = 6usize;
+    let base = unique_slug("v-nokey");
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let upload_router = router.clone();
+        let upload_cookie = cookie.clone();
+        let upload_barrier = barrier.clone();
+        let version = format!("{base}-{i}");
+        handles.push(tokio::spawn(async move {
+            upload_barrier.wait().await;
+            let bytes = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
+            let resp = crate::common::post_multipart_with_files(
+                upload_router.as_ref(),
+                "/admin/releases/new",
+                Some(&upload_cookie),
+                &[("date", "2026-08-01"), ("notes", "FIX: battle no key")],
+                &[crate::common::MultipartFile {
+                    field: "package",
+                    filename: "vauban.pkg",
+                    content_type: "application/octet-stream",
+                    bytes: &bytes,
+                }],
+            )
+            .await;
+            assert!(status(&resp).is_redirection());
+            resp.headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned()
+        }));
+    }
+
+    for h in handles {
+        let loc = h.await.expect("join");
+        assert_eq!(loc, "/admin/releases/new?err=no_active_key");
+    }
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("all");
+        assert!(
+            !rows.iter().any(|r| r.version.contains(&base)),
+            "missing ACTIVE key must never stage under contention"
+        );
+    }
+
+    cleanup(&db).await;
+    drop(blob);
+}
+
+/// Concurrent creates with an empty date must never stage and must never
+/// invent a Unix-epoch `released_on`.
+#[tokio::test]
+async fn battle_parallel_missing_date_never_stages() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let router = Arc::new(test_router().await);
+    let email = unique_email("battle-nodate");
+    let slug = unique_slug("battle-nodate");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
+
+    let n = 6usize;
+    let base = unique_slug("v-nodate");
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let upload_router = router.clone();
+        let upload_cookie = cookie.clone();
+        let upload_barrier = barrier.clone();
+        let version = format!("{base}-{i}");
+        handles.push(tokio::spawn(async move {
+            upload_barrier.wait().await;
+            let bytes = vcp::freebsd_pkg::craft_test_vauban_pkg(&version);
+            let resp = crate::common::post_multipart_with_files(
+                upload_router.as_ref(),
+                "/admin/releases/new",
+                Some(&upload_cookie),
+                &[("date", ""), ("notes", "FIX: battle no date")],
+                &[crate::common::MultipartFile {
+                    field: "package",
+                    filename: "vauban.pkg",
+                    content_type: "application/octet-stream",
+                    bytes: &bytes,
+                }],
+            )
+            .await;
+            assert!(status(&resp).is_redirection());
+            resp.headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned()
+        }));
+    }
+
+    for h in handles {
+        let loc = h.await.expect("join");
+        assert_eq!(loc, "/admin/releases/new?err=date");
+    }
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("all");
+        assert!(
+            !rows.iter().any(|r| r.version.contains(&base)),
+            "missing date must never stage"
+        );
+        assert!(
+            !rows.iter().any(|r| r.released_on == "1970-01-01"),
+            "must not invent Unix-epoch released_on under contention"
+        );
     }
 
     cleanup(&db).await;

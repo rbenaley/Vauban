@@ -42,8 +42,10 @@ rtk cargo test --test integration_tests -- builds_entitlement_ -- --test-threads
    **with a real FreeBSD `.pkg`** so `vcp-store` commits the blob and
    `storage_objects` is upserted. There are no Version / Channel fields —
    both are read from the package manifeste (`Version` ending in `+LTS`
-   → LTS, otherwise Stable). The package is mandatory: submitting without
-   one is refused and creates nothing. A random binary / non-pkg upload
+   → LTS, otherwise Stable). **Date is mandatory** (no Unix-epoch
+   default): omit it and Publish is refused with a compose banner, and
+   nothing is created. The package is mandatory: submitting without one
+   is refused and creates nothing. A random binary / non-pkg upload
    raises the Concept confirm modal (**Not a FreeBSD package**) **without
    wiping Date / Org / Notes** (Topcoat runtime preflight to
    `validate-pkg`); re-pick a real `.pkg` and Publish again. Creates
@@ -86,8 +88,12 @@ leaves no trace.
    Notes still filled, no new row. Re-pick a real `.pkg` and succeed.
    (Without the Topcoat runtime, the PRG `?err=not_pkg` fallback still
    shows the modal but fields are cleared.)
+6. With WebAuthn required and **no ACTIVE key** in vcp-store (revoke all
+   keys / fresh helper DB), Publish — expect the **No active security key**
+   modal (same Concept chrome as not_pkg). WebAuthn must **not** open.
+   Enrol + `vcp-store approve-key`, then Publish again.
 
-Pass: Casbin + tenant + FreeBSD package gate fail-closed.
+Pass: Casbin + tenant + FreeBSD package + ACTIVE-key gates fail-closed.
 
 ## C -- Channel chips + pagination
 

@@ -247,6 +247,63 @@ async fn e2e_admin_validate_pkg_preflight() {
     cleanup(&db).await;
 }
 
+/// A release date is mandatory: empty/invalid dates never invent 1970-01-01.
+#[tokio::test]
+async fn e2e_admin_create_without_date_creates_nothing() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("rel-nodate");
+    let slug = unique_slug("rel-nodate-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let craft_ver = unique_slug("v-nodate");
+    let identity = expected_identity(&craft_ver);
+    let bytes = vcp::freebsd_pkg::craft_test_vauban_pkg(&craft_ver);
+    let create = post_multipart_with_files(
+        &router,
+        "/admin/releases/new",
+        cookie.as_deref(),
+        &[("date", ""), ("notes", "FIX: no date")],
+        &[package_part(&bytes)],
+    )
+    .await;
+    assert!(status(&create).is_redirection());
+    assert_eq!(
+        create
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some("/admin/releases/new?err=date")
+    );
+
+    let page = get(&router, "/admin/releases/new?err=date", cookie.as_deref()).await;
+    assert!(status(&page).is_success());
+    let html = body_text(page).await;
+    assert!(
+        html.contains("date is required") || html.contains("A release date is required"),
+        "missing date must surface the compose banner"
+    );
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("releases");
+        assert!(
+            !rows.iter().any(|r| r.version == identity.version),
+            "missing date must mean no release row"
+        );
+        assert!(
+            !rows.iter().any(|r| r.released_on == "1970-01-01"),
+            "must not invent Unix-epoch released_on"
+        );
+    }
+
+    cleanup(&db).await;
+}
+
 /// A release row is worthless without its binary: the create is refused
 /// outright and leaves nothing behind.
 #[tokio::test]
@@ -1506,6 +1563,90 @@ async fn e2e_admin_releases_sql_semver_order_and_sort_columns() {
     cleanup(&db).await;
 }
 
+/// With WebAuthn required and zero ACTIVE keys, Publish must refuse before
+/// staging / WebAuthn (modal / PRG `err=no_active_key`).
+#[tokio::test]
+async fn e2e_publish_without_active_key_refuses_before_webauthn() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let blob = tempfile::tempdir().expect("blob dir");
+    let mut cfg = test_config().await;
+    cfg.storage.webauthn_required = true;
+    // Fresh helper meta: no ACTIVE keys (shared test blob may already have some).
+    cfg.storage.blob_path = blob
+        .path()
+        .canonicalize()
+        .expect("canon")
+        .to_string_lossy()
+        .into_owned();
+    let router = test_router_with_config(cfg).await;
+
+    let email = unique_email("rel-nokey");
+    let slug = unique_slug("rel-nokey-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let preflight = get(
+        &router,
+        "/admin/releases/new/require-active-key",
+        cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&preflight), StatusCode::UNPROCESSABLE_ENTITY);
+    let preflight_body = body_text(preflight).await;
+    assert!(
+        preflight_body.contains("no_active_key"),
+        "preflight JSON must name no_active_key: {preflight_body}"
+    );
+
+    let craft_ver = unique_slug("v-nokey");
+    let identity = expected_identity(&craft_ver);
+    let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&craft_ver);
+    let create = post_multipart_with_files(
+        &router,
+        "/admin/releases/new",
+        cookie.as_deref(),
+        &[("date", "2026-08-01"), ("notes", "FIX: no key")],
+        &[package_part(&pkg)],
+    )
+    .await;
+    assert!(status(&create).is_redirection());
+    assert_eq!(
+        create
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some("/admin/releases/new?err=no_active_key")
+    );
+
+    let page = get(
+        &router,
+        "/admin/releases/new?err=no_active_key",
+        cookie.as_deref(),
+    )
+    .await;
+    assert!(status(&page).is_success());
+    let html = body_text(page).await;
+    assert!(
+        html.contains("No active security key") && html.contains("id=\"vcp-no-key-open\""),
+        "compose must surface the no-key modal: {html}"
+    );
+
+    {
+        let mut conn = db.clone();
+        let rows = Release::all().exec(&mut conn).await.expect("releases");
+        assert!(
+            !rows.iter().any(|r| r.version == identity.version),
+            "missing ACTIVE key must mean no release row"
+        );
+    }
+
+    cleanup(&db).await;
+    drop(blob);
+}
+
 /// Abandoning the WebAuthn signature must publish nothing: the staged row is
 /// invisible while the ceremony is in flight and disappears on cancel.
 #[tokio::test]
@@ -1516,6 +1657,7 @@ async fn e2e_publish_cancelled_at_signature_rolls_everything_back() {
 
     let mut cfg = test_config().await;
     cfg.storage.webauthn_required = true;
+    crate::common::seed_active_soft_key(&cfg);
     let router = test_router_with_config(cfg).await;
 
     let email = unique_email("rel-cancel");
@@ -1664,6 +1806,7 @@ async fn e2e_staged_release_is_not_reachable_by_id() {
 
     let mut cfg = test_config().await;
     cfg.storage.webauthn_required = true;
+    crate::common::seed_active_soft_key(&cfg);
     let router = test_router_with_config(cfg).await;
 
     let email = unique_email("rel-staged-id");

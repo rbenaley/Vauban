@@ -56,16 +56,40 @@ grep -n 'derive_release_identity' "$NEW" >/dev/null \
   || fail "$NEW must derive version/channel from the package manifeste"
 grep -n 'err=identity' "$NEW" >/dev/null \
   || fail "$NEW must refuse empty manifeste Version with err=identity"
+grep -n 'parse_released_on' "$NEW" >/dev/null \
+  || fail "$NEW must parse a required release date"
+grep -n 'err=date' "$NEW" >/dev/null \
+  || fail "$NEW must refuse a missing/invalid date with err=date"
+grep -nE 'name="date"' "$NEW" >/dev/null \
+  || fail "$NEW compose form must include a date field"
+grep -n 'type="date"' "$NEW" >/dev/null \
+  || fail "$NEW date input must be type=date"
+grep -n 'form.reportValidity()' "$NEW" >/dev/null \
+  || fail "$NEW submit preflight must call form.reportValidity()"
+# Fail closed: no epoch string assigned as a default (tests may mention 1970).
+if grep -nE '"1970-01-01"\.to_owned\(\)|"1970-01-01"\.into\(\)' "$NEW" >/dev/null; then
+  fail "$NEW must not default released_on to Unix epoch"
+fi
 # Compose must not collect Version / Channel — manifeste is SoT.
 if grep -nE 'name="version"|name="channel"' "$NEW" >/dev/null; then
   fail "$NEW compose form must not include version or channel fields"
 fi
 grep -n 'vb-confirm-root' "$NEW" >/dev/null \
   || fail "$NEW not_pkg modal must reuse vb-confirm-root"
-grep -n '\"not_pkg\" => None' "$NEW" >/dev/null \
-  || fail "$NEW must keep not_pkg off the inline red banner"
+grep -nE '\"not_pkg\"(\s*\|\s*\"no_active_key\")?\s*=>' "$NEW" >/dev/null \
+  || fail "$NEW must keep not_pkg (and no_active_key) off the inline red banner"
 grep -nE '#\[route\(POST "/admin/releases/new/validate-pkg"\)\]' "$NEW" >/dev/null \
   || fail "$NEW must expose POST validate-pkg preflight"
+grep -nE '#\[route\(GET "/admin/releases/new/require-active-key"\)\]' "$NEW" >/dev/null \
+  || fail "$NEW must expose GET require-active-key preflight"
+grep -n 'vcp-no-key-open' "$NEW" >/dev/null \
+  || fail "$NEW must expose #vcp-no-key-open signal bridge"
+grep -n 'signal no_key_open' "$NEW" >/dev/null \
+  || fail "$NEW must drive the no-key modal from signal no_key_open"
+grep -n 'err=no_active_key' "$NEW" >/dev/null \
+  || fail "$NEW must refuse create with err=no_active_key when no ACTIVE key"
+grep -n 'has_active_key' "$NEW" >/dev/null \
+  || fail "$NEW must call StorageClient::has_active_key"
 grep -n 'fn admin_releases_validate_pkg' "$NEW" >/dev/null \
   || fail "$NEW must define admin_releases_validate_pkg"
 # validate-pkg must never stage or open helper I/O.

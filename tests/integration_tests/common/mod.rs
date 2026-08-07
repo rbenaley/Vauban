@@ -893,6 +893,19 @@ pub async fn seed_release_digest(db: &Db, release_id: u64, sha256: &str, size_by
     .expect("meta upsert");
 }
 
+/// Seed one soft ACTIVE WebAuthn credential into the shared testing blob root.
+///
+/// Required when `storage.webauthn_required = true` before a release publish
+/// can leave `/admin/releases/new` (active-key gate).
+pub fn seed_active_soft_key(cfg: &Config) {
+    std::fs::create_dir_all(&cfg.storage.blob_path).expect("blob_path mkdir");
+    let client = StorageClient::connect(&cfg.storage).expect("storage connect");
+    let id = format!("soft-key-{}", unique_suffix());
+    client
+        .seed_soft_active_credential(id.as_bytes(), "test")
+        .expect("seed soft ACTIVE key");
+}
+
 /// Write a release blob via inline `StorageClient` and upsert `storage_objects`.
 ///
 /// Returns the lowercase hex SHA-256 of `bytes`.

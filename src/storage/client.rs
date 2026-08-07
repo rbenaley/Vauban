@@ -117,6 +117,34 @@ impl StorageClient {
         self.webauthn_required
     }
 
+    /// Whether vcp-store has at least one **active** security key.
+    ///
+    /// When [`Self::webauthn_required`] is true, release publish must not
+    /// start a WebAuthn ceremony without one (empty `allowCredentials` would
+    /// otherwise fall through to any browser passkey for the RP).
+    pub fn has_active_key(&self) -> Result<bool, StorageError> {
+        let (_json, total) = self.key_list_page("active", 1, 1)?;
+        Ok(total > 0)
+    }
+
+    /// Test / lab helper: insert a soft ACTIVE credential into an inline engine.
+    pub fn seed_soft_active_credential(
+        &self,
+        credential_id: &[u8],
+        admin_label: &str,
+    ) -> Result<String, StorageError> {
+        match &self.backend {
+            Backend::Inline(engine) => {
+                let eng = engine.lock().expect("inline engine");
+                eng.seed_soft_active_credential(credential_id, admin_label)
+            }
+            Backend::Ipc { .. } => Err(StorageError::new(
+                StorageErrorCode::Io,
+                "seed_soft_active_credential requires inline storage",
+            )),
+        }
+    }
+
     pub fn stash_pending_release(&self, pending: PendingReleaseCeremony) -> String {
         let token = Uuid::new_v4().to_string();
         self.pending_release
