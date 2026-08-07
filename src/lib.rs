@@ -33,6 +33,7 @@ pub mod mailer;
 pub mod models;
 pub mod nav;
 pub mod perms;
+pub mod process_guard;
 pub mod release_pkg;
 pub mod seats;
 pub mod slug;

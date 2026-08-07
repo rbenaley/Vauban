@@ -70,6 +70,10 @@ async fn run_server() -> anyhow::Result<()> {
     // Config first so the default log filter can follow `environment`.
     let cfg = Config::load()?;
 
+    // Fail closed on a second portal instance via PID file (not listen port:
+    // another app may own the port). Stale PIDs / non-`vcp` reuse are cleared.
+    let _pid_guard = vcp::process_guard::acquire(&cfg.server.pid_file)?;
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {

@@ -11,6 +11,8 @@ port = 3000
 public_origins = ["https://localhost:3000", "https://127.0.0.1:3000"]
 # Apache CLF access log (relative paths resolve against the crate root).
 access_log_path = "logs/vcp-access.log"
+# Singleton PID file (production uses /var/run/vcp/vcp.pid).
+pid_file = "/tmp/vcp.pid"
 
 [server.tls]
 cert_path = "certs/dev-server.crt"

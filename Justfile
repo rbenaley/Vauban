@@ -237,7 +237,24 @@ release: ensure-topcoat
 # Smoke: curl -k https://127.0.0.1:3000/login
 # Builds then refreshes assets when needed (see ensure-asset-bundle) so
 # binary AssetIds match target/assets. Prefer this over bare `cargo run`.
-run *ARGS: (build ARGS)
+# Fail closed early when server.pid_file (default /tmp/vcp.pid) names a
+# live process named `vcp` — not a generic "port in use" check.
+run *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pid_file="${VCP_PID_FILE:-/tmp/vcp.pid}"
+    if [[ -f "${pid_file}" ]]; then
+        pid="$(tr -d '[:space:]' <"${pid_file}" || true)"
+        if [[ "${pid}" =~ ^[1-9][0-9]*$ ]] && kill -0 "${pid}" 2>/dev/null; then
+            comm="$(ps -p "${pid}" -o comm= 2>/dev/null | tr -d '[:space:]' || true)"
+            base="${comm##*/}"
+            if [[ "${base}" == "vcp" ]]; then
+                echo "error: another vcp process is already running (pid ${pid}, pid_file ${pid_file}); stop it before starting a new instance" >&2
+                exit 1
+            fi
+        fi
+    fi
+    just build {{ARGS}}
     cargo run {{ARGS}}
 
 # Hot-reload via Topcoat CLI (auto-installs topcoat-cli if missing)

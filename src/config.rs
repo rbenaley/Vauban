@@ -194,6 +194,12 @@ pub struct ServerConfig {
     /// the crate `logs/` directory (gitignored).
     pub access_log_path: String,
 
+    /// Singleton PID file path.
+    ///
+    /// Production default: `/var/run/vcp/vcp.pid` (same runtime directory as
+    /// the storage helper socket). Non-production: `/tmp/vcp.pid`.
+    pub pid_file: String,
+
     pub tls: TlsConfig,
 }
 
@@ -728,6 +734,7 @@ impl Config {
         self.access.model_path = resolve_path(root, &self.access.model_path);
         self.access.policy_path = resolve_path(root, &self.access.policy_path);
         self.server.access_log_path = resolve_path(root, &self.server.access_log_path);
+        self.server.pid_file = resolve_path(root, &self.server.pid_file);
         self.server.tls.cert_path = resolve_path(root, &self.server.tls.cert_path);
         self.server.tls.key_path = resolve_path(root, &self.server.tls.key_path);
         if let Some(ref chain) = self.server.tls.ca_chain_path {
@@ -764,6 +771,9 @@ impl Config {
         }
         if self.server.access_log_path.trim().is_empty() {
             anyhow::bail!("server.access_log_path must not be empty");
+        }
+        if self.server.pid_file.trim().is_empty() {
+            anyhow::bail!("server.pid_file must not be empty");
         }
         if self.server.tls.cert_path.trim().is_empty() || self.server.tls.key_path.trim().is_empty()
         {
@@ -927,6 +937,7 @@ mod tests {
             "{}",
             cfg.server.access_log_path
         );
+        assert_eq!(cfg.server.pid_file, "/tmp/vcp.pid");
         assert_eq!(cfg.login.max_attempts, 10);
         assert_eq!(cfg.login.window_secs, 300);
         assert_eq!(cfg.login.lockout_secs, 900);
@@ -956,6 +967,7 @@ mod tests {
         assert!(cfg.server.tls.acme.as_ref().is_some_and(|a| !a.enabled));
         assert_eq!(cfg.server.port, 443);
         assert_eq!(cfg.server.access_log_path, "/var/log/vcp-access.log");
+        assert_eq!(cfg.server.pid_file, "/var/run/vcp/vcp.pid");
         assert_eq!(cfg.primary_public_origin(), "https://access.vauban.sh");
         assert_eq!(cfg.login.max_attempts, 10);
         assert_eq!(cfg.login.window_secs, 300);

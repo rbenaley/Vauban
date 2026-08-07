@@ -10,6 +10,7 @@ port = 3000
 # Localhost only: WebAuthn rp_id cannot be an IP (open https://localhost:3000).
 public_origins = ["https://localhost:3000"]
 access_log_path = "logs/vcp-access.log"
+pid_file = "/tmp/vcp.pid"
 
 [server.tls]
 cert_path = "certs/dev-server.crt"

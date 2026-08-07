@@ -7,6 +7,7 @@ host = "127.0.0.1"
 port = 3001
 public_origins = ["https://localhost:3001"]
 access_log_path = "logs/vcp-access.log"
+pid_file = "/tmp/vcp.pid"
 
 [server.tls]
 cert_path = "certs/test-server.crt"
