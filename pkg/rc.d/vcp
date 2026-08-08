@@ -15,11 +15,13 @@ load_rc_config $name
 : ${vcp_config_dir:="/usr/local/etc/vcp"}
 : ${vcp_user:="vcp"}
 : ${vcp_acl_sh:="/usr/local/libexec/vcp/acl.sh"}
+: ${vcp_log:="/var/log/vcp.log"}
+: ${vcp_access_log:="/var/log/vcp-access.log"}
 
 # Do NOT use daemon -P: the portal process_guard owns /var/run/vcp/vcp.pid
 # (newsyslog SIGHUP target for the Apache CLF access log).
 command="/usr/sbin/daemon"
-command_args="-r -H -t vcp -u ${vcp_user} -o /var/log/vcp.log /usr/local/bin/vcp"
+command_args="-r -H -t vcp -u ${vcp_user} -o ${vcp_log} /usr/local/bin/vcp"
 
 start_precmd="${name}_prestart"
 
@@ -27,6 +29,11 @@ vcp_prestart()
 {
 	# Mandatory: never fall through to a compile-time checkout path.
 	export VCP_CONFIG_DIR="${vcp_config_dir}"
+	touch "${vcp_log}" "${vcp_access_log}"
+	chown "${vcp_user}:wheel" "${vcp_log}" "${vcp_access_log}"
+	chmod 640 "${vcp_log}" "${vcp_access_log}"
+	chflags noschg,nouchg,nosappnd,nouappnd "${vcp_log}" "${vcp_access_log}" \
+		2>/dev/null || true
 	if [ -f "${vcp_acl_sh}" ]; then
 		# shellcheck source=/usr/local/libexec/vcp/acl.sh
 		. "${vcp_acl_sh}"

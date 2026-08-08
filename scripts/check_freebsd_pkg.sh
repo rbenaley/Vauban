@@ -47,6 +47,17 @@ grep -n 'prepare_vcp_run_dir' pkg/rc.d/vcp_store >/dev/null \
   || fail "vcp_store rc.d must call prepare_vcp_run_dir"
 grep -n 'ensure_store_socket_acl' pkg/rc.d/vcp_store >/dev/null \
   || fail "vcp_store rc.d must ensure socket FACL after bind"
+# daemon -o opens after setuid; prestart must create the log as the service user.
+grep -n 'touch .*vcp_store_log\|touch.*vcp-store.log' pkg/rc.d/vcp_store >/dev/null \
+  || fail "vcp_store rc.d must touch the daemon -o log in prestart"
+grep -n 'chown .*vcp_store_user\|chown vcp-storage' pkg/rc.d/vcp_store >/dev/null \
+  || fail "vcp_store rc.d must chown the daemon log to vcp-storage"
+grep -n '/var/log/vcp-store.log' pkg/rc.d/vcp_store >/dev/null \
+  || fail "vcp_store log must be /var/log/vcp-store.log (flat layout)"
+grep -n 'touch .*vcp_log\|touch.*vcp.log' pkg/rc.d/vcp >/dev/null \
+  || fail "vcp rc.d must touch the daemon -o log in prestart"
+grep -n '/var/log/vcp-access.log' pkg/newsyslog.conf.d/vcp.conf >/dev/null \
+  || fail "newsyslog must rotate /var/log/vcp-access.log"
 
 # Portal must not use daemon -P (process_guard owns vcp.pid).
 if grep -nE '^command_args=.*-P' pkg/rc.d/vcp >/dev/null; then
@@ -78,6 +89,17 @@ fi
 grep -n '800' pkg/+PRE_INSTALL >/dev/null || fail "PRE_INSTALL must create UID 800"
 grep -n '801' pkg/+PRE_INSTALL >/dev/null || fail "PRE_INSTALL must create UID 801"
 grep -n 'vcp-storage' pkg/+PRE_INSTALL >/dev/null || fail "PRE_INSTALL must create vcp-storage"
+grep -n '/var/db/vcp/portal' pkg/+PRE_INSTALL >/dev/null \
+  || fail "PRE_INSTALL must set vcp home to /var/db/vcp/portal"
+grep -n '/var/db/vcp/storage' pkg/+PRE_INSTALL >/dev/null \
+  || fail "PRE_INSTALL must set vcp-storage home to /var/db/vcp/storage"
+grep -n '\-L daemon' pkg/+PRE_INSTALL >/dev/null \
+  || fail "PRE_INSTALL must set login class daemon (setusercontext)"
+if grep -nE -- '-d[[:space:]]*/nonexistent' pkg/+PRE_INSTALL >/dev/null; then
+  fail "PRE_INSTALL must not pw useradd -d /nonexistent (daemon setusercontext)"
+fi
+grep -n '/var/run/vcp-store.pid' pkg/rc.d/vcp_store >/dev/null \
+  || fail "vcp_store supervisor pidfile must be /var/run/vcp-store.pid"
 
 # Runtime config discovery: release paths must not bake CARGO_MANIFEST_DIR.
 # Checkout fallback is allowed only under cfg(test) / feature = "test-support".

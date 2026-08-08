@@ -12,9 +12,13 @@ VCP_BIN="${PREFIX}/bin/vcp"
 . "${ACL_SH}"
 
 echo "==> Creating runtime directories..."
-mkdir -p /var/db/vcp/storage
-chown vcp-storage:vcp-storage /var/db/vcp /var/db/vcp/storage
+mkdir -p /var/db/vcp/portal /var/db/vcp/storage /var/empty
+chmod 555 /var/empty
+chown root:wheel /var/db/vcp
 chmod 755 /var/db/vcp
+chown vcp:vcp /var/db/vcp/portal
+chmod 755 /var/db/vcp/portal
+chown vcp-storage:vcp-storage /var/db/vcp/storage
 chmod 0700 /var/db/vcp/storage
 
 mkdir -p /var/run/vcp

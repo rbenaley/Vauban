@@ -38,6 +38,55 @@ service vcp start
 Pass: both services running; `VCP_CONFIG_DIR` effective via rc.d
 (`/usr/local/etc/vcp`); helper log shows `vcp-store listening`.
 
+### Troubleshooting: `daemon: open: Permission denied`
+
+On FreeBSD 13/14, `daemon -o` opens the log **as root** before `-u`.
+`daemon: open: Permission denied` means that `open(2)` on the `-o` path
+failed (not the pidfile — that would say `ppidfile`).
+
+```bash
+ls -ld /var/log
+ls -lo /var/log/vcp-store.log   # watch for uchg/schg/sappnd
+getfacl /var/log /var/log/vcp-store.log 2>/dev/null
+# Isolate -o vs -P:
+/usr/sbin/daemon -u vcp-storage -o /tmp/vcp-store.log /usr/bin/true; echo tmp:$?
+/usr/sbin/daemon -P /var/run/vcp-store.pid -u vcp-storage /usr/bin/true; echo pid:$?
+# Unblock flat layout:
+touch /var/log/vcp-store.log
+chown vcp-storage:wheel /var/log/vcp-store.log
+chmod 640 /var/log/vcp-store.log
+chflags noschg,nouchg /var/log/vcp-store.log 2>/dev/null || true
+service vcp_store start
+```
+
+Packaged `rc.d` prestart touches `/var/log/vcp*.log` on every start.
+
+### Troubleshooting: `daemon: failed to set user environment`
+
+`daemon -u` calls `setusercontext(LOGIN_SETALL)`. Needs an **existing** home
+directory on disk (pw home alone is not enough) and a usable login class.
+
+```bash
+ls -ld /var/empty /var/db/vcp/portal /var/db/vcp/storage
+pw usershow vcp
+pw usershow vcp-storage
+# Unblock without reinstall:
+mkdir -p /var/empty /var/db/vcp/portal /var/db/vcp/storage
+chmod 555 /var/empty
+chown vcp:vcp /var/db/vcp/portal
+chown vcp-storage:vcp-storage /var/db/vcp/storage
+chmod 755 /var/db/vcp/portal
+chmod 0700 /var/db/vcp/storage
+pw usermod vcp -d /var/db/vcp/portal -L daemon -s /usr/sbin/nologin
+pw usermod vcp-storage -d /var/db/vcp/storage -L daemon -s /usr/sbin/nologin
+cap_mkdb /etc/login.conf
+# Prove setusercontext works:
+/usr/sbin/daemon -u vcp /usr/bin/true; echo vcp_daemon:$?
+/usr/sbin/daemon -u vcp-storage /usr/bin/true; echo store_daemon:$?
+service vcp_store restart
+service vcp restart
+```
+
 ## B -- Reboot survival (FACL + /var/run)
 
 ```bash

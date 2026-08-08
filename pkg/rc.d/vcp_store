@@ -16,10 +16,13 @@ load_rc_config $name
 : ${vcp_store_config:="${vcp_store_config_dir}/vcp-store.conf"}
 : ${vcp_store_user:="vcp-storage"}
 : ${vcp_store_acl_sh:="/usr/local/libexec/vcp/acl.sh"}
+: ${vcp_store_log:="/var/log/vcp-store.log"}
 
-pidfile="/var/run/vcp/vcp-store.pid"
+# Supervisor pidfile stays in world-traversable /var/run (not the 0700
+# socket dir) so daemon(8) open_pid_files never trips FACL edge cases.
+pidfile="/var/run/vcp-store.pid"
 command="/usr/sbin/daemon"
-command_args="-P ${pidfile} -r -H -t vcp-store -u ${vcp_store_user} -o /var/log/vcp-store.log /usr/local/sbin/vcp-store --config ${vcp_store_config} --production"
+command_args="-P ${pidfile} -r -H -t vcp-store -u ${vcp_store_user} -o ${vcp_store_log} /usr/local/sbin/vcp-store --config ${vcp_store_config} --production"
 
 start_precmd="${name}_prestart"
 start_postcmd="${name}_poststart"
@@ -28,6 +31,12 @@ stop_postcmd="${name}_poststop"
 vcp_store_prestart()
 {
 	export VCP_CONFIG_DIR="${vcp_store_config_dir}"
+	# daemon(8) -o opens as root before -u; still pre-create so ownership is
+	# stable for the service user / newsyslog (flat /var/log layout).
+	touch "${vcp_store_log}"
+	chown "${vcp_store_user}:wheel" "${vcp_store_log}"
+	chmod 640 "${vcp_store_log}"
+	chflags noschg,nouchg,nosappnd,nouappnd "${vcp_store_log}" 2>/dev/null || true
 	if [ -f "${vcp_store_acl_sh}" ]; then
 		# shellcheck source=/usr/local/libexec/vcp/acl.sh
 		. "${vcp_store_acl_sh}"

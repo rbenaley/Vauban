@@ -1,5 +1,10 @@
 #!/bin/sh
 # Create VCP service accounts (fixed UIDs) and stop services before upgrade.
+#
+# daemon(8) -u calls setusercontext(LOGIN_SETALL). That requires:
+#   - an existing home directory (not a missing path)
+#   - a usable login class (we set -L daemon)
+# Creating users with a missing home yields: "failed to set user environment".
 
 if service vcp onestatus >/dev/null 2>&1; then
     echo "==> Stopping running vcp before upgrade..."
@@ -19,21 +24,43 @@ create_group_if_missing() {
     fi
 }
 
-create_user_if_missing() {
+ensure_service_homes() {
+    # Base FreeBSD usually ships /var/empty; create if a minimal image omitted it.
+    mkdir -p /var/empty
+    chmod 555 /var/empty
+    mkdir -p /var/db/vcp/portal /var/db/vcp/storage
+    chmod 755 /var/db/vcp /var/db/vcp/portal
+    chmod 0700 /var/db/vcp/storage
+}
+
+ensure_user() {
     _name=$1
     _uid=$2
     _gid=$3
-    _gecos=$4
+    _home=$4
+    _gecos=$5
+
+    mkdir -p "${_home}"
     if ! pw usershow "$_name" >/dev/null 2>&1; then
         pw useradd -n "$_name" -u "$_uid" -g "$_gid" \
-            -d /nonexistent -s /usr/sbin/nologin \
+            -d "${_home}" -s /usr/sbin/nologin -L daemon \
             -c "${_gecos}"
-        echo "  Created user ${_name} (UID ${_uid}, GID ${_gid})"
+        echo "  Created user ${_name} (UID ${_uid}, home ${_home}, class daemon)"
+    else
+        pw usermod -n "$_name" -d "${_home}" -s /usr/sbin/nologin -L daemon
+        echo "  Ensured ${_name} home=${_home} class=daemon"
     fi
+    chown "${_name}:${_name}" "${_home}"
 }
 
 echo "==> Creating VCP service accounts..."
+ensure_service_homes
 create_group_if_missing vcp 800
 create_group_if_missing vcp-storage 801
-create_user_if_missing vcp 800 800 "VCP portal service"
-create_user_if_missing vcp-storage 801 801 "VCP storage helper"
+ensure_user vcp 800 800 /var/db/vcp/portal "VCP portal service"
+ensure_user vcp-storage 801 801 /var/db/vcp/storage "VCP storage helper"
+
+# login.conf.db must exist for setusercontext / -L daemon.
+if [ -f /etc/login.conf ]; then
+    cap_mkdb /etc/login.conf 2>/dev/null || true
+fi
