@@ -4,7 +4,7 @@ mod access_log;
 mod resolver;
 mod serve;
 
-pub use access_log::{AccessLog, format_common_log};
+pub use access_log::{AccessLog, format_common_log, spawn_reopen_on_hangup};
 pub use resolver::{
     AcmeResolver, certified_key_from_der, certified_key_from_pem, generate_self_signed_cert,
 };

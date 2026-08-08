@@ -1,6 +1,6 @@
 //! Helper request dispatch against [`StorageEngine`].
 
-use std::os::unix::io::AsRawFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 
 use base64::Engine;
@@ -30,7 +30,7 @@ fn reply(
     stream: &mut UnixStream,
     op: &str,
     resp: &StorageResponse,
-    fd: Option<i32>,
+    fd: Option<BorrowedFd<'_>>,
 ) -> Result<(), ()> {
     let bytes = match encode_response(resp) {
         Ok(b) => b,
@@ -43,8 +43,8 @@ fn reply(
         store_log::wire_failed(op, "send_bytes", &e);
         return Err(());
     }
-    if let Some(raw) = fd
-        && let Err(e) = send_fd(stream, raw)
+    if let Some(handoff) = fd
+        && let Err(e) = send_fd(stream, handoff)
     {
         store_log::wire_failed(op, "send_fd", &e);
         return Err(());
@@ -113,7 +113,7 @@ fn dispatch(
                             "SCM_RIGHTS handoff ready"
                         );
                         let resp = StorageResponse::ok_upload(ok.upload_id);
-                        reply(stream, op, &resp, Some(file.as_raw_fd()))
+                        reply(stream, op, &resp, Some(file.as_fd()))
                     }
                     Err(e) => {
                         // Already WARNed in open_partial_for_handoff.
@@ -195,7 +195,7 @@ fn dispatch(
                             stream,
                             op,
                             &StorageResponse::ok_stat(st.size, st.sha256),
-                            Some(file.as_raw_fd()),
+                            Some(file.as_fd()),
                         ),
                         Err(e) => reply(stream, op, &map_err(e), None),
                     }

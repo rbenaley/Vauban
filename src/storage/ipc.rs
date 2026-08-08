@@ -1,14 +1,15 @@
-//! Length-prefixed Unix IPC + SCM_RIGHTS FD via `passfd`.
+//! Length-prefixed Unix IPC + SCM_RIGHTS FD via `unix-ancillary`.
 //!
 //! Architecture prefers SOCK_SEQPACKET; macOS lacks AF_UNIX SEQPACKET, so we
 //! use SOCK_STREAM with a u32 BE length header (message-oriented framing).
+//! FD handoff uses the safe `OwnedFd` / `BorrowedFd` API from `unix-ancillary`
+//! (unsafe FFI stays in that dependency + `nix` for peer credentials).
 
 use std::io::{Read, Write};
-use std::os::fd::{FromRawFd, OwnedFd};
-use std::os::unix::io::AsRawFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 
-use passfd::FdPassingExt;
+use unix_ancillary::UnixStreamExt;
 
 use super::error::{StorageError, StorageErrorCode};
 use super::protocol::{MAX_MSG_BYTES, StorageRequest, StorageResponse};
@@ -74,21 +75,24 @@ pub fn send_bytes(stream: &mut UnixStream, bytes: &[u8]) -> Result<(), StorageEr
     Ok(())
 }
 
-pub fn send_fd(stream: &UnixStream, fd: impl AsRawFd) -> Result<(), StorageError> {
+/// Send one FD over the Unix stream (dummy data byte + SCM_RIGHTS).
+pub fn send_fd(stream: &UnixStream, fd: impl AsFd) -> Result<(), StorageError> {
     stream
-        .send_fd(fd.as_raw_fd())
+        .send_fds(b"\0", &[fd.as_fd()])
         .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("send_fd: {e}")))?;
     Ok(())
 }
 
+/// Receive one FD transferred with [`send_fd`].
 pub fn recv_fd(stream: &UnixStream) -> Result<OwnedFd, StorageError> {
-    let raw = stream
-        .recv_fd()
+    let received = stream
+        .recv_fds::<1>()
         .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("recv_fd: {e}")))?;
-    // SAFETY: `passfd` transfers ownership of a new FD from the kernel.
-    #[allow(unsafe_code)]
-    let owned = unsafe { OwnedFd::from_raw_fd(raw) };
-    Ok(owned)
+    received
+        .fds
+        .into_iter()
+        .next()
+        .ok_or_else(|| StorageError::new(StorageErrorCode::Io, "recv_fd: no fd in ancillary"))
 }
 
 pub fn bind_socket(path: &str) -> Result<UnixListener, StorageError> {
@@ -112,14 +116,31 @@ pub fn peer_uid(stream: &UnixStream) -> Result<u32, StorageError> {
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
-        let mut uid: libc::uid_t = 0;
-        let mut gid: libc::gid_t = 0;
-        // SAFETY: getpeereid probes peer credentials on a connected Unix FD.
-        #[allow(unsafe_code)]
-        let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
-        if rc != 0 {
-            return Err(StorageError::new(StorageErrorCode::Io, "getpeereid failed"));
-        }
-        Ok(uid as u32)
+        let (uid, _gid) = nix::unistd::getpeereid(stream)
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("peercred: {e}")))?;
+        Ok(uid.as_raw())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn send_recv_fd_round_trip_without_unsafe_in_caller() {
+        let (tx, rx) = UnixStream::pair().expect("pair");
+        let mut src = tempfile::tempfile().expect("tempfile");
+        src.write_all(b"handoff-payload").expect("write");
+        src.flush().expect("flush");
+        src.seek(SeekFrom::Start(0)).expect("seek");
+
+        send_fd(&tx, &src).expect("send_fd");
+        let owned = recv_fd(&rx).expect("recv_fd");
+        let mut got = std::fs::File::from(owned);
+        let mut buf = String::new();
+        got.read_to_string(&mut buf).expect("read received fd");
+        assert_eq!(buf, "handoff-payload");
     }
 }

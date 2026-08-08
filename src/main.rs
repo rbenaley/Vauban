@@ -1,7 +1,6 @@
 #![recursion_limit = "256"]
 
 use std::env;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -84,8 +83,9 @@ async fn run_seed_data() -> anyhow::Result<()> {
 /// Toasty migrations with development as the default env (same as the
 /// former standalone migrations binary).
 async fn run_migration(args: &[String]) -> anyhow::Result<()> {
-    // Resolve Toasty.toml / toasty/ relative to the package, not the caller's CWD.
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // Resolve Toasty.toml / toasty/ via Config::package_root (VCP_PACKAGE_ROOT,
+    // parent of VCP_CONFIG_DIR, or /usr/local/share/vcp) — not CWD / compile paths.
+    let root = Config::package_root()?;
     env::set_current_dir(&root)?;
 
     let toasty_cfg = toasty_cli::Config::load()?;
@@ -149,6 +149,8 @@ async fn run_server() -> anyhow::Result<()> {
             cfg.server.access_log_path
         )
     })?;
+    // newsyslog sends SIGHUP to process_guard pid (/var/run/vcp/vcp.pid).
+    tls::spawn_reopen_on_hangup(access_log.clone());
 
     let addr = (cfg.server.host.as_str(), cfg.server.port);
     let listener = TcpListener::bind(addr).await?;

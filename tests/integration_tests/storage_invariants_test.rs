@@ -145,11 +145,31 @@ fn inv_vcp_store_pins_peercred_and_capsicum() {
         env!("CARGO_MANIFEST_DIR"),
         "/src/storage/capsicum.rs"
     ));
+    assert!(
+        cap.contains("capsicum::enter"),
+        "FreeBSD path must call capsicum::enter (cap_enter(2))"
+    );
     assert!(cap.contains("cap_enter"));
     assert!(cap.contains("enter_capability_mode"));
+    assert!(
+        !cap.contains("allow(unsafe_code)"),
+        "Capsicum FFI must live in the capsicum crate, not this module"
+    );
 
     let ipc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/storage/ipc.rs"));
     assert!(ipc.contains("fn peer_uid"));
+    assert!(
+        ipc.contains("unix_ancillary") || ipc.contains("unix-ancillary"),
+        "SCM_RIGHTS must use unix-ancillary OwnedFd API"
+    );
+    assert!(
+        ipc.contains("getpeereid") || ipc.contains("PeerCredentials"),
+        "peer_uid must use nix peer-cred APIs"
+    );
+    assert!(
+        !ipc.contains("allow(unsafe_code)"),
+        "IPC FFI must live in nix / unix-ancillary, not this module"
+    );
 }
 
 #[test]

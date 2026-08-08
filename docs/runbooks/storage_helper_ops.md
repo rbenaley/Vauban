@@ -31,36 +31,43 @@ rtk cargo test -p vcp --lib production_rejects_storage_ipc_spawn -- --test-threa
 | Portal config | `/usr/local/etc/vcp/vcp.conf` — `[storage]` = `ipc=socket` + `socket_path` only |
 | Helper config | `/usr/local/etc/vcp/vcp-store.conf` — `blob_path`, `listen`, quotas, `expected_peer_uid` |
 | Blob root | `/var/db/vcp/storage` owned by `vcp-storage:vcp-storage` (UID **801**), mode **0700** (includes `meta.sqlite` SoT + `releases/` / `images/` / `tmp/`) |
-| Listen socket | `/var/run/vcp/store.sock` — directory **0700**, socket owned so only portal UID **800** (`vcp`) can connect |
+| Listen socket | `/var/run/vcp/store.sock` — dir owner **vcp-storage** mode **0700** + FACL `u:vcp:rx` (default `u:vcp:rw` on new socket); peercred still requires UID **800** |
 | Helper binary | `/usr/local/sbin/vcp-store` (runs as `vcp-storage` / 801) |
 | Portal UID | `vcp` = **800** — no blob mount required; peercred identity for IPC |
+| Config dir | `/usr/local/etc/vcp` via `VCP_CONFIG_DIR` (rc.d); unset `VCP_ENVIRONMENT` ⇒ production |
 
 `vcp` talks to the helper over the named SEQPACKET socket. The helper
 checks **peer credentials** (`getpeereid` / `SO_PEERCRED`) when
 `expected_peer_uid` / `--expected-uid` is set and rejects foreign UIDs.
 With `--production`, peer UID is **required**.
 
+`/var/run` is often tmpfs: **rc.d recreates `/var/run/vcp` and FACLs on every
+`vcp_store` start** (`pkg/acl.sh` → `prepare_vcp_run_dir`). Do not rely on
+`+POST_INSTALL` alone for socket reachability.
+
 ### rc.d / service ownership
 
-1. Start **`vcp-store` before `vcp`** (or restart both if the socket vanished).
-2. Ensure the socket directory is created as root / service user with mode
-   **0700** before bind (helper also `create_dir_all` on the parent).
+1. Start **`vcp-store` before `vcp`** (`REQUIRE: vcp_store` on the portal script).
+2. `service vcp_store start` runs `prepare_vcp_run_dir` then binds; poststart
+   applies `u:vcp:rw` on `store.sock` if default ACL did not inherit.
 3. After bind, confirm:
-   - `ls -ld /var/run/vcp` → `drwx------` for the store / runtime user;
-   - `ls -l /var/run/vcp/store.sock` → socket; only portal UID can connect;
-   - `ls -ld /var/db/vcp/storage` → `drwx------ vcp-storage vcp-storage`.
+   - `getfacl /var/run/vcp` shows `user:vcp` traverse;
+   - `getfacl /var/run/vcp/store.sock` shows `user:vcp` rw (or equivalent);
+   - `ls -ld /var/db/vcp/storage` → `drwx------ vcp-storage vcp-storage` (**no** FACL for `vcp`).
 4. Portal boot with `ipc=spawn` or a non-empty `storage.blob_path` in
    `vcp.conf` **fails validation** — keep blob settings in `vcp-store.conf`.
 
-Example FreeBSD `rc.conf` sketch (adjust names to your package):
+Packaged FreeBSD enable:
 
 ```sh
-vcp_store_enable="YES"
-vcp_enable="YES"
-# vcp_store_user="vcp-storage"   # UID 801
-# vcp_user="vcp"                 # UID 800
-# vcp_store_flags="--config /usr/local/etc/vcp/vcp-store.conf --production"
+sysrc vcp_store_enable=YES
+sysrc vcp_enable=YES
+service vcp_store start
+service vcp start
 ```
+
+Build the `.pkg` on FreeBSD: `just release && just package` (see
+`docs/runbooks/freebsd_pkg_smoke_test.md`).
 
 ## Restart helper
 

@@ -43,6 +43,7 @@ static SCHEMA_READY: OnceLock<()> = OnceLock::new();
 pub const TEST_ORIGIN: &str = "https://localhost:3001";
 
 fn ensure_tracing() {
+    // Config paths: just exports VCP_CONFIG_DIR / VCP_PACKAGE_ROOT.
     TRACING.get_or_init(|| {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(

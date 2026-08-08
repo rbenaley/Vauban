@@ -982,7 +982,8 @@ fn default_helper_path() -> PathBuf {
             return candidate;
         }
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/vcp-store")
+    // Dev: same target dir as `vcp` when launched via `cargo run` / `just run`.
+    PathBuf::from("vcp-store")
 }
 
 /// Stream bytes into a write FD while hashing.

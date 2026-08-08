@@ -1,0 +1,41 @@
+#!/bin/sh
+
+# PROVIDE: vcp
+# REQUIRE: LOGIN postgresql vcp_store
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="vcp"
+rcvar="vcp_enable"
+
+load_rc_config $name
+
+: ${vcp_enable:="NO"}
+: ${vcp_config_dir:="/usr/local/etc/vcp"}
+: ${vcp_user:="vcp"}
+: ${vcp_acl_sh:="/usr/local/libexec/vcp/acl.sh"}
+
+# Do NOT use daemon -P: the portal process_guard owns /var/run/vcp/vcp.pid
+# (newsyslog SIGHUP target for the Apache CLF access log).
+command="/usr/sbin/daemon"
+command_args="-r -H -t vcp -u ${vcp_user} -o /var/log/vcp.log /usr/local/bin/vcp"
+
+start_precmd="${name}_prestart"
+
+vcp_prestart()
+{
+	# Mandatory: never fall through to a compile-time checkout path.
+	export VCP_CONFIG_DIR="${vcp_config_dir}"
+	if [ -f "${vcp_acl_sh}" ]; then
+		# shellcheck source=/usr/local/libexec/vcp/acl.sh
+		. "${vcp_acl_sh}"
+		prepare_vcp_run_dir /var/run/vcp
+	else
+		mkdir -p /var/run/vcp
+		chown vcp-storage:vcp-storage /var/run/vcp 2>/dev/null || true
+		chmod 0700 /var/run/vcp
+	fi
+}
+
+run_rc_command "$1"

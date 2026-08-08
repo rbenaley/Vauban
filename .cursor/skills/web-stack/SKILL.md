@@ -66,6 +66,8 @@ static-asset embedding assumptions unless explicitly requested.
 | ORM | **Toasty** ([tokio-rs/toasty](https://github.com/tokio-rs/toasty)) |
 | Database | **PostgreSQL** (dev / staging / prod). SQLite is not the default |
 | Tooling | `just run` (HTTPS), `topcoat dev` (HMR), `topcoat fmt`, `just bundle`; root layout includes `runtime::script()` + `dev::script()` |
+| Config dir | `VCP_CONFIG_DIR` or `/usr/local/etc/vcp` (unset `VCP_ENVIRONMENT` ⇒ production); `just` exports local `config/` |
+| FreeBSD pkg | `pkg/` + `just package` (FreeBSD host only); UIDs 800/801; FACL on `/var/run/vcp` |
 
 ## Database / ORM (Toasty + PostgreSQL)
 

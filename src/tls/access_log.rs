@@ -4,13 +4,17 @@
 //!
 //! Lines are appended to the path from `server.access_log_path` (not to the
 //! process tracing subscriber).
+//!
+//! FreeBSD `newsyslog` should send `SIGHUP` to the **process_guard** pid in
+//! `/var/run/vcp/vcp.pid` (not a parent `daemon -P` pid). The portal reopens
+//! the log file so writes continue on the live path after rotation.
 
 use std::convert::Infallible;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{self, Write};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
@@ -19,11 +23,12 @@ use http::{Method, Version};
 use hyper::body::Incoming;
 use hyper::service::Service;
 use topcoat::router::{Request, Response, RouterService};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Append-only writer for Apache CLF lines (shared across connections).
 #[derive(Clone)]
 pub struct AccessLog {
+    path: PathBuf,
     file: Arc<Mutex<File>>,
 }
 
@@ -31,17 +36,59 @@ impl AccessLog {
     /// Open (or create) the access log file for append. Parent directories are
     /// created when missing (e.g. crate-local `logs/`).
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
-        let path = path.as_ref();
+        let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
             std::fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let file = open_append(&path)?;
         info!(access_log = %path.display(), "Apache CLF access log ready");
         Ok(Self {
+            path,
             file: Arc::new(Mutex::new(file)),
         })
+    }
+
+    /// Path used for append and [`Self::reopen`].
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Re-open the log at [`Self::path`] (newsyslog / `SIGHUP`).
+    ///
+    /// On failure, keeps the previous FD so writes continue (fail soft) and
+    /// returns the error after logging.
+    pub fn reopen(&self) -> io::Result<()> {
+        self.reopen_at(&self.path)
+    }
+
+    fn reopen_at(&self, path: &Path) -> io::Result<()> {
+        match open_append(path) {
+            Ok(new_file) => {
+                let mut guard = match self.file.lock() {
+                    Ok(g) => g,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                *guard = new_file;
+                info!(access_log = %path.display(), "Apache CLF access log reopened");
+                Ok(())
+            }
+            Err(error) => {
+                error!(
+                    access_log = %path.display(),
+                    %error,
+                    "failed to reopen access log; keeping previous file descriptor"
+                );
+                Err(error)
+            }
+        }
+    }
+
+    /// Test helper: attempt reopen at an alternate path (fail-soft semantics).
+    #[cfg(test)]
+    pub fn reopen_at_for_test(&self, path: &Path) -> io::Result<()> {
+        self.reopen_at(path)
     }
 
     /// Write one CLF line (adds a trailing newline). Failures are logged via
@@ -54,6 +101,40 @@ impl AccessLog {
         if let Err(error) = writeln!(guard, "{line}").and_then(|_| guard.flush()) {
             error!(%error, "failed to write access log line");
         }
+    }
+}
+
+fn open_append(path: &Path) -> io::Result<File> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    OpenOptions::new().create(true).append(true).open(path)
+}
+
+/// Spawn a task that reopens `access_log` on every `SIGHUP` (Unix).
+pub fn spawn_reopen_on_hangup(access_log: AccessLog) {
+    #[cfg(unix)]
+    {
+        tokio::spawn(async move {
+            let mut hangup =
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+                    Ok(s) => s,
+                    Err(error) => {
+                        warn!(%error, "access log SIGHUP listener unavailable");
+                        return;
+                    }
+                };
+            loop {
+                hangup.recv().await;
+                let _ = access_log.reopen();
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = access_log;
     }
 }
 
@@ -147,7 +228,17 @@ fn version_token(version: Version) -> &'static str {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::sync::Barrier;
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_log(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("vcp-access-log-{label}-{nanos}.log"))
+    }
 
     #[test]
     fn formats_clf_line() {
@@ -199,11 +290,7 @@ mod tests {
 
     #[test]
     fn appends_clf_lines_to_file() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("vcp-access-log-unit-{nanos}.log"));
+        let path = temp_log("append");
         let log = AccessLog::open(&path).expect("open");
         log.write_line("127.0.0.1 - - [01/Jan/2026:00:00:00 +0000] \"GET /a HTTP/1.1\" 200 -");
         log.write_line("127.0.0.1 - - [01/Jan/2026:00:00:01 +0000] \"GET /b HTTP/1.1\" 404 -");
@@ -213,5 +300,116 @@ mod tests {
         assert!(body.contains("\"GET /a HTTP/1.1\" 200 -"));
         assert!(body.contains("\"GET /b HTTP/1.1\" 404 -"));
         assert!(body.ends_with('\n'));
+    }
+
+    #[test]
+    fn without_reopen_writes_follow_renamed_inode() {
+        let path = temp_log("no-reopen");
+        let rotated = path.with_extension("log.0");
+        let log = AccessLog::open(&path).expect("open");
+        log.write_line("line-before");
+        std::fs::rename(&path, &rotated).expect("rename");
+        // Simulate newsyslog creating an empty live file.
+        File::create(&path).expect("create live");
+        log.write_line("line-after-no-reopen");
+        let live = std::fs::read_to_string(&path).expect("live");
+        let old = std::fs::read_to_string(&rotated).expect("rotated");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&rotated);
+        assert!(!live.contains("line-after-no-reopen"), "live={live}");
+        assert!(old.contains("line-before") && old.contains("line-after-no-reopen"));
+    }
+
+    #[test]
+    fn reopen_sends_new_writes_to_live_path() {
+        let path = temp_log("reopen");
+        let rotated = path.with_extension("log.0");
+        let log = AccessLog::open(&path).expect("open");
+        log.write_line("line-before");
+        std::fs::rename(&path, &rotated).expect("rename");
+        File::create(&path).expect("create live");
+        log.reopen().expect("reopen");
+        log.write_line("line-after-reopen");
+        let live = std::fs::read_to_string(&path).expect("live");
+        let old = std::fs::read_to_string(&rotated).expect("rotated");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&rotated);
+        assert!(live.contains("line-after-reopen"), "live={live}");
+        assert!(old.contains("line-before"));
+        assert!(!old.contains("line-after-reopen"));
+    }
+
+    #[test]
+    fn reopen_failure_keeps_previous_fd() {
+        let path = temp_log("reopen-fail");
+        let log = AccessLog::open(&path).expect("open");
+        log.write_line("kept");
+        // Parent path is a file → create_dir_all / open fails.
+        let impossible = path.join("nested").join("x.log");
+        assert!(log.reopen_at_for_test(&impossible).is_err());
+        log.write_line("still-on-old");
+        let body = std::fs::read_to_string(&path).expect("read");
+        let _ = std::fs::remove_file(&path);
+        assert!(body.contains("kept"));
+        assert!(body.contains("still-on-old"));
+    }
+
+    #[test]
+    fn prop_reopen_interleaved_with_writes_preserves_lines() {
+        let path = temp_log("prop");
+        let log = AccessLog::open(&path).expect("open");
+        let mut expected = 0u32;
+        for round in 0..20u32 {
+            for i in 0..5u32 {
+                log.write_line(&format!("r{round}-i{i}"));
+                expected += 1;
+            }
+            if round % 3 == 0 {
+                let rotated = path.with_extension(format!("log.{round}"));
+                let _ = std::fs::rename(&path, &rotated);
+                let _ = File::create(&path);
+                log.reopen().expect("reopen");
+                let _ = std::fs::remove_file(&rotated);
+            }
+        }
+        let body = std::fs::read_to_string(&path).expect("read");
+        let _ = std::fs::remove_file(&path);
+        // After the last reopen, only lines since that reopen remain on the live path.
+        assert!(body.lines().count() >= 5);
+        assert!(body.contains("r19-i4"));
+        let _ = expected;
+    }
+
+    #[test]
+    fn battle_parallel_writes_and_reopens() {
+        let path = temp_log("battle");
+        let log = AccessLog::open(&path).expect("open");
+        let barrier = Arc::new(Barrier::new(5));
+        let mut handles = Vec::new();
+        for t in 0..4 {
+            let log = log.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                for i in 0..50 {
+                    log.write_line(&format!("t{t}-{i}"));
+                }
+            }));
+        }
+        let log_reopen = log.clone();
+        let barrier_r = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            barrier_r.wait();
+            for _ in 0..20 {
+                let _ = log_reopen.reopen();
+            }
+        }));
+        for h in handles {
+            h.join().expect("thread");
+        }
+        log.write_line("battle-final");
+        let body = std::fs::read_to_string(&path).expect("read after battle");
+        let _ = std::fs::remove_file(&path);
+        assert!(body.contains("battle-final"), "body len={}", body.len());
     }
 }

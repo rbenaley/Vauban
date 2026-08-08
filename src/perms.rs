@@ -78,8 +78,14 @@ impl PolicyStore {
         Ok(Self { grants })
     }
 
+    /// Policy CSV under the resolved config directory (`access/vcp_policy.csv`).
+    ///
+    /// Requires `VCP_CONFIG_DIR`, `/usr/local/etc/vcp`, or (tests only) the
+    /// checkout fallback from [`crate::config::Config::find_config_dir`].
     pub fn default_path() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/access/vcp_policy.csv")
+        crate::config::Config::find_config_dir()
+            .map(|d| d.join("access/vcp_policy.csv"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("access/vcp_policy.csv"))
     }
 
     pub fn allows(&self, role: &str, resource: &str, action: &str) -> bool {

@@ -54,6 +54,14 @@ fn inv_access_log_writes_to_configured_file() {
         main.contains("AccessLog::open"),
         "main must open server.access_log_path"
     );
+    assert!(
+        main.contains("spawn_reopen_on_hangup"),
+        "main must spawn SIGHUP access-log reopen for newsyslog"
+    );
+    assert!(
+        src.contains("fn reopen"),
+        "AccessLog must implement reopen()"
+    );
 
     let prod = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/vcp.conf"));
     assert!(prod.contains("access_log_path = \"/var/log/vcp-access.log\""));

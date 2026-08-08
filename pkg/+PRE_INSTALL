@@ -1,0 +1,39 @@
+#!/bin/sh
+# Create VCP service accounts (fixed UIDs) and stop services before upgrade.
+
+if service vcp onestatus >/dev/null 2>&1; then
+    echo "==> Stopping running vcp before upgrade..."
+    service vcp onestop || true
+fi
+if service vcp_store onestatus >/dev/null 2>&1; then
+    echo "==> Stopping running vcp_store before upgrade..."
+    service vcp_store onestop || true
+fi
+
+create_group_if_missing() {
+    _name=$1
+    _gid=$2
+    if ! pw groupshow "$_name" >/dev/null 2>&1; then
+        pw groupadd -n "$_name" -g "$_gid"
+        echo "  Created group ${_name} (GID ${_gid})"
+    fi
+}
+
+create_user_if_missing() {
+    _name=$1
+    _uid=$2
+    _gid=$3
+    _gecos=$4
+    if ! pw usershow "$_name" >/dev/null 2>&1; then
+        pw useradd -n "$_name" -u "$_uid" -g "$_gid" \
+            -d /nonexistent -s /usr/sbin/nologin \
+            -c "${_gecos}"
+        echo "  Created user ${_name} (UID ${_uid}, GID ${_gid})"
+    fi
+}
+
+echo "==> Creating VCP service accounts..."
+create_group_if_missing vcp 800
+create_group_if_missing vcp-storage 801
+create_user_if_missing vcp 800 800 "VCP portal service"
+create_user_if_missing vcp-storage 801 801 "VCP storage helper"

@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use toasty::Db;
@@ -460,15 +459,10 @@ pub async fn connect(database_url: &str) -> anyhow::Result<Db> {
     Ok(db)
 }
 
-fn package_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
 /// Apply migrations listed in `toasty/history.toml` that are not yet recorded
-/// in `__toasty_migrations`. Paths are resolved from the package root so this
-/// works regardless of process CWD.
+/// in `__toasty_migrations`. Paths are resolved from [`crate::config::Config::package_root`].
 pub async fn apply_pending_migrations(db: &Db) -> anyhow::Result<()> {
-    let root = package_root();
+    let root = crate::config::Config::package_root()?;
     let config = ToastyConfig::load_from(&root.join("Toasty.toml"))?;
     let history_path = root.join(config.migration.get_history_file_path());
     let history = History::load_or_default(&history_path)?;
@@ -986,11 +980,9 @@ pub fn now_unix() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn toasty_migration_tree_is_present() {
-        let root = package_root();
+        let root = crate::config::Config::package_root().expect("package_root");
         assert!(
             root.join("Toasty.toml").is_file(),
             "Toasty.toml must exist at package root"

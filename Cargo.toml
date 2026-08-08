@@ -9,6 +9,12 @@ default-run = "vcp"
 name = "vcp-store"
 path = "src/bin/vcp_store.rs"
 
+[features]
+# Optional checkout config / Toasty root fallback when running bare
+# `cargo test` without VCP_CONFIG_DIR. Do not enable from `just test` — a
+# second feature-gated lib build desyncs Topcoat AssetIds vs the asset bundle.
+test-support = []
+
 [dependencies]
 ambient-authority = "0.0.2"
 anyhow = "1.0.104"
@@ -25,10 +31,9 @@ http = "1"
 hyper = "1"
 hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
 instant-acme = { version = "0.8", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }
-libc = "0.2.189"
-nix = { version = "0.31.3", features = ["socket", "uio", "user"] }
+nix = { version = "0.31.3", features = ["fs", "socket", "uio", "user"] }
 p256 = { version = "0.13", features = ["ecdsa"] }
-passfd = "0.1.6"
+unix-ancillary = "0.3.0"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 regex = "1.13.1"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
@@ -50,6 +55,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 xz2 = "0.1"
 zstd = "0.13"
+
+# FreeBSD-only: wraps cap_enter(2). Does not compile on other targets.
+[target.'cfg(target_os = "freebsd")'.dependencies]
+capsicum = "0.4"
 
 [build-dependencies]
 topcoat = { version = "0.5.0", default-features = false, features = ["tailwind"] }

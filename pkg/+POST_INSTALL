@@ -1,0 +1,106 @@
+#!/bin/sh
+# Post-installation: dirs, FACLs, DB setup, migration.
+#
+# Package version: %%VERSION%%
+
+PREFIX=${PKG_PREFIX:-/usr/local}
+CONF_DIR="${PREFIX}/etc/vcp"
+ACL_SH="${PREFIX}/libexec/vcp/acl.sh"
+VCP_BIN="${PREFIX}/bin/vcp"
+
+# shellcheck source=/usr/local/libexec/vcp/acl.sh
+. "${ACL_SH}"
+
+echo "==> Creating runtime directories..."
+mkdir -p /var/db/vcp/storage
+chown vcp-storage:vcp-storage /var/db/vcp /var/db/vcp/storage
+chmod 755 /var/db/vcp
+chmod 0700 /var/db/vcp/storage
+
+mkdir -p /var/run/vcp
+prepare_vcp_run_dir /var/run/vcp
+
+mkdir -p "${CONF_DIR}/certs" "${CONF_DIR}/access"
+chown root:wheel "${CONF_DIR}"
+chmod 755 "${CONF_DIR}"
+chown root:wheel "${CONF_DIR}/certs"
+chmod 700 "${CONF_DIR}/certs"
+
+# Portal must read conf + policy; helper reads vcp-store.conf.
+detect_acl_type "${CONF_DIR}"
+set_acl "vcp" "rx" "${CONF_DIR}"
+set_acl "vcp-storage" "rx" "${CONF_DIR}"
+set_default_acl "vcp" "r" "${CONF_DIR}"
+set_default_acl "vcp-storage" "r" "${CONF_DIR}"
+
+if [ -f "${CONF_DIR}/vcp.conf" ]; then
+    chown root:wheel "${CONF_DIR}/vcp.conf"
+    chmod 640 "${CONF_DIR}/vcp.conf"
+    detect_acl_type "${CONF_DIR}/vcp.conf"
+    set_acl "vcp" "r" "${CONF_DIR}/vcp.conf"
+fi
+if [ -f "${CONF_DIR}/vcp-store.conf" ]; then
+    chown root:wheel "${CONF_DIR}/vcp-store.conf"
+    chmod 640 "${CONF_DIR}/vcp-store.conf"
+    detect_acl_type "${CONF_DIR}/vcp-store.conf"
+    set_acl "vcp-storage" "r" "${CONF_DIR}/vcp-store.conf"
+fi
+
+touch /var/log/vcp-access.log /var/log/vcp.log /var/log/vcp-store.log
+chown vcp:wheel /var/log/vcp-access.log /var/log/vcp.log
+chown vcp-storage:wheel /var/log/vcp-store.log
+chmod 640 /var/log/vcp-access.log /var/log/vcp.log /var/log/vcp-store.log
+
+# --------------------------------------------------------------------------- #
+# PostgreSQL role + database + migrations                                     #
+# --------------------------------------------------------------------------- #
+echo "==> Checking PostgreSQL..."
+if su -m postgres -c "psql -Atc 'SELECT 1'" >/dev/null 2>&1; then
+    if ! su -m postgres -c "psql -Atc \"SELECT 1 FROM pg_roles WHERE rolname='vcp'\"" | grep -q 1; then
+        _pass=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)
+        echo "==> Creating PostgreSQL role and database 'vcp'..."
+        su -m postgres -c "psql -v ON_ERROR_STOP=1" <<SQL
+CREATE USER vcp WITH PASSWORD '${_pass}';
+CREATE DATABASE vcp OWNER vcp;
+SQL
+        if [ -f "${CONF_DIR}/vcp.conf" ]; then
+            # Inject URL only when still at the CHANGE-ME placeholder.
+            if grep -q 'CHANGE-ME' "${CONF_DIR}/vcp.conf"; then
+                _esc=$(printf '%s' "${_pass}" | sed 's/[&/\]/\\&/g')
+                sed -i '' "s|postgresql://vcp:CHANGE-ME@localhost/vcp|postgresql://vcp:${_esc}@localhost/vcp|" \
+                    "${CONF_DIR}/vcp.conf"
+                detect_acl_type "${CONF_DIR}/vcp.conf"
+                set_acl "vcp" "r" "${CONF_DIR}/vcp.conf"
+            fi
+        fi
+    fi
+
+    echo "==> Applying Toasty migrations..."
+    export VCP_CONFIG_DIR="${CONF_DIR}"
+    export VCP_PACKAGE_ROOT="${PREFIX}/share/vcp"
+    export VCP_ENVIRONMENT=production
+    if ! "${VCP_BIN}" migration apply; then
+        echo "ERROR: DB_SETUP_FAILED — vcp migration apply failed" >&2
+        exit 1
+    fi
+else
+    echo "WARNING: PostgreSQL not reachable; skip DB setup."
+    echo "  Later: sysrc postgresql_enable=YES && service postgresql start"
+    echo "  Then:  VCP_CONFIG_DIR=${CONF_DIR} VCP_PACKAGE_ROOT=${PREFIX}/share/vcp \\"
+    echo "         VCP_ENVIRONMENT=production ${VCP_BIN} migration apply"
+fi
+
+echo ""
+echo "================================================================"
+echo "  VCP %%VERSION%% installed."
+echo ""
+echo "  Enable and start (helper before portal):"
+echo "    sysrc vcp_store_enable=YES"
+echo "    sysrc vcp_enable=YES"
+echo "    service vcp_store start"
+echo "    service vcp start"
+echo ""
+echo "  Edit secrets in ${CONF_DIR}/vcp.conf (DB URL, SMTP)."
+echo "  Align webauthn_origin with the public HTTPS name."
+echo "================================================================"
+echo ""

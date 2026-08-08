@@ -151,6 +151,30 @@ async fn e2e_serve_https_writes_clf_access_log() {
 }
 
 #[tokio::test]
+async fn e2e_access_log_reopen_after_rotate_keeps_live_path() {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let log_path = std::env::temp_dir().join(format!("vcp-e2e-reopen-{nanos}.log"));
+    let rotated = log_path.with_extension("log.0");
+    let access_log = AccessLog::open(&log_path).expect("open");
+    access_log
+        .write_line("127.0.0.1 - - [01/Jan/2026:00:00:00 +0000] \"GET /before HTTP/1.1\" 200 -");
+    std::fs::rename(&log_path, &rotated).expect("rename");
+    std::fs::File::create(&log_path).expect("create live");
+    access_log.reopen().expect("reopen");
+    access_log
+        .write_line("127.0.0.1 - - [01/Jan/2026:00:00:01 +0000] \"GET /after HTTP/1.1\" 200 -");
+    let live = std::fs::read_to_string(&log_path).expect("live");
+    let old = std::fs::read_to_string(&rotated).expect("old");
+    let _ = std::fs::remove_file(&log_path);
+    let _ = std::fs::remove_file(&rotated);
+    assert!(live.contains("/after"), "live={live}");
+    assert!(old.contains("/before") && !old.contains("/after"));
+}
+
+#[tokio::test]
 async fn e2e_handshake_coalescer_counts_identical_errors() {
     let (log, captured) = HandshakeFailureLog::capturing(std::time::Duration::from_secs(60));
     for _ in 0..7 {

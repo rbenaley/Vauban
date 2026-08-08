@@ -2,6 +2,10 @@
 #
 # Single-package crate (`vcp`). Use `just` instead of ad-hoc cargo commands.
 # Local runs default to VCP_ENVIRONMENT=development (layered TOML under config/).
+# Runtime config discovery no longer uses CARGO_MANIFEST_DIR in release builds —
+# export VCP_CONFIG_DIR (and optionally VCP_PACKAGE_ROOT) for every local recipe.
+# Integration tests rely on those exports (do not enable `test-support` here:
+# a second feature-gated lib build desyncs Topcoat AssetIds vs the asset bundle).
 #
 # Topcoat CLI (`topcoat-cli`) is required for asset bundling and `view!` fmt.
 # Recipes that need it call `ensure-topcoat`, which installs the pinned version
@@ -13,6 +17,8 @@
 # `just db-create-test`.
 
 export VCP_ENVIRONMENT := env("VCP_ENVIRONMENT", "development")
+export VCP_CONFIG_DIR := env("VCP_CONFIG_DIR", justfile_directory() / "config")
+export VCP_PACKAGE_ROOT := env("VCP_PACKAGE_ROOT", justfile_directory())
 
 # Prefer cargo-installed binaries even when the parent shell PATH is thin
 # (IDE tasks, minimal CI images, fresh shells).
@@ -208,10 +214,12 @@ ensure-test-asset-bundle *ARGS: ensure-topcoat
     cargo test --no-run {{ARGS}}
     echo "ensure-test-asset-bundle: bundling assets (profile=test)…" >&2
     topcoat asset bundle --bin vcp --profile test
-    mkdir -p target/assets
-    printf '%s\n' "test" >target/assets/.bundle-profile
+    assets_dir="${CARGO_TARGET_DIR:-target}/assets"
+    mkdir -p "$assets_dir"
+    printf '%s\n' "test" >"$assets_dir/.bundle-profile"
 
 # Run tests (single-threaded). Ensures vcp_test + test-profile asset bundle.
+# Config roots come from exported VCP_CONFIG_DIR / VCP_PACKAGE_ROOT (no set_var).
 test *ARGS: ensure-vcp-test (ensure-test-asset-bundle ARGS)
     cargo test {{ARGS}} -- --test-threads=1
 
@@ -231,6 +239,10 @@ release: ensure-topcoat
     topcoat asset bundle --bin vcp --release
     mkdir -p target/assets
     printf '%s\n' "release" >target/assets/.bundle-profile
+
+# FreeBSD package (requires FreeBSD host + pkg(8) + prior `just release`).
+package:
+    cd pkg && ./build-pkg.sh
 
 # Run the portal over HTTPS (defaults to development config, port 3000)
 # Examples: just run | just run --release

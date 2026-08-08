@@ -1,0 +1,65 @@
+#!/bin/sh
+
+# PROVIDE: vcp_store
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="vcp_store"
+rcvar="vcp_store_enable"
+
+load_rc_config $name
+
+: ${vcp_store_enable:="NO"}
+: ${vcp_store_config_dir:="/usr/local/etc/vcp"}
+: ${vcp_store_config:="${vcp_store_config_dir}/vcp-store.conf"}
+: ${vcp_store_user:="vcp-storage"}
+: ${vcp_store_acl_sh:="/usr/local/libexec/vcp/acl.sh"}
+
+pidfile="/var/run/vcp/vcp-store.pid"
+command="/usr/sbin/daemon"
+command_args="-P ${pidfile} -r -H -t vcp-store -u ${vcp_store_user} -o /var/log/vcp-store.log /usr/local/sbin/vcp-store --config ${vcp_store_config} --production"
+
+start_precmd="${name}_prestart"
+start_postcmd="${name}_poststart"
+stop_postcmd="${name}_poststop"
+
+vcp_store_prestart()
+{
+	export VCP_CONFIG_DIR="${vcp_store_config_dir}"
+	if [ -f "${vcp_store_acl_sh}" ]; then
+		# shellcheck source=/usr/local/libexec/vcp/acl.sh
+		. "${vcp_store_acl_sh}"
+		prepare_vcp_run_dir /var/run/vcp
+	else
+		mkdir -p /var/run/vcp
+		chown vcp-storage:vcp-storage /var/run/vcp
+		chmod 0700 /var/run/vcp
+	fi
+}
+
+vcp_store_poststart()
+{
+	if [ -f "${vcp_store_acl_sh}" ]; then
+		# shellcheck source=/usr/local/libexec/vcp/acl.sh
+		. "${vcp_store_acl_sh}"
+		# Brief wait for bind before applying socket ACE.
+		i=0
+		while [ "$i" -lt 20 ]; do
+			if [ -S /var/run/vcp/store.sock ]; then
+				ensure_store_socket_acl /var/run/vcp/store.sock
+				break
+			fi
+			sleep 0.1
+			i=$((i + 1))
+		done
+	fi
+}
+
+vcp_store_poststop()
+{
+	rm -f "${pidfile}"
+}
+
+run_rc_command "$1"

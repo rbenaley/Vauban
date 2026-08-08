@@ -25,6 +25,12 @@ grep -n 'write_line' src/tls/access_log.rs >/dev/null \
 # Startup may announce the path via info!; request CLF lines stay in the file.
 grep -n 'info!(access_log' src/tls/access_log.rs >/dev/null \
   || fail "AccessLog::open must announce path via tracing under this module"
+grep -n 'fn reopen' src/tls/access_log.rs >/dev/null \
+  || fail "access log must support reopen for newsyslog SIGHUP"
+grep -n 'spawn_reopen_on_hangup' src/tls/access_log.rs >/dev/null \
+  || fail "access log must define spawn_reopen_on_hangup"
+grep -n 'spawn_reopen_on_hangup' src/main.rs >/dev/null \
+  || fail "main must spawn SIGHUP access-log reopen"
 if grep -nE 'info!\("\{line\}"\)|info!\(\{line\}' src/tls/access_log.rs >/dev/null; then
   fail "request CLF lines must not be emitted via tracing::info!"
 fi

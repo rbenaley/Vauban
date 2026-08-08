@@ -216,14 +216,12 @@ fn run() -> Result<(), String> {
 
     let blob_root = PathBuf::from(&cfg.blob_path);
 
-    // Process hygiene (best-effort portable).
+    // Process hygiene (best-effort portable). umask is process-global;
+    // call before serving. FFI lives in `nix`.
     #[cfg(unix)]
     {
-        // SAFETY: umask is process-global and called before serving.
-        #[allow(unsafe_code)]
-        unsafe {
-            libc::umask(0o077);
-        }
+        use nix::sys::stat::{Mode, umask};
+        umask(Mode::from_bits_truncate(0o077));
     }
 
     let engine = StorageEngine::open(&blob_root, cfg).map_err(|e| e.to_string())?;

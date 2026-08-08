@@ -56,17 +56,26 @@ for app config.
 Environment selection:
 
 ```bash
-export VCP_ENVIRONMENT=development   # layered TOML
-# unset or production               # loads config/vcp.conf only
+export VCP_ENVIRONMENT=development   # layered TOML (`just` sets this by default)
+# unset or production               # loads vcp.conf only (production paths)
 ```
 
-Config directory lookup:
+Config directory lookup (release / runtime — **no** `CARGO_MANIFEST_DIR`):
 
-1. `VCP_CONFIG_DIR` (if set)
-2. `{crate}/config` (this repo)
-3. `/usr/local/etc/vcp`
+1. `VCP_CONFIG_DIR` (required for local checkouts; `just` exports `$PWD/config`)
+2. `/usr/local/etc/vcp` (packaged install)
 
-Production install path: `/usr/local/etc/vcp/vcp.conf` (plus `access/` policies and TLS material).
+Lib unit tests may use a checkout fallback under `cfg(test)`. Integration
+tests rely on `just` exporting `VCP_CONFIG_DIR` / `VCP_PACKAGE_ROOT` (optional
+`--features test-support` exists for bare `cargo test` without those exports,
+but must not be mixed into `just test` — it desyncs the Topcoat asset bundle).
+
+Toasty migrations resolve via `VCP_PACKAGE_ROOT`, the parent of
+`VCP_CONFIG_DIR` when it contains `Toasty.toml`, or `/usr/local/share/vcp`.
+
+Production install: `/usr/local/etc/vcp/vcp.conf` (+ `vcp-store.conf`,
+`access/vcp_policy.csv`, TLS material). FreeBSD package: `just release && just package`
+(see `docs/runbooks/freebsd_pkg_smoke_test.md`).
 
 Notable knobs (see TOML / `vcp.conf`):
 

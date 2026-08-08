@@ -80,5 +80,7 @@ changes; pin versions and prefer thin vertical slices.
 paging. Binary crate: `vcp`.
 
 **Config:** TOML under `config/` (Vauban-style layering). No application
-`.env`. Production is self-contained `config/vcp.conf` (deployed as
-`/usr/local/etc/vcp/vcp.conf`). Local: `VCP_ENVIRONMENT=development`.
+`.env`. Unset `VCP_ENVIRONMENT` ⇒ **production** (`vcp.conf` only). Config
+dir: `VCP_CONFIG_DIR` or `/usr/local/etc/vcp` (no runtime
+`CARGO_MANIFEST_DIR`). Local: `just` exports `VCP_CONFIG_DIR` +
+`VCP_ENVIRONMENT=development`. FreeBSD package: `pkg/` + `just package`.

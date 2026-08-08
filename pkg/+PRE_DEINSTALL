@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stop VCP services before removing package files.
+
+if service vcp status >/dev/null 2>&1; then
+    echo "==> Stopping vcp..."
+    service vcp stop || true
+fi
+if service vcp_store status >/dev/null 2>&1; then
+    echo "==> Stopping vcp_store..."
+    service vcp_store stop || true
+fi

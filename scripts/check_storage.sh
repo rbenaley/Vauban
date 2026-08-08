@@ -99,8 +99,20 @@ grep -n 'fn enter_capability_mode' "$CAP" >/dev/null \
   || fail "$CAP must define enter_capability_mode"
 grep -n 'enter_capability_mode' "$BIN" >/dev/null \
   || fail "$BIN must call enter_capability_mode at boot"
+grep -n 'capsicum::enter' "$CAP" >/dev/null \
+  || fail "$CAP must call capsicum::enter on FreeBSD (cap_enter(2))"
 grep -n 'cap_enter' "$CAP" >/dev/null \
-  || fail "$CAP must attempt cap_enter on FreeBSD (cfg)"
+  || fail "$CAP must document/log cap_enter for ops grep"
+if grep -n 'allow(unsafe_code)' "$CAP" >/dev/null; then
+  fail "$CAP must not contain unsafe (use capsicum crate)"
+fi
+if grep -n 'allow(unsafe_code)' "$IPC" >/dev/null; then
+  fail "$IPC must not contain unsafe (use nix / unix-ancillary)"
+fi
+grep -nE 'unix_ancillary|UnixStreamExt' "$IPC" >/dev/null \
+  || fail "$IPC must use unix-ancillary for SCM_RIGHTS"
+grep -nE 'getpeereid|PeerCredentials' "$IPC" >/dev/null \
+  || fail "$IPC peer_uid must use nix peer-cred APIs"
 
 # ID / ext catalogue exports.
 grep -n 'pub fn is_uuid_key' "$IDS" >/dev/null || fail "$IDS must export is_uuid_key"

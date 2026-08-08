@@ -1,4 +1,8 @@
 //! Capsicum hooks (FreeBSD) with soft-containment WARN elsewhere.
+//!
+//! On FreeBSD, capability mode is entered via the `capsicum` crate
+//! (`capsicum::enter` → `cap_enter(2)`). Unsafe FFI stays in that dependency;
+//! this module keeps `unsafe_code = "deny"`.
 
 #[cfg(target_os = "freebsd")]
 use tracing::info;
@@ -7,7 +11,7 @@ use tracing::warn;
 use super::STORE_LOG_TARGET;
 
 /// Display name for log lines (`macOS`, `Linux`, …). FreeBSD uses the
-/// `cap_enter` path and never formats this helper.
+/// `capsicum::enter` path and never formats this helper.
 #[cfg(not(target_os = "freebsd"))]
 fn os_display_name() -> &'static str {
     match std::env::consts::OS {
@@ -22,33 +26,33 @@ fn os_display_name() -> &'static str {
 
 /// Enter capability mode after pre-opening FDs.
 ///
-/// On FreeBSD, attempts real `cap_enter(2)`. Elsewhere (and when the
-/// syscall is unavailable), logs a soft-containment WARN and continues
-/// with dirfd + path policy + UID permissions only.
+/// On FreeBSD, attempts real `cap_enter(2)` via [`capsicum::enter`]. Elsewhere
+/// (and when the syscall is unavailable), logs a soft-containment WARN and
+/// continues with dirfd + path policy + UID permissions only.
 pub fn enter_capability_mode(production: bool) {
     #[cfg(target_os = "freebsd")]
     {
-        // SAFETY: `cap_enter` is process-wide and irreversible. Callers must
-        // pre-open blob dirfd, listen socket, and any other needed FDs first.
-        #[allow(unsafe_code)]
-        let rc = unsafe { libc::cap_enter() };
-        if rc == 0 {
-            info!(
-                target: STORE_LOG_TARGET,
-                "Capsicum: entered capability mode via cap_enter"
-            );
-        } else {
-            let err = std::io::Error::last_os_error();
-            warn!(
-                target: STORE_LOG_TARGET,
-                error = %err,
-                "Capsicum: cap_enter unavailable or failed; soft containment only (dirfd + uid)"
-            );
-            if production {
+        // Callers must pre-open blob dirfd, listen socket, and any other
+        // needed FDs first — `cap_enter` is process-wide and irreversible.
+        match capsicum::enter() {
+            Ok(()) => {
+                info!(
+                    target: STORE_LOG_TARGET,
+                    "Capsicum: entered capability mode via cap_enter"
+                );
+            }
+            Err(err) => {
                 warn!(
                     target: STORE_LOG_TARGET,
-                    "production deployment without kernel capability mode"
+                    error = %err,
+                    "Capsicum: cap_enter unavailable or failed; soft containment only (dirfd + uid)"
                 );
+                if production {
+                    warn!(
+                        target: STORE_LOG_TARGET,
+                        "production deployment without kernel capability mode"
+                    );
+                }
             }
         }
     }

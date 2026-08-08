@@ -74,6 +74,27 @@ Pass: one CLF-shaped line appended per request. Startup tracing should show a
 separate `INFO vcp::tls::access_log:` line with `access_log=…` (not mixed into
 the listening line); CLF request content lives only in the file.
 
+## B2 -- Access log reopen on SIGHUP (newsyslog)
+
+Production `newsyslog` rotates `/var/log/vcp-access.log` and signals `1`
+(`SIGHUP`) to the pid in `/var/run/vcp/vcp.pid` (process_guard — not a
+parent `daemon -P` pid).
+
+Lab (development):
+
+```bash
+# With just run active:
+curl -k -s -o /dev/null https://127.0.0.1:3000/login
+mv logs/vcp-access.log logs/vcp-access.log.0
+: > logs/vcp-access.log
+kill -HUP "$(tr -d '[:space:]' </tmp/vcp.pid)"
+curl -k -s -o /dev/null https://127.0.0.1:3000/login
+tail -n 3 logs/vcp-access.log
+```
+
+Pass: the second request’s CLF line is in `logs/vcp-access.log` (live path),
+not only in `.0`. Tracing may show `Apache CLF access log reopened`.
+
 ## C -- Static assets keep long-cache (regression)
 
 ```bash

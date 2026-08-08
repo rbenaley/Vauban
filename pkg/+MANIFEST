@@ -1,0 +1,31 @@
+name = "vcp";
+version = "%%VERSION%%";
+origin = "www/vcp";
+comment = "Vauban Customer Portal (HTTPS) with sandboxed vcp-store helper";
+maintainer = "none@freebsd.org";
+www = "https://vauban.sh";
+prefix = "/usr/local";
+licenselogic = "single";
+licenses = ["BSD2CLAUSE"];
+categories = ["www"];
+
+desc = <<EOD
+VCP (Vauban Customer Portal) provides:
+ - Authenticated HTTPS customer portal (Topcoat)
+ - Org-scoped docs, builds, issues, and account surfaces
+ - Casbin-format policy CSV via PolicyStore
+ - Sandboxed artifact helper (vcp-store) with Capsicum on FreeBSD
+ - Unix socket IPC + peercred (portal UID 800, helper UID 801)
+ - ACME TLS-ALPN-01 and Apache CLF access logging
+EOD;
+
+deps = {
+    postgresql18-server = {
+        origin = "databases/postgresql18-server";
+        version = "18";
+    };
+    postgresql18-contrib = {
+        origin = "databases/postgresql18-contrib";
+        version = "18";
+    };
+};

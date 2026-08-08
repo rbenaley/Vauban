@@ -26,6 +26,7 @@
 //! - `cargo test --test integration_tests -- topcoat_boolean_attrs -- --test-threads=1`
 //! - `cargo test --test integration_tests -- storage_ -- --test-threads=1`
 //! - `cargo test --test integration_tests -- seed_data -- --test-threads=1`
+//! - `cargo test --test integration_tests -- freebsd_pkg -- --test-threads=1`
 
 mod admin_companies_battle_test;
 mod admin_companies_e2e_test;
@@ -72,6 +73,7 @@ mod docs_search_shard_battle_test;
 mod docs_search_shard_e2e_test;
 mod docs_search_shard_invariants_test;
 mod docs_search_shard_proptest;
+mod freebsd_pkg_invariants_test;
 mod http_edge_battle_test;
 mod http_edge_e2e_test;
 mod http_edge_invariants_test;

@@ -1,9 +1,16 @@
 //! TOML configuration (Vauban-style layering).
 //!
-//! Lookup order for the config directory:
+//! Lookup order for the config directory (release / runtime — no compile-time
+//! paths):
 //! 1. `VCP_CONFIG_DIR` (must exist)
-//! 2. `{CARGO_MANIFEST_DIR}/config` (development checkout)
-//! 3. `/usr/local/etc/vcp` (production install)
+//! 2. `/usr/local/etc/vcp` (production install)
+//!
+//! Local checkouts must export `VCP_CONFIG_DIR` (see `justfile`). Running the
+//! release binary with neither env nor the system directory fails closed.
+//!
+//! Under `cfg(test)` or the `test-support` feature, a third fallback uses the
+//! crate's `config/` directory and repo root (`Toasty.toml`) so tests work
+//! without mutating the process environment.
 //!
 //! Loading:
 //! - Production portal: `vcp.conf` only (self-contained). Storage helper
@@ -13,6 +20,10 @@
 //!
 //! Environment selection: `VCP_ENVIRONMENT` (`development` / `testing` /
 //! `production`). When unset, defaults to **production** (same as Vauban).
+//!
+//! Relative paths in layered TOML are resolved against the **parent** of the
+//! config directory (repo root when `VCP_CONFIG_DIR=…/config`). Production
+//! `vcp.conf` uses absolute paths only.
 
 use std::path::{Path, PathBuf};
 
@@ -695,7 +706,7 @@ impl Config {
             .map_err(|e| anyhow::anyhow!("config deserialize failed: {e}"))?;
 
         cfg.environment = environment;
-        cfg.resolve_paths();
+        cfg.resolve_paths(config_path);
         cfg.storage.derive_webauthn_rp_id()?;
         cfg.validate()?;
         Ok(cfg)
@@ -703,34 +714,102 @@ impl Config {
 
     /// Resolve the config directory (same search order as [`Config::load`]).
     pub fn find_config_dir() -> anyhow::Result<PathBuf> {
-        if let Ok(path) = std::env::var("VCP_CONFIG_DIR") {
-            let config_path = PathBuf::from(&path);
-            if config_path.exists() {
+        Self::find_config_dir_from(std::env::var_os("VCP_CONFIG_DIR").map(PathBuf::from))
+    }
+
+    /// Resolve the config directory from an optional `VCP_CONFIG_DIR` value.
+    ///
+    /// Prefer this in unit tests instead of mutating the process environment.
+    pub fn find_config_dir_from(vcp_config_dir: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+        if let Some(config_path) = vcp_config_dir {
+            if config_path.is_dir() {
                 return Ok(config_path);
             }
-            anyhow::bail!("VCP_CONFIG_DIR points to a missing directory: {path}");
-        }
-
-        let crate_config = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
-        if crate_config.exists() {
-            return Ok(crate_config);
+            anyhow::bail!(
+                "VCP_CONFIG_DIR points to a missing directory: {}",
+                config_path.display()
+            );
         }
 
         let system_config = Path::new("/usr/local/etc/vcp");
-        if system_config.exists() {
+        if system_config.is_dir() {
             return Ok(system_config.to_path_buf());
+        }
+
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+            if checkout.is_dir() {
+                return Ok(checkout);
+            }
         }
 
         anyhow::bail!(
             "configuration directory not found. Searched:\n\
              - VCP_CONFIG_DIR\n\
-             - {{CARGO_MANIFEST_DIR}}/config\n\
-             - /usr/local/etc/vcp"
+             - /usr/local/etc/vcp\n\
+             Set VCP_CONFIG_DIR (local: export VCP_CONFIG_DIR=$PWD/config) or install \
+             the FreeBSD package under /usr/local/etc/vcp."
         );
     }
 
-    fn resolve_paths(&mut self) {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    /// Directory that contains `Toasty.toml` / `toasty/` migrations.
+    ///
+    /// Order: `VCP_PACKAGE_ROOT`, parent of [`Self::find_config_dir`] when it
+    /// holds `Toasty.toml`, then `/usr/local/share/vcp`.
+    pub fn package_root() -> anyhow::Result<PathBuf> {
+        Self::package_root_from(
+            std::env::var_os("VCP_PACKAGE_ROOT").map(PathBuf::from),
+            None,
+        )
+    }
+
+    /// Resolve the Toasty package root from optional overrides.
+    ///
+    /// `config_dir` short-circuits [`Self::find_config_dir`] when set (tests).
+    pub fn package_root_from(
+        vcp_package_root: Option<PathBuf>,
+        config_dir: Option<PathBuf>,
+    ) -> anyhow::Result<PathBuf> {
+        if let Some(root) = vcp_package_root {
+            if root.join("Toasty.toml").is_file() {
+                return Ok(root);
+            }
+            anyhow::bail!("VCP_PACKAGE_ROOT has no Toasty.toml: {}", root.display());
+        }
+
+        let resolved_config = match config_dir {
+            Some(dir) => Some(dir),
+            None => Self::find_config_dir().ok(),
+        };
+        if let Some(config_dir) = resolved_config {
+            let candidate = path_resolve_root(&config_dir);
+            if candidate.join("Toasty.toml").is_file() {
+                return Ok(candidate.to_path_buf());
+            }
+        }
+
+        let share = Path::new("/usr/local/share/vcp");
+        if share.join("Toasty.toml").is_file() {
+            return Ok(share.to_path_buf());
+        }
+
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            if checkout.join("Toasty.toml").is_file() {
+                return Ok(checkout);
+            }
+        }
+
+        anyhow::bail!(
+            "Toasty package root not found (VCP_PACKAGE_ROOT, parent of \
+             VCP_CONFIG_DIR, or /usr/local/share/vcp with Toasty.toml)"
+        );
+    }
+
+    fn resolve_paths(&mut self, config_dir: &Path) {
+        let root = path_resolve_root(config_dir);
         self.access.policy_path = resolve_path(root, &self.access.policy_path);
         self.server.access_log_path = resolve_path(root, &self.server.access_log_path);
         self.server.pid_file = resolve_path(root, &self.server.pid_file);
@@ -905,6 +984,18 @@ impl Config {
     }
 }
 
+/// Repo / install root for relative TOML paths (`logs/`, `certs/`, …).
+///
+/// When `config_dir` is `…/config` or `/usr/local/etc/vcp`, relative paths are
+/// resolved against its parent (checkout root or `/usr/local/etc`). Production
+/// conf should use absolute paths only.
+fn path_resolve_root(config_dir: &Path) -> &Path {
+    config_dir
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(config_dir)
+}
+
 fn resolve_path(root: &Path, path: &str) -> String {
     if path.starts_with('/') {
         path.to_owned()
@@ -916,6 +1007,31 @@ fn resolve_path(root: &Path, path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_config_dir_from_prefers_injected_path() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+        let found = Config::find_config_dir_from(Some(dir.clone())).unwrap();
+        assert_eq!(found, dir);
+        let root =
+            Config::package_root_from(Some(PathBuf::from(env!("CARGO_MANIFEST_DIR"))), Some(dir))
+                .unwrap();
+        assert!(root.join("Toasty.toml").is_file());
+    }
+
+    #[test]
+    fn find_config_dir_test_fallback_reaches_checkout_config() {
+        // No env mutation: cfg(test) fallback or a live system/env path.
+        let found = Config::find_config_dir().unwrap();
+        assert!(found.is_dir());
+        assert!(found.join("default.toml").is_file() || found.join("vcp.conf").is_file());
+        assert!(
+            Config::package_root()
+                .unwrap()
+                .join("Toasty.toml")
+                .is_file()
+        );
+    }
 
     #[test]
     fn loads_development_layering() {
@@ -962,8 +1078,11 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
         let cfg = Config::load_with_environment(&dir, Environment::Production).unwrap();
         assert_eq!(cfg.environment, Environment::Production);
-        // ACME stays off until an operator enables and parameterizes it.
-        assert!(cfg.server.tls.acme.as_ref().is_some_and(|a| !a.enabled));
+        assert!(cfg.server.tls.acme.as_ref().is_some_and(|a| a.enabled));
+        assert_eq!(
+            cfg.server.tls.acme.as_ref().map(|a| a.email.as_str()),
+            Some("support@vauban.sh")
+        );
         assert_eq!(cfg.server.port, 443);
         assert_eq!(cfg.server.access_log_path, "/var/log/vcp-access.log");
         assert_eq!(cfg.server.pid_file, "/var/run/vcp/vcp.pid");

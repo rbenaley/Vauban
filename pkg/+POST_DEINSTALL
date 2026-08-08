@@ -1,0 +1,26 @@
+#!/bin/sh
+# Optionally remove service accounts; leave data and configuration.
+
+echo "==> Removing VCP service accounts (best-effort)..."
+for _u in vcp vcp-storage; do
+    pw userdel "$_u" 2>/dev/null && echo "  Removed user $_u"
+    pw groupdel "$_u" 2>/dev/null && echo "  Removed group $_u"
+done
+
+echo ""
+echo "================================================================"
+echo "  VCP package removed."
+echo ""
+echo "  The following items were NOT removed automatically:"
+echo "    - PostgreSQL DB    : database 'vcp' and role 'vcp'"
+echo "    - Blob / SoT       : /var/db/vcp/"
+echo "    - Configuration    : /usr/local/etc/vcp/"
+echo "    - Logs             : /var/log/vcp*.log"
+echo ""
+echo "  To fully clean up (destructive):"
+echo ""
+echo "    rm -rf /var/db/vcp /usr/local/etc/vcp"
+echo "    su -m postgres -c 'dropdb vcp'"
+echo "    su -m postgres -c \"psql -c \\\"DROP USER vcp;\\\"\""
+echo "================================================================"
+echo ""
