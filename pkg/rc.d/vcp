@@ -27,8 +27,12 @@ load_rc_config $name
 : ${vcp_portacl_enable:="YES"}
 : ${vcp_portacl_port:="443"}
 
-# Do NOT use daemon -P: the portal process_guard owns /var/run/vcp/vcp.pid
+# Do NOT use daemon -P: the portal process_guard owns this pidfile
 # (newsyslog SIGHUP target for the Apache CLF access log).
+# Without pidfile + procname, rc.subr matches every /usr/sbin/daemon and
+# status/stop/start collide with vcp_store's supervisor.
+pidfile="/var/run/vcp/vcp.pid"
+procname="/usr/local/bin/vcp"
 command="/usr/sbin/daemon"
 command_args="-r -H -t vcp -u ${vcp_runas} -o ${vcp_log} /usr/local/bin/vcp"
 

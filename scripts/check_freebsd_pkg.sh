@@ -101,6 +101,11 @@ grep -n '/var/log/vcp-access.log' pkg/newsyslog.conf.d/vcp.conf >/dev/null \
 if grep -nE '^command_args=.*-P' pkg/rc.d/vcp >/dev/null; then
   fail "rc.d/vcp must not use daemon -P (conflicts with process_guard pidfile)"
 fi
+# Without these, status/stop/start match every /usr/sbin/daemon (incl. store).
+grep -nE '^pidfile="/var/run/vcp/vcp.pid"' pkg/rc.d/vcp >/dev/null \
+  || fail "rc.d/vcp must set pidfile=/var/run/vcp/vcp.pid (process_guard)"
+grep -nE '^procname="/usr/local/bin/vcp"' pkg/rc.d/vcp >/dev/null \
+  || fail "rc.d/vcp must set procname=/usr/local/bin/vcp (not daemon)"
 grep -n 'vcp.pid' pkg/newsyslog.conf.d/vcp.conf >/dev/null \
   || fail "newsyslog must reference /var/run/vcp/vcp.pid"
 grep -nE '[[:space:]]1[[:space:]]*$|[[:space:]]1$' pkg/newsyslog.conf.d/vcp.conf >/dev/null \
@@ -119,6 +124,11 @@ grep -n 'bin/vcp' pkg/build-pkg.sh >/dev/null \
   || fail "build-pkg.sh must stage bin/vcp"
 grep -n 'sbin/vcp-store' pkg/build-pkg.sh >/dev/null \
   || fail "build-pkg.sh must stage sbin/vcp-store"
+# Topcoat AssetBundle::load() looks next to the binary at /usr/local/bin/assets.
+grep -n 'bin/assets\|/usr/local/bin/assets' pkg/build-pkg.sh >/dev/null \
+  || fail "build-pkg.sh must stage Topcoat assets at bin/assets"
+grep -n 'manifest.toml' pkg/build-pkg.sh >/dev/null \
+  || fail "build-pkg.sh must require target/assets/manifest.toml before packaging"
 grep -n 'vcp_policy.csv' pkg/build-pkg.sh >/dev/null \
   || fail "build-pkg.sh must ship vcp_policy.csv"
 if grep -n 'model.conf' pkg/build-pkg.sh pkg/+MANIFEST >/dev/null 2>&1; then

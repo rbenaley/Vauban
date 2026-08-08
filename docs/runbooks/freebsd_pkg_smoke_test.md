@@ -37,6 +37,14 @@ service vcp start
 
 Pass: both services running; `VCP_CONFIG_DIR` effective via rc.d
 (`/usr/local/etc/vcp`); helper log shows `vcp-store listening`.
+`service vcp status` must show a single portal pid (not the store's
+`daemon`), and `service vcp stop` must leave `vcp_store` running.
+
+```bash
+ls /usr/local/bin/assets/manifest.toml   # Topcoat bundle next to bin/vcp
+service vcp status                        # one pid, not shared with store
+service vcp_store status
+```
 
 ### A2 -- Reserved port 443 for an unprivileged portal
 
@@ -119,6 +127,21 @@ pw usermod vcp-storage -d /var/db/vcp/storage -L daemon -s /usr/sbin/nologin
 cap_mkdb /etc/login.conf
 service vcp_store restart
 service vcp restart
+```
+
+### Troubleshooting: `asset bundle missing` restart loop
+
+`daemon -r` restarts the portal every second when Topcoat cannot find
+`/usr/local/bin/assets` (packaging must stage `target/assets` from
+`just release`). Symptom in `/var/log/vcp.log`: panic at `src/app.rs`
+after `vcp listening on https://0.0.0.0:443`.
+
+```bash
+service vcp stop
+ls /usr/local/bin/assets/manifest.toml
+# Hotfix until the next pkg rebuild (from the release checkout):
+#   cp -R target/assets /usr/local/bin/assets && chmod -R a+rX /usr/local/bin/assets
+service vcp start
 ```
 
 If a log was rotated before `newsyslog.conf.d/vcp.conf` carried an
