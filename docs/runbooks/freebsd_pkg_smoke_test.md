@@ -38,33 +38,60 @@ service vcp start
 Pass: both services running; `VCP_CONFIG_DIR` effective via rc.d
 (`/usr/local/etc/vcp`); helper log shows `vcp-store listening`.
 
-### Troubleshooting: `daemon: open: Permission denied`
+### A2 -- Reserved port 443 for an unprivileged portal
 
-On FreeBSD 13/14, `daemon -o` opens the log **as root** before `-u`.
-`daemon: open: Permission denied` means that `open(2)` on the `-o` path
-failed (not the pidfile — that would say `ppidfile`).
+The portal drops to uid `vcp` but listens on 443. `rc.d/vcp` loads
+`mac_portacl(4)`, adds a rule for that single uid, and only then unreserves
+the low port range. Verify after the first start:
 
 ```bash
-ls -ld /var/log
-ls -lo /var/log/vcp-store.log   # watch for uchg/schg/sappnd
-getfacl /var/log /var/log/vcp-store.log 2>/dev/null
-# Isolate -o vs -P:
-/usr/sbin/daemon -u vcp-storage -o /tmp/vcp-store.log /usr/bin/true; echo tmp:$?
-/usr/sbin/daemon -P /var/run/vcp-store.pid -u vcp-storage /usr/bin/true; echo pid:$?
-# Unblock flat layout:
-touch /var/log/vcp-store.log
-chown vcp-storage:wheel /var/log/vcp-store.log
-chmod 640 /var/log/vcp-store.log
-chflags noschg,nouchg /var/log/vcp-store.log 2>/dev/null || true
-service vcp_store start
+kldstat -m mac_portacl
+sysctl security.mac.portacl.rules        # expect uid:800:tcp:443
+sysctl net.inet.ip.portrange.reservedlow net.inet.ip.portrange.reservedhigh
+sockstat -4 -6 -l | grep ':443'          # owner must be vcp, not root
 ```
 
-Packaged `rc.d` prestart touches `/var/log/vcp*.log` on every start.
+Pass: rule present, listener owned by `vcp`. If `mac_portacl` cannot load,
+`vcp_prestart` refuses to start rather than leaving every low port open to
+all users. Set `sysrc vcp_portacl_enable=NO` when the portal listens on a
+port >= 1024 or behind a TLS-terminating proxy.
 
-### Troubleshooting: `daemon: failed to set user environment`
+Certificates live in `0700 root:wheel` `/usr/local/etc/vcp/certs`; the
+portal reaches them through a FACL (`ensure_portal_cert_acl`) because it
+reads `server.key` and ACME rewrites the pair on renewal:
 
-`daemon -u` calls `setusercontext(LOGIN_SETALL)`. Needs an **existing** home
-directory on disk (pw home alone is not enough) and a usable login class.
+```bash
+getfacl /usr/local/etc/vcp/certs | grep vcp
+su -m vcp -c 'sh -c "head -c1 /usr/local/etc/vcp/certs/server.key >/dev/null"' \
+  && echo cert_readable
+```
+
+### Troubleshooting: `daemon(8)` must stay root
+
+`rc.subr` treats `${name}_user` as its own variable and wraps the whole
+command in `su -m <user> -c ...`. An rc.d script that names its service
+account `vcp_user` / `vcp_store_user` therefore starts `daemon(8)`
+**unprivileged**, which produces both of these:
+
+| Symptom | Failing call inside `daemon(8)` |
+|---|---|
+| `daemon: open: Permission denied` | `open_log()` on the `-o` path, before `daemon(3)` |
+| `daemon: failed to set user environment` | `setusercontext(LOGIN_SETALL)` in `restrict_process()` |
+
+Packaged rc.d uses `vcp_runas` / `vcp_store_runas`, so `daemon(8)` runs as
+root, opens the log and pidfile, then drops privileges via `-u`.
+
+```bash
+# Confirm the supervisor is root and the child is the service user:
+ps -o user,command -p "$(cat /var/run/vcp-store.pid)"
+grep -n 'runas' /usr/local/etc/rc.d/vcp /usr/local/etc/rc.d/vcp_store
+# Prove privilege drop works standalone:
+/usr/sbin/daemon -u vcp /usr/bin/true; echo vcp_daemon:$?
+/usr/sbin/daemon -u vcp-storage /usr/bin/true; echo store_daemon:$?
+```
+
+`setusercontext` also needs an **existing** home directory (pw home alone is
+not enough) and a usable login class:
 
 ```bash
 ls -ld /var/empty /var/db/vcp/portal /var/db/vcp/storage
@@ -80,11 +107,19 @@ chmod 0700 /var/db/vcp/storage
 pw usermod vcp -d /var/db/vcp/portal -L daemon -s /usr/sbin/nologin
 pw usermod vcp-storage -d /var/db/vcp/storage -L daemon -s /usr/sbin/nologin
 cap_mkdb /etc/login.conf
-# Prove setusercontext works:
-/usr/sbin/daemon -u vcp /usr/bin/true; echo vcp_daemon:$?
-/usr/sbin/daemon -u vcp-storage /usr/bin/true; echo store_daemon:$?
 service vcp_store restart
 service vcp restart
+```
+
+If a log was rotated before `newsyslog.conf.d/vcp.conf` carried an
+`owner:group` field, the live file is `root:wheel` and the service user
+cannot reopen it:
+
+```bash
+ls -l /var/log/vcp*.log
+chown vcp:wheel /var/log/vcp.log /var/log/vcp-access.log
+chown vcp-storage:wheel /var/log/vcp-store.log
+chmod 640 /var/log/vcp*.log
 ```
 
 ## B -- Reboot survival (FACL + /var/run)

@@ -38,12 +38,38 @@ fn prop_rc_d_and_newsyslog_required_pins() {
     assert!(vcp.contains("REQUIRE:") && vcp.contains("vcp_store"));
     assert!(ns.contains("/var/log/vcp-access.log"));
     assert!(ns.contains("/var/run/vcp/vcp.pid"));
-    // No compression flags in the flags field (C / CN only).
+    // rc.subr turns ${name}_user into "su -m", which breaks daemon(8) -u.
+    assert!(
+        !vcp.contains("vcp_user") && vcp.contains("vcp_runas"),
+        "rc.d/vcp must use vcp_runas, never the rc.subr-owned vcp_user"
+    );
+    assert!(
+        !store.contains("vcp_store_user") && store.contains("vcp_store_runas"),
+        "rc.d/vcp_store must use vcp_store_runas, never vcp_store_user"
+    );
+    // Unreserving low ports before mac_portacl is loaded would let any user
+    // bind 443; the load must come first.
+    let load = vcp
+        .find("kldload mac_portacl")
+        .expect("rc.d/vcp must load mac_portacl");
+    let unreserve = vcp
+        .find("portrange.reserved")
+        .expect("rc.d/vcp must unreserve the low port range");
+    assert!(
+        load < unreserve,
+        "mac_portacl must be loaded before portrange is unreserved"
+    );
     for line in ns
         .lines()
         .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
     {
-        let flags = line.split_whitespace().nth(5).unwrap_or("");
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        assert!(
+            fields[1].contains(':'),
+            "newsyslog line needs owner:group so rotation stays writable: {line}"
+        );
+        // Flags field: path owner mode count size when flags.
+        let flags = fields.get(6).copied().unwrap_or("");
         assert!(
             !flags.chars().any(|c| matches!(c, 'Z' | 'J' | 'X' | 'Y')),
             "compression flag in newsyslog line: {line}"

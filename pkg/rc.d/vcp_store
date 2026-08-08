@@ -14,7 +14,11 @@ load_rc_config $name
 : ${vcp_store_enable:="NO"}
 : ${vcp_store_config_dir:="/usr/local/etc/vcp"}
 : ${vcp_store_config:="${vcp_store_config_dir}/vcp-store.conf"}
-: ${vcp_store_user:="vcp-storage"}
+# NOT ${name}_user: rc.subr reads that name and wraps the command in
+# "su -m", which would run daemon(8) unprivileged -- its setusercontext()
+# then fails with "failed to set user environment" and it cannot open
+# the -o log or the pidfile. daemon(8) must stay root and drop itself.
+: ${vcp_store_runas:="vcp-storage"}
 : ${vcp_store_acl_sh:="/usr/local/libexec/vcp/acl.sh"}
 : ${vcp_store_log:="/var/log/vcp-store.log"}
 
@@ -22,7 +26,7 @@ load_rc_config $name
 # socket dir) so daemon(8) open_pid_files never trips FACL edge cases.
 pidfile="/var/run/vcp-store.pid"
 command="/usr/sbin/daemon"
-command_args="-P ${pidfile} -r -H -t vcp-store -u ${vcp_store_user} -o ${vcp_store_log} /usr/local/sbin/vcp-store --config ${vcp_store_config} --production"
+command_args="-P ${pidfile} -r -H -t vcp-store -u ${vcp_store_runas} -o ${vcp_store_log} /usr/local/sbin/vcp-store --config ${vcp_store_config} --production"
 
 start_precmd="${name}_prestart"
 start_postcmd="${name}_poststart"
@@ -34,7 +38,7 @@ vcp_store_prestart()
 	# daemon(8) -o opens as root before -u; still pre-create so ownership is
 	# stable for the service user / newsyslog (flat /var/log layout).
 	touch "${vcp_store_log}"
-	chown "${vcp_store_user}:wheel" "${vcp_store_log}"
+	chown "${vcp_store_runas}:wheel" "${vcp_store_log}"
 	chmod 640 "${vcp_store_log}"
 	chflags noschg,nouchg,nosappnd,nouappnd "${vcp_store_log}" 2>/dev/null || true
 	if [ -f "${vcp_store_acl_sh}" ]; then

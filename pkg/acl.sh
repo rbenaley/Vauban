@@ -57,6 +57,23 @@ prepare_vcp_run_dir() {
     set_default_acl "vcp" "rw" "${_run}"
 }
 
+# Portal reads server.crt / server.key and ACME rewrites them on renewal, so
+# the portal UID needs rwx on the 0700 root-owned certs dir (and rw on the
+# files ACME replaces). Keep the dir mode itself closed to everyone else.
+ensure_portal_cert_acl() {
+    _certs="${1:-/usr/local/etc/vcp/certs}"
+    _portal="${2:-vcp}"
+    [ -d "${_certs}" ] || return 0
+    detect_acl_type "${_certs}"
+    set_acl "${_portal}" "rwx" "${_certs}"
+    set_default_acl "${_portal}" "rw" "${_certs}"
+    for _f in "${_certs}"/*; do
+        [ -f "${_f}" ] || continue
+        detect_acl_type "${_f}"
+        set_acl "${_portal}" "rw" "${_f}"
+    done
+}
+
 # Ensure store.sock is reachable by portal UID after bind (umask 077).
 ensure_store_socket_acl() {
     _sock="${1:-/var/run/vcp/store.sock}"

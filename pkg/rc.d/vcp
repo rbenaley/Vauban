@@ -13,24 +13,65 @@ load_rc_config $name
 
 : ${vcp_enable:="NO"}
 : ${vcp_config_dir:="/usr/local/etc/vcp"}
-: ${vcp_user:="vcp"}
+# NOT ${name}_user: rc.subr reads that name and wraps the command in
+# "su -m", which would run daemon(8) unprivileged -- its setusercontext()
+# then fails with "failed to set user environment". daemon(8) must stay
+# root and drop privileges itself via -u.
+: ${vcp_runas:="vcp"}
 : ${vcp_acl_sh:="/usr/local/libexec/vcp/acl.sh"}
 : ${vcp_log:="/var/log/vcp.log"}
 : ${vcp_access_log:="/var/log/vcp-access.log"}
+# The portal drops to ${vcp_runas} but listens on 443. Grant that single UID
+# the reserved port through mac_portacl(4). Set NO when the configured
+# server.port is >= 1024 (or when a proxy terminates TLS).
+: ${vcp_portacl_enable:="YES"}
+: ${vcp_portacl_port:="443"}
 
 # Do NOT use daemon -P: the portal process_guard owns /var/run/vcp/vcp.pid
 # (newsyslog SIGHUP target for the Apache CLF access log).
 command="/usr/sbin/daemon"
-command_args="-r -H -t vcp -u ${vcp_user} -o ${vcp_log} /usr/local/bin/vcp"
+command_args="-r -H -t vcp -u ${vcp_runas} -o ${vcp_log} /usr/local/bin/vcp"
 
 start_precmd="${name}_prestart"
+
+# Unreserving the low port range is only safe once mac_portacl is the gate,
+# so bail out before touching net.inet.ip.portrange if the module is missing.
+vcp_portacl_setup()
+{
+	local _uid _rule _cur
+
+	checkyesno vcp_portacl_enable || return 0
+
+	_uid=$(id -u "${vcp_runas}" 2>/dev/null) || {
+		warn "unknown user ${vcp_runas}: cannot grant port ${vcp_portacl_port}"
+		return 1
+	}
+	if ! kldstat -q -m mac_portacl && ! kldload mac_portacl; then
+		warn "mac_portacl unavailable: ${vcp_runas} cannot bind ${vcp_portacl_port}"
+		return 1
+	fi
+
+	sysctl security.mac.portacl.enabled=1 >/dev/null 2>&1 || true
+	sysctl security.mac.portacl.suser_exempt=1 >/dev/null
+	sysctl security.mac.portacl.port_high=1023 >/dev/null
+
+	_rule="uid:${_uid}:tcp:${vcp_portacl_port}"
+	_cur=$(sysctl -n security.mac.portacl.rules 2>/dev/null)
+	case ",${_cur}," in
+	*",${_rule},"*) ;;
+	*) sysctl security.mac.portacl.rules="${_cur:+${_cur},}${_rule}" >/dev/null ;;
+	esac
+
+	sysctl net.inet.ip.portrange.reservedlow=0 >/dev/null
+	sysctl net.inet.ip.portrange.reservedhigh=0 >/dev/null
+}
 
 vcp_prestart()
 {
 	# Mandatory: never fall through to a compile-time checkout path.
 	export VCP_CONFIG_DIR="${vcp_config_dir}"
 	touch "${vcp_log}" "${vcp_access_log}"
-	chown "${vcp_user}:wheel" "${vcp_log}" "${vcp_access_log}"
+	chown "${vcp_runas}:wheel" "${vcp_log}" "${vcp_access_log}"
 	chmod 640 "${vcp_log}" "${vcp_access_log}"
 	chflags noschg,nouchg,nosappnd,nouappnd "${vcp_log}" "${vcp_access_log}" \
 		2>/dev/null || true
@@ -38,11 +79,13 @@ vcp_prestart()
 		# shellcheck source=/usr/local/libexec/vcp/acl.sh
 		. "${vcp_acl_sh}"
 		prepare_vcp_run_dir /var/run/vcp
+		ensure_portal_cert_acl "${vcp_config_dir}/certs" "${vcp_runas}"
 	else
 		mkdir -p /var/run/vcp
 		chown vcp-storage:vcp-storage /var/run/vcp 2>/dev/null || true
 		chmod 0700 /var/run/vcp
 	fi
+	vcp_portacl_setup || return 1
 }
 
 run_rc_command "$1"
