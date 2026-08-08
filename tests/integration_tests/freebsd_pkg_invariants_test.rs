@@ -47,6 +47,17 @@ fn prop_rc_d_and_newsyslog_required_pins() {
         !store.contains("vcp_store_user") && store.contains("vcp_store_runas"),
         "rc.d/vcp_store must use vcp_store_runas, never vcp_store_user"
     );
+    // Helpers sourced from precmds run inside run_rc_command: assigning
+    // rc.subr's dynamically scoped _user would re-enable the su -m wrapper.
+    let acl = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/pkg/acl.sh"));
+    assert!(
+        !acl.contains("\n    _user=") && !acl.contains("\n_user="),
+        "acl.sh must not assign the rc.subr-reserved _user variable"
+    );
+    assert!(
+        acl.contains("_vcpacl_"),
+        "acl.sh internals must stay namespaced under _vcpacl_"
+    );
     // Unreserving low ports before mac_portacl is loaded would let any user
     // bind 443; the load must come first.
     let load = vcp

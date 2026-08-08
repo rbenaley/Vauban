@@ -86,6 +86,14 @@ grep -n 'ensure_portal_cert_acl' pkg/+POST_INSTALL >/dev/null \
   || fail "POST_INSTALL must grant the portal an ACL on certs/"
 grep -n 'ensure_portal_cert_acl' pkg/rc.d/vcp >/dev/null \
   || fail "rc.d/vcp must re-apply the certs ACL (ACME rewrites files)"
+
+# sh "local" is dynamically scoped: precmds run inside run_rc_command, so a
+# bare _user=... in sourced helpers clobbers rc.subr's local and makes it
+# wrap the service in "su -m" (daemon(8) then runs unprivileged).
+if grep -nE '^[[:space:]]*_(user|group|groups|chdir|chroot|nice|fib|env|prepend|login_class|limits|oomprotect|setup|env_file|umask)=' \
+  pkg/acl.sh pkg/rc.d/vcp pkg/rc.d/vcp_store >/dev/null; then
+  fail "acl.sh / rc.d must not assign rc.subr-reserved _user/_group/... names"
+fi
 grep -n '/var/log/vcp-access.log' pkg/newsyslog.conf.d/vcp.conf >/dev/null \
   || fail "newsyslog must rotate /var/log/vcp-access.log"
 

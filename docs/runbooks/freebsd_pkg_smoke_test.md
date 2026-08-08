@@ -68,10 +68,20 @@ su -m vcp -c 'sh -c "head -c1 /usr/local/etc/vcp/certs/server.key >/dev/null"' \
 
 ### Troubleshooting: `daemon(8)` must stay root
 
-`rc.subr` treats `${name}_user` as its own variable and wraps the whole
-command in `su -m <user> -c ...`. An rc.d script that names its service
-account `vcp_user` / `vcp_store_user` therefore starts `daemon(8)`
-**unprivileged**, which produces both of these:
+`rc.subr` wraps the whole command in `su -m <user> -c ...` whenever its
+internal `_user` variable is set. Two distinct bugs can trigger that:
+
+1. Naming the service account variable `${name}_user` (`vcp_user` /
+   `vcp_store_user`): rc.subr owns that name.
+2. A sourced helper assigning `_user=...` from a precmd. sh `local` is
+   **dynamically scoped** and precmds run inside `run_rc_command`, after
+   it computed `_user` but before it builds the command line, so the
+   assignment clobbers rc.subr's own variable (this is why `acl.sh`
+   namespaces everything under `_vcpacl_`).
+
+Diagnose with `env rc_debug=YES /usr/local/etc/rc.d/vcp_store start` and
+read the `DEBUG: run_rc_command: doit:` line: any `su -m` wrapper there
+means `daemon(8)` starts **unprivileged**, which produces both of these:
 
 | Symptom | Failing call inside `daemon(8)` |
 |---|---|
