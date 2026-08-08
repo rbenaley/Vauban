@@ -63,6 +63,7 @@ is planned._
 | P0-P3 Topcoat campaign | [`p0-p3_topcoat_campaign_d0d5c3c6.plan.md`](p0-p3_topcoat_campaign_d0d5c3c6.plan.md) | Done |
 | Preserve form on not_pkg | [`preserve_form_on_not_pkg_88aa80a9.plan.md`](preserve_form_on_not_pkg_88aa80a9.plan.md) | Done |
 | Pyramid compliance backfill | [`pyramid_compliance_backfill_c0557c49.plan.md`](pyramid_compliance_backfill_c0557c49.plan.md) | Done |
+| Python import-pkgs lab | [`python_import-pkgs_lab_7eb64e13.plan.md`](python_import-pkgs_lab_7eb64e13.plan.md) | Done |
 | Release semver SQL sort | [`release_semver_sql_sort_29d7d2b8.plan.md`](release_semver_sql_sort_29d7d2b8.plan.md) | Done |
 | Rename store key CLI | [`rename_store_key_cli_0c3de0d4.plan.md`](rename_store_key_cli_0c3de0d4.plan.md) | Open |
 | Request SQL dedup | [`request_sql_dedup_46a6151e.plan.md`](request_sql_dedup_46a6151e.plan.md) | Done |

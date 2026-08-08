@@ -46,6 +46,7 @@ mod tests {
     fn cli_usage_mentions_seed_data_and_server() {
         let u = cli_usage();
         assert!(u.contains("seed-data"));
+        assert!(!u.contains("import-pkgs"));
         assert!(u.contains("HTTPS"));
         assert!(u.contains("--help"));
     }
