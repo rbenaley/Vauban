@@ -5,6 +5,7 @@ use vcp::{
     docs_body::{self, Block},
     list_page::LIST_PAGE_SIZE,
     models::{DOC_STATUS_DRAFT, DOC_STATUS_PUBLISHED},
+    release_notes::{InlineSegment, flatten_inline_segments, parse_inline_code},
     slug::slugify,
 };
 
@@ -91,5 +92,31 @@ proptest! {
                 }
             }
         }
+    }
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(48))]
+
+    /// Block parse keeps paired backticks so the page can chip them; flatten
+    /// of inline segments equals the prose without the delimiter ticks.
+    #[test]
+    fn prop_docs_prose_inline_code_round_trip(
+        before in "[A-Za-z0-9.,]{0,24}",
+        code in "[A-Za-z0-9_=/.-]{1,32}",
+        after in "[A-Za-z0-9.,]{0,24}",
+    ) {
+        prop_assume!(!code.contains('`'));
+        // No leading/trailing whitespace: docs_body::parse trims paragraphs.
+        let para = format!("{before}`{code}`{after}");
+        let src = format!("{para}\n");
+        let blocks = docs_body::parse(&src);
+        prop_assert!(matches!(
+            &blocks[..],
+            [Block::Paragraph(p)] if p == &para
+        ));
+        let segs = parse_inline_code(&para);
+        prop_assert!(segs.iter().any(|s| matches!(s, InlineSegment::Code(c) if c == &code)));
+        prop_assert_eq!(flatten_inline_segments(&segs), format!("{before}{code}{after}"));
     }
 }

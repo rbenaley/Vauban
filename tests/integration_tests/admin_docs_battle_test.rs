@@ -206,14 +206,14 @@ async fn battle_concurrent_doc_delete_and_reads() {
 async fn battle_parallel_docs_body_parse() {
     let src = r#"# Title
 
-Para with <script>.
+Para with <script> and `auth_type`.
 
 ```
 code <here>
 ```
 
 ::: callout
-Need RAM.
+Need `2 GB` RAM.
 :::
 "#;
     let n = 12usize;
@@ -235,12 +235,81 @@ Need RAM.
                     .iter()
                     .any(|b| matches!(b, vcp::docs_body::Block::Pre(_)))
             );
+            assert!(
+                blocks.iter().any(|b| matches!(
+                    b,
+                    vcp::docs_body::Block::Paragraph(p) if p.contains("`auth_type`")
+                )),
+                "inline backticks must survive block parse under contention"
+            );
             assert_eq!(vcp::docs_body::escape_html("<x>"), "&lt;x&gt;");
+            let segs = vcp::release_notes::parse_inline_code("Need `2 GB` RAM.");
+            assert!(segs.iter().any(|s| matches!(
+                s,
+                vcp::release_notes::InlineSegment::Code(c) if c == "2 GB"
+            )));
         }));
     }
     for h in handles {
         h.await.expect("join");
     }
+}
+
+/// Concurrent client modal renders must each emit vb-inline-code chips.
+#[tokio::test]
+async fn battle_concurrent_doc_modal_inline_code_renders() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-adoc-inline");
+    let slug = unique_slug("battle-adoc-inline");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let article_slug = unique_slug("inline-chip-doc");
+    {
+        let mut conn = db.clone();
+        let _ = toasty::create!(DocArticle {
+            title: "Inline chips".to_owned(),
+            summary: "sum".to_owned(),
+            category: "API".to_owned(),
+            slug: article_slug.clone(),
+            version: "v1".to_owned(),
+            status: "PUBLISHED".to_owned(),
+            body: "Prefer `config/` over workspace.".to_owned(),
+            updated_at: now_unix(),
+        })
+        .exec(&mut conn)
+        .await
+        .expect("create");
+    }
+
+    let path = format!("/{slug}/docs/{article_slug}");
+    let n = 8usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for _ in 0..n {
+        let barrier = barrier.clone();
+        let path = path.clone();
+        let email = email.clone();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let router = test_router().await;
+            let cookie = login_cookie(&router, &email).await;
+            let resp = get(&router, &path, cookie.as_deref()).await;
+            assert_eq!(status(&resp), StatusCode::OK);
+            let body = resp.into_body().collect().await.expect("body").to_bytes();
+            let html = String::from_utf8_lossy(&body).into_owned();
+            assert!(
+                html.contains("vb-inline-code") && html.contains("config/"),
+                "concurrent modal must ship inline chips: {html}"
+            );
+        }));
+    }
+    for h in handles {
+        h.await.expect("join");
+    }
+
+    cleanup(&db).await;
 }
 
 #[tokio::test]

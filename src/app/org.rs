@@ -27,7 +27,7 @@ use crate::{
     ui::{channel_badge_class, note_tag_color},
 };
 
-use super::_components::{ico_builds, ico_docs, ico_issues, vb_rail, vb_topbar};
+use super::_components::{ico_builds, ico_docs, ico_issues, note_inline_text, vb_rail, vb_topbar};
 
 #[path_param]
 pub struct Org(str);
@@ -330,7 +330,7 @@ async fn dashboard(cx: &Cx) -> Result {
                         <span
                             style="font-size: 13px; color: #5a5f66; line-height: 1.5;"
                         >
-                            (text)
+                            note_inline_text(text: &text)
                         </span>
                     </div>
                 }

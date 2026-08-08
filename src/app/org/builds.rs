@@ -15,7 +15,7 @@ use topcoat::{
 use crate::{
     app::_components::{
         filter_row, ico_arrow_down, ico_check, ico_chevron_down, ico_chevron_right, ico_copy,
-        ico_hourglass,
+        ico_hourglass, note_inline_text,
     },
     app::org::Org,
     auth::{capability_denied, config, require_org},
@@ -304,7 +304,7 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
                                         style="display: flex; gap: 10px; margin-bottom: 8px; font-size: 13.5px; color: #3a3f46;"
                                     >
                                         <span class="vb-mono" style=(tag_style)>(tag)</span>
-                                        <span>(text)</span>
+                                        <span>note_inline_text(text: &text)</span>
                                     </div>
                                 }
                                 if can_download {

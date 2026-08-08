@@ -31,7 +31,7 @@ async fn e2e_dialect_body_renders_callout_and_pre_from_db() {
     let cookie = login(&router, &email).await;
 
     let article_slug = unique_slug("dialect-doc");
-    let body = "# Install\n\nDownload it.\n\n```\n$ curl example\n```\n\n::: callout\nNeed 2 GB RAM.\n:::\n";
+    let body = "# Install `pkg`\n\nOnly assets with `auth_type = ssh_key`.\n\n```\n$ curl example\n```\n\n::: callout\nNeed `2 GB` RAM.\n:::\n\n- Prefer `user@host`\n";
     {
         let mut conn = db.clone();
         let _ = toasty::create!(DocArticle {
@@ -58,7 +58,7 @@ async fn e2e_dialect_body_renders_callout_and_pre_from_db() {
     assert_eq!(status(&client), StatusCode::OK);
     let html = body_text(client).await;
     assert!(
-        html.contains("vb-callout") && html.contains("Need 2 GB RAM"),
+        html.contains("vb-callout") && html.contains("RAM"),
         "callout from DB dialect missing: {html}"
     );
     assert!(
@@ -66,6 +66,29 @@ async fn e2e_dialect_body_renders_callout_and_pre_from_db() {
         "pre from DB dialect missing: {html}"
     );
     assert!(html.contains("Install"), "heading missing: {html}");
+    assert!(
+        html.contains("vb-inline-code")
+            && html.contains("auth_type = ssh_key")
+            && html.contains("user@host")
+            && html.contains("pkg")
+            && html.contains("2 GB"),
+        "paired backticks in heading/paragraph/list/callout must become chips: {html}"
+    );
+    assert!(
+        html.matches("vb-inline-code").count() >= 4,
+        "expected chips for heading+paragraph+callout+list: {html}"
+    );
+    assert!(
+        !html.contains("`auth_type = ssh_key`"),
+        "delimiters must not remain around chip text: {html}"
+    );
+    // Fenced pre must stay literal (no chip class inside vb-pre for the fence body).
+    let pre_at = html.find("vb-pre").expect("pre");
+    let pre_slice = &html[pre_at..pre_at + 200.min(html.len() - pre_at)];
+    assert!(
+        pre_slice.contains("curl example"),
+        "fenced body must remain in pre: {pre_slice}"
+    );
 
     cleanup(&db).await;
 }

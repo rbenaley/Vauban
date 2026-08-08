@@ -153,7 +153,7 @@ async fn admin_docs_edit_page(cx: &Cx) -> Result {
                         (article.body.get().clone())
                     </textarea>
                     <p class="vb-form-hint">
-                        "Formatting · ## Heading · blank line = new paragraph · - item for bullet lists · ::: callout … ::: · ``` to fence a code block"
+                        "Formatting · ## Heading · blank line = new paragraph · - item for bullet lists · ::: callout … ::: · ``` to fence a code block · `inline` for monospace chips"
                     </p>
                     <div
                         style="display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; align-items: center;"

@@ -10,6 +10,7 @@
 //! - `cargo test --test integration_tests -- admin_companies -- --test-threads=1`
 //! - `cargo test --test integration_tests -- org_account -- --test-threads=1`
 //! - `cargo test --test integration_tests -- builds_entitlement -- --test-threads=1`
+//! - `cargo test --test integration_tests -- release_notes_inline -- --test-threads=1`
 //! - `cargo test --test integration_tests -- toasty_filters -- --test-threads=1`
 //! - `cargo test --test integration_tests -- request_sql_dedup -- --test-threads=1`
 //! - `cargo test --test integration_tests -- dashboard_stats -- --test-threads=1`
@@ -94,6 +95,10 @@ mod portal_shell_battle_test;
 mod portal_shell_e2e_test;
 mod portal_shell_invariants_test;
 mod portal_shell_proptest;
+mod release_notes_inline_battle_test;
+mod release_notes_inline_e2e_test;
+mod release_notes_inline_invariants_test;
+mod release_notes_inline_proptest;
 mod request_sql_dedup_battle_test;
 mod request_sql_dedup_e2e_test;
 mod request_sql_dedup_invariants_test;

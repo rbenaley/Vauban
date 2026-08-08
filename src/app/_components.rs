@@ -4,6 +4,7 @@ mod badges;
 mod chips;
 mod icons;
 mod modal;
+mod note_inline;
 mod pager;
 mod rail;
 mod topbar;
@@ -15,6 +16,7 @@ pub use icons::{
     ico_hourglass, ico_issues, ico_key, ico_paperclip, ico_plus, ico_trash,
 };
 pub use modal::article_modal_shell;
+pub use note_inline::note_inline_text;
 pub use pager::list_toolbar;
 pub use rail::vb_rail;
 pub use topbar::vb_topbar;

@@ -18,6 +18,7 @@ Related:
 - Pyramid: `.cursor/rules/vcp-test-pyramid.mdc`
 - Filter: `cargo test --test integration_tests -- builds_entitlement -- --test-threads=1`
 - Auth denials: [`auth_tenant_smoke_test.md`](auth_tenant_smoke_test.md)
+- Changelog ``code`` chips: [`release_notes_inline_smoke_test.md`](release_notes_inline_smoke_test.md)
 
 ## Automated prerequisites
 

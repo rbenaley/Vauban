@@ -73,6 +73,26 @@ fn inv_client_doc_modal_uses_docs_body_parser() {
         src.contains("docs_body"),
         "client modal must parse dialect via docs_body"
     );
+    assert!(
+        src.contains("note_inline_text"),
+        "client modal must render paired backticks via note_inline_text"
+    );
+}
+
+#[test]
+fn inv_docs_compose_hint_mentions_inline_code() {
+    let new = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/docs/new.rs"
+    ));
+    let edit = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/docs/doc.rs"
+    ));
+    assert!(
+        new.contains("monospace chips") && edit.contains("monospace chips"),
+        "compose + edit hints must document `inline` monospace chips"
+    );
 }
 
 #[test]

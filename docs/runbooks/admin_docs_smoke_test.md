@@ -63,6 +63,22 @@ SSR list paging (10 rows per page, shareable `?page=`).
 
 Pass: 10 max per page; toolbar pager; overlay query not sticky.
 
+## D -- Inline ``code`` chips in article body
+
+Paired backticks in prose use the same `.vb-inline-code` chips as release
+notes (monospace + light gray border). Fenced ``` blocks stay literal
+`<pre>` (no chip rewrite inside the fence).
+
+1. Publish (or edit) an article whose body includes e.g.
+   `Only assets with \`auth_type = ssh_key\` are included.` plus a list
+   item with `` `user@host` `` and a fenced command block.
+2. Open `/{org}/docs/{slug}` as a member: chips appear for the paired
+   spans; backticks are not visible as delimiters; the fenced block is
+   still a plain `<pre class="vb-pre">`.
+3. Unpaired trailing `` ` `` stays plain text (no empty gray box).
+
+Pass: chips on prose/list/callout/heading; fences untouched.
+
 ## Related automated coverage
 
 | Layer | Filter / artifact |

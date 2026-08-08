@@ -3,9 +3,11 @@
 //! Markers:
 //! - `#` / `##` headings -> h3 in the Concept modal
 //! - blank-line paragraphs
-//! - fenced code with triple backticks
+//! - fenced code with triple backticks (literal `<pre>`; no inline chips)
 //! - `::: callout` … `:::` callout boxes
 //! - `- ` list items (consecutive)
+//! - paired `` `code` `` in headings / paragraphs / lists / callouts — rendered
+//!   by the page via [`crate::release_notes::parse_inline_code`] (not here)
 
 use std::fmt;
 
@@ -250,5 +252,30 @@ Need 2 GB RAM.
             "# Overview\n\nReal dialect body with content.",
             "Summary here."
         ));
+    }
+
+    #[test]
+    fn parse_keeps_paired_backticks_in_prose_for_inline_renderer() {
+        // Block parse must not strip `` `…` ``; the page turns them into chips.
+        let blocks = parse(
+            "Only non-deleted assets with `auth_type = ssh_key` are included.\n\n- Use `user@host`\n",
+        );
+        assert_eq!(
+            blocks[0],
+            Block::Paragraph(
+                "Only non-deleted assets with `auth_type = ssh_key` are included.".into()
+            )
+        );
+        assert_eq!(blocks[1], Block::List(vec!["Use `user@host`".into()]));
+    }
+
+    #[test]
+    fn fenced_triple_backticks_still_become_pre() {
+        let blocks = parse("See:\n\n```\nvauban-supervisor asset-pubkeys\n```\n");
+        assert!(matches!(&blocks[0], Block::Paragraph(p) if p == "See:"));
+        assert_eq!(
+            blocks[1],
+            Block::Pre("vauban-supervisor asset-pubkeys".into())
+        );
     }
 }

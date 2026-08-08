@@ -9,7 +9,7 @@ use topcoat::{
 
 use super::{DocsFilter, docs_list_view};
 use crate::{
-    app::_components::{article_modal_shell, ico_issues},
+    app::_components::{article_modal_shell, ico_issues, note_inline_text},
     app::org::Org,
     auth::{capability_denied, require_org},
     docs_body::{self, Block},
@@ -93,12 +93,17 @@ async fn render_body_blocks(cx: &Cx, body: &str) -> Result {
 async fn render_block(cx: &Cx, block: Block) -> Result {
     match block {
         Block::Heading(text) => {
-            view! { cx => <h3>(text)</h3> }
+            view! { cx => <h3>note_inline_text(text: &text)</h3> }
         }
         Block::Paragraph(text) => {
-            view! { cx => <p style="white-space: pre-wrap;">(text)</p> }
+            view! {
+                cx =>
+                <p style="white-space: pre-wrap;">note_inline_text(text: &text)</p>
+            }
         }
         Block::Pre(text) => {
+            // Fenced ``` blocks stay literal; only paired `…` in prose/lists/callouts
+            // become mono chips (same helper as release notes).
             view! { cx => <pre class="vb-pre">(text)</pre> }
         }
         Block::Callout(text) => {
@@ -106,7 +111,9 @@ async fn render_block(cx: &Cx, block: Block) -> Result {
                 cx =>
                 <div class="vb-callout">
                     (ico_issues(cx, 16).await?)
-                    <span style="white-space: pre-wrap;">(text)</span>
+                    <span style="white-space: pre-wrap;">
+                        note_inline_text(text: &text)
+                    </span>
                 </div>
             }
         }
@@ -115,7 +122,7 @@ async fn render_block(cx: &Cx, block: Block) -> Result {
                 cx =>
                 <ul>
                     for item in items {
-                        <li>(item)</li>
+                        <li>note_inline_text(text: &item)</li>
                     }
                 </ul>
             }
