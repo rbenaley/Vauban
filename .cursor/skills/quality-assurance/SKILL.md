@@ -121,11 +121,11 @@ production code, `scripts/check_auth_tenant.sh`, and
 
 ### Always cover denial paths
 
-For auth, multi-tenant, Casbin, and license / billing surfaces:
+For auth, multi-tenant, Casbin-format policy, and license / billing surfaces:
 
 - Wrong organization / tenant ID
 - Expired or missing session
-- Missing Casbin permission
+- Missing policy permission (`PermissionContext` flag)
 - Missing entitlement
 - CSRF / method mismatch where applicable
 - Anti-enumeration where existence would leak across tenants (prefer

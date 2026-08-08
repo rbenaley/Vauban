@@ -91,7 +91,7 @@ Remove all `/{org}/admin/*` routes.
 - [`Release.organization_id`](src/models/mod.rs): `u64`, `0` = GA, else target org id.
 - Constant e.g. `RESERVED_ORG_SLUG = "vauban"` in models or auth.
 
-**Policy** — [`config/access/default_policy.csv`](config/access/default_policy.csv):
+**Policy** — [`config/access/vcp_policy.csv`](config/access/vcp_policy.csv):
 
 - `role:member` → `role:org`.
 - Keep `role:admin` (+ `admin,view`, issues r/w for aggregate).

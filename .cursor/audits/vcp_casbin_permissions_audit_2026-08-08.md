@@ -25,12 +25,12 @@ Three ordered layers, consistent with `casbin-permissions.mdc`:
 - **Catalogue** (11 couples) matches the rule 1:1: `docs read/write`,
   `builds read/download`, `releases manage`, `issues read/write`,
   `companies manage`, `key manage`, `account read`, `admin view`.
-  Roles: `role:org`, `role:admin` only (`config/access/default_policy.csv`).
+  Roles: `role:org`, `role:admin` only (`config/access/vcp_policy.csv`).
 - **Casbin subject derivation** (`org_context`): staff `portal_role=admin` →
   `admin` (including `/vauban` preview); otherwise membership role (always
   `org`). Unknown role strings resolve to an all-false context → fail closed.
 - **Policy load**: once at boot from `cfg.access.policy_path`
-  (layered TOML; production `/usr/local/etc/vcp/access/default_policy.csv`),
+  (layered TOML; production `/usr/local/etc/vcp/access/vcp_policy.csv`),
   `Arc<PolicyStore>` in router `app_context`. Malformed CSV line → boot abort.
 - **Memoization**: `org_context` and `require_perms` are `#[memoize]`d, so
   layout + page + shards share one membership lookup and one policy read per
@@ -118,6 +118,12 @@ and rename the wording in rules/docs to "Casbin-format policy". Option (b) is
 cheaper and honest; option (a) only pays off when role inheritance or richer
 matchers are actually needed.
 
+**Resolution (2026-08-08):** **Option B accepted and applied.**
+`config/access/model.conf` deleted; `access.model_path` removed from
+`AccessConfig` and TOML/`vcp.conf`; rules/skills wording updated to
+Casbin-format / `PolicyStore`; `scripts/check_auth_tenant.sh` pins the
+absence of `model.conf`, `model_path`, and a `casbin` crate dependency.
+
 ### F2 — No reverse drift test on the CSV (Low)
 
 `TRACKED_PERMS` → CSV is pinned (every tracked couple must be granted), but
@@ -135,7 +141,7 @@ Config validation checks `policy_path` is non-empty as a **string**, and the
 parser aborts on malformed lines — but a syntactically valid file with zero
 grants (or missing `admin, view`) boots fine and locks everyone out
 (fail-closed, but a production foot-gun since prod reads
-`/usr/local/etc/vcp/access/default_policy.csv`, not the repo file that the
+`/usr/local/etc/vcp/access/vcp_policy.csv`, not the repo file that the
 repo lint pins).
 
 **Recommendation:** startup sanity check after load: at least one grant, and
@@ -220,7 +226,7 @@ the intended layering; keep the lint that freezes it.
 
 | # | Finding | Severity | Effort |
 |---|---------|----------|--------|
-| F1 | Homegrown loader vs. real Casbin; dead `model.conf` / `model_path` | Medium | S (option b) / M (option a) |
+| F1 | Homegrown loader vs. real Casbin; dead `model.conf` / `model_path` | Medium | **Resolved (option B)** |
 | F2 | Reverse CSV→TRACKED_PERMS drift test missing | Low | S |
 | F3 | No startup sanity on loaded policy (lockout boots) | Low | S |
 | F4 | Dashboard panels not gated per-module | Low | S |
@@ -237,8 +243,7 @@ The permission model is **correctly and uniformly applied**: every routed
 surface goes tenant-gate → capability-flag → object-scope, entry denials are
 anti-enumeration 404s, views read `PermissionContext` flags, no role-boolean
 gates exist in application code, and the whole posture is frozen by structural
-lints and a multi-layer test pyramid. The material gap is honesty of naming
-(F1): the project enforces a Casbin-*format* policy through a minimal custom
-loader, and one config artifact (`model.conf`) is dead. The remaining findings
-are small hardening and hygiene items, none of which is an exploitable flaw in
-the current two-role model.
+lints and a multi-layer test pyramid. F1 (naming / dead `model.conf`) is
+**resolved via option B**: CSV + `PolicyStore` is the documented enforcement
+path. The remaining findings are small hardening and hygiene items, none of
+which is an exploitable flaw in the current two-role model.

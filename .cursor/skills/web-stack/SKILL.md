@@ -61,7 +61,7 @@ static-asset embedding assumptions unless explicitly requested.
 | Cookies | `.cookies()`; signed / private (AES-256-GCM) jars; app `Key` in app context |
 | Sessions | `.sessions(SessionConfig)` — BYO storage of **SHA-256 token hash** + expiry |
 | CSRF | Session `OriginLayer` (Sec-Fetch-Site / Origin) — keep mutations on non-GET |
-| AuthZ | Casbin `PermissionContext` via `cx` functions — see `casbin-permissions.mdc` |
+| AuthZ | Casbin-format CSV → `PolicyStore` → `PermissionContext` via `cx` — see `casbin-permissions.mdc` |
 | Dates in HTML | `vcp_tz` cookie + `format_local*` — see `timezone-localization.mdc` |
 | ORM | **Toasty** ([tokio-rs/toasty](https://github.com/tokio-rs/toasty)) |
 | Database | **PostgreSQL** (dev / staging / prod). SQLite is not the default |
@@ -187,7 +187,7 @@ src/
 |-- db.rs                  -> Toasty connect / seed
 |-- models/                -> toasty::Model types
 |-- auth.rs                -> current_user / require_* helpers
-|-- perms.rs               -> PermissionContext + Casbin
+|-- perms.rs               -> PermissionContext + PolicyStore (Casbin-format CSV)
 |-- nav.rs                 -> NavSection + crumb from URI
 |-- fonts.rs               -> Fontsource Hanken / JetBrains
 |-- app.rs                 -> root #[layout], module_router!, assets
@@ -208,7 +208,7 @@ src/
         `-- companies.rs
 ```
 
-Staff tools live under global `/admin/*` (Casbin `admin_view` via
+Staff tools live under global `/admin/*` (`admin_view` via
 `require_staff`). Reserved org `vauban` is the staff **preview** tenant
 for client chrome (`/{org}/docs`, builds); `/vauban/issues*` redirects
 to `/admin/issues`. Do not nest admin under `/{org}/admin/*`.

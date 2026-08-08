@@ -279,7 +279,7 @@ pub struct DatabaseConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccessConfig {
-    pub model_path: String,
+    /// Casbin-format `p, role:…, resource, action` CSV (see `PolicyStore`).
     pub policy_path: String,
 }
 
@@ -731,7 +731,6 @@ impl Config {
 
     fn resolve_paths(&mut self) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        self.access.model_path = resolve_path(root, &self.access.model_path);
         self.access.policy_path = resolve_path(root, &self.access.policy_path);
         self.server.access_log_path = resolve_path(root, &self.server.access_log_path);
         self.server.pid_file = resolve_path(root, &self.server.pid_file);

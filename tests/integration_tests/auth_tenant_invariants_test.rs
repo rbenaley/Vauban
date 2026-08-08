@@ -204,14 +204,14 @@ fn inv_router_trusts_public_origins() {
 }
 
 #[test]
-fn inv_tracked_perms_match_default_policy_csv() {
+fn inv_tracked_perms_match_vcp_policy_csv() {
     let store = PolicyStore::load_from_csv(PolicyStore::default_path()).unwrap();
     for &(resource, action) in TRACKED_PERMS {
         let granted =
             store.allows("admin", resource, action) || store.allows("org", resource, action);
         assert!(
             granted,
-            "tracked permission {resource}:{action} missing from default_policy.csv grants"
+            "tracked permission {resource}:{action} missing from vcp_policy.csv grants"
         );
     }
 }
@@ -310,7 +310,7 @@ fn inv_get_navigational_redirects_use_redirect_not_see_other() {
 fn inv_policy_csv_roles_use_role_prefix() {
     let csv = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/config/access/default_policy.csv"
+        "/config/access/vcp_policy.csv"
     ));
     for line in csv.lines() {
         let line = line.trim();
@@ -323,6 +323,51 @@ fn inv_policy_csv_roles_use_role_prefix() {
             parts[1].starts_with("role:"),
             "policy subject must be role:* (got {})",
             parts[1]
+        );
+    }
+}
+
+/// Audit F1 option B: no Casbin engine artifacts; CSV + PolicyStore only.
+#[test]
+fn inv_no_casbin_model_conf_or_model_path() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let model = root.join("config/access/model.conf");
+    assert!(
+        !model.exists(),
+        "config/access/model.conf must stay deleted (PolicyStore loads CSV only)"
+    );
+    assert!(
+        root.join("config/access/vcp_policy.csv").is_file(),
+        "config/access/vcp_policy.csv must exist"
+    );
+    assert!(
+        !root.join("config/access/default_policy.csv").exists(),
+        "legacy default_policy.csv must stay removed"
+    );
+    let access_cfg = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config.rs"));
+    assert!(
+        access_cfg.contains("struct AccessConfig"),
+        "AccessConfig must remain in src/config.rs"
+    );
+    assert!(
+        !access_cfg.contains("model_path"),
+        "AccessConfig must not expose model_path"
+    );
+    for path in [
+        "config/default.toml",
+        "config/development.toml",
+        "config/vcp.conf",
+    ] {
+        let body =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+                .unwrap_or_else(|e| panic!("read {path}: {e}"));
+        assert!(
+            !body.contains("model_path"),
+            "{path} must not set access.model_path"
+        );
+        assert!(
+            !body.contains("model.conf"),
+            "{path} must not reference model.conf"
         );
     }
 }

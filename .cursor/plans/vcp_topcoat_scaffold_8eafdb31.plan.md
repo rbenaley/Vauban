@@ -121,7 +121,7 @@ Business rules encoded as comments / constants where already known from mockups 
 - `POST /logout` → `session::stop` → delete session row.
 - `current_user` / `require_auth` / `require_org(slug)` / `require_perms` as `cx` helpers + `#[memoize]`.
 - Active org from path `{org}` + membership check (404 if cross-tenant).
-- Casbin: `config/access/default_policy.csv` (VCP catalogue, not bastion) + `PermissionContext` fields aligned to mockups:
+- Casbin: `config/access/vcp_policy.csv` (VCP catalogue, not bastion) + `PermissionContext` fields aligned to mockups:
 
 | Resource | Actions |
 |----------|---------|

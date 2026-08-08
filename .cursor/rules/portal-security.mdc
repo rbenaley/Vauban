@@ -43,9 +43,10 @@ missing entitlement), not only the happy path. See
 
 ## Authorization
 
-Use a Casbin-backed `PermissionContext` for capability gates (see
-`casbin-permissions.mdc`). Keep tenant / entitlement checks as a second
-layer — Casbin alone is not enough for object access.
+Use a `PermissionContext` from the Casbin-format policy CSV / `PolicyStore`
+for capability gates (see `casbin-permissions.mdc`). Keep tenant /
+entitlement checks as a second layer — capability alone is not enough for
+object access.
 
 ## Product shape
 
@@ -55,7 +56,7 @@ forms, shards/procedures as needed). **No WebSocket product surface.**
 ## Out of scope (unless asked)
 
 Do not pull bastion privsep, Capsicum, mTLS IPC, proxy session viewers,
-WebSocket dashboards, or bastion Casbin policy / resource catalogues
+WebSocket dashboards, or bastion Casbin-format policy / resource catalogues
 from `../Vauban`. VCP defines its own policy catalogue for org /
 license / billing / support. TLS 1.3 + PQ **are** in scope (shared
 security bar, different product).

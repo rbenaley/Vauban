@@ -60,8 +60,7 @@ token_retention_days = 7
 purge_interval_minutes = 60
 
 [access]
-model_path = "config/access/model.conf"
-policy_path = "config/access/default_policy.csv"
+policy_path = "config/access/vcp_policy.csv"
 
 [login]
 max_attempts = 10

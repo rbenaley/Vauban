@@ -69,8 +69,8 @@ token_retention_days = 1
 purge_interval_minutes = 60
 
 [access]
-model_path = "config/access/model.conf"
-policy_path = "config/access/default_policy.csv"
+# Casbin-format CSV grants; loaded by PolicyStore (no casbin crate).
+policy_path = "config/access/vcp_policy.csv"
 
 [login]
 max_attempts = 10

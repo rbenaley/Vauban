@@ -1,4 +1,10 @@
-//! Casbin-format policy loader and request-scoped `PermissionContext`.
+//! Casbin-format policy loader (`PolicyStore`) and request-scoped
+//! `PermissionContext`.
+//!
+//! VCP does not depend on the `casbin` crate and does not read a Casbin
+//! `model.conf`. Grants live in `config/access/vcp_policy.csv`
+//! (`p, role:…, resource, action`); exact-match lookups feed
+//! `PermissionContext` flags used by pages, shards, and `view!`.
 
 use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
@@ -10,7 +16,7 @@ use topcoat::{
 use crate::auth::AuthUser;
 
 /// Tracked (resource, action) couples — keep in lock-step with
-/// `config/access/default_policy.csv` (see drift test).
+/// `config/access/vcp_policy.csv` (see drift test).
 #[cfg_attr(not(test), allow(dead_code))]
 pub const TRACKED_PERMS: &[(&str, &str)] = &[
     ("docs", "read"),
@@ -73,8 +79,7 @@ impl PolicyStore {
     }
 
     pub fn default_path() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("config/access/default_policy.csv")
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/access/vcp_policy.csv")
     }
 
     pub fn allows(&self, role: &str, resource: &str, action: &str) -> bool {
@@ -128,7 +133,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_policy_grants_every_tracked_permission() {
+    fn vcp_policy_grants_every_tracked_permission() {
         let store = PolicyStore::load_from_csv(PolicyStore::default_path()).unwrap();
         for &(resource, action) in TRACKED_PERMS {
             let granted = store
@@ -137,7 +142,7 @@ mod tests {
                 .any(|(_, r, a)| r == resource && a == action);
             assert!(
                 granted,
-                "tracked permission {resource}:{action} missing from default_policy.csv"
+                "tracked permission {resource}:{action} missing from vcp_policy.csv"
             );
         }
     }

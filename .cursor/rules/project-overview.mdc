@@ -8,7 +8,7 @@ alwaysApply: true
 Customer-facing web portal for **Vauban** (sibling of the
 bastion product in `../Vauban`). This repository is **not** the bastion
 admin UI (`vauban-web`); do not import bastion IPC, proxy, privsep, or
-bastion Casbin policy files unless the user explicitly asks.
+bastion Casbin-format policy files unless the user explicitly asks.
 
 Project short name: **VCP**. Use that name in paths, crates, package
 scopes, and commit/PR titles unless a longer form is clearer.
@@ -27,7 +27,7 @@ WebSocket product surface). Product IA is defined by
 - **Issues** — support tracker (SLA: initial analysis 2–5 business days)
 - **Account & subscription** — plan, LTS counters, technical contact
 
-### Admin zone (org-scoped, Casbin-gated)
+### Admin zone (org-scoped, policy-gated)
 
 - **Documentation editor** — write / publish / unpublish articles
 - **Release manager** — publish binaries that appear in Builds

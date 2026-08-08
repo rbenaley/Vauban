@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Structural invariants for auth / tenant / Casbin surfaces.
+# Structural invariants for auth / tenant / Casbin-format policy surfaces.
 # Uses grep (POSIX-ish) so `cargo test` / CI work without ripgrep on PATH.
 set -euo pipefail
 
@@ -26,7 +26,23 @@ if grep -REn --include='*.rs' \
     -e 'role[[:space:]]*==[[:space:]]*"admin"' \
     -e "role[[:space:]]*==[[:space:]]*'admin'" \
     src/ >&2 || true
-  fail "found forbidden role-string / is_* gates (use Casbin PermissionContext)"
+  fail "found forbidden role-string / is_* gates (use PermissionContext)"
+fi
+
+# Option B (audit F1): no Casbin engine artifacts — CSV + PolicyStore only.
+if [[ -e config/access/model.conf ]]; then
+  fail "config/access/model.conf must not exist (Casbin-format CSV only)"
+fi
+if grep -REn --include='*.toml' --include='*.conf' --include='*.rs' \
+  -e '\bmodel_path\b' \
+  config/ src/config.rs >/dev/null 2>&1; then
+  grep -REn --include='*.toml' --include='*.conf' --include='*.rs' \
+    -e '\bmodel_path\b' \
+    config/ src/config.rs >&2 || true
+  fail "access.model_path must stay removed (dead Casbin model path)"
+fi
+if grep -nE '\bcasbin\b' Cargo.toml Cargo.lock >/dev/null 2>&1; then
+  fail "do not add the casbin crate without an explicit product decision (PolicyStore owns authZ)"
 fi
 
 # Tenant isolation helper must stay fail-closed to 404.
@@ -87,9 +103,25 @@ if awk '
 fi
 
 # Policy catalogue file must exist and mention admin view.
-POLICY="config/access/default_policy.csv"
+POLICY="config/access/vcp_policy.csv"
 [[ -f "$POLICY" ]] || fail "missing $POLICY"
+[[ -e config/access/default_policy.csv ]] && fail "legacy config/access/default_policy.csv must stay removed (use vcp_policy.csv)"
 grep -nE 'admin,[[:space:]]*view' "$POLICY" >/dev/null || fail "$POLICY must grant admin,view"
+if grep -REn --include='*.toml' --include='*.conf' --include='*.rs' --include='*.mdc' \
+  -e 'default_policy\.csv' \
+  config/ src/ .cursor/rules/ >/dev/null 2>&1; then
+  grep -REn --include='*.toml' --include='*.conf' --include='*.rs' --include='*.mdc' \
+    -e 'default_policy\.csv' \
+    config/ src/ .cursor/rules/ >&2 || true
+  fail "default_policy.csv references must use vcp_policy.csv"
+fi
+if ! grep -n 'struct PolicyStore' src/perms.rs >/dev/null; then
+  fail "src/perms.rs must define PolicyStore (Casbin-format CSV loader)"
+fi
+if ! grep -n 'AccessConfig' src/config.rs >/dev/null \
+  || ! grep -A5 'struct AccessConfig' src/config.rs | grep -q 'policy_path'; then
+  fail "AccessConfig must expose policy_path only"
+fi
 
 # Authenticated entry must redirect to portal home (no continue-button chrome).
 if grep -REn --include='*.rs' -e 'Continue to portal' src/app/ >/dev/null 2>&1; then

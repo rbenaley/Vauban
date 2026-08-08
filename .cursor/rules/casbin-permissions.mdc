@@ -1,13 +1,15 @@
 ---
-description: Authorization gates must use a Casbin-backed PermissionContext, never raw role flags
+description: Authorization gates must use PermissionContext from the Casbin-format policy CSV, never raw role flags
 alwaysApply: true
 ---
 
-# Casbin / PermissionContext - gating rule (VCP)
+# PermissionContext / Casbin-format policy (VCP)
 
 Every authorization decision — in pages, components, shards, procedures,
-**and** in `view!` markup — must go exclusively through Casbin via a
-request-scoped `PermissionContext`.
+**and** in `view!` markup — must go exclusively through a request-scoped
+`PermissionContext` built from the Casbin-format policy CSV via
+`PolicyStore` (`src/perms.rs`). VCP does **not** depend on the `casbin`
+crate and does **not** ship a Casbin `model.conf`.
 
 This portal is **not** the bastion. Do **not** copy `../Vauban` policy
 CSV files or resource names. Tenant isolation on `/{org}/…` paths is a
@@ -34,15 +36,15 @@ async fn admin_docs(cx: &Cx) -> Result {
 
 - **Never** gate on `is_staff` / `is_superuser` / `is_admin` / raw role
   string compares.
-- **Never** treat “logged in” as enough for org data: Casbin **and**
-  membership on the path `{org}` slug (404 if not a member).
+- **Never** treat “logged in” as enough for org data: policy capability
+  **and** membership on the path `{org}` slug (404 if not a member).
 - Admin nest (`/admin/*`): layout gate via `require_staff` (`admin_view`)
   **plus** body re-check; clients/anonymous get **404** (anti-enumeration).
 
 ## Permission catalogue (mockup IA)
 
 Map `PermissionContext` fields 1:1 to `(resource, action)`. Source of
-truth: `config/access/default_policy.csv`.
+truth: `config/access/vcp_policy.csv`.
 
 | Resource     | Actions                         | Typical surfaces                          |
 |--------------|---------------------------------|-------------------------------------------|
@@ -61,14 +63,14 @@ Field naming: `docs_read`, `docs_write`, `builds_read`, `builds_download`,
 
 Adding a new field MUST come with:
 
-1. A matching `p, role:..., r, a` line in `config/access/default_policy.csv`.
+1. A matching `p, role:..., r, a` line in `config/access/vcp_policy.csv`.
 2. A tracked-permission registry + drift test (every permission granted
    to at least one role).
 3. Denial-path tests (wrong role, wrong org, anonymous).
 
 ## In `view!` templates
 
-Actionable controls must read Casbin flags:
+Actionable controls must read policy flags on `PermissionContext`:
 
 ```rust
 // FORBIDDEN
@@ -84,18 +86,20 @@ if perms.releases_manage { /* … */ }
 |-----------|------------------|
 | Role booleans as gates | `perms.<resource>_<action>` |
 | Trust path `{org}` without membership | `require_org(cx, slug)` |
-| Casbin alone for object access | Casbin + tenant / ownership |
+| Capability alone for object access | `PermissionContext` + tenant / ownership |
 | Bastion `assets:*` / `sessions:*` | VCP catalogue only |
 | Missing `PermissionContext` | Fail closed |
+| Shipping / reading `model.conf` | CSV + `PolicyStore` only |
 
 ## Two-layer authorization
 
-1. **Casbin** — capability (may download builds / manage releases?).
+1. **Policy (`PermissionContext`)** — capability (may download builds /
+   manage releases?).
 2. **Tenant** — membership on this org slug; prefer **404** over chatty
    403 when cross-tenant existence would leak.
 
 Hard invariants (e.g. max **5** user accounts per company) live in
-dedicated helpers, not Casbin alone.
+dedicated helpers, not the policy CSV alone.
 
 ## Why
 

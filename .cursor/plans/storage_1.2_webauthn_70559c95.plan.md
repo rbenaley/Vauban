@@ -122,7 +122,7 @@ sequenceDiagram
 
 ## Phase E — CTAP2 dashboard + CLI (ADR 003)
 
-1. Casbin : `p, role:admin, ctap2, manage` dans [`config/access/default_policy.csv`](config/access/default_policy.csv) + [`src/perms.rs`](src/perms.rs) + drift tests.
+1. Casbin : `p, role:admin, ctap2, manage` dans [`config/access/vcp_policy.csv`](config/access/vcp_policy.csv) + [`src/perms.rs`](src/perms.rs) + drift tests.
 2. Nav : entrée **CTAP2** après Orgs dans [`rail.rs`](src/app/_components/rail.rs) / [`nav.rs`](src/nav.rs) ; page `/admin/ctap2`.
 3. E1 : `credentials.create` → PENDING Postgres + IPC `ctap2_enrol_stage` → afficher fingerprint + instructions CLI.
 4. CLI sous-commandes (parse argv ou clap minimal) : `vcp-store ctap2 pending` | `ctap2 approve --fingerprint …` (fail closed mismatch).
