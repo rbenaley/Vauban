@@ -220,6 +220,16 @@ fn inv_webauthn_12_and_adrs_pinned() {
     assert!(!bin.contains("println!(\"binding"));
     assert!(bin.contains("wants_help"));
     assert!(bin.contains("cli_usage"));
+    assert!(bin.contains("Usage:"));
+    assert!(bin.contains("Commands:"));
+    assert!(bin.contains("Options:"));
+    assert!(bin.contains("-h, --help"));
+    assert!(bin.contains("-V, --version"));
+    assert!(bin.contains("wants_version"));
+    assert!(bin.contains("HelpStyle"));
+    // Old lowercase / footer forms must not remain in usage string literals.
+    assert!(!bin.contains("\"usage: vcp-store"));
+    assert!(!bin.contains("Help: -h, --help, help"));
     assert!(bin.contains("load_key_cfg_with_env"));
     assert!(bin.contains("VCP_ENVIRONMENT"));
     assert!(

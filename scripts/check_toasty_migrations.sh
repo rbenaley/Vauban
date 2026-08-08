@@ -21,7 +21,16 @@ sql_count=$(find toasty/migrations -maxdepth 1 -name '*.sql' | wc -l | tr -d ' '
 snap_count=$(find toasty/snapshots -maxdepth 1 -name '*.toml' | wc -l | tr -d ' ')
 [[ "$snap_count" -gt 0 ]] || fail "expected at least one snapshot under toasty/snapshots/"
 
-[[ -f src/bin/vcp_cli.rs ]] || fail "missing src/bin/vcp_cli.rs (vcp-cli)"
+grep -n 'run_migration' src/main.rs >/dev/null \
+  || fail "src/main.rs must define run_migration (former vcp-cli)"
+grep -nE '"migration"' src/main.rs >/dev/null \
+  || fail "src/main.rs must dispatch the migration command"
+if [[ -f src/bin/vcp_cli.rs ]]; then
+  fail "src/bin/vcp_cli.rs must stay removed (migrations live on vcp)"
+fi
+if grep -n 'name = "vcp-cli"' Cargo.toml >/dev/null; then
+  fail "Cargo.toml must not declare [[bin]] vcp-cli"
+fi
 
 grep -n 'apply_pending_migrations' src/db.rs >/dev/null \
   || fail "src/db.rs must call apply_pending_migrations"

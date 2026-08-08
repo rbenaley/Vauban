@@ -169,8 +169,8 @@ reason for `sqlx`.
 2. Wire pool into router `.app_context`; add `db(cx)` (+ memoize as needed).
 3. First models: `User`, session record (`TokenHash`), `Organization`,
    membership — enough for login + tenant.
-4. Schema via Toasty migrations (`Toasty.toml`, `toasty/`, binary
-   `vcp-cli`): edit models → `just db-migrate-generate NAME=…` → review
+4. Schema via Toasty migrations (`Toasty.toml`, `toasty/`, `vcp
+   migration`): edit models → `just db-migrate-generate NAME=…` → review
    SQL → `just db-migrate`. `db::connect` applies pending migrations.
    Do **not** use `push_schema` for the app DB. URL from TOML
    (`VCP_ENVIRONMENT=development` for local layering); no secrets in git.

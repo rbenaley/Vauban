@@ -6,10 +6,6 @@ rust-version = "1.95"
 default-run = "vcp"
 
 [[bin]]
-name = "vcp-cli"
-path = "src/bin/vcp_cli.rs"
-
-[[bin]]
 name = "vcp-store"
 path = "src/bin/vcp_store.rs"
 

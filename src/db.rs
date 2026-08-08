@@ -475,7 +475,7 @@ pub async fn apply_pending_migrations(db: &Db) -> anyhow::Result<()> {
 
     if history.entries().is_empty() {
         anyhow::bail!(
-            "no Toasty migrations in {}; run: cargo run --bin vcp-cli -- migration generate --name initial",
+            "no Toasty migrations in {}; run: cargo run --bin vcp -- migration generate --name initial",
             history_path.display()
         );
     }
@@ -997,7 +997,7 @@ mod tests {
         );
         assert!(
             root.join("toasty").join("history.toml").is_file(),
-            "toasty/history.toml must exist (run: cargo run --bin vcp-cli -- migration generate)"
+            "toasty/history.toml must exist (run: cargo run --bin vcp -- migration generate)"
         );
         let migrations = root.join("toasty").join("migrations");
         assert!(migrations.is_dir(), "toasty/migrations/ must exist");

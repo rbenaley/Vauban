@@ -21,6 +21,7 @@ use std::process;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+use vcp::cli::{HelpStyle, styled_literal_col, version_line, wants_help, wants_version};
 use vcp::config::{Config, Environment, StorageConfig, StorageIpcMode, StoreHelperConfig};
 use vcp::storage::STORE_LOG_TARGET;
 use vcp::storage::capsicum;
@@ -45,6 +46,10 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
     if wants_help(&args) {
         print!("{}", cli_usage());
+        return Ok(());
+    }
+    if wants_version(&args) {
+        println!("{}", version_line("vcp-store"));
         return Ok(());
     }
     match args.first().map(String::as_str) {
@@ -283,53 +288,147 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-/// True when the invocation asked for help (`-h`, `--help`, or `help`).
-fn wants_help(args: &[String]) -> bool {
-    args.iter()
-        .any(|a| matches!(a.as_str(), "-h" | "--help" | "help"))
+/// Full CLI usage for the daemon accept loop and the ops KEY commands.
+///
+/// Layout + ANSI styles mirror clap / `vcp --help`.
+fn cli_usage() -> String {
+    cli_usage_with(HelpStyle::auto())
 }
 
-/// Full CLI usage for the daemon accept loop and the ops KEY commands.
-fn cli_usage() -> &'static str {
-    "usage: vcp-store [options]\n\
-     \n\
-     Sandboxed artifact helper. With no ops command, loads vcp-store.conf\n\
-     (or --config) and accepts Unix SEQPACKET connections on --listen.\n\
-     \n\
-     Daemon options:\n\
-       --config PATH                 helper TOML (default: beside portal config)\n\
-       --blob-path PATH              absolute blob root\n\
-       --listen PATH                 Unix SEQPACKET socket path\n\
-       --spawn-mode                  parent-spawned accept path (no peercred filter)\n\
-       --production                  require expected_peer_uid / --expected-uid\n\
-       --expected-uid UID            peercred allow-list (socket mode)\n\
-       --max-artifact-bytes N\n\
-       --max-image-bytes N\n\
-       --max-concurrent-uploads N\n\
-       --max-images-per-org N\n\
-       --upload-ttl-secs N\n\
-       --webauthn-required true|false\n\
-       --webauthn-origin URL\n\
-     \n\
-     Ops CLI (separate invocation; opens meta.sqlite under the blob root):\n\
-       vcp-store pending-ops [--config PATH] [--blob-path PATH]\n\
-       vcp-store list-keys [--config PATH] [--blob-path PATH]\n\
-       vcp-store approve-key --fingerprint HEX [--config PATH] [--blob-path PATH]\n\
-     \n\
-     Help: -h, --help, help\n"
+fn cli_usage_with(style: HelpStyle) -> String {
+    let usage = style.header("Usage:");
+    let commands = style.header("Commands:");
+    let options = style.header("Options:");
+    let bin = style.literal("vcp-store");
+    let opts = style.placeholder("[OPTIONS]");
+    let cmd = style.placeholder("<COMMAND>");
+    let pending = styled_literal_col(style, "pending-ops", 11);
+    let list = styled_literal_col(style, "list-keys", 11);
+    let approve = styled_literal_col(style, "approve-key", 11);
+    let help_cmd = styled_literal_col(style, "help", 11);
+    // One options column: short flags left-aligned; long-only flags get a
+    // 4-space lead-in so `--` lines up under `-h, --help`, and every
+    // description starts at the same screen column.
+    const OPT_COL: usize = 32;
+    let opt_help = styled_literal_col(style, "-h, --help", OPT_COL);
+    let opt_ver = styled_literal_col(style, "-V, --version", OPT_COL);
+    let opt_config = styled_option(style, "--config", "<PATH>", OPT_COL);
+    let opt_blob = styled_option(style, "--blob-path", "<PATH>", OPT_COL);
+    let opt_listen = styled_option(style, "--listen", "<PATH>", OPT_COL);
+    let opt_spawn = styled_long_flag(style, "--spawn-mode", OPT_COL);
+    let opt_prod = styled_long_flag(style, "--production", OPT_COL);
+    let opt_uid = styled_option(style, "--expected-uid", "<UID>", OPT_COL);
+    let opt_art = styled_option(style, "--max-artifact-bytes", "<N>", OPT_COL);
+    let opt_img = styled_option(style, "--max-image-bytes", "<N>", OPT_COL);
+    let opt_up = styled_option(style, "--max-concurrent-uploads", "<N>", OPT_COL);
+    let opt_org = styled_option(style, "--max-images-per-org", "<N>", OPT_COL);
+    let opt_ttl = styled_option(style, "--upload-ttl-secs", "<N>", OPT_COL);
+    let opt_wa = styled_option(style, "--webauthn-required", "<BOOL>", OPT_COL);
+    let opt_origin = styled_option(style, "--webauthn-origin", "<URL>", OPT_COL);
+    let fp = format!(
+        "{} {}",
+        style.literal("--fingerprint"),
+        style.placeholder("<HEX>")
+    );
+    format!(
+        "\
+VCP storage helper - sandboxed artifact daemon and KEY ops
+
+{usage} {bin} {opts}
+       {bin} {cmd}
+
+When no command is given, load vcp-store.conf (or --config) and accept Unix
+SEQPACKET connections on --listen. Ops commands open meta.sqlite under the
+blob root (separate invocation).
+
+{commands}
+  {pending}  List pending WebAuthn KEY enrolments and in-flight challenges
+  {list}  List stored WebAuthn credentials
+  {approve}  Activate a pending KEY ({fp})
+  {help_cmd}  Print this message
+
+{options}
+  {opt_help}  Print help
+  {opt_ver}  Print version
+  {opt_config}  Helper TOML (default: beside portal config)
+  {opt_blob}  Absolute blob root
+  {opt_listen}  Unix SEQPACKET socket path
+  {opt_spawn}  Parent-spawned accept path (no peercred filter)
+  {opt_prod}  Require expected_peer_uid / --expected-uid
+  {opt_uid}  Peercred allow-list (socket mode)
+  {opt_art}  Max release artifact size
+  {opt_img}  Max tenant image size
+  {opt_up}  Max in-flight uploads
+  {opt_org}  Max images retained per org
+  {opt_ttl}  Staging upload TTL
+  {opt_wa}  Require WebAuthn for release commit
+  {opt_origin}  WebAuthn RP origin
+"
+    )
+}
+
+/// Long-only flag: 4 leading spaces so `--` aligns under `-h, --help`.
+fn styled_long_flag(style: HelpStyle, flag: &str, width: usize) -> String {
+    let plain = format!("    {flag}");
+    let painted = format!("    {}", style.literal(flag));
+    let pad = width.saturating_sub(plain.len());
+    format!("{painted}{}", " ".repeat(pad))
+}
+
+fn styled_option(style: HelpStyle, flag: &str, value: &str, width: usize) -> String {
+    let plain = format!("    {flag} {value}");
+    let painted = format!("    {} {}", style.literal(flag), style.placeholder(value));
+    // ANSI makes `painted` longer than the visible width; pad using the plain
+    // width so the description column stays aligned in the terminal.
+    let pad = width.saturating_sub(plain.len());
+    format!("{painted}{}", " ".repeat(pad))
 }
 
 fn ops_cli_usage() -> String {
-    "usage: vcp-store <pending-ops|list-keys|approve-key> [options]\n\
-     \n\
-     Commands:\n\
-       pending-ops                  pending credentials (E2) + in-flight challenges\n\
-       list-keys                    all credentials (pending / active / expired / revoked)\n\
-       approve-key --fingerprint    activate a PENDING credential (E2)\n\
-     \n\
-     Options: [--config PATH] [--blob-path PATH] [--fingerprint HEX]\n\
-     Help: -h, --help"
-        .into()
+    ops_cli_usage_with(HelpStyle::auto())
+}
+
+fn ops_cli_usage_with(style: HelpStyle) -> String {
+    let usage = style.header("Usage:");
+    let commands = style.header("Commands:");
+    let options = style.header("Options:");
+    let bin = style.literal("vcp-store");
+    let cmd = style.placeholder("<COMMAND>");
+    let pending = styled_literal_col(style, "pending-ops", 11);
+    let list = styled_literal_col(style, "list-keys", 11);
+    let approve = styled_literal_col(style, "approve-key", 11);
+    let help_cmd = styled_literal_col(style, "help", 11);
+    const OPT_COL: usize = 28;
+    let opt_help = styled_literal_col(style, "-h, --help", OPT_COL);
+    let opt_ver = styled_literal_col(style, "-V, --version", OPT_COL);
+    let opt_config = styled_option(style, "--config", "<PATH>", OPT_COL);
+    let opt_blob = styled_option(style, "--blob-path", "<PATH>", OPT_COL);
+    let opt_fp = styled_option(style, "--fingerprint", "<HEX>", OPT_COL);
+    let fp = format!(
+        "{} {}",
+        style.literal("--fingerprint"),
+        style.placeholder("<HEX>")
+    );
+    format!(
+        "\
+VCP storage helper - KEY ops
+
+{usage} {bin} {cmd}
+
+{commands}
+  {pending}  List pending credentials and in-flight challenges
+  {list}  List all credentials (pending / active / expired / revoked)
+  {approve}  Activate a pending credential ({fp})
+  {help_cmd}  Print this message
+
+{options}
+  {opt_help}  Print help
+  {opt_ver}  Print version
+  {opt_config}  Helper TOML
+  {opt_blob}  Absolute blob root
+  {opt_fp}  Credential fingerprint (approve-key)
+"
+    )
 }
 
 fn run_ops_cli(args: &[String]) -> Result<(), String> {
@@ -622,10 +721,11 @@ fn absolute_blob_path(blob: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        absolute_blob_path, cli_usage, cred_display_status, format_activated_at,
-        format_ascii_table, format_revoked_at, load_key_cfg_with_env, wants_help,
+        absolute_blob_path, cli_usage_with, cred_display_status, format_activated_at,
+        format_ascii_table, format_revoked_at, load_key_cfg_with_env, ops_cli_usage_with,
     };
     use std::path::PathBuf;
+    use vcp::cli::{HelpStyle, wants_help, wants_version};
     use vcp::config::Environment;
 
     #[test]
@@ -725,17 +825,82 @@ mod tests {
 
     #[test]
     fn cli_usage_covers_daemon_and_ops() {
-        let u = cli_usage();
+        let u = cli_usage_with(HelpStyle::plain());
+        assert!(u.starts_with("VCP storage helper"));
+        assert!(u.contains("Usage: vcp-store"));
+        assert!(!u.contains("usage:"));
+        assert!(u.contains("Commands:"));
+        assert!(u.contains("Options:"));
         assert!(u.contains("--spawn-mode"));
         assert!(u.contains("pending-ops"));
         assert!(u.contains("list-keys"));
         assert!(u.contains("approve-key"));
-        assert!(u.contains("--help"));
+        assert!(u.contains("-h, --help"));
+        assert!(u.contains("-V, --version"));
+        assert!(!u.contains("Help: -h"));
+        assert!(!u.contains('\u{1b}'));
         // Keep usage free of local-dev recipes (same contract as storage
         // invariants on this file). Build the needles so the forbidden
         // literals never appear as contiguous source text here.
         let debug_bin = format!("./{}/{}/{}", "target", "debug", "vcp-store");
         let env_dev = format!("{}_ENVIRONMENT={}", "VCP", "development");
         assert!(!u.contains(&debug_bin) && !u.contains(&env_dev));
+    }
+
+    #[test]
+    fn cli_usage_option_descriptions_align() {
+        let u = cli_usage_with(HelpStyle::plain());
+        let print_help = u
+            .lines()
+            .find(|l| l.contains("Print help"))
+            .expect("Print help");
+        let helper_toml = u
+            .lines()
+            .find(|l| l.contains("Helper TOML"))
+            .expect("Helper TOML");
+        let print_ver = u
+            .lines()
+            .find(|l| l.contains("Print version"))
+            .expect("Print version");
+        let blob = u
+            .lines()
+            .find(|l| l.contains("Absolute blob root"))
+            .expect("blob root");
+        assert_eq!(
+            print_help.find("Print help"),
+            helper_toml.find("Helper TOML")
+        );
+        assert_eq!(
+            print_ver.find("Print version"),
+            blob.find("Absolute blob root")
+        );
+    }
+
+    #[test]
+    fn cli_usage_color_applies_bold_and_underline() {
+        let u = cli_usage_with(HelpStyle::always());
+        assert!(u.contains('\u{1b}'));
+        assert!(u.contains("\x1b[1;4m"), "headers bold+underline");
+        assert!(u.contains("\x1b[1m"), "literals bold");
+        assert!(u.contains("\x1b[4m"), "placeholders underline");
+    }
+
+    #[test]
+    fn ops_cli_usage_matches_clap_style_layout() {
+        let u = ops_cli_usage_with(HelpStyle::plain());
+        assert!(u.contains("Usage: vcp-store"));
+        assert!(!u.contains("usage:"));
+        assert!(u.contains("Commands:"));
+        assert!(u.contains("Options:"));
+        assert!(u.contains("-h, --help"));
+        assert!(u.contains("-V, --version"));
+        assert!(!u.contains("Help: -h"));
+    }
+
+    #[test]
+    fn wants_version_recognizes_flags() {
+        assert!(wants_version(&["-V".into()]));
+        assert!(wants_version(&["--version".into()]));
+        assert!(!wants_version(&["--help".into()]));
     }
 }

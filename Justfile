@@ -122,7 +122,7 @@ ensure-asset-bundle *ARGS: ensure-topcoat
       exit 0
     fi
     echo "ensure-asset-bundle: bundling assets for ${bin} (profile=${profile})…" >&2
-    # Explicit --bin: the package also ships `vcp-cli` (Toasty migrations).
+    # Explicit --bin: the package also ships `vcp-store`.
     topcoat asset bundle --bin vcp {{ARGS}}
     mkdir -p target/assets
     printf '%s\n' "$profile" >"$stamp"
@@ -274,11 +274,11 @@ db-reset:
 
 # Apply pending Toasty migrations (development URL from layered TOML)
 db-migrate:
-    cargo run --bin vcp-cli -- migration apply
+    cargo run --bin vcp -- migration apply
 
 # Diff models vs last snapshot and write a new migration (optional NAME=…)
 db-migrate-generate NAME="migration":
-    cargo run --bin vcp-cli -- migration generate --name {{NAME}}
+    cargo run --bin vcp -- migration generate --name {{NAME}}
 
 # Seed full demo catalog (docs, GA builds, sample issues). Boot alone is minimal.
 # Respects VCP_ENVIRONMENT (default development). Does not start HTTPS.

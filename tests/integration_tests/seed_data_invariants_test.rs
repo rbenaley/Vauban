@@ -45,7 +45,18 @@ fn inv_cli_usage_pins() {
     assert!(cli.contains("fn wants_help"));
     assert!(cli.contains("fn cli_usage"));
     assert!(cli.contains("seed-data"));
-    assert!(cli.contains("--help"));
+    assert!(cli.contains("migration"));
+    assert!(cli.contains("Usage:"));
+    assert!(cli.contains("Commands:"));
+    assert!(cli.contains("Options:"));
+    assert!(cli.contains("-h, --help"));
+    assert!(cli.contains("-V, --version"));
+    assert!(cli.contains("wants_version"));
+    assert!(cli.contains("BOLD_UNDERLINE") || cli.contains("1;4m"));
+    // Old lowercase / footer forms must not remain in the usage string literal.
+    assert!(!cli.contains("\"usage: vcp"));
+    assert!(!cli.contains("Help: -h, --help, help"));
+    assert!(!cli.contains("Usage: vcp-cli"));
 }
 
 #[test]

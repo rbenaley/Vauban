@@ -1,12 +1,16 @@
 #![recursion_limit = "256"]
 
+use std::env;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use toasty_cli::ToastyCli;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use vcp::cli::{cli_usage, first_command, wants_help};
+use vcp::cli::{cli_usage, first_command, version_line, wants_help, wants_version};
+use vcp::config::Environment;
 use vcp::models::{DocArticle, Issue, Release};
 use vcp::{acme, app, config::Config, db, perms, tls};
 
@@ -22,20 +26,31 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = env::args().skip(1).collect();
+
+    // Dispatch subcommands before top-level --help/--version so
+    // `vcp migration --help` reaches ToastyCli.
+    if let Some(cmd) = first_command(&args) {
+        match cmd {
+            "seed-data" => return run_seed_data().await,
+            "migration" => return run_migration(&args).await,
+            "help" => {
+                print!("{}", cli_usage());
+                return Ok(());
+            }
+            other => {
+                anyhow::bail!("unknown command `{other}`\n\n{}", cli_usage());
+            }
+        }
+    }
 
     if wants_help(&args) {
         print!("{}", cli_usage());
         return Ok(());
     }
-
-    if let Some(cmd) = first_command(&args) {
-        match cmd {
-            "seed-data" => return run_seed_data().await,
-            other => {
-                anyhow::bail!("unknown command `{other}`\n\n{}", cli_usage());
-            }
-        }
+    if wants_version(&args) {
+        println!("{}", version_line("vcp"));
+        return Ok(());
     }
 
     run_server().await
@@ -63,6 +78,29 @@ async fn run_seed_data() -> anyhow::Result<()> {
         releases, issues, "seed-data complete (full demo catalog)"
     );
     println!("seed-data: docs={docs} releases={releases} issues={issues}");
+    Ok(())
+}
+
+/// Toasty migrations with development as the default env (same as the
+/// former standalone migrations binary).
+async fn run_migration(args: &[String]) -> anyhow::Result<()> {
+    // Resolve Toasty.toml / toasty/ relative to the package, not the caller's CWD.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    env::set_current_dir(&root)?;
+
+    let toasty_cfg = toasty_cli::Config::load()?;
+    let environment = env::var("VCP_ENVIRONMENT")
+        .map(|v| Environment::parse(&v))
+        .unwrap_or(Environment::Development);
+    let app = Config::load_with_environment(Config::find_config_dir()?, environment)?;
+    let database = db::open(&app.database.url).await?;
+
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push("vcp".to_owned());
+    argv.extend(args.iter().cloned());
+    ToastyCli::with_config(database, toasty_cfg)
+        .parse_from(argv)
+        .await?;
     Ok(())
 }
 

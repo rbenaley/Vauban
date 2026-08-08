@@ -526,7 +526,7 @@ show it); it is an integrity check binding mirror ↔ SoT ↔ disk.
 | Phase | Content | Deliverable |
 |-------|---------|-------------|
 | 1 | `StorageConfig` + portable I/O module (`cap-std::Dir`, IDs, tmp+rename, digest, sniffing) **in the crate**, tested without the helper | `src/storage/` + tests |
-| 2 | `vcp-store` binary (`[[bin]]`, like `vcp-cli`): IPC loop, `spawn` mode, WARN outside FreeBSD | Working dev helper |
+| 2 | `vcp-store` binary (`[[bin]]`, sibling of `vcp`): IPC loop, `spawn` mode, WARN outside FreeBSD | Working dev helper |
 | 3 | Toasty `storage_objects` mirror + digests off `Release`; handlers wired to IPC — admin release upload / org download, org-user image upload / image serving; degraded 503; no direct `storage/` access from `vcp` (CI lint) | Feature complete (mirror era) |
 | 3b | SQLite SoT in helper (`rusqlite` / `meta.sqlite`); `get`/`stat` expected sha256 + verify-on-read; `integrity_mismatch` | Digest SoT under helper UID |
 | 4 | `socket` mode + `LOCAL_PEERCRED` + rc.d + `vcp-store` UID; `access(2)` check at `vcp` boot | Prod-ready soft |

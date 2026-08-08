@@ -12,7 +12,7 @@ Related:
 
 - Guide: [Toasty schema management](https://tokio-rs.github.io/toasty/nightly/guide/schema-management.html)
 - Lint: `scripts/check_toasty_migrations.sh`
-- CLI: `cargo run --bin vcp-cli -- migration …` / `just db-migrate`
+- CLI: `cargo run --bin vcp -- migration …` / `just db-migrate`
 
 ## Automated prerequisites
 
@@ -26,8 +26,8 @@ rtk cargo test --test integration_tests -- toasty_migrations -- --test-threads=1
 ## Lab prerequisites
 
 - Postgres with `vcp` (dev) and `vcp_test`.
-- `VCP_ENVIRONMENT=development` for local `vcp-cli` (defaults to development
-  when unset).
+- `VCP_ENVIRONMENT=development` for local `vcp migration` (defaults to
+  development when unset; unlike `vcp` server which defaults to production).
 
 ## A -- Generate / apply locally
 
@@ -64,7 +64,7 @@ just seed-data
 
 ## C -- Staging
 
-Apply pending migrations with the staging database URL (same `vcp-cli
+Apply pending migrations with the staging database URL (same `vcp
 migration apply` with staging `VCP_ENVIRONMENT` / config), then smoke login
 and one admin docs save.
 

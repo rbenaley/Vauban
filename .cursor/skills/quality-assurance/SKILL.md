@@ -114,7 +114,7 @@ production code, `scripts/check_auth_tenant.sh`, and
   socket (`VCP_PG_ADMIN_USER` / `PGPASSWORD` / `~/.pgpass` as needed).
   App `database.url` in TOML / `vcp.conf` stays TCP (`localhost`).
 - Schema: Toasty migrations under `toasty/` applied on `db::connect`
-  (`vcp-cli migration generate|apply`; not Diesel / not `push_schema`).
+  (`vcp migration generate|apply`; not Diesel / not `push_schema`).
 - Run tests single-threaded: `just test` / `--test-threads=1`.
 - Prefer production `app::router` + model helpers over a parallel
   Diesel/Axum harness from the bastion.

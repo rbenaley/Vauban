@@ -160,12 +160,12 @@ Seed / one-shot admin tools may still scan; document why. Hot paths
 
 ## Migrations (VCP)
 
-- Models under `src/models/`; schema via `toasty/` + `vcp-cli`.
+- Models under `src/models/`; schema via `toasty/` + `vcp migration`.
 - Flow: edit models → `just db-migrate-generate NAME=…` → **review SQL**
   (interactive rename vs drop; preserve data) → `just db-migrate`.
 - `db::connect` applies pending migrations. Do **not** use `push_schema`
   for the app DB.
-- Non-TTY: `script -q /dev/null cargo run --bin vcp-cli -- migration generate --name …`
+- Non-TTY: `script -q /dev/null cargo run --bin vcp -- migration generate --name …`
   then answer rename prompts carefully (prefer RENAME over DROP).
 - Tests: `vcp_test` (`just db-create-test` / `just db-reset-test`).
 
