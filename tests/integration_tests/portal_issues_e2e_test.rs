@@ -981,6 +981,32 @@ async fn e2e_issue_reply_attaches_several_screenshots() {
         3,
         "every attached screenshot must render its own thumb: {html}"
     );
+    assert!(
+        html.contains("issue-lb-prev")
+            && html.contains("issue-lb-next")
+            && html.contains("data-step=\"-1\"")
+            && html.contains("data-step=\"1\""),
+        "multi-thumb detail must ship looping prev/next lightbox controls: {html}"
+    );
+    let clicks = data_topcoat_on_event_values(&html, "click");
+    assert!(
+        clicks
+            .iter()
+            .any(|js| js.contains("vcpGallery") && js.contains("closest('.vb-issue-thumbs')")),
+        "thumb open handler must scope the gallery to one comment strip: {clicks:?}"
+    );
+    assert!(
+        clicks
+            .iter()
+            .any(|js| js.contains("data-step") && js.contains("((i % n) + n) % n")),
+        "nav handler must wrap the gallery index: {clicks:?}"
+    );
+    let keys = data_topcoat_on_event_values(&html, "keydown");
+    assert!(
+        keys.iter()
+            .any(|js| js.contains("ArrowLeft") && js.contains("ArrowRight")),
+        "lightbox must bind arrow keys for gallery navigation: {keys:?}"
+    );
 
     // Picker affordances: cap wiring, add trigger state, live count.
     assert!(

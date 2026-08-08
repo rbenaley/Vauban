@@ -10,6 +10,8 @@ use vcp::models::{
     ISSUE_STATUS_CLOSED, ISSUE_STATUS_OPEN, Issue, IssueComment,
 };
 
+use vcp::app::lightbox_step_index;
+
 use crate::common::{
     MultipartFile, TINY_PNG, cleanup, create_org_with_membership, db_lock, get, login_cookie,
     post_form, post_multipart_with_files, status, test_db, test_router, unique_email, unique_slug,
@@ -655,7 +657,45 @@ async fn battle_concurrent_detail_renders_keep_picker_and_lightbox() {
             html.contains("vb-issue-lightbox-figure") && html.contains("vb-issue-lightbox-close"),
             "every concurrent render must ship a complete lightbox figure"
         );
+        assert!(
+            html.contains("issue-lb-prev")
+                && html.contains("issue-lb-next")
+                && html.contains("data-step"),
+            "every concurrent render must ship wrap-around gallery nav"
+        );
     }
 
     cleanup(&db).await;
+}
+
+/// Pure wrap-around math under parallel stepping — no shared mutable index,
+/// just many threads exercising the same contract the lightbox JS mirrors.
+#[tokio::test]
+async fn battle_lightbox_step_wrap_under_contention() {
+    let n = 16usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for t in 0..n {
+        let barrier = barrier.clone();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let len = 2 + (t % 7);
+            let mut i = t % len;
+            for step in [1i32, -1, 1, 1, -1] {
+                let next = lightbox_step_index(i, len, step).expect("multi");
+                assert!(next < len);
+                i = next;
+            }
+            // Full lap of +1 returns home.
+            let start = i;
+            for _ in 0..len {
+                i = lightbox_step_index(i, len, 1).unwrap();
+            }
+            assert_eq!(i, start);
+            assert_eq!(lightbox_step_index(0, 1, 1), None);
+        }));
+    }
+    for h in handles {
+        h.await.expect("join");
+    }
 }

@@ -294,6 +294,16 @@ a.vb-modal-close:hover { background: #f5f6f4; }
 .vb-build-panel {
   padding: 18px 22px 22px; background: #fbfcfb; border-bottom: 1px solid #f0f1ee;
 }
+/* Inline ``code`` chips inside release-note changelog lines. */
+.vb-inline-code {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.92em;
+  background: #eef0ee;
+  border: 1px solid #e0e2de;
+  border-radius: 3px;
+  padding: 0.05em 0.35em;
+  color: #3a3f46;
+}
 .vb-btn-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; align-items: center; }
 a.vb-btn.outline, button.vb-btn.outline, span.vb-btn.outline {
   background: #fff; color: var(--accent);
@@ -679,13 +689,32 @@ html:has(.vb-issue-lightbox[open]) { overflow: hidden; }
   top: 6px; right: 6px; width: 30px; height: 30px; font-size: 16px;
 }
 .vb-issue-lightbox-close:hover { background: rgba(16, 19, 23, 0.78); }
+/* Multi-image strip: fixed viewport chevrons (not figure-anchored) so tall
+   screenshots do not hide them. Hidden until the open handler sees 2+ srcs. */
+.vb-issue-lightbox-nav {
+  position: fixed; top: 50%; z-index: 2;
+  transform: translateY(-50%);
+  width: 48px; height: 48px; border: 0; border-radius: 999px;
+  background: rgba(16, 19, 23, 0.55); color: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22), 0 2px 10px rgba(0, 0, 0, 0.35);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  font-size: 28px; line-height: 1; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background 0.15s ease;
+}
+.vb-issue-lightbox-nav[hidden] { display: none !important; }
+.vb-issue-lightbox-prev { left: max(12px, env(safe-area-inset-left, 0px)); }
+.vb-issue-lightbox-next { right: max(12px, env(safe-area-inset-right, 0px)); }
+.vb-issue-lightbox-nav:hover { background: rgba(16, 19, 23, 0.78); }
 .vb-issue-lightbox-backdrop:focus-visible,
-.vb-issue-lightbox-close:focus-visible {
+.vb-issue-lightbox-close:focus-visible,
+.vb-issue-lightbox-nav:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {
   .vb-issue-lightbox-img { animation: none; }
-  .vb-issue-lightbox-close { transition: none; }
+  .vb-issue-lightbox-close,
+  .vb-issue-lightbox-nav { transition: none; }
   .vb-shot-preview-item { animation: none; }
   .vb-issue-thumb, label.vb-btn.vb-shot-add { transition: none; }
   .vb-issue-thumb:hover { transform: none; }

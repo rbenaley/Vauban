@@ -119,6 +119,28 @@ grep -n '@load' src/app/issue_thumbs.rs >/dev/null \
   || fail "lightbox image must bind @load to size the figure to the image"
 grep -n 'getBoundingClientRect' src/app/issue_thumbs.rs >/dev/null \
   || fail "lightbox figure must be pinned to the measured image box"
+grep -n 'lightbox_step_index\|vcpGallery' src/app/issue_thumbs.rs >/dev/null \
+  || fail "lightbox must wrap multi-image strips (lightbox_step_index / vcpGallery)"
+grep -n 'issue-lb-prev\|ISSUE_LB_PREV' src/app/issue_thumbs.rs >/dev/null \
+  || fail "lightbox must ship prev control for multi-image comments"
+grep -n 'issue-lb-next\|ISSUE_LB_NEXT' src/app/issue_thumbs.rs >/dev/null \
+  || fail "lightbox must ship next control for multi-image comments"
+grep -n 'ArrowLeft\|ArrowRight' src/app/issue_thumbs.rs >/dev/null \
+  || fail "lightbox must bind ArrowLeft/ArrowRight for gallery navigation"
+grep -nE '\.vb-issue-lightbox-nav' styles.css >/dev/null \
+  || fail "styles.css must define .vb-issue-lightbox-nav"
+# Nav buttons must not be method=dialog submits (that would close the lightbox).
+# `type="button"` sits on the line above `id=(ISSUE_LB_*)` in the view.
+grep -n 'vb-issue-lightbox-prev' src/app/issue_thumbs.rs >/dev/null \
+  || fail "lightbox must declare vb-issue-lightbox-prev"
+grep -n 'vb-issue-lightbox-next' src/app/issue_thumbs.rs >/dev/null \
+  || fail "lightbox must declare vb-issue-lightbox-next"
+if ! grep -B5 'vb-issue-lightbox-prev' src/app/issue_thumbs.rs | grep -q 'type="button"'; then
+  fail "lightbox prev must be type=button (not a dialog dismiss submit)"
+fi
+if ! grep -B5 'vb-issue-lightbox-next' src/app/issue_thumbs.rs | grep -q 'type="button"'; then
+  fail "lightbox next must be type=button (not a dialog dismiss submit)"
+fi
 # Picking a second image must add to the selection, not replace it.
 grep -n 'input.vcpShots' src/app/issue_thumbs.rs >/dev/null \
   || fail "screenshot picker must accumulate picks (input.vcpShots)"

@@ -2,7 +2,9 @@
 //!
 //! - Liaisons comment ↔ image: Postgres (`issue_attachments.issue_comment_id`).
 //! - Lightbox: Topcoat `@click` string handlers read `data-src` (works inside
-//!   `for` loops; no loop-capture into `$()` closures).
+//!   `for` loops; no loop-capture into `$()` closures). Multi-image strips
+//!   share one dialog; prev/next (+ arrow keys) walk siblings in the same
+//!   `.vb-issue-thumbs` with wrap-around.
 //! - Pre-submit previews: Topcoat `@change` function handler (File API).
 //! - Published attachments are not removable from the portal UI.
 
@@ -16,6 +18,24 @@ use crate::{
     issue_attachments::{attachment_cap_hint, gallery_src},
     models::{ISSUE_COMMENT_KIND_STATUS, IssueAttachment},
 };
+
+/// Lightbox prev control id (also used by keyboard ArrowLeft).
+pub const ISSUE_LB_PREV: &str = "issue-lb-prev";
+/// Lightbox next control id (also used by keyboard ArrowRight).
+pub const ISSUE_LB_NEXT: &str = "issue-lb-next";
+
+/// Wrap-around index for multi-image lightbox navigation.
+///
+/// Returns `None` when there are fewer than two images (nav is a no-op).
+/// Otherwise applies `step` and wraps into `0..len`.
+pub fn lightbox_step_index(index: usize, len: usize, step: i32) -> Option<usize> {
+    if len < 2 {
+        return None;
+    }
+    let n = len as i64;
+    let i = index as i64 + i64::from(step);
+    Some((((i % n) + n) % n) as usize)
+}
 
 /// One thumb inside a comment / opener bubble.
 #[derive(Debug, Clone)]
@@ -163,7 +183,7 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
                                         class="vb-issue-thumb"
                                         aria-label="Open screenshot"
                                         data-src=(thumb.src.clone())
-                                        @click="(e) => { const src = e.current_target.inner.getAttribute('data-src'); const box = document.getElementById('issue-lb'); const img = document.getElementById('issue-lb-img'); if (!src || !box || !img) return; const fig = img.closest('.vb-issue-lightbox-figure'); if (fig) { fig.classList.remove('is-fit'); fig.style.width = ''; fig.style.height = ''; } if (!box.open) { if (typeof box.showModal === 'function') { box.showModal(); } else { box.setAttribute('open', ''); } } if (img.getAttribute('src') !== src) { img.setAttribute('src', src); } else if (img.complete) { img.dispatchEvent(new Event('load')); } }"
+                                        @click="(e) => { const btn = e.current_target.inner; const src = btn.getAttribute('data-src'); const box = document.getElementById('issue-lb'); const img = document.getElementById('issue-lb-img'); if (!src || !box || !img) return; const strip = btn.closest('.vb-issue-thumbs'); const buttons = strip ? Array.from(strip.querySelectorAll('.vb-issue-thumb[data-src]')) : [btn]; const srcs = buttons.map((b) => b.getAttribute('data-src')).filter((s) => !!s); let idx = srcs.indexOf(src); if (idx < 0) idx = 0; box.vcpGallery = srcs; box.vcpIndex = idx; const multi = srcs.length > 1; const prev = document.getElementById('issue-lb-prev'); const next = document.getElementById('issue-lb-next'); if (prev) { prev.hidden = !multi; } if (next) { next.hidden = !multi; } const fig = img.closest('.vb-issue-lightbox-figure'); if (fig) { fig.classList.remove('is-fit'); fig.style.width = ''; fig.style.height = ''; } if (!box.open) { if (typeof box.showModal === 'function') { box.showModal(); } else { box.setAttribute('open', ''); } } if (img.getAttribute('src') !== src) { img.setAttribute('src', src); } else if (img.complete) { img.dispatchEvent(new Event('load')); } }"
                                     >
                                         <img src=(thumb.src.clone()) alt="Issue screenshot">
                                     </button>
@@ -240,7 +260,7 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
                                                 class="vb-issue-thumb"
                                                 aria-label="Open screenshot"
                                                 data-src=(thumb.src.clone())
-                                                @click="(e) => { const src = e.current_target.inner.getAttribute('data-src'); const box = document.getElementById('issue-lb'); const img = document.getElementById('issue-lb-img'); if (!src || !box || !img) return; const fig = img.closest('.vb-issue-lightbox-figure'); if (fig) { fig.classList.remove('is-fit'); fig.style.width = ''; fig.style.height = ''; } if (!box.open) { if (typeof box.showModal === 'function') { box.showModal(); } else { box.setAttribute('open', ''); } } if (img.getAttribute('src') !== src) { img.setAttribute('src', src); } else if (img.complete) { img.dispatchEvent(new Event('load')); } }"
+                                                @click="(e) => { const btn = e.current_target.inner; const src = btn.getAttribute('data-src'); const box = document.getElementById('issue-lb'); const img = document.getElementById('issue-lb-img'); if (!src || !box || !img) return; const strip = btn.closest('.vb-issue-thumbs'); const buttons = strip ? Array.from(strip.querySelectorAll('.vb-issue-thumb[data-src]')) : [btn]; const srcs = buttons.map((b) => b.getAttribute('data-src')).filter((s) => !!s); let idx = srcs.indexOf(src); if (idx < 0) idx = 0; box.vcpGallery = srcs; box.vcpIndex = idx; const multi = srcs.length > 1; const prev = document.getElementById('issue-lb-prev'); const next = document.getElementById('issue-lb-next'); if (prev) { prev.hidden = !multi; } if (next) { next.hidden = !multi; } const fig = img.closest('.vb-issue-lightbox-figure'); if (fig) { fig.classList.remove('is-fit'); fig.style.width = ''; fig.style.height = ''; } if (!box.open) { if (typeof box.showModal === 'function') { box.showModal(); } else { box.setAttribute('open', ''); } } if (img.getAttribute('src') !== src) { img.setAttribute('src', src); } else if (img.complete) { img.dispatchEvent(new Event('load')); } }"
                                             >
                                                 <img src=(thumb.src.clone()) alt="Issue screenshot">
                                             </button>
@@ -263,7 +283,14 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
             // a two-axis-constrained <img> is not reliable across engines, so
             // `@load` pins the figure to the measured image box: the close
             // button then keeps its fixed 12px inset on the pixels themselves.
-            <dialog id="issue-lb" class="vb-issue-lightbox" aria-label="Screenshot">
+            // Prev/next are type=button (not method=dialog) and start hidden;
+            // the open handler reveals them only when the strip has 2+ images.
+            <dialog
+                id="issue-lb"
+                class="vb-issue-lightbox"
+                aria-label="Screenshot"
+                @keydown="(e) => { const key = e.inner.key; if (key !== 'ArrowLeft' && key !== 'ArrowRight') return; const id = key === 'ArrowLeft' ? 'issue-lb-prev' : 'issue-lb-next'; const nav = document.getElementById(id); if (!nav || nav.hidden) return; nav.click(); }"
+            >
                 <form method="dialog" class="vb-issue-lightbox-dismiss">
                     <button
                         type="submit"
@@ -272,6 +299,28 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
                         aria-label="Close screenshot"
                     ></button>
                 </form>
+                <button
+                    type="button"
+                    id=(ISSUE_LB_PREV)
+                    class="vb-issue-lightbox-nav vb-issue-lightbox-prev"
+                    data-step="-1"
+                    hidden=""
+                    aria-label="Previous screenshot"
+                    @click="(e) => { const stepBtn = e.current_target.inner; const box = document.getElementById('issue-lb'); const img = document.getElementById('issue-lb-img'); if (!box || !img) return; const srcs = box.vcpGallery; if (!srcs || srcs.length < 2) return; const step = parseInt(stepBtn.getAttribute('data-step') || '0', 10) || 0; const n = srcs.length; let i = (typeof box.vcpIndex === 'number' ? box.vcpIndex : 0) + step; i = ((i % n) + n) % n; box.vcpIndex = i; const src = srcs[i]; if (!src) return; const fig = img.closest('.vb-issue-lightbox-figure'); if (fig) { fig.classList.remove('is-fit'); fig.style.width = ''; fig.style.height = ''; } if (img.getAttribute('src') !== src) { img.setAttribute('src', src); } else if (img.complete) { img.dispatchEvent(new Event('load')); } }"
+                >
+                    "‹"
+                </button>
+                <button
+                    type="button"
+                    id=(ISSUE_LB_NEXT)
+                    class="vb-issue-lightbox-nav vb-issue-lightbox-next"
+                    data-step="1"
+                    hidden=""
+                    aria-label="Next screenshot"
+                    @click="(e) => { const stepBtn = e.current_target.inner; const box = document.getElementById('issue-lb'); const img = document.getElementById('issue-lb-img'); if (!box || !img) return; const srcs = box.vcpGallery; if (!srcs || srcs.length < 2) return; const step = parseInt(stepBtn.getAttribute('data-step') || '0', 10) || 0; const n = srcs.length; let i = (typeof box.vcpIndex === 'number' ? box.vcpIndex : 0) + step; i = ((i % n) + n) % n; box.vcpIndex = i; const src = srcs[i]; if (!src) return; const fig = img.closest('.vb-issue-lightbox-figure'); if (fig) { fig.classList.remove('is-fit'); fig.style.width = ''; fig.style.height = ''; } if (img.getAttribute('src') !== src) { img.setAttribute('src', src); } else if (img.complete) { img.dispatchEvent(new Event('load')); } }"
+                >
+                    "›"
+                </button>
                 <form method="dialog" class="vb-issue-lightbox-figure">
                     <img
                         id="issue-lb-img"
@@ -332,5 +381,26 @@ mod tests {
         let thumbs = thumbs_for_comment("acme", &rows, 42);
         // The lightbox copies this into `data-src` then into `img.src`.
         assert_eq!(thumbs[0].src, "/acme/images/bbb.png");
+    }
+
+    #[test]
+    fn lightbox_step_wraps_at_ends() {
+        assert_eq!(lightbox_step_index(0, 3, -1), Some(2));
+        assert_eq!(lightbox_step_index(2, 3, 1), Some(0));
+        assert_eq!(lightbox_step_index(1, 3, 1), Some(2));
+        assert_eq!(lightbox_step_index(1, 3, -1), Some(0));
+    }
+
+    #[test]
+    fn lightbox_step_disabled_for_single_or_empty() {
+        assert_eq!(lightbox_step_index(0, 0, 1), None);
+        assert_eq!(lightbox_step_index(0, 1, 1), None);
+        assert_eq!(lightbox_step_index(0, 1, -1), None);
+    }
+
+    #[test]
+    fn lightbox_nav_ids_are_stable() {
+        assert_eq!(ISSUE_LB_PREV, "issue-lb-prev");
+        assert_eq!(ISSUE_LB_NEXT, "issue-lb-next");
     }
 }

@@ -1,6 +1,7 @@
 //! Property tests for issue details bounds / key shaping / comment roles.
 
 use proptest::prelude::*;
+use vcp::app::lightbox_step_index;
 use vcp::issue_anchor::{ISSUE_REPLY_ANCHOR, with_reply_anchor};
 use vcp::issue_attachments::{
     AttachmentToken, attachment_cap_hint, gallery_src, parse_attachment_token,
@@ -149,6 +150,48 @@ proptest! {
             prop_assert!(vcp::storage::is_uuid_key(&tok.image_id));
             prop_assert!(matches!(tok.ext, "png" | "jpeg" | "webp"));
         }
+    }
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(48))]
+
+    /// Multi-image lightbox nav wraps at both ends for every strip length ≥ 2.
+    #[test]
+    fn prop_lightbox_step_wraps(
+        len in 2usize..12,
+        index in 0usize..12,
+        step in prop::sample::select(vec![-1i32, 1, -2, 2, 5, -5]),
+    ) {
+        let index = index % len;
+        let next = lightbox_step_index(index, len, step).expect("nav enabled");
+        prop_assert!(next < len);
+        let expected = {
+            let n = len as i64;
+            let i = index as i64 + i64::from(step);
+            (((i % n) + n) % n) as usize
+        };
+        prop_assert_eq!(next, expected);
+        // One full lap of +1 (resp. −1) returns to the start.
+        if step == 1 {
+            let mut i = index;
+            for _ in 0..len {
+                i = lightbox_step_index(i, len, 1).unwrap();
+            }
+            prop_assert_eq!(i, index);
+        }
+        if step == -1 {
+            let mut i = index;
+            for _ in 0..len {
+                i = lightbox_step_index(i, len, -1).unwrap();
+            }
+            prop_assert_eq!(i, index);
+        }
+    }
+
+    #[test]
+    fn prop_lightbox_step_noop_when_not_multi(len in 0usize..2, index in 0usize..4, step in -3i32..4) {
+        prop_assert_eq!(lightbox_step_index(index, len, step), None);
     }
 }
 

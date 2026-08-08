@@ -351,6 +351,27 @@ fn inv_shot_picker_accumulates_and_lightbox_tracks_image() {
         "close button must stay hidden until the figure is pinned to the image"
     );
     assert!(
+        thumbs.contains("lightbox_step_index")
+            && thumbs.contains("vcpGallery")
+            && thumbs.contains("issue-lb-prev")
+            && thumbs.contains("issue-lb-next")
+            && thumbs.contains("ArrowLeft")
+            && thumbs.contains("ArrowRight")
+            && thumbs.contains("closest('.vb-issue-thumbs')"),
+        "multi-image lightbox must wrap within one comment strip (prev/next + arrows)"
+    );
+    assert!(
+        thumbs.contains("data-step=\"-1\"") && thumbs.contains("data-step=\"1\""),
+        "nav buttons must expose data-step for wrap-around stepping"
+    );
+    assert!(
+        css.contains(".vb-issue-lightbox-nav")
+            && css.contains(".vb-issue-lightbox-prev")
+            && css.contains(".vb-issue-lightbox-next")
+            && css.contains(".vb-issue-lightbox-nav[hidden]"),
+        "nav chevrons must be styled and hideable until a multi-image strip opens"
+    );
+    assert!(
         css.contains(".vb-shot-add:focus-within") && css.contains(".vb-shot-status"),
         "picker needs a visible keyboard focus ring and a status line"
     );

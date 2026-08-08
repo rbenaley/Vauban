@@ -9,6 +9,7 @@ mod org;
 pub(crate) use issue_thumbs::{
     DiscussionPane, DiscussionRow, issue_discussion, shot_file_input, thumbs_for_comment,
 };
+pub use issue_thumbs::{ISSUE_LB_NEXT, ISSUE_LB_PREV, lightbox_step_index};
 
 pub use crate::list_page::{
     BUILDS_PAGE_SIZE, LIST_PAGE_SIZE, clamp_page, page_count, page_slice, parse_page,

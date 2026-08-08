@@ -148,18 +148,25 @@ Prerequisites: `vcp-store` running (same as
    legible over both a dark and a light screenshot. Closing works three
    ways: the ×, a click on the backdrop, and `Escape`. There is **no**
    remove (×) control on published thumbs.
-6. On an open issue, attach + reply: thumbs sit **in that reply bubble**
+6. **Multi-image loop.** On a comment (or opener) with **two or more**
+   screenshots, open any thumb: left/right chevrons appear at the
+   viewport edges. Click next through the last image → first; previous
+   through the first → last. Keyboard `ArrowRight` / `ArrowLeft` must
+   mirror the chevrons. A **single**-image comment must **not** show
+   chevrons. Navigation stays inside that comment's strip (another
+   comment's images must not enter the gallery).
+7. On an open issue, attach + reply: thumbs sit **in that reply bubble**
    (another up-to-cap set is allowed on that comment).
-7. As **Vauban Support** on `/admin/issues/{key}`, the same image URLs
+8. As **Vauban Support** on `/admin/issues/{key}`, the same image URLs
    load (Casbin `admin_view` + issues access; no client membership), and
    the reply picker accumulates exactly as in step 4.
-8. Selecting more than the configured cap on create → redirect
+9. Selecting more than the configured cap on create → redirect
    `?err=attach` (no issue).
 
 | Result | Criteria |
 |--------|----------|
-| **Pass** | Previews + lightbox; successive picks accumulate to the cap; status line tracks the count; × stays inset on the image at every aspect ratio and after resize; thumbs in the owning bubble; first-party URLs for member + staff; per-comment cap from config; no post-publish remove; no first-party JS asset. |
-| **Fail** | A second pick drops the first file; status line stuck or wrong; × lands in the backdrop or off the image; flat end-of-thread gallery; navigate-away on click; 404 on staff view; custom JS file; markdown URLs; remove × after publish; or over-cap links persist. |
+| **Pass** | Previews + lightbox; successive picks accumulate to the cap; status line tracks the count; × stays inset on the image at every aspect ratio and after resize; multi-image comments loop with ←/→ (chevrons + keys) scoped to that strip; single-image strips hide chevrons; thumbs in the owning bubble; first-party URLs for member + staff; per-comment cap from config; no post-publish remove; no first-party JS asset. |
+| **Fail** | A second pick drops the first file; status line stuck or wrong; × lands in the backdrop or off the image; flat end-of-thread gallery; navigate-away on click; gallery mixes another comment's images; arrows do not wrap or appear on a single image; 404 on staff view; custom JS file; markdown URLs; remove × after publish; or over-cap links persist. |
 
 ## Related automated coverage
 
