@@ -403,10 +403,11 @@ impl StorageIpcMode {
 
 /// Portal-side storage client settings (`[storage]` in `vcp.conf` / TOML).
 ///
-/// Production socket mode needs only [`Self::ipc`] + [`Self::socket_path`].
-/// Dev spawn / test inline also set [`Self::blob_path`] and abuse-limit
-/// fields (passed into the helper or inline engine). Helper-owned prod
-/// settings live in [`StoreHelperConfig`] / `vcp-store.conf`.
+/// Production socket mode needs [`Self::ipc`], [`Self::socket_path`], and
+/// [`Self::webauthn_origin`] (RP ID for `/admin/key` is derived here — must
+/// match `vcp-store.conf`). Dev spawn / test inline also set [`Self::blob_path`]
+/// and abuse-limit fields. Helper-owned blob / quota settings live in
+/// [`StoreHelperConfig`] / `vcp-store.conf`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StorageConfig {
     /// Blob root for spawn/inline only. Empty in production (`vcp.conf`).
@@ -983,16 +984,55 @@ impl Config {
             .expect("server.public_origins validated non-empty")
     }
 
-    /// Domains used for bootstrap self-signed certificates.
+    /// Domains / IPs used for bootstrap self-signed certificates.
+    ///
+    /// Order:
+    /// 1. `server.tls.acme.domains` when non-empty (**even if ACME is disabled** —
+    ///    operators may list FQDNs for a lab self-signed without enabling LE);
+    /// 2. else hostnames from `server.public_origins`;
+    /// 3. else `localhost` + `127.0.0.1`.
     pub fn bootstrap_domains(&self) -> Vec<String> {
         if let Some(acme) = &self.server.tls.acme
-            && acme.enabled
             && !acme.domains.is_empty()
         {
             return acme.domains.clone();
         }
+        let from_origins: Vec<String> = self
+            .server
+            .public_origins
+            .iter()
+            .filter_map(|o| host_from_https_origin(o))
+            .collect();
+        if !from_origins.is_empty() {
+            return from_origins;
+        }
         vec!["localhost".to_owned(), "127.0.0.1".to_owned()]
     }
+}
+
+/// Hostname or IP from an `https://…` origin (strips scheme, port, path).
+fn host_from_https_origin(origin: &str) -> Option<String> {
+    let rest = origin
+        .trim()
+        .strip_prefix("https://")
+        .or_else(|| origin.trim().strip_prefix("http://"))?;
+    let hostport = rest.split('/').next().unwrap_or("");
+    if hostport.is_empty() {
+        return None;
+    }
+    if let Some(inner) = hostport.strip_prefix('[') {
+        let end = inner.find(']')?;
+        let host = &inner[..end];
+        if host.is_empty() {
+            return None;
+        }
+        return Some(host.to_owned());
+    }
+    let host = hostport.split(':').next().unwrap_or("");
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.to_owned())
 }
 
 /// Repo / install root for relative TOML paths (`logs/`, `certs/`, …).
@@ -1086,10 +1126,103 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_domains_uses_acme_list_even_when_disabled() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+        let mut cfg = Config::load_with_environment(&dir, Environment::Production).unwrap();
+        let acme = cfg.server.tls.acme.as_mut().expect("acme section");
+        acme.enabled = false;
+        acme.domains = vec!["ec2-lab.example.com".to_owned()];
+        assert_eq!(
+            cfg.bootstrap_domains(),
+            vec!["ec2-lab.example.com".to_owned()]
+        );
+    }
+
+    #[test]
+    fn bootstrap_domains_falls_back_to_public_origins_hosts() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+        let mut cfg = Config::load_with_environment(&dir, Environment::Development).unwrap();
+        cfg.server.tls.acme = Some(AcmeConfig {
+            enabled: false,
+            email: String::new(),
+            domains: vec![],
+            renew_before_hours: 24,
+            account_key_path: String::new(),
+            staging: true,
+            directory_url: String::new(),
+            staging_directory_url: String::new(),
+            eab_kid: None,
+            eab_hmac_key: None,
+        });
+        cfg.server.public_origins = vec![
+            "https://portal.example.com".to_owned(),
+            "https://[::1]:3000/path".to_owned(),
+        ];
+        assert_eq!(
+            cfg.bootstrap_domains(),
+            vec!["portal.example.com".to_owned(), "::1".to_owned()]
+        );
+    }
+
+    #[test]
+    fn bootstrap_domains_localhost_when_no_acme_domains_or_origins() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+        let mut cfg = Config::load_with_environment(&dir, Environment::Development).unwrap();
+        cfg.server.tls.acme = None;
+        cfg.server.public_origins.clear();
+        assert_eq!(
+            cfg.bootstrap_domains(),
+            vec!["localhost".to_owned(), "127.0.0.1".to_owned()]
+        );
+    }
+
+    #[test]
+    fn host_from_https_origin_strips_port_and_path() {
+        assert_eq!(
+            host_from_https_origin("https://access.vauban.sh/admin"),
+            Some("access.vauban.sh".to_owned())
+        );
+        assert_eq!(
+            host_from_https_origin("https://localhost:3000"),
+            Some("localhost".to_owned())
+        );
+        assert_eq!(
+            host_from_https_origin("https://127.0.0.1:443"),
+            Some("127.0.0.1".to_owned())
+        );
+    }
+
+    #[test]
+    fn battle_parallel_bootstrap_domains() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let barrier = Arc::new(Barrier::new(4));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+                let mut cfg = Config::load_with_environment(&dir, Environment::Production).unwrap();
+                cfg.server.tls.acme.as_mut().unwrap().enabled = false;
+                barrier.wait();
+                let domains = cfg.bootstrap_domains();
+                assert_eq!(domains, vec!["access.vauban.sh".to_owned()]);
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread");
+        }
+    }
+
+    #[test]
     fn loads_production_vcp_conf() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
         let cfg = Config::load_with_environment(&dir, Environment::Production).unwrap();
         assert_eq!(cfg.environment, Environment::Production);
+        assert_eq!(cfg.storage.webauthn_origin, "https://access.vauban.sh");
+        assert_eq!(cfg.storage.webauthn_rp_id, "access.vauban.sh");
+        assert_eq!(cfg.bootstrap_domains(), vec!["access.vauban.sh".to_owned()]);
         assert!(cfg.server.tls.acme.as_ref().is_some_and(|a| a.enabled));
         assert_eq!(
             cfg.server.tls.acme.as_ref().map(|a| a.email.as_str()),
@@ -1329,6 +1462,42 @@ smtp_encryption = "starttls"
 mod proptest_tests {
     use super::*;
     use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(crate::proptest_util::default_config())]
+
+        #[test]
+        fn host_from_https_origin_keeps_hostname(
+            host in "[a-z][a-z0-9-]{0,20}\\.[a-z]{2,8}",
+            port in proptest::option::of(1u16..65535),
+        ) {
+            let origin = match port {
+                Some(p) => format!("https://{host}:{p}/x"),
+                None => format!("https://{host}/x"),
+            };
+            prop_assert_eq!(host_from_https_origin(&origin), Some(host));
+        }
+    }
+
+    proptest! {
+        #![proptest_config(crate::proptest_util::default_config())]
+
+        #[test]
+        fn bootstrap_domains_prefers_acme_over_origins_regardless_of_enabled(
+            enabled in proptest::bool::ANY,
+        ) {
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+            let mut cfg = Config::load_with_environment(&dir, Environment::Production).unwrap();
+            let acme = cfg.server.tls.acme.as_mut().unwrap();
+            acme.enabled = enabled;
+            acme.domains = vec!["lab.example.test".to_owned()];
+            cfg.server.public_origins = vec!["https://other.example.test".to_owned()];
+            prop_assert_eq!(
+                cfg.bootstrap_domains(),
+                vec!["lab.example.test".to_owned()]
+            );
+        }
+    }
 
     proptest! {
         #![proptest_config(crate::proptest_util::default_config())]

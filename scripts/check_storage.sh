@@ -213,14 +213,54 @@ grep -n 'canonical_summary\|webauthn_host_is_ip\|test_attestation_object_b64' "$
 grep -n 'load_key_cfg_with_env\|VCP_ENVIRONMENT' "$BIN" >/dev/null \
   || fail "$BIN must resolve key blob_path via VCP_ENVIRONMENT (testable helper)"
 DEV_TOML="config/development.toml"
+PROD_CONF="config/vcp.conf"
 grep -n 'webauthn_origin = "https://localhost:3000"' "$DEV_TOML" >/dev/null \
   || fail "$DEV_TOML must set webauthn_origin = https://localhost:3000 (RP ID derived)"
+grep -n 'webauthn_origin' "$PROD_CONF" >/dev/null \
+  || fail "$PROD_CONF [storage] must set webauthn_origin (portal /admin/key RP ID)"
+# Packaged portal + helper defaults must agree (lab hosts override both together).
+# Value after '=' (tolerates `key = "…"` / `key="…"` spacing).
+portal_origin=$(awk -F= '/^\[storage\]/{s=1;next} /^\[/{s=0} s && /^webauthn_origin[[:space:]]*=/{
+  v=$2; gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); gsub(/"/,"",v); print v; exit
+}' "$PROD_CONF")
+store_origin=$(awk -F= '/^webauthn_origin[[:space:]]*=/{
+  v=$2; gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); gsub(/"/,"",v); print v; exit
+}' "$STORE_CONF")
+if [ -z "$portal_origin" ] || [ -z "$store_origin" ] || [ "$portal_origin" != "$store_origin" ]; then
+  fail "vcp.conf and vcp-store.conf webauthn_origin must match (got portal='$portal_origin' store='$store_origin')"
+fi
 if grep -n 'webauthn_rp_id' "$DEV_TOML" config/default.toml config/testing.toml \
-  "$STORE_CONF" 2>/dev/null | grep -v '^[^:]*:.*#' >/dev/null; then
+  "$STORE_CONF" "$PROD_CONF" 2>/dev/null | grep -v '^[^:]*:.*#' >/dev/null; then
   fail "webauthn_rp_id must not appear in config (derived from webauthn_origin)"
 fi
 grep -n 'rp_id_from_webauthn_origin' src/storage/webauthn.rs >/dev/null \
   || fail "webauthn.rs must derive RP ID from webauthn_origin"
+# Bootstrap SANs: use acme.domains even when ACME is disabled (lab FQDNs).
+grep -n 'fn bootstrap_domains' src/config.rs >/dev/null \
+  || fail "config.rs must define bootstrap_domains"
+grep -nE '!acme\.domains\.is_empty' src/config.rs >/dev/null \
+  || fail "bootstrap_domains must key off acme.domains non-empty"
+# Scan only the pub impl body (not unit/proptest tests that set acme.enabled).
+bootstrap_body=$(awk '
+  /^[[:space:]]*pub fn bootstrap_domains\(/ { grab=1; depth=0 }
+  grab {
+    print
+    for (i = 1; i <= length($0); i++) {
+      c = substr($0, i, 1)
+      if (c == "{") depth++
+      else if (c == "}") {
+        depth--
+        if (depth == 0) exit
+      }
+    }
+  }
+' src/config.rs)
+if [ -z "$bootstrap_body" ]; then
+  fail "could not extract bootstrap_domains body from config.rs"
+fi
+if printf '%s\n' "$bootstrap_body" | grep -nE 'acme\.enabled|\.enabled' >/dev/null; then
+  fail "bootstrap_domains must not require acme.enabled (use domains even when ACME is off)"
+fi
 grep -n 'webauthn-origin' src/storage/client.rs src/bin/vcp_store.rs >/dev/null \
   || fail "spawn path must pass --webauthn-origin so RP ID matches portal config"
 grep -n 'webauthn_pending_ttl_hours' "$STORE_CONF" >/dev/null \

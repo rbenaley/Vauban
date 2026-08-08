@@ -153,3 +153,19 @@ Expect:
 Also confirm security headers (`no-store`, `nosniff`, CSP) remain on the 308.
 
 Pass: trailing slashes canonicalize via Topcoat `redirect_permanent`; root `/` is unchanged.
+
+## F -- Bootstrap self-signed SANs (ACME off)
+
+When `server.tls.acme.enabled = false` but `server.tls.acme.domains` lists
+your FQDN(s), a **new** bootstrap (missing `server.crt` / `server.key`) must
+SAN those names — not only `localhost` / `127.0.0.1`.
+
+```bash
+# After setting domains and removing old PEM:
+rm -f /usr/local/etc/vcp/certs/server.crt /usr/local/etc/vcp/certs/server.key
+service vcp restart
+openssl x509 -in /usr/local/etc/vcp/certs/server.crt -noout -text | grep -A2 'Subject Alternative'
+```
+
+Pass: SAN includes each `acme.domains` entry. Fail: only `localhost` /
+`127.0.0.1` while domains listed a real FQDN.

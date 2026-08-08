@@ -331,6 +331,33 @@ fn inv_webauthn_12_and_adrs_pinned() {
         "webauthn_rp_id must not be a config key (derived from origin)"
     );
 
+    let portal_prod = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/vcp.conf"));
+    let store_prod = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/config/vcp-store.conf"
+    ));
+    assert!(
+        portal_prod.contains("webauthn_origin = \"https://access.vauban.sh\""),
+        "packaged vcp.conf [storage] must set webauthn_origin for /admin/key RP ID"
+    );
+    assert!(
+        store_prod.contains("webauthn_origin = \"https://access.vauban.sh\""),
+        "packaged vcp-store.conf must set the same webauthn_origin"
+    );
+    let portal_origin = portal_prod
+        .lines()
+        .find(|l| l.trim_start().starts_with("webauthn_origin"))
+        .expect("portal webauthn_origin");
+    let store_origin = store_prod
+        .lines()
+        .find(|l| l.trim_start().starts_with("webauthn_origin"))
+        .expect("store webauthn_origin");
+    assert_eq!(
+        portal_origin.trim(),
+        store_origin.trim(),
+        "packaged portal and helper webauthn_origin defaults must match"
+    );
+
     assert!(
         std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),

@@ -189,9 +189,10 @@ pub fn certified_key_from_pem(
 /// Generate a self-signed certificate for the given domains and write it
 /// to `cert_path` and `key_path`.
 ///
-/// Used when ACME is enabled but no certificate files exist yet.
-/// The scheduler will detect this as self-signed and trigger immediate
-/// ACME renewal to replace it with a real certificate.
+/// Used when no certificate files exist yet (bootstrap). SANs come from
+/// [`crate::config::Config::bootstrap_domains`] (ACME domain list even when
+/// ACME is disabled, else public_origins hosts). When ACME is enabled, the
+/// scheduler may later replace a self-signed cert with a real one.
 ///
 /// **Must be called before `cap_enter()`** since it performs file I/O.
 pub fn generate_self_signed_cert(

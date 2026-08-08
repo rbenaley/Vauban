@@ -157,3 +157,47 @@ fn inv_handshake_coalescer_pins() {
     );
     assert!(src.contains("struct HandshakeFailureLog"));
 }
+
+#[test]
+fn inv_bootstrap_domains_not_gated_on_acme_enabled() {
+    let config = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config.rs"));
+    let start = config
+        .find("pub fn bootstrap_domains")
+        .expect("bootstrap_domains");
+    // Only the impl body — tests below set `acme.enabled` and must not false-positive.
+    let after = &config[start..];
+    let open = after.find('{').expect("bootstrap_domains opening brace");
+    let mut depth = 0usize;
+    let mut end = open;
+    for (i, c) in after[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = open + i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let body = &after[..end];
+    assert!(
+        body.contains("!acme.domains.is_empty()"),
+        "bootstrap must use non-empty acme.domains"
+    );
+    assert!(
+        !body.contains("acme.enabled") && !body.contains(".enabled"),
+        "bootstrap_domains must not require acme.enabled"
+    );
+    assert!(
+        body.contains("public_origins") || body.contains("host_from_https_origin"),
+        "bootstrap must fall back to public_origins hosts"
+    );
+    let vcp_conf = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/vcp.conf"));
+    assert!(
+        vcp_conf.contains("domains = [\"access.vauban.sh\"]"),
+        "packaged ACME domains must list the portal FQDN for bootstrap SANs"
+    );
+}

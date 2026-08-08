@@ -161,6 +161,11 @@ Local lab: open **`https://localhost:3000/admin/key`** (not `127.0.0.1`).
 WebAuthn rejects IP hosts; `webauthn_origin` uses `localhost` (RP ID derived).
 Accept the self-signed cert for `localhost` if prompted.
 
+Production / EC2 lab: set the **same** `webauthn_origin` in both
+`/usr/local/etc/vcp/vcp.conf` (`[storage]`) and `vcp-store.conf`, matching
+the browser URL hostname. `/admin/key` reads the **portal** value; the helper
+file alone is not enough. After changing origin, restart `vcp` and `vcp_store`.
+
 1. `/admin/key` → Create key → PENDING fingerprint shown; activate from the
    helper host (`vcp-store approve-key`, copy from PENDING table if needed).
    PENDING and ACTIVE tables paginate at **4** rows (`pending_page` /
