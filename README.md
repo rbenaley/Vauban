@@ -156,9 +156,10 @@ Browsers will warn on the self-signed cert until you trust it or use ACME in sta
 `/login` is email-only. Submitting the form swaps in-place to a **Check your
 email** panel (Topcoat signals + procedure; no `/login/check-email` redirect)
 with a resend cooldown of `magiclinks.token_ttl_secs` shown as `MM:SS`. A
-one-shot link is emailed via SMTP. Local development expects
+one-shot link is emailed via SMTP. Local development/testing expect
 [Mailpit](https://github.com/axllent/mailpit) (or equivalent) on
-`localhost:1025` (`[mail]` in `development.toml`).
+`localhost:1025` with STARTTLS and `smtp_accept_invalid_certs = true`
+(`[mail]` in `development.toml` / `testing.toml`).
 
 After opening a valid link: staff land on `/vauban`; a single client membership
 goes to `/{org}`; multiple client memberships open `/choose-org` to pick a

@@ -42,13 +42,14 @@ webauthn_origin = "https://localhost:3000"
 webauthn_challenge_ttl_secs = 300
 webauthn_pending_ttl_hours = 24
 
-# Mailpit (or local SMTP catch-all). Override credentials in local.toml if needed.
+# Local SMTP catch-all (Mailpit STARTTLS / self-signed). Override in local.toml if needed.
 [mail]
 smtp_host = "localhost"
 smtp_port = 1025
-smtp_encryption = "plaintext"
+smtp_encryption = "starttls"
 smtp_username = ""
 smtp_password = ""
+smtp_accept_invalid_certs = true
 
 [magiclinks]
 from_address = "no-reply@vauban.sh"

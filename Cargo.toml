@@ -31,6 +31,7 @@ http = "1"
 hyper = "1"
 hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
 instant-acme = { version = "0.8", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls-tls", "pool", "builder"] }
 nix = { version = "0.31.3", features = ["fs", "socket", "uio", "user"] }
 p256 = { version = "0.13", features = ["ecdsa"] }
 unix-ancillary = "0.3.0"

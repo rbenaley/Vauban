@@ -104,6 +104,10 @@ pub struct MailConfig {
     pub smtp_username: String,
     #[serde(default)]
     pub smtp_password: String,
+    /// When true, skip SMTP peer certificate verification (self-signed labs).
+    /// Applies to `starttls` and `tls` only; default false.
+    #[serde(default)]
+    pub smtp_accept_invalid_certs: bool,
 }
 
 /// SMTP encryption mode for [`MailConfig::smtp_encryption`].
@@ -942,6 +946,13 @@ impl Config {
         {
             anyhow::bail!("mail.smtp_encryption=plaintext is forbidden in production");
         }
+        if self.mail.smtp_accept_invalid_certs
+            && self.mail.smtp_encryption == SmtpEncryption::Plaintext
+        {
+            anyhow::bail!(
+                "mail.smtp_accept_invalid_certs requires smtp_encryption=starttls or tls"
+            );
+        }
         Ok(())
     }
 
@@ -1061,7 +1072,8 @@ mod tests {
         assert_eq!(cfg.issues.max_attachments_per_comment, 5);
         assert_eq!(cfg.mail.smtp_host, "localhost");
         assert_eq!(cfg.mail.smtp_port, 1025);
-        assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Plaintext);
+        assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Starttls);
+        assert!(cfg.mail.smtp_accept_invalid_certs);
         assert_eq!(cfg.magiclinks.token_ttl_secs, 300);
         assert_eq!(cfg.magiclinks.token_retention_days, 7);
         assert_eq!(cfg.magiclinks.purge_interval_minutes, 60);
@@ -1096,6 +1108,7 @@ mod tests {
         assert_eq!(cfg.mail.smtp_host, "smtp.tem.scaleway.com");
         assert_eq!(cfg.mail.smtp_port, 587);
         assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Starttls);
+        assert!(!cfg.mail.smtp_accept_invalid_certs);
         assert_eq!(cfg.magiclinks.token_ttl_secs, 300);
         assert_eq!(cfg.magiclinks.token_retention_days, 1);
         assert_eq!(cfg.magiclinks.purge_interval_minutes, 60);
@@ -1119,7 +1132,8 @@ mod tests {
         assert_eq!(cfg.login.lockout_secs, 1);
         assert_eq!(cfg.org.max_accounts_per_org, 5);
         assert_eq!(cfg.org.max_lts_subscriptions, 99);
-        assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Plaintext);
+        assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Starttls);
+        assert!(cfg.mail.smtp_accept_invalid_certs);
         assert_eq!(cfg.magiclinks.token_ttl_secs, 300);
         assert_eq!(cfg.magiclinks.token_retention_days, 0);
         assert_eq!(cfg.magiclinks.purge_interval_minutes, 60);
@@ -1147,6 +1161,50 @@ mod tests {
         cfg.mail.smtp_encryption = SmtpEncryption::Plaintext;
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("plaintext"));
+    }
+
+    #[test]
+    fn rejects_accept_invalid_certs_with_plaintext() {
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Development,
+        )
+        .unwrap();
+        cfg.mail.smtp_encryption = SmtpEncryption::Plaintext;
+        cfg.mail.smtp_accept_invalid_certs = true;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("smtp_accept_invalid_certs"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn production_allows_accept_invalid_certs_with_starttls() {
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Production,
+        )
+        .unwrap();
+        cfg.mail.smtp_encryption = SmtpEncryption::Starttls;
+        cfg.mail.smtp_accept_invalid_certs = true;
+        cfg.validate()
+            .expect("accept_invalid_certs allowed in prod");
+    }
+
+    #[test]
+    fn smtp_accept_invalid_certs_defaults_false_when_key_absent() {
+        let fragment = r#"
+smtp_host = "localhost"
+smtp_port = 587
+smtp_encryption = "starttls"
+"#;
+        let loaded = config::Config::builder()
+            .add_source(config::File::from_str(fragment, config::FileFormat::Toml))
+            .build()
+            .expect("fragment");
+        let cfg: MailConfig = loaded.try_deserialize().expect("MailConfig");
+        assert!(!cfg.smtp_accept_invalid_certs);
     }
 
     #[test]
@@ -1275,6 +1333,7 @@ mod proptest_tests {
     proptest! {
         #![proptest_config(crate::proptest_util::default_config())]
 
+        #[test]
         fn smtp_encryption_unknown_strings_reject(s in "[a-zA-Z0-9_]{0,32}") {
             let known = matches!(
                 s.to_ascii_lowercase().as_str(),
@@ -1287,6 +1346,40 @@ mod proptest_tests {
     proptest! {
         #![proptest_config(crate::proptest_util::default_config())]
 
+        #[test]
+        fn smtp_accept_invalid_certs_bool_roundtrip(flag in proptest::bool::ANY) {
+            let fragment = format!(
+                "smtp_host = \"localhost\"\nsmtp_port = 587\nsmtp_encryption = \"starttls\"\nsmtp_accept_invalid_certs = {flag}\n"
+            );
+            let loaded = config::Config::builder()
+                .add_source(config::File::from_str(&fragment, config::FileFormat::Toml))
+                .build()
+                .expect("fragment");
+            let mail: MailConfig = loaded.try_deserialize().expect("MailConfig");
+            prop_assert_eq!(mail.smtp_accept_invalid_certs, flag);
+
+            let mut cfg = Config::load_with_environment(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+                Environment::Development,
+            )
+            .unwrap();
+            cfg.mail.smtp_encryption = SmtpEncryption::Starttls;
+            cfg.mail.smtp_accept_invalid_certs = flag;
+            prop_assert!(cfg.validate().is_ok());
+
+            cfg.mail.smtp_encryption = SmtpEncryption::Plaintext;
+            if flag {
+                prop_assert!(cfg.validate().is_err());
+            } else {
+                prop_assert!(cfg.validate().is_ok());
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(crate::proptest_util::default_config())]
+
+        #[test]
         fn token_ttl_positive_validates(ttl in 1u64..10_000) {
             let mut cfg = Config::load_with_environment(
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
@@ -1301,6 +1394,7 @@ mod proptest_tests {
     proptest! {
         #![proptest_config(crate::proptest_util::default_config())]
 
+        #[test]
         fn retention_secs_is_days_times_86400(days in 0u64..=365) {
             let mut cfg = Config::load_with_environment(
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
@@ -1315,6 +1409,7 @@ mod proptest_tests {
     proptest! {
         #![proptest_config(crate::proptest_util::default_config())]
 
+        #[test]
         fn purge_interval_minutes_to_duration(mins in 1u64..=10_000) {
             let mut cfg = Config::load_with_environment(
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),

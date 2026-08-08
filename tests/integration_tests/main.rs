@@ -27,6 +27,7 @@
 //! - `cargo test --test integration_tests -- storage_ -- --test-threads=1`
 //! - `cargo test --test integration_tests -- seed_data -- --test-threads=1`
 //! - `cargo test --test integration_tests -- freebsd_pkg -- --test-threads=1`
+//! - `cargo test --test integration_tests -- smtp_certs -- --test-threads=1`
 
 mod admin_companies_battle_test;
 mod admin_companies_e2e_test;
@@ -109,6 +110,9 @@ mod seed_data_battle_test;
 mod seed_data_e2e_test;
 mod seed_data_invariants_test;
 mod seed_data_proptest;
+mod smtp_certs_battle_test;
+mod smtp_certs_e2e_test;
+mod smtp_certs_invariants_test;
 mod storage_battle_test;
 mod storage_e2e_test;
 mod storage_invariants_test;

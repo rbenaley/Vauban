@@ -9,11 +9,17 @@ invite/revoke mail on a staging or local host.
 
 - VCP running with `VCP_ENVIRONMENT=development` (or staging with TEM).
 - SMTP catch-all reachable per `[mail]`:
-  - Local: [Mailpit](https://github.com/axllent/mailpit) on `localhost:1025`
-    (`smtp_encryption = "plaintext"`). UI on `localhost:8025`.
-    MacPorts: install `mailpit +ui` so `/dist/app.css` / `app.js` are embedded.
-  - Staging/prod: Scaleway TEM (`smtp.tem.scaleway.com`, `starttls` / `tls`);
-    `smtp_username` = Project ID, `smtp_password` = IAM secret (host secret).
+  - Local (dev/testing): [Mailpit](https://github.com/axllent/mailpit) (or
+    equivalent) on `localhost:1025` with `smtp_encryption = "starttls"` and
+    `smtp_accept_invalid_certs = true` (self-signed). UI often on
+    `localhost:8025`. MacPorts: install `mailpit +ui` so `/dist/app.css` /
+    `app.js` are embedded.
+  - Staging/prod TEM: Scaleway (`smtp.tem.scaleway.com`, `starttls` / `tls`);
+    `smtp_username` = Project ID, `smtp_password` = IAM secret (host secret);
+    keep `smtp_accept_invalid_certs = false`.
+  - Other self-signed submission: same starttls/tls + `smtp_accept_invalid_certs
+    = true` (forbidden with `plaintext`). VCP warns at transport build time;
+    production allows the flag (unlike plaintext SMTP).
 - `[magiclinks]` configured: `vcp_admin`, `from_address`, `token_ttl_secs = 300`,
   `token_retention_days` (dev `7`, prod `1`), `purge_interval_minutes = 60`.
 - Browser can open `server.public_origins[0]` (HTTPS) with Topcoat runtime
@@ -93,6 +99,30 @@ orgs the user is not a member of; staff accounts are forced through the picker.
 
 **Fail if:** the table grows without bound across days with no deletes after
 expiry + retention; or active (unexpired) tokens disappear mid-TTL.
+
+### 6. Self-signed SMTP submission (`smtp_accept_invalid_certs`)
+
+Use when the submission server presents a self-signed (or otherwise
+untrusted) certificate. Mailpit plaintext does not need this flag.
+
+1. Set in the effective config (e.g. `local.toml` / host `vcp.conf`):
+
+   ```toml
+   [mail]
+   smtp_host = "localhost"
+   smtp_port = 587
+   smtp_encryption = "starttls"   # or "tls" on 465
+   smtp_accept_invalid_certs = true
+   ```
+
+2. Restart `vcp`. Confirm a warn line about `smtp_accept_invalid_certs=true`.
+3. Request a magic link for a known account.
+4. Confirm the message arrives at the submission server / catch-all.
+
+**Pass:** mail delivered with STARTTLS or implicit TLS against the self-signed
+peer. **Fail if:** handshake fails while the flag is true; or
+`smtp_encryption = "plaintext"` with the flag set (config must refuse to
+load).
 
 ## Related
 
