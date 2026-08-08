@@ -40,7 +40,8 @@ for _bin in vcp vcp-store; do
     fi
 done
 
-# Topcoat AssetBundle::load() walks near the binary: /usr/local/bin/assets.
+# Topcoat release bundle: staged under share/vcp/assets (VCP_PACKAGE_ROOT).
+# Runtime loads via AssetBundle::load_dir (see src/app.rs::load_asset_bundle).
 ASSETS_SRC="${PROJECT_ROOT}/target/assets"
 if [ ! -f "${ASSETS_SRC}/manifest.toml" ]; then
     echo "ERROR: missing ${ASSETS_SRC}/manifest.toml" >&2
@@ -69,12 +70,6 @@ mkdir -p "${STAGING}/usr/local/share/vcp"
 echo "==> Staging files..."
 install -m 755 "${RELEASE_DIR}/vcp" "${STAGING}/usr/local/bin/vcp"
 install -m 755 "${RELEASE_DIR}/vcp-store" "${STAGING}/usr/local/sbin/vcp-store"
-# Topcoat looks for assets next to the binary (/usr/local/bin/assets).
-cp -R "${ASSETS_SRC}" "${STAGING}/usr/local/bin/assets"
-# Drop the local build stamp; operators do not need it on the host.
-rm -f "${STAGING}/usr/local/bin/assets/.bundle-profile"
-find "${STAGING}/usr/local/bin/assets" -type d -exec chmod 755 {} +
-find "${STAGING}/usr/local/bin/assets" -type f -exec chmod 644 {} +
 install -m 644 "${PROJECT_ROOT}/config/vcp.conf" "${STAGING}/usr/local/etc/vcp/vcp.conf"
 install -m 644 "${PROJECT_ROOT}/config/vcp-store.conf" "${STAGING}/usr/local/etc/vcp/vcp-store.conf"
 install -m 644 "${PROJECT_ROOT}/config/access/vcp_policy.csv" \
@@ -85,9 +80,14 @@ install -m 644 "${SCRIPT_DIR}/newsyslog.conf.d/vcp.conf" \
     "${STAGING}/usr/local/etc/newsyslog.conf.d/vcp.conf"
 install -m 644 "${SCRIPT_DIR}/acl.sh" "${STAGING}/usr/local/libexec/vcp/acl.sh"
 
-# Toasty migrations for POST_INSTALL / `vcp migration` (VCP_PACKAGE_ROOT).
+# Toasty migrations + Topcoat release assets (VCP_PACKAGE_ROOT=/usr/local/share/vcp).
 install -m 644 "${PROJECT_ROOT}/Toasty.toml" "${STAGING}/usr/local/share/vcp/Toasty.toml"
 cp -R "${PROJECT_ROOT}/toasty" "${STAGING}/usr/local/share/vcp/toasty"
+cp -R "${ASSETS_SRC}" "${STAGING}/usr/local/share/vcp/assets"
+# Drop the local build stamp; operators do not need it on the host.
+rm -f "${STAGING}/usr/local/share/vcp/assets/.bundle-profile"
+find "${STAGING}/usr/local/share/vcp/assets" -type d -exec chmod 755 {} +
+find "${STAGING}/usr/local/share/vcp/assets" -type f -exec chmod 644 {} +
 
 echo "==> Generating plist..."
 PLIST="${SCRIPT_DIR}/plist"
@@ -103,8 +103,9 @@ PLIST="${SCRIPT_DIR}/plist"
     echo "@config etc/newsyslog.conf.d/vcp.conf"
     echo "share/vcp/Toasty.toml"
     find "${STAGING}/usr/local/share/vcp/toasty" -type f | sed "s|^${STAGING}/usr/local/||" | sort
-    find "${STAGING}/usr/local/bin/assets" -type f | sed "s|^${STAGING}/usr/local/||" | sort
-    find "${STAGING}/usr/local/bin/assets" -type d | sed "s|^${STAGING}/usr/local/||" | sort | while read -r _d; do
+    find "${STAGING}/usr/local/share/vcp/assets" -type f | sed "s|^${STAGING}/usr/local/||" | sort
+    # Emits @dir share/vcp/assets (and any future subdirs) exactly once.
+    find "${STAGING}/usr/local/share/vcp/assets" -type d | sed "s|^${STAGING}/usr/local/||" | sort | while read -r _d; do
         echo "@dir ${_d}"
     done
     echo "@dir libexec/vcp"

@@ -37,14 +37,25 @@ service vcp start
 
 Pass: both services running; `VCP_CONFIG_DIR` effective via rc.d
 (`/usr/local/etc/vcp`); helper log shows `vcp-store listening`.
-`service vcp status` must show a single portal pid (not the store's
-`daemon`), and `service vcp stop` must leave `vcp_store` running.
+`service vcp status` reports the **daemon supervisor**
+(`/var/run/vcp.pid`, same convention as `/var/run/vcp-store.pid`);
+newsyslog signals `/var/run/vcp/vcp.pid` (process_guard, note the
+subdirectory) for the access log. `service vcp stop` must leave
+`vcp_store` running and must **not** leave a restart storm in
+`/var/log/vcp.log`.
 
 ```bash
-ls /usr/local/bin/assets/manifest.toml   # Topcoat bundle next to bin/vcp
-service vcp status                        # one pid, not shared with store
+ls /usr/local/share/vcp/assets/manifest.toml   # Topcoat release bundle
+service vcp status                              # supervisor at /var/run/vcp.pid
 service vcp_store status
+cat /var/run/vcp.pid /var/run/vcp/vcp.pid
+service vcp stop && service vcp_store status    # store still up
 ```
+
+Stop `vcp` **before** `vcp_store`. If the store socket disappears while
+`daemon -r` is supervising the portal, every restart panics with
+`storage helper connect failed … Connection refused` and the portal
+respawns about once per second until the supervisor is killed.
 
 ### A2 -- Reserved port 443 for an unprivileged portal
 
@@ -129,18 +140,41 @@ service vcp_store restart
 service vcp restart
 ```
 
+### Troubleshooting: hard-to-stop `vcp` / store-down restart storm
+
+`daemon -r` respawns the portal on every exit. `service vcp stop` must
+kill the **supervisor** (`/var/run/vcp.pid`). Killing only
+`/var/run/vcp/vcp.pid` (process_guard) leaves `-r` running — the next
+child appears within a second, so stop seems to "fail".
+
+```bash
+# Immediate unblock on a host still running the old rc.d:
+pkill -f 'daemon: vcp\[' || true
+rm -f /var/run/vcp.pid /var/run/vcp/vcp.pid
+# After upgrading the package, a single stop is enough:
+service vcp stop
+```
+
+If `/var/log/vcp.log` shows `storage helper connect failed … Connection
+refused` in a tight loop, `vcp_store` is down — start the store first
+(or stop the portal supervisor as above).
+
 ### Troubleshooting: `asset bundle missing` restart loop
 
-`daemon -r` restarts the portal every second when Topcoat cannot find
-`/usr/local/bin/assets` (packaging must stage `target/assets` from
-`just release`). Symptom in `/var/log/vcp.log`: panic at `src/app.rs`
-after `vcp listening on https://0.0.0.0:443`.
+`daemon -r` restarts the portal every second when the release Topcoat
+bundle is missing at `/usr/local/share/vcp/assets` (staged from
+`target/assets` by `just release` + `just package`). Symptom in
+`/var/log/vcp.log`: panic at `src/app.rs` after
+`vcp listening on https://0.0.0.0:443`.
 
 ```bash
 service vcp stop
-ls /usr/local/bin/assets/manifest.toml
+ls /usr/local/share/vcp/assets/manifest.toml
 # Hotfix until the next pkg rebuild (from the release checkout):
-#   cp -R target/assets /usr/local/bin/assets && chmod -R a+rX /usr/local/bin/assets
+#   cp -R target/assets /usr/local/share/vcp/assets
+#   chmod -R a+rX /usr/local/share/vcp/assets
+# Remove a leftover layout from older packages:
+#   rm -rf /usr/local/bin/assets
 service vcp start
 ```
 

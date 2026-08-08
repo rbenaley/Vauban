@@ -70,20 +70,63 @@ fn prop_rc_d_and_newsyslog_required_pins() {
         load < unreserve,
         "mac_portacl must be loaded before portrange is unreserved"
     );
-    // Without pidfile + procname, status/stop match every /usr/sbin/daemon.
+    // daemon -r needs a supervisor pidfile; newsyslog keeps process_guard.
+    // Uniform convention across services: /var/run/<service>.pid.
     assert!(
-        vcp.contains("pidfile=\"/var/run/vcp/vcp.pid\"")
-            && vcp.contains("procname=\"/usr/local/bin/vcp\""),
-        "rc.d/vcp must pin process_guard pidfile and the portal binary procname"
+        vcp.contains("pidfile=\"/var/run/vcp.pid\"") && vcp.contains("-P ${pidfile}"),
+        "rc.d/vcp must use daemon -P on /var/run/vcp.pid for stop/status"
     );
+    assert!(
+        store.contains("pidfile=\"/var/run/vcp-store.pid\"") && store.contains("-P ${pidfile}"),
+        "rc.d/vcp_store must use daemon -P on /var/run/vcp-store.pid"
+    );
+    assert!(
+        !vcp.contains("-P /var/run/vcp/vcp.pid"),
+        "daemon -P must not steal process_guard's /var/run/vcp/vcp.pid"
+    );
+    let access_line = ns
+        .lines()
+        .find(|l| l.starts_with("/var/log/vcp-access.log"))
+        .expect("newsyslog must rotate the access log");
+    assert!(
+        access_line.contains("/var/run/vcp/vcp.pid") && !access_line.contains("/var/run/vcp.pid"),
+        "access log must SIGHUP process_guard (subdir pidfile), not the supervisor"
+    );
+    // Stderr captures reopen via daemon -H on SIGHUP to the supervisors.
+    for (log, pid) in [
+        ("/var/log/vcp.log", "/var/run/vcp.pid"),
+        ("/var/log/vcp-store.log", "/var/run/vcp-store.pid"),
+    ] {
+        let line = ns
+            .lines()
+            .find(|l| l.starts_with(&format!("{log} ")))
+            .unwrap_or_else(|| panic!("newsyslog must rotate {log}"));
+        assert!(
+            line.contains(pid),
+            "{log} rotation must SIGHUP the supervisor at {pid}"
+        );
+    }
     let build = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/pkg/build-pkg.sh"));
     assert!(
-        build.contains("bin/assets") || build.contains("/usr/local/bin/assets"),
-        "build-pkg.sh must stage Topcoat assets next to bin/vcp"
+        build.contains("share/vcp/assets"),
+        "build-pkg.sh must stage Topcoat assets under share/vcp/assets"
+    );
+    assert!(
+        !build.contains("bin/assets") && !build.contains("/usr/local/bin/assets"),
+        "build-pkg.sh must not stage assets under bin/"
     );
     assert!(
         build.contains("manifest.toml"),
         "build-pkg.sh must refuse to package without a release asset bundle"
+    );
+    assert!(
+        vcp.contains("VCP_PACKAGE_ROOT"),
+        "rc.d/vcp must export VCP_PACKAGE_ROOT for share/vcp assets"
+    );
+    let app = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
+    assert!(
+        app.contains("load_asset_bundle") && app.contains("load_dir"),
+        "app.rs must load packaged assets via AssetBundle::load_dir"
     );
     for line in ns
         .lines()

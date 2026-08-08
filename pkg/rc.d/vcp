@@ -13,6 +13,7 @@ load_rc_config $name
 
 : ${vcp_enable:="NO"}
 : ${vcp_config_dir:="/usr/local/etc/vcp"}
+: ${vcp_package_root:="/usr/local/share/vcp"}
 # NOT ${name}_user: rc.subr reads that name and wraps the command in
 # "su -m", which would run daemon(8) unprivileged -- its setusercontext()
 # then fails with "failed to set user environment". daemon(8) must stay
@@ -27,16 +28,18 @@ load_rc_config $name
 : ${vcp_portacl_enable:="YES"}
 : ${vcp_portacl_port:="443"}
 
-# Do NOT use daemon -P: the portal process_guard owns this pidfile
-# (newsyslog SIGHUP target for the Apache CLF access log).
-# Without pidfile + procname, rc.subr matches every /usr/sbin/daemon and
-# status/stop/start collide with vcp_store's supervisor.
-pidfile="/var/run/vcp/vcp.pid"
-procname="/usr/local/bin/vcp"
+# Two pidfiles on purpose:
+#   - daemon -P /var/run/vcp.pid: supervisor that owns -r restarts; rc.subr
+#     status/stop must kill THIS process or -r respawns forever after each
+#     crash. Same convention as vcp_store (/var/run/vcp-store.pid).
+#   - process_guard writes /var/run/vcp/vcp.pid (note the subdirectory):
+#     newsyslog SIGHUP target so the portal reopens the access log.
+pidfile="/var/run/vcp.pid"
 command="/usr/sbin/daemon"
-command_args="-r -H -t vcp -u ${vcp_runas} -o ${vcp_log} /usr/local/bin/vcp"
+command_args="-P ${pidfile} -r -H -t vcp -u ${vcp_runas} -o ${vcp_log} /usr/local/bin/vcp"
 
 start_precmd="${name}_prestart"
+stop_postcmd="${name}_poststop"
 
 # Unreserving the low port range is only safe once mac_portacl is the gate,
 # so bail out before touching net.inet.ip.portrange if the module is missing.
@@ -74,6 +77,7 @@ vcp_prestart()
 {
 	# Mandatory: never fall through to a compile-time checkout path.
 	export VCP_CONFIG_DIR="${vcp_config_dir}"
+	export VCP_PACKAGE_ROOT="${vcp_package_root}"
 	touch "${vcp_log}" "${vcp_access_log}"
 	chown "${vcp_runas}:wheel" "${vcp_log}" "${vcp_access_log}"
 	chmod 640 "${vcp_log}" "${vcp_access_log}"
@@ -90,6 +94,13 @@ vcp_prestart()
 		chmod 0700 /var/run/vcp
 	fi
 	vcp_portacl_setup || return 1
+}
+
+vcp_poststop()
+{
+	rm -f "${pidfile}"
+	# Stale process_guard file confuses operators / newsyslog after a hard stop.
+	rm -f /var/run/vcp/vcp.pid
 }
 
 run_rc_command "$1"

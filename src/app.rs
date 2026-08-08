@@ -142,12 +142,13 @@ fn router_with_mail(
 }
 
 fn load_assets(env: Environment) -> AssetConfig {
-    let bundle = match AssetBundle::load() {
+    let bundle = match load_asset_bundle() {
         Ok(bundle) => bundle,
         Err(err) => {
             panic!(
                 "asset bundle missing ({err}); run `just bundle` or `just run` after \
-                 `cargo build` (bare `cargo run` skips bundling)"
+                 `cargo build` (bare `cargo run` skips bundling). Packaged installs \
+                 ship the release bundle at /usr/local/share/vcp/assets"
             );
         }
     };
@@ -170,6 +171,21 @@ fn load_assets(env: Environment) -> AssetConfig {
         ],
     );
     config
+}
+
+/// Prefer the packaged (or `VCP_PACKAGE_ROOT`) share tree; fall back to Topcoat's
+/// conventional walk from the binary (`target/assets` for local `just run`).
+///
+/// Only treat `package_root/assets` as a bundle when `manifest.toml` is present —
+/// the checkout source tree also has an `assets/` directory of unbundled inputs.
+fn load_asset_bundle() -> std::io::Result<AssetBundle> {
+    if let Ok(pkg_root) = Config::package_root() {
+        let packaged = pkg_root.join("assets");
+        if packaged.join("manifest.toml").is_file() {
+            return AssetBundle::load_dir(packaged);
+        }
+    }
+    AssetBundle::load()
 }
 
 fn require_catalog_assets(config: &AssetConfig, env: Environment, assets: &[(&str, Asset)]) {

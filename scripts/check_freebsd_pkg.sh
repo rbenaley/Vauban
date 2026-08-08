@@ -97,17 +97,32 @@ fi
 grep -n '/var/log/vcp-access.log' pkg/newsyslog.conf.d/vcp.conf >/dev/null \
   || fail "newsyslog must rotate /var/log/vcp-access.log"
 
-# Portal must not use daemon -P (process_guard owns vcp.pid).
-if grep -nE '^command_args=.*-P' pkg/rc.d/vcp >/dev/null; then
-  fail "rc.d/vcp must not use daemon -P (conflicts with process_guard pidfile)"
+# Supervisor pidfile (daemon -P + -r): status/stop must kill the supervisor,
+# not process_guard's /var/run/vcp/vcp.pid — otherwise -r respawns forever.
+# Uniform convention: /var/run/<service>.pid (vcp.pid, vcp-store.pid).
+grep -nE '^pidfile="/var/run/vcp.pid"' pkg/rc.d/vcp >/dev/null \
+  || fail "rc.d/vcp must set pidfile=/var/run/vcp.pid (daemon -P supervisor)"
+grep -nE '^pidfile="/var/run/vcp-store.pid"' pkg/rc.d/vcp_store >/dev/null \
+  || fail "rc.d/vcp_store must set pidfile=/var/run/vcp-store.pid"
+for _rc in pkg/rc.d/vcp pkg/rc.d/vcp_store; do
+  grep -nE -- '-P \$\{pidfile\}' "${_rc}" >/dev/null \
+    || fail "${_rc} must pass daemon -P \${pidfile} for the supervisor"
+done
+if grep -nE 'command_args=.*-P.*/var/run/vcp/vcp\.pid' pkg/rc.d/vcp >/dev/null; then
+  fail "daemon -P must not target process_guard's /var/run/vcp/vcp.pid"
 fi
-# Without these, status/stop/start match every /usr/sbin/daemon (incl. store).
-grep -nE '^pidfile="/var/run/vcp/vcp.pid"' pkg/rc.d/vcp >/dev/null \
-  || fail "rc.d/vcp must set pidfile=/var/run/vcp/vcp.pid (process_guard)"
-grep -nE '^procname="/usr/local/bin/vcp"' pkg/rc.d/vcp >/dev/null \
-  || fail "rc.d/vcp must set procname=/usr/local/bin/vcp (not daemon)"
-grep -n 'vcp.pid' pkg/newsyslog.conf.d/vcp.conf >/dev/null \
-  || fail "newsyslog must reference /var/run/vcp/vcp.pid"
+# Access log SIGHUP must hit the portal process (process_guard in the
+# /var/run/vcp/ subdirectory), never a daemon(8) supervisor pid.
+grep -nE '^/var/log/vcp-access\.log[[:space:]].*/var/run/vcp/vcp\.pid[[:space:]]+1' \
+  pkg/newsyslog.conf.d/vcp.conf >/dev/null \
+  || fail "newsyslog access log must SIGHUP process_guard (/var/run/vcp/vcp.pid)"
+# Stderr captures rotate via the supervisors (daemon -H reopens -o on SIGHUP).
+grep -nE '^/var/log/vcp\.log[[:space:]].*/var/run/vcp\.pid[[:space:]]+1' \
+  pkg/newsyslog.conf.d/vcp.conf >/dev/null \
+  || fail "newsyslog vcp.log must SIGHUP the daemon supervisor (/var/run/vcp.pid)"
+grep -nE '^/var/log/vcp-store\.log[[:space:]].*/var/run/vcp-store\.pid[[:space:]]+1' \
+  pkg/newsyslog.conf.d/vcp.conf >/dev/null \
+  || fail "newsyslog vcp-store.log must SIGHUP the store supervisor"
 grep -nE '[[:space:]]1[[:space:]]*$|[[:space:]]1$' pkg/newsyslog.conf.d/vcp.conf >/dev/null \
   || fail "newsyslog access log line must signal 1 (SIGHUP)"
 # Rotation recreates the live file: without owner:group it lands root:wheel
@@ -124,11 +139,18 @@ grep -n 'bin/vcp' pkg/build-pkg.sh >/dev/null \
   || fail "build-pkg.sh must stage bin/vcp"
 grep -n 'sbin/vcp-store' pkg/build-pkg.sh >/dev/null \
   || fail "build-pkg.sh must stage sbin/vcp-store"
-# Topcoat AssetBundle::load() looks next to the binary at /usr/local/bin/assets.
-grep -n 'bin/assets\|/usr/local/bin/assets' pkg/build-pkg.sh >/dev/null \
-  || fail "build-pkg.sh must stage Topcoat assets at bin/assets"
+# Topcoat release bundle lives under VCP_PACKAGE_ROOT (not next to bin/vcp).
+grep -n 'share/vcp/assets' pkg/build-pkg.sh >/dev/null \
+  || fail "build-pkg.sh must stage Topcoat assets at share/vcp/assets"
+if grep -nE 'bin/assets|/usr/local/bin/assets' pkg/build-pkg.sh >/dev/null; then
+  fail "build-pkg.sh must not stage assets under bin/ (use share/vcp/assets)"
+fi
 grep -n 'manifest.toml' pkg/build-pkg.sh >/dev/null \
   || fail "build-pkg.sh must require target/assets/manifest.toml before packaging"
+grep -n 'VCP_PACKAGE_ROOT' pkg/rc.d/vcp >/dev/null \
+  || fail "rc.d/vcp must export VCP_PACKAGE_ROOT for share/vcp/assets"
+grep -n 'load_dir\|load_asset_bundle' src/app.rs >/dev/null \
+  || fail "app.rs must load packaged assets via load_dir / load_asset_bundle"
 grep -n 'vcp_policy.csv' pkg/build-pkg.sh >/dev/null \
   || fail "build-pkg.sh must ship vcp_policy.csv"
 if grep -n 'model.conf' pkg/build-pkg.sh pkg/+MANIFEST >/dev/null 2>&1; then
