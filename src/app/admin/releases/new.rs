@@ -58,7 +58,7 @@ fn create_error_message(err: Option<&str>) -> Option<&'static str> {
     }
 }
 
-/// Parse a required calendar release date (`YYYY-MM-DD`). Empty / invalid → `None`.
+/// Parse a required calendar release date (`YYYY-MM-DD`). Empty / invalid -> `None`.
 fn parse_released_on(raw: &str) -> Option<String> {
     let d = raw.trim();
     if d.is_empty() {
@@ -200,7 +200,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                     <p>
                         "Publishing a release requires at least one active security key in vcp-store. WebAuthn was not started and nothing was created."
                         <br />
-                        "Enrol a key under Admin → Security keys, approve it with "
+                        "Enrol a key under Admin -> Security keys, approve it with "
                         <code>"vcp-store approve-key"</code>
                         ", then try again."
                     </p>
