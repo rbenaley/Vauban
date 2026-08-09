@@ -183,7 +183,9 @@ a.vb-modal-close {
   font-size: 16px; color: #5a5f66; text-decoration: none; background: #fff;
 }
 a.vb-modal-close:hover { background: #f5f6f4; }
-.vb-modal-body { padding: 26px 30px 30px; max-width: 820px; margin: 0 auto; }
+/* Full-bleed body: horizontal padding matches .vb-modal-head so the title and
+   the prose share one left edge. */
+.vb-modal-body { padding: 26px 28px 30px; }
 .vb-modal-body h3 {
   font-size: 17px; font-weight: 800; color: #14171c; margin: 26px 0 10px; letter-spacing: -0.01em;
 }

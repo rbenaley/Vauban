@@ -184,6 +184,19 @@ fn inv_ui_polish_css_and_rail_icon_outlines() {
         css.contains(".vb-modal") && css.contains("vbIn"),
         ".vb-modal must keep vbIn"
     );
+    let modal_body = css
+        .split(".vb-modal-body {")
+        .nth(1)
+        .and_then(|s| s.split('}').next())
+        .expect(".vb-modal-body rule");
+    assert!(
+        !modal_body.contains("max-width"),
+        "article modal body must use the full modal width"
+    );
+    assert!(
+        modal_body.contains("28px"),
+        "modal body padding must match .vb-modal-head horizontal padding"
+    );
     assert!(
         css.contains("scale(0.96)"),
         "buttons need active scale(0.96)"
