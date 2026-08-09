@@ -43,6 +43,17 @@ impl CertExpiry {
         if secs <= 0 { 0 } else { (secs / 86400) as u32 }
     }
 
+    /// Days until notAfter for operator logs. `None` when the cert is
+    /// self-signed: rcgen bootstrap PEMs use a multi-century notAfter, so a
+    /// raw day count (e.g. 755831) is noise.
+    pub fn days_remaining_for_log(&self) -> Option<u32> {
+        if self.is_self_signed() {
+            None
+        } else {
+            Some(self.days_remaining())
+        }
+    }
+
     pub fn is_self_signed(&self) -> bool {
         self.self_signed.load(Ordering::Relaxed)
     }
@@ -53,11 +64,7 @@ impl CertExpiry {
                 self.not_after_epoch
                     .store(info.not_after_epoch, Ordering::Relaxed);
                 self.self_signed.store(info.self_signed, Ordering::Relaxed);
-                info!(
-                    days_remaining = self.days_remaining(),
-                    self_signed = info.self_signed,
-                    "Certificate metadata updated in memory"
-                );
+                log_cert_metadata_updated(self);
                 self.waker.notify_one();
             }
             Err(e) => warn!(error = %e, "Failed to parse metadata from new certificate"),
@@ -93,16 +100,41 @@ pub fn start_acme_monitoring(
     resolver: Arc<AcmeResolver>,
     cert_expiry: Arc<CertExpiry>,
 ) {
-    info!(
-        days_remaining = cert_expiry.days_remaining(),
-        self_signed = cert_expiry.is_self_signed(),
-        renew_before_hours = acme_config.renew_before_hours,
-        "ACME renewal scheduler started"
-    );
+    log_scheduler_started(&acme_config, &cert_expiry);
 
     tokio::spawn(async move {
         renewal_scheduler(acme_config, cert_path, key_path, resolver, cert_expiry).await;
     });
+}
+
+fn log_scheduler_started(acme_config: &AcmeConfig, cert_expiry: &CertExpiry) {
+    match cert_expiry.days_remaining_for_log() {
+        Some(days_remaining) => info!(
+            days_remaining,
+            self_signed = false,
+            renew_before_hours = acme_config.renew_before_hours,
+            "ACME renewal scheduler started"
+        ),
+        None => info!(
+            self_signed = true,
+            renew_before_hours = acme_config.renew_before_hours,
+            "ACME renewal scheduler started (bootstrap self-signed; days_remaining omitted)"
+        ),
+    }
+}
+
+fn log_cert_metadata_updated(cert_expiry: &CertExpiry) {
+    match cert_expiry.days_remaining_for_log() {
+        Some(days_remaining) => info!(
+            days_remaining,
+            self_signed = false,
+            "Certificate metadata updated in memory"
+        ),
+        None => info!(
+            self_signed = true,
+            "Certificate metadata updated in memory (self-signed; days_remaining omitted)"
+        ),
+    }
 }
 
 async fn renewal_scheduler(
@@ -325,4 +357,77 @@ fn parse_datetime_components(
         .ok_or_else(|| {
             format!("Invalid date: {year}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}")
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    #[test]
+    fn days_remaining_for_log_omits_self_signed() {
+        let now = chrono::Utc::now().timestamp();
+        let expiry = CertExpiry::new(CertInfo {
+            // Far-future notAfter like rcgen bootstrap (~755k days).
+            not_after_epoch: now + 755_831 * 86400,
+            self_signed: true,
+        });
+        assert!(expiry.days_remaining() > 100_000);
+        assert_eq!(expiry.days_remaining_for_log(), None);
+    }
+
+    #[test]
+    fn days_remaining_for_log_includes_ca_issued() {
+        let now = chrono::Utc::now().timestamp();
+        let expiry = CertExpiry::new(CertInfo {
+            not_after_epoch: now + 90 * 86400,
+            self_signed: false,
+        });
+        let days = expiry.days_remaining_for_log().expect("Some");
+        assert!((89..=90).contains(&days), "days={days}");
+    }
+
+    #[test]
+    fn inv_scheduler_start_log_omits_days_when_self_signed() {
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/acme/scheduler.rs"
+        ));
+        assert!(src.contains("days_remaining_for_log"));
+        assert!(src.contains("days_remaining omitted"));
+        let start_fn = src
+            .find("fn log_scheduler_started")
+            .expect("log_scheduler_started");
+        let body = &src[start_fn..start_fn + 500];
+        assert!(
+            body.contains("days_remaining_for_log"),
+            "scheduler start must gate days_remaining on self_signed"
+        );
+    }
+
+    #[test]
+    fn battle_parallel_days_remaining_for_log() {
+        let barrier = Arc::new(Barrier::new(4));
+        let mut handles = Vec::new();
+        for self_signed in [true, true, false, false] {
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                let now = chrono::Utc::now().timestamp();
+                let expiry = CertExpiry::new(CertInfo {
+                    not_after_epoch: now + 30 * 86400,
+                    self_signed,
+                });
+                barrier.wait();
+                if self_signed {
+                    assert_eq!(expiry.days_remaining_for_log(), None);
+                } else {
+                    assert!(expiry.days_remaining_for_log().is_some());
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread");
+        }
+    }
 }

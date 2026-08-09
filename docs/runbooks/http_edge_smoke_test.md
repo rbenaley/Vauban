@@ -169,3 +169,8 @@ openssl x509 -in /usr/local/etc/vcp/certs/server.crt -noout -text | grep -A2 'Su
 
 Pass: SAN includes each `acme.domains` entry. Fail: only `localhost` /
 `127.0.0.1` while domains listed a real FQDN.
+
+Ops note: with a bootstrap self-signed cert, ACME scheduler start logs set
+`self_signed=true` and **omit** `days_remaining` (rcgen notAfter is far-future
+and would otherwise look like hundreds of thousands of days). After a real ACME
+issue, expect `self_signed=false` and a normal `days_remaining`.
