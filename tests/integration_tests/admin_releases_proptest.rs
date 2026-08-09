@@ -7,8 +7,8 @@ use vcp::{
     freebsd_pkg::{FreeBsdPkgInfo, craft_minimal_pkg, inspect},
     models::{RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED},
     release_pkg::{
-        apply_edit_channel, channel_track, derive_release_identity, package_file_name,
-        version_for_display,
+        apply_edit_channel, channel_track, cmp_admin_release_list, cmp_status_published_first,
+        cmp_version_desc, derive_release_identity, package_file_name, version_for_display,
     },
     ui::release_status_badge_class,
 };
@@ -222,5 +222,57 @@ proptest! {
         prop_assert_eq!(parsed.comment, comment);
         prop_assert_eq!(parsed.prefix, "/usr/local");
         prop_assert_eq!(parsed.architecture, "FreeBSD:15:amd64");
+    }
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(48))]
+
+    #[test]
+    fn prop_admin_list_published_before_hidden_at_same_version(
+        major in 0u32..30,
+        minor in 0u32..40,
+        patch in 0u32..80,
+        suffix in prop_oneof![Just("".to_owned()), Just("acme1".to_owned())],
+    ) {
+        let version = if suffix.is_empty() {
+            format!("v{major}.{minor}.{patch}")
+        } else {
+            format!("v{major}.{minor}.{patch}-{suffix}")
+        };
+        prop_assert_eq!(
+            cmp_status_published_first(RELEASE_STATUS_PUBLISHED, RELEASE_STATUS_HIDDEN),
+            std::cmp::Ordering::Less
+        );
+        prop_assert_eq!(
+            cmp_admin_release_list(
+                &version,
+                RELEASE_STATUS_PUBLISHED,
+                &version,
+                RELEASE_STATUS_HIDDEN
+            ),
+            std::cmp::Ordering::Less
+        );
+        prop_assert_eq!(
+            cmp_admin_release_list(
+                &version,
+                RELEASE_STATUS_HIDDEN,
+                &version,
+                RELEASE_STATUS_PUBLISHED
+            ),
+            std::cmp::Ordering::Greater
+        );
+        // Distinct versions: semver still dominates status.
+        let higher = format!("v{}.{}.{}", major + 1, minor, patch);
+        prop_assert_eq!(cmp_version_desc(&higher, &version), std::cmp::Ordering::Less);
+        prop_assert_eq!(
+            cmp_admin_release_list(
+                &higher,
+                RELEASE_STATUS_HIDDEN,
+                &version,
+                RELEASE_STATUS_PUBLISHED
+            ),
+            std::cmp::Ordering::Less
+        );
     }
 }

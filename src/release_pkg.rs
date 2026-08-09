@@ -196,8 +196,10 @@ pub fn version_sort_fields(version: &str) -> VersionSortFields {
 
 /// List order: higher numeric version first; for the same `X.Y.Z`,
 /// `X.Y.Z-client` rows sit above plain `X.Y.Z`, sorted A→Z by client name.
-/// Ignores release dates. Must match SQL
-/// `ORDER BY v_major DESC, v_minor DESC, v_patch DESC, has_client_suffix DESC, client_suffix ASC`.
+/// Ignores release dates and status. Must match the leading keys of SQL
+/// `ORDER BY v_major DESC, v_minor DESC, v_patch DESC, has_client_suffix DESC,
+/// client_suffix ASC` (admin adds `status DESC` after these — see
+/// [`cmp_admin_release_list`]).
 pub fn cmp_version_desc(a: &str, b: &str) -> Ordering {
     let fa = version_sort_fields(a);
     let fb = version_sort_fields(b);
@@ -212,6 +214,27 @@ pub fn cmp_sort_fields_desc(a: &VersionSortFields, b: &VersionSortFields) -> Ord
         .then_with(|| b.v_patch.cmp(&a.v_patch))
         .then_with(|| b.has_client_suffix.cmp(&a.has_client_suffix))
         .then_with(|| a.client_suffix.cmp(&b.client_suffix))
+}
+
+/// Admin `/admin/releases` tie-break after semver keys: `PUBLISHED` before
+/// `HIDDEN`. Matches SQL `ORDER BY status DESC` (`P` > `H` lexicographically;
+/// `STAGING` is filtered out of the list).
+pub fn cmp_status_published_first(a: &str, b: &str) -> Ordering {
+    b.cmp(a)
+}
+
+/// Full admin list order: [`cmp_version_desc`] then [`cmp_status_published_first`].
+/// Must match SQL
+/// `ORDER BY v_major DESC, v_minor DESC, v_patch DESC, has_client_suffix DESC,
+/// client_suffix ASC, status DESC`.
+pub fn cmp_admin_release_list(
+    a_version: &str,
+    a_status: &str,
+    b_version: &str,
+    b_status: &str,
+) -> Ordering {
+    cmp_version_desc(a_version, b_version)
+        .then_with(|| cmp_status_published_first(a_status, b_status))
 }
 
 /// Artifact basename: LTS track → `vauban-{ver}+LTS.pkg`, else `vauban-{ver}.pkg`.
@@ -376,6 +399,40 @@ mod tests {
                 &version_sort_fields("v0.8.6")
             ),
             Ordering::Less
+        );
+    }
+
+    #[test]
+    fn status_tie_break_published_before_hidden() {
+        use crate::models::{RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED};
+
+        assert_eq!(
+            cmp_status_published_first(RELEASE_STATUS_PUBLISHED, RELEASE_STATUS_HIDDEN),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp_status_published_first(RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED),
+            Ordering::Greater
+        );
+        assert_eq!(
+            cmp_admin_release_list(
+                "v1.0.1",
+                RELEASE_STATUS_HIDDEN,
+                "v1.0.1",
+                RELEASE_STATUS_PUBLISHED
+            ),
+            Ordering::Greater,
+            "same version: HIDDEN must sort after PUBLISHED"
+        );
+        assert_eq!(
+            cmp_admin_release_list(
+                "v1.0.2",
+                RELEASE_STATUS_HIDDEN,
+                "v1.0.1",
+                RELEASE_STATUS_PUBLISHED
+            ),
+            Ordering::Less,
+            "semver still beats status"
         );
     }
 }

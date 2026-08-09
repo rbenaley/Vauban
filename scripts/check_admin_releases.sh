@@ -272,10 +272,14 @@ if [[ -f "$LIST" ]]; then
   grep -n 'page_offset' "$LIST" >/dev/null \
     || fail "$LIST must use page_offset for SQL limit/offset"
   grep -n 'v_major().desc()' "$LIST" >/dev/null \
-    || fail "$LIST must ORDER BY v_major.desc (SQL semver; status toggles must not reshuffle)"
+    || fail "$LIST must ORDER BY v_major.desc (SQL semver)"
+  grep -n 'status().desc()' "$LIST" >/dev/null \
+    || fail "$LIST must ORDER BY status.desc (PUBLISHED before HIDDEN at same semver)"
   if grep -nE 'page_slice|cmp_version_desc' "$LIST" >/dev/null; then
     fail "$LIST must not page_slice or cmp_version_desc (SQL ORDER BY + limit/offset)"
   fi
+  grep -n 'cmp_admin_release_list' src/release_pkg.rs >/dev/null \
+    || fail "release_pkg must define cmp_admin_release_list (admin list order contract)"
   grep -n 'channel_badge_class' "$LIST" >/dev/null \
     || fail "$LIST must color channel badges via channel_badge_class"
   grep -n 'release_status_badge_class' "$LIST" >/dev/null \

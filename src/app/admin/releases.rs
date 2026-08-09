@@ -140,6 +140,8 @@ async fn admin_releases_page(cx: &Cx) -> Result {
             Release::fields().v_patch().desc(),
             Release::fields().has_client_suffix().desc(),
             Release::fields().client_suffix().asc(),
+            // Same semver: PUBLISHED before HIDDEN (`status DESC`; STAGING excluded).
+            Release::fields().status().desc(),
         ))
         .limit(LIST_PAGE_SIZE)
         .offset(page_offset(page, LIST_PAGE_SIZE))

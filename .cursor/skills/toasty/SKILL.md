@@ -65,13 +65,20 @@ in SQL:
     Release::fields().v_patch().desc(),
     Release::fields().has_client_suffix().desc(),
     Release::fields().client_suffix().asc(),
+    // Admin list only — same semver: PUBLISHED before HIDDEN.
+    // Release::fields().status().desc(),
 ))
 .limit(PAGE)
 .offset(page_offset(page, PAGE))
 ```
 
+`/admin/releases` **must** include `status().desc()` after the semver keys
+(matches `release_pkg::cmp_admin_release_list`). Org Builds only loads
+`PUBLISHED`, so the status key is optional there.
+
 Do **not** `cmp_version_desc` / `page_slice` on those list hot paths.
-`cmp_version_desc` remains the pure-order contract for unit/proptest.
+`cmp_version_desc` remains the pure version-order contract for unit/proptest;
+admin status tie-break is `cmp_admin_release_list`.
 
 ## Query shape (typed)
 

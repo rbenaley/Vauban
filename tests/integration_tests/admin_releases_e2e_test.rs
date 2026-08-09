@@ -1513,6 +1513,75 @@ async fn e2e_admin_create_rejects_unusable_manifeste_version() {
     cleanup(&db).await;
 }
 
+/// Same version string: HIDDEN inserted first must still list under PUBLISHED.
+#[tokio::test]
+async fn e2e_admin_releases_same_version_published_before_hidden() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("adm-status-tie");
+    let slug = unique_slug("adm-status-tie");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let version = format!("v91.{}", unique_slug("same"));
+    let sort = vcp::release_pkg::version_sort_fields(&version);
+    let (hidden_id, published_id) = {
+        let mut conn = db.clone();
+        let hidden = toasty::create!(Release {
+            version: version.clone(),
+            channel: "Stable".to_owned(),
+            released_on: "2026-01-01".to_owned(),
+            status: RELEASE_STATUS_HIDDEN.to_owned(),
+            notes: "FIX: old twin".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: sort.v_major,
+            v_minor: sort.v_minor,
+            v_patch: sort.v_patch,
+            has_client_suffix: sort.has_client_suffix,
+            client_suffix: sort.client_suffix.clone(),
+        })
+        .exec(&mut conn)
+        .await
+        .expect("hidden");
+        let published = toasty::create!(Release {
+            version: version.clone(),
+            channel: "Stable".to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            status: RELEASE_STATUS_PUBLISHED.to_owned(),
+            notes: "FIX: new twin".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: sort.v_major,
+            v_minor: sort.v_minor,
+            v_patch: sort.v_patch,
+            has_client_suffix: sort.has_client_suffix,
+            client_suffix: sort.client_suffix.clone(),
+        })
+        .exec(&mut conn)
+        .await
+        .expect("published");
+        (hidden.id, published.id)
+    };
+
+    let list = get(&router, "/admin/releases", cookie.as_deref()).await;
+    assert_eq!(status(&list), StatusCode::OK);
+    let html = body_text(list).await;
+    let pub_at = html
+        .find(&format!("/admin/releases/{published_id}"))
+        .expect("published edit href");
+    let hid_at = html
+        .find(&format!("/admin/releases/{hidden_id}"))
+        .expect("hidden edit href");
+    assert!(
+        pub_at < hid_at,
+        "same version: PUBLISHED before HIDDEN (hidden inserted first): {html}"
+    );
+
+    cleanup(&db).await;
+}
+
 #[tokio::test]
 async fn e2e_admin_releases_sql_semver_order_and_sort_columns() {
     let _guard = db_lock().lock().await;

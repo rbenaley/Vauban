@@ -232,9 +232,19 @@ fn inv_admin_releases_list_actions_and_badges() {
     ));
     assert!(src.contains("release_status_badge_class"));
     assert!(src.contains("v_major().desc()"));
+    assert!(
+        src.contains("status().desc()"),
+        "admin list must tie-break same semver with status DESC (PUBLISHED before HIDDEN)"
+    );
     assert!(!src.contains("cmp_version_desc"));
+    assert!(!src.contains("cmp_admin_release_list"));
     assert!(src.contains("vb-row-actions"));
     assert!(src.contains("vb-rel-actions"));
+    let pkg = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/release_pkg.rs"));
+    assert!(
+        pkg.contains("fn cmp_admin_release_list") && pkg.contains("fn cmp_status_published_first"),
+        "release_pkg must keep admin list order contract helpers"
+    );
     assert!(src.contains("vb-rel-head"));
     assert!(src.contains("vb-rel-row"));
     assert!(src.contains("delete="));

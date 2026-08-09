@@ -5,7 +5,7 @@ use std::sync::Arc;
 use http_body_util::BodyExt;
 use tokio::sync::Barrier;
 use topcoat::router::StatusCode;
-use vcp::models::{RELEASE_GA_ORG_ID, Release};
+use vcp::models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED, Release};
 
 use crate::common::{
     cleanup, create_org_with_membership, db_lock, get, login_cookie, post_form, status, test_db,
@@ -145,6 +145,93 @@ async fn battle_parallel_admin_releases_page_pagination() {
         (1..=10).contains(&count_channel_badges(&page2)),
         "page2 rows under contention: {page2}"
     );
+
+    cleanup(&db).await;
+}
+
+/// Same semver twins under concurrent list reads: PUBLISHED must stay above HIDDEN.
+#[tokio::test]
+async fn battle_parallel_same_version_published_before_hidden() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-rel-tie");
+    let slug = unique_slug("battle-rel-tie");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+
+    let version = format!("v94.{}", unique_slug("tie"));
+    let sort = vcp::release_pkg::version_sort_fields(&version);
+    let (hidden_id, published_id) = {
+        let mut conn = db.clone();
+        // Insert HIDDEN first so insertion order would put it above PUBLISHED
+        // without the status DESC tie-break.
+        let hidden = toasty::create!(Release {
+            version: version.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-01-01".to_owned(),
+            status: RELEASE_STATUS_HIDDEN.to_owned(),
+            notes: "FIX: hidden twin".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: sort.v_major,
+            v_minor: sort.v_minor,
+            v_patch: sort.v_patch,
+            has_client_suffix: sort.has_client_suffix,
+            client_suffix: sort.client_suffix.clone(),
+        })
+        .exec(&mut conn)
+        .await
+        .expect("hidden");
+        let published = toasty::create!(Release {
+            version: version.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            status: RELEASE_STATUS_PUBLISHED.to_owned(),
+            notes: "FIX: published twin".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: sort.v_major,
+            v_minor: sort.v_minor,
+            v_patch: sort.v_patch,
+            has_client_suffix: sort.has_client_suffix,
+            client_suffix: sort.client_suffix.clone(),
+        })
+        .exec(&mut conn)
+        .await
+        .expect("published");
+        (hidden.id, published.id)
+    };
+
+    let router = Arc::new(test_router().await);
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
+    let barrier = Arc::new(Barrier::new(4));
+    let mut handles = Vec::with_capacity(4);
+    for _ in 0..4 {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        let barrier = barrier.clone();
+        let published_needle = format!("/admin/releases/{published_id}");
+        let hidden_needle = format!("/admin/releases/{hidden_id}");
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let resp = get(router.as_ref(), "/admin/releases", Some(&cookie)).await;
+            assert_eq!(status(&resp), StatusCode::OK);
+            let body = resp.into_body().collect().await.expect("body").to_bytes();
+            let html = String::from_utf8_lossy(&body).into_owned();
+            let pub_at = html
+                .find(&published_needle)
+                .unwrap_or_else(|| panic!("missing published row: {html}"));
+            let hid_at = html
+                .find(&hidden_needle)
+                .unwrap_or_else(|| panic!("missing hidden row: {html}"));
+            assert!(
+                pub_at < hid_at,
+                "PUBLISHED must precede HIDDEN at same version under contention"
+            );
+        }));
+    }
+    for h in handles {
+        h.await.expect("join");
+    }
 
     cleanup(&db).await;
 }
