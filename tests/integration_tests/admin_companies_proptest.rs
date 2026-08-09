@@ -2,8 +2,8 @@
 
 use proptest::prelude::*;
 use vcp::companies_accounts::{
-    apply_lts_compose_action, clamp_lts_count, format_technical_contact, normalize_contact_email,
-    normalize_emails, parse_lts_subscriptions,
+    COMPANY_DISPLAY_SEP, apply_lts_compose_action, clamp_lts_count, format_company_address,
+    format_technical_contact, normalize_contact_email, normalize_emails, parse_lts_subscriptions,
 };
 use vcp::list_page::{COMPANIES_PAGE_SIZE, LIST_PAGE_SIZE};
 use vcp::models::{MAX_LTS_SUBSCRIPTIONS_DEFAULT, MAX_USERS_PER_COMPANY};
@@ -115,6 +115,40 @@ proptest! {
         if name.trim().is_empty() && email.trim().is_empty() {
             prop_assert_eq!(line, "—");
         }
+    }
+
+    #[test]
+    fn prop_format_company_address_joins_nonempty_lines(
+        a in "[A-Za-z0-9 .,-]{1,24}",
+        b in "[A-Za-z0-9 .,-]{1,24}",
+        c in "[A-Za-z0-9 .,-]{0,24}",
+    ) {
+        let raw = format!("{a}\n  \n{b}\n{c}\n");
+        let out = format_company_address(&raw);
+        prop_assert!(!out.is_empty());
+        prop_assert!(!out.contains('\n'));
+        prop_assert!(out.contains(a.trim()) && out.contains(b.trim()));
+        if c.trim().is_empty() {
+            prop_assert_eq!(
+                out,
+                format!("{}{}{}", a.trim(), COMPANY_DISPLAY_SEP, b.trim())
+            );
+        } else {
+            prop_assert_eq!(
+                out,
+                format!(
+                    "{}{}{}{}{}",
+                    a.trim(),
+                    COMPANY_DISPLAY_SEP,
+                    b.trim(),
+                    COMPANY_DISPLAY_SEP,
+                    c.trim()
+                )
+            );
+        }
+        // Same glyph as technical contact name/email join.
+        let contact = format_technical_contact("Name", "a@b.test");
+        prop_assert!(contact.contains(COMPANY_DISPLAY_SEP));
     }
 }
 

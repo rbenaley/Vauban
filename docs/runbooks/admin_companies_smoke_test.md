@@ -48,7 +48,11 @@ just test --test integration_tests -- admin_companies -- --test-threads=1
 2. Open `/admin/companies` — expect Concept cards (contact, ADDRESS/VAT,
    USER ACCOUNTS pills, Edit + trash). No reserved `vauban` card.
 3. Click **+ New company**; fill **Technical contact — full name** and
-   **Technical contact — email** (two fields), set **Vauban LTS** /
+   **Technical contact — email** (two fields). For **Company address**, enter
+   multi-line text (e.g. street / city / country on separate lines) — the
+   `/admin/companies` card and `/{org}/account` must show those lines joined
+   with the same ` · ` separator as technical contact (name · email), not raw
+   newlines. Set **Vauban LTS** /
    **Industrial LTS** steppers with `+` / `-` (client-side signals: no
    page reload per click; values post on Save only; 0..N, start at 0),
    plus up to seat-cap email-only USER ACCOUNTS (no password fields).

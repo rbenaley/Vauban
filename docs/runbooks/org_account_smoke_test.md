@@ -33,14 +33,19 @@ just test --test integration_tests -- org_account -- --test-threads=1
 
 ## A -- Fiche parity
 
-1. Sign in as an org member; open `/{org}/account`.
-2. Expect company **name**, **plan**, **status**, **address**, **VAT**,
+1. Sign in via magic link as an org member; open `/{org}/account`.
+2. Expect the matching **USER ACCOUNTS** pill to use the `is-you` highlight;
+   other member pills stay muted. No **SESSION** / **Signed in as** block.
+3. Expect company **name**, **plan**, **status**, **address**, **VAT**,
    technical contact, **Vauban LTS** / **Industrial LTS** counts, and
    **USER ACCOUNTS** pills matching `/admin/companies` for that org.
-   SUBSCRIPTION must **not** show Supported builds.
-3. No **SIGNED-IN USER** mockup block — only company fiche + **Sign out**.
+   Multi-line addresses must appear joined with ` · ` (same separator as
+   technical contact). SUBSCRIPTION must **not** show Supported builds.
+4. No Concept **SIGNED-IN USER** mockup label — company fiche + pill highlight
+   + **Sign out**.
 
-Pass: values match the admin company fiche / Organization row (not mockup).
+Pass: session member pill matches the login identity; fiche values match the
+admin company / Organization row (not mockup).
 
 ## B -- Denial paths
 

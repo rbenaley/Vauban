@@ -4,9 +4,11 @@ use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
 use vcp::models::Organization;
 
+use vcp::models::MEMBERSHIP_ROLE_ORG;
+
 use crate::common::{
-    cleanup, create_org_with_membership, create_test_org, db_lock, get, login_cookie, status,
-    test_db, test_router, unique_email, unique_slug,
+    cleanup, create_membership, create_org_with_membership, create_test_org, create_test_user,
+    db_lock, get, login_cookie, status, test_db, test_router, unique_email, unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -70,8 +72,16 @@ async fn e2e_org_account_shows_company_fiche_fields() {
     assert!(html.contains(&email), "member pill: {html}");
     assert!(html.contains("USER ACCOUNTS"), "{html}");
     assert!(
+        html.contains("vb-account-pill is-you"),
+        "session member pill highlight: {html}"
+    );
+    assert!(
+        !html.contains("Signed in as") && !html.contains("data-account-signed-in"),
+        "no SESSION Signed in as block: {html}"
+    );
+    assert!(
         !html.contains("SIGNED-IN USER"),
-        "account page is company fiche only: {html}"
+        "must not use Concept SIGNED-IN USER mockup label: {html}"
     );
     assert!(
         !html.contains("Supported builds"),
@@ -80,6 +90,51 @@ async fn e2e_org_account_shows_company_fiche_fields() {
     assert!(
         html.contains("Sign out") || html.contains("logout"),
         "{html}"
+    );
+
+    cleanup(&db).await;
+}
+
+/// With two members, only the session user's pill is marked `is-you`.
+#[tokio::test]
+async fn e2e_org_account_highlights_only_signed_in_member() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email_a = unique_email("acct-you-a");
+    let email_b = unique_email("acct-you-b");
+    let slug = unique_slug("acct-you");
+    let (_user_a, org) =
+        create_org_with_membership(&db, &email_a, "password", &slug, "member").await;
+    let user_b = create_test_user(&db, &email_b, "password").await;
+    create_membership(&db, user_b.id, org.id, MEMBERSHIP_ROLE_ORG).await;
+
+    let cookie = login_cookie(&router, &email_b).await.expect("cookie");
+    let page = get(&router, &format!("/{slug}/account"), Some(&cookie)).await;
+    assert_eq!(status(&page), StatusCode::OK);
+    let html = body_text(page).await;
+
+    assert!(html.contains(&email_a) && html.contains(&email_b), "{html}");
+    assert!(
+        !html.contains("Signed in as") && !html.contains("data-account-signed-in"),
+        "no SESSION Signed in as block: {html}"
+    );
+    assert_eq!(
+        html.matches("vb-account-pill is-you").count(),
+        1,
+        "exactly one session pill: {html}"
+    );
+    let you_at = html.find("vb-account-pill is-you").expect("is-you pill");
+    let you_window = &html[you_at..(you_at + 200).min(html.len())];
+    assert!(
+        you_window.contains(&email_b),
+        "is-you pill must be B: {you_window}"
+    );
+    assert!(
+        !you_window.contains(&email_a),
+        "is-you pill must not be A: {you_window}"
     );
 
     cleanup(&db).await;

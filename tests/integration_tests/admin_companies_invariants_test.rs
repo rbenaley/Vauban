@@ -124,6 +124,8 @@ fn inv_mailbox_email_validation_wired() {
     assert!(accounts.contains("fn parse_portal_email"));
     assert!(accounts.contains("fn normalize_contact_email"));
     assert!(accounts.contains("fn format_technical_contact"));
+    assert!(accounts.contains("fn format_company_address"));
+    assert!(accounts.contains("COMPANY_DISPLAY_SEP"));
     assert!(accounts.contains("Mailbox::new"));
     assert!(accounts.contains("Result<Vec<String>, String>"));
     assert!(cargo.contains("\"mail\""));
@@ -205,6 +207,10 @@ fn inv_admin_companies_list_concept_and_edit_delete() {
     assert!(shard.contains("vb-account-pill"));
     assert!(shard.contains("ico_trash"));
     assert!(shard.contains("delete="));
+    assert!(
+        shard.contains("format_company_address"),
+        "shard must join multi-line addresses with COMPANY_DISPLAY_SEP"
+    );
     assert!(
         shard.contains("company_cards_page"),
         "shard must page via company_cards_page"

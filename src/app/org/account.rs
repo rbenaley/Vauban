@@ -8,7 +8,9 @@ use topcoat::{
 use crate::{
     app::org::Org,
     auth::{capability_denied, db, require_org},
-    companies_accounts::format_technical_contact,
+    companies_accounts::{
+        account_member_pill_class, format_company_address, format_technical_contact,
+    },
     models::Membership,
     perms::perms_for_user,
 };
@@ -23,6 +25,7 @@ async fn account_page(cx: &Cx) -> Result {
     }
 
     let org = ctx.org.clone();
+    let signed_in_email = ctx.user.email.clone();
     let technical_contact =
         format_technical_contact(&org.technical_contact_name, &org.technical_contact_email);
 
@@ -44,11 +47,7 @@ async fn account_page(cx: &Cx) -> Result {
     }
     member_emails.sort();
 
-    let address = if org.address.trim().is_empty() {
-        "—".to_owned()
-    } else {
-        org.address.clone()
-    };
+    let address = format_company_address(&org.address);
     let vat = if org.vat.trim().is_empty() {
         "—".to_owned()
     } else {
@@ -115,7 +114,9 @@ async fn account_page(cx: &Cx) -> Result {
                     <span style="font-size: 13px; color: #8a8f96;">"None"</span>
                 } else {
                     for email in member_emails {
-                        <span class="vb-account-pill">(email)</span>
+                        let pill_class = account_member_pill_class(&email, &signed_in_email)
+                            .to_owned();
+                        <span class=(pill_class)>(email)</span>
                     }
                 }
             </div>

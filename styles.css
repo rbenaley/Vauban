@@ -769,6 +769,11 @@ html:has(.vb-issue-lightbox[open]) { overflow: hidden; }
   background: #f3f5f2; border: 1px solid #e4e7e2;
   border-radius: 999px; padding: 3px 10px;
 }
+.vb-account-pill.is-you {
+  color: #14171c; background: color-mix(in srgb, var(--accent) 14%, #fff);
+  border-color: color-mix(in srgb, var(--accent) 42%, #e4e7e2);
+  font-weight: 600;
+}
 .vb-lead {
   margin: 0 0 18px; color: var(--muted); font-size: 14px;
   text-wrap: pretty;

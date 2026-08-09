@@ -26,14 +26,42 @@ fn inv_account_page_reads_org_and_members() {
     assert!(src.contains("account_read"));
     assert!(src.contains("require_org"));
     assert!(src.contains("org.address"));
+    assert!(
+        src.contains("format_company_address"),
+        "account must format multi-line addresses for display"
+    );
     assert!(src.contains("org.vat"));
     assert!(src.contains("lts_subscriptions"));
     assert!(src.contains("industrial_lts_subscriptions"));
     assert!(src.contains("USER ACCOUNTS"));
     assert!(src.contains("Membership::all"));
-    assert!(!src.contains("SIGNED-IN USER"));
+    assert!(
+        src.contains("ctx.user.email") && src.contains("account_member_pill_class"),
+        "account must bind session email and highlight the matching pill"
+    );
+    assert!(
+        !src.contains("SESSION")
+            && !src.contains("Signed in as")
+            && !src.contains("data-account-signed-in"),
+        "session identity is the USER ACCOUNTS pill only"
+    );
+    assert!(
+        !src.contains("SIGNED-IN USER"),
+        "must not use the Concept SIGNED-IN USER mockup label"
+    );
     assert!(!src.contains("Acme Infrastructure"));
     assert!(!src.contains("l.martin@acme"));
+    let helpers = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/companies_accounts.rs"
+    ));
+    assert!(helpers.contains("fn is_signed_in_member"));
+    assert!(helpers.contains("fn account_member_pill_class"));
+    let css = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
+    assert!(
+        css.contains(".vb-account-pill.is-you"),
+        "styles must highlight the session account pill"
+    );
     let login = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/login.rs"));
     assert!(
         !login.contains("\"acme-infrastructure\""),

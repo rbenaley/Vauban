@@ -149,6 +149,13 @@ grep -n 'fn normalize_contact_email' "$ACCOUNTS" >/dev/null \
   || fail "$ACCOUNTS must define normalize_contact_email"
 grep -n 'fn format_technical_contact' "$ACCOUNTS" >/dev/null \
   || fail "$ACCOUNTS must define format_technical_contact"
+grep -n 'fn format_company_address' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS must define format_company_address"
+grep -n 'COMPANY_DISPLAY_SEP' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS must define COMPANY_DISPLAY_SEP for address/contact"
+SHARD="src/app/admin/companies/search_shard.rs"
+grep -n 'format_company_address' "$SHARD" >/dev/null \
+  || fail "$SHARD must display addresses via format_company_address"
 grep -n 'Mailbox::new' "$ACCOUNTS" >/dev/null || fail "$ACCOUNTS must validate via Mailbox::new"
 grep -n 'Result<Vec<String>, String>' "$ACCOUNTS" >/dev/null \
   || fail "$ACCOUNTS normalize_emails must return Result (fail-closed)"

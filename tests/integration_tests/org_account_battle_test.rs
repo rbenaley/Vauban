@@ -35,6 +35,7 @@ async fn battle_parallel_org_account_gets() {
         let cookie = cookie.clone();
         let path = path.clone();
         let barrier = barrier.clone();
+        let email = email.clone();
         let router = test_router().await;
         handles.push(tokio::spawn(async move {
             barrier.wait().await;
@@ -48,6 +49,11 @@ async fn battle_parallel_org_account_gets() {
             );
             assert!(html.contains("USER ACCOUNTS"), "{html}");
             assert!(html.contains("Vauban LTS subscriptions"), "{html}");
+            assert!(
+                html.contains("vb-account-pill is-you") && html.contains(&email),
+                "session pill under contention: {html}"
+            );
+            assert!(!html.contains("Signed in as"), "{html}");
             assert!(!html.contains("SIGNED-IN USER"), "{html}");
         }));
     }

@@ -9,7 +9,7 @@ use super::load::company_cards_page;
 use crate::{
     app::_components::ico_trash,
     auth::{capability_denied, require_staff},
-    companies_accounts::format_technical_contact,
+    companies_accounts::{format_company_address, format_technical_contact},
     companies_search::normalize_query,
     list_page::parse_page,
     perms::perms_for_user,
@@ -100,7 +100,7 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
                             <div class="vb-company-meta-col">
                                 <div class="vb-company-meta-label">"ADDRESS"</div>
                                 <div class="vb-company-meta-value">
-                                    (card.org.address.clone())
+                                    (format_company_address(&card.org.address))
                                 </div>
                             </div>
                             <div class="vb-company-meta-col vat">

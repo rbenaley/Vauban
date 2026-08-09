@@ -7,7 +7,8 @@ use http_body_util::BodyExt;
 use tokio::sync::Barrier;
 use topcoat::router::StatusCode;
 use vcp::companies_accounts::{
-    apply_lts_compose_action, clamp_lts_count, normalize_contact_email, normalize_emails,
+    COMPANY_DISPLAY_SEP, apply_lts_compose_action, clamp_lts_count, format_company_address,
+    normalize_contact_email, normalize_emails,
 };
 use vcp::seats::{can_add_member, membership_count};
 
@@ -58,6 +59,30 @@ async fn battle_parallel_seat_helper_reads() {
     }
 
     cleanup(&db).await;
+}
+
+#[test]
+fn battle_parallel_format_company_address() {
+    let raw = "Scalable Solutions\nChaussee de Mons 1229\n1070 Bruxelles\nBelgique";
+    let expected = format!(
+        "Scalable Solutions{COMPANY_DISPLAY_SEP}Chaussee de Mons 1229{COMPANY_DISPLAY_SEP}1070 Bruxelles{COMPANY_DISPLAY_SEP}Belgique"
+    );
+    let n = 8usize;
+    let barrier = Arc::new(std::sync::Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for _ in 0..n {
+        let barrier = Arc::clone(&barrier);
+        let raw = raw.to_owned();
+        let expected = expected.clone();
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            assert_eq!(format_company_address(&raw), expected);
+            assert!(!format_company_address(&raw).contains('\n'));
+        }));
+    }
+    for h in handles {
+        h.join().expect("join");
+    }
 }
 
 #[test]

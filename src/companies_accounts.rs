@@ -98,6 +98,24 @@ pub fn normalize_contact_email(raw: &str) -> Result<String, String> {
 }
 
 /// Display line for company technical contact (name and/or email).
+/// True when `email` is the session user (case-insensitive). Used to mark the
+/// current account pill on `/{org}/account`.
+pub fn is_signed_in_member(email: &str, signed_in_email: &str) -> bool {
+    !signed_in_email.is_empty() && email.eq_ignore_ascii_case(signed_in_email.trim())
+}
+
+/// Pill class for USER ACCOUNTS: highlight the session member.
+pub fn account_member_pill_class(email: &str, signed_in_email: &str) -> &'static str {
+    if is_signed_in_member(email, signed_in_email) {
+        "vb-account-pill is-you"
+    } else {
+        "vb-account-pill"
+    }
+}
+
+/// Shared display separator (technical contact name/email, multi-line address).
+pub const COMPANY_DISPLAY_SEP: &str = " · ";
+
 pub fn format_technical_contact(name: &str, email: &str) -> String {
     let name = name.trim();
     let email = email.trim();
@@ -105,7 +123,23 @@ pub fn format_technical_contact(name: &str, email: &str) -> String {
         (true, true) => "—".to_owned(),
         (false, true) => name.to_owned(),
         (true, false) => email.to_owned(),
-        (false, false) => format!("{name} · {email}"),
+        (false, false) => format!("{name}{COMPANY_DISPLAY_SEP}{email}"),
+    }
+}
+
+/// Single-line display for a stored company address (textarea may contain
+/// newlines). Non-empty lines are trimmed and joined with
+/// [`COMPANY_DISPLAY_SEP`] (same glyph as technical contact).
+pub fn format_company_address(address: &str) -> String {
+    let lines: Vec<&str> = address
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        "—".to_owned()
+    } else {
+        lines.join(COMPANY_DISPLAY_SEP)
     }
 }
 
@@ -441,7 +475,45 @@ mod tests {
         assert_eq!(format_technical_contact("", " a@x.test "), "a@x.test");
         assert_eq!(
             format_technical_contact("Ada Lovelace", "ada@x.test"),
-            "Ada Lovelace · ada@x.test"
+            format!("Ada Lovelace{COMPANY_DISPLAY_SEP}ada@x.test")
+        );
+    }
+
+    #[test]
+    fn format_company_address_joins_lines_with_display_sep() {
+        assert_eq!(format_company_address(""), "—");
+        assert_eq!(format_company_address("  \n  "), "—");
+        assert_eq!(format_company_address("1 Rue Alone"), "1 Rue Alone");
+        assert_eq!(
+            format_company_address(
+                "Scalable Solutions\nChaussée de Mons 1229\n1070 Bruxelles\nBelgique"
+            ),
+            format!(
+                "Scalable Solutions{COMPANY_DISPLAY_SEP}Chaussée de Mons 1229{COMPANY_DISPLAY_SEP}1070 Bruxelles{COMPANY_DISPLAY_SEP}Belgique"
+            )
+        );
+        assert_eq!(
+            format_company_address("  Line A  \r\n\r\n  Line B  \n"),
+            format!("Line A{COMPANY_DISPLAY_SEP}Line B")
+        );
+        assert!(
+            format_company_address("A\nB").contains(COMPANY_DISPLAY_SEP),
+            "address sep must match technical contact glyph"
+        );
+    }
+
+    #[test]
+    fn signed_in_member_pill_marks_session_user() {
+        assert!(is_signed_in_member("Ada@X.test", " ada@x.test "));
+        assert!(!is_signed_in_member("other@x.test", "ada@x.test"));
+        assert!(!is_signed_in_member("ada@x.test", ""));
+        assert_eq!(
+            account_member_pill_class("ada@x.test", "ada@x.test"),
+            "vb-account-pill is-you"
+        );
+        assert_eq!(
+            account_member_pill_class("other@x.test", "ada@x.test"),
+            "vb-account-pill"
         );
     }
 

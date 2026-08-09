@@ -820,6 +820,93 @@ async fn e2e_admin_lts_counters_persist_and_fiche_user_can_login() {
     cleanup(&db).await;
 }
 
+/// Multi-line Company address displays with the technical-contact separator.
+#[tokio::test]
+async fn e2e_admin_companies_multiline_address_uses_display_sep() {
+    use vcp::companies_accounts::{COMPANY_DISPLAY_SEP, format_company_address};
+
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let admin_email = unique_email("addr-admin");
+    let admin_slug = unique_slug("addr-admin-org");
+    let (_admin, _aorg) =
+        create_org_with_membership(&db, &admin_email, "password", &admin_slug, "admin").await;
+    let admin_cookie = login(&router, &admin_email).await;
+
+    let name = format!("Addr Co {}", unique_slug("addrco"));
+    let member_email = unique_email("addr-member");
+    let address = "Scalable Solutions\nChaussee de Mons 1229\n1070 Bruxelles\nBelgique";
+    let displayed = format_company_address(address);
+    assert!(displayed.contains(COMPANY_DISPLAY_SEP));
+    assert!(!displayed.contains('\n'));
+
+    let form = company_compose_form(
+        &name,
+        "Addr Contact",
+        "addr-ops@example.com",
+        "FR112233445",
+        address,
+        &[&member_email],
+    );
+    let create = post_form(
+        &router,
+        "/admin/companies/new",
+        admin_cookie.as_deref(),
+        &form,
+    )
+    .await;
+    assert_eq!(status(&create), StatusCode::SEE_OTHER);
+
+    let org = {
+        let mut conn = db.clone();
+        Organization::all()
+            .exec(&mut conn)
+            .await
+            .expect("orgs")
+            .into_iter()
+            .find(|o| o.name == name)
+            .expect("created org")
+    };
+    assert!(
+        org.address.contains('\n'),
+        "DB must keep newlines: {}",
+        org.address
+    );
+
+    let list = get(
+        &router,
+        &format!("/admin/companies?q={}", urlencoding_encode(&name)),
+        admin_cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&list), StatusCode::OK);
+    let list_html = body_text(list).await;
+    assert!(
+        list_html.contains(&displayed),
+        "admin list must join address lines: {list_html}"
+    );
+
+    let _ = post_form(&router, "/logout", admin_cookie.as_deref(), "").await;
+    let member_cookie = login_cookie(&router, &member_email).await.expect("cookie");
+    let account = get(
+        &router,
+        &format!("/{}/account", org.slug),
+        Some(&member_cookie),
+    )
+    .await;
+    assert_eq!(status(&account), StatusCode::OK);
+    let account_html = body_text(account).await;
+    assert!(
+        account_html.contains(&displayed),
+        "account must join address lines: {account_html}"
+    );
+
+    cleanup(&db).await;
+}
+
 #[tokio::test]
 async fn e2e_admin_rejects_out_of_range_lts_count() {
     let _guard = db_lock().lock().await;
