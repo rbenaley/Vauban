@@ -47,6 +47,39 @@ fn inv_dashboard_stats_module_exported() {
     assert!(helpers.contains("pub fn latest_issue_by_updated_at"));
 }
 
+/// Pins the contract that OPEN ISSUES is FSM `Open`, not `!issue_is_closed`.
+#[test]
+fn inv_dashboard_open_tile_counts_fsm_open_not_non_closed() {
+    let helpers = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/dashboard_stats.rs"
+    ));
+    assert!(
+        helpers.contains("ISSUE_STATUS_OPEN"),
+        "open tile must key off ISSUE_STATUS_OPEN"
+    );
+    assert!(
+        helpers.contains("ISSUE_STATUS_IN_ANALYSIS"),
+        "analysis tile must key off ISSUE_STATUS_IN_ANALYSIS"
+    );
+    assert!(
+        !helpers.contains("issue_is_closed"),
+        "dashboard_stats must not reuse issue_is_closed (would fold In analysis into Open)"
+    );
+    assert!(
+        helpers.contains("summarize_open_excludes_in_analysis_and_terminal"),
+        "must keep the 16/3/1/1 Open-vs-In-analysis regression unit"
+    );
+    let script = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/scripts/check_dashboard_stats.sh"
+    ));
+    assert!(
+        script.contains("issue_is_closed") && script.contains("ISSUE_STATUS_OPEN"),
+        "check_dashboard_stats.sh must pin FSM open counting"
+    );
+}
+
 #[test]
 fn inv_toasty_filters_pins_dashboard_single_load() {
     let script = include_str!(concat!(

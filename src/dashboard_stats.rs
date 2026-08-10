@@ -3,10 +3,7 @@
 //! Typical orgs have tens of issues — one org-scoped load + in-process
 //! aggregation is cheaper than multiple SQL `COUNT(*)` round-trips.
 
-use crate::{
-    issue_status::issue_is_closed,
-    models::{ISSUE_STATUS_IN_ANALYSIS, Issue},
-};
+use crate::models::{ISSUE_STATUS_IN_ANALYSIS, ISSUE_STATUS_OPEN, Issue};
 
 /// Safety cap for the single org issues fetch (product expectation: tens).
 pub const DASHBOARD_ISSUES_CAP: usize = 500;
@@ -20,14 +17,16 @@ pub struct DashboardIssueStats {
 
 /// Summarize issue tiles from rows already ordered by `updated_at` DESC
 /// (or any order — counts do not depend on order; caller picks `latest` separately).
+///
+/// `open_count` is the FSM `Open` status only (not "non-closed"). `In analysis`
+/// is counted separately so the two dashboard tiles do not double-count.
 pub fn summarize_issue_stats(issues: &[Issue]) -> DashboardIssueStats {
     let mut open_count = 0usize;
     let mut in_analysis_count = 0usize;
     for issue in issues {
-        if !issue_is_closed(&issue.status) {
+        if issue.status.eq_ignore_ascii_case(ISSUE_STATUS_OPEN) {
             open_count += 1;
-        }
-        if issue.status.eq_ignore_ascii_case(ISSUE_STATUS_IN_ANALYSIS) {
+        } else if issue.status.eq_ignore_ascii_case(ISSUE_STATUS_IN_ANALYSIS) {
             in_analysis_count += 1;
         }
     }
@@ -49,7 +48,10 @@ pub fn latest_issue_by_updated_at(issues: &[Issue]) -> Option<&Issue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ISSUE_STATUS_CLOSED, ISSUE_STATUS_OPEN, ISSUE_STATUS_RESOLVED, Issue};
+    use crate::models::{
+        ISSUE_STATUS_CLOSED, ISSUE_STATUS_IN_ANALYSIS, ISSUE_STATUS_OPEN, ISSUE_STATUS_RESOLVED,
+        Issue,
+    };
     use proptest::prelude::*;
 
     fn sample(id: u64, status: &str, updated_at: i64) -> Issue {
@@ -77,10 +79,38 @@ mod tests {
             sample(3, ISSUE_STATUS_RESOLVED, 30),
             sample(4, ISSUE_STATUS_CLOSED, 40),
             sample(5, "in analysis", 50),
+            sample(6, "open", 60),
         ];
         let stats = summarize_issue_stats(&rows);
-        assert_eq!(stats.open_count, 3); // open + 2× in analysis
+        assert_eq!(stats.open_count, 2); // Open + case variant
         assert_eq!(stats.in_analysis_count, 2);
+    }
+
+    /// Regression: OPEN ISSUES must not equal "non-closed" (Open + In analysis).
+    /// Shape mirrors a real tenant mix (16 Open / 3 In analysis / 1 Resolved / 1 Closed).
+    #[test]
+    fn summarize_open_excludes_in_analysis_and_terminal() {
+        let mut rows = Vec::new();
+        let mut id = 1u64;
+        for _ in 0..16 {
+            rows.push(sample(id, ISSUE_STATUS_OPEN, id as i64));
+            id += 1;
+        }
+        for _ in 0..3 {
+            rows.push(sample(id, ISSUE_STATUS_IN_ANALYSIS, id as i64));
+            id += 1;
+        }
+        rows.push(sample(id, ISSUE_STATUS_RESOLVED, id as i64));
+        id += 1;
+        rows.push(sample(id, ISSUE_STATUS_CLOSED, id as i64));
+
+        let stats = summarize_issue_stats(&rows);
+        // Old bug: !reply-blocked => 16+3 = 19. Tiles must stay FSM-disjoint.
+        assert_eq!(
+            stats.open_count, 16,
+            "must not report 19 (Open folded with In analysis)"
+        );
+        assert_eq!(stats.in_analysis_count, 3);
     }
 
     #[test]
@@ -106,7 +136,7 @@ mod tests {
         #![proptest_config(crate::proptest_util::cases(48))]
 
         #[test]
-        fn prop_open_plus_closed_equals_len(
+        fn prop_fsm_tile_counts_partition_rows(
             statuses in prop::collection::vec(
                 prop_oneof![
                     Just(ISSUE_STATUS_OPEN.to_owned()),
@@ -123,9 +153,24 @@ mod tests {
                 .map(|(i, s)| sample(i as u64 + 1, s, i as i64))
                 .collect();
             let stats = summarize_issue_stats(&rows);
-            let closed = rows.iter().filter(|i| issue_is_closed(&i.status)).count();
-            prop_assert_eq!(stats.open_count + closed, rows.len());
-            prop_assert!(stats.in_analysis_count <= stats.open_count);
+            let open = rows
+                .iter()
+                .filter(|i| i.status.eq_ignore_ascii_case(ISSUE_STATUS_OPEN))
+                .count();
+            let analysis = rows
+                .iter()
+                .filter(|i| i.status.eq_ignore_ascii_case(ISSUE_STATUS_IN_ANALYSIS))
+                .count();
+            let terminal = rows
+                .iter()
+                .filter(|i| {
+                    i.status.eq_ignore_ascii_case(ISSUE_STATUS_RESOLVED)
+                        || i.status.eq_ignore_ascii_case(ISSUE_STATUS_CLOSED)
+                })
+                .count();
+            prop_assert_eq!(stats.open_count, open);
+            prop_assert_eq!(stats.in_analysis_count, analysis);
+            prop_assert_eq!(stats.open_count + stats.in_analysis_count + terminal, rows.len());
         }
     }
 }

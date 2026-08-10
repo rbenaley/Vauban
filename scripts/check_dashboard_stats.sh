@@ -21,6 +21,17 @@ grep -n 'fn latest_issue_by_updated_at' "$HELPERS" >/dev/null \
 grep -n 'DASHBOARD_ISSUES_CAP' "$HELPERS" >/dev/null \
   || fail "$HELPERS must define DASHBOARD_ISSUES_CAP"
 
+# OPEN ISSUES tile = FSM Open only (not !issue_is_closed / "non-closed").
+grep -n 'ISSUE_STATUS_OPEN' "$HELPERS" >/dev/null \
+  || fail "$HELPERS must count ISSUE_STATUS_OPEN for the open tile"
+grep -n 'ISSUE_STATUS_IN_ANALYSIS' "$HELPERS" >/dev/null \
+  || fail "$HELPERS must count ISSUE_STATUS_IN_ANALYSIS for the analysis tile"
+if grep -n 'issue_is_closed' "$HELPERS" >/dev/null; then
+  fail "$HELPERS must not use issue_is_closed for dashboard tiles (double-counts In analysis)"
+fi
+grep -n 'summarize_open_excludes_in_analysis_and_terminal' "$HELPERS" >/dev/null \
+  || fail "$HELPERS must keep the Open-vs-In-analysis regression unit test"
+
 grep -n 'summarize_issue_stats' "$DASH" >/dev/null \
   || fail "$DASH must call summarize_issue_stats"
 grep -n 'DASHBOARD_ISSUES_CAP' "$DASH" >/dev/null \

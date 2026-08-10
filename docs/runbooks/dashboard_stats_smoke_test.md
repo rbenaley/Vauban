@@ -38,9 +38,10 @@ rtk cargo test --lib dashboard_stats -- --test-threads=1
 
 1. Sign in as the client user; open `/{org}` dashboard.
 2. Note **OPEN ISSUES** and **IN ANALYSIS** tile values.
-3. Open `/{org}/issues` and count rows that are not Resolved/Closed
-   (open) and rows in **In analysis**.
-4. Expect dashboard tiles to match those counts (org-scoped only).
+3. Open `/{org}/issues` and count rows with status **Open** and rows
+   with status **In analysis** (Resolved / Closed are excluded from both
+   tiles; do not treat "not closed" as Open).
+4. Expect dashboard tiles to match those FSM status counts (org-scoped).
 
 Pass: tiles equal org Issues list aggregates; no foreign-org inflation.
 
@@ -66,8 +67,8 @@ Pass: single issues load + docs COUNT; no multi-COUNT issue fan-out.
 
 | Layer | Filter / artifact |
 |-------|-------------------|
-| Unit | `dashboard_stats::tests` (`--lib`) |
-| Invariants | `inv_`, `scripts/check_dashboard_stats.sh` |
-| Proptest | `prop_` |
-| Battle | `battle_` |
-| E2E | `e2e_` (`--test integration_tests`) |
+| Unit | `summarize_open_excludes_in_analysis_and_terminal` (16/3/1/1) |
+| Invariants | `inv_dashboard_open_tile_counts_fsm_open_not_non_closed`, `check_dashboard_stats.sh` |
+| Proptest | `prop_open_and_analysis_are_disjoint_fsm_counts` |
+| Battle | `battle_parallel_dashboard_gets_with_issue_stats` |
+| E2E | `e2e_dashboard_open_tile_excludes_in_analysis` (exact tile values) |

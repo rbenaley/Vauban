@@ -3,7 +3,6 @@
 use proptest::prelude::*;
 use vcp::{
     dashboard_stats::{latest_issue_by_updated_at, summarize_issue_stats},
-    issue_status::issue_is_closed,
     models::{
         ISSUE_STATUS_CLOSED, ISSUE_STATUS_IN_ANALYSIS, ISSUE_STATUS_OPEN, ISSUE_STATUS_RESOLVED,
         Issue,
@@ -31,7 +30,7 @@ proptest! {
     #![proptest_config(crate::common::prop_config(64))]
 
     #[test]
-    fn prop_in_analysis_subset_of_open(
+    fn prop_open_and_analysis_are_disjoint_fsm_counts(
         statuses in prop::collection::vec(
             prop_oneof![
                 Just(ISSUE_STATUS_OPEN.to_owned()),
@@ -48,10 +47,27 @@ proptest! {
             .map(|(i, s)| sample(i as u64 + 1, s, i as i64))
             .collect();
         let stats = summarize_issue_stats(&rows);
-        prop_assert!(stats.in_analysis_count <= stats.open_count);
-        prop_assert!(stats.open_count <= rows.len());
-        let closed = rows.iter().filter(|i| issue_is_closed(&i.status)).count();
-        prop_assert_eq!(stats.open_count + closed, rows.len());
+        let open = rows
+            .iter()
+            .filter(|i| i.status.eq_ignore_ascii_case(ISSUE_STATUS_OPEN))
+            .count();
+        let analysis = rows
+            .iter()
+            .filter(|i| i.status.eq_ignore_ascii_case(ISSUE_STATUS_IN_ANALYSIS))
+            .count();
+        let terminal = rows
+            .iter()
+            .filter(|i| {
+                i.status.eq_ignore_ascii_case(ISSUE_STATUS_RESOLVED)
+                    || i.status.eq_ignore_ascii_case(ISSUE_STATUS_CLOSED)
+            })
+            .count();
+        prop_assert_eq!(stats.open_count, open);
+        prop_assert_eq!(stats.in_analysis_count, analysis);
+        prop_assert_eq!(
+            stats.open_count + stats.in_analysis_count + terminal,
+            rows.len()
+        );
     }
 
     #[test]

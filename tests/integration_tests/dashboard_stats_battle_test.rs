@@ -17,6 +17,21 @@ async fn body_text(resp: topcoat::router::Response) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+fn tile_value_after(html: &str, label: &str) -> String {
+    let idx = html
+        .find(label)
+        .unwrap_or_else(|| panic!("missing tile label {label}"));
+    let after = &html[idx + label.len()..];
+    let marker = "vb-stat-value";
+    let v = after
+        .find(marker)
+        .unwrap_or_else(|| panic!("missing {marker} after {label}"));
+    let rest = &after[v + marker.len()..];
+    let start = rest.find('>').expect("value open") + 1;
+    let end = rest[start..].find('<').expect("value close") + start;
+    rest[start..end].trim().to_owned()
+}
+
 #[tokio::test]
 async fn battle_parallel_dashboard_gets_with_issue_stats() {
     let _guard = db_lock().lock().await;
@@ -72,12 +87,8 @@ async fn battle_parallel_dashboard_gets_with_issue_stats() {
             let html = body_text(resp).await;
             assert!(html.contains("OPEN ISSUES"), "{html}");
             assert!(html.contains("IN ANALYSIS"), "{html}");
-            // open = Open + In analysis = 2; in analysis = 1
-            assert!(html.contains("vb-stat-value"), "{html}");
-            assert!(
-                html.contains(">2<") || html.contains("(2)"),
-                "expected open_count=2 in stats: {html}"
-            );
+            assert_eq!(tile_value_after(&html, "OPEN ISSUES"), "1", "{html}");
+            assert_eq!(tile_value_after(&html, "IN ANALYSIS"), "1", "{html}");
         }));
     }
     for h in handles {
