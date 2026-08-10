@@ -123,29 +123,31 @@ proptest! {
         b in "[A-Za-z0-9 .,-]{1,24}",
         c in "[A-Za-z0-9 .,-]{0,24}",
     ) {
+        // Regex allows whitespace-only segments; the helper trims and drops them.
         let raw = format!("{a}\n  \n{b}\n{c}\n");
         let out = format_company_address(&raw);
+        let expected = {
+            let parts: Vec<&str> = [a.as_str(), b.as_str(), c.as_str()]
+                .into_iter()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect();
+            if parts.is_empty() {
+                "—".to_owned()
+            } else {
+                parts.join(COMPANY_DISPLAY_SEP)
+            }
+        };
         prop_assert!(!out.is_empty());
         prop_assert!(!out.contains('\n'));
-        prop_assert!(out.contains(a.trim()) && out.contains(b.trim()));
-        if c.trim().is_empty() {
-            prop_assert_eq!(
-                out,
-                format!("{}{}{}", a.trim(), COMPANY_DISPLAY_SEP, b.trim())
-            );
-        } else {
-            prop_assert_eq!(
-                out,
-                format!(
-                    "{}{}{}{}{}",
-                    a.trim(),
-                    COMPANY_DISPLAY_SEP,
-                    b.trim(),
-                    COMPANY_DISPLAY_SEP,
-                    c.trim()
-                )
-            );
+        for part in [a.as_str(), b.as_str(), c.as_str()]
+            .into_iter()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            prop_assert!(out.contains(part));
         }
+        prop_assert_eq!(out, expected);
         // Same glyph as technical contact name/email join.
         let contact = format_technical_contact("Name", "a@b.test");
         prop_assert!(contact.contains(COMPANY_DISPLAY_SEP));
