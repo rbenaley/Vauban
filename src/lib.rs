@@ -23,6 +23,7 @@ pub mod http_canonical;
 pub mod id_lookups;
 pub mod issue_anchor;
 pub mod issue_attachments;
+pub mod issue_fsm;
 pub mod issue_key;
 pub mod issue_status;
 pub mod issues_search;

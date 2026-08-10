@@ -668,6 +668,7 @@ async fn ensure_demo_issues(db: &mut Db, org_id: u64, member_id: u64) -> anyhow:
             opened_by_user_id: member_id,
             created_at: now - 86_400,
             updated_at: now - 7_200,
+            version: 1,
         })
         .exec(db)
         .await?;
@@ -707,6 +708,7 @@ async fn ensure_demo_issues(db: &mut Db, org_id: u64, member_id: u64) -> anyhow:
             opened_by_user_id: member_id,
             created_at: now - 172_800,
             updated_at: now - 172_800,
+            version: 1,
         })
         .exec(db)
         .await?;

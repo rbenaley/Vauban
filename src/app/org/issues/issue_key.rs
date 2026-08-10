@@ -6,7 +6,7 @@ use topcoat::{
     router::{
         content::multipart::Multipart,
         error::{SeeOther, not_found, redirect, see_other},
-        page, path_param, route,
+        page, path_param, query_params, route,
     },
     view::view,
 };
@@ -22,7 +22,8 @@ use crate::{
         ScreenshotUpload, attach_many, issue_attachment_list_limit, list_for_issue,
         screenshot_from_part, store_screenshot_uploads,
     },
-    issue_status::{close_issue_status, issue_is_closed, reopen_issue_status},
+    issue_fsm::{IssueEvent, IssueState},
+    issue_status::{ISSUE_ERR_CONFLICT, PersistError, advance_issue_with_retry, issue_is_closed},
     models::{
         ISSUE_ATTACHMENT_OPENER_COMMENT_ID, ISSUE_COMMENT_KIND_COMMENT, ISSUE_ROLE_REPORTER,
         ISSUE_ROLE_SUPPORT, ISSUE_ROLE_SYSTEM, Issue, IssueAttachment, IssueComment,
@@ -34,6 +35,11 @@ use crate::{
 
 #[path_param]
 struct IssueKey(str);
+
+#[query_params]
+struct OrgIssueDetailQuery {
+    err: Option<String>,
+}
 
 #[page]
 async fn issue_detail_page(cx: &Cx) -> Result {
@@ -47,6 +53,10 @@ async fn issue_detail_page(cx: &Cx) -> Result {
     if !perms.issues_read {
         return Err(capability_denied().into());
     }
+    let flash_conflict = query_params::<OrgIssueDetailQuery>(cx)
+        .ok()
+        .and_then(|q| q.err.clone())
+        .is_some_and(|e| e == ISSUE_ERR_CONFLICT);
 
     let mut database = db(cx);
     let key_owned = key.to_owned();
@@ -101,7 +111,10 @@ async fn issue_detail_page(cx: &Cx) -> Result {
     let reply_action = format!("/{org_slug}/issues/{}/reply", issue.key);
     let close_action = format!("/{org_slug}/issues/{}/close", issue.key);
     let reopen_action = format!("/{org_slug}/issues/{}/reopen", issue.key);
-    let closed = issue_is_closed(&issue.status);
+    let state = IssueState::try_from(issue.status.as_str()).unwrap_or(IssueState::Open);
+    let is_resolved = state == IssueState::Resolved;
+    let is_closed = state == IssueState::Closed;
+    let can_write = perms.issues_write;
 
     let timeline = build_discussion_rows(&comments, &users, &attachments, org_slug, now, tz);
     view! {
@@ -113,6 +126,15 @@ async fn issue_detail_page(cx: &Cx) -> Result {
             >
                 "Back to list"
             </a>
+            if flash_conflict {
+                <div
+                    class="vb-callout"
+                    style="margin-bottom: 12px; border-color: #c9a227; background: #fff8e6;"
+                    role="status"
+                >
+                    "This issue was updated by someone else. Review the current status and try again."
+                </div>
+            }
             <div
                 style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;"
             >
@@ -186,7 +208,40 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                     has_lightbox: !attachments.is_empty(),
                 }
             )
-            if closed {
+            if is_resolved {
+                <div
+                    class="vb-panel"
+                    id=(ISSUE_REPLY_ANCHOR)
+                    style="background: #fafbf9; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;"
+                >
+                    <div style="display: flex; align-items: center; gap: 11px;">
+                        <span
+                            style="width: 26px; height: 26px; flex: none; border-radius: 50%; background: #e9eaec; color: #5a5f66; display: flex; align-items: center; justify-content: center;"
+                        >
+                            (ico_check(cx, 13).await?)
+                        </span>
+                        <div
+                            style="font-size: 13.5px; color: #5a5f66; line-height: 1.5;"
+                        >
+                            "This issue is resolved. Close it when finished, or reopen to continue."
+                        </div>
+                    </div>
+                    if can_write {
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <form method="POST" action=(close_action)>
+                                <button class="vb-btn muted" type="submit">
+                                    "Close issue"
+                                </button>
+                            </form>
+                            <form method="POST" action=(reopen_action)>
+                                <button class="vb-btn outline" type="submit">
+                                    "Reopen issue"
+                                </button>
+                            </form>
+                        </div>
+                    }
+                </div>
+            } else if is_closed {
                 <div
                     class="vb-panel"
                     id=(ISSUE_REPLY_ANCHOR)
@@ -204,7 +259,7 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                             "This issue is closed. Reopen it to add a comment."
                         </div>
                     </div>
-                    if perms.issues_write {
+                    if can_write {
                         <form method="POST" action=(reopen_action)>
                             <button class="vb-btn outline" type="submit">
                                 "Reopen issue"
@@ -212,14 +267,8 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                         </form>
                     }
                 </div>
-            } else if perms.issues_write {
+            } else if can_write {
                 <div class="vb-panel" style="padding: 14px;">
-                    <form
-                        method="POST"
-                        action=(close_action)
-                        id="issue-close"
-                        style="display: none;"
-                    ></form>
                     <form
                         method="POST"
                         action=(reply_action)
@@ -243,13 +292,6 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                         <div
                             style="display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 12px;"
                         >
-                            <button
-                                class="vb-btn muted"
-                                type="submit"
-                                form="issue-close"
-                            >
-                                "Close issue"
-                            </button>
                             <button class="vb-btn" type="submit">"Reply"</button>
                         </div>
                     </form>
@@ -438,39 +480,15 @@ async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
 
 #[route(POST "/{org}/issues/{issue_key}/close")]
 async fn close_issue(cx: &Cx) -> Result<SeeOther> {
-    let org_slug = path_param::<Org>(cx);
-    let key = path_param::<IssueKey>(cx);
-    if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Ok(see_other(&reserved_admin_reply_target(key)));
-    }
-    let ctx = require_org(cx, org_slug).await.map_err(|_| not_found())?;
-    let perms = perms_for_user(cx, &ctx.user).await;
-    if !perms.issues_write {
-        return Err(capability_denied().into());
-    }
-
-    let mut database = db(cx);
-    let key_owned = key.to_owned();
-    let issue = Issue::all()
-        .filter(Issue::fields().organization_id().eq(ctx.org.id))
-        .filter(Issue::fields().key().eq(key_owned))
-        .limit(1)
-        .exec(&mut database)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .next();
-    let Some(mut issue) = issue else {
-        return Err(capability_denied().into());
-    };
-
-    let _ = close_issue_status(&mut database, &mut issue).await;
-
-    Ok(see_other(&org_reply_target(org_slug, key, None)))
+    org_advance_issue(cx, IssueEvent::Close).await
 }
 
 #[route(POST "/{org}/issues/{issue_key}/reopen")]
 async fn reopen_issue(cx: &Cx) -> Result<SeeOther> {
+    org_advance_issue(cx, IssueEvent::Reopen).await
+}
+
+async fn org_advance_issue(cx: &Cx, event: IssueEvent) -> Result<SeeOther> {
     let org_slug = path_param::<Org>(cx);
     let key = path_param::<IssueKey>(cx);
     if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
@@ -493,13 +511,24 @@ async fn reopen_issue(cx: &Cx) -> Result<SeeOther> {
         .unwrap_or_default()
         .into_iter()
         .next();
-    let Some(mut issue) = issue else {
+    let Some(issue) = issue else {
         return Err(capability_denied().into());
     };
 
-    let _ = reopen_issue_status(&mut database, &mut issue).await;
-
-    Ok(see_other(&org_reply_target(org_slug, key, None)))
+    match advance_issue_with_retry(&mut database, issue.id, event).await {
+        Ok(_) | Err(PersistError::Fsm(_)) | Err(PersistError::UnknownStatus(_)) => {
+            Ok(see_other(&org_reply_target(org_slug, key, None)))
+        }
+        Err(PersistError::Conflict) => Ok(see_other(&org_reply_target(
+            org_slug,
+            key,
+            Some(ISSUE_ERR_CONFLICT),
+        ))),
+        Err(PersistError::Db(err)) => {
+            tracing::warn!(org = %org_slug, key = %key, error = %err, "issue advance failed");
+            Ok(see_other(&org_reply_target(org_slug, key, None)))
+        }
+    }
 }
 
 fn build_discussion_rows(

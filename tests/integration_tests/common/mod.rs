@@ -818,6 +818,7 @@ pub async fn create_test_issue(
         opened_by_user_id,
         created_at: now,
         updated_at: now,
+        version: 1,
     })
     .exec(&mut conn)
     .await

@@ -88,8 +88,12 @@ fn inv_issue_detail_renders_details() {
         "detail must use shared issue_is_closed helper"
     );
     assert!(
-        src.contains("close_issue_status") && src.contains("reopen_issue_status"),
-        "detail must call close/reopen status helpers"
+        src.contains("advance_issue_with_retry"),
+        "detail must call advance_issue_with_retry"
+    );
+    assert!(
+        !src.contains("start-analysis") && !src.contains("/resolve\""),
+        "org detail must not expose start-analysis / resolve"
     );
     assert!(
         !src.contains("<span class=\"vb-btn muted\">\"Close issue\"</span>")
@@ -110,12 +114,20 @@ fn inv_issue_detail_renders_details() {
 fn inv_issue_status_helpers_exist() {
     let models = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/models/mod.rs"));
     let status = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/issue_status.rs"));
+    let fsm = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/issue_fsm.rs"));
     assert!(models.contains("ISSUE_STATUS_OPEN"));
     assert!(models.contains("ISSUE_STATUS_CLOSED"));
     assert!(models.contains("ISSUE_COMMENT_KIND_STATUS"));
+    assert!(models.contains("#[version]"));
     assert!(status.contains("fn issue_is_closed"));
+    assert!(status.contains("fn advance_issue"));
+    assert!(status.contains("is_condition_failed"));
+    assert!(!status.contains("sqlx"));
     assert!(status.contains("ISSUE_TIMELINE_CLOSED"));
     assert!(status.contains("ISSUE_TIMELINE_REOPENED"));
+    assert!(fsm.contains("fn transition"));
+    assert!(!fsm.contains("use toasty") && !fsm.contains("use topcoat"));
+    assert!(!fsm.contains("user_role") && !fsm.contains("PermissionContext"));
 }
 
 #[test]
@@ -141,6 +153,9 @@ fn inv_admin_issues_aggregate_surface() {
     assert!(detail.contains("?org="));
     assert!(detail.contains("/close"));
     assert!(detail.contains("/reopen"));
+    assert!(detail.contains("start-analysis"));
+    assert!(detail.contains("/resolve"));
+    assert!(detail.contains("advance_issue_with_retry"));
     assert!(detail.contains("issue_is_closed"));
     let shard = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -419,8 +434,8 @@ fn inv_issue_post_actions_anchor_on_the_reply_box() {
         );
         assert_eq!(
             src.matches("id=(ISSUE_REPLY_ANCHOR)").count(),
-            2,
-            "{name} detail must anchor both the reply form and the closed panel"
+            3,
+            "{name} detail must anchor the reply form, resolved panel, and closed panel"
         );
         assert!(
             !src.contains("id=\"issue-reply\""),

@@ -5,9 +5,12 @@ use std::sync::Arc;
 use tokio::sync::Barrier;
 use topcoat::router::StatusCode;
 use vcp::issue_anchor::ISSUE_REPLY_ANCHOR;
+use vcp::issue_fsm::IssueEvent;
+use vcp::issue_status::{PersistError, advance_issue};
 use vcp::models::{
     ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_REPORTER,
-    ISSUE_STATUS_CLOSED, ISSUE_STATUS_OPEN, Issue, IssueComment,
+    ISSUE_STATUS_CLOSED, ISSUE_STATUS_IN_ANALYSIS, ISSUE_STATUS_OPEN, ISSUE_STATUS_RESOLVED, Issue,
+    IssueComment,
 };
 
 use vcp::app::lightbox_step_index;
@@ -157,6 +160,7 @@ async fn battle_concurrent_issue_creates() {
                 opened_by_user_id: 1,
                 created_at: now,
                 updated_at: now,
+                version: 1,
             })
             .exec(&mut conn)
             .await
@@ -211,6 +215,7 @@ async fn battle_concurrent_issue_comment_creates() {
             opened_by_user_id: user.id,
             created_at: now,
             updated_at: now,
+            version: 1,
         })
         .exec(&mut conn)
         .await
@@ -283,12 +288,13 @@ async fn battle_parallel_close_reopen_under_detail_reads() {
             title: "Close battle".to_owned(),
             component: "Portal".to_owned(),
             severity: "Minor".to_owned(),
-            status: ISSUE_STATUS_OPEN.to_owned(),
+            status: ISSUE_STATUS_RESOLVED.to_owned(),
             organization_id: org.id,
             details: "opener".to_owned(),
             opened_by_user_id: user.id,
             created_at: now,
             updated_at: now,
+            version: 1,
         })
         .exec(&mut conn)
         .await
@@ -365,11 +371,15 @@ async fn battle_parallel_close_reopen_under_detail_reads() {
             .expect("list");
         let ours: Vec<_> = rows.into_iter().filter(|i| i.key == key).collect();
         assert_eq!(ours.len(), 1, "exactly one issue row");
+        // With `advance_issue_with_retry`, the loser reloads and may still
+        // apply: Close-then-Reopen lands on Open; Reopen-then-Close leaves
+        // In analysis (Close is invalid from that state).
         assert!(
-            ours[0].status == ISSUE_STATUS_OPEN || ours[0].status == ISSUE_STATUS_CLOSED,
-            "final status must be Open or Closed, got {}",
+            ours[0].status == ISSUE_STATUS_OPEN || ours[0].status == ISSUE_STATUS_IN_ANALYSIS,
+            "final status must be Open or In analysis, got {}",
             ours[0].status
         );
+        assert!(ours[0].version >= 2, "OCC version must advance");
         let comments = IssueComment::all()
             .filter(IssueComment::fields().issue_id().eq(ours[0].id))
             .exec(&mut conn)
@@ -384,6 +394,111 @@ async fn battle_parallel_close_reopen_under_detail_reads() {
             "at most one close + one reopen status_change under race, got {status_rows}"
         );
     }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn battle_close_reopen_cas_exactly_one_winner() {
+    // Single-shot `advance_issue` (no retry): OCC must let exactly one of
+    // Close / Reopen from Resolved commit. HTTP helpers use retry separately.
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-cas");
+    let slug = unique_slug("battle-cas-org");
+    let (user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let now = vcp::db::now_unix();
+    let mut conn = db.clone();
+    let issue = toasty::create!(Issue {
+        key: format!("TEST-{}", unique_slug("cas")),
+        title: "CAS battle".to_owned(),
+        component: "Portal".to_owned(),
+        severity: "Minor".to_owned(),
+        status: ISSUE_STATUS_RESOLVED.to_owned(),
+        organization_id: org.id,
+        details: "race".to_owned(),
+        opened_by_user_id: user.id,
+        created_at: now,
+        updated_at: now,
+        version: 1,
+    })
+    .exec(&mut conn)
+    .await
+    .expect("issue");
+    let issue_id = issue.id;
+
+    let barrier = Arc::new(Barrier::new(2));
+    let url = crate::common::database_url();
+    let barrier_a = barrier.clone();
+    let barrier_b = barrier;
+    let url_a = url.clone();
+    let url_b = url;
+
+    let h1 = tokio::spawn(async move {
+        let db = vcp::db::connect(&url_a).await.expect("db");
+        let mut conn = db.clone();
+        let mut issue = Issue::all()
+            .filter(Issue::fields().id().eq(issue_id))
+            .limit(1)
+            .exec(&mut conn)
+            .await
+            .expect("load")
+            .into_iter()
+            .next()
+            .expect("issue");
+        barrier_a.wait().await;
+        advance_issue(&mut conn, &mut issue, IssueEvent::Close).await
+    });
+    let h2 = tokio::spawn(async move {
+        let db = vcp::db::connect(&url_b).await.expect("db");
+        let mut conn = db.clone();
+        let mut issue = Issue::all()
+            .filter(Issue::fields().id().eq(issue_id))
+            .limit(1)
+            .exec(&mut conn)
+            .await
+            .expect("load")
+            .into_iter()
+            .next()
+            .expect("issue");
+        barrier_b.wait().await;
+        advance_issue(&mut conn, &mut issue, IssueEvent::Reopen).await
+    });
+
+    let r1 = h1.await.expect("join close");
+    let r2 = h2.await.expect("join reopen");
+    let ok_count = [r1.is_ok(), r2.is_ok()].iter().filter(|b| **b).count();
+    assert_eq!(
+        ok_count, 1,
+        "exactly one CAS winner; close={r1:?} reopen={r2:?}"
+    );
+    let conflict_count = [
+        matches!(r1, Err(PersistError::Conflict)),
+        matches!(r2, Err(PersistError::Conflict)),
+    ]
+    .iter()
+    .filter(|b| **b)
+    .count();
+    assert_eq!(
+        conflict_count, 1,
+        "loser must be Conflict; close={r1:?} reopen={r2:?}"
+    );
+
+    let mut conn = db.clone();
+    let rows = Issue::all()
+        .filter(Issue::fields().id().eq(issue_id))
+        .exec(&mut conn)
+        .await
+        .expect("issue");
+    assert!(
+        rows[0].status == ISSUE_STATUS_CLOSED || rows[0].status == ISSUE_STATUS_IN_ANALYSIS,
+        "final {:?}",
+        rows[0].status
+    );
+    assert_eq!(rows[0].version, 2, "exactly one OCC bump");
 
     cleanup(&db).await;
 }
@@ -415,6 +530,7 @@ async fn battle_parallel_attach_respects_cap() {
         opened_by_user_id: user.id,
         created_at: now,
         updated_at: now,
+        version: 1,
     })
     .exec(&mut conn)
     .await

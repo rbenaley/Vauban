@@ -35,18 +35,19 @@ Alternatives considered:
 
 ## Decision
 
-1. **Add `issues.version`** (unsigned integer, monotonic) to the Toasty
-   model and a Toasty migration. Initialize existing rows to a shared
-   baseline (`0` or `1`); new issues start at that baseline.
+1. **Add `issues.version: u64` with Toasty `#[version]`** on the `Issue`
+   model, plus a Toasty migration (existing rows backfilled to `1`).
+   Toasty manages the counter on create (initial `1`) and on instance
+   updates (condition + atomic increment).
 2. **Every successful lifecycle status transition** goes through one
    advance helper that:
-   - loads the row (including `version`);
+   - loads the row (so the in-memory `version` is current);
    - runs `IssueState::transition`;
-   - `UPDATE … SET status, version = version + 1, updated_at = … WHERE id
-     = … AND version = expected`;
-   - treats **zero rows affected** as `PersistError::Conflict`;
-   - appends the `status_change` timeline row only after a successful
-     CAS.
+   - performs an **instance** `issue.update()…exec()` (not a
+     query-based update) so OCC conditions on the loaded version;
+   - maps `Error::is_condition_failed()` to `PersistError::Conflict`;
+   - appends the `status_change` timeline row in the **same Toasty
+     transaction** as the status update.
 3. **Optimistic locking is the default.** Pessimistic row locks are not
    required for v1. Revisit only if product adds a high-contention
    claim/assign path.
@@ -54,21 +55,20 @@ Alternatives considered:
 5. **Conflict UX:** never report success; refresh detail and signal the
    user (soft query flag or equivalent). Bounded retry is allowed for
    transient identical-event races; after exhaustion, surface Conflict.
-6. **v1 scope:** CAS applies to **status transitions** only. Replies and
-   attachments do not bump `version` unless a later ADR expands the
-   token.
-7. **Battle tests are mandatory** before calling the seam done:
+6. **v1 product focus:** conflict handling and battle tests target
+   **status transitions**. Other instance updates on `Issue` also bump
+   `#[version]` (Toasty default); that is acceptable and strengthens OCC.
+7. **Do not introduce `sqlx` (or raw SQL) for this seam.** Use Toasty
+   `#[version]` + instance update + transactions.
+8. **Battle tests are mandatory** before calling the seam done:
    identical concurrent transitions, and divergent `Close` ∥ `Reopen`
    from `Resolved` (exactly one winner; final state in the legal set).
 
 ## Consequences
 
-- Implementation must not leave `apply_issue_status` /
-  close/reopen helpers on a blind `update()` path once the FSM seam
-  ships.
-- Toasty CAS syntax is verified at coding time; a local SQL escape
-  hatch is acceptable if the ORM cannot express “update where version”
-  cleanly, provided it stays inside the advance helper.
+- Implementation must not leave close/reopen helpers on a blind
+  non-OCC `update()` path once the FSM seam ships.
+- Design reviews reject adding `sqlx` solely for issue status CAS.
 - Exports / support debugging SHOULD include `version` when dumping an
   issue row.
 - Accepting this ADR without accepting the parent architecture’s

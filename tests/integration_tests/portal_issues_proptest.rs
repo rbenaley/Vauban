@@ -6,6 +6,7 @@ use vcp::issue_anchor::{ISSUE_REPLY_ANCHOR, with_reply_anchor};
 use vcp::issue_attachments::{
     AttachmentToken, attachment_cap_hint, gallery_src, parse_attachment_token,
 };
+use vcp::issue_fsm::{ALL_EVENTS, IssueEvent, IssueState};
 use vcp::issue_key::{next_issue_key_from_keys, parse_vbn_suffix};
 use vcp::issue_status::issue_is_closed;
 use vcp::models::{
@@ -14,6 +15,66 @@ use vcp::models::{
     ISSUE_STATUS_IN_ANALYSIS, ISSUE_STATUS_OPEN, ISSUE_STATUS_RESOLVED, IssueAttachment,
     MAX_ISSUE_ATTACHMENTS,
 };
+
+fn reference_model(state: IssueState, event: IssueEvent) -> Option<IssueState> {
+    use IssueEvent::*;
+    use IssueState::*;
+    match (state, event) {
+        (Open, StartAnalysis) => Some(InAnalysis),
+        (InAnalysis, Resolve) => Some(Resolved),
+        (Resolved, Close) => Some(Closed),
+        (Resolved, Reopen) => Some(InAnalysis),
+        (Closed, Reopen) => Some(Open),
+        _ => None,
+    }
+}
+
+fn any_state() -> impl Strategy<Value = IssueState> {
+    prop_oneof![
+        Just(IssueState::Open),
+        Just(IssueState::InAnalysis),
+        Just(IssueState::Resolved),
+        Just(IssueState::Closed),
+    ]
+}
+
+fn any_event() -> impl Strategy<Value = IssueEvent> {
+    prop_oneof![
+        Just(IssueEvent::StartAnalysis),
+        Just(IssueEvent::Resolve),
+        Just(IssueEvent::Close),
+        Just(IssueEvent::Reopen),
+    ]
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(64))]
+
+    #[test]
+    fn prop_fsm_matches_reference_model(state in any_state(), event in any_event()) {
+        prop_assert_eq!(state.transition(event).ok(), reference_model(state, event));
+    }
+
+    #[test]
+    fn prop_fsm_sequences_never_panic(
+        events in prop::collection::vec(any_event(), 0..40)
+    ) {
+        let mut state = IssueState::Open;
+        for event in events {
+            if let Ok(next) = state.transition(event) {
+                state = next;
+            }
+        }
+        prop_assert!(matches!(
+            state,
+            IssueState::Open
+                | IssueState::InAnalysis
+                | IssueState::Resolved
+                | IssueState::Closed
+        ));
+        let _ = ALL_EVENTS;
+    }
+}
 
 proptest! {
     #![proptest_config(crate::common::prop_config(32))]
@@ -102,9 +163,17 @@ proptest! {
         let expect = status.eq_ignore_ascii_case(ISSUE_STATUS_CLOSED)
             || status.eq_ignore_ascii_case(ISSUE_STATUS_RESOLVED);
         prop_assert_eq!(closed, expect);
-        if !closed {
-            // Reopen target is always Open.
-            prop_assert_eq!(ISSUE_STATUS_OPEN, "Open");
+        if status.eq_ignore_ascii_case(ISSUE_STATUS_CLOSED) {
+            prop_assert_eq!(
+                IssueState::Closed.transition(IssueEvent::Reopen).ok(),
+                Some(IssueState::Open)
+            );
+        }
+        if status.eq_ignore_ascii_case(ISSUE_STATUS_RESOLVED) {
+            prop_assert_eq!(
+                IssueState::Resolved.transition(IssueEvent::Reopen).ok(),
+                Some(IssueState::InAnalysis)
+            );
         }
     }
 }

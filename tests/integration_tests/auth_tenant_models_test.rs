@@ -168,6 +168,7 @@ async fn models_issue_and_stubs_create() {
         opened_by_user_id: user.id,
         created_at: now,
         updated_at: now,
+        version: 1,
     })
     .exec(&mut conn)
     .await

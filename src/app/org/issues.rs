@@ -354,6 +354,7 @@ async fn report_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
             opened_by_user_id: ctx.user.id,
             created_at: now,
             updated_at: now,
+            version: 1,
         })
         .exec(&mut database)
         .await

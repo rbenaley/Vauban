@@ -50,6 +50,7 @@ is planned._
 | FreeBSD Tailwind CLI | [`freebsd_tailwind_cli_d526732f.plan.md`](freebsd_tailwind_cli_d526732f.plan.md) | Done |
 | Issue close reopen | [`issue_close_reopen_954c4a67.plan.md`](issue_close_reopen_954c4a67.plan.md) | Done |
 | Issue image attachments | [`issue_image_attachments_98d24998.plan.md`](issue_image_attachments_98d24998.plan.md) | Done |
+| Issue lifecycle FSM | [`issue_lifecycle_fsm_02ac8ded.plan.md`](issue_lifecycle_fsm_02ac8ded.plan.md) | Open |
 | Issues live search shards | [`issues_live_search_shards_d44946a2.plan.md`](issues_live_search_shards_d44946a2.plan.md) | Done |
 | List pagination standard | [`list_pagination_standard_4c1f389a.plan.md`](list_pagination_standard_4c1f389a.plan.md) | Done |
 | Login signal UX | [`login_signal_ux_5fb30469.plan.md`](login_signal_ux_5fb30469.plan.md) | Done |
@@ -61,12 +62,14 @@ is planned._
 | Multi-org choose picker | [`multi-org_choose_picker_a9604b68.plan.md`](multi-org_choose_picker_a9604b68.plan.md) | Done |
 | ORM Toasty Postgres | [`orm_toasty_postgres_3e00d8ac.plan.md`](orm_toasty_postgres_3e00d8ac.plan.md) | Done |
 | P0-P3 Topcoat campaign | [`p0-p3_topcoat_campaign_d0d5c3c6.plan.md`](p0-p3_topcoat_campaign_d0d5c3c6.plan.md) | Done |
+| pkg and SIGHUP reopen | [`pkg_and_sighup_reopen_4444fb07.plan.md`](pkg_and_sighup_reopen_4444fb07.plan.md) | Open |
 | Preserve form on not_pkg | [`preserve_form_on_not_pkg_88aa80a9.plan.md`](preserve_form_on_not_pkg_88aa80a9.plan.md) | Done |
 | Pyramid compliance backfill | [`pyramid_compliance_backfill_c0557c49.plan.md`](pyramid_compliance_backfill_c0557c49.plan.md) | Done |
 | Python import-pkgs lab | [`python_import-pkgs_lab_7eb64e13.plan.md`](python_import-pkgs_lab_7eb64e13.plan.md) | Done |
 | Release semver SQL sort | [`release_semver_sql_sort_29d7d2b8.plan.md`](release_semver_sql_sort_29d7d2b8.plan.md) | Done |
 | Rename store key CLI | [`rename_store_key_cli_0c3de0d4.plan.md`](rename_store_key_cli_0c3de0d4.plan.md) | Open |
 | Request SQL dedup | [`request_sql_dedup_46a6151e.plan.md`](request_sql_dedup_46a6151e.plan.md) | Done |
+| SMTP accept invalid certs | [`smtp_accept_invalid_certs_420c1d44.plan.md`](smtp_accept_invalid_certs_420c1d44.plan.md) | Open |
 | Storage 1.2 WebAuthn | [`storage_1.2_webauthn_70559c95.plan.md`](storage_1.2_webauthn_70559c95.plan.md) | Done |
 | Storage arch 1.2 review | [`storage_arch_1.2_review_70fe67f6.plan.md`](storage_arch_1.2_review_70fe67f6.plan.md) | Done |
 | Toasty query debt fix | [`toasty_query_debt_fix_d9c552ec.plan.md`](toasty_query_debt_fix_d9c552ec.plan.md) | Done |

@@ -22,7 +22,8 @@ use crate::{
         ScreenshotUpload, attach_many, issue_attachment_list_limit, list_for_issue,
         screenshot_from_part, store_screenshot_uploads,
     },
-    issue_status::{close_issue_status, issue_is_closed, reopen_issue_status},
+    issue_fsm::{IssueEvent, IssueState},
+    issue_status::{ISSUE_ERR_CONFLICT, PersistError, advance_issue_with_retry, issue_is_closed},
     models::{
         ISSUE_ATTACHMENT_OPENER_COMMENT_ID, ISSUE_COMMENT_KIND_COMMENT, ISSUE_ROLE_REPORTER,
         ISSUE_ROLE_SUPPORT, ISSUE_ROLE_SYSTEM, Issue, IssueAttachment, IssueComment, Organization,
@@ -39,6 +40,7 @@ struct IssueKey(str);
 #[query_params]
 struct AdminIssueDetailQuery {
     org: Option<String>,
+    err: Option<String>,
 }
 
 #[page]
@@ -50,10 +52,15 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
         return Err(capability_denied().into());
     }
 
-    let org_hint = query_params::<AdminIssueDetailQuery>(cx)
-        .ok()
+    let detail_q = query_params::<AdminIssueDetailQuery>(cx).ok();
+    let org_hint = detail_q
+        .as_ref()
         .and_then(|q| q.org.clone())
         .unwrap_or_default();
+    let flash_conflict = detail_q
+        .as_ref()
+        .and_then(|q| q.err.as_deref())
+        .is_some_and(|e| e == ISSUE_ERR_CONFLICT);
 
     let mut database = db(cx);
     let Some(issue) = load_admin_issue_by_key(&mut database, key, &org_hint).await else {
@@ -111,7 +118,14 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
     let reply_action = admin_issue_action(&issue.key, "reply", org_slug_for_q);
     let close_action = admin_issue_action(&issue.key, "close", org_slug_for_q);
     let reopen_action = admin_issue_action(&issue.key, "reopen", org_slug_for_q);
-    let closed = issue_is_closed(&issue.status);
+    let start_action = admin_issue_action(&issue.key, "start-analysis", org_slug_for_q);
+    let resolve_action = admin_issue_action(&issue.key, "resolve", org_slug_for_q);
+    let state = IssueState::try_from(issue.status.as_str()).unwrap_or(IssueState::Open);
+    let is_open = state == IssueState::Open;
+    let is_in_analysis = state == IssueState::InAnalysis;
+    let is_resolved = state == IssueState::Resolved;
+    let is_closed = state == IssueState::Closed;
+    let can_write = perms.issues_write;
 
     let timeline = build_discussion_rows(&comments, &users, &attachments, org_slug, now, tz);
 
@@ -124,6 +138,15 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
             >
                 "Back to list"
             </a>
+            if flash_conflict {
+                <div
+                    class="vb-callout"
+                    style="margin-bottom: 12px; border-color: #c9a227; background: #fff8e6;"
+                    role="status"
+                >
+                    "This issue was updated by someone else. Review the current status and try again."
+                </div>
+            }
             <div
                 style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;"
             >
@@ -205,7 +228,40 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
                     has_lightbox: !attachments.is_empty(),
                 }
             )
-            if closed {
+            if is_resolved {
+                <div
+                    class="vb-panel"
+                    id=(ISSUE_REPLY_ANCHOR)
+                    style="background: #fafbf9; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;"
+                >
+                    <div style="display: flex; align-items: center; gap: 11px;">
+                        <span
+                            style="width: 26px; height: 26px; flex: none; border-radius: 50%; background: #e9eaec; color: #5a5f66; display: flex; align-items: center; justify-content: center;"
+                        >
+                            (ico_check(cx, 13).await?)
+                        </span>
+                        <div
+                            style="font-size: 13.5px; color: #5a5f66; line-height: 1.5;"
+                        >
+                            "This issue is resolved. Close it when finished, or reopen to continue analysis."
+                        </div>
+                    </div>
+                    if can_write {
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <form method="POST" action=(close_action)>
+                                <button class="vb-btn muted" type="submit">
+                                    "Close issue"
+                                </button>
+                            </form>
+                            <form method="POST" action=(reopen_action)>
+                                <button class="vb-btn outline" type="submit">
+                                    "Reopen issue"
+                                </button>
+                            </form>
+                        </div>
+                    }
+                </div>
+            } else if is_closed {
                 <div
                     class="vb-panel"
                     id=(ISSUE_REPLY_ANCHOR)
@@ -223,7 +279,7 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
                             "This issue is closed. Reopen it to add a comment."
                         </div>
                     </div>
-                    if perms.issues_write {
+                    if can_write {
                         <form method="POST" action=(reopen_action)>
                             <button class="vb-btn outline" type="submit">
                                 "Reopen issue"
@@ -231,14 +287,24 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
                         </form>
                     }
                 </div>
-            } else if perms.issues_write {
+            } else if can_write {
                 <div class="vb-panel" style="padding: 14px;">
-                    <form
-                        method="POST"
-                        action=(close_action)
-                        id="issue-close"
-                        style="display: none;"
-                    ></form>
+                    if is_open {
+                        <form
+                            method="POST"
+                            action=(start_action)
+                            style="display: none;"
+                            id="issue-start-analysis"
+                        ></form>
+                    }
+                    if is_in_analysis {
+                        <form
+                            method="POST"
+                            action=(resolve_action)
+                            style="display: none;"
+                            id="issue-resolve"
+                        ></form>
+                    }
                     <form
                         method="POST"
                         action=(reply_action)
@@ -262,13 +328,24 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
                         <div
                             style="display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 12px;"
                         >
-                            <button
-                                class="vb-btn muted"
-                                type="submit"
-                                form="issue-close"
-                            >
-                                "Close issue"
-                            </button>
+                            if is_open {
+                                <button
+                                    class="vb-btn outline"
+                                    type="submit"
+                                    form="issue-start-analysis"
+                                >
+                                    "Start analysis"
+                                </button>
+                            }
+                            if is_in_analysis {
+                                <button
+                                    class="vb-btn outline"
+                                    type="submit"
+                                    form="issue-resolve"
+                                >
+                                    "Mark resolved"
+                                </button>
+                            }
                             <button class="vb-btn" type="submit">"Reply"</button>
                         </div>
                     </form>
@@ -413,30 +490,25 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
 
 #[route(POST "/admin/issues/{issue_key}/close")]
 async fn admin_close_issue(cx: &Cx) -> Result<SeeOther> {
-    let key = path_param::<IssueKey>(cx);
-    let staff = require_staff(cx).await?;
-    let perms = perms_for_user(cx, &staff.user).await;
-    let org_hint = query_params::<AdminIssueDetailQuery>(cx)
-        .ok()
-        .and_then(|q| q.org.clone())
-        .unwrap_or_default();
-    let detail = admin_reply_target(key, &org_hint, None);
-    if !perms.issues_write {
-        return Ok(see_other(&detail));
-    }
-
-    let mut database = db(cx);
-    let Some(mut issue) = load_admin_issue_by_key(&mut database, key, &org_hint).await else {
-        return Ok(see_other("/admin/issues"));
-    };
-
-    let _ = close_issue_status(&mut database, &mut issue).await;
-
-    Ok(see_other(&detail))
+    admin_advance_issue(cx, IssueEvent::Close).await
 }
 
 #[route(POST "/admin/issues/{issue_key}/reopen")]
 async fn admin_reopen_issue(cx: &Cx) -> Result<SeeOther> {
+    admin_advance_issue(cx, IssueEvent::Reopen).await
+}
+
+#[route(POST "/admin/issues/{issue_key}/start-analysis")]
+async fn admin_start_analysis_issue(cx: &Cx) -> Result<SeeOther> {
+    admin_advance_issue(cx, IssueEvent::StartAnalysis).await
+}
+
+#[route(POST "/admin/issues/{issue_key}/resolve")]
+async fn admin_resolve_issue(cx: &Cx) -> Result<SeeOther> {
+    admin_advance_issue(cx, IssueEvent::Resolve).await
+}
+
+async fn admin_advance_issue(cx: &Cx, event: IssueEvent) -> Result<SeeOther> {
     let key = path_param::<IssueKey>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -450,13 +522,24 @@ async fn admin_reopen_issue(cx: &Cx) -> Result<SeeOther> {
     }
 
     let mut database = db(cx);
-    let Some(mut issue) = load_admin_issue_by_key(&mut database, key, &org_hint).await else {
+    let Some(issue) = load_admin_issue_by_key(&mut database, key, &org_hint).await else {
         return Ok(see_other("/admin/issues"));
     };
 
-    let _ = reopen_issue_status(&mut database, &mut issue).await;
-
-    Ok(see_other(&detail))
+    match advance_issue_with_retry(&mut database, issue.id, event).await {
+        Ok(_) | Err(PersistError::Fsm(_)) | Err(PersistError::UnknownStatus(_)) => {
+            Ok(see_other(&detail))
+        }
+        Err(PersistError::Conflict) => Ok(see_other(&admin_reply_target(
+            key,
+            &org_hint,
+            Some(ISSUE_ERR_CONFLICT),
+        ))),
+        Err(PersistError::Db(err)) => {
+            tracing::warn!(key = %key, error = %err, "admin issue advance failed");
+            Ok(see_other(&detail))
+        }
+    }
 }
 
 fn admin_issue_action(key: &str, action: &str, org_slug: &str) -> String {
@@ -664,6 +747,7 @@ mod tests {
             opened_by_user_id: 1,
             created_at: 0,
             updated_at: 0,
+            version: 1,
         }
     }
 

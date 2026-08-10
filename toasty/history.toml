@@ -79,3 +79,8 @@ snapshot_name = "0014_snapshot.toml"
 id = 8667971414787680271
 name = "0015_issue_attachment_comment_id.sql"
 snapshot_name = "0015_snapshot.toml"
+
+[[migrations]]
+id = 8102559200699637830
+name = "0016_issue_version.sql"
+snapshot_name = "0016_snapshot.toml"

@@ -282,6 +282,9 @@ pub const ISSUE_STATUS_IN_ANALYSIS: &str = "In analysis";
 pub const ISSUE_STATUS_RESOLVED: &str = "Resolved";
 pub const ISSUE_STATUS_CLOSED: &str = "Closed";
 
+/// Initial optimistic-lock token for new issues (ADR 006).
+pub const ISSUE_VERSION_INITIAL: u64 = 1;
+
 #[derive(Debug, Clone, Model)]
 #[unique(organization_id, key)]
 pub struct Issue {
@@ -312,6 +315,11 @@ pub struct Issue {
 
     /// Unix timestamp (seconds) of last update (reply or status change).
     pub updated_at: i64,
+
+    /// Optimistic concurrency token (Toasty `#[version]` / ADR 006).
+    /// Instance updates condition on this value and bump it atomically.
+    #[version]
+    pub version: u64,
 }
 
 #[derive(Debug, Clone, Model)]

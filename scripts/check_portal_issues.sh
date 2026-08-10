@@ -185,8 +185,10 @@ grep -nE '#\[route\(POST "/\{org\}/issues/\{issue_key\}/reopen"\)' "$DETAIL" >/d
   || fail "$DETAIL must expose POST reopen route"
 grep -n 'issue_is_closed' "$DETAIL" >/dev/null \
   || fail "$DETAIL must use issue_is_closed"
-grep -n 'close_issue_status\|reopen_issue_status' "$DETAIL" >/dev/null \
-  || fail "$DETAIL must call close/reopen helpers"
+grep -n 'advance_issue_with_retry' "$DETAIL" >/dev/null \
+  || fail "$DETAIL must advance status via advance_issue_with_retry"
+grep -n 'IssueEvent::Close\|IssueEvent::Reopen' "$DETAIL" >/dev/null \
+  || fail "$DETAIL must use IssueEvent for close/reopen"
 # Close/Reopen must be real forms, not Concept stub spans.
 if grep -nE '<span class="vb-btn[^"]*">"Close issue"|<span class="vb-btn[^"]*">"Reopen issue"' "$DETAIL" >/dev/null 2>&1; then
   fail "$DETAIL must not stub Close/Reopen as non-submitting spans"
@@ -231,8 +233,35 @@ grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/close"\)' "$ADMIN_DETAIL" 
   || fail "$ADMIN_DETAIL must expose POST close route"
 grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/reopen"\)' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL must expose POST reopen route"
+grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/start-analysis"\)' "$ADMIN_DETAIL" >/dev/null \
+  || fail "$ADMIN_DETAIL must expose POST start-analysis route"
+grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/resolve"\)' "$ADMIN_DETAIL" >/dev/null \
+  || fail "$ADMIN_DETAIL must expose POST resolve route"
+grep -n 'advance_issue_with_retry' "$ADMIN_DETAIL" >/dev/null \
+  || fail "$ADMIN_DETAIL must advance status via advance_issue_with_retry"
 grep -n 'issue_is_closed' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL must use issue_is_closed"
+# Org surface must not expose staff-only lifecycle routes.
+if grep -nE 'start-analysis|/resolve"' "$DETAIL" >/dev/null 2>&1; then
+  fail "$DETAIL must not expose start-analysis / resolve (admin-only)"
+fi
+grep -n '#\[version\]' src/models/mod.rs >/dev/null \
+  || fail "Issue.version must use Toasty #[version]"
+grep -n '0016_issue_version.sql' toasty/history.toml >/dev/null \
+  || fail "toasty/history.toml must list 0016_issue_version.sql"
+grep -n 'fn transition' src/issue_fsm.rs >/dev/null \
+  || fail "issue_fsm.rs must define transition"
+if grep -nE 'use toasty|use topcoat|sqlx' src/issue_fsm.rs >/dev/null 2>&1; then
+  fail "issue_fsm.rs must stay free of toasty/topcoat/sqlx imports"
+fi
+if grep -nE 'user_role|PermissionContext|portal_role' src/issue_fsm.rs >/dev/null 2>&1; then
+  fail "issue_fsm.rs must not take role / PermissionContext (ADR 005)"
+fi
+if grep -nE 'sqlx' src/issue_status.rs >/dev/null 2>&1; then
+  fail "issue_status.rs must use Toasty #[version] OCC, not sqlx"
+fi
+grep -n 'is_condition_failed\|#\[version\]' src/issue_status.rs docs/adr/006-issue-status-optimistic-locking.md >/dev/null \
+  || fail "OCC must document/use Toasty condition_failed / #[version]"
 grep -n 'ISSUE_ROLE_SUPPORT' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL staff replies must use ISSUE_ROLE_SUPPORT"
 if grep -nE '<span class="vb-btn[^"]*">"Close issue"|<span class="vb-btn[^"]*">"Reopen issue"' "$ADMIN_DETAIL" >/dev/null 2>&1; then
@@ -262,11 +291,12 @@ for f in "$DETAIL" "$ADMIN_DETAIL"; do
     || fail "$f post-action redirects must go through with_reply_anchor"
   grep -n 'id=(ISSUE_REPLY_ANCHOR)' "$f" >/dev/null \
     || fail "$f must anchor the reply box on ISSUE_REPLY_ANCHOR"
-  # Closed issues drop the reply form: the panel that replaces it carries the
-  # same id, otherwise close/reopen redirects resolve to nothing.
-  awk '/if closed \{/,/} else if perms.issues_write \{/' "$f" \
-    | grep -q 'id=(ISSUE_REPLY_ANCHOR)' \
-    || fail "$f closed-issue panel must carry the reply anchor id"
+  # Resolved/Closed panels drop the reply form: they must carry the same
+  # anchor id, otherwise close/reopen redirects resolve to nothing.
+  grep -n 'id=(ISSUE_REPLY_ANCHOR)' "$f" >/dev/null \
+    || fail "$f must anchor reply / resolved / closed panels on ISSUE_REPLY_ANCHOR"
+  grep -n 'is_resolved\|is_closed' "$f" >/dev/null \
+    || fail "$f must split Resolved vs Closed UI (is_resolved / is_closed)"
   if grep -nE 'see_other\(&format!\("/\{org_slug\}/issues/\{key\}' "$f" >/dev/null 2>&1; then
     fail "$f must not redirect to an unanchored detail URL"
   fi

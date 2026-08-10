@@ -65,6 +65,7 @@ mod tests {
             opened_by_user_id: 1,
             created_at: updated_at,
             updated_at,
+            version: 1,
         }
     }
 

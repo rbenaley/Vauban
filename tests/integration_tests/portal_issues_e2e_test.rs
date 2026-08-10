@@ -5,7 +5,8 @@ use topcoat::router::StatusCode;
 use vcp::issue_anchor::ISSUE_REPLY_ANCHOR;
 use vcp::models::{
     ISSUE_COMMENT_KIND_COMMENT, ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_SUPPORT, ISSUE_STATUS_CLOSED,
-    ISSUE_STATUS_OPEN, Issue, IssueComment, MAX_ISSUE_ATTACHMENTS, RESERVED_ORG_SLUG,
+    ISSUE_STATUS_IN_ANALYSIS, ISSUE_STATUS_OPEN, ISSUE_STATUS_RESOLVED, Issue, IssueComment,
+    MAX_ISSUE_ATTACHMENTS, RESERVED_ORG_SLUG,
 };
 
 use crate::common::{
@@ -156,6 +157,7 @@ async fn e2e_issue_detail_shows_seeded_comment_and_reply() {
             opened_by_user_id: user.id,
             created_at: now - 10_000,
             updated_at: now - 1_000,
+            version: 1,
         })
         .exec(&mut conn)
         .await
@@ -243,6 +245,7 @@ async fn e2e_issue_post_actions_redirect_to_the_reply_anchor() {
             opened_by_user_id: user.id,
             created_at: now,
             updated_at: now,
+            version: 1,
         })
         .exec(&mut conn)
         .await
@@ -274,6 +277,26 @@ async fn e2e_issue_post_actions_redirect_to_the_reply_anchor() {
         open_html.contains(&format!("id=\"{ISSUE_REPLY_ANCHOR}\"")),
         "open pane must render the reply anchor: {open_html}"
     );
+
+    // Close is only legal from Resolved (FSM); seed that before the close POST.
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().organization_id().eq(org.id))
+            .exec(&mut conn)
+            .await
+            .expect("list");
+        let mut issue = rows
+            .into_iter()
+            .find(|i| i.key == key)
+            .expect("seeded issue");
+        issue
+            .update()
+            .status(ISSUE_STATUS_RESOLVED.to_owned())
+            .exec(&mut conn)
+            .await
+            .expect("seed Resolved");
+    }
 
     let closed = post_form(
         &router,
@@ -388,6 +411,7 @@ async fn e2e_admin_issues_aggregate_and_reserved_redirect() {
             opened_by_user_id: user.id,
             created_at: now,
             updated_at: now,
+            version: 1,
         })
         .exec(&mut conn)
         .await
@@ -469,18 +493,31 @@ async fn e2e_member_close_blocks_reply_and_reopen_restores() {
             title: "Close e2e".to_owned(),
             component: "Portal".to_owned(),
             severity: "Major".to_owned(),
-            status: ISSUE_STATUS_OPEN.to_owned(),
+            status: ISSUE_STATUS_RESOLVED.to_owned(),
             organization_id: org.id,
             details: "Please close me".to_owned(),
             opened_by_user_id: user.id,
             created_at: now,
             updated_at: now,
+            version: 1,
         })
         .exec(&mut conn)
         .await
         .expect("issue");
         issue.id
     };
+
+    let detail_resolved = get(&router, &format!("/{slug}/issues/{key}"), cookie.as_deref()).await;
+    assert_eq!(status(&detail_resolved), StatusCode::OK);
+    let html_resolved = body_text(detail_resolved).await;
+    assert!(
+        html_resolved.contains("This issue is resolved"),
+        "resolved panel missing: {html_resolved}"
+    );
+    assert!(
+        html_resolved.contains("Close issue"),
+        "close control missing on Resolved: {html_resolved}"
+    );
 
     let closed = post_form(
         &router,
@@ -590,6 +627,115 @@ async fn e2e_member_close_blocks_reply_and_reopen_restores() {
 }
 
 #[tokio::test]
+async fn e2e_close_from_open_is_noop_and_reopen_resolved_to_analysis() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("iss-fsm");
+    let slug = unique_slug("iss-fsm-org");
+    let (user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let cookie = login(&router, &email).await;
+
+    let now = vcp::db::now_unix();
+    let open_key = format!("VBN-{}", unique_slug("op").replace('-', ""));
+    let open_id = {
+        let mut conn = db.clone();
+        toasty::create!(Issue {
+            key: open_key.clone(),
+            title: "Open close noop".to_owned(),
+            component: "Portal".to_owned(),
+            severity: "Minor".to_owned(),
+            status: ISSUE_STATUS_OPEN.to_owned(),
+            organization_id: org.id,
+            details: "open".to_owned(),
+            opened_by_user_id: user.id,
+            created_at: now,
+            updated_at: now,
+            version: 1,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("issue")
+        .id
+    };
+
+    let close_open = post_form(
+        &router,
+        &format!("/{slug}/issues/{open_key}/close"),
+        cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert!(status(&close_open).is_redirection());
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().id().eq(open_id))
+            .exec(&mut conn)
+            .await
+            .expect("issue");
+        assert_eq!(rows[0].status, ISSUE_STATUS_OPEN);
+    }
+
+    let resolved_key = format!("VBN-{}", unique_slug("rs").replace('-', ""));
+    let resolved_id = {
+        let mut conn = db.clone();
+        toasty::create!(Issue {
+            key: resolved_key.clone(),
+            title: "Reopen to analysis".to_owned(),
+            component: "Portal".to_owned(),
+            severity: "Minor".to_owned(),
+            status: ISSUE_STATUS_RESOLVED.to_owned(),
+            organization_id: org.id,
+            details: "resolved".to_owned(),
+            opened_by_user_id: user.id,
+            created_at: now,
+            updated_at: now,
+            version: 1,
+        })
+        .exec(&mut conn)
+        .await
+        .expect("issue")
+        .id
+    };
+
+    let reopened = post_form(
+        &router,
+        &format!("/{slug}/issues/{resolved_key}/reopen"),
+        cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert!(status(&reopened).is_redirection());
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().id().eq(resolved_id))
+            .exec(&mut conn)
+            .await
+            .expect("issue");
+        assert_eq!(rows[0].status, ISSUE_STATUS_IN_ANALYSIS);
+    }
+
+    let forbidden = post_form(
+        &router,
+        &format!("/{slug}/issues/{open_key}/start-analysis"),
+        cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert!(
+        status(&forbidden) == StatusCode::NOT_FOUND || status(&forbidden).is_client_error(),
+        "org must not have start-analysis route, got {}",
+        status(&forbidden)
+    );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
 async fn e2e_admin_close_reopen_and_member_denied_admin_close() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
@@ -618,12 +764,49 @@ async fn e2e_admin_close_reopen_and_member_denied_admin_close() {
             opened_by_user_id: user.id,
             created_at: now,
             updated_at: now,
+            version: 1,
         })
         .exec(&mut conn)
         .await
         .expect("issue");
         issue.id
     };
+
+    let started = post_form(
+        &router,
+        &format!("/admin/issues/{key}/start-analysis?org={client_slug}"),
+        staff_cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert!(status(&started).is_redirection());
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().id().eq(issue_id))
+            .exec(&mut conn)
+            .await
+            .expect("issue");
+        assert_eq!(rows[0].status, ISSUE_STATUS_IN_ANALYSIS);
+    }
+
+    let resolved = post_form(
+        &router,
+        &format!("/admin/issues/{key}/resolve?org={client_slug}"),
+        staff_cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert!(status(&resolved).is_redirection());
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().id().eq(issue_id))
+            .exec(&mut conn)
+            .await
+            .expect("issue");
+        assert_eq!(rows[0].status, ISSUE_STATUS_RESOLVED);
+    }
 
     let closed = post_form(
         &router,

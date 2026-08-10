@@ -63,7 +63,7 @@ illustrative role guards in that draft).
 | **D4** | `transition(self, event) -> Result<IssueState, TransitionError>` takes `self` **by value** (`Copy` state) | On `Err`, source state is never mutated (invariant I3) |
 | **D5** | FSM has **no** role / capability / membership parameters | AuthZ is request-scoped elsewhere; see ADR 005 |
 | **D6** | Persist wire labels as today’s strings (`"Open"`, `"In analysis"`, `"Resolved"`, `"Closed"`) via `Display` / `TryFrom<&str>` | Avoids a Toasty enum migration risk; keeps list chips stable |
-| **D7** | Add `issues.version: u64` (or `u32`) for optimistic CAS; bump on every successful status transition | Lost-update protection; see ADR 006 |
+| **D7** | `Issue.version: u64` with Toasty `#[version]` OCC; status advances use **instance** `update()` | Native CAS; see ADR 006 — no `sqlx` / raw SQL |
 | **D8** | Status mutation path: load → authZ → `transition` → CAS update + timeline row in one logical advance helper | Handlers stay thin; no ad-hoc `issue.update().status(...)` outside that helper |
 | **D9** | Timeline: keep `IssueComment` `kind = status_change`, `author_role = system` for user-visible dividers | Compatible with seeded / shipped discussion UI |
 | **D10** | Reply blocking stays **policy outside FSM**: block when status is `Resolved` **or** `Closed` (today’s `issue_is_closed`) | Orthogonal to which Close/Reopen edges exist |
@@ -260,47 +260,40 @@ Normative detail: [ADR 006](../adr/006-issue-status-optimistic-locking.md).
 
 ### 6.1 Schema
 
-Add column on `issues`:
+Add column on `issues` via Toasty model + migration:
 
-| Column | Type | Default | Notes |
-|--------|------|---------|-------|
-| `version` | `BIGINT` / `u64` in model | `0` or `1` at insert | Monotonic per successful status CAS |
+| Column | Type | Notes |
+|--------|------|-------|
+| `version` | `u64` / `BIGINT` with `#[version]` | Toasty OCC token; create defaults to `1` |
 
 `updated_at` remains the wall-clock stamp for lists/UI; it is **not**
-the concurrency token (second-resolution clocks collide under load).
-
-Migration: backfill existing rows to `version = 1` (or `0`); all new
-issues start at the same initial value.
+the concurrency token.
 
 ### 6.2 Advance helper (logical contract)
 
 ```text
-advance_issue_status(db, issue_id, event) -> Result<IssueState, PersistError>
+advance_issue(db, issue, event) -> Result<AdvanceOutcome, PersistError>
 
 PersistError:
   - Fsm(TransitionError)      // illegal edge
-  - Conflict                  // CAS lost (version mismatch)
-  - NotFound                  // optional; or let handler 404 earlier
-  - Db(...)                   // Toasty / driver errors
+  - Conflict                  // Toasty condition_failed (OCC)
+  - UnknownStatus(...)
+  - Db(...)
 ```
 
 Algorithm:
 
-1. `SELECT` issue by id (caller already scoped by org).
-2. Parse `status` → `IssueState`.
-3. `new_state = state.transition(event)?`.
-4. `UPDATE issues SET status = $new, version = version + 1,
-   updated_at = $now WHERE id = $id AND version = $expected`.
-5. If rows affected == 0 → `Conflict` (reload / retry policy at
-   handler).
-6. Else insert `status_change` timeline row; return `new_state`.
+1. Parse `issue.status` → `IssueState` (row already loaded for OCC).
+2. `new_state = state.transition(event)?` (or HTTP no-op mapping).
+3. Begin a Toasty **transaction**.
+4. **Instance** `issue.update().status(…).updated_at(…).exec(&mut tx)` —
+   Toasty conditions on the loaded `#[version]` and increments it.
+5. On `Error::is_condition_failed()` → `Conflict` (rollback).
+6. Insert `status_change` timeline row on the same `tx`; `commit`.
 
-Exact Toasty API for “filter on version + count rows” is an
-**implementation detail** to verify against Toasty 0.9 at coding time.
-If the ORM cannot express CAS cleanly, use a short SQL escape hatch
-local to the helper (still behind the same contract). Prefer not to
-hold long `SELECT … FOR UPDATE` transactions for this rare conflict
-path (ADR 006).
+Do **not** use query-based `Issue::filter(…).update()` for this path
+(it increments version but does not condition on the loaded snapshot).
+Do **not** introduce `sqlx` or hand-written SQL for CAS (ADR 006).
 
 ### 6.3 Conflict UX
 
@@ -314,10 +307,10 @@ path (ADR 006).
 
 ### 6.4 What bumps `version`
 
-- **Yes:** every successful FSM status transition.
-- **No (v1):** reply comments, attachment liaison rows, title edits
-  (if any). Those use `updated_at` only unless a later ADR expands CAS
-  to all issue row mutations.
+- **Yes:** every successful FSM status transition (instance update).
+- Other instance updates on `Issue` (e.g. reply touching `updated_at`)
+  also bump `#[version]` under Toasty’s default OCC rules — acceptable
+  and strengthens conflict detection.
 
 ---
 
@@ -429,7 +422,8 @@ design.
 - [x] §5.1 surface policy accepted (**3A**: StartAnalysis / Resolve
   admin-only in v1).
 - [x] Timeline copy strings frozen (§8).
-- [ ] Implementation plan (Cursor plan) references this document as SoT.
+- [x] Implementation plan (Cursor plan) references this document as SoT
+  (`.cursor/plans/issue_lifecycle_fsm_02ac8ded.plan.md`).
 
 ---
 

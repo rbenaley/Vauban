@@ -42,15 +42,17 @@ rtk cargo test --test integration_tests -- portal_issues -- --test-threads=1
    comments / status dividers come from the DB.
 3. Confirm support replies display as **Vauban Support**.
 4. Post a reply; confirm it persists after reload.
-5. On an open issue, click **Close issue** — status becomes Closed, a
-   timeline divider `Closed` appears, and the reply form is replaced by
-   the closed panel.
-6. Attempting a reply while closed must not add a comment (no reply form;
-   forged POST must not persist).
-7. Click **Reopen issue** — status returns to Open; post a reply and
-   confirm it persists.
+5. On an **Open** / **In analysis** issue, confirm there is **no**
+   Close button (only Reply). Forged `POST …/close` must leave status
+   unchanged.
+6. On a **Resolved** issue (staff pipeline below), click **Close issue**
+   — status becomes Closed, timeline `Closed`, closed panel shown.
+7. Attempting a reply while Resolved/Closed must not add a comment.
+8. From **Closed**, **Reopen** → **Open**. From **Resolved**, **Reopen**
+   → **In analysis** (not Open).
 
-Pass: client issue timeline, replies, close, and reopen work under the org slug.
+Pass: client timeline / replies; Close only from Resolved; reopen targets
+match the FSM.
 
 ## A2 -- Landing position after a post (Pass / Fail)
 
@@ -78,12 +80,17 @@ proves nothing.
 
 1. Sign in as `support@vauban.sh` / `password`.
 2. Open `/admin/issues` — expect aggregated list (optional org filter).
-3. Open an issue detail under `/admin/issues/{key}` and post a staff reply.
-4. Close the issue from admin, confirm Closed + blocked reply, then Reopen.
-5. Open `/vauban/issues` — expect redirect to `/admin/issues`.
+3. Open an **Open** issue under `/admin/issues/{key}?org=…` and post a
+   staff reply.
+4. Click **Start analysis** → status **In analysis**, timeline
+   `Moved to analysis`.
+5. Click **Mark resolved** → **Resolved**, timeline `Resolved`.
+6. **Close issue** → **Closed**; client can also Close from Resolved.
+7. **Reopen** from Closed → **Open**.
+8. Open `/vauban/issues` — expect redirect to `/admin/issues`.
 
-Pass: staff issues live under `/admin/issues`; reserved org issues redirect;
-staff close/reopen works.
+Pass: staff pipeline Open → In analysis → Resolved → Closed; reserved
+org issues redirect.
 
 ## C -- Denial paths
 
