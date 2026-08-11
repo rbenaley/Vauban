@@ -83,6 +83,102 @@ async fn e2e_report_issue_persists_and_shows_details() {
 }
 
 #[tokio::test]
+async fn e2e_report_form_lists_vauban_components() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("iss-comp-form");
+    let slug = unique_slug("iss-comp-form-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let cookie = login(&router, &email).await;
+
+    let page = get(&router, &format!("/{slug}/issues/new"), cookie.as_deref()).await;
+    assert_eq!(status(&page), StatusCode::OK);
+    let html = body_text(page).await;
+    for label in [
+        "SSH",
+        "RDP",
+        "IACS",
+        "Web UI",
+        "Authentication",
+        "Access control",
+        "Vault",
+        "Recording &amp; audit",
+        "Recording & audit",
+        "Notifications",
+        "Infrastructure",
+        "Portal",
+        "Other",
+    ] {
+        // HTML may escape `&` in "Recording & audit".
+        if label == "Recording & audit" || label == "Recording &amp; audit" {
+            assert!(
+                html.contains("Recording & audit") || html.contains("Recording &amp; audit"),
+                "form missing Recording & audit: {html}"
+            );
+            continue;
+        }
+        assert!(
+            html.contains(label),
+            "report form missing component {label}: {html}"
+        );
+    }
+    assert!(!html.contains("SSH Proxy"));
+    assert!(!html.contains("RDP Gateway"));
+    assert!(!html.contains("Control plane"));
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_report_issue_unknown_component_skips_create() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("iss-bad-comp");
+    let slug = unique_slug("iss-bad-comp-org");
+    let (_user, org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let cookie = login(&router, &email).await;
+
+    let report = post_multipart_with_files(
+        &router,
+        &format!("/{slug}/issues"),
+        cookie.as_deref(),
+        &[
+            ("title", "Should not persist"),
+            ("component", "NotAVaubanSurface"),
+            ("severity", "Major"),
+            ("details", "forged component"),
+        ],
+        &[],
+    )
+    .await;
+    assert!(status(&report).is_redirection());
+    let location = report
+        .headers()
+        .get(topcoat::router::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert_eq!(location, format!("/{slug}/issues/new"));
+
+    {
+        let mut conn = db.clone();
+        let rows = Issue::all()
+            .filter(Issue::fields().organization_id().eq(org.id))
+            .exec(&mut conn)
+            .await
+            .expect("list");
+        assert!(rows.is_empty(), "unknown component must not insert");
+    }
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
 async fn e2e_report_issue_empty_title_skips_create() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
@@ -149,7 +245,7 @@ async fn e2e_issue_detail_shows_seeded_comment_and_reply() {
         let issue = toasty::create!(Issue {
             key: key.clone(),
             title: "Comment e2e".to_owned(),
-            component: "SSH Proxy".to_owned(),
+            component: "SSH".to_owned(),
             severity: "Major".to_owned(),
             status: "In analysis".to_owned(),
             organization_id: org.id,

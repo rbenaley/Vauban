@@ -66,6 +66,17 @@ grep -n 'filter_row' "$LIST" >/dev/null || fail "$LIST must use filter_row for c
 
 grep -n 'method="POST"' "$NEW" >/dev/null || fail "$NEW must POST report form"
 grep -n 'name="details"' "$NEW" >/dev/null || fail "$NEW must include details field"
+grep -n 'ISSUE_COMPONENTS' "$NEW" >/dev/null \
+  || fail "$NEW must render options from ISSUE_COMPONENTS"
+if grep -nE 'SSH Proxy|RDP Gateway|Control plane' "$NEW" >/dev/null 2>&1; then
+  fail "$NEW must not ship legacy component labels"
+fi
+grep -n 'fn normalize_issue_component' src/issue_component.rs >/dev/null \
+  || fail "src/issue_component.rs must define normalize_issue_component"
+grep -n 'Infrastructure' src/issue_component.rs >/dev/null \
+  || fail "issue component catalogue must include Infrastructure"
+grep -n 'normalize_issue_component' "$LIST" >/dev/null \
+  || fail "$LIST must validate component via normalize_issue_component"
 grep -n 'enctype="multipart/form-data"' "$NEW" >/dev/null \
   || fail "$NEW must use multipart/form-data for screenshots"
 grep -n 'vb-drop' "$NEW" >/dev/null || fail "$NEW must include screenshot dropzone"

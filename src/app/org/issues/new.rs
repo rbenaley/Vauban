@@ -11,6 +11,7 @@ use crate::{
     app::org::Org,
     app::shot_file_input,
     auth::{capability_denied, config, require_org},
+    issue_component::{DEFAULT_ISSUE_COMPONENT, ISSUE_COMPONENTS},
     models::RESERVED_ORG_SLUG,
     perms::perms_for_user,
 };
@@ -98,13 +99,13 @@ async fn new_issue_page(cx: &Cx) -> Result {
                                 "COMPONENT"
                             </label>
                             <select id="component" name="component">
-                                <option value="SSH Proxy" selected=(true)>
-                                    "SSH Proxy"
-                                </option>
-                                <option value="RDP Gateway">"RDP Gateway"</option>
-                                <option value="Control plane">"Control plane"</option>
-                                <option value="Portal">"Portal"</option>
-                                <option value="Other">"Other"</option>
+                                for label in ISSUE_COMPONENTS {
+                                    let value = (*label).to_owned();
+                                    let selected = *label == DEFAULT_ISSUE_COMPONENT;
+                                    <option value=(value.clone()) selected=(selected)>
+                                        (value)
+                                    </option>
+                                }
                             </select>
                         </div>
                     </div>

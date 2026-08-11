@@ -6,6 +6,7 @@ use vcp::issue_anchor::{ISSUE_REPLY_ANCHOR, with_reply_anchor};
 use vcp::issue_attachments::{
     AttachmentToken, attachment_cap_hint, gallery_src, parse_attachment_token,
 };
+use vcp::issue_component::{ISSUE_COMPONENTS, normalize_issue_component};
 use vcp::issue_fsm::{ALL_EVENTS, IssueEvent, IssueState};
 use vcp::issue_key::{next_issue_key_from_keys, parse_vbn_suffix};
 use vcp::issue_status::issue_is_closed;
@@ -85,6 +86,31 @@ proptest! {
         prop_assume!(!details.is_empty());
         prop_assert_eq!(details.len(), details.trim().len());
         prop_assert!(details.len() <= 200);
+    }
+
+    #[test]
+    fn prop_normalize_issue_component_round_trips_catalogue(
+        idx in 0usize..ISSUE_COMPONENTS.len()
+    ) {
+        let label = ISSUE_COMPONENTS[idx];
+        prop_assert_eq!(normalize_issue_component(label), Some(label));
+        prop_assert_eq!(
+            normalize_issue_component(&format!("  {label}  ")),
+            Some(label)
+        );
+        prop_assert_eq!(
+            normalize_issue_component(&label.to_ascii_lowercase()),
+            Some(label)
+        );
+    }
+
+    #[test]
+    fn prop_normalize_rejects_unknown_component(s in "[A-Za-z]{3,20}") {
+        prop_assume!(!ISSUE_COMPONENTS.iter().any(|c| c.eq_ignore_ascii_case(&s)));
+        prop_assume!(!s.eq_ignore_ascii_case("SSH Proxy"));
+        prop_assume!(!s.eq_ignore_ascii_case("RDP Gateway"));
+        prop_assume!(!s.eq_ignore_ascii_case("Control plane"));
+        prop_assert_eq!(normalize_issue_component(&s), None);
     }
 }
 

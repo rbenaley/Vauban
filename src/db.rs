@@ -660,7 +660,7 @@ async fn ensure_demo_issues(db: &mut Db, org_id: u64, member_id: u64) -> anyhow:
         let issue_214 = toasty::create!(Issue {
             key: "VBN-214".to_owned(),
             title: "Intermittent SSH proxy latency under heavy load".to_owned(),
-            component: "SSH Proxy".to_owned(),
+            component: "SSH".to_owned(),
             severity: "Major".to_owned(),
             status: "In analysis".to_owned(),
             organization_id: org_id,
@@ -700,7 +700,7 @@ async fn ensure_demo_issues(db: &mut Db, org_id: u64, member_id: u64) -> anyhow:
         toasty::create!(Issue {
             key: "VBN-208".to_owned(),
             title: "RDP clipboard sync drops large payloads".to_owned(),
-            component: "RDP Gateway".to_owned(),
+            component: "RDP".to_owned(),
             severity: "Minor".to_owned(),
             status: "Open".to_owned(),
             organization_id: org_id,

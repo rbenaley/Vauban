@@ -57,7 +57,7 @@ async fn create_issue_at(
     toasty::create!(Issue {
         key: key.to_owned(),
         title: title.to_owned(),
-        component: "SSH Proxy".to_owned(),
+        component: "SSH".to_owned(),
         severity: "Major".to_owned(),
         status: status.to_owned(),
         organization_id,

@@ -25,6 +25,7 @@ use crate::{
     issue_attachments::{
         ScreenshotUpload, attach_many, screenshot_from_part, store_screenshot_uploads,
     },
+    issue_component::normalize_issue_component,
     issue_key::{
         ISSUE_KEY_CREATE_ATTEMPTS, ISSUE_KEY_PREFIX, allocate_issue_key, is_unique_violation,
         parse_vbn_suffix,
@@ -299,7 +300,9 @@ async fn report_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
 
     let form = parse_report_multipart(multipart).await?;
     let title = form.title.trim().to_owned();
-    let component = form.component.trim().to_owned();
+    let Some(component) = normalize_issue_component(&form.component).map(str::to_owned) else {
+        return Ok(see_other(&format!("/{slug}/issues/new")));
+    };
     let severity = form.severity.trim().to_owned();
     let details = form.details.trim().to_owned();
 

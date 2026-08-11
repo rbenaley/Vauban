@@ -29,6 +29,47 @@ fn inv_report_issue_persists_details() {
 }
 
 #[test]
+fn inv_issue_component_catalogue_is_vauban_aligned() {
+    let catalog = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/issue_component.rs"
+    ));
+    let new_page = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/issues/new.rs"
+    ));
+    let report = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/issues.rs"
+    ));
+    for label in [
+        "SSH",
+        "RDP",
+        "IACS",
+        "Web UI",
+        "Authentication",
+        "Access control",
+        "Vault",
+        "Recording & audit",
+        "Notifications",
+        "Infrastructure",
+        "Portal",
+        "Other",
+    ] {
+        assert!(
+            catalog.contains(&format!("\"{label}\"")),
+            "catalogue missing {label}"
+        );
+    }
+    assert!(new_page.contains("ISSUE_COMPONENTS"));
+    assert!(new_page.contains("DEFAULT_ISSUE_COMPONENT"));
+    assert!(report.contains("normalize_issue_component"));
+    assert!(!new_page.contains("SSH Proxy"));
+    assert!(!new_page.contains("RDP Gateway"));
+    assert!(!new_page.contains("Control plane"));
+}
+
+#[test]
 fn inv_report_issue_safe_key_allocation() {
     let src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

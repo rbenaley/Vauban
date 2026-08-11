@@ -810,7 +810,7 @@ pub async fn create_test_issue(
     toasty::create!(Issue {
         key: key.to_owned(),
         title: title.to_owned(),
-        component: "SSH Proxy".to_owned(),
+        component: "SSH".to_owned(),
         severity: "Major".to_owned(),
         status: status.to_owned(),
         organization_id,

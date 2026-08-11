@@ -38,17 +38,22 @@ rtk cargo test --test integration_tests -- portal_issues -- --test-threads=1
 ## A -- Client happy path
 
 1. Sign in as `l.martin@acme.example` (magic link).
-2. Open `/acme-infrastructure/issues/VBN-214` and confirm discussion
+2. Open `/{org}/issues/new` and confirm the COMPONENT select lists the
+   Vauban catalogue (SSH, RDP, IACS, Web UI, Authentication, Access
+   control, Vault, Recording & audit, Notifications, Infrastructure,
+   Portal, Other) — not legacy "SSH Proxy" / "RDP Gateway" /
+   "Control plane".
+3. Open `/acme-infrastructure/issues/VBN-214` and confirm discussion
    comments / status dividers come from the DB.
-3. Confirm support replies display as **Vauban Support**.
-4. Post a reply; confirm it persists after reload.
-5. On an **Open** / **In analysis** issue, confirm there is **no**
+4. Confirm support replies display as **Vauban Support**.
+5. Post a reply; confirm it persists after reload.
+6. On an **Open** / **In analysis** issue, confirm there is **no**
    Close button (only Reply). Forged `POST …/close` must leave status
    unchanged.
-6. On a **Resolved** issue (staff pipeline below), click **Close issue**
+7. On a **Resolved** issue (staff pipeline below), click **Close issue**
    — status becomes Closed, timeline `Closed`, closed panel shown.
-7. Attempting a reply while Resolved/Closed must not add a comment.
-8. From **Closed**, **Reopen** → **Open**. From **Resolved**, **Reopen**
+8. Attempting a reply while Resolved/Closed must not add a comment.
+9. From **Closed**, **Reopen** → **Open**. From **Resolved**, **Reopen**
    → **In analysis** (not Open).
 
 Pass: client timeline / replies; Close only from Resolved; reopen targets
