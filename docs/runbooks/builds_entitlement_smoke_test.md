@@ -1,7 +1,8 @@
 # Runbook -- Builds download entitlement
 
 > Manual validation after shipping **storage-backed artifact download**,
-> **GA vs org-private release visibility**, and **Concept Builds chrome**
+> **GA vs org-private release visibility**, **LTS / LTS.industrial /
+> Stable subscription entitlement**, and **Concept Builds chrome**
 > (default-open latest + **server-side** ephemeral download links via
 > Topcoat POST/PRG). CI covers unit / invariants / proptest / battle /
 > in-process E2E against `vcp_test`; staging proves browser HTTPS and
@@ -50,10 +51,13 @@ rtk cargo test --test integration_tests -- builds_entitlement -- --test-threads=
    same `X.Y.Z`, `X.Y.Z-client` rows sit above plain `X.Y.Z`, A→Z by
    client name. Pager must not reshuffle when toggling publish.
    SIGNATURE column shows the **full** 64-hex SHA-256 (not a 7-char
-   prefix). VERSION omits a trailing `+LTS` (channel badge carries LTS);
-   verify / ephemeral / download basenames still use `vauban-…+LTS.pkg`
-   for the LTS track. Column gaps look even across VERSION…SIZE.
-   Dashboard `/{org}` CURRENT BUILD / latest must also omit `+LTS`.
+   prefix). VERSION omits track markers (`+LTS` / `+LTS.industrial`;
+   channel badge carries the track). Basenames keep
+   `vauban-…+LTS.pkg` / `vauban-…+LTS.industrial.pkg`. When both LTS and
+   industrial twins share `X.Y.Z`, industrial sorts **above** LTS.
+   Channel chips: All / LTS / LTS.industrial / Stable / EOL.
+   Dashboard `/{org}` CURRENT BUILD / latest must also omit markers and
+   respect the subscription matrix.
 3. Action row: **Download (size)**, **5-minute download link**,
    **Verify signature** (no Collapse).
 4. Submit **5-minute download link** — server issues a UUID token and
@@ -90,6 +94,22 @@ The list/detail/download loaders apply a **SQL** net
 published-only for reserved `vauban`) before Rust defense-in-depth
 `release_visible_to_org`.
 
+## B2 -- Subscription matrix (LTS / Industrial LTS)
+
+Seed (or admin-publish) three GA packages sharing a core when needed:
+`vauban-X.Y.Z.pkg` (Stable), `…+LTS.pkg`, `…+LTS.industrial.pkg`.
+
+| Org counters (admin Companies) | Expect on `/{org}/builds` + download |
+|---|---|
+| LTS=0, Industrial=0 | `/{org}/builds` **404**; Builds rail item **absent**; download **404** |
+| LTS≥1, Industrial=0 | Stable + LTS only; chips All/LTS/Stable/EOL (no Industrial); industrial **404** |
+| LTS=0, Industrial≥1 | Industrial only; chips All/LTS Industrial/EOL (no LTS/Stable); Stable/LTS **404** |
+| LTS≥1 and Industrial≥1 | All three; all chips; industrial twin **above** LTS |
+| Reserved `/vauban` (even 0/0) | All published tracks; all chips; Builds stays in rail |
+
+Pass / Fail: list HTML, chip set, rail presence, and download POST match the
+table; dashboard never links Builds when counters are 0/0.
+
 ## C -- Collapse without re-open loop
 
 1. On the list with latest open, click the open row — expect collapse
@@ -117,7 +137,8 @@ the live ephemeral panel share **one** slot (mutually exclusive).
 3. Expect **only** **PACKAGE SIGNATURE** (same body chrome as the
    ephemeral zone): full SHA-256 + Copy, and `$ sha256 vauban-…pkg` +
    command copy. LTS packages use `+LTS`; Stable/EOL omit it. DB versions
-   keep a leading `v`; package names do not.
+   keep a leading `v`; package names do not. Industrial packages use
+   `+LTS.industrial` in the sha256 command basename.
 4. Confirm **EPHEMERAL DOWNLOAD LINK** is **not** visible at the same time
    (no fetch/cURL, countdown, or Revoke while Verify is open).
 5. Click **Verify signature** again — PACKAGE SIGNATURE collapses and the

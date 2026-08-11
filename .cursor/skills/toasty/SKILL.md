@@ -63,6 +63,7 @@ in SQL:
     Release::fields().v_major().desc(),
     Release::fields().v_minor().desc(),
     Release::fields().v_patch().desc(),
+    Release::fields().is_industrial().desc(), // industrial above LTS twin
     Release::fields().has_client_suffix().desc(),
     Release::fields().client_suffix().asc(),
     // Admin list only — same semver: PUBLISHED before HIDDEN.

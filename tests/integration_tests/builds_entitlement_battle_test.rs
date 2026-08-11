@@ -37,8 +37,10 @@ async fn battle_parallel_download_posts() {
             v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -105,8 +107,10 @@ async fn battle_parallel_download_posts_without_blob_redirect() {
             v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -179,8 +183,10 @@ async fn battle_parallel_ephemeral_generate() {
             v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -246,8 +252,10 @@ async fn battle_parallel_builds_page_keeps_verify_hooks() {
             v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -317,9 +325,11 @@ async fn battle_parallel_builds_page_pagination() {
                 v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
                     .has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+                product_track: "LTS".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -378,6 +388,123 @@ async fn battle_parallel_builds_page_pagination() {
         !page2.contains(">v99.0.10<"),
         "page2 must not list highest: {page2}"
     );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn battle_parallel_lts_only_vs_industrial_only_no_cross_leak() {
+    use crate::common::create_org_with_membership_subs;
+    use vcp::release_pkg::release_write_keys;
+
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let core = format!("v93.1.{}", unique_slug("bt").len());
+    let lts_ver = format!("{core}+LTS");
+    let ind_ver = format!("{core}+LTS.industrial");
+    let payload = b"battle-track";
+    for (version, channel, track) in [
+        (lts_ver.as_str(), "LTS", "LTS"),
+        (ind_ver.as_str(), "LTS.industrial", "LTS.industrial"),
+    ] {
+        let (sort, _) = release_write_keys(version, channel);
+        let mut conn = db.clone();
+        let id = toasty::create!(Release {
+            version: version.to_owned(),
+            channel: channel.to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            status: "PUBLISHED".to_owned(),
+            notes: "FIX: battle track".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: sort.v_major,
+            v_minor: sort.v_minor,
+            v_patch: sort.v_patch,
+            is_industrial: sort.is_industrial,
+            has_client_suffix: sort.has_client_suffix,
+            client_suffix: sort.client_suffix,
+            product_track: track.to_owned(),
+        })
+        .exec(&mut conn)
+        .await
+        .expect("release")
+        .id;
+        let _ = seed_release_artifact(&db, id, payload).await;
+        let _ = track;
+    }
+
+    let email_lts = unique_email("battle-lts");
+    let slug_lts = unique_slug("battle-lts");
+    let _ = create_org_with_membership_subs(&db, &email_lts, "password", &slug_lts, "member", 1, 0)
+        .await;
+    let email_ind = unique_email("battle-ind");
+    let slug_ind = unique_slug("battle-ind");
+    let _ = create_org_with_membership_subs(&db, &email_ind, "password", &slug_ind, "member", 0, 1)
+        .await;
+
+    let router = Arc::new(test_router().await);
+    let cookie_lts = login_cookie(router.as_ref(), &email_lts)
+        .await
+        .expect("cookie");
+    let cookie_ind = login_cookie(router.as_ref(), &email_ind)
+        .await
+        .expect("cookie");
+    let barrier = Arc::new(Barrier::new(4));
+
+    let mut handles = Vec::new();
+    for (slug, cookie, allow_ver, deny_ver) in [
+        (
+            slug_lts.clone(),
+            cookie_lts.clone(),
+            lts_ver.clone(),
+            ind_ver.clone(),
+        ),
+        (
+            slug_ind.clone(),
+            cookie_ind.clone(),
+            ind_ver.clone(),
+            lts_ver.clone(),
+        ),
+    ] {
+        for is_allow in [true, false] {
+            let router = router.clone();
+            let barrier = barrier.clone();
+            let slug = slug.clone();
+            let cookie = cookie.clone();
+            let ver = if is_allow {
+                allow_ver.clone()
+            } else {
+                deny_ver.clone()
+            };
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                let resp = post_form(
+                    router.as_ref(),
+                    &format!("/{slug}/builds/{ver}/download"),
+                    Some(&cookie),
+                    "",
+                )
+                .await;
+                (is_allow, status(&resp))
+            }));
+        }
+    }
+
+    let mut allow_ok = 0;
+    let mut deny_ok = 0;
+    for h in handles {
+        let (is_allow, st) = h.await.expect("join");
+        if is_allow {
+            assert_eq!(st, StatusCode::OK);
+            allow_ok += 1;
+        } else {
+            assert_eq!(st, StatusCode::NOT_FOUND);
+            deny_ok += 1;
+        }
+    }
+    assert_eq!(allow_ok, 2);
+    assert_eq!(deny_ok, 2);
 
     cleanup(&db).await;
 }

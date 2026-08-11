@@ -21,7 +21,7 @@ use crate::{
     auth::{db, require_org, storage},
     list_page::href_with_query,
     perms::perms_for_user,
-    release_pkg::package_file_name,
+    release_pkg::{org_builds_entitled, package_file_name},
     storage::find_release_object,
 };
 
@@ -128,12 +128,24 @@ async fn builds_download(cx: &Cx, Form(form): Form<DlRedirectForm>) -> Result<Re
     if !perms.builds_download {
         return Err(forbidden().into());
     }
+    let lts = ctx.org.lts_subscriptions;
+    let industrial = ctx.org.industrial_lts_subscriptions;
+    if !org_builds_entitled(org_slug, lts, industrial) {
+        return Err(not_found().into());
+    }
 
     let channel = form.channel.as_deref().map(str::trim).unwrap_or_default();
     let ver_key = ver.to_string();
     let mut database = db(cx);
-    let Some(rel) =
-        find_visible_release_by_version(&mut database, &ver_key, ctx.org.id, org_slug).await
+    let Some(rel) = find_visible_release_by_version(
+        &mut database,
+        &ver_key,
+        ctx.org.id,
+        org_slug,
+        lts,
+        industrial,
+    )
+    .await
     else {
         return Err(not_found().into());
     };

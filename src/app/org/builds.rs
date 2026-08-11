@@ -23,9 +23,12 @@ use crate::{
     list_page::{PagerLinks, href_with_query, page_offset, with_page_param},
     models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, RESERVED_ORG_SLUG, Release},
     perms::perms_for_user,
-    release_pkg::{package_file_name, sha256_cmd, version_for_display},
+    release_pkg::{
+        allowed_product_tracks, builds_channel_filter_chips, org_builds_entitled,
+        package_file_name, product_track_allowed, sha256_cmd, version_for_display,
+    },
     storage::{BlobDisplay, release_blob_display},
-    ui::channel_badge_class,
+    ui::{channel_badge_class, channel_filter_label},
 };
 
 use self::download::DlError;
@@ -39,8 +42,6 @@ pub use self::download::{DL_ERROR_PARAM, download_error_href};
 pub use crate::list_page::page_slice;
 /// Re-export shared pagination helpers for `builds_entitlement` / `vcp::app`.
 pub use crate::list_page::{BUILDS_PAGE_SIZE, clamp_page, page_count, parse_page};
-
-const CHANNELS: &[&str] = &["LTS", "Stable", "EOL"];
 
 #[query_params]
 pub(super) struct BuildsQuery {
@@ -74,22 +75,28 @@ async fn builds_page(cx: &Cx) -> Result {
     if !perms.builds_read {
         return Err(capability_denied().into());
     }
+    let lts = ctx.org.lts_subscriptions;
+    let industrial = ctx.org.industrial_lts_subscriptions;
+    if !org_builds_entitled(slug, lts, industrial) {
+        return Err(capability_denied().into());
+    }
 
     let q = query_params::<BuildsQuery>(cx).ok();
-    let channel = q
+    let channel_raw = q
         .as_ref()
         .and_then(|q| q.channel.clone())
         .unwrap_or_default();
-    let channel = channel.trim();
+    let channel = normalize_builds_channel(channel_raw.trim(), slug, lts, industrial);
     let collapse = q
         .as_ref()
         .and_then(|q| q.open.as_deref())
         .is_some_and(|v| v.eq_ignore_ascii_case("none"));
     let mut page = parse_page(q.as_ref().and_then(|q| q.page));
-    let total = count_releases_for_org(cx, ctx.org.id, slug, channel).await;
+    let total = count_releases_for_org(cx, ctx.org.id, slug, channel, lts, industrial).await;
     let pages = page_count(total, BUILDS_PAGE_SIZE);
     page = clamp_page(page, pages);
-    let page_releases = load_releases_page_for_org(cx, ctx.org.id, slug, channel, page).await;
+    let page_releases =
+        load_releases_page_for_org(cx, ctx.org.id, slug, channel, page, lts, industrial).await;
     let open_version = if collapse || page != 1 {
         None
     } else {
@@ -108,6 +115,8 @@ async fn builds_page(cx: &Cx) -> Result {
             org_id: ctx.org.id,
             page,
             page_count: pages,
+            lts,
+            industrial,
             dl_error: q
                 .as_ref()
                 .and_then(|q| q.dl_error.as_deref())
@@ -115,6 +124,26 @@ async fn builds_page(cx: &Cx) -> Result {
         },
     )
     .await
+}
+
+/// Drop channel query values the org cannot filter on (URL guessing).
+pub(super) fn normalize_builds_channel<'a>(
+    channel: &'a str,
+    org_slug: &str,
+    lts: i32,
+    industrial: i32,
+) -> &'a str {
+    if channel.is_empty() {
+        return "";
+    }
+    if builds_channel_filter_chips(org_slug, lts, industrial)
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(channel))
+    {
+        channel
+    } else {
+        ""
+    }
 }
 
 /// Everything the Builds list body needs for one request.
@@ -128,6 +157,8 @@ pub(super) struct BuildsRender<'a> {
     pub org_id: u64,
     pub page: usize,
     pub page_count: usize,
+    pub lts: i32,
+    pub industrial: i32,
     /// Set after a failed download POST redirect; raises the Concept modal.
     pub dl_error: Option<DlError>,
 }
@@ -143,6 +174,8 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
         org_id,
         page,
         page_count,
+        lts,
+        industrial,
         dl_error,
     } = args;
     let base = format!("/{org_slug}/builds");
@@ -156,11 +189,12 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
     });
     let pager_opt = if pager.show() { Some(pager) } else { None };
 
-    let mut chips: Vec<(String, String, bool)> = Vec::with_capacity(1 + CHANNELS.len());
+    let filter_channels = builds_channel_filter_chips(org_slug, lts, industrial);
+    let mut chips: Vec<(String, String, bool)> = Vec::with_capacity(1 + filter_channels.len());
     chips.push(("All".to_owned(), base.clone(), channel.is_empty()));
-    for ch in CHANNELS {
+    for ch in filter_channels {
         chips.push((
-            (*ch).to_owned(),
+            channel_filter_label(ch).to_owned(),
             format!("{base}?channel={ch}"),
             channel.eq_ignore_ascii_case(ch),
         ));
@@ -708,17 +742,33 @@ pub fn release_matches_sql_visibility(
     release_org_id == RELEASE_GA_ORG_ID || release_org_id == viewer_org_id
 }
 
-/// Releases visible on org Builds / dashboard: must be `PUBLISHED`, then either
-/// GA (`organization_id == 0`) or targeted at that org. The reserved staff
-/// tenant `vauban` still sees every **published** private client build; `HIDDEN`
-/// rows stay on `/admin/releases` only (Unpublish removes them from chrome).
-pub(super) fn release_visible_to_org(release: &Release, org_id: u64, org_slug: &str) -> bool {
-    release_matches_sql_visibility(&release.status, release.organization_id, org_id, org_slug)
+/// Owned `product_track` allow-list for SQL `in_list` (`None` = unrestricted).
+pub fn product_track_sql_filter(org_slug: &str, lts: i32, industrial: i32) -> Option<Vec<String>> {
+    allowed_product_tracks(org_slug, lts, industrial)
+        .map(|tracks| tracks.into_iter().map(str::to_owned).collect())
 }
 
-/// Apply published + tenant (+ optional channel) filters for org Builds queries.
+/// Releases visible on org Builds / dashboard: published + tenant + product track.
+///
+/// Reserved staff tenant `vauban` sees every **published** build (ignores
+/// subscription counters). `HIDDEN` rows stay on `/admin/releases` only.
+pub fn release_visible_to_org(
+    release: &Release,
+    org_id: u64,
+    org_slug: &str,
+    lts: i32,
+    industrial: i32,
+) -> bool {
+    if !release_matches_sql_visibility(&release.status, release.organization_id, org_id, org_slug) {
+        return false;
+    }
+    let allowed = allowed_product_tracks(org_slug, lts, industrial);
+    product_track_allowed(allowed.as_deref(), &release.product_track)
+}
+
+/// Apply published + tenant + product-track (+ optional channel) filters.
 macro_rules! builds_releases_filtered {
-    ($org_id:expr, $org_slug:expr, $channel:expr) => {{
+    ($org_id:expr, $org_slug:expr, $channel:expr, $tracks:expr) => {{
         let mut q = Release::all().filter(Release::fields().status().eq(RELEASE_STATUS_PUBLISHED));
         if !$org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
             q = q.filter(
@@ -726,6 +776,19 @@ macro_rules! builds_releases_filtered {
                     .organization_id()
                     .in_list([RELEASE_GA_ORG_ID, $org_id]),
             );
+        }
+        match &$tracks {
+            None => {}
+            Some(tracks) if tracks.is_empty() => {
+                q = q.filter(
+                    Release::fields()
+                        .product_track()
+                        .eq("__denied__".to_owned()),
+                );
+            }
+            Some(tracks) => {
+                q = q.filter(Release::fields().product_track().in_list(tracks.clone()));
+            }
         }
         if !$channel.is_empty() {
             let channel_owned = ($channel).to_owned();
@@ -742,21 +805,25 @@ macro_rules! release_semver_order_by {
             Release::fields().v_major().desc(),
             Release::fields().v_minor().desc(),
             Release::fields().v_patch().desc(),
+            Release::fields().is_industrial().desc(),
             Release::fields().has_client_suffix().desc(),
             Release::fields().client_suffix().asc(),
         )
     };
 }
 
-/// Count published releases visible to the org (SQL tenant + channel filters).
+/// Count published releases visible to the org (SQL tenant + track + channel).
 pub(crate) async fn count_releases_for_org(
     cx: &Cx,
     org_id: u64,
     org_slug: &str,
     channel: &str,
+    lts: i32,
+    industrial: i32,
 ) -> usize {
     let mut database = crate::auth::db(cx);
-    let q = builds_releases_filtered!(org_id, org_slug, channel);
+    let tracks = product_track_sql_filter(org_slug, lts, industrial);
+    let q = builds_releases_filtered!(org_id, org_slug, channel, tracks);
     q.count().exec(&mut database).await.unwrap_or(0) as usize
 }
 
@@ -767,9 +834,12 @@ pub(crate) async fn load_releases_page_for_org(
     org_slug: &str,
     channel: &str,
     page: usize,
+    lts: i32,
+    industrial: i32,
 ) -> Vec<Release> {
     let mut database = crate::auth::db(cx);
-    let mut filtered = builds_releases_filtered!(org_id, org_slug, channel)
+    let tracks = product_track_sql_filter(org_slug, lts, industrial);
+    let mut filtered = builds_releases_filtered!(org_id, org_slug, channel, tracks)
         .order_by(release_semver_order_by!())
         .limit(BUILDS_PAGE_SIZE)
         .offset(page_offset(page, BUILDS_PAGE_SIZE))
@@ -777,7 +847,7 @@ pub(crate) async fn load_releases_page_for_org(
         .await
         .unwrap_or_default();
     // Defense in depth — SQL already applied the same net.
-    filtered.retain(|r| release_visible_to_org(r, org_id, org_slug));
+    filtered.retain(|r| release_visible_to_org(r, org_id, org_slug, lts, industrial));
     filtered
 }
 
@@ -787,14 +857,17 @@ pub(crate) async fn load_releases_for_org(
     org_id: u64,
     org_slug: &str,
     channel: &str,
+    lts: i32,
+    industrial: i32,
 ) -> Vec<Release> {
     let mut database = crate::auth::db(cx);
-    let mut filtered = builds_releases_filtered!(org_id, org_slug, channel)
+    let tracks = product_track_sql_filter(org_slug, lts, industrial);
+    let mut filtered = builds_releases_filtered!(org_id, org_slug, channel, tracks)
         .order_by(release_semver_order_by!())
         .exec(&mut database)
         .await
         .unwrap_or_default();
-    filtered.retain(|r| release_visible_to_org(r, org_id, org_slug));
+    filtered.retain(|r| release_visible_to_org(r, org_id, org_slug, lts, industrial));
     filtered
 }
 
@@ -804,8 +877,11 @@ pub(super) async fn find_visible_release_by_version(
     version: &str,
     org_id: u64,
     org_slug: &str,
+    lts: i32,
+    industrial: i32,
 ) -> Option<Release> {
     let ver_key = version.to_owned();
+    let tracks = product_track_sql_filter(org_slug, lts, industrial);
     let mut q = Release::all()
         .filter(Release::fields().version().eq(ver_key))
         .filter(Release::fields().status().eq(RELEASE_STATUS_PUBLISHED));
@@ -816,10 +892,23 @@ pub(super) async fn find_visible_release_by_version(
                 .in_list([RELEASE_GA_ORG_ID, org_id]),
         );
     }
+    match &tracks {
+        None => {}
+        Some(t) if t.is_empty() => {
+            q = q.filter(
+                Release::fields()
+                    .product_track()
+                    .eq("__denied__".to_owned()),
+            );
+        }
+        Some(t) => {
+            q = q.filter(Release::fields().product_track().in_list(t.clone()));
+        }
+    }
     let found = q.exec(db).await.unwrap_or_default();
     found
         .into_iter()
-        .find(|r| release_visible_to_org(r, org_id, org_slug))
+        .find(|r| release_visible_to_org(r, org_id, org_slug, lts, industrial))
 }
 
 #[cfg(test)]
@@ -842,8 +931,10 @@ mod builds_entitlement_page_tests {
             v_major: sort.v_major,
             v_minor: sort.v_minor,
             v_patch: sort.v_patch,
+            is_industrial: 0,
             has_client_suffix: sort.has_client_suffix,
             client_suffix: sort.client_suffix,
+            product_track: "LTS".to_owned(),
         }
     }
 
@@ -867,32 +958,32 @@ mod builds_entitlement_page_tests {
     #[test]
     fn release_visible_published_ga_for_client() {
         let rel = sample_release(RELEASE_STATUS_PUBLISHED, RELEASE_GA_ORG_ID);
-        assert!(release_visible_to_org(&rel, 42, "acme"));
+        assert!(release_visible_to_org(&rel, 42, "acme", 1, 1));
     }
 
     #[test]
     fn release_visible_hidden_ga_hidden_from_client() {
         let rel = sample_release(RELEASE_STATUS_HIDDEN, RELEASE_GA_ORG_ID);
-        assert!(!release_visible_to_org(&rel, 42, "acme"));
+        assert!(!release_visible_to_org(&rel, 42, "acme", 1, 1));
     }
 
     #[test]
     fn release_visible_hidden_hidden_from_reserved_too() {
         let rel = sample_release(RELEASE_STATUS_HIDDEN, RELEASE_GA_ORG_ID);
-        assert!(!release_visible_to_org(&rel, 1, "vauban"));
+        assert!(!release_visible_to_org(&rel, 1, "vauban", 0, 0));
     }
 
     #[test]
     fn release_visible_reserved_still_sees_published_private() {
         let rel = sample_release(RELEASE_STATUS_PUBLISHED, 42);
-        assert!(release_visible_to_org(&rel, 1, "vauban"));
+        assert!(release_visible_to_org(&rel, 1, "vauban", 0, 0));
     }
 
     #[test]
     fn release_visible_published_private_for_target_org_only() {
         let rel = sample_release(RELEASE_STATUS_PUBLISHED, 42);
-        assert!(release_visible_to_org(&rel, 42, "acme"));
-        assert!(!release_visible_to_org(&rel, 99, "other"));
+        assert!(release_visible_to_org(&rel, 42, "acme", 1, 1));
+        assert!(!release_visible_to_org(&rel, 99, "other", 1, 1));
     }
 }
 

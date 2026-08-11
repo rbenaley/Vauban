@@ -204,8 +204,10 @@ async fn models_issue_and_stubs_create() {
         v_major: sort.v_major,
         v_minor: sort.v_minor,
         v_patch: sort.v_patch,
+        is_industrial: 0,
         has_client_suffix: sort.has_client_suffix,
         client_suffix: sort.client_suffix,
+        product_track: "LTS".to_owned(),
     })
     .exec(&mut conn)
     .await

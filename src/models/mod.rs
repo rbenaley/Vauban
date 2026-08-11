@@ -225,9 +225,15 @@ pub struct Release {
     pub v_major: u64,
     pub v_minor: u64,
     pub v_patch: u64,
+    /// `1` when product track is industrial LTS; else `0` (SQL tie-break).
+    pub is_industrial: u64,
     /// `1` when `version` has a `-client` suffix; else `0`.
     pub has_client_suffix: u64,
     pub client_suffix: String,
+
+    /// Immutable product family: `Stable`, `LTS`, or `LTS.industrial`.
+    /// Survives lifecycle `channel = EOL`.
+    pub product_track: String,
 }
 
 /// Portal mirror of blob digests/sizes (SoT lives in helper SQLite `meta.sqlite`).

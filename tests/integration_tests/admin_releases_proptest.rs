@@ -50,21 +50,30 @@ proptest! {
         major in 0u32..20,
         minor in 0u32..40,
         patch in 0u32..40,
-        lts in any::<bool>(),
+        kind in 0u8..3,
     ) {
         let core = format!("{major}.{minor}.{patch}");
-        let raw = if lts {
-            format!("{core}+LTS")
-        } else {
-            core.clone()
+        let raw = match kind {
+            0 => core.clone(),
+            1 => format!("{core}+LTS"),
+            _ => format!("{core}+LTS.industrial"),
         };
         let id = derive_release_identity(&raw).expect("identity");
         prop_assert!(id.version.starts_with('v'));
-        prop_assert_eq!(id.channel, if lts { "LTS" } else { "Stable" });
-        if lts {
-            prop_assert!(id.version.ends_with("+LTS"));
-        } else {
-            prop_assert!(!id.version.to_ascii_uppercase().ends_with("+LTS"));
+        match kind {
+            0 => {
+                prop_assert_eq!(id.channel, "Stable");
+                prop_assert!(!id.version.to_ascii_uppercase().contains("+LTS"));
+            }
+            1 => {
+                prop_assert_eq!(id.channel, "LTS");
+                prop_assert!(id.version.ends_with("+LTS"));
+                prop_assert!(!id.version.ends_with("+LTS.industrial"));
+            }
+            _ => {
+                prop_assert_eq!(id.channel, "LTS.industrial");
+                prop_assert!(id.version.ends_with("+LTS.industrial"));
+            }
         }
     }
 
@@ -105,11 +114,22 @@ proptest! {
         major in 0u32..20,
         minor in 0u32..40,
         patch in 0u32..40,
-        channel in prop_oneof![Just("LTS"), Just("Stable"), Just("EOL")],
+        channel in prop_oneof![
+            Just("LTS"),
+            Just("LTS.industrial"),
+            Just("Stable"),
+            Just("EOL")
+        ],
         store_marker in any::<bool>(),
     ) {
         let core = format!("v{major}.{minor}.{patch}");
-        let version = if store_marker || channel == "LTS" {
+        let version = if channel == "LTS.industrial" || (store_marker && channel != "Stable") {
+            if channel == "LTS.industrial" {
+                format!("{core}+LTS.industrial")
+            } else {
+                format!("{core}+LTS")
+            }
+        } else if store_marker || channel == "LTS" {
             format!("{core}+LTS")
         } else {
             core.clone()
@@ -119,7 +139,12 @@ proptest! {
         prop_assert!(!display.contains('+'));
         let track = channel_track(&version, channel);
         let pkg = package_file_name(&version, channel);
-        if track == "LTS" {
+        if track == "LTS.industrial" {
+            prop_assert!(
+                pkg.ends_with("+LTS.industrial.pkg"),
+                "industrial basename: {pkg}"
+            );
+        } else if track == "LTS" {
             prop_assert!(
                 pkg.ends_with("+LTS.pkg"),
                 "LTS track basename must keep +LTS: {pkg}"

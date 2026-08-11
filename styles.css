@@ -988,6 +988,9 @@ a.vb-row:hover { background: #fafbfa; }
 .vb-badge.chan-lts {
   color: #117a6b; background: #e2f0ec; border-color: #bfe0d8; font-weight: 500;
 }
+.vb-badge.chan-lts-industrial {
+  color: #0f5c70; background: #e0eef2; border-color: #b5d4de; font-weight: 500;
+}
 .vb-badge.chan-stable {
   color: #2f5fb0; background: #e9eef8; border-color: #cdd9f0; font-weight: 500;
 }

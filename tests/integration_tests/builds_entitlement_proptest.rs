@@ -7,7 +7,9 @@ use vcp::app::{
 };
 use vcp::config::{Config, Environment};
 use vcp::release_pkg::{
-    cmp_sort_fields_desc, cmp_version_desc, package_file_name, sha256_cmd, version_for_display,
+    PRODUCT_TRACK_INDUSTRIAL, PRODUCT_TRACK_LTS, PRODUCT_TRACK_STABLE, allowed_product_tracks,
+    builds_channel_filter_chips, cmp_sort_fields_desc, cmp_version_desc, derive_release_identity,
+    org_builds_entitled, package_file_name, product_track_allowed, sha256_cmd, version_for_display,
     version_sort_fields,
 };
 
@@ -27,6 +29,16 @@ const PACKAGE_CASES: &[(&str, &str, &str)] = &[
     ("v0.9.35", "Stable", "vauban-0.9.35.pkg"),
     ("v0.8.6", "EOL", "vauban-0.8.6.pkg"),
     ("v1.0.0+LTS", "EOL", "vauban-1.0.0+LTS.pkg"),
+    (
+        "v1.0.0+LTS.industrial",
+        "EOL",
+        "vauban-1.0.0+LTS.industrial.pkg",
+    ),
+    (
+        "v1.0.0",
+        "LTS.industrial",
+        "vauban-1.0.0+LTS.industrial.pkg",
+    ),
     ("1.2.3", "LTS", "vauban-1.2.3+LTS.pkg"),
 ];
 
@@ -102,12 +114,70 @@ proptest! {
         );
         let display = version_for_display(ver);
         prop_assert!(!display.to_ascii_uppercase().ends_with("+LTS"));
-        if expected.ends_with("+LTS.pkg") {
+        prop_assert!(!display.to_ascii_uppercase().contains("+LTS.INDUSTRIAL"));
+        if expected.ends_with("+LTS.pkg") || expected.ends_with("+LTS.industrial.pkg") {
             prop_assert!(
-                !display.contains("+LTS") && !display.contains("+lts"),
+                !display.contains('+'),
                 "display must omit marker while basename keeps it: {display} / {expected}"
             );
         }
+    }
+
+    #[test]
+    fn prop_allowed_tracks_matrix(
+        lts in 0i32..5,
+        industrial in 0i32..5,
+        slug in "[a-z][a-z0-9-]{2,12}",
+    ) {
+        let allowed = allowed_product_tracks(&slug, lts, industrial);
+        prop_assert!(allowed.is_some());
+        let tracks = allowed.unwrap();
+        if lts == 0 && industrial == 0 {
+            prop_assert!(tracks.is_empty());
+        }
+        if lts > 0 {
+            prop_assert!(tracks.contains(&PRODUCT_TRACK_STABLE));
+            prop_assert!(tracks.contains(&PRODUCT_TRACK_LTS));
+        } else {
+            prop_assert!(!tracks.contains(&PRODUCT_TRACK_LTS));
+            prop_assert!(!tracks.contains(&PRODUCT_TRACK_STABLE));
+        }
+        if industrial > 0 {
+            prop_assert!(tracks.contains(&PRODUCT_TRACK_INDUSTRIAL));
+        } else {
+            prop_assert!(!tracks.contains(&PRODUCT_TRACK_INDUSTRIAL));
+        }
+        prop_assert_eq!(
+            org_builds_entitled(&slug, lts, industrial),
+            !tracks.is_empty()
+        );
+        let chips = builds_channel_filter_chips(&slug, lts, industrial);
+        if tracks.is_empty() {
+            prop_assert!(chips.is_empty());
+        } else {
+            prop_assert!(chips.contains(&"EOL"));
+            prop_assert_eq!(chips.contains(&"LTS"), lts > 0);
+            prop_assert_eq!(chips.contains(&"Stable"), lts > 0);
+            prop_assert_eq!(chips.contains(&"LTS.industrial"), industrial > 0);
+        }
+        prop_assert!(allowed_product_tracks("vauban", lts, industrial).is_none());
+        prop_assert!(org_builds_entitled("vauban", 0, 0));
+        prop_assert!(product_track_allowed(None, PRODUCT_TRACK_INDUSTRIAL));
+    }
+
+    #[test]
+    fn prop_derive_industrial_longest_first(
+        major in 1u32..10,
+        patch in 0u32..20,
+    ) {
+        let raw = format!("{major}.0.{patch}+LTS.industrial");
+        let id = derive_release_identity(&raw).expect("identity");
+        prop_assert_eq!(id.channel, PRODUCT_TRACK_INDUSTRIAL);
+        prop_assert!(id.version.ends_with("+LTS.industrial"));
+        prop_assert_eq!(
+            cmp_version_desc(&id.version, &format!("v{major}.0.{patch}+LTS")),
+            std::cmp::Ordering::Less
+        );
     }
 
     #[test]

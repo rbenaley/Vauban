@@ -100,8 +100,10 @@ async fn battle_parallel_channel_release_filters() {
                 v_major: vcp::release_pkg::version_sort_fields(ver).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(ver).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(ver).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(ver).has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(ver).client_suffix,
+                product_track: "LTS".to_owned(),
             })
             .exec(&mut conn)
             .await

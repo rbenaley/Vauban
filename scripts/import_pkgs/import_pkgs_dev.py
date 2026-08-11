@@ -107,8 +107,10 @@ class SortFields:
     v_major: int
     v_minor: int
     v_patch: int
+    is_industrial: int
     has_client_suffix: int
     client_suffix: str
+    product_track: str
 
 
 @dataclass(frozen=True)
@@ -222,20 +224,39 @@ def version_for_package(version: str) -> str:
     return version
 
 
+INDUSTRIAL_SUFFIX = "+LTS.industrial"
+LTS_SUFFIX = "+LTS"
+
+
+def has_industrial_marker(version: str) -> bool:
+    ver = version_for_package(version.strip())
+    return len(ver) >= len(INDUSTRIAL_SUFFIX) and ver[
+        -len(INDUSTRIAL_SUFFIX) :
+    ].lower() == INDUSTRIAL_SUFFIX.lower()
+
+
 def has_lts_marker(version: str) -> bool:
-    ver = version_for_package(version)
+    if has_industrial_marker(version):
+        return False
+    ver = version_for_package(version.strip())
     return len(ver) >= 4 and ver[-4:].lower() == "+lts"
 
 
-def strip_lts_marker(version: str) -> str:
-    ver = version_for_package(version)
-    if has_lts_marker(ver):
+def strip_track_markers(version: str) -> str:
+    ver = version_for_package(version.strip())
+    if has_industrial_marker(version):
+        return ver[: -len(INDUSTRIAL_SUFFIX)]
+    if has_lts_marker(version):
         return ver[:-4]
     return ver
 
 
+def strip_lts_marker(version: str) -> str:
+    return strip_track_markers(version)
+
+
 def ensure_lts_marker(version: str) -> str:
-    if has_lts_marker(version):
+    if has_industrial_marker(version) or has_lts_marker(version):
         return version
     trimmed = version.strip()
     if not trimmed:
@@ -243,26 +264,43 @@ def ensure_lts_marker(version: str) -> str:
     return f"{trimmed}+LTS"
 
 
+def ensure_industrial_marker(version: str) -> str:
+    if has_industrial_marker(version):
+        return version
+    core = strip_track_markers(version)
+    trimmed = version.strip()
+    if trimmed.startswith("v") or trimmed.startswith("V"):
+        with_v = f"{trimmed[0]}{core}"
+    elif core:
+        with_v = f"v{core}"
+    else:
+        return INDUSTRIAL_SUFFIX
+    return f"{with_v}{INDUSTRIAL_SUFFIX}"
+
+
 def derive_release_identity(pkg_version: str) -> Optional[Tuple[str, str]]:
     raw = pkg_version.strip()
     if not raw:
         return None
+    is_industrial = has_industrial_marker(raw)
     is_lts = has_lts_marker(raw)
-    core = strip_lts_marker(raw).strip()
+    core = strip_track_markers(raw).strip()
     if not core:
         return None
     if core.startswith("v") or core.startswith("V"):
         version = core
     else:
         version = f"v{core}"
+    if is_industrial:
+        return ensure_industrial_marker(version), "LTS.industrial"
     if is_lts:
-        version = ensure_lts_marker(version)
-    return version, ("LTS" if is_lts else "Stable")
+        return ensure_lts_marker(version), "LTS"
+    return version, "Stable"
 
 
 def import_channel(portal_version: str, derived_channel: str) -> str:
-    if derived_channel == "LTS":
-        return "LTS"
+    if derived_channel in ("LTS", "LTS.industrial"):
+        return derived_channel
     core = version_for_package(portal_version)
     parts = core.split(".")
     try:
@@ -278,8 +316,16 @@ def import_channel(portal_version: str, derived_channel: str) -> str:
     return "Stable"
 
 
-def version_sort_fields(version: str) -> SortFields:
-    ver = strip_lts_marker(version)
+def product_track(version: str, channel: str) -> str:
+    if channel.lower() == "lts.industrial" or has_industrial_marker(version):
+        return "LTS.industrial"
+    if channel.lower() == "lts" or has_lts_marker(version):
+        return "LTS"
+    return "Stable"
+
+
+def version_sort_fields(version: str, channel: str = "") -> SortFields:
+    ver = strip_track_markers(version)
     if "-" in ver:
         core, suffix = ver.split("-", 1)
     else:
@@ -291,12 +337,15 @@ def version_sort_fields(version: str) -> SortFields:
     while len(nums) < 3:
         nums.append(0)
     nums = nums[:3]
+    track = product_track(version, channel or ("LTS.industrial" if has_industrial_marker(version) else "LTS" if has_lts_marker(version) else "Stable"))
     return SortFields(
         v_major=nums[0],
         v_minor=nums[1],
         v_patch=nums[2],
+        is_industrial=1 if track == "LTS.industrial" else 0,
         has_client_suffix=1 if suffix else 0,
         client_suffix=suffix,
+        product_track=track,
     )
 
 
@@ -431,8 +480,10 @@ def upsert_release(
                 v_major = %s,
                 v_minor = %s,
                 v_patch = %s,
+                is_industrial = %s,
                 has_client_suffix = %s,
-                client_suffix = %s
+                client_suffix = %s,
+                product_track = %s
             WHERE id = %s
             """,
             (
@@ -444,8 +495,10 @@ def upsert_release(
                 sort.v_major,
                 sort.v_minor,
                 sort.v_patch,
+                sort.is_industrial,
                 sort.has_client_suffix,
                 sort.client_suffix,
+                sort.product_track,
                 release_id,
             ),
         )
@@ -454,8 +507,9 @@ def upsert_release(
         """
         INSERT INTO releases (
             version, channel, released_on, status, notes, organization_id,
-            v_major, v_minor, v_patch, has_client_suffix, client_suffix
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            v_major, v_minor, v_patch, is_industrial, has_client_suffix,
+            client_suffix, product_track
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -468,8 +522,10 @@ def upsert_release(
             sort.v_major,
             sort.v_minor,
             sort.v_patch,
+            sort.is_industrial,
             sort.has_client_suffix,
             sort.client_suffix,
+            sort.product_track,
         ),
     )
     return int(cur.fetchone()[0])
@@ -606,7 +662,7 @@ def run(args: argparse.Namespace) -> None:
                     continue
 
                 channel = import_channel(version, derived_channel)
-                sort = version_sort_fields(version)
+                sort = version_sort_fields(version, channel)
                 release_id = upsert_release(cur, version, channel, section, sort)
 
                 data = pkg_path.read_bytes()

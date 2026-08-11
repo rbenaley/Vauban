@@ -23,11 +23,11 @@ use crate::{
     models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, RELEASE_STATUS_STAGING, Release},
     perms::perms_for_user,
     storage::{BlobDisplay, release_blob_display},
-    ui::{channel_badge_class, release_status_badge_class},
+    ui::{channel_badge_class, channel_filter_label, release_status_badge_class},
 };
 
 /// Channel filter chips (same labels as `/{org}/builds`).
-const CHANNEL_CHIPS: &[&str] = &["LTS", "Stable", "EOL"];
+const CHANNEL_CHIPS: &[&str] = &["LTS", "LTS.industrial", "Stable", "EOL"];
 
 #[query_params]
 struct AdminReleasesQuery {
@@ -138,6 +138,7 @@ async fn admin_releases_page(cx: &Cx) -> Result {
             Release::fields().v_major().desc(),
             Release::fields().v_minor().desc(),
             Release::fields().v_patch().desc(),
+            Release::fields().is_industrial().desc(),
             Release::fields().has_client_suffix().desc(),
             Release::fields().client_suffix().asc(),
             // Same semver: PUBLISHED before HIDDEN (`status DESC`; STAGING excluded).
@@ -177,7 +178,7 @@ async fn admin_releases_page(cx: &Cx) -> Result {
     ));
     for ch in CHANNEL_CHIPS {
         chips.push((
-            (*ch).to_owned(),
+            channel_filter_label(ch).to_owned(),
             // Chip hrefs omit `page` so a filter change resets to page 1.
             admin_releases_list_href(ch, 1),
             channel.eq_ignore_ascii_case(ch),

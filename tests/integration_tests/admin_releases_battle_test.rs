@@ -48,9 +48,11 @@ async fn battle_concurrent_release_creates() {
                 v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
                     .has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+                product_track: "LTS".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -97,9 +99,11 @@ async fn battle_parallel_admin_releases_page_pagination() {
                 v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
                     .has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+                product_track: "LTS".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -176,8 +180,10 @@ async fn battle_parallel_same_version_published_before_hidden() {
             v_major: sort.v_major,
             v_minor: sort.v_minor,
             v_patch: sort.v_patch,
+            is_industrial: 0,
             has_client_suffix: sort.has_client_suffix,
             client_suffix: sort.client_suffix.clone(),
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -192,8 +198,10 @@ async fn battle_parallel_same_version_published_before_hidden() {
             v_major: sort.v_major,
             v_minor: sort.v_minor,
             v_patch: sort.v_patch,
+            is_industrial: 0,
             has_client_suffix: sort.has_client_suffix,
             client_suffix: sort.client_suffix.clone(),
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -258,9 +266,11 @@ async fn battle_parallel_publish_unpublish_under_list_reads() {
             v_major: vcp::release_pkg::version_sort_fields("v95.battle.status").v_major,
             v_minor: vcp::release_pkg::version_sort_fields("v95.battle.status").v_minor,
             v_patch: vcp::release_pkg::version_sort_fields("v95.battle.status").v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields("v95.battle.status")
                 .has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields("v95.battle.status").client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -374,9 +384,11 @@ async fn battle_parallel_semver_list_order_under_concurrent_creates() {
                 v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
                     .has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+                product_track: "LTS".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -400,9 +412,11 @@ async fn battle_parallel_semver_list_order_under_concurrent_creates() {
                 v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
                     .has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+                product_track: "LTS".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -953,8 +967,10 @@ async fn battle_parallel_channel_filter_under_list_reads() {
                     v_major: sort.v_major,
                     v_minor: sort.v_minor,
                     v_patch: sort.v_patch,
+                    is_industrial: 0,
                     has_client_suffix: sort.has_client_suffix,
                     client_suffix: sort.client_suffix,
+                    product_track: "LTS".to_owned(),
                 })
                 .exec(&mut conn)
                 .await

@@ -450,8 +450,10 @@ async fn e2e_admin_releases_edit_preserves_target_org_selection() {
             v_major: sort.v_major,
             v_minor: sort.v_minor,
             v_patch: sort.v_patch,
+            is_industrial: 0,
             has_client_suffix: sort.has_client_suffix,
             client_suffix: sort.client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -536,8 +538,10 @@ async fn e2e_admin_releases_edit_preserves_channel_selection() {
             v_major: sort.v_major,
             v_minor: sort.v_minor,
             v_patch: sort.v_patch,
+            is_industrial: 0,
             has_client_suffix: sort.has_client_suffix,
             client_suffix: sort.client_suffix,
+            product_track: "Stable".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -620,9 +624,11 @@ async fn e2e_admin_releases_list_pagination() {
                 v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
                     .has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+                product_track: "LTS".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -710,8 +716,10 @@ async fn e2e_admin_releases_channel_filter_hides_other_channels() {
                 v_major: sort.v_major,
                 v_minor: sort.v_minor,
                 v_patch: sort.v_patch,
+                is_industrial: 0,
                 has_client_suffix: sort.has_client_suffix,
                 client_suffix: sort.client_suffix,
+                product_track: "LTS".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -760,8 +768,10 @@ async fn e2e_admin_releases_channel_filter_hides_other_channels() {
                 v_major: sort.v_major,
                 v_minor: sort.v_minor,
                 v_patch: sort.v_patch,
+                is_industrial: 0,
                 has_client_suffix: sort.has_client_suffix,
                 client_suffix: sort.client_suffix,
+                product_track: "Stable".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -812,8 +822,10 @@ async fn e2e_admin_releases_list_shows_status_badges_and_actions() {
             v_major: vcp::release_pkg::version_sort_fields("v95.ui.1").v_major,
             v_minor: vcp::release_pkg::version_sort_fields("v95.ui.1").v_minor,
             v_patch: vcp::release_pkg::version_sort_fields("v95.ui.1").v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields("v95.ui.1").has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields("v95.ui.1").client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -872,8 +884,10 @@ async fn e2e_admin_releases_order_stable_across_unpublish() {
                 v_major: vcp::release_pkg::version_sort_fields(ver).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(ver).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(ver).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(ver).has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(ver).client_suffix,
+                product_track: "LTS".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -959,8 +973,10 @@ async fn e2e_unpublish_hides_from_client_builds_publish_restores() {
             v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -1094,8 +1110,10 @@ async fn e2e_admin_releases_delete_with_confirm() {
             v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            product_track: "Stable".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -1195,8 +1213,10 @@ async fn e2e_member_denied_admin_releases_mutations() {
             v_major: vcp::release_pkg::version_sort_fields("v95.mem.0").v_major,
             v_minor: vcp::release_pkg::version_sort_fields("v95.mem.0").v_minor,
             v_patch: vcp::release_pkg::version_sort_fields("v95.mem.0").v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields("v95.mem.0").has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields("v95.mem.0").client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -1251,9 +1271,11 @@ async fn e2e_admin_releases_edit_updates_row() {
             v_major: vcp::release_pkg::version_sort_fields("v95.edit.0").v_major,
             v_minor: vcp::release_pkg::version_sort_fields("v95.edit.0").v_minor,
             v_patch: vcp::release_pkg::version_sort_fields("v95.edit.0").v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields("v95.edit.0")
                 .has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields("v95.edit.0").client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -1342,8 +1364,10 @@ async fn e2e_admin_releases_list_strips_lts_marker_from_version() {
             v_major: sort.v_major,
             v_minor: sort.v_minor,
             v_patch: sort.v_patch,
+            is_industrial: 0,
             has_client_suffix: sort.has_client_suffix,
             client_suffix: sort.client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -1402,8 +1426,10 @@ async fn e2e_admin_releases_edit_rejects_lts_to_stable() {
             v_major: sort.v_major,
             v_minor: sort.v_minor,
             v_patch: sort.v_patch,
+            is_industrial: 0,
             has_client_suffix: sort.has_client_suffix,
             client_suffix: sort.client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -1540,8 +1566,10 @@ async fn e2e_admin_releases_same_version_published_before_hidden() {
             v_major: sort.v_major,
             v_minor: sort.v_minor,
             v_patch: sort.v_patch,
+            is_industrial: 0,
             has_client_suffix: sort.has_client_suffix,
             client_suffix: sort.client_suffix.clone(),
+            product_track: "Stable".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -1556,8 +1584,10 @@ async fn e2e_admin_releases_same_version_published_before_hidden() {
             v_major: sort.v_major,
             v_minor: sort.v_minor,
             v_patch: sort.v_patch,
+            is_industrial: 0,
             has_client_suffix: sort.has_client_suffix,
             client_suffix: sort.client_suffix.clone(),
+            product_track: "Stable".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -1610,8 +1640,10 @@ async fn e2e_admin_releases_sql_semver_order_and_sort_columns() {
                 v_major: vcp::release_pkg::version_sort_fields(version).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(version).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(version).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(version).has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(version).client_suffix,
+                product_track: "Stable".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -1840,8 +1872,10 @@ async fn e2e_orphan_staged_release_is_swept_from_release_manager() {
             v_major: sort.v_major,
             v_minor: sort.v_minor,
             v_patch: sort.v_patch,
+            is_industrial: 0,
             has_client_suffix: sort.has_client_suffix,
             client_suffix: sort.client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await

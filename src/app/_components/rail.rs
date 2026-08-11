@@ -4,7 +4,9 @@ use topcoat::{
     view::{component, view},
 };
 
-use crate::{auth::require_org, nav::NavSection, perms::perms_for_user, ui};
+use crate::{
+    auth::require_org, nav::NavSection, perms::perms_for_user, release_pkg::org_builds_entitled, ui,
+};
 
 use super::icons::{
     ico_builds, ico_docs, ico_edit, ico_home, ico_issues, ico_key, ico_orgs, ico_release,
@@ -17,6 +19,11 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
     let perms = perms_for_user(cx, &ctx.user).await;
     let org_name = ctx.org.name.clone();
     let show_admin = perms.admin_view;
+    let show_builds = org_builds_entitled(
+        org_slug,
+        ctx.org.lts_subscriptions,
+        ctx.org.industrial_lts_subscriptions,
+    );
 
     let home_href = format!("/{org_slug}");
     let docs_href = format!("/{org_slug}/docs");
@@ -63,10 +70,12 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
                 (ico_docs(cx, 17).await?)
                 <span class="lbl">"Docs"</span>
             </a>
-            <a href=(builds_href) class=(rail_class(section == NavSection::Builds))>
-                (ico_builds(cx, 17).await?)
-                <span class="lbl">"Builds"</span>
-            </a>
+            if show_builds {
+                <a href=(builds_href) class=(rail_class(section == NavSection::Builds))>
+                    (ico_builds(cx, 17).await?)
+                    <span class="lbl">"Builds"</span>
+                </a>
+            }
             <a
                 href=(issues_href.clone())
                 class=(rail_class(

@@ -30,8 +30,10 @@ async fn seed_ga_release_with_notes(db: &toasty::Db, version: &str, notes: &str)
         v_major: sort.v_major,
         v_minor: sort.v_minor,
         v_patch: sort.v_patch,
+        is_industrial: 0,
         has_client_suffix: sort.has_client_suffix,
         client_suffix: sort.client_suffix,
+        product_track: "Stable".to_owned(),
     })
     .exec(&mut conn)
     .await

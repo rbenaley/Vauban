@@ -186,6 +186,16 @@ pub async fn ensure_reserved_org(db: &Db) -> Organization {
 }
 
 pub async fn create_test_org(db: &Db, slug: &str) -> Organization {
+    create_test_org_with_subs(db, slug, 1, 0).await
+}
+
+/// Create an org with explicit LTS / Industrial LTS subscription counters.
+pub async fn create_test_org_with_subs(
+    db: &Db,
+    slug: &str,
+    lts: i32,
+    industrial: i32,
+) -> Organization {
     let mut db = db.clone();
     toasty::create!(Organization {
         slug: slug.to_owned(),
@@ -194,8 +204,8 @@ pub async fn create_test_org(db: &Db, slug: &str) -> Organization {
         vat: "FR 00 000000000".to_owned(),
         plan_label: "Test plan".to_owned(),
         supported_builds: "LTS".to_owned(),
-        lts_subscriptions: 1,
-        industrial_lts_subscriptions: 0,
+        lts_subscriptions: lts,
+        industrial_lts_subscriptions: industrial,
         technical_contact_name: "Ops Contact".to_owned(),
         technical_contact_email: "ops@example.com".to_owned(),
         status: "ACTIVE".to_owned(),
@@ -224,13 +234,26 @@ pub async fn create_org_with_membership(
     slug: &str,
     role: &str,
 ) -> (User, Organization) {
+    create_org_with_membership_subs(db, email, password, slug, role, 1, 0).await
+}
+
+/// Like [`create_org_with_membership`] with explicit subscription counters.
+pub async fn create_org_with_membership_subs(
+    db: &Db,
+    email: &str,
+    password: &str,
+    slug: &str,
+    role: &str,
+    lts: i32,
+    industrial: i32,
+) -> (User, Organization) {
     let is_admin = role == "admin" || role == PORTAL_ROLE_ADMIN;
     let user = if is_admin {
         create_test_user_with_portal_role(db, email, password, PORTAL_ROLE_ADMIN).await
     } else {
         create_test_user(db, email, password).await
     };
-    let org = create_test_org(db, slug).await;
+    let org = create_test_org_with_subs(db, slug, lts, industrial).await;
     // Memberships are always `org`; staff capability lives on `User.portal_role`.
     create_membership(db, user.id, org.id, MEMBERSHIP_ROLE_ORG).await;
     if is_admin && !slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
@@ -248,6 +271,7 @@ fn is_seed_release_version(version: &str) -> bool {
         "v1.0.2"
             | "v1.0.1"
             | "v1.0.0"
+            | "v1.0.0+LTS.industrial"
             | "v0.9.35"
             | "v0.9.31"
             | "v0.9.29"

@@ -22,7 +22,7 @@ use crate::{
     db::now_unix,
     models::{DOC_STATUS_PUBLISHED, DocArticle, Issue, RESERVED_ORG_SLUG},
     nav::nav_from_cx,
-    release_pkg::version_for_display,
+    release_pkg::{org_builds_entitled, version_for_display},
     tz::{browser_tz, format_relative, format_unix_local},
     ui::{channel_badge_class, note_tag_color},
 };
@@ -56,8 +56,15 @@ async fn org_layout(cx: &Cx, slot: Result) -> Result {
 async fn dashboard(cx: &Cx) -> Result {
     let slug = path_param::<Org>(cx);
     let ctx = require_org(cx, slug).await?;
+    let lts = ctx.org.lts_subscriptions;
+    let industrial = ctx.org.industrial_lts_subscriptions;
+    let show_builds = org_builds_entitled(slug, lts, industrial);
 
-    let releases = builds::load_releases_for_org(cx, ctx.org.id, slug, "").await;
+    let releases = if show_builds {
+        builds::load_releases_for_org(cx, ctx.org.id, slug, "", lts, industrial).await
+    } else {
+        Vec::new()
+    };
     let mut database = crate::auth::db(cx);
     let org_id = ctx.org.id;
     // Typical orgs have tens of issues — one org-scoped load + Rust stats
@@ -194,33 +201,35 @@ async fn dashboard(cx: &Cx) -> Result {
                 </div>
                 <div class="vb-link">"Open"</div>
             </a>
-            <a
-                class="vb-card"
-                href=(format!("/{}/builds", slug))
-                style="padding: 20px; min-height: 168px;"
-            >
-                <div
-                    style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
+            if show_builds {
+                <a
+                    class="vb-card"
+                    href=(format!("/{}/builds", slug))
+                    style="padding: 20px; min-height: 168px;"
                 >
-                    (ico_builds(cx, 20).await?)
-                    <span
-                        class="vb-mono vb-signed"
-                        style="font-size: 10px; color: var(--ok);"
+                    <div
+                        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
                     >
-                        (build_version.clone())
-                        " · signed"
-                    </span>
-                </div>
-                <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">
-                    "LTS builds & changelogs"
-                </div>
-                <div
-                    style="font-size: 13px; color: var(--muted); line-height: 1.45; flex: 1;"
-                >
-                    "Signed, verified binaries with long-term support."
-                </div>
-                <div class="vb-link">"Open"</div>
-            </a>
+                        (ico_builds(cx, 20).await?)
+                        <span
+                            class="vb-mono vb-signed"
+                            style="font-size: 10px; color: var(--ok);"
+                        >
+                            (build_version.clone())
+                            " · signed"
+                        </span>
+                    </div>
+                    <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">
+                        "LTS builds & changelogs"
+                    </div>
+                    <div
+                        style="font-size: 13px; color: var(--muted); line-height: 1.45; flex: 1;"
+                    >
+                        "Signed, verified binaries with long-term support."
+                    </div>
+                    <div class="vb-link">"Open"</div>
+                </a>
+            }
             <a
                 class="vb-card"
                 href=(issues_href)
@@ -334,13 +343,15 @@ async fn dashboard(cx: &Cx) -> Result {
                         </span>
                     </div>
                 }
-                <a
-                    class="vb-link"
-                    href=(format!("/{}/builds", slug))
-                    style="display: inline-block; margin-top: 14px;"
-                >
-                    "All builds"
-                </a>
+                if show_builds {
+                    <a
+                        class="vb-link"
+                        href=(format!("/{}/builds", slug))
+                        style="display: inline-block; margin-top: 14px;"
+                    >
+                        "All builds"
+                    </a>
+                }
             </div>
         </div>
     }

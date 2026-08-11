@@ -227,7 +227,19 @@ if [[ -f "$LIST" ]]; then
   grep -n 'admin_releases_list_href' "$LIST" >/dev/null \
     || fail "$LIST must share admin_releases_list_href for chips/pager"
   grep -n 'CHANNEL_CHIPS' "$LIST" >/dev/null \
-    || fail "$LIST must define CHANNEL_CHIPS (All/LTS/Stable/EOL)"
+    || fail "$LIST must define CHANNEL_CHIPS (All/LTS/LTS.industrial/Stable/EOL)"
+  grep -n 'LTS.industrial' "$LIST" >/dev/null \
+    || fail "$LIST CHANNEL_CHIPS must include LTS.industrial"
+  grep -n 'is_industrial().desc()' "$LIST" >/dev/null \
+    || fail "$LIST must ORDER BY is_industrial.desc"
+  grep -n 'product_track\|release_write_keys' "$NEW" >/dev/null \
+    || fail "$NEW must persist product_track via release_write_keys"
+  grep -n 'product_track\|release_write_keys' "$EDIT" >/dev/null \
+    || fail "$EDIT must persist product_track via release_write_keys"
+  grep -n 'LTS.industrial\|PRODUCT_TRACK_INDUSTRIAL' src/release_pkg.rs >/dev/null \
+    || fail "release_pkg must support LTS.industrial track transitions"
+  grep -n 'chan-lts-industrial' "$UI" >/dev/null \
+    || fail "$UI channel_badge_class must style LTS.industrial"
   grep -n 'vb-rel-head' "$LIST" >/dev/null \
     || fail "$LIST must use vb-rel-head catalog grid (not HTML table)"
   grep -n 'vb-rel-row' "$LIST" >/dev/null \

@@ -24,6 +24,7 @@ use crate::{
     db::now_unix,
     models::{EPH_DOWNLOAD_TTL_SECS, EphemeralDownload, Release},
     perms::perms_for_user,
+    release_pkg::org_builds_entitled,
     storage::{find_release_object, storage_http_status},
 };
 
@@ -136,11 +137,23 @@ async fn require_downloadable_release(
     if !perms.builds_download {
         return Err(forbidden().into());
     }
+    let lts = ctx.org.lts_subscriptions;
+    let industrial = ctx.org.industrial_lts_subscriptions;
+    if !org_builds_entitled(org_slug, lts, industrial) {
+        return Err(not_found().into());
+    }
 
     let ver_key = ver.to_owned();
     let mut database = db(cx);
-    let Some(release) =
-        find_visible_release_by_version(&mut database, &ver_key, ctx.org.id, org_slug).await
+    let Some(release) = find_visible_release_by_version(
+        &mut database,
+        &ver_key,
+        ctx.org.id,
+        org_slug,
+        lts,
+        industrial,
+    )
+    .await
     else {
         return Err(not_found().into());
     };
@@ -197,9 +210,15 @@ async fn ephemeral_download_get(cx: &Cx) -> Result<Response> {
     else {
         return Err(not_found().into());
     };
-    let Some(rel) =
-        find_visible_release_by_version(&mut database, &row.release_version, org.id, &org.slug)
-            .await
+    let Some(rel) = find_visible_release_by_version(
+        &mut database,
+        &row.release_version,
+        org.id,
+        &org.slug,
+        org.lts_subscriptions,
+        org.industrial_lts_subscriptions,
+    )
+    .await
     else {
         return Err(not_found().into());
     };

@@ -66,8 +66,44 @@ fn inv_download_route_gates_and_streams_via_storage() {
     assert!(src.contains("forbidden"));
     assert!(src.contains("require_org"));
     assert!(
+        src.contains("org_builds_entitled"),
+        "download must deny when org has zero LTS/Industrial subscriptions"
+    );
+    assert!(
         src.contains("package_file_name") && src.contains("CONTENT_DISPOSITION"),
         "download must set Content-Disposition from package_file_name"
+    );
+}
+
+#[test]
+fn inv_builds_surface_gates_zero_subscription_orgs() {
+    let builds = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/builds.rs"
+    ));
+    let rail = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/_components/rail.rs"
+    ));
+    let detail = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/builds/release_ver.rs"
+    ));
+    assert!(
+        builds.contains("org_builds_entitled") && builds.contains("capability_denied"),
+        "builds list must 404 when org has no Builds entitlement"
+    );
+    assert!(
+        builds.contains("builds_channel_filter_chips"),
+        "builds chips must be subscription-filtered"
+    );
+    assert!(
+        detail.contains("org_builds_entitled"),
+        "build detail must 404 when org has no Builds entitlement"
+    );
+    assert!(
+        rail.contains("org_builds_entitled") && rail.contains("show_builds"),
+        "rail must hide Builds without subscription entitlement"
     );
 }
 

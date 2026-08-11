@@ -433,7 +433,7 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
 
     let create_guard = store.begin_staging_create();
 
-    let sort = crate::release_pkg::version_sort_fields(&version);
+    let (sort, track) = crate::release_pkg::release_write_keys(&version, &channel);
     let mut database = db(cx);
     let Ok(mut created) = toasty::create!(Release {
         version,
@@ -445,8 +445,10 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
         v_major: sort.v_major,
         v_minor: sort.v_minor,
         v_patch: sort.v_patch,
+        is_industrial: sort.is_industrial,
         has_client_suffix: sort.has_client_suffix,
         client_suffix: sort.client_suffix,
+        product_track: track.to_owned(),
     })
     .exec(&mut database)
     .await

@@ -16,7 +16,7 @@ use crate::models::{
     IssueComment, MEMBERSHIP_ROLE_ORG, Membership, Organization, PORTAL_ROLE_ORG,
     RELEASE_GA_ORG_ID, RESERVED_ORG_SLUG, Release, USER_NOT_DELETED, User,
 };
-use crate::release_pkg::version_sort_fields;
+use crate::release_pkg::release_write_keys;
 use crate::storage::upsert_release_object;
 
 /// Doc row used by minimal / full demo seed: (title, summary, category, slug).
@@ -29,9 +29,9 @@ pub const MINIMAL_DOC_SLUG: &str = "quick-start";
 pub const DEMO_DOC_COUNT: usize = 7;
 
 /// GA rows in [`ga_release_catalog`] (Acme private hotfix is extra).
-pub const DEMO_GA_RELEASE_COUNT: usize = 23;
+pub const DEMO_GA_RELEASE_COUNT: usize = 24;
 
-/// Total releases after full demo seed (23 GA + 1 Acme-private).
+/// Total releases after full demo seed (24 GA + 1 Acme-private).
 pub const DEMO_RELEASE_COUNT: usize = DEMO_GA_RELEASE_COUNT + 1;
 
 /// Demo issues created by [`seed_demo_catalog`].
@@ -126,6 +126,14 @@ fn ga_release_catalog() -> Vec<(
             22_419_122,
             "c2b1f7dfa88ec9b77eb19dfaefe70ff25a75bb6877191f84609c637a75d2fc26",
             "FIX: stop newsyslog rotation from killing daemon(8)\nFEAT: expand staff Casbin grants",
+        ),
+        (
+            "v1.0.0+LTS.industrial",
+            "LTS.industrial",
+            "2026-07-02",
+            22_419_200,
+            "d3c2f8efb99fd0c88fc20efbffe810a36b86cc7988202a95710d748b86e3ad37",
+            "FIX: Industrial LTS twin of 1.0.0",
         ),
         (
             "v0.9.35",
@@ -309,7 +317,7 @@ async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
         .collect();
 
     for (version, channel, date, bytes, sha, notes) in ga_release_catalog() {
-        let sort = version_sort_fields(version);
+        let (sort, track) = release_write_keys(version, channel);
         let release_id = if let Some(mut rel) = by_ver.remove(version) {
             let id = rel.id;
             rel.update()
@@ -320,8 +328,10 @@ async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
                 .v_major(sort.v_major)
                 .v_minor(sort.v_minor)
                 .v_patch(sort.v_patch)
+                .is_industrial(sort.is_industrial)
                 .has_client_suffix(sort.has_client_suffix)
                 .client_suffix(sort.client_suffix.clone())
+                .product_track(track.to_owned())
                 .exec(db)
                 .await?;
             id
@@ -336,8 +346,10 @@ async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
                 v_major: sort.v_major,
                 v_minor: sort.v_minor,
                 v_patch: sort.v_patch,
+                is_industrial: sort.is_industrial,
                 has_client_suffix: sort.has_client_suffix,
                 client_suffix: sort.client_suffix,
+                product_track: track.to_owned(),
             })
             .exec(db)
             .await?;
@@ -361,7 +373,7 @@ async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
     };
 
     let existing = Release::all().exec(db).await?;
-    let sort = version_sort_fields(ACME_PRIVATE_VERSION);
+    let (sort, track) = release_write_keys(ACME_PRIVATE_VERSION, "EOL");
     let release_id = if let Some(mut rel) = existing
         .into_iter()
         .find(|r| r.version == ACME_PRIVATE_VERSION)
@@ -376,8 +388,10 @@ async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
             .v_major(sort.v_major)
             .v_minor(sort.v_minor)
             .v_patch(sort.v_patch)
+            .is_industrial(sort.is_industrial)
             .has_client_suffix(sort.has_client_suffix)
             .client_suffix(sort.client_suffix.clone())
+            .product_track(track.to_owned())
             .exec(db)
             .await?;
         id
@@ -392,8 +406,10 @@ async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
             v_major: sort.v_major,
             v_minor: sort.v_minor,
             v_patch: sort.v_patch,
+            is_industrial: sort.is_industrial,
             has_client_suffix: sort.has_client_suffix,
             client_suffix: sort.client_suffix,
+            product_track: track.to_owned(),
         })
         .exec(db)
         .await?;
@@ -404,17 +420,19 @@ async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Recompute `v_*` / `client_suffix` from `version` for every release row.
+/// Recompute `v_*` / track / `client_suffix` from `version`+`channel` for every release.
 pub async fn resync_release_sort_keys(db: &Db) -> anyhow::Result<()> {
     let mut conn = db.clone();
     let releases = Release::all().exec(&mut conn).await?;
     for mut rel in releases {
-        let sort = version_sort_fields(&rel.version);
+        let (sort, track) = release_write_keys(&rel.version, &rel.channel);
         if rel.v_major == sort.v_major
             && rel.v_minor == sort.v_minor
             && rel.v_patch == sort.v_patch
+            && rel.is_industrial == sort.is_industrial
             && rel.has_client_suffix == sort.has_client_suffix
             && rel.client_suffix == sort.client_suffix
+            && rel.product_track == track
         {
             continue;
         }
@@ -422,8 +440,10 @@ pub async fn resync_release_sort_keys(db: &Db) -> anyhow::Result<()> {
             .v_major(sort.v_major)
             .v_minor(sort.v_minor)
             .v_patch(sort.v_patch)
+            .is_industrial(sort.is_industrial)
             .has_client_suffix(sort.has_client_suffix)
             .client_suffix(sort.client_suffix)
+            .product_track(track.to_owned())
             .exec(&mut conn)
             .await?;
     }

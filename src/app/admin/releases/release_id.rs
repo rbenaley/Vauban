@@ -207,9 +207,9 @@ async fn admin_releases_update(cx: &Cx, Form(form): Form<UpdateReleaseForm>) -> 
         }
     };
 
-    // Version string may gain `+LTS` when leaving the LTS track for EOL; date
-    // is immutable (set at publish).
-    let sort = crate::release_pkg::version_sort_fields(&version);
+    // Version string may gain track markers when leaving for EOL; date
+    // is immutable (set at publish). product_track stays on the family.
+    let (sort, track) = crate::release_pkg::release_write_keys(&version, &channel);
     let mut database = db(cx);
     let _ = rel
         .update()
@@ -220,8 +220,10 @@ async fn admin_releases_update(cx: &Cx, Form(form): Form<UpdateReleaseForm>) -> 
         .v_major(sort.v_major)
         .v_minor(sort.v_minor)
         .v_patch(sort.v_patch)
+        .is_industrial(sort.is_industrial)
         .has_client_suffix(sort.has_client_suffix)
         .client_suffix(sort.client_suffix)
+        .product_track(track.to_owned())
         .exec(&mut database)
         .await;
 

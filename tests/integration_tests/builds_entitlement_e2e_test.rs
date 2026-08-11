@@ -49,8 +49,10 @@ async fn e2e_authorized_download_returns_200_with_blob() {
             v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -104,8 +106,10 @@ async fn e2e_builds_lts_marker_display_vs_package_basename() {
             v_major: vcp::release_pkg::version_sort_fields(&stored).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&stored).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&stored).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&stored).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&stored).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -177,8 +181,10 @@ async fn e2e_builds_lts_marker_display_vs_package_basename() {
             v_major: vcp::release_pkg::version_sort_fields(&eol_stored).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&eol_stored).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&eol_stored).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&eol_stored).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&eol_stored).client_suffix,
+            product_track: "Stable".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -233,8 +239,10 @@ async fn e2e_download_without_storage_row_redirects_to_builds_modal() {
             v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -333,8 +341,10 @@ async fn e2e_download_wrong_org_is_404() {
             v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -374,8 +384,10 @@ async fn e2e_download_anonymous_denied() {
             v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -436,9 +448,11 @@ async fn e2e_org_private_release_hidden_from_other_org() {
             v_major: vcp::release_pkg::version_sort_fields(&private_ver).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&private_ver).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&private_ver).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&private_ver)
                 .has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&private_ver).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -453,8 +467,10 @@ async fn e2e_org_private_release_hidden_from_other_org() {
             v_major: vcp::release_pkg::version_sort_fields(&ga_ver).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&ga_ver).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&ga_ver).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&ga_ver).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&ga_ver).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -545,8 +561,10 @@ async fn e2e_reserved_vauban_org_sees_all_client_private_releases() {
                 v_major: vcp::release_pkg::version_sort_fields(ver).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(ver).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(ver).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(ver).has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(ver).client_suffix,
+                product_track: "Stable".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -601,8 +619,10 @@ async fn e2e_hidden_ga_release_absent_from_client_builds() {
             v_major: vcp::release_pkg::version_sort_fields(&hidden_ver).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&hidden_ver).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&hidden_ver).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&hidden_ver).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&hidden_ver).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -617,9 +637,11 @@ async fn e2e_hidden_ga_release_absent_from_client_builds() {
             v_major: vcp::release_pkg::version_sort_fields(&published_ver).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&published_ver).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&published_ver).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&published_ver)
                 .has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&published_ver).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -678,8 +700,10 @@ async fn e2e_builds_list_opens_latest_with_concept_actions() {
                 v_major: vcp::release_pkg::version_sort_fields(ver).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(ver).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(ver).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(ver).has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(ver).client_suffix,
+                product_track: "LTS".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -905,8 +929,10 @@ async fn e2e_ephemeral_expired_offers_generate_new_link() {
             v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
             v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
             v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            is_industrial: 0,
             has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
             client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            product_track: "LTS".to_owned(),
         })
         .exec(&mut conn)
         .await
@@ -969,9 +995,11 @@ async fn e2e_builds_list_pagination() {
                 v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(&version)
                     .has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+                product_track: "LTS".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -1101,8 +1129,10 @@ async fn e2e_builds_sql_semver_order_matches_product_rules() {
                 v_major: vcp::release_pkg::version_sort_fields(version).v_major,
                 v_minor: vcp::release_pkg::version_sort_fields(version).v_minor,
                 v_patch: vcp::release_pkg::version_sort_fields(version).v_patch,
+                is_industrial: 0,
                 has_client_suffix: vcp::release_pkg::version_sort_fields(version).has_client_suffix,
                 client_suffix: vcp::release_pkg::version_sort_fields(version).client_suffix,
+                product_track: "LTS".to_owned(),
             })
             .exec(&mut conn)
             .await
@@ -1129,6 +1159,297 @@ async fn e2e_builds_sql_semver_order_matches_product_rules() {
     assert!(i10 < i_acme, "0.10 before acme: {html}");
     assert!(i_acme < i_zen, "acme before zenith: {html}");
     assert!(i_zen < i_plain, "zenith before plain: {html}");
+
+    cleanup(&db).await;
+}
+
+async fn insert_ga_track_release(
+    db: &toasty::Db,
+    version: &str,
+    channel: &str,
+    product_track: &str,
+    payload: &[u8],
+) -> u64 {
+    use crate::common::seed_release_artifact;
+    let (sort, _) = vcp::release_pkg::release_write_keys(version, channel);
+    let mut conn = db.clone();
+    let id = toasty::create!(Release {
+        version: version.to_owned(),
+        channel: channel.to_owned(),
+        released_on: "2026-07-01".to_owned(),
+        status: RELEASE_STATUS_PUBLISHED.to_owned(),
+        notes: "FIX: track matrix".to_owned(),
+        organization_id: RELEASE_GA_ORG_ID,
+        v_major: sort.v_major,
+        v_minor: sort.v_minor,
+        v_patch: sort.v_patch,
+        is_industrial: sort.is_industrial,
+        has_client_suffix: sort.has_client_suffix,
+        client_suffix: sort.client_suffix,
+        product_track: product_track.to_owned(),
+    })
+    .exec(&mut conn)
+    .await
+    .expect("release")
+    .id;
+    let _ = seed_release_artifact(db, id, payload).await;
+    id
+}
+
+#[tokio::test]
+async fn e2e_subscription_matrix_hides_and_allows_tracks() {
+    use crate::common::create_org_with_membership_subs;
+
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let tag = unique_slug("mtx");
+    let core = format!("v91.4.{}", tag.len().min(40));
+    let stable_ver = core.clone();
+    let lts_ver = format!("{core}+LTS");
+    let ind_ver = format!("{core}+LTS.industrial");
+    let payload = b"track-matrix-blob";
+
+    insert_ga_track_release(&db, &stable_ver, "Stable", "Stable", payload).await;
+    insert_ga_track_release(&db, &lts_ver, "LTS", "LTS", payload).await;
+    insert_ga_track_release(&db, &ind_ver, "LTS.industrial", "LTS.industrial", payload).await;
+
+    let router = test_router().await;
+
+    // 0/0 — Builds surface denied (404) + rail hidden
+    {
+        let email = unique_email("mtx-none");
+        let slug = unique_slug("mtx-none");
+        let _ =
+            create_org_with_membership_subs(&db, &email, "password", &slug, "member", 0, 0).await;
+        let cookie = login(&router, &email).await;
+        let list = get(&router, &format!("/{slug}/builds"), cookie.as_deref()).await;
+        assert_eq!(status(&list), StatusCode::NOT_FOUND, "0/0 list must 404");
+        let detail = get(
+            &router,
+            &format!("/{slug}/builds/{lts_ver}"),
+            cookie.as_deref(),
+        )
+        .await;
+        assert_eq!(
+            status(&detail),
+            StatusCode::NOT_FOUND,
+            "0/0 detail must 404"
+        );
+        let dl = post_form(
+            &router,
+            &format!("/{slug}/builds/{lts_ver}/download"),
+            cookie.as_deref(),
+            "",
+        )
+        .await;
+        assert_eq!(status(&dl), StatusCode::NOT_FOUND);
+        let dash = body_text(get(&router, &format!("/{slug}"), cookie.as_deref()).await).await;
+        assert!(
+            !dash.contains(&format!("href=\"/{slug}/builds\""))
+                && !dash.contains(&format!("/{slug}/builds\"")),
+            "0/0 dashboard must not link Builds: {dash}"
+        );
+        assert!(
+            !dash.contains("lbl\">Builds<") && !dash.contains(">Builds</span>"),
+            "0/0 rail must omit Builds: {dash}"
+        );
+    }
+
+    // LTS only — Stable + LTS, not industrial
+    {
+        let email = unique_email("mtx-lts");
+        let slug = unique_slug("mtx-lts");
+        let _ =
+            create_org_with_membership_subs(&db, &email, "password", &slug, "member", 2, 0).await;
+        let cookie = login(&router, &email).await;
+        let html =
+            body_text(get(&router, &format!("/{slug}/builds"), cookie.as_deref()).await).await;
+        assert!(
+            html_has_build_version(&html, &stable_ver),
+            "LTS-only sees Stable"
+        );
+        assert!(
+            html_has_build_version(&html, &lts_ver),
+            "LTS-only sees LTS row"
+        );
+        assert!(
+            !html_has_build_version(&html, &ind_ver) && !html.contains("chan-lts-industrial"),
+            "LTS-only must not see industrial row: {html}"
+        );
+        assert!(
+            html.contains("channel=LTS") && html.contains("channel=Stable"),
+            "LTS-only chips include LTS/Stable: {html}"
+        );
+        assert!(
+            !html.contains("channel=LTS.industrial") && !html.contains("LTS Industrial"),
+            "LTS-only must omit Industrial chip: {html}"
+        );
+        let ok = post_form(
+            &router,
+            &format!("/{slug}/builds/{lts_ver}/download"),
+            cookie.as_deref(),
+            "",
+        )
+        .await;
+        assert_eq!(status(&ok), StatusCode::OK);
+        let deny = post_form(
+            &router,
+            &format!("/{slug}/builds/{ind_ver}/download"),
+            cookie.as_deref(),
+            "",
+        )
+        .await;
+        assert_eq!(status(&deny), StatusCode::NOT_FOUND);
+    }
+
+    // Industrial only
+    {
+        let email = unique_email("mtx-ind");
+        let slug = unique_slug("mtx-ind");
+        let _ =
+            create_org_with_membership_subs(&db, &email, "password", &slug, "member", 0, 1).await;
+        let cookie = login(&router, &email).await;
+        let html =
+            body_text(get(&router, &format!("/{slug}/builds"), cookie.as_deref()).await).await;
+        assert!(
+            !html_has_build_version(&html, &stable_ver) && !html_has_build_version(&html, &lts_ver),
+            "Ind-only must not see Stable/LTS rows: {html}"
+        );
+        assert!(
+            html_has_build_version(&html, &ind_ver) || html.contains("chan-lts-industrial"),
+            "Ind-only sees industrial row: {html}"
+        );
+        assert!(
+            html.contains("LTS Industrial") || html.contains("channel=LTS.industrial"),
+            "Ind-only Industrial chip: {html}"
+        );
+        assert!(
+            !html.contains("channel=LTS\"")
+                && !html.contains("channel=LTS&")
+                && !html.contains("channel=Stable"),
+            "Ind-only must omit LTS/Stable chips: {html}"
+        );
+        let ok = post_form(
+            &router,
+            &format!("/{slug}/builds/{ind_ver}/download"),
+            cookie.as_deref(),
+            "",
+        )
+        .await;
+        assert_eq!(status(&ok), StatusCode::OK);
+        let deny = post_form(
+            &router,
+            &format!("/{slug}/builds/{stable_ver}/download"),
+            cookie.as_deref(),
+            "",
+        )
+        .await;
+        assert_eq!(status(&deny), StatusCode::NOT_FOUND);
+    }
+
+    // Both — all + industrial sorts above LTS twin
+    {
+        let email = unique_email("mtx-both");
+        let slug = unique_slug("mtx-both");
+        let _ =
+            create_org_with_membership_subs(&db, &email, "password", &slug, "member", 1, 1).await;
+        let cookie = login(&router, &email).await;
+        let html =
+            body_text(get(&router, &format!("/{slug}/builds"), cookie.as_deref()).await).await;
+        assert!(html.contains(&stable_ver));
+        assert!(html_has_build_version(&html, &ind_ver));
+        assert!(html_has_build_version(&html, &lts_ver));
+        let i_ind = html.find(&format!("/builds/{ind_ver}")).expect("ind href");
+        let i_lts = html
+            .find(&format!("/builds/{lts_ver}\""))
+            .expect("lts href");
+        assert!(
+            i_ind < i_lts,
+            "industrial should sort above LTS twin: {html}"
+        );
+    }
+
+    cleanup(&db).await;
+}
+
+/// True when HTML links a specific release version (not a prefix of another).
+fn html_has_build_version(html: &str, version: &str) -> bool {
+    let needle = format!("/builds/{version}");
+    html.match_indices(&needle).any(|(i, _)| {
+        let after = html.as_bytes().get(i + needle.len()).copied();
+        matches!(
+            after,
+            None | Some(b'"') | Some(b'/') | Some(b'?') | Some(b'\'')
+        )
+    })
+}
+
+#[tokio::test]
+async fn e2e_vauban_sees_industrial_without_subscriptions() {
+    use crate::common::{
+        create_membership, create_test_user_with_portal_role, ensure_reserved_org,
+    };
+    use vcp::models::{MEMBERSHIP_ROLE_ORG, PORTAL_ROLE_ADMIN};
+
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let vauban = ensure_reserved_org(&db).await;
+    // Force 0/0 counters on reserved org — bypass must still see industrial.
+    {
+        let mut conn = db.clone();
+        let mut org = vauban.clone();
+        let _ = org
+            .update()
+            .lts_subscriptions(0)
+            .industrial_lts_subscriptions(0)
+            .exec(&mut conn)
+            .await;
+    }
+    let email = unique_email("mtx-vauban");
+    let user = create_test_user_with_portal_role(&db, &email, "password", PORTAL_ROLE_ADMIN).await;
+    create_membership(&db, user.id, vauban.id, MEMBERSHIP_ROLE_ORG).await;
+
+    let core = "v92.3.7";
+    let ind_ver = format!("{core}+LTS.industrial");
+    insert_ga_track_release(
+        &db,
+        &ind_ver,
+        "LTS.industrial",
+        "LTS.industrial",
+        b"vauban-ind",
+    )
+    .await;
+
+    let router = test_router().await;
+    let cookie = login(&router, &email).await;
+    let html = body_text(
+        get(
+            &router,
+            &format!("/{}/builds", vcp::models::RESERVED_ORG_SLUG),
+            cookie.as_deref(),
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        html.contains("LTS.industrial") || html.contains(core),
+        "vauban must see industrial with 0/0 counters: {html}"
+    );
+    let dl = post_form(
+        &router,
+        &format!(
+            "/{}/builds/{ind_ver}/download",
+            vcp::models::RESERVED_ORG_SLUG
+        ),
+        cookie.as_deref(),
+        "",
+    )
+    .await;
+    assert_eq!(status(&dl), StatusCode::OK);
 
     cleanup(&db).await;
 }

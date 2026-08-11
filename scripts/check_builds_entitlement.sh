@@ -311,4 +311,38 @@ if grep -nE 'pager|page_slice|BUILDS_PAGE_SIZE' "$BUILDS" | grep -qiE 'localStor
   fail "$BUILDS must not use client JS for paging"
 fi
 
+# Industrial LTS product-track entitlement (subscription matrix).
+grep -n 'allowed_product_tracks\|product_track_sql_filter' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must compute product-track allow-list from org subscriptions"
+grep -n 'org_builds_entitled' "$BUILDS" >/dev/null \
+  || fail "$BUILDS list must 404 when org has zero LTS/Industrial subscriptions"
+grep -n 'builds_channel_filter_chips\|normalize_builds_channel' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must filter channel chips by subscription entitlement"
+grep -n 'org_builds_entitled' src/app/_components/rail.rs >/dev/null \
+  || fail "vb_rail must hide Builds when org has no subscription entitlement"
+grep -n 'org_builds_entitled' "$DL" >/dev/null \
+  || fail "$DL must deny download when org has no Builds entitlement"
+grep -n 'org_builds_entitled' "$EPH" >/dev/null \
+  || fail "$EPH must deny ephemeral when org has no Builds entitlement"
+grep -n 'product_track().in_list\|product_track().eq' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must filter product_track in SQL (not Rust-only)"
+grep -n 'is_industrial().desc()' "$BUILDS" >/dev/null \
+  || fail "$BUILDS must ORDER BY is_industrial.desc (industrial above LTS twin)"
+grep -n 'LTS.industrial' src/release_pkg.rs >/dev/null \
+  || fail "release_pkg builds_channel_filter_chips must include LTS.industrial"
+grep -n 'chan-lts-industrial' styles.css >/dev/null \
+  || fail "styles.css must define chan-lts-industrial"
+grep -n 'has_industrial_marker\|PRODUCT_TRACK_INDUSTRIAL' src/release_pkg.rs >/dev/null \
+  || fail "release_pkg must recognize +LTS.industrial"
+grep -n 'product_track' src/models/mod.rs >/dev/null \
+  || fail "Release model must persist product_track"
+grep -n 'is_industrial' src/models/mod.rs >/dev/null \
+  || fail "Release model must persist is_industrial"
+grep -n 'industrial\|product_track' toasty/migrations/0017_release_product_track.sql >/dev/null \
+  || fail "migration 0017 must add product_track / is_industrial"
+grep -n 'lts_subscriptions\|industrial_lts_subscriptions' "$DL" >/dev/null \
+  || fail "$DL must pass org subscription counters into find_visible_release_by_version"
+grep -n 'lts_subscriptions\|industrial_lts_subscriptions' "$EPH" >/dev/null \
+  || fail "$EPH must pass org subscription counters into find_visible_release_by_version"
+
 echo "check_builds_entitlement: OK"
