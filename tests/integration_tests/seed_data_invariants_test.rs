@@ -45,6 +45,8 @@ fn inv_cli_usage_pins() {
     assert!(cli.contains("fn wants_help"));
     assert!(cli.contains("fn cli_usage"));
     assert!(cli.contains("seed-data"));
+    assert!(cli.contains("docs export"));
+    assert!(cli.contains("docs import"));
     assert!(cli.contains("migration"));
     assert!(cli.contains("Usage:"));
     assert!(cli.contains("Commands:"));

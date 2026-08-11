@@ -8,8 +8,9 @@ use toasty_cli::ToastyCli;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use vcp::cli::{cli_usage, first_command, version_line, wants_help, wants_version};
+use vcp::cli::{cli_usage, command_tail, first_command, version_line, wants_help, wants_version};
 use vcp::config::Environment;
+use vcp::docs_bundle::{export_articles_to_dir, import_articles_from_dir};
 use vcp::models::{DocArticle, Issue, Release};
 use vcp::{acme, app, config::Config, db, perms, tls};
 
@@ -32,6 +33,7 @@ async fn run() -> anyhow::Result<()> {
     if let Some(cmd) = first_command(&args) {
         match cmd {
             "seed-data" => return run_seed_data().await,
+            "docs" => return run_docs(&args).await,
             "migration" => return run_migration(&args).await,
             "help" => {
                 print!("{}", cli_usage());
@@ -77,6 +79,60 @@ async fn run_seed_data() -> anyhow::Result<()> {
         releases, issues, "seed-data complete (full demo catalog)"
     );
     println!("seed-data: docs={docs} releases={releases} issues={issues}");
+    Ok(())
+}
+
+async fn run_docs(args: &[String]) -> anyhow::Result<()> {
+    let tail = command_tail(args);
+    let Some(sub) = tail.first().copied() else {
+        anyhow::bail!("docs requires `export` or `import`\n\n{}", cli_usage());
+    };
+    if wants_help(args) {
+        print!("{}", cli_usage());
+        return Ok(());
+    }
+    let Some(dir) = tail.get(1).copied() else {
+        anyhow::bail!("docs {sub} requires <DIR>\n\n{}", cli_usage());
+    };
+    let cfg = Config::load()?;
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new(cfg.environment.default_log_filter())
+            }),
+        )
+        .init();
+    let database = db::connect(&cfg.database.url).await?;
+    let path = std::path::Path::new(dir);
+    match sub {
+        "export" => {
+            let report = export_articles_to_dir(&database, path).await?;
+            info!(exported = report.exported, dir = %path.display(), "docs export complete");
+            println!(
+                "docs export: exported={} dir={}",
+                report.exported,
+                path.display()
+            );
+        }
+        "import" => {
+            let report = import_articles_from_dir(&database, path).await?;
+            info!(
+                created = report.created,
+                updated = report.updated,
+                dir = %path.display(),
+                "docs import complete"
+            );
+            println!(
+                "docs import: created={} updated={} dir={}",
+                report.created,
+                report.updated,
+                path.display()
+            );
+        }
+        other => {
+            anyhow::bail!("unknown docs subcommand `{other}`\n\n{}", cli_usage());
+        }
+    }
     Ok(())
 }
 

@@ -297,6 +297,14 @@ db-migrate-generate NAME="migration":
 seed-data:
     cargo run -- seed-data
 
+# Export all DocArticle rows to Markdown + frontmatter under DIR (must be empty/new).
+docs-export DIR:
+    cargo run -- docs export {{DIR}}
+
+# Import Markdown docs bundle from DIR (upsert by slug+version; fail-fast).
+docs-import DIR:
+    cargo run -- docs import {{DIR}}
+
 # Create Postgres `vcp_test` + role for automated tests
 db-create-test:
     bash scripts/setup_test_db.sh

@@ -119,6 +119,8 @@ just db-migrate       # apply pending Toasty migrations (dev DB)
 just db-reset         # drop/recreate local `vcp` + migrate (destructive)
 just db-reset-test    # drop/recreate `vcp_test` (destructive)
 just seed-data        # full demo catalog (docs, builds, issues); boot is minimal
+just docs-export DIR=./docs-bundle   # export DocArticle rows as Markdown
+just docs-import DIR=./docs-bundle   # import Markdown bundle (upsert)
 ```
 
 Recipes that need the Topcoat CLI (`run`, `bundle`, `release`, `fmt`,
@@ -180,6 +182,9 @@ just seed-data
 ```
 
 Ops smoke: [`docs/runbooks/seed_data_smoke_test.md`](docs/runbooks/seed_data_smoke_test.md).
+
+Docs Markdown bundle (instance-to-instance): `vcp docs export|import <DIR>` —
+see [`docs/runbooks/docs_bundle_smoke_test.md`](docs/runbooks/docs_bundle_smoke_test.md).
 
 Slug **`vauban`** is reserved (not a billable client). Client companies cannot create or rename to that slug.
 

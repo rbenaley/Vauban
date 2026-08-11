@@ -286,9 +286,7 @@ async fn battle_concurrent_doc_modal_inline_code_renders() {
     // One router + session: parallel login_cookie for the same user races
     // magic-link invalidation (only one unused token stays active).
     let router = Arc::new(test_router().await);
-    let cookie = login_cookie(router.as_ref(), &email)
-        .await
-        .expect("cookie");
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
     let path = format!("/{slug}/docs/{article_slug}");
     let n = 8usize;
     let barrier = Arc::new(Barrier::new(n));

@@ -15,6 +15,7 @@ pub mod config;
 pub mod dashboard_stats;
 pub mod db;
 pub mod docs_body;
+pub mod docs_bundle;
 pub mod docs_search;
 pub mod docs_version;
 pub mod fonts;

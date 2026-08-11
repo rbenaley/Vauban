@@ -105,9 +105,12 @@ pub fn cli_usage_with(style: HelpStyle) -> String {
     let options = style.header("Options:");
     let bin = style.literal("vcp");
     let cmd = style.placeholder("<COMMAND>");
-    let seed = styled_literal_col(style, "seed-data", 10);
-    let migration = styled_literal_col(style, "migration", 10);
-    let help_cmd = styled_literal_col(style, "help", 10);
+    let seed = styled_literal_col(style, "seed-data", 18);
+    let docs_export = styled_literal_col(style, "docs export", 18);
+    let docs_import = styled_literal_col(style, "docs import", 18);
+    let migration = styled_literal_col(style, "migration", 18);
+    let help_cmd = styled_literal_col(style, "help", 18);
+    let dir = style.placeholder("<DIR>");
     let opt_help = styled_literal_col(style, "-h, --help", 14);
     let opt_ver = styled_literal_col(style, "-V, --version", 14);
     format!(
@@ -120,6 +123,8 @@ When no command is given, load config, minimally seed an empty DB, and serve HTT
 
 {commands}
   {seed}  Seed the database with test data (docs, builds, issues)
+  {docs_export} {dir}  Export DocArticle rows as Markdown + frontmatter
+  {docs_import} {dir}  Import Markdown bundle (upsert by slug+version)
   {migration}  Database migrations (apply, generate, …)
   {help_cmd}  Print this message
 
@@ -135,6 +140,18 @@ pub fn first_command(args: &[String]) -> Option<&str> {
     args.iter()
         .map(String::as_str)
         .find(|a| !a.starts_with('-'))
+}
+
+/// Positional args after the first command (skips leading flags before command).
+pub fn command_tail(args: &[String]) -> Vec<&str> {
+    let Some(idx) = args.iter().position(|a| !a.starts_with('-')) else {
+        return Vec::new();
+    };
+    args[idx + 1..]
+        .iter()
+        .map(String::as_str)
+        .filter(|a| !a.starts_with('-'))
+        .collect()
 }
 
 #[cfg(test)]
@@ -170,6 +187,12 @@ mod tests {
     }
 
     #[test]
+    fn command_tail_skips_command_and_flags() {
+        let args = vec!["docs".to_owned(), "export".to_owned(), "./out".to_owned()];
+        assert_eq!(command_tail(&args), vec!["export", "./out"]);
+    }
+
+    #[test]
     fn cli_usage_plain_matches_clap_layout() {
         let u = cli_usage_with(HelpStyle::plain());
         assert!(u.starts_with("Vauban Customer Portal"));
@@ -177,6 +200,8 @@ mod tests {
         assert!(u.contains("<COMMAND>"));
         assert!(!u.contains("usage:"));
         assert!(u.contains("Commands:"));
+        assert!(u.contains("docs export"));
+        assert!(u.contains("docs import"));
         assert!(u.contains("Options:"));
         assert!(u.contains("seed-data"));
         assert!(u.contains("migration"));
