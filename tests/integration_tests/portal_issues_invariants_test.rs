@@ -288,6 +288,18 @@ fn inv_issue_attachments_o_k_and_wired() {
         "screenshots input must be inside #issue-reply"
     );
     assert!(
+        detail[reply_idx..].contains("vb-drop-inline"),
+        "reply picker must sit in a visible dashed dropzone"
+    );
+    let admin_detail = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/issues/issue_key.rs"
+    ));
+    assert!(
+        admin_detail.contains("vb-drop-inline"),
+        "admin reply picker must use the same dashed dropzone"
+    );
+    assert!(
         !app.contains("vcp_issue_images.js") && !new_page.contains("VCP_ISSUE_IMAGES_JS"),
         "must not ship first-party issue image JS asset"
     );
@@ -377,6 +389,17 @@ fn inv_shot_picker_accumulates_and_lightbox_tracks_image() {
         "picker must expose the add trigger + live count hooks"
     );
     assert!(
+        thumbs.contains("SHOT_DROPZONE")
+            && thumbs.contains("SHOT_DROP_JS")
+            && thumbs.contains("e.inner.dataTransfer")
+            && thumbs.contains("dispatchEvent(new Event('change'"),
+        "picker must accept drag-and-drop and reuse the @change accumulator"
+    );
+    assert!(
+        thumbs.contains("@dragover") && thumbs.contains("@drop"),
+        "picker must wire Topcoat dragover/drop handlers"
+    );
+    assert!(
         thumbs.contains("aria-live=\"polite\""),
         "attachment count must be announced politely"
     );
@@ -394,6 +417,14 @@ fn inv_shot_picker_accumulates_and_lightbox_tracks_image() {
     );
 
     let css = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
+    assert!(
+        css.contains(".vb-shot-picker.is-dragover"),
+        "CSS must highlight the drop target while dragging"
+    );
+    assert!(
+        css.contains(".vb-drop-inline"),
+        "CSS must style the reply dashed dropzone"
+    );
     assert!(
         !css.contains("max-width: min(100%, 1180px)"),
         "percentage caps resolve against the shrink-wrapping figure: use viewport units"

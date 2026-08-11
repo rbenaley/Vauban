@@ -25,9 +25,9 @@ pub fn issue_attachment_list_limit(max_per_comment: usize) -> usize {
 pub fn attachment_cap_hint(max_per_comment: usize) -> String {
     let max = max_per_comment.max(1);
     if max == 1 {
-        "PNG, JPEG or WebP · 1 screenshot per message".to_owned()
+        "PNG, JPEG or WebP · drag & drop or browse · 1 screenshot per message".to_owned()
     } else {
-        format!("PNG, JPEG or WebP · up to {max} screenshots per message")
+        format!("PNG, JPEG or WebP · drag & drop or browse · up to {max} screenshots per message")
     }
 }
 
@@ -340,6 +340,10 @@ mod tests {
         assert!(five.contains('5'), "hint must state the cap: {five}");
         assert!(five.contains("PNG") && five.contains("WebP"));
         assert!(five.contains("screenshots"), "plural above one: {five}");
+        assert!(
+            five.contains("drag") && five.contains("browse"),
+            "hint must mention drag & drop: {five}"
+        );
         let one = attachment_cap_hint(1);
         assert!(one.contains("1 screenshot per"), "singular at one: {one}");
         // A misconfigured 0 must never advertise "up to 0".

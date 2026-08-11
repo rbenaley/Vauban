@@ -497,6 +497,16 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
   border: 1.5px dashed #cdd1cb; border-radius: 6px; padding: 22px; background: #fbfcfb;
   color: #5a5f66; font-size: 13px; text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+/* Reply / admin attach strip: same dashed affordance, horizontal layout. */
+.vb-drop-inline {
+  display: block; width: 100%; box-sizing: border-box;
+  padding: 14px 16px; margin: 0 0 4px; text-align: left;
+}
+.vb-drop-inline:hover {
+  border-color: color-mix(in srgb, var(--accent, #117a6b) 45%, #cdd1cb);
+  background: #f4faf8;
 }
 .vb-sev {
   font-size: 11px; padding: 3px 9px; border-radius: 3px; flex: none;
@@ -598,9 +608,25 @@ label.vb-btn.vb-shot-add:hover { background: #fbfcfb; border-color: #cdd1cb; }
 .vb-shot-hint { color: #9aa0a6; }
 .vb-shot-status { color: #5a5f66; }
 .vb-shot-status:empty { display: none; }
-/* Compose page keeps the dashed dropzone look: stack and center instead. */
-.vb-drop .vb-shot-picker { align-items: center; }
-.vb-drop .vb-shot-picker-row { flex-direction: column; gap: 8px; }
+/* Compose page: stack and center inside the dashed box. */
+.vb-drop:not(.vb-drop-inline) .vb-shot-picker { align-items: center; }
+.vb-drop:not(.vb-drop-inline) .vb-shot-picker-row { flex-direction: column; gap: 8px; }
+/* Reply strip: keep button + hint on one row inside the dashed box. */
+.vb-drop-inline .vb-shot-picker { align-items: stretch; width: 100%; }
+.vb-drop-inline .vb-shot-picker-row {
+  flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px;
+}
+/* Drag-over: paint the dashed parent; suppress a second outline on the child. */
+.vb-drop:has(.vb-shot-picker.is-dragover) {
+  border-color: var(--accent); background: #eef7f4;
+}
+.vb-shot-picker.is-dragover {
+  outline: 1.5px dashed var(--accent); outline-offset: 4px;
+  border-radius: 6px; background: #eef7f4;
+}
+.vb-drop .vb-shot-picker.is-dragover {
+  outline: none; background: transparent;
+}
 .vb-shot-preview {
   display: flex; flex-wrap: wrap; gap: 8px; margin: 0;
 }

@@ -766,8 +766,10 @@ async fn battle_concurrent_detail_renders_keep_picker_and_lightbox() {
             "every concurrent render must publish the cap"
         );
         assert!(
-            html.contains("data-shot-add") && html.contains("data-shot-status"),
-            "every concurrent render must ship the picker hooks"
+            html.contains("data-shot-add")
+                && html.contains("data-shot-status")
+                && html.contains("data-shot-dropzone"),
+            "every concurrent render must ship the picker + dropzone hooks"
         );
         assert!(
             html.contains("vb-issue-lightbox-figure") && html.contains("vb-issue-lightbox-close"),

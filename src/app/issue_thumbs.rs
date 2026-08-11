@@ -6,6 +6,8 @@
 //!   share one dialog; prev/next (+ arrow keys) walk siblings in the same
 //!   `.vb-issue-thumbs` with wrap-around.
 //! - Pre-submit previews: Topcoat `@change` function handler (File API).
+//! - Drag-and-drop: `@dragover` / `@drop` on the picker feed the same
+//!   `@change` accumulator (`vcpShots`) — no separate upload path.
 //! - Published attachments are not removable from the portal UI.
 
 use topcoat::{
@@ -72,6 +74,19 @@ pub fn thumbs_for_comment(
 /// Marker for invariants / lint: preview host attribute.
 pub const SHOT_PREVIEW_CHANGE: &str = "data-shot-preview";
 
+/// Marker: picker accepts OS drag-and-drop (compose + reply).
+pub const SHOT_DROPZONE: &str = "data-shot-dropzone";
+
+/// `@dragover` — allow drop + highlight (Topcoat Event: `prevent_default`,
+/// native `dataTransfer` via `e.inner`). Must match the attribute literal.
+pub const SHOT_DRAGOVER_JS: &str = "(e) => { e.prevent_default(); e.stop_propagation(); const picker = e.current_target.inner; picker.classList.add('is-dragover'); const dt = e.inner && e.inner.dataTransfer; if (dt) dt.dropEffect = 'copy'; }";
+
+/// `@dragleave` — clear highlight when the pointer leaves the picker.
+pub const SHOT_DRAGLEAVE_JS: &str = "(e) => { e.prevent_default(); const picker = e.current_target.inner; const related = e.inner && e.inner.relatedTarget; if (related && picker.contains(related)) return; picker.classList.remove('is-dragover'); }";
+
+/// `@drop` — feed dropped files into the file input and reuse `@change`.
+pub const SHOT_DROP_JS: &str = "(e) => { e.prevent_default(); e.stop_propagation(); const picker = e.current_target.inner; picker.classList.remove('is-dragover'); const input = picker.querySelector('input.vb-shot-input'); const nativeDt = e.inner && e.inner.dataTransfer; if (!input || !nativeDt) return; try { const dt = new DataTransfer(); Array.from(nativeDt.files || []).forEach((f) => dt.items.add(f)); input.files = dt.files; } catch (_err) { return; } input.dispatchEvent(new Event('change', { bubbles: true })); }";
+
 /// Hidden file input + preview host (`@change` function expression).
 ///
 /// `max` is `[issues].max_attachments_per_comment` (also enforced server-side).
@@ -81,15 +96,28 @@ pub const SHOT_PREVIEW_CHANGE: &str = "data-shot-preview";
 /// The handler therefore keeps its own accumulated list on the input
 /// (`vcpShots`) and writes it back through a `DataTransfer` — picking one image
 /// at a time still fills the whole per-message cap.
+///
+/// Drag-and-drop uses the same accumulator: `@drop` assigns `input.files` and
+/// dispatches `change` so browse and drop stay on one code path.
 #[component]
 pub async fn shot_file_input(cx: &Cx, label: Result, max: usize) -> Result {
     let _pin = SHOT_PREVIEW_CHANGE;
+    let _drop_pin = SHOT_DROPZONE;
+    // Reachable so `-D dead_code` keeps the handler contracts next to the view.
+    let _handlers = (SHOT_DRAGOVER_JS, SHOT_DRAGLEAVE_JS, SHOT_DROP_JS);
     let max = max.max(1);
     let max_attr = max.to_string();
     let hint = attachment_cap_hint(max);
+    // Raw JS string attributes (Topcoat Expr); keep in sync with SHOT_*_JS.
     view! {
         cx =>
-        <div class="vb-shot-picker">
+        <div
+            class="vb-shot-picker"
+            data-shot-dropzone=""
+            @dragover="(e) => { e.prevent_default(); e.stop_propagation(); const picker = e.current_target.inner; picker.classList.add('is-dragover'); const dt = e.inner && e.inner.dataTransfer; if (dt) dt.dropEffect = 'copy'; }"
+            @dragleave="(e) => { e.prevent_default(); const picker = e.current_target.inner; const related = e.inner && e.inner.relatedTarget; if (related && picker.contains(related)) return; picker.classList.remove('is-dragover'); }"
+            @drop="(e) => { e.prevent_default(); e.stop_propagation(); const picker = e.current_target.inner; picker.classList.remove('is-dragover'); const input = picker.querySelector('input.vb-shot-input'); const nativeDt = e.inner && e.inner.dataTransfer; if (!input || !nativeDt) return; try { const dt = new DataTransfer(); Array.from(nativeDt.files || []).forEach((f) => dt.items.add(f)); input.files = dt.files; } catch (_err) { return; } input.dispatchEvent(new Event('change', { bubbles: true })); }"
+        >
             <div class="vb-shot-picker-row">
                 <label class="vb-btn muted vb-btn-ico vb-shot-add" data-shot-add="">
                     <input
@@ -113,7 +141,45 @@ pub async fn shot_file_input(cx: &Cx, label: Result, max: usize) -> Result {
                 aria-live="polite"
             ></p>
             <span style="display:none" aria-hidden="true">(_pin)</span>
+            <span style="display:none" aria-hidden="true">(_drop_pin)</span>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod shot_drop_tests {
+    use super::*;
+
+    #[test]
+    fn drop_handler_contract_and_wiring() {
+        for js in [SHOT_DRAGOVER_JS, SHOT_DRAGLEAVE_JS, SHOT_DROP_JS] {
+            let trimmed = js.trim_start();
+            assert!(
+                trimmed.starts_with("(e) =>") || trimmed.starts_with("() =>"),
+                "must be a JS function expression: {js}"
+            );
+            assert!(js.contains("prevent_default"));
+        }
+        assert!(SHOT_DROP_JS.contains("e.inner.dataTransfer"));
+        assert!(SHOT_DROP_JS.contains("input.vb-shot-input"));
+        assert!(SHOT_DROP_JS.contains("dispatchEvent(new Event('change'"));
+        assert!(SHOT_DRAGOVER_JS.contains("is-dragover"));
+        assert_eq!(SHOT_DROPZONE, "data-shot-dropzone");
+
+        // Attribute literals in `shot_file_input` must stay aligned with the
+        // documented handler constants (Topcoat needs string attrs for Expr).
+        let src = include_str!("issue_thumbs.rs");
+        for (name, js) in [
+            ("dragover", SHOT_DRAGOVER_JS),
+            ("dragleave", SHOT_DRAGLEAVE_JS),
+            ("drop", SHOT_DROP_JS),
+        ] {
+            let hits = src.matches(js).count();
+            assert!(
+                hits >= 2,
+                "{name} handler must appear as const + view! attribute (hits={hits})"
+            );
+        }
     }
 }
 

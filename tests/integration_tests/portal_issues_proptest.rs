@@ -386,6 +386,10 @@ proptest! {
         let effective = max.max(1);
         prop_assert!(hint.contains(&effective.to_string()), "hint: {hint}");
         prop_assert!(hint.contains("PNG") && hint.contains("JPEG") && hint.contains("WebP"));
+        prop_assert!(
+            hint.contains("drag") && hint.contains("browse"),
+            "hint must invite drag & drop: {hint}"
+        );
         prop_assert!(!hint.contains("up to 0"), "never advertise a zero cap: {hint}");
         if effective == 1 {
             prop_assert!(hint.contains("1 screenshot per"), "singular: {hint}");

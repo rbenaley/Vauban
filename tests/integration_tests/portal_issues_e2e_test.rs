@@ -1297,18 +1297,31 @@ async fn e2e_issue_reply_attaches_several_screenshots() {
         "picker must ship the cap-state and live-count hooks: {html}"
     );
     assert!(
-        html.contains("screenshots per message"),
-        "picker must state the cap in plain words"
+        html.contains("data-shot-dropzone"),
+        "picker must expose the drag-and-drop dropzone: {html}"
+    );
+    assert!(
+        html.contains("screenshots per message") && html.contains("drag"),
+        "picker must state the cap and invite drag & drop"
     );
     for handler in data_topcoat_on_event_values(&html, "change")
         .into_iter()
         .chain(data_topcoat_on_event_values(&html, "load"))
+        .chain(data_topcoat_on_event_values(&html, "drop"))
+        .chain(data_topcoat_on_event_values(&html, "dragover"))
+        .chain(data_topcoat_on_event_values(&html, "dragleave"))
     {
         assert!(
             is_topcoat_function_handler(&handler),
             "Topcoat binds handlers with `return <js>`: {handler}"
         );
     }
+    assert!(
+        data_topcoat_on_event_values(&html, "drop")
+            .iter()
+            .any(|js| js.contains("dataTransfer") && js.contains("dispatchEvent")),
+        "drop must feed files into the change accumulator"
+    );
     let fit = data_topcoat_on_event_values(&html, "load");
     assert!(
         fit.iter()

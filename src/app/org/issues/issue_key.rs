@@ -281,14 +281,16 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                             placeholder="Add a reply…"
                             style="width: 100%; min-height: 76px; font-size: 14px; padding: 10px 12px; border: 1px solid #e0e2de; border-radius: 4px; background: #fbfcfb; resize: vertical; font-family: 'Hanken Grotesk', sans-serif; line-height: 1.5; margin-bottom: 12px;"
                         ></textarea>
-                        shot_file_input(
-                            label: view! {
-                                cx =>
-                                (ico_paperclip(cx, 13).await?)
-                                <span>"Attach screenshot"</span>
-                            },
-                            max: max_att
-                        )
+                        <div class="vb-drop vb-drop-inline">
+                            shot_file_input(
+                                label: view! {
+                                    cx =>
+                                    (ico_paperclip(cx, 13).await?)
+                                    <span>"Attach screenshot"</span>
+                                },
+                                max: max_att
+                            )
+                        </div>
                         <div
                             style="display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 12px;"
                         >

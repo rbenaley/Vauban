@@ -164,6 +164,16 @@ grep -n 'data-shot-add' src/app/issue_thumbs.rs >/dev/null \
   || fail "screenshot picker must expose data-shot-add (cap state)"
 grep -n 'data-shot-status' src/app/issue_thumbs.rs >/dev/null \
   || fail "screenshot picker must expose data-shot-status (live count)"
+grep -n 'data-shot-dropzone\|SHOT_DROPZONE' src/app/issue_thumbs.rs >/dev/null \
+  || fail "screenshot picker must expose a drag-and-drop dropzone"
+grep -n 'SHOT_DROP_JS\|@drop' src/app/issue_thumbs.rs >/dev/null \
+  || fail "screenshot picker must handle @drop"
+grep -n 'e.inner.dataTransfer' src/app/issue_thumbs.rs >/dev/null \
+  || fail "drop handler must read native dataTransfer via e.inner"
+grep -n "dispatchEvent(new Event('change'" src/app/issue_thumbs.rs >/dev/null \
+  || fail "drop must reuse the @change accumulator via dispatched change"
+grep -n 'is-dragover' styles.css >/dev/null \
+  || fail "styles.css must highlight is-dragover on the shot picker"
 grep -n 'ISSUE_ATTACHMENT_OPENER_COMMENT_ID\|issue_comment_id' "$DETAIL" src/issue_attachments.rs >/dev/null \
   || fail "attachments must link to comment id (or opener sentinel)"
 grep -n 'attach_many\|store_screenshot_uploads' "$DETAIL" >/dev/null \
@@ -173,6 +183,8 @@ if grep -nE 'attachments/remove|remove_action|unlink_one' "$DETAIL" >/dev/null 2
 fi
 grep -n 'shot_file_input\|name="screenshots"' "$DETAIL" src/app/issue_thumbs.rs >/dev/null \
   || fail "$DETAIL must wire reply file input"
+grep -n 'vb-drop-inline' "$DETAIL" >/dev/null \
+  || fail "$DETAIL reply must wrap the picker in vb-drop-inline (visible dropzone)"
 grep -n 'enctype="multipart/form-data"' "$DETAIL" >/dev/null \
   || fail "$DETAIL reply form must be multipart"
 grep -n 'shot_file_input\|data-shot-preview' "$DETAIL" >/dev/null \
@@ -240,6 +252,10 @@ grep -n 'issue_discussion\|opener_thumbs\|list_for_issue' "$ADMIN_DETAIL" >/dev/
   || fail "$ADMIN_DETAIL must render issue_discussion with attachments"
 grep -n 'shot_file_input\|data-shot-preview' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL reply must wire Topcoat screenshot preview"
+grep -n 'vb-drop-inline' "$ADMIN_DETAIL" >/dev/null \
+  || fail "$ADMIN_DETAIL reply must wrap the picker in vb-drop-inline"
+grep -n 'vb-drop-inline' styles.css >/dev/null \
+  || fail "styles.css must define vb-drop-inline for the reply dropzone"
 grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/close"\)' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL must expose POST close route"
 grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/reopen"\)' "$ADMIN_DETAIL" >/dev/null \
