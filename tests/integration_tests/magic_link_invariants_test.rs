@@ -4,17 +4,25 @@
 fn inv_login_is_email_only_signal_procedure_no_check_email_page() {
     let login = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/login.rs"));
     assert!(login.contains("Email me a sign-in link"));
+    assert!(login.contains("Sending..."));
     assert!(login.contains("/login/magic"));
     assert!(login.contains("#[procedure]"));
     assert!(login.contains("request_login_link"));
+    assert!(login.contains("Result<bool>"));
+    assert!(login.contains("MailCircuitBreaker"));
     assert!(login.contains("signal sent"));
+    assert!(login.contains("signal sending"));
+    assert!(login.contains("signal unavailable"));
     assert!(login.contains("vb-eph-tick"));
     assert!(login.contains("Resend in "));
     assert!(login.contains("Use a different email"));
     assert!(login.contains("cooldown_mm_ss"));
     assert!(login.contains("LOGIN_LINK_ERROR"));
+    assert!(login.contains("LOGIN_UNAVAILABLE_MESSAGE"));
     assert!(login.contains("/login?error="));
     assert!(login.contains("This sign-in link is invalid or has expired"));
+    assert!(login.contains("Sign-in is temporarily unavailable. Please try again later."));
+    assert!(login.contains("Delivery can take a few minutes"));
     assert!(login.contains("post_auth_landing"));
     assert!(login.contains("/choose-org"));
     assert!(!login.contains("/login/check-email"));
@@ -23,6 +31,19 @@ fn inv_login_is_email_only_signal_procedure_no_check_email_page() {
     assert!(!login.contains("Seed:"));
     assert!(!login.contains("password_hash"));
     assert!(!login.contains("#[route(POST \"/login\")]"));
+}
+
+#[test]
+fn inv_mail_circuit_wired_in_app_and_mailer() {
+    let app = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
+    assert!(app.contains("MailCircuitBreaker"));
+    assert!(app.contains("router_with_memory_mail_circuit"));
+    let mailer = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/mailer.rs"));
+    assert!(mailer.contains("record_failure"));
+    assert!(mailer.contains("record_success"));
+    let circuit = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/mail_circuit.rs"));
+    assert!(circuit.contains("allow_attempt"));
+    assert!(circuit.contains("force_open"));
 }
 
 #[test]

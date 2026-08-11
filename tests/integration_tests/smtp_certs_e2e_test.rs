@@ -189,6 +189,8 @@ async fn e2e_implicit_tls_accept_invalid_true_delivers() {
         smtp_username: String::new(),
         smtp_password: String::new(),
         smtp_accept_invalid_certs: true,
+        circuit_failure_threshold: 3,
+        circuit_open_secs: 60,
     };
     try_send(&cfg)
         .await
@@ -207,6 +209,8 @@ async fn e2e_implicit_tls_accept_invalid_false_rejects() {
         smtp_username: String::new(),
         smtp_password: String::new(),
         smtp_accept_invalid_certs: false,
+        circuit_failure_threshold: 3,
+        circuit_open_secs: 60,
     };
     let err = try_send(&cfg)
         .await
@@ -233,6 +237,8 @@ async fn e2e_starttls_accept_invalid_true_delivers() {
         smtp_username: String::new(),
         smtp_password: String::new(),
         smtp_accept_invalid_certs: true,
+        circuit_failure_threshold: 3,
+        circuit_open_secs: 60,
     };
     try_send(&cfg)
         .await
@@ -251,6 +257,8 @@ async fn e2e_starttls_accept_invalid_false_rejects() {
         smtp_username: String::new(),
         smtp_password: String::new(),
         smtp_accept_invalid_certs: false,
+        circuit_failure_threshold: 3,
+        circuit_open_secs: 60,
     };
     let err = try_send(&cfg)
         .await

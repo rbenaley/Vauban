@@ -6,11 +6,15 @@ use topcoat::router::StatusCode;
 use vcp::magic_link::{hash_token, issue_token, purge_expired_tokens};
 use vcp::models::{MagicLinkToken, PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG, USER_NOT_DELETED, User};
 
+use std::sync::Arc;
+
+use vcp::mail_circuit::MailCircuitBreaker;
+
 use crate::common::{
     assert_topcoat_click_handlers_are_functions, assert_topcoat_submit_handlers_are_functions,
     call_request_login_link, cleanup, create_org_with_membership, db_lock, get, login_cookie,
-    procedure_path_from_html, status, test_db, test_router, test_router_with_memory_mail,
-    unique_email, unique_slug,
+    procedure_bool_body, procedure_path_from_html, status, test_config, test_db, test_router,
+    test_router_with_memory_mail, test_router_with_memory_mail_circuit, unique_email, unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -202,6 +206,10 @@ async fn e2e_unknown_email_same_ok_no_mail() {
     let missing = unique_email("ml-unknown");
     let resp = call_request_login_link(&router, &missing).await;
     assert_eq!(status(&resp), StatusCode::OK);
+    assert!(
+        procedure_bool_body(resp).await,
+        "closed circuit: unknown email still Check-your-email"
+    );
     assert!(memory.sent().is_empty(), "unknown email must not send mail");
 }
 
@@ -219,11 +227,60 @@ async fn e2e_known_email_sends_mail_via_procedure() {
 
     let resp = call_request_login_link(&router, &email).await;
     assert_eq!(status(&resp), StatusCode::OK);
+    assert!(
+        procedure_bool_body(resp).await,
+        "closed circuit: known email Check-your-email"
+    );
     assert_eq!(
         memory.sent().len(),
         1,
         "known email must receive magic link"
     );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_mail_circuit_open_same_unavailable_no_oracle() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let cfg = test_config().await;
+    let circuit = Arc::new(MailCircuitBreaker::new(&cfg.mail));
+    circuit.force_open();
+    let memory = MemoryTransport::new();
+    let router = test_router_with_memory_mail_circuit(memory.clone(), circuit).await;
+
+    let email = unique_email("ml-circuit-known");
+    let slug = unique_slug("ml-circuit-known");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+    let missing = unique_email("ml-circuit-missing");
+
+    let known = call_request_login_link(&router, &email).await;
+    let unknown = call_request_login_link(&router, &missing).await;
+    assert_eq!(status(&known), StatusCode::OK);
+    assert_eq!(status(&unknown), StatusCode::OK);
+    assert!(
+        !procedure_bool_body(known).await,
+        "open circuit: known email must get unavailable"
+    );
+    assert!(
+        !procedure_bool_body(unknown).await,
+        "open circuit: unknown email must get same unavailable (no oracle)"
+    );
+    assert!(
+        memory.sent().is_empty(),
+        "open circuit must not send magic-link mail"
+    );
+
+    let page = get(&router, "/login", None).await;
+    let html = body_text(page).await;
+    assert!(
+        html.contains("Sign-in is temporarily unavailable. Please try again later."),
+        "login SSR must embed unavailable copy"
+    );
+    assert!(html.contains("Sending..."));
 
     cleanup(&db).await;
 }

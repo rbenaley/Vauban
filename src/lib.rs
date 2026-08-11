@@ -31,6 +31,7 @@ pub mod issues_search;
 pub mod list_page;
 pub mod login_limit;
 pub mod magic_link;
+pub mod mail_circuit;
 pub mod mailer;
 pub mod models;
 pub mod nav;

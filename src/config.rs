@@ -113,6 +113,20 @@ pub struct MailConfig {
     /// Applies to `starttls` and `tls` only; default false.
     #[serde(default)]
     pub smtp_accept_invalid_certs: bool,
+    /// Consecutive SMTP send failures before the mail circuit opens.
+    #[serde(default = "default_circuit_failure_threshold")]
+    pub circuit_failure_threshold: u32,
+    /// How long the mail circuit stays open (seconds) before a half-open probe.
+    #[serde(default = "default_circuit_open_secs")]
+    pub circuit_open_secs: u64,
+}
+
+fn default_circuit_failure_threshold() -> u32 {
+    3
+}
+
+fn default_circuit_open_secs() -> u64 {
+    60
 }
 
 /// SMTP encryption mode for [`MailConfig::smtp_encryption`].

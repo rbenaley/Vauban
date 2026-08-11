@@ -13,11 +13,14 @@ use lettre::{
 };
 use topcoat::{
     Result,
-    context::{Cx, app_context},
+    context::{Cx, app_context, try_app_context},
     mail::{Mail, Mailbox, Receipt, SendError, Transport, TransportFuture, send},
 };
 
-use crate::config::{Config, MagicLinksConfig, MailConfig, SmtpEncryption};
+use crate::{
+    config::{Config, MagicLinksConfig, MailConfig, SmtpEncryption},
+    mail_circuit::MailCircuitBreaker,
+};
 
 /// lettre-backed SMTP transport configured from `[mail]`.
 ///
@@ -221,17 +224,34 @@ async fn send_text_mail(
     if let Some(reply) = reply_to_mailbox(ml)? {
         builder = builder.reply_to([reply]);
     }
-    let receipt = send(cx, builder.build()).await?;
-    let mail = &app_context::<Arc<Config>>(cx).mail;
-    tracing::debug!(
-        to = %to_email,
-        smtp_host = %mail.smtp_host,
-        smtp_port = mail.smtp_port,
-        smtp_encryption = mail.smtp_encryption.as_str(),
-        message_id = %receipt.message_id(),
-        "smtp mail delivered"
-    );
-    Ok(())
+    match send(cx, builder.build()).await {
+        Ok(receipt) => {
+            if let Some(breaker) = try_app_context::<Arc<MailCircuitBreaker>>(cx) {
+                breaker.record_success();
+            }
+            let mail = &app_context::<Arc<Config>>(cx).mail;
+            tracing::debug!(
+                to = %to_email,
+                smtp_host = %mail.smtp_host,
+                smtp_port = mail.smtp_port,
+                smtp_encryption = mail.smtp_encryption.as_str(),
+                message_id = %receipt.message_id(),
+                "smtp mail delivered"
+            );
+            Ok(())
+        }
+        Err(err) => {
+            if let Some(breaker) = try_app_context::<Arc<MailCircuitBreaker>>(cx) {
+                breaker.record_failure();
+            }
+            tracing::error!(
+                to = %to_email,
+                error = %err,
+                "failed to send transactional mail"
+            );
+            Err(err)
+        }
+    }
 }
 
 /// Encryption mode selected for a given [`MailConfig`] (unit / invariant tests).
@@ -259,6 +279,8 @@ mod tests {
             smtp_username: String::new(),
             smtp_password: String::new(),
             smtp_accept_invalid_certs: accept_invalid,
+            circuit_failure_threshold: 3,
+            circuit_open_secs: 60,
         }
     }
 
@@ -300,6 +322,8 @@ mod tests {
             smtp_username: "project-id".to_owned(),
             smtp_password: "secret".to_owned(),
             smtp_accept_invalid_certs: false,
+            circuit_failure_threshold: 3,
+            circuit_open_secs: 60,
         };
         assert_eq!(encryption_mode(&cfg), SmtpEncryption::Starttls);
         let _transport = build_smtp_transport(&cfg).expect("starttls builder");
@@ -314,6 +338,8 @@ mod tests {
             smtp_username: "project-id".to_owned(),
             smtp_password: "secret".to_owned(),
             smtp_accept_invalid_certs: false,
+            circuit_failure_threshold: 3,
+            circuit_open_secs: 60,
         };
         assert_eq!(encryption_mode(&cfg), SmtpEncryption::Tls);
         let _transport = build_smtp_transport(&cfg).expect("tls builder");

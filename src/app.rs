@@ -68,6 +68,7 @@ use crate::{
     fonts::{HANKEN_GROTESK, JETBRAINS_MONO},
     http_canonical::{should_redirect_trailing_slash, trailing_slash_redirect_location},
     login_limit::LoginRateLimiter,
+    mail_circuit::MailCircuitBreaker,
     mailer::build_smtp_transport,
     perms::PolicyStore,
     storage::StorageClient,
@@ -86,6 +87,7 @@ pub fn router(db: Db, policy: Arc<PolicyStore>, cfg: &Config) -> Router {
         policy,
         cfg,
         TopcoatMailConfig::builder().transport(transport).build(),
+        Arc::new(MailCircuitBreaker::new(&cfg.mail)),
     )
 }
 
@@ -101,6 +103,24 @@ pub fn router_with_memory_mail(
         policy,
         cfg,
         TopcoatMailConfig::builder().transport(memory).build(),
+        Arc::new(MailCircuitBreaker::new(&cfg.mail)),
+    )
+}
+
+/// Test helper: memory mail plus a shared [`MailCircuitBreaker`] handle.
+pub fn router_with_memory_mail_circuit(
+    db: Db,
+    policy: Arc<PolicyStore>,
+    cfg: &Config,
+    memory: MemoryTransport,
+    mail_circuit: Arc<MailCircuitBreaker>,
+) -> Router {
+    router_with_mail(
+        db,
+        policy,
+        cfg,
+        TopcoatMailConfig::builder().transport(memory).build(),
+        mail_circuit,
     )
 }
 
@@ -109,6 +129,7 @@ fn router_with_mail(
     policy: Arc<PolicyStore>,
     cfg: &Config,
     mail: TopcoatMailConfig,
+    mail_circuit: Arc<MailCircuitBreaker>,
 ) -> Router {
     let mut sessions = SessionConfig::builder();
     for origin in &cfg.server.public_origins {
@@ -136,6 +157,7 @@ fn router_with_mail(
         .app_context(Arc::new(cfg.clone()))
         .app_context(enable_hsts)
         .app_context(login_limiter)
+        .app_context(mail_circuit)
         .app_context(storage)
         .discover()
         .build()

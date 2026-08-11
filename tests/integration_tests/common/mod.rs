@@ -118,6 +118,19 @@ pub async fn test_router_with_memory_mail(memory: MemoryTransport) -> Router {
     app::router_with_memory_mail(database, policy, &cfg, memory)
 }
 
+/// Memory-mail router with a shared [`vcp::mail_circuit::MailCircuitBreaker`].
+pub async fn test_router_with_memory_mail_circuit(
+    memory: MemoryTransport,
+    mail_circuit: std::sync::Arc<vcp::mail_circuit::MailCircuitBreaker>,
+) -> Router {
+    let cfg = test_config().await;
+    let database = test_db().await;
+    let policy = std::sync::Arc::new(
+        PolicyStore::load_from_csv(&cfg.access.policy_path).expect("load policy"),
+    );
+    app::router_with_memory_mail_circuit(database, policy, &cfg, memory, mail_circuit)
+}
+
 pub fn unique_suffix() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -689,6 +702,22 @@ pub async fn call_request_login_link(router: &Router, email: &str) -> Response {
     };
     let path = procedure_path_from_html(&html).expect("procedure path in /login SSR HTML");
     post_json(router, &path, None, &request_login_link_json(email)).await
+}
+
+/// Parse a Topcoat procedure JSON body that returns a bool (`true` / `false`).
+pub async fn procedure_bool_body(resp: Response) -> bool {
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("procedure body")
+        .to_bytes();
+    let text = String::from_utf8_lossy(&bytes);
+    match text.trim() {
+        "true" => true,
+        "false" => false,
+        other => panic!("expected procedure bool body, got {other:?}"),
+    }
 }
 
 /// JSON body for `docs_search_results(org_slug, q, cat, page)`.

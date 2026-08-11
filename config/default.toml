@@ -59,6 +59,9 @@ smtp_encryption = "plaintext"
 smtp_username = ""
 smtp_password = ""
 smtp_accept_invalid_certs = false
+# Open sign-in unavailable UX after N consecutive SMTP failures (process-local).
+circuit_failure_threshold = 3
+circuit_open_secs = 60
 
 [magiclinks]
 from_address = "no-reply@vauban.sh"

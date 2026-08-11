@@ -22,6 +22,7 @@ use crate::{
     config::Config,
     login_limit::LoginRateLimiter,
     magic_link::{active_user_by_email, consume_token, ensure_vcp_admin_user, issue_token},
+    mail_circuit::MailCircuitBreaker,
     mailer::send_login_magic_link,
     models::{PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG},
 };
@@ -37,6 +38,10 @@ pub(crate) const LOGIN_LINK_ERROR: &str = "link";
 /// Shared copy for expired / used / unknown magic links.
 pub(crate) const LOGIN_LINK_ERROR_MESSAGE: &str =
     "This sign-in link is invalid or has expired. Request a new one.";
+
+/// Shared copy when the mail circuit is open (no account-existence oracle).
+pub(crate) const LOGIN_UNAVAILABLE_MESSAGE: &str =
+    "Sign-in is temporarily unavailable. Please try again later.";
 
 fn see_other_login_link_error() -> SeeOther {
     see_other(&format!("/login?error={LOGIN_LINK_ERROR}"))
@@ -84,11 +89,21 @@ async fn login_layout(cx: &Cx, slot: Result) -> Result {
     view! { cx => login_splash(body: slot) }
 }
 
-/// Request (or re-request) a sign-in magic link. Always `Ok(())` (anti-enumeration).
+/// Request (or re-request) a sign-in magic link.
+///
+/// Returns `true` when the client should show Check-your-email (anti-enumeration
+/// for unknown / locked emails and for per-request SMTP failures). Returns
+/// `false` only when the mail circuit is open — same unavailable UX for all
+/// addresses so outages do not leak account existence.
 #[procedure]
-async fn request_login_link(cx: &Cx, email: String) -> Result<()> {
+async fn request_login_link(cx: &Cx, email: String) -> Result<bool> {
     let cfg = app_context::<Arc<Config>>(cx);
     let limiter = app_context::<Arc<LoginRateLimiter>>(cx);
+    let mail_circuit = app_context::<Arc<MailCircuitBreaker>>(cx);
+
+    if !mail_circuit.allow_attempt() {
+        return Ok(false);
+    }
 
     let email = email.trim().to_ascii_lowercase();
     let email_ok = Mailbox::new(&email).is_ok();
@@ -109,7 +124,9 @@ async fn request_login_link(cx: &Cx, email: String) -> Result<()> {
         if let Some(user) = user {
             match issue_token(&mut database, user.id, cfg.magiclinks.token_ttl_secs).await {
                 Ok(raw) => {
-                    if let Err(err) = send_login_magic_link(
+                    // SMTP err: mailer trips the circuit + logs; keep
+                    // Check-your-email for this request (no oracle).
+                    if send_login_magic_link(
                         cx,
                         &cfg.magiclinks,
                         cfg.primary_public_origin(),
@@ -117,13 +134,8 @@ async fn request_login_link(cx: &Cx, email: String) -> Result<()> {
                         &raw,
                     )
                     .await
+                    .is_ok()
                     {
-                        tracing::error!(
-                            email = %user.email,
-                            error = %err,
-                            "failed to send login magic link"
-                        );
-                    } else {
                         limiter.clear(&email);
                     }
                 }
@@ -141,7 +153,7 @@ async fn request_login_link(cx: &Cx, email: String) -> Result<()> {
         limiter.record_failure(&email);
     }
 
-    Ok(())
+    Ok(true)
 }
 
 #[page]
@@ -179,6 +191,8 @@ async fn login_page(cx: &Cx) -> Result {
         signal mins = ttl_mins;
         signal secs = ttl_secs_part;
         signal cooling = false;
+        signal sending = false;
+        signal unavailable = false;
         signal ttl_remaining_seed = ttl_remaining;
         signal ttl_mins_seed = ttl_mins;
         signal ttl_secs_seed = ttl_secs_part;
@@ -189,15 +203,32 @@ async fn login_page(cx: &Cx) -> Result {
             if show_link_error {
                 <p class="vb-login-error" role="alert">(LOGIN_LINK_ERROR_MESSAGE)</p>
             }
+            <p
+                class="vb-login-error"
+                role="alert"
+                :style=$(if unavailable.get() { "" } else { "display:none" })
+            >
+                (LOGIN_UNAVAILABLE_MESSAGE)
+            </p>
             <form
                 @submit=$(async |e: Event| {
                     e.prevent_default();
-                    request_login_link(email.get()).await;
-                    remaining.set(ttl_remaining_seed.get());
-                    mins.set(ttl_mins_seed.get());
-                    secs.set(ttl_secs_seed.get());
-                    cooling.set(true);
-                    sent.set(true);
+                    if sending.get() {
+                        return;
+                    }
+                    sending.set(true);
+                    unavailable.set(false);
+                    let ok = request_login_link(email.get()).await;
+                    sending.set(false);
+                    if ok {
+                        remaining.set(ttl_remaining_seed.get());
+                        mins.set(ttl_mins_seed.get());
+                        secs.set(ttl_secs_seed.get());
+                        cooling.set(true);
+                        sent.set(true);
+                    } else {
+                        unavailable.set(true);
+                    }
                 })
             >
                 <label for="email">"Email"</label>
@@ -210,16 +241,37 @@ async fn login_page(cx: &Cx) -> Result {
                     :value=$(email.get())
                     @input=$(|e: Event| email.set(e.target.value))
                 >
-                <button type="submit">"Email me a sign-in link"</button>
+                <button
+                    type="submit"
+                    :style=$(if sending.get() { "display:none" } else { "" })
+                >
+                    "Email me a sign-in link"
+                </button>
+                <button
+                    type="button"
+                    disabled=""
+                    :style=$(if sending.get() { "" } else { "display:none" })
+                >
+                    "Sending..."
+                </button>
             </form>
         </div>
-
         <div :style=$(if sent.get() { "" } else { "display:none" })>
             <h2>"Check your email"</h2>
             <p class="vb-muted">
                 "If that address can access the portal, we sent a sign-in link to "
                 $(email.get())
                 "."
+            </p>
+            <p class="vb-muted" style="margin-top: 8px;">
+                "Delivery can take a few minutes. If nothing arrives, try Resend or try again later."
+            </p>
+            <p
+                class="vb-login-error"
+                role="alert"
+                :style=$(if unavailable.get() { "" } else { "display:none" })
+            >
+                (LOGIN_UNAVAILABLE_MESSAGE)
             </p>
             <span
                 class="vb-eph-tick"
@@ -261,16 +313,41 @@ async fn login_page(cx: &Cx) -> Result {
                 </button>
                 <button
                     type="button"
-                    :style=$(if cooling.get() { "display:none" } else { "" })
+                    :style=$(if cooling.get() {
+                        "display:none"
+                    } else {
+                        if sending.get() { "display:none" } else { "" }
+                    })
                     @click=$(async |_e| {
-                        request_login_link(email.get()).await;
-                        remaining.set(ttl_remaining_seed.get());
-                        mins.set(ttl_mins_seed.get());
-                        secs.set(ttl_secs_seed.get());
-                        cooling.set(true);
+                        if sending.get() {
+                            return;
+                        }
+                        sending.set(true);
+                        unavailable.set(false);
+                        let ok = request_login_link(email.get()).await;
+                        sending.set(false);
+                        if ok {
+                            remaining.set(ttl_remaining_seed.get());
+                            mins.set(ttl_mins_seed.get());
+                            secs.set(ttl_secs_seed.get());
+                            cooling.set(true);
+                        } else {
+                            unavailable.set(true);
+                        }
                     })
                 >
                     "Resend"
+                </button>
+                <button
+                    type="button"
+                    disabled=""
+                    :style=$(if cooling.get() {
+                        "display:none"
+                    } else {
+                        if sending.get() { "" } else { "display:none" }
+                    })
+                >
+                    "Sending..."
                 </button>
             </p>
             <p style="margin-top: 12px;">
@@ -279,6 +356,8 @@ async fn login_page(cx: &Cx) -> Result {
                     @click=$(|_e| {
                         sent.set(false);
                         cooling.set(false);
+                        unavailable.set(false);
+                        sending.set(false);
                     })
                 >
                     "Use a different email"

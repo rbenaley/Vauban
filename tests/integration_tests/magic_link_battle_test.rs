@@ -9,9 +9,12 @@ use topcoat::router::StatusCode;
 use vcp::magic_link::{issue_token, purge_expired_tokens};
 use vcp::models::{MAGIC_LINK_NOT_CONSUMED, MagicLinkToken};
 
+use vcp::mail_circuit::MailCircuitBreaker;
+
 use crate::common::{
-    call_request_login_link, cleanup, create_org_with_membership, db_lock, get, status, test_db,
-    test_router, test_router_with_memory_mail, unique_email, unique_slug,
+    call_request_login_link, cleanup, create_org_with_membership, db_lock, get,
+    procedure_bool_body, status, test_config, test_db, test_router, test_router_with_memory_mail,
+    test_router_with_memory_mail_circuit, unique_email, unique_slug,
 };
 
 #[tokio::test]
@@ -101,6 +104,55 @@ async fn battle_parallel_request_login_link_same_email() {
     assert!(
         sent >= 1 && sent <= n,
         "parallel request_login_link must send at least one mail and at most n; got {sent}"
+    );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn battle_parallel_request_login_link_circuit_open_all_unavailable() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let cfg = test_config().await;
+    let circuit = Arc::new(MailCircuitBreaker::new(&cfg.mail));
+    circuit.force_open();
+    let memory = MemoryTransport::new();
+    let router = Arc::new(test_router_with_memory_mail_circuit(memory.clone(), circuit).await);
+
+    let email = unique_email("ml-battle-circuit");
+    let slug = unique_slug("ml-battle-circuit");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "member").await;
+
+    let n = 8usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let router = router.clone();
+        let barrier = barrier.clone();
+        let email = if i % 2 == 0 {
+            email.clone()
+        } else {
+            unique_email(&format!("ml-battle-circuit-miss-{i}"))
+        };
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let resp = call_request_login_link(&router, &email).await;
+            assert_eq!(status(&resp), StatusCode::OK);
+            assert!(
+                !procedure_bool_body(resp).await,
+                "open circuit must return unavailable for every address"
+            );
+        }));
+    }
+
+    for h in handles {
+        h.await.expect("join");
+    }
+    assert!(
+        memory.sent().is_empty(),
+        "open circuit parallel flood must not send mail"
     );
 
     cleanup(&db).await;

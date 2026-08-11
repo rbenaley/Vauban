@@ -6,6 +6,7 @@ use vcp::{
     config::LoginConfig,
     login_limit::LoginRateLimiter,
     magic_link::{generate_raw_token, hash_token},
+    mail_circuit::MailCircuitBreaker,
     models::{PORTAL_ROLE_ADMIN, PORTAL_ROLE_ORG, RESERVED_ORG_SLUG, is_allowed_portal_role},
     perms::PolicyStore,
 };
@@ -89,6 +90,14 @@ proptest! {
         let allow = LoginRateLimiter::decide(failures, max, false);
         prop_assert_eq!(allow, failures < max);
         prop_assert!(!LoginRateLimiter::decide(failures, max, true));
+    }
+
+    #[test]
+    fn prop_mail_circuit_should_open(failures in 0u32..30, threshold in 1u32..10) {
+        prop_assert_eq!(
+            MailCircuitBreaker::should_open(failures, threshold),
+            failures >= threshold
+        );
     }
 
     #[test]

@@ -31,6 +31,8 @@ fn battle_parallel_build_smtp_accept_invalid_matrix() {
                 smtp_username: String::new(),
                 smtp_password: String::new(),
                 smtp_accept_invalid_certs: accept,
+                circuit_failure_threshold: 3,
+                circuit_open_secs: 60,
             };
             rt.block_on(async {
                 build_smtp_transport(&cfg).expect("build_smtp_transport");

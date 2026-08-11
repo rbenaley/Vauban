@@ -73,6 +73,24 @@ user row.
 1. Submit an unknown email on `/login`.
 2. Same in-page **Check your email** panel; **no** outbound message in Mailpit
    for that address.
+3. While the request is in flight, the submit button shows **Sending...** and
+   stays disabled (no double-submit).
+
+### 3b. Mail circuit / sign-in unavailable
+
+Simulate SMTP down (stop Mailpit / TEM, or point `[mail]` at a closed port)
+and retry until the process opens the mail circuit
+(`circuit_failure_threshold`, default 3 consecutive send failures).
+
+1. Submit a **known** email and an **unknown** email on `/login`.
+2. Both stay on the form with the same alert:
+   **Sign-in is temporarily unavailable. Please try again later.**
+   (no Check-your-email panel, no Mailpit message).
+3. Restore SMTP; wait `circuit_open_secs` (default 60) or restart `vcp`, then
+   confirm a known email returns to Check-your-email and mail arrives.
+
+**Fail if:** known vs unknown show different copy while the circuit is open;
+or the unavailable message appears for only one class of address.
 
 ### 4. Multi-org picker
 
