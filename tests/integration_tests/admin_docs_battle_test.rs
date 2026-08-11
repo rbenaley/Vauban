@@ -283,6 +283,12 @@ async fn battle_concurrent_doc_modal_inline_code_renders() {
         .expect("create");
     }
 
+    // One router + session: parallel login_cookie for the same user races
+    // magic-link invalidation (only one unused token stays active).
+    let router = Arc::new(test_router().await);
+    let cookie = login_cookie(router.as_ref(), &email)
+        .await
+        .expect("cookie");
     let path = format!("/{slug}/docs/{article_slug}");
     let n = 8usize;
     let barrier = Arc::new(Barrier::new(n));
@@ -290,12 +296,11 @@ async fn battle_concurrent_doc_modal_inline_code_renders() {
     for _ in 0..n {
         let barrier = barrier.clone();
         let path = path.clone();
-        let email = email.clone();
+        let cookie = cookie.clone();
+        let router = router.clone();
         handles.push(tokio::spawn(async move {
             barrier.wait().await;
-            let router = test_router().await;
-            let cookie = login_cookie(&router, &email).await;
-            let resp = get(&router, &path, cookie.as_deref()).await;
+            let resp = get(router.as_ref(), &path, Some(&cookie)).await;
             assert_eq!(status(&resp), StatusCode::OK);
             let body = resp.into_body().collect().await.expect("body").to_bytes();
             let html = String::from_utf8_lossy(&body).into_owned();

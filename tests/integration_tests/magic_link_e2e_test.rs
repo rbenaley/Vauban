@@ -1,6 +1,7 @@
 //! E2E: passwordless magic-link login, JIT admin, denial paths.
 
 use http_body_util::BodyExt;
+use topcoat::context::Cx;
 use topcoat::mail::{MemoryTransport, TextBody};
 use topcoat::router::StatusCode;
 use vcp::magic_link::{hash_token, issue_token, purge_expired_tokens};
@@ -103,6 +104,18 @@ async fn e2e_vcp_admin_jit_lands_on_vauban() {
     let TextBody::Text(body) = sent[0].text().clone() else {
         panic!("expected plain-text magic link body");
     };
+    let html = {
+        let cx = Cx::default();
+        sent[0].html().map(|v| v.render(&cx)).unwrap_or_default()
+    };
+    assert!(
+        html.contains(r#"src="cid:vauban-logo""#)
+            && sent[0]
+                .attachments()
+                .iter()
+                .any(|a| a.content_id() == Some("vauban-logo")),
+        "login mail must be branded HTML with CID logo: {html}"
+    );
     let token = body
         .split("token=")
         .nth(1)

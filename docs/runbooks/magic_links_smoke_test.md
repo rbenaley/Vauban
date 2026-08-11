@@ -36,8 +36,9 @@ Automated coverage (CI): `cargo test --test integration_tests -- magic_link comp
 3. Confirm the page stays on `/login` and swaps in-place to **Check your email**
    (no redirect to `/login/check-email`). The typed address is recalled; **Resend
    in MM:SS** starts at `05:00` when `token_ttl_secs = 300` (button disabled).
-4. In Mailpit/TEM: receive “Sign in to Vauban Customer Portal” with link
-   `/login/magic?token=…`.
+4. In Mailpit/TEM: receive **HTML** “Sign in to Vauban Customer Portal”
+   (Vauban branding, CID logo, bulletproof button) with link
+   `/login/magic?token=…`, plus a plain-text alternative.
 5. Open link within 300 seconds → land on `/vauban` as admin (`/admin` works).
 6. Reuse the same link → rejected to `/login?error=link` with the generic banner
    (“This sign-in link is invalid or has expired. Request a new one.”) — same
@@ -53,11 +54,13 @@ messages for expired vs used; plaintext SMTP accepted when
 
 ### 2. Company invitation + revoke
 
-1. As staff, create a company with one account email → invitation mail arrives.
+1. As staff, create a company with one account email → branded **HTML**
+   invitation mail arrives (org name in title/body, magic-link button, CID
+   logo). Plain-text alternative still present.
 2. Recipient opens magic link → lands on `/{org}`.
-3. Remove that email from the company fiche and save → revocation mail
-   (no sign-in link); user cannot obtain a new session when that was their
-   only membership.
+3. Remove that email from the company fiche and save → branded **HTML**
+   revocation mail (no sign-in link); user cannot obtain a new session when
+   that was their only membership.
 4. (Optional multi-org) User also member of another company: remove from one
    fiche and save → still receives org-scoped revocation mail; can still
    sign in via the remaining membership.

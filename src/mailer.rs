@@ -14,12 +14,17 @@ use lettre::{
 use topcoat::{
     Result,
     context::{Cx, app_context, try_app_context},
-    mail::{Mail, Mailbox, Receipt, SendError, Transport, TransportFuture, send},
+    mail::{Attachment, Mail, Mailbox, Receipt, SendError, Transport, TransportFuture, send},
+    view::{Unescaped, view},
 };
 
 use crate::{
     config::{Config, MagicLinksConfig, MailConfig, SmtpEncryption},
     mail_circuit::MailCircuitBreaker,
+    mail_templates::{
+        LOGO_CONTENT_ID, TemplateVars, USER_JOIN_HTML, USER_LEAVE_HTML, USER_LOGIN_HTML,
+        VAUBAN_LOGO_PNG, render_html,
+    },
 };
 
 /// lettre-backed SMTP transport configured from `[mail]`.
@@ -151,13 +156,30 @@ pub async fn send_login_magic_link(
     raw_token: &str,
 ) -> Result<()> {
     let url = magic_link_url(public_origin, raw_token);
-    let body = format!(
+    let ttl = ml.token_ttl_secs.div_ceil(60);
+    let text = format!(
         "Sign in to the Vauban Customer Portal:\n\n{url}\n\n\
-         This link expires in {} minutes and can be used only once.\n\
-         If you did not request this, you can ignore this email.\n",
-        ml.token_ttl_secs.div_ceil(60)
+         This link expires in {ttl} minutes and can be used only once.\n\
+         If you did not request this, you can ignore this email.\n"
     );
-    send_text_mail(cx, ml, to_email, "Sign in to Vauban Customer Portal", &body).await
+    let html = render_html(
+        USER_LOGIN_HTML,
+        TemplateVars {
+            org_name: None,
+            magic_url: Some(&url),
+            from_address: ml.from_address.trim(),
+            ttl_minutes: Some(ttl),
+        },
+    );
+    send_branded_mail(
+        cx,
+        ml,
+        to_email,
+        "Sign in to Vauban Customer Portal",
+        &text,
+        html,
+    )
+    .await
 }
 
 /// Invitation when a company account is created or revived.
@@ -170,18 +192,28 @@ pub async fn send_invitation_mail(
     raw_token: &str,
 ) -> Result<()> {
     let url = magic_link_url(public_origin, raw_token);
-    let body = format!(
+    let ttl = ml.token_ttl_secs.div_ceil(60);
+    let text = format!(
         "You have been invited to the Vauban Customer Portal for {org_name}.\n\n\
          Sign in with this link:\n\n{url}\n\n\
-         This link expires in {} minutes and can be used only once.\n",
-        ml.token_ttl_secs.div_ceil(60)
+         This link expires in {ttl} minutes and can be used only once.\n"
     );
-    send_text_mail(
+    let html = render_html(
+        USER_JOIN_HTML,
+        TemplateVars {
+            org_name: Some(org_name),
+            magic_url: Some(&url),
+            from_address: ml.from_address.trim(),
+            ttl_minutes: Some(ttl),
+        },
+    );
+    send_branded_mail(
         cx,
         ml,
         to_email,
         &format!("Invitation to {org_name} — Vauban Customer Portal"),
-        &body,
+        &text,
+        html,
     )
     .await
 }
@@ -193,34 +225,52 @@ pub async fn send_revocation_mail(
     to_email: &str,
     org_name: &str,
 ) -> Result<()> {
-    let body = format!(
+    let text = format!(
         "Your access to the Vauban Customer Portal for {org_name} has been removed.\n\n\
          If you believe this is a mistake, contact your administrator.\n"
     );
-    send_text_mail(
+    let html = render_html(
+        USER_LEAVE_HTML,
+        TemplateVars {
+            org_name: Some(org_name),
+            magic_url: None,
+            from_address: ml.from_address.trim(),
+            ttl_minutes: None,
+        },
+    );
+    send_branded_mail(
         cx,
         ml,
         to_email,
         &format!("Access removed — {org_name}"),
-        &body,
+        &text,
+        html,
     )
     .await
 }
 
-async fn send_text_mail(
+async fn send_branded_mail(
     cx: &Cx,
     ml: &MagicLinksConfig,
     to_email: &str,
     subject: &str,
-    body: &str,
+    text: &str,
+    html: String,
 ) -> Result<()> {
     let from = from_mailbox(ml)?;
     let to = Mailbox::new(to_email.trim())?;
+    let html_view = view! { cx => (Unescaped::new_unchecked(html)) }?;
     let mut builder = Mail::builder()
         .from(from)
         .to([to])
         .subject(subject)
-        .text(body);
+        .html(html_view)
+        .text(text)
+        .attachments([Attachment::inline(
+            LOGO_CONTENT_ID,
+            "image/png",
+            VAUBAN_LOGO_PNG,
+        )]);
     if let Some(reply) = reply_to_mailbox(ml)? {
         builder = builder.reply_to([reply]);
     }

@@ -1,5 +1,6 @@
 //! E2E: company invite / revoke / revive mails and soft-delete preserves opener.
 
+use topcoat::context::Cx;
 use topcoat::mail::{MemoryTransport, TextBody};
 use vcp::models::{MEMBERSHIP_ROLE_ORG, USER_NOT_DELETED, User};
 
@@ -43,6 +44,11 @@ fn mail_text(mail: &topcoat::mail::Mail) -> String {
     }
 }
 
+fn mail_html(mail: &topcoat::mail::Mail) -> String {
+    let cx = Cx::default();
+    mail.html().map(|v| v.render(&cx)).unwrap_or_default()
+}
+
 #[tokio::test]
 async fn e2e_company_invite_revoke_revive_preserves_user_id() {
     let _guard = db_lock().lock().await;
@@ -80,8 +86,12 @@ async fn e2e_company_invite_revoke_revive_preserves_user_id() {
         sent.iter().any(|m| {
             mail_to_contains(m, &member_email)
                 && (mail_text(m).contains("invited") || mail_text(m).contains("Sign in"))
+                && mail_html(m).contains(r#"src="cid:vauban-logo""#)
+                && m.attachments()
+                    .iter()
+                    .any(|a| a.content_id() == Some("vauban-logo"))
         }),
-        "create must send invitation mail"
+        "create must send branded invitation mail"
     );
 
     assert!(
