@@ -13,8 +13,8 @@ use vcp::mail_circuit::MailCircuitBreaker;
 
 use crate::common::{
     call_request_login_link, cleanup, create_org_with_membership, db_lock, get,
-    procedure_bool_body, status, test_config, test_db, test_router, test_router_with_memory_mail,
-    test_router_with_memory_mail_circuit, unique_email, unique_slug,
+    procedure_login_link_accepted, status, test_config, test_db, test_router,
+    test_router_with_memory_mail, test_router_with_memory_mail_circuit, unique_email, unique_slug,
 };
 
 #[tokio::test]
@@ -141,7 +141,7 @@ async fn battle_parallel_request_login_link_circuit_open_all_unavailable() {
             let resp = call_request_login_link(&router, &email).await;
             assert_eq!(status(&resp), StatusCode::OK);
             assert!(
-                !procedure_bool_body(resp).await,
+                !procedure_login_link_accepted(resp).await,
                 "open circuit must return unavailable for every address"
             );
         }));

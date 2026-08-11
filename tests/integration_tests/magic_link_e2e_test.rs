@@ -13,8 +13,9 @@ use vcp::mail_circuit::MailCircuitBreaker;
 use crate::common::{
     assert_topcoat_click_handlers_are_functions, assert_topcoat_submit_handlers_are_functions,
     call_request_login_link, cleanup, create_org_with_membership, db_lock, get, login_cookie,
-    procedure_bool_body, procedure_path_from_html, status, test_config, test_db, test_router,
-    test_router_with_memory_mail, test_router_with_memory_mail_circuit, unique_email, unique_slug,
+    procedure_login_link_accepted, procedure_path_from_html, status, test_config, test_db,
+    test_router, test_router_with_memory_mail, test_router_with_memory_mail_circuit, unique_email,
+    unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::Response) -> String {
@@ -207,7 +208,7 @@ async fn e2e_unknown_email_same_ok_no_mail() {
     let resp = call_request_login_link(&router, &missing).await;
     assert_eq!(status(&resp), StatusCode::OK);
     assert!(
-        procedure_bool_body(resp).await,
+        procedure_login_link_accepted(resp).await,
         "closed circuit: unknown email still Check-your-email"
     );
     assert!(memory.sent().is_empty(), "unknown email must not send mail");
@@ -228,7 +229,7 @@ async fn e2e_known_email_sends_mail_via_procedure() {
     let resp = call_request_login_link(&router, &email).await;
     assert_eq!(status(&resp), StatusCode::OK);
     assert!(
-        procedure_bool_body(resp).await,
+        procedure_login_link_accepted(resp).await,
         "closed circuit: known email Check-your-email"
     );
     assert_eq!(
@@ -262,11 +263,11 @@ async fn e2e_mail_circuit_open_same_unavailable_no_oracle() {
     assert_eq!(status(&known), StatusCode::OK);
     assert_eq!(status(&unknown), StatusCode::OK);
     assert!(
-        !procedure_bool_body(known).await,
+        !procedure_login_link_accepted(known).await,
         "open circuit: known email must get unavailable"
     );
     assert!(
-        !procedure_bool_body(unknown).await,
+        !procedure_login_link_accepted(unknown).await,
         "open circuit: unknown email must get same unavailable (no oracle)"
     );
     assert!(

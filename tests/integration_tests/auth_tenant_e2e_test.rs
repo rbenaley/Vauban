@@ -7,8 +7,8 @@ use vcp::models::{AuthSession, PORTAL_ROLE_ORG, RESERVED_ORG_SLUG};
 
 use crate::common::{
     call_request_login_link, cleanup, create_org_with_membership, create_test_org, db_lock,
-    expire_all_sessions_for_user, get, login_cookie, procedure_bool_body, status, test_config,
-    test_db, test_router, test_router_with_config, unique_email, unique_slug,
+    expire_all_sessions_for_user, get, login_cookie, procedure_login_link_accepted, status,
+    test_config, test_db, test_router, test_router_with_config, unique_email, unique_slug,
 };
 
 fn location(resp: &topcoat::router::Response) -> Option<&str> {
@@ -171,11 +171,11 @@ async fn e2e_login_unknown_and_known_email_same_procedure_ok() {
     assert_eq!(status(&unknown), StatusCode::OK);
     assert_eq!(status(&known), StatusCode::OK);
     assert!(
-        procedure_bool_body(unknown).await,
+        procedure_login_link_accepted(unknown).await,
         "closed circuit: unknown email Check-your-email"
     );
     assert!(
-        procedure_bool_body(known).await,
+        procedure_login_link_accepted(known).await,
         "closed circuit: known email Check-your-email"
     );
 

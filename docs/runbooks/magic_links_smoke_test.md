@@ -82,10 +82,11 @@ Simulate SMTP down (stop Mailpit / TEM, or point `[mail]` at a closed port)
 and retry until the process opens the mail circuit
 (`circuit_failure_threshold`, default 3 consecutive send failures).
 
-1. Submit a **known** email and an **unknown** email on `/login`.
-2. Both stay on the form with the same alert:
+1. On the attempt that opens the circuit (3rd consecutive SMTP failure for a
+   known address), the form must leave **Sending...** and show the alert:
    **Sign-in is temporarily unavailable. Please try again later.**
-   (no Check-your-email panel, no Mailpit message).
+   (no Check-your-email panel, no stuck Sending button).
+2. Immediately after, submit an **unknown** email — same alert (no oracle).
 3. Restore SMTP; wait `circuit_open_secs` (default 60) or restart `vcp`, then
    confirm a known email returns to Check-your-email and mail arrives.
 

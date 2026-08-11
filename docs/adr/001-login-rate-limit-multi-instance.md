@@ -12,14 +12,16 @@
 ## Context
 
 Magic-link request (`#[procedure] request_login_link`) is
-anti-enumeration: unknown emails, lockouts, and **per-request** SMTP
-failures all present the same "Check your email" UX (`Ok(true)`). When
-the process-local mail circuit breaker is **open** (after consecutive
-SMTP failures; see `[mail] circuit_*` and `MailCircuitBreaker`), every
-address gets the same unavailable outcome (`Ok(false)` + shared copy)
-so outages do not become an account-existence oracle. Abuse control
-today is an **in-process** per-email window + lockout (`LoginRateLimiter`
-in `app_context`, keyed by normalized email, thresholds from `[login]`).
+anti-enumeration: unknown emails, lockouts, and SMTP failures while the
+mail circuit is still closed present the same "Check your email" UX
+(`Ok(1.0)`). When the process-local mail circuit breaker is **open**
+(after consecutive SMTP failures; see `[mail] circuit_*` and
+`MailCircuitBreaker`) — including on the request that just opened it —
+every address gets the same unavailable outcome (`Ok(0.0)` + shared
+copy) so outages do not become an account-existence oracle. Abuse
+control today is an **in-process** per-email window + lockout
+(`LoginRateLimiter` in `app_context`, keyed by normalized email,
+thresholds from `[login]`).
 
 That store is process-local (`Mutex<HashMap<…>>`). Under **N** active
 portal replicas without a shared counter, an attacker can multiply the

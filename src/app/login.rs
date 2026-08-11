@@ -89,20 +89,25 @@ async fn login_layout(cx: &Cx, slot: Result) -> Result {
     view! { cx => login_splash(body: slot) }
 }
 
+/// Wire codes for [`request_login_link`] (f64 for reliable Topcoat client `if`).
+pub(crate) const LOGIN_LINK_ACCEPTED: f64 = 1.0;
+pub(crate) const LOGIN_LINK_UNAVAILABLE: f64 = 0.0;
+
 /// Request (or re-request) a sign-in magic link.
 ///
-/// Returns `true` when the client should show Check-your-email (anti-enumeration
-/// for unknown / locked emails and for per-request SMTP failures). Returns
-/// `false` only when the mail circuit is open — same unavailable UX for all
-/// addresses so outages do not leak account existence.
+/// Returns [`LOGIN_LINK_ACCEPTED`] when the client should show Check-your-email
+/// (anti-enumeration for unknown / locked emails and for SMTP failures while
+/// the circuit is still closed). Returns [`LOGIN_LINK_UNAVAILABLE`] when the
+/// mail circuit is open — including on the request that just opened it — so
+/// every address shares the same unavailable UX.
 #[procedure]
-async fn request_login_link(cx: &Cx, email: String) -> Result<bool> {
+async fn request_login_link(cx: &Cx, email: String) -> Result<f64> {
     let cfg = app_context::<Arc<Config>>(cx);
     let limiter = app_context::<Arc<LoginRateLimiter>>(cx);
     let mail_circuit = app_context::<Arc<MailCircuitBreaker>>(cx);
 
     if !mail_circuit.allow_attempt() {
-        return Ok(false);
+        return Ok(LOGIN_LINK_UNAVAILABLE);
     }
 
     let email = email.trim().to_ascii_lowercase();
@@ -124,8 +129,8 @@ async fn request_login_link(cx: &Cx, email: String) -> Result<bool> {
         if let Some(user) = user {
             match issue_token(&mut database, user.id, cfg.magiclinks.token_ttl_secs).await {
                 Ok(raw) => {
-                    // SMTP err: mailer trips the circuit + logs; keep
-                    // Check-your-email for this request (no oracle).
+                    // SMTP err: mailer trips the circuit + logs. If the circuit
+                    // is now open, fall through to unavailable (no stuck UX).
                     if send_login_magic_link(
                         cx,
                         &cfg.magiclinks,
@@ -153,7 +158,10 @@ async fn request_login_link(cx: &Cx, email: String) -> Result<bool> {
         limiter.record_failure(&email);
     }
 
-    Ok(true)
+    if mail_circuit.is_open() {
+        return Ok(LOGIN_LINK_UNAVAILABLE);
+    }
+    Ok(LOGIN_LINK_ACCEPTED)
 }
 
 #[page]
@@ -218,9 +226,9 @@ async fn login_page(cx: &Cx) -> Result {
                     }
                     sending.set(true);
                     unavailable.set(false);
-                    let ok = request_login_link(email.get()).await;
+                    let status = request_login_link(email.get()).await;
                     sending.set(false);
-                    if ok {
+                    if status > 0.0 {
                         remaining.set(ttl_remaining_seed.get());
                         mins.set(ttl_mins_seed.get());
                         secs.set(ttl_secs_seed.get());
@@ -324,9 +332,9 @@ async fn login_page(cx: &Cx) -> Result {
                         }
                         sending.set(true);
                         unavailable.set(false);
-                        let ok = request_login_link(email.get()).await;
+                        let status = request_login_link(email.get()).await;
                         sending.set(false);
-                        if ok {
+                        if status > 0.0 {
                             remaining.set(ttl_remaining_seed.get());
                             mins.set(ttl_mins_seed.get());
                             secs.set(ttl_secs_seed.get());

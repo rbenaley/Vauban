@@ -704,8 +704,8 @@ pub async fn call_request_login_link(router: &Router, email: &str) -> Response {
     post_json(router, &path, None, &request_login_link_json(email)).await
 }
 
-/// Parse a Topcoat procedure JSON body that returns a bool (`true` / `false`).
-pub async fn procedure_bool_body(resp: Response) -> bool {
+/// Parse `request_login_link` JSON body (`1.0` accepted / `0.0` unavailable).
+pub async fn procedure_login_link_accepted(resp: Response) -> bool {
     let bytes = resp
         .into_body()
         .collect()
@@ -713,11 +713,11 @@ pub async fn procedure_bool_body(resp: Response) -> bool {
         .expect("procedure body")
         .to_bytes();
     let text = String::from_utf8_lossy(&bytes);
-    match text.trim() {
-        "true" => true,
-        "false" => false,
-        other => panic!("expected procedure bool body, got {other:?}"),
-    }
+    let status: f64 = text
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("expected procedure f64 body, got {text:?}"));
+    status > 0.0
 }
 
 /// JSON body for `docs_search_results(org_slug, q, cat, page)`.
