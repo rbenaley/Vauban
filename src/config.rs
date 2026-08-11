@@ -60,10 +60,15 @@ impl Environment {
     }
 
     /// Default `RUST_LOG` filter when the env var is unset.
+    ///
+    /// Production quiets `rustls::msgs::handshake` WARN noise (illegal SNI
+    /// from IP scanners / bots). Development and testing keep those WARNs.
+    /// A set `RUST_LOG` replaces this string entirely.
     pub const fn default_log_filter(self) -> &'static str {
         match self {
             Self::Development => "debug",
-            Self::Testing | Self::Production => "info",
+            Self::Testing => "info",
+            Self::Production => "info,rustls::msgs::handshake=error",
         }
     }
 }
@@ -1389,7 +1394,10 @@ smtp_encryption = "starttls"
     fn development_default_log_filter_enables_global_debug() {
         assert_eq!(Environment::Development.default_log_filter(), "debug");
         assert_eq!(Environment::Testing.default_log_filter(), "info");
-        assert_eq!(Environment::Production.default_log_filter(), "info");
+        assert_eq!(
+            Environment::Production.default_log_filter(),
+            "info,rustls::msgs::handshake=error"
+        );
     }
 
     #[test]
