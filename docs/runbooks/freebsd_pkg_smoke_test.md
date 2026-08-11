@@ -44,6 +44,26 @@ subdirectory) for the access log. `service vcp stop` must leave
 `vcp_store` running and must **not** leave a restart storm in
 `/var/log/vcp.log`.
 
+### A1 -- Database URL password injection
+
+The staged `vcp.conf` inside the `.pkg` always contains
+`postgresql://vcp:CHANGE-ME@localhost/vcp`. A strong password is
+generated and written into `/usr/local/etc/vcp/vcp.conf` by
+`+POST_INSTALL` when PostgreSQL is reachable — on first install
+(`CREATE USER`) **and** on reinstall when the role already exists but
+the conf was restored to the placeholder (`ALTER USER`).
+
+```bash
+# Must NOT still be the packaged placeholder after a successful pkg add
+# with postgres up:
+grep 'url =' /usr/local/etc/vcp/vcp.conf
+! grep -F 'postgresql://vcp:CHANGE-ME@localhost/vcp' /usr/local/etc/vcp/vcp.conf
+```
+
+Fail: URL still `CHANGE-ME` after install with postgres running (pkg-add
+log should show Creating/Resetting PostgreSQL …). SMTP `CHANGE-ME`
+placeholders are intentional and stay for the operator.
+
 ```bash
 ls /usr/local/share/vcp/assets/manifest.toml   # Topcoat release bundle
 service vcp status                              # supervisor at /var/run/vcp.pid

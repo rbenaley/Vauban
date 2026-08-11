@@ -59,25 +59,60 @@ chmod 640 /var/log/vcp-access.log /var/log/vcp.log /var/log/vcp-store.log
 # --------------------------------------------------------------------------- #
 # PostgreSQL role + database + migrations                                     #
 # --------------------------------------------------------------------------- #
+# Packaged vcp.conf always ships the DB URL placeholder. Password injection
+# happens here at pkg-add time (never at `just package` / pkg create).
+# Reinstall keeps the Postgres role (see +POST_DEINSTALL) but may restore a
+# fresh @config template — so when the placeholder is still present we must
+# CREATE or ALTER USER and rewrite the URL, not skip because the role exists.
+_DB_URL_PLACEHOLDER='postgresql://vcp:CHANGE-ME@localhost/vcp'
+
+_inject_db_password() {
+    _pass="$1"
+    if [ ! -f "${CONF_DIR}/vcp.conf" ]; then
+        return 0
+    fi
+    if ! grep -qF "${_DB_URL_PLACEHOLDER}" "${CONF_DIR}/vcp.conf"; then
+        return 0
+    fi
+    _esc=$(printf '%s' "${_pass}" | sed 's/[&/\]/\\&/g')
+    sed -i '' "s|${_DB_URL_PLACEHOLDER}|postgresql://vcp:${_esc}@localhost/vcp|" \
+        "${CONF_DIR}/vcp.conf"
+    detect_acl_type "${CONF_DIR}/vcp.conf"
+    set_acl "vcp" "r" "${CONF_DIR}/vcp.conf"
+}
+
 echo "==> Checking PostgreSQL..."
 if su -m postgres -c "psql -Atc 'SELECT 1'" >/dev/null 2>&1; then
-    if ! su -m postgres -c "psql -Atc \"SELECT 1 FROM pg_roles WHERE rolname='vcp'\"" | grep -q 1; then
+    _role_exists=0
+    if su -m postgres -c "psql -Atc \"SELECT 1 FROM pg_roles WHERE rolname='vcp'\"" | grep -q 1; then
+        _role_exists=1
+    fi
+
+    if [ -f "${CONF_DIR}/vcp.conf" ] \
+        && grep -qF "${_DB_URL_PLACEHOLDER}" "${CONF_DIR}/vcp.conf"; then
+        # openssl base64 minus /+= => URL-safe for the postgres:// userinfo.
         _pass=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)
-        echo "==> Creating PostgreSQL role and database 'vcp'..."
-        su -m postgres -c "psql -v ON_ERROR_STOP=1" <<SQL
+        if [ "${_role_exists}" -eq 0 ]; then
+            echo "==> Creating PostgreSQL role and database 'vcp'..."
+            su -m postgres -c "psql -v ON_ERROR_STOP=1" <<SQL
 CREATE USER vcp WITH PASSWORD '${_pass}';
 CREATE DATABASE vcp OWNER vcp;
 SQL
-        if [ -f "${CONF_DIR}/vcp.conf" ]; then
-            # Inject URL only when still at the CHANGE-ME placeholder.
-            if grep -q 'CHANGE-ME' "${CONF_DIR}/vcp.conf"; then
-                _esc=$(printf '%s' "${_pass}" | sed 's/[&/\]/\\&/g')
-                sed -i '' "s|postgresql://vcp:CHANGE-ME@localhost/vcp|postgresql://vcp:${_esc}@localhost/vcp|" \
-                    "${CONF_DIR}/vcp.conf"
-                detect_acl_type "${CONF_DIR}/vcp.conf"
-                set_acl "vcp" "r" "${CONF_DIR}/vcp.conf"
+        else
+            echo "==> Resetting PostgreSQL password for existing role 'vcp'..."
+            su -m postgres -c "psql -v ON_ERROR_STOP=1" <<SQL
+ALTER USER vcp WITH PASSWORD '${_pass}';
+SQL
+            if ! su -m postgres -c "psql -Atc \"SELECT 1 FROM pg_database WHERE datname='vcp'\"" | grep -q 1; then
+                echo "==> Creating missing database 'vcp'..."
+                su -m postgres -c "psql -v ON_ERROR_STOP=1 -c \"CREATE DATABASE vcp OWNER vcp;\""
             fi
         fi
+        _inject_db_password "${_pass}"
+    elif [ "${_role_exists}" -eq 0 ]; then
+        echo "WARNING: PostgreSQL role 'vcp' is missing and ${CONF_DIR}/vcp.conf"
+        echo "  has no ${_DB_URL_PLACEHOLDER} placeholder; provision the role/DB"
+        echo "  manually before starting the portal."
     fi
 
     echo "==> Applying Toasty migrations..."
@@ -91,7 +126,9 @@ SQL
 else
     echo "WARNING: PostgreSQL not reachable; skip DB setup."
     echo "  Later: sysrc postgresql_enable=YES && service postgresql start"
-    echo "  Then:  VCP_CONFIG_DIR=${CONF_DIR} VCP_PACKAGE_ROOT=${PREFIX}/share/vcp \\"
+    echo "  Then:  reinstall the package (or restore ${_DB_URL_PLACEHOLDER}"
+    echo "         in ${CONF_DIR}/vcp.conf and re-run pkg-add post-install),"
+    echo "         or: VCP_CONFIG_DIR=${CONF_DIR} VCP_PACKAGE_ROOT=${PREFIX}/share/vcp \\"
     echo "         VCP_ENVIRONMENT=production ${VCP_BIN} migration apply"
 fi
 

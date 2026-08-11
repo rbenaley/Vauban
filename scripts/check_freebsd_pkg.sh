@@ -87,6 +87,24 @@ grep -n 'ensure_portal_cert_acl' pkg/+POST_INSTALL >/dev/null \
 grep -n 'ensure_portal_cert_acl' pkg/rc.d/vcp >/dev/null \
   || fail "rc.d/vcp must re-apply the certs ACL (ACME rewrites files)"
 
+# DB password: packaged conf keeps CHANGE-ME; +POST_INSTALL injects at
+# pkg-add (CREATE on first install, ALTER when role exists + placeholder).
+grep -nF 'postgresql://vcp:CHANGE-ME@localhost/vcp' config/vcp.conf >/dev/null \
+  || fail "config/vcp.conf must ship the DB URL CHANGE-ME placeholder"
+grep -nF "_DB_URL_PLACEHOLDER='postgresql://vcp:CHANGE-ME@localhost/vcp'" \
+  pkg/+POST_INSTALL >/dev/null \
+  || fail "POST_INSTALL must pin _DB_URL_PLACEHOLDER to the packaged URL"
+grep -n 'ALTER USER vcp WITH PASSWORD' pkg/+POST_INSTALL >/dev/null \
+  || fail "POST_INSTALL must ALTER USER when role exists and URL is CHANGE-ME"
+grep -n 'CREATE USER vcp WITH PASSWORD' pkg/+POST_INSTALL >/dev/null \
+  || fail "POST_INSTALL must CREATE USER on first install"
+grep -n '_inject_db_password\|openssl rand' pkg/+POST_INSTALL >/dev/null \
+  || fail "POST_INSTALL must generate and inject a DB password"
+# Do not gate injection on a bare CHANGE-ME grep (matches SMTP too) alone.
+if grep -nE 'grep -q[[:space:]]+['\''"]CHANGE-ME['\''"]' pkg/+POST_INSTALL >/dev/null; then
+  fail "POST_INSTALL must match the full DB URL placeholder, not bare CHANGE-ME"
+fi
+
 # sh "local" is dynamically scoped: precmds run inside run_rc_command, so a
 # bare _user=... in sourced helpers clobbers rc.subr's local and makes it
 # wrap the service in "su -m" (daemon(8) then runs unprivileged).

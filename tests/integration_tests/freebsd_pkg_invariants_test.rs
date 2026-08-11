@@ -106,6 +106,28 @@ fn prop_rc_d_and_newsyslog_required_pins() {
             "{log} rotation must SIGHUP the supervisor at {pid}"
         );
     }
+    let post = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/pkg/+POST_INSTALL"));
+    let conf = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/vcp.conf"));
+    let db_placeholder = "postgresql://vcp:CHANGE-ME@localhost/vcp";
+    assert!(
+        conf.contains(db_placeholder),
+        "packaged vcp.conf must ship the DB URL placeholder (injection is pkg-add time)"
+    );
+    assert!(
+        post.contains("_DB_URL_PLACEHOLDER=") && post.contains(db_placeholder),
+        "+POST_INSTALL must pin the same DB URL placeholder as config/vcp.conf"
+    );
+    assert!(
+        post.contains("CREATE USER vcp WITH PASSWORD")
+            && post.contains("ALTER USER vcp WITH PASSWORD")
+            && post.contains("openssl rand"),
+        "+POST_INSTALL must CREATE or ALTER the vcp role and inject a generated password"
+    );
+    assert!(
+        !post.contains("grep -q 'CHANGE-ME'") && !post.contains("grep -q \"CHANGE-ME\""),
+        "+POST_INSTALL must not gate DB injection on a bare CHANGE-ME grep (SMTP false positive)"
+    );
+
     let build = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/pkg/build-pkg.sh"));
     assert!(
         build.contains("share/vcp/assets"),
@@ -144,6 +166,34 @@ fn prop_rc_d_and_newsyslog_required_pins() {
             "compression flag in newsyslog line: {line}"
         );
     }
+}
+
+#[test]
+fn prop_post_install_db_placeholder_matches_packaged_conf() {
+    let conf = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/vcp.conf"));
+    let post = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/pkg/+POST_INSTALL"));
+    let urls: Vec<&str> = conf
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim();
+            t.strip_prefix("url = \"")
+                .and_then(|rest| rest.strip_suffix('"'))
+        })
+        .collect();
+    assert_eq!(
+        urls.len(),
+        1,
+        "config/vcp.conf must have exactly one database url"
+    );
+    let url = urls[0];
+    assert!(
+        url.contains("CHANGE-ME"),
+        "packaged DB url must remain a placeholder for pkg-add injection"
+    );
+    assert!(
+        post.contains(&format!("_DB_URL_PLACEHOLDER='{url}'")),
+        "+POST_INSTALL placeholder must match config/vcp.conf url exactly: {url}"
+    );
 }
 
 #[test]
