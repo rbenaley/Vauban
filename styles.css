@@ -975,6 +975,22 @@ a.vb-row:hover { background: #fafbfa; }
 .vb-table.vb-table-key td.vb-col-actions {
   width: 18%;
 }
+/* /admin/docs — TITLE is user content of any length. Fixed layout keeps the
+   remainder for the title (it ellipsizes) instead of widening the table past
+   the clipped .vb-table-wrap and hiding ACTIONS. */
+.vb-table.vb-table-docs {
+  table-layout: fixed;
+  width: 100%;
+}
+.vb-table.vb-table-docs col.vb-docs-c-category { width: 8.5rem; }
+.vb-table.vb-table-docs col.vb-docs-c-version { width: 4.5rem; }
+.vb-table.vb-table-docs col.vb-docs-c-status { width: 7.5rem; }
+.vb-table.vb-table-docs col.vb-docs-c-actions { width: 16rem; }
+.vb-table.vb-table-docs th.vb-col-actions,
+.vb-table.vb-table-docs td.vb-col-actions {
+  width: 16rem;
+}
+.vb-table.vb-table-docs td { overflow: hidden; }
 .vb-table tr:last-child td { border-bottom: 0; }
 .vb-table a { color: inherit; text-decoration: none; }
 .vb-table a:hover { color: var(--accent); }

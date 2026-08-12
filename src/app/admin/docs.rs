@@ -103,7 +103,14 @@ async fn admin_docs_page(cx: &Cx) -> Result {
         list_toolbar(links: &pager)
 
         <div class="vb-table-wrap">
-            <table class="vb-table">
+            <table class="vb-table vb-table-docs">
+                <colgroup>
+                    <col class="vb-docs-c-title">
+                    <col class="vb-docs-c-category">
+                    <col class="vb-docs-c-version">
+                    <col class="vb-docs-c-status">
+                    <col class="vb-docs-c-actions">
+                </colgroup>
                 <thead>
                     <tr>
                         <th>"TITLE"</th>
