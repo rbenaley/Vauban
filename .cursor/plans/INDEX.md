@@ -46,11 +46,14 @@ is planned._
 | Companies LTS account login | [`companies_lts_account_login_ab2fc8c3.plan.md`](companies_lts_account_login_ab2fc8c3.plan.md) | Done |
 | Companies page size search | [`companies_page_size_search_cff9b1d5.plan.md`](companies_page_size_search_cff9b1d5.plan.md) | Done |
 | DB-backed editorial content | [`db-backed_editorial_content_b6911b21.plan.md`](db-backed_editorial_content_b6911b21.plan.md) | Done |
+| Docs CLI MD bundle | [`docs_cli_md_bundle_0d4c230a.plan.md`](docs_cli_md_bundle_0d4c230a.plan.md) | Done |
+| Email HTML templates location | [`email_html_templates_location_28ea4c65.plan.md`](email_html_templates_location_28ea4c65.plan.md) | Done |
 | FreeBSD pkg validation | [`freebsd_pkg_validation_158d8575.plan.md`](freebsd_pkg_validation_158d8575.plan.md) | Done |
 | FreeBSD Tailwind CLI | [`freebsd_tailwind_cli_d526732f.plan.md`](freebsd_tailwind_cli_d526732f.plan.md) | Done |
+| Industrial LTS builds | [`industrial_lts_builds_6b65e0e9.plan.md`](industrial_lts_builds_6b65e0e9.plan.md) | Done |
 | Issue close reopen | [`issue_close_reopen_954c4a67.plan.md`](issue_close_reopen_954c4a67.plan.md) | Done |
 | Issue image attachments | [`issue_image_attachments_98d24998.plan.md`](issue_image_attachments_98d24998.plan.md) | Done |
-| Issue lifecycle FSM | [`issue_lifecycle_fsm_02ac8ded.plan.md`](issue_lifecycle_fsm_02ac8ded.plan.md) | Open |
+| Issue lifecycle FSM | [`issue_lifecycle_fsm_02ac8ded.plan.md`](issue_lifecycle_fsm_02ac8ded.plan.md) | Done |
 | Issues live search shards | [`issues_live_search_shards_d44946a2.plan.md`](issues_live_search_shards_d44946a2.plan.md) | Done |
 | List pagination standard | [`list_pagination_standard_4c1f389a.plan.md`](list_pagination_standard_4c1f389a.plan.md) | Done |
 | Login signal UX | [`login_signal_ux_5fb30469.plan.md`](login_signal_ux_5fb30469.plan.md) | Done |
