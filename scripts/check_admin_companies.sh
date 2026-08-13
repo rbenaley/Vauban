@@ -95,6 +95,13 @@ grep -n 'fn render_admin_page' src/app/admin.rs >/dev/null \
 grep -nE 'name=\(field\)|email_' "$FORM" >/dev/null || fail "$FORM must collect indexed email_N fields"
 grep -n 'account_rows' "$FORM" >/dev/null || fail "$FORM must send account_rows"
 grep -n 'compose_action' "$FORM" >/dev/null || fail "$FORM must use compose_action"
+grep -n 'fn show_remove_account_row' "$ACCOUNTS" >/dev/null \
+  || fail "$ACCOUNTS must define show_remove_account_row"
+grep -n 'show_remove_account_row' "$FORM" >/dev/null \
+  || fail "$FORM must gate Remove via show_remove_account_row"
+if grep -nE 'if emails\.len\(\) > 1' "$FORM" >/dev/null; then
+  fail "$FORM must not hide Remove solely because emails.len() > 1"
+fi
 
 grep -n '\+ New company' "$LIST" >/dev/null || fail "$LIST CTA must be + New company"
 grep -n 'max_accounts_per_org' "$LIST" >/dev/null || fail "$LIST must read max_accounts_per_org"
@@ -220,5 +227,10 @@ grep -n 'FileTransport' src/app.rs >/dev/null \
   && fail "src/app.rs must not use FileTransport"
 grep -n 'RouterBuilderMailExt\|\.mail(' src/app.rs >/dev/null \
   || fail "src/app.rs must wire .mail(MailConfig…)"
+
+RUNBOOK="docs/runbooks/admin_companies_smoke_test.md"
+[[ -f "$RUNBOOK" ]] || fail "missing $RUNBOOK"
+grep -nF 'must still show **Remove**' "$RUNBOOK" >/dev/null \
+  || fail "$RUNBOOK must check Remove on a sole filled account"
 
 echo "check_admin_companies: OK"

@@ -63,6 +63,9 @@ just test --test integration_tests -- admin_companies -- --test-threads=1
    below in the same mono style as VAT; open Edit; confirm steppers +
    contact fields; add/remove an account email; Save (invite on add,
    revocation mail on remove, including multi-org users).
+   A company with **one** USER ACCOUNT must still show **Remove** on that
+   row. After Remove + Save the company may have zero accounts. A new
+   company with only the padded empty slot must **not** show Remove.
 5. Sign out; sign in as a fiche account via its invitation / login magic
    link; open `/{org}` and `/{org}/account` — expect address, VAT, LTS
    counts, and user-account pills from the company fiche.

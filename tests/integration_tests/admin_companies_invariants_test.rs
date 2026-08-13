@@ -234,4 +234,25 @@ fn inv_admin_companies_list_concept_and_edit_delete() {
     assert!(form.contains("contact_name"));
     assert!(form.contains("contact_email"));
     assert!(!form.contains("type=\"password\""));
+    assert!(
+        form.contains("show_remove_account_row"),
+        "Remove must stay visible for a sole filled account"
+    );
+    assert!(
+        !form.contains("if emails.len() > 1"),
+        "must not hide Remove solely on row count"
+    );
+    let accounts = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/companies_accounts.rs"
+    ));
+    assert!(accounts.contains("fn show_remove_account_row"));
+    let runbook = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/docs/runbooks/admin_companies_smoke_test.md"
+    ));
+    assert!(
+        runbook.contains("must still show **Remove**"),
+        "smoke runbook must cover Remove on a sole filled account"
+    );
 }

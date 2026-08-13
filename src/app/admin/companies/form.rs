@@ -7,7 +7,7 @@ use topcoat::{
     view::view,
 };
 
-use crate::companies_accounts::ensure_email_rows;
+use crate::companies_accounts::{ensure_email_rows, show_remove_account_row};
 
 use super::super::render_admin_page;
 
@@ -221,6 +221,7 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
                         for (idx, email) in emails.iter().enumerate() {
                             let field = format!("email_{idx}");
                             let remove_val = format!("remove:{idx}");
+                            let show_remove = show_remove_account_row(emails.len(), email);
                             <div style="display: flex; gap: 8px; align-items: center;">
                                 <input
                                     name=(field)
@@ -229,7 +230,7 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
                                     value=(email.clone())
                                     style="flex: 1; margin: 0;"
                                 >
-                                if emails.len() > 1 {
+                                if show_remove {
                                     <button
                                         class="vb-btn muted compact"
                                         type="submit"

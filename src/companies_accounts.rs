@@ -161,6 +161,14 @@ pub fn normalize_emails(raw: &[String]) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// Whether the compose row should show **Remove**.
+///
+/// A single empty padded slot (new company / after removing the last account)
+/// hides the button. One filled account, or any extra row, keeps it visible.
+pub fn show_remove_account_row(row_count: usize, email: &str) -> bool {
+    row_count > 1 || !email.trim().is_empty()
+}
+
 /// Ensure row count for the compose form (at least one empty slot when empty).
 pub fn ensure_email_rows(emails: &[String], max: usize) -> Vec<String> {
     let mut rows = emails.to_vec();
@@ -522,6 +530,24 @@ mod tests {
         assert_eq!(ensure_email_rows(&[], 5), vec![String::new()]);
         let many = vec!["a@x".into(), "b@x".into(), "c@x".into()];
         assert_eq!(ensure_email_rows(&many, 2).len(), 2);
+    }
+
+    #[test]
+    fn show_remove_account_row_hides_only_padded_empty_slot() {
+        assert!(
+            !show_remove_account_row(1, ""),
+            "new-company padded empty row has no Remove"
+        );
+        assert!(
+            !show_remove_account_row(1, "   "),
+            "whitespace-only padded row has no Remove"
+        );
+        assert!(
+            show_remove_account_row(1, "ops@example.com"),
+            "sole filled account must keep Remove"
+        );
+        assert!(show_remove_account_row(2, ""));
+        assert!(show_remove_account_row(2, "ops@example.com"));
     }
 
     #[test]

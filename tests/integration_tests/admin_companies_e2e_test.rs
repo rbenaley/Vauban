@@ -187,6 +187,10 @@ async fn e2e_admin_edit_and_delete_company() {
     let html = body_text(edit_get).await;
     assert!(html.contains("Edit client company"));
     assert!(html.contains(&a));
+    assert!(
+        html.contains("aria-label=\"Remove account\"") && html.contains("value=\"remove:0\""),
+        "sole filled account must keep Remove: {html}"
+    );
     assert!(!html.contains("type=\"password\""));
 
     // add_row is a POST re-render: must keep the admin shell (CSS), not a bare View.
@@ -517,6 +521,81 @@ async fn e2e_company_form_lts_steppers_are_client_signals() {
         "LTS + must not POST compose_action: {html}"
     );
     assert_topcoat_click_handlers_are_functions(&html);
+    assert!(
+        !html.contains("aria-label=\"Remove account\""),
+        "new-company padded empty row must not show Remove: {html}"
+    );
+
+    cleanup(&db).await;
+}
+
+#[tokio::test]
+async fn e2e_admin_remove_last_company_account() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("co-rm-last");
+    let slug = unique_slug("co-rm-last-org");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login(&router, &email).await;
+
+    let name = format!("Rm Last {}", unique_slug("rml"));
+    let a = unique_email("rm-last-a");
+    let form = company_compose_form(&name, "", "c@x.test", "V", "A", &[&a]);
+    let create = post_form(&router, "/admin/companies/new", cookie.as_deref(), &form).await;
+    assert_eq!(status(&create), StatusCode::SEE_OTHER);
+
+    let org_id = {
+        let mut conn = db.clone();
+        Organization::all()
+            .exec(&mut conn)
+            .await
+            .expect("orgs")
+            .into_iter()
+            .find(|o| o.name == name)
+            .expect("org")
+            .id
+    };
+    {
+        let mut conn = db.clone();
+        assert_eq!(membership_count(&mut conn, org_id).await.unwrap(), 1);
+    }
+
+    let remove_form = company_compose_form(&name, "", "c@x.test", "V", "A", &[&a])
+        .replace("compose_action=save", "compose_action=remove:0");
+    let removed = post_form(
+        &router,
+        &format!("/admin/companies/{org_id}"),
+        cookie.as_deref(),
+        &remove_form,
+    )
+    .await;
+    assert_eq!(status(&removed), StatusCode::OK);
+    let html = body_text(removed).await;
+    assert!(
+        !html.contains("aria-label=\"Remove account\""),
+        "after removing the last account, padded empty row hides Remove: {html}"
+    );
+
+    let save_empty = company_compose_form(&name, "", "c@x.test", "V", "A", &[]);
+    let saved = post_form(
+        &router,
+        &format!("/admin/companies/{org_id}"),
+        cookie.as_deref(),
+        &save_empty,
+    )
+    .await;
+    assert_eq!(status(&saved), StatusCode::SEE_OTHER);
+    {
+        let mut conn = db.clone();
+        assert_eq!(
+            membership_count(&mut conn, org_id).await.unwrap(),
+            0,
+            "saving an empty account list must drop the last membership"
+        );
+    }
 
     cleanup(&db).await;
 }

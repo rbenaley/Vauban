@@ -4,6 +4,7 @@ use proptest::prelude::*;
 use vcp::companies_accounts::{
     COMPANY_DISPLAY_SEP, apply_lts_compose_action, clamp_lts_count, format_company_address,
     format_technical_contact, normalize_contact_email, normalize_emails, parse_lts_subscriptions,
+    show_remove_account_row,
 };
 use vcp::list_page::{COMPANIES_PAGE_SIZE, LIST_PAGE_SIZE};
 use vcp::models::{MAX_LTS_SUBSCRIPTIONS_DEFAULT, MAX_USERS_PER_COMPANY};
@@ -189,5 +190,23 @@ proptest! {
             apply_lts_compose_action(lts, industrial, action, 99).expect("step");
         prop_assert!((0..=99).contains(&next_lts));
         prop_assert!((0..=99).contains(&next_ind));
+    }
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(32))]
+
+    #[test]
+    fn prop_show_remove_account_row(
+        extra_rows in 0usize..=6,
+        email in ".*{0,48}"
+    ) {
+        let row_count = extra_rows + 1;
+        let show = show_remove_account_row(row_count, &email);
+        if row_count > 1 {
+            prop_assert!(show);
+        } else {
+            prop_assert_eq!(show, !email.trim().is_empty());
+        }
     }
 }

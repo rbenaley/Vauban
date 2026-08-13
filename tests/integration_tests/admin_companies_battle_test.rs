@@ -8,7 +8,7 @@ use tokio::sync::Barrier;
 use topcoat::router::StatusCode;
 use vcp::companies_accounts::{
     COMPANY_DISPLAY_SEP, apply_lts_compose_action, clamp_lts_count, format_company_address,
-    normalize_contact_email, normalize_emails,
+    normalize_contact_email, normalize_emails, show_remove_account_row,
 };
 use vcp::seats::{can_add_member, membership_count};
 
@@ -260,4 +260,23 @@ async fn battle_parallel_company_create_with_lts_counters() {
     }
 
     cleanup(&db).await;
+}
+
+#[test]
+fn battle_parallel_show_remove_account_row() {
+    let n = 8usize;
+    let barrier = Arc::new(std::sync::Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            assert!(show_remove_account_row(1, "sole@example.com"));
+            assert!(!show_remove_account_row(1, ""));
+            assert!(show_remove_account_row(2 + i % 3, ""));
+        }));
+    }
+    for h in handles {
+        h.join().expect("join");
+    }
 }
