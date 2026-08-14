@@ -117,6 +117,35 @@ fn inv_mailer_fd_passing_not_in_ipc_vec() {
 }
 
 #[test]
+fn inv_mailer_db_warmup_before_sandbox() {
+    let main = include_str!("../../../vauban-mailer/src/main.rs");
+    let db = include_str!("../../../vauban-mailer/src/db.rs");
+    assert!(
+        db.contains("fn create_pool_sandboxed") && db.contains("fn force_create_all_connections"),
+        "mailer db helpers must exist"
+    );
+    let warm = main
+        .find("force_create_all_connections")
+        .expect("main must warm the pool");
+    let seal = main
+        .find("setup_service_sandbox_extended")
+        .expect("main must seal");
+    assert!(
+        warm < seal,
+        "force_create_all_connections must run before Capsicum seal"
+    );
+    assert!(
+        main.contains("Database pool ready") && main.contains("pre-established"),
+        "mailer must log pre-established pool size"
+    );
+    let after = &main[seal..];
+    assert!(
+        !after.contains("Pool::builder"),
+        "must not build a DB pool after the seal"
+    );
+}
+
+#[test]
 fn inv_mailer_kinds_catalogue_exists() {
     let profiles = include_str!("../../../shared/src/sandbox/profiles.rs");
     assert!(

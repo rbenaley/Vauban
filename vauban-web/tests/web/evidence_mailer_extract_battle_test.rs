@@ -101,4 +101,15 @@ fn battle_mailer_main_seals_sandbox() {
         window.contains("&ipc_fds") && !window.contains("&all_fds"),
         "first arg must be &ipc_fds (pipes only), not a combined all_fds"
     );
+    let warm = main
+        .find("force_create_all_connections")
+        .expect("force_create_all_connections");
+    assert!(
+        warm < seal,
+        "DB warm-up must precede setup_service_sandbox_extended"
+    );
+    assert!(
+        main.contains("Database pool ready") && main.contains("pre-established"),
+        "mailer must log Database pool ready / pre-established"
+    );
 }

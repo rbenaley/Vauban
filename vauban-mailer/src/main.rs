@@ -1,7 +1,6 @@
 //! Vauban sealed mailer -- drains email_outbox via supervisor-brokered SMTP.
 
 use anyhow::{Context, Result};
-use diesel_async::pooled_connection::{AsyncDieselConnectionManager, deadpool};
 use shared::ipc::IpcChannel;
 use shared::sandbox as capsicum;
 use std::os::unix::io::RawFd;
@@ -9,6 +8,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tracing::{error, info};
+use vauban_mailer::db::{MAILER_POOL_SIZE, create_pool_sandboxed, force_create_all_connections};
 use vauban_mailer::outbox::{DrainCtx, dispatcher_loop};
 use vauban_mailer::provision::wait_for_mailer_provision;
 
@@ -70,6 +70,23 @@ fn run_service() -> Result<()> {
         "Mailer SMTP runtime provisioned"
     );
 
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("Failed to build Tokio runtime")?;
+
+    // Postgres sockets MUST be opened before cap_enter() (access/web
+    // contract). Staging 2026-08-14: building the pool after the seal
+    // produced "error connecting to server" on every drain tick.
+    let pool = create_pool_sandboxed(&database_url, MAILER_POOL_SIZE)
+        .context("Failed to build DB pool")?;
+    rt.block_on(force_create_all_connections(&pool, MAILER_POOL_SIZE))
+        .context("Failed to pre-establish mailer DB connections")?;
+    info!(
+        "Database pool ready ({} connections pre-established)",
+        MAILER_POOL_SIZE
+    );
+
     // The fd_passing socket only ever receives fds via SCM_RIGHTS (recvmsg):
     // declare it as a dedicated fd-receiver so Capsicum narrows it to
     // fd_receiver_socket rights (no write). It MUST NOT also appear in
@@ -81,18 +98,7 @@ fn run_service() -> Result<()> {
         capsicum::setup_service_sandbox_extended(&ipc_fds, None, fd_receiver_fds.as_deref())
             .context("Failed to setup sandbox")?;
 
-    let manager =
-        AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new(database_url);
-    let pool = deadpool::Pool::builder(manager)
-        .max_size(2)
-        .build()
-        .context("Failed to build DB pool")?;
-
     let shutdown = Arc::new(AtomicBool::new(false));
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("Failed to build Tokio runtime")?;
 
     rt.block_on(async {
         let ctx = DrainCtx {

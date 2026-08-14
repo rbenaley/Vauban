@@ -35,4 +35,5 @@ base64.workspace = true
 rand = "0.8"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "macros", "rt", "net", "io-util"] }
+tokio = { workspace = true, features = ["test-util", "macros", "rt", "net", "io-util", "time"] }
+proptest = "1"

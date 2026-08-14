@@ -64,6 +64,27 @@ if ! grep -Eq 'pub const MAILER_KINDS' "$ROOT/shared/src/sandbox/profiles.rs"; t
     fail "shared sandbox profiles must define MAILER_KINDS"
 fi
 
+# REGRESSION (staging 2026-08-14): Postgres pool must warm up BEFORE cap_enter.
+if ! grep -REq --include='*.rs' 'fn create_pool_sandboxed' "$ROOT/vauban-mailer/src"; then
+    fail "vauban-mailer must define create_pool_sandboxed"
+fi
+if ! grep -REq --include='*.rs' 'fn force_create_all_connections' "$ROOT/vauban-mailer/src"; then
+    fail "vauban-mailer must define force_create_all_connections"
+fi
+WARM_OFF=$(grep -n 'force_create_all_connections' "$MAILER_MAIN" | head -1 | cut -d: -f1)
+SEAL_OFF=$(grep -n 'setup_service_sandbox_extended' "$MAILER_MAIN" | head -1 | cut -d: -f1)
+if [ -z "$WARM_OFF" ] || [ -z "$SEAL_OFF" ]; then
+    fail "vauban-mailer main must call force_create_all_connections and setup_service_sandbox_extended"
+fi
+if [ "$WARM_OFF" -ge "$SEAL_OFF" ]; then
+    fail "vauban-mailer must force_create_all_connections before setup_service_sandbox_extended"
+fi
+# No Pool::builder after the seal call in main.rs.
+AFTER_SEAL=$(awk "/setup_service_sandbox_extended/{p=1} p" "$MAILER_MAIN")
+if echo "$AFTER_SEAL" | grep -Eq 'Pool::builder'; then
+    fail "vauban-mailer must not build a DB pool after the Capsicum seal"
+fi
+
 # Frozen discriminant pin (shared).
 if ! grep -Eq 'Service::Mailer.as_token_discriminant\(\), 9\)' "$ROOT/shared/src/messages.rs"; then
     fail "shared must pin Service::Mailer discriminant 9"

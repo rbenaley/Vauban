@@ -44,10 +44,10 @@ Suite highlights that must stay green:
 
 | Layer | Examples |
 |-------|----------|
-| Invariants + lint | `evidence_mailer_extract_invariants_test`, both `check_*.sh`, `MAILER_KINDS` |
-| Proptest | `evidence_mailer_extract_proptest`, sandbox `mailer_fd_kinds_disjoint_ok_overlap_rejected` |
-| Battle | `evidence_mailer_extract_battle_test`, `battle_mailer_validate_under_contention` |
-| E2E | `evidence_mailer_extract_e2e_test`, `e2e_mailer_sandbox_wiring_staging_regression` |
+| Invariants + lint | `evidence_mailer_extract_invariants_test`, both `check_*.sh`, `MAILER_KINDS`, `inv_mailer_db_warmup_before_sandbox` |
+| Proptest | `evidence_mailer_extract_proptest`, sandbox `mailer_fd_kinds_disjoint_ok_overlap_rejected`, mailer `force_create_count_is_total_on_dead_url` |
+| Battle | `evidence_mailer_extract_battle_test`, `battle_mailer_validate_under_contention`, `battle_force_create_dead_url_under_contention` |
+| E2E | `evidence_mailer_extract_e2e_test`, `e2e_mailer_sandbox_wiring_staging_regression`, `e2e_mailer_db_warmup_order_staging_regression` |
 | Wire | `Service::Mailer.as_token_discriminant() == 9` |
 
 ## Lab prerequisites
@@ -114,6 +114,24 @@ Regression: before 0.9.36, mailer listed `fd_passing_socket` in both
 Pass: mailer stays up after `Mailer SMTP runtime provisioned`; SMTP
 drain (section C) can proceed.
 
+## C'' -- DB pool pre-open (0.9.36 second mailer lot)
+
+Regression: after the FD-kind seal fix, mailer built the deadpool
+*after* `cap_enter()`, so every 10 s tick logged
+`DB pool error: error connecting to server` while Postgres was up.
+
+1. With Postgres reachable, restart the stack (`[mailer] enabled = true`).
+2. In **vauban-mailer** logs, after `Mailer SMTP runtime provisioned`,
+   expect `Database pool ready (2 connections pre-established)` **before**
+   any drain line.
+3. Confirm there is **no** burst of `error connecting to server` on
+   every poll tick.
+4. Optional: stop Postgres and restart mailer -- expect **exit 1 /
+   supervisor respawn** at boot (warm-up fail), not a live process
+   looping drain errors every 10 s.
+
+Pass: warm-up precedes seal; drain can talk to the pre-opened sockets.
+
 ## D -- Fail-closed
 
 1. Point `[mailer].smtp_host` at a host **not** in the supervisor
@@ -130,7 +148,7 @@ SMTP FD path.
 
 ## E -- Full pass gate
 
-Sections A–D and C' must all Pass before declaring the deploy good.
+Sections A–D, C' and C'' must all Pass before declaring the deploy good.
 
 ## Rollback notes
 

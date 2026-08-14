@@ -105,3 +105,32 @@ fn e2e_mailer_sandbox_wiring_staging_regression() {
     expected.dedup();
     assert_eq!(kinds, expected);
 }
+
+/// Staging FreeBSD 2026-08-14: after the FD-kind fix, mailer sealed then
+/// built the deadpool *after* cap_enter, so every drain tick logged
+/// `error connecting to server`. Boot order must be provision -> runtime
+/// -> force_create -> seal -> dispatcher_loop. Do not enter_sandbox here.
+#[test]
+fn e2e_mailer_db_warmup_order_staging_regression() {
+    let main = include_str!("../../../vauban-mailer/src/main.rs");
+    let body_start = main.find("fn run_service()").expect("run_service");
+    let body = &main[body_start..];
+    let steps = [
+        "wait_for_mailer_provision",
+        "tokio::runtime::Builder",
+        "force_create_all_connections",
+        "setup_service_sandbox_extended",
+        "dispatcher_loop",
+    ];
+    let mut last = 0;
+    for step in steps {
+        let pos = body
+            .find(step)
+            .unwrap_or_else(|| panic!("run_service must contain {step}"));
+        assert!(
+            pos >= last,
+            "{step} must follow previous boot step (staging DB-after-seal regression)"
+        );
+        last = pos;
+    }
+}
