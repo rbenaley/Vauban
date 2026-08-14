@@ -76,9 +76,11 @@ the listening line); CLF request content lives only in the file.
 
 ## B2 -- Access log reopen on SIGHUP (newsyslog)
 
-Production `newsyslog` rotates `/var/log/vcp-access.log` and signals `1`
-(`SIGHUP`) to the pid in `/var/run/vcp/vcp.pid` (process_guard — not a
-parent `daemon -P` pid).
+Production `newsyslog` rotates `/var/log/vcp-access.log` at **1048576**
+KiB (1 GiB) and signals `1` (`SIGHUP`) to the pid in
+`/var/run/vcp/vcp.pid` (process_guard — not a parent `daemon -P` pid).
+The same size threshold applies to `/var/log/vcp.log` and
+`/var/log/vcp-store.log`.
 
 Lab (development):
 

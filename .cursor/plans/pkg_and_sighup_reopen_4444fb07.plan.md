@@ -174,7 +174,7 @@ pkg/
 [`pkg/newsyslog.conf.d/vcp.conf`](pkg/newsyslog.conf.d/vcp.conf):
 
 ```
-/var/log/vcp-access.log  640  20  102400  *  C  /var/run/vcp/vcp.pid  1
+/var/log/vcp-access.log  640  20  1048576  *  C  /var/run/vcp/vcp.pid  1
 ```
 
 Optional companion lines for `daemon -o` logs (`vcp.log`, `vcp-store.log`) with their pidfiles / `N` as appropriate — include both daemon logs with `C` + correct pidfiles for consistency.

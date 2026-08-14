@@ -40,9 +40,11 @@ Pass: both services running; `VCP_CONFIG_DIR` effective via rc.d
 `service vcp status` reports the **daemon supervisor**
 (`/var/run/vcp.pid`, same convention as `/var/run/vcp-store.pid`);
 newsyslog signals `/var/run/vcp/vcp.pid` (process_guard, note the
-subdirectory) for the access log. `service vcp stop` must leave
-`vcp_store` running and must **not** leave a restart storm in
-`/var/log/vcp.log`.
+subdirectory) for the access log. Size-based rotation for
+`/var/log/vcp.log`, `/var/log/vcp-access.log`, and
+`/var/log/vcp-store.log` is **1048576** KiB (1 GiB), count 20, no
+compression. `service vcp stop` must leave `vcp_store` running and
+must **not** leave a restart storm in `/var/log/vcp.log`.
 
 ### A1 -- Database URL password injection
 

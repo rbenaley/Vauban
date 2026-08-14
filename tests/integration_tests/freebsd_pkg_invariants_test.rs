@@ -165,6 +165,11 @@ fn prop_rc_d_and_newsyslog_required_pins() {
             !flags.chars().any(|c| matches!(c, 'Z' | 'J' | 'X' | 'Y')),
             "compression flag in newsyslog line: {line}"
         );
+        assert_eq!(
+            fields.get(4).copied(),
+            Some("1048576"),
+            "newsyslog size must be 1048576 KiB (1 GiB): {line}"
+        );
     }
 }
 

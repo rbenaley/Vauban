@@ -152,6 +152,17 @@ fi
 if grep -nE '[ZJXY]' pkg/newsyslog.conf.d/vcp.conf >/dev/null; then
   fail "newsyslog must not enable compression flags Z/J/X/Y"
 fi
+# Size is kilobytes: 1048576 KiB = 1 GiB for all three live logs.
+for _log in /var/log/vcp-access.log /var/log/vcp.log /var/log/vcp-store.log; do
+  awk -v logfile="${_log}" '
+    $1 == logfile {
+      found = 1
+      if ($5 != "1048576") { bad = 1 }
+    }
+    END { exit (found && !bad) ? 0 : 1 }
+  ' pkg/newsyslog.conf.d/vcp.conf \
+    || fail "newsyslog ${_log} must rotate at 1048576 KiB (1 GiB)"
+done
 
 grep -n 'bin/vcp' pkg/build-pkg.sh >/dev/null \
   || fail "build-pkg.sh must stage bin/vcp"
