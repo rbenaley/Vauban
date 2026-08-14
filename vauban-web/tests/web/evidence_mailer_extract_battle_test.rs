@@ -82,4 +82,23 @@ fn battle_mailer_main_seals_sandbox() {
         main.contains("MailerSmtpProvision") || main.contains("provision"),
         "mailer must wait for SMTP provision before sealing"
     );
+    // REGRESSION staging FreeBSD 2026-08-14: fd_passing must not be in the
+    // first-arg ipc vec of setup_service_sandbox_extended.
+    assert!(
+        !main.contains("vec![ipc_read_fd, ipc_write_fd, fd_passing_socket]"),
+        "fd_passing_socket must not share ipc_fds with IpcPipe rights"
+    );
+    let seal = main
+        .find("setup_service_sandbox_extended")
+        .expect("setup_service_sandbox_extended call");
+    let window_start = seal.saturating_sub(400);
+    let window = &main[window_start..seal.saturating_add(120).min(main.len())];
+    assert!(
+        window.contains("ipc_fds") && window.contains("fd_receiver_fds"),
+        "seal site must use distinct ipc_fds and fd_receiver_fds locals"
+    );
+    assert!(
+        window.contains("&ipc_fds") && !window.contains("&all_fds"),
+        "first arg must be &ipc_fds (pipes only), not a combined all_fds"
+    );
 }

@@ -586,9 +586,40 @@ mod tests {
         let iacs = setup_profile_only(&[3, 4], None, Some(&[5]), Some(&[6]));
         assert_eq!(unique_kinds(&iacs), sorted(profiles::PROXY_IACS_KINDS));
 
+        // mailer: IPC pipes + fd receiver (SMTP broker SCM_RIGHTS). Same
+        // shape as auth/audit/proxy-ssh; fd_passing must not be in ipc_fds.
+        let mailer = setup_profile_only(&[3, 4], None, Some(&[5]), None);
+        assert_eq!(unique_kinds(&mailer), sorted(profiles::MAILER_KINDS));
+
         // web: listener + supervisor fd receiver.
         let web = profiles::web_server(3, Some(4));
         assert_eq!(unique_kinds(&web), sorted(profiles::WEB_KINDS));
+    }
+
+    /// REGRESSION (staging FreeBSD 2026-08-14): vauban-mailer listed
+    /// `fd_passing_socket` in both `ipc_fds` and `fd_receiver_fds`, which
+    /// `validate` rejects before Capsicum (`ConflictingFdRights`). Corrected
+    /// wiring (ipc distinct from receiver) matches `MAILER_KINDS`.
+    #[test]
+    fn mailer_historic_buggy_wiring_rejected_corrected_ok() {
+        use super::profiles;
+
+        let buggy = setup_profile_only(&[3, 4, 5], None, Some(&[5]), None);
+        let err = buggy
+            .validate()
+            .expect_err("mailer historic double-declare must be rejected");
+        assert!(matches!(
+            err,
+            SandboxError::ConflictingFdRights {
+                fd: 5,
+                first: ResourceKind::IpcPipe,
+                second: ResourceKind::FdReceiver,
+            }
+        ));
+
+        let corrected = setup_profile_only(&[3, 4], None, Some(&[5]), None);
+        assert!(corrected.validate().is_ok());
+        assert_eq!(unique_kinds(&corrected), sorted(profiles::MAILER_KINDS));
     }
 
     /// REGRESSION (FreeBSD ENOTCAPABLE crash-loop): vauban-auth used to
@@ -679,5 +710,77 @@ mod tests {
         // Adding a resource strictly grows the profile (never shrinks).
         let grown = empty.clone().listener(3);
         assert!(grown.resources().len() > empty.resources().len());
+    }
+
+    // Property: for any three distinct fds, corrected mailer wiring
+    // validates; overlapping ipc+receiver always yields ConflictingFdRights.
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+
+        #[test]
+        fn mailer_fd_kinds_disjoint_ok_overlap_rejected(
+            a in 3i32..200,
+            b in 3i32..200,
+            c in 3i32..200,
+        ) {
+            proptest::prop_assume!(a != b && a != c && b != c);
+            let ok = setup_profile_only(&[a, b], None, Some(&[c]), None);
+            proptest::prop_assert!(ok.validate().is_ok());
+
+            let overlap_first = setup_profile_only(&[a, b], None, Some(&[a]), None);
+            let Err(SandboxError::ConflictingFdRights {
+                fd,
+                first: ResourceKind::IpcPipe,
+                second: ResourceKind::FdReceiver,
+            }) = overlap_first.validate()
+            else {
+                return Err(proptest::test_runner::TestCaseError::fail(
+                    "expected ConflictingFdRights on overlapping ipc fd a",
+                ));
+            };
+            proptest::prop_assert_eq!(fd, a);
+
+            let overlap_second = setup_profile_only(&[a, b], None, Some(&[b]), None);
+            let Err(SandboxError::ConflictingFdRights {
+                fd,
+                first: ResourceKind::IpcPipe,
+                second: ResourceKind::FdReceiver,
+            }) = overlap_second.validate()
+            else {
+                return Err(proptest::test_runner::TestCaseError::fail(
+                    "expected ConflictingFdRights on overlapping ipc fd b",
+                ));
+            };
+            proptest::prop_assert_eq!(fd, b);
+        }
+    }
+
+    /// Battle: N threads validate corrected vs buggy mailer profiles under
+    /// contention (pure CPU, no kernel sandbox enter).
+    #[test]
+    fn battle_mailer_validate_under_contention() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                let base = 10 + i * 10;
+                let ok = setup_profile_only(&[base, base + 1], None, Some(&[base + 2]), None);
+                assert!(ok.validate().is_ok());
+                let buggy =
+                    setup_profile_only(&[base, base + 1, base + 2], None, Some(&[base + 2]), None);
+                assert!(matches!(
+                    buggy.validate(),
+                    Err(SandboxError::ConflictingFdRights { .. })
+                ));
+            }));
+        }
+        for h in handles {
+            h.join().expect("battle thread");
+        }
     }
 }

@@ -67,6 +67,11 @@ pub const PROXY_IACS_KINDS: &[ResourceKind] = &[
 /// vauban-proxy-rdp: IPC pipes + an SCM_RIGHTS fd receiver.
 pub const PROXY_RDP_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe, ResourceKind::FdReceiver];
 
+/// vauban-mailer: supervisor IPC pipes + an SCM_RIGHTS fd receiver for the
+/// brokered SMTP connected socket. The fd-passing socket MUST NOT also be
+/// declared as an IpcPipe (one fd, one kind).
+pub const MAILER_KINDS: &[ResourceKind] = &[ResourceKind::IpcPipe, ResourceKind::FdReceiver];
+
 /// vauban-web: a pre-bound HTTP listener, plus the supervisor SCM_RIGHTS
 /// fd-passing socket (recording fds, brokered SMTP streams). The web runtime
 /// keeps `cap_enter` as its only FreeBSD wall (no per-fd limiting).
@@ -125,6 +130,7 @@ mod tests {
             PROXY_SSH_KINDS,
             PROXY_IACS_KINDS,
             PROXY_RDP_KINDS,
+            MAILER_KINDS,
             WEB_KINDS,
         ] {
             assert!(!kinds.is_empty());

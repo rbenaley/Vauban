@@ -65,8 +65,9 @@ cp -R "${PROJECT_ROOT}/vauban-db/migrations/"* "${STAGING}/usr/local/share/vauba
 install -m 555 "${SCRIPT_DIR}/rc.d/vauban" "${STAGING}/usr/local/etc/rc.d/vauban"
 
 # newsyslog(8) rotation policy for the daemon(8) log (/var/log/vauban.log,
-# pidfile /var/run/vauban.pid -- see pkg/rc.d/vauban). Dropped into the
-# base newsyslog include dir so rotation is active out of the box.
+# pidfile /var/run/vauban.pid -- see pkg/rc.d/vauban). Size threshold is
+# 1048576 KiB (1 GiB). Dropped into the base newsyslog include dir so
+# rotation is active out of the box.
 install -m 644 "${SCRIPT_DIR}/newsyslog.conf.d/vauban.conf" \
     "${STAGING}/usr/local/etc/newsyslog.conf.d/vauban.conf"
 

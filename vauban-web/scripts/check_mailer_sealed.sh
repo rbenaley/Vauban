@@ -39,11 +39,29 @@ fi
 if ! grep -Eq 'setup_service_sandbox_extended' "$MAILER_MAIN"; then
     fail "vauban-mailer must enter Capsicum sandbox"
 fi
+# REGRESSION (FreeBSD ConflictingFdRights crash-loop): fd_passing_socket must
+# NOT appear in the ipc_fds vec passed as the first argument.
+if grep -Eq 'vec!\[ipc_read_fd, ipc_write_fd, fd_passing_socket\]' "$MAILER_MAIN"; then
+    fail "vauban-mailer must not list fd_passing_socket in ipc_fds (one fd, one kind)"
+fi
+if ! grep -Eq 'let ipc_fds = vec!\[ipc_read_fd, ipc_write_fd\]' "$MAILER_MAIN"; then
+    fail "vauban-mailer ipc_fds must be supervisor read/write pipes only"
+fi
+if ! grep -Eq 'fd_receiver_fds.*fd_passing_socket|Some\(vec!\[fd_passing_socket\]\)' "$MAILER_MAIN"; then
+    fail "vauban-mailer must declare fd_passing_socket as fd_receiver only"
+fi
+if ! grep -Eq 'one fd, one kind' "$MAILER_MAIN"; then
+    fail "vauban-mailer must document one-fd-one-kind invariant at seal site"
+fi
 if ! grep -REq --include='*.rs' 'MailerSmtpProvision|wait_for_mailer_provision' "$ROOT/vauban-mailer/src"; then
     fail "vauban-mailer must wait for MailerSmtpProvision"
 fi
 if ! grep -REq --include='*.rs' 'target_service: Service::Mailer' "$ROOT/vauban-mailer/src"; then
     fail "vauban-mailer broker must use Service::Mailer"
+fi
+# Catalogue drift: MAILER_KINDS must exist in shared sandbox profiles.
+if ! grep -Eq 'pub const MAILER_KINDS' "$ROOT/shared/src/sandbox/profiles.rs"; then
+    fail "shared sandbox profiles must define MAILER_KINDS"
 fi
 
 # Frozen discriminant pin (shared).

@@ -70,10 +70,15 @@ fn run_service() -> Result<()> {
         "Mailer SMTP runtime provisioned"
     );
 
-    let all_fds = vec![ipc_read_fd, ipc_write_fd, fd_passing_socket];
-    let fd_receiver_fds = Some(vec![fd_passing_socket]);
+    // The fd_passing socket only ever receives fds via SCM_RIGHTS (recvmsg):
+    // declare it as a dedicated fd-receiver so Capsicum narrows it to
+    // fd_receiver_socket rights (no write). It MUST NOT also appear in
+    // `ipc_fds` (one fd, one kind) -- the historic bug of listing it in both
+    // crash-looped vauban-mailer on FreeBSD with ConflictingFdRights.
+    let ipc_fds = vec![ipc_read_fd, ipc_write_fd];
+    let fd_receiver_fds: Option<Vec<RawFd>> = Some(vec![fd_passing_socket]);
     let _sealed =
-        capsicum::setup_service_sandbox_extended(&all_fds, None, fd_receiver_fds.as_deref())
+        capsicum::setup_service_sandbox_extended(&ipc_fds, None, fd_receiver_fds.as_deref())
             .context("Failed to setup sandbox")?;
 
     let manager =

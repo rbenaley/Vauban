@@ -94,6 +94,44 @@ fn inv_mailer_crate_targets_service_mailer() {
 }
 
 #[test]
+fn inv_mailer_fd_passing_not_in_ipc_vec() {
+    let main = include_str!("../../../vauban-mailer/src/main.rs");
+    assert!(
+        !main.contains("vec![ipc_read_fd, ipc_write_fd, fd_passing_socket]"),
+        "fd_passing_socket must not appear in ipc_fds (ConflictingFdRights)"
+    );
+    assert!(
+        main.contains("let ipc_fds = vec![ipc_read_fd, ipc_write_fd]"),
+        "ipc_fds must be supervisor pipes only"
+    );
+    assert!(
+        main.contains("one fd, one kind"),
+        "mailer main must document one-fd-one-kind at seal site"
+    );
+    assert!(
+        main.contains("fd_passing_socket")
+            && main.contains("fd_receiver_fds")
+            && main.contains("setup_service_sandbox_extended(&ipc_fds"),
+        "fd_passing must be declared via fd_receiver_fds only"
+    );
+}
+
+#[test]
+fn inv_mailer_kinds_catalogue_exists() {
+    let profiles = include_str!("../../../shared/src/sandbox/profiles.rs");
+    assert!(
+        profiles.contains("pub const MAILER_KINDS"),
+        "shared sandbox profiles must define MAILER_KINDS"
+    );
+    assert!(
+        profiles.contains("MAILER_KINDS")
+            && profiles.contains("ResourceKind::IpcPipe")
+            && profiles.contains("ResourceKind::FdReceiver"),
+        "MAILER_KINDS must be IpcPipe + FdReceiver"
+    );
+}
+
+#[test]
 fn inv_production_mailer_uid_gid_is_909() {
     let conf =
         std::fs::read_to_string(repo_root().join("config/vauban.conf")).expect("vauban.conf");

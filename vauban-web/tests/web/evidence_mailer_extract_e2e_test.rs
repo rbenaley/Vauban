@@ -65,3 +65,43 @@ async fn e2e_inspect_analyzer_reachable_via_web_reexport() {
         "empty buffer must fail parse (analyzer wired)"
     );
 }
+
+/// Staging FreeBSD 2026-08-14 regression: mailer crash-looped because
+/// `fd_passing_socket` was declared as both IpcPipe and FdReceiver.
+///
+/// The buggy profile must fail in `enter_sandbox` at the portable
+/// `validate()` step (before any kernel Capsicum/Landlock call). The
+/// corrected profile must match `MAILER_KINDS` -- we deliberately do
+/// NOT call `enter_sandbox` on the success path here: a successful
+/// seal is irreversible and would confine the whole `integration_tests`
+/// process on FreeBSD/Linux CI.
+#[test]
+fn e2e_mailer_sandbox_wiring_staging_regression() {
+    use shared::sandbox::{SandboxError, SandboxProfile, enter_sandbox, profiles};
+
+    // Historic buggy mailer main: ipc_fds included fd_passing.
+    let buggy = SandboxProfile::new()
+        .ipc_pipes(&[10, 11, 12])
+        .fd_receiver(12);
+    let err = enter_sandbox(buggy).expect_err("buggy mailer wiring must fail-closed");
+    assert!(
+        matches!(
+            err,
+            SandboxError::ConflictingFdRights {
+                fd: 12,
+                first: profiles::ResourceKind::IpcPipe,
+                second: profiles::ResourceKind::FdReceiver,
+            }
+        ),
+        "expected ConflictingFdRights, got {err:?}"
+    );
+
+    // Corrected wiring (0.9.36+): ipc pipes distinct from fd_receiver.
+    let corrected = SandboxProfile::new().ipc_pipes(&[10, 11]).fd_receiver(12);
+    let mut kinds = corrected.kinds();
+    kinds.dedup();
+    let mut expected = profiles::MAILER_KINDS.to_vec();
+    expected.sort_unstable();
+    expected.dedup();
+    assert_eq!(kinds, expected);
+}
