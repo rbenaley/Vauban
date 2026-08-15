@@ -521,14 +521,13 @@ pub(crate) async fn load_access_posture(db_pool: &DbPool) -> AccessPosture {
         .unwrap_or(0);
     // SCOPE: the MFA posture counts the real account population the
     // admin sees on /users, i.e. every NON-deleted, NON-service user
-    // (active AND inactive). Filtering on `is_active` alone was wrong on
-    // two counts: (a) the soft-delete handler sets `is_deleted = true`
-    // but leaves `is_active = true`, so deleted users kept inflating the
-    // numerator/denominator; (b) inactive non-deleted users were silently
-    // dropped from the denominator, diverging from the /users total.
-    // Service accounts authenticate via API keys, never MFA, so they are
-    // excluded. Mirrors the `is_deleted = false` convention already used
-    // by `services::anomalies::mfa_stale_users`.
+    // (active AND inactive). Filtering on `is_active` alone was wrong:
+    // inactive non-deleted users were dropped from the denominator.
+    // Delete now also sets `is_active = false` (CHECK
+    // `users_tombstone_is_inactive`), but the posture MUST still filter
+    // `is_deleted = false` so a tombstone never re-enters the count.
+    // Service accounts authenticate via API keys, never MFA, so they
+    // are excluded.
     let mfa_on: i64 = users::table
         .filter(users::is_deleted.eq(false))
         .filter(users::is_service_account.eq(false))

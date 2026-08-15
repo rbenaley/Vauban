@@ -139,6 +139,7 @@ async fn set_deleted(pool: &TestPool, user_id: i32, deleted: bool) {
     diesel::update(users::table.filter(users::id.eq(user_id)))
         .set((
             users::is_deleted.eq(deleted),
+            users::is_active.eq(!deleted),
             users::deleted_at.eq(deleted.then(chrono::Utc::now)),
         ))
         .execute(&mut conn)

@@ -7433,11 +7433,19 @@ async fn test_sec07_deactivated_user_cannot_ssh() {
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
+    let status = response.status_code().as_u16();
     let body = response.text();
+    let bounced_to_login = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|loc| loc.starts_with("/login"));
     assert!(
-        body.contains("deactivated"),
-        "SEC-07: deactivated user should not be able to SSH: {}",
-        body
+        status == 401
+            || bounced_to_login
+            || body.contains("deactivated")
+            || body.contains("Authentication required"),
+        "SEC-07: deactivated user should not be able to SSH (got {status}): {body}"
     );
 
     test_db::cleanup(&mut conn).await;
@@ -7475,16 +7483,23 @@ async fn test_sec07_deactivated_user_cannot_rdp() {
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
-    // RDP handler returns the error via HX-Trigger header (toast notification)
+    // Fail-closed session middleware denies an unusable owner before
+    // the RDP handler (no HX-Trigger). The handler-level
+    // ACCOUNT_DEACTIVATED_MSG toast remains defence-in-depth.
+    let status = response.status_code().as_u16();
     let trigger = response
         .headers()
         .get("HX-Trigger")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
+    let bounced_to_login = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|loc| loc.starts_with("/login"));
     assert!(
-        trigger.contains("deactivated"),
-        "SEC-07: deactivated user should not be able to RDP. HX-Trigger: {}",
-        trigger
+        status == 401 || bounced_to_login || trigger.contains("deactivated"),
+        "SEC-07: deactivated user should not be able to RDP (got {status}). HX-Trigger: {trigger}"
     );
 
     test_db::cleanup(&mut conn).await;

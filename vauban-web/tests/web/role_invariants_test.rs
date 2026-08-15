@@ -54,7 +54,9 @@ use uuid::Uuid;
 use vauban_web::models::user::AuthSource;
 use vauban_web::schema::users;
 use vauban_web::services::auth::AuthService;
-use vauban_web::services::role_invariants::RoleViolation;
+use vauban_web::services::role_invariants::{
+    ChangeIntent, CheckError, RoleSnapshot, RoleViolation, check_last_active_superuser,
+};
 
 // =============================================================================
 // Helpers
@@ -278,6 +280,55 @@ async fn follow_redirect_and_read(
         .add_header(COOKIE, format!("access_token={}; {}", token, flash_cookie))
         .await;
     detail.text()
+}
+
+/// Surface C: a cookie whose owner is no longer usable (`!is_active`
+/// or `is_deleted`) is denied at the session middleware. The last-
+/// superuser web tests used to deactivate the operator after minting
+/// the JWT so the fence could fire with `operator != target`; that
+/// setup now bounces to `/login` with no flash (the mutation never
+/// runs). The fence itself is asserted via
+/// [`check_last_active_superuser`] on the same rows.
+fn assert_unusable_operator_bounced_to_login(response: &axum_test::TestResponse) {
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "unusable operator must be redirected, got {status}"
+    );
+    let location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        location.starts_with("/login"),
+        "unusable operator must bounce to /login, got {location}"
+    );
+    assert!(
+        extract_flash_cookie(response).is_none(),
+        "login bounce must not carry a mutation flash"
+    );
+}
+
+async fn assert_deactivate_fence_fires(app: &TestApp, target_id: i32) {
+    let mut conn = app.get_conn().await;
+    let before = RoleSnapshot {
+        is_superuser: true,
+        is_staff: true,
+        is_active: true,
+        is_deleted: false,
+    };
+    let result =
+        check_last_active_superuser(&mut conn, target_id, &before, ChangeIntent::Deactivate).await;
+    assert!(
+        matches!(
+            result,
+            Err(CheckError::Violation(
+                RoleViolation::LastActiveSuperuserDeactivate
+            ))
+        ),
+        "last-active-superuser deactivate fence must fire; got {result:?}"
+    );
 }
 
 /// Deactivate every other active superuser so the target row becomes
@@ -609,24 +660,17 @@ async fn cannot_deactivate_last_active_superuser_via_web() {
     let target_stored_username = get_username(&mut conn, target_id).await;
     let target_email = get_email(&mut conn, target_id).await;
 
-    // Generate the operator's auth token BEFORE deactivating them.
-    // The auth middleware does not re-check `is_active` on every
-    // request (it only validates JWT + session existence), so an
-    // operator whose row is later flipped to inactive can still drive
-    // a request -- which is exactly the configuration required to
-    // reach the count-fence with `operator != target`. If we generated
-    // the token *after* the isolate, that would still work today, but
-    // pinning the order makes the intent explicit and is robust to
-    // future hardening of the middleware.
+    // Token minted while the operator is still usable. Isolation then
+    // deactivates every other superuser (including the operator) so
+    // `target` is the unique active superuser. Surface C denies that
+    // cookie on the next request -- the web form never runs -- and
+    // the fence is asserted on the same rows (inactive operator does
+    // not count). The JSON API twin still hits the fence over HTTP
+    // with a staff `users:write` operator.
     let token = app
         .generate_test_token(&op_uuid.to_string(), &op_stored_username, true, true)
         .await;
 
-    // Make `target` the unique active superuser. The operator gets
-    // flipped to inactive by the helper -- intentionally so, because
-    // it is the only way the fence's "OTHER active superuser" count
-    // can return zero with `operator != target` (the operator itself
-    // would otherwise be counted as the saving second superuser).
     let (touched, when) = isolate_as_only_active_superuser(&mut conn, target_id).await;
     let before = read_snapshot(&mut conn, target_id).await;
     let csrf = app.generate_csrf_token();
@@ -645,12 +689,8 @@ async fn cannot_deactivate_last_active_superuser_via_web() {
     )
     .await;
 
-    let body = follow_redirect_and_read(app, response, &token).await;
-    assert!(
-        body.contains(RoleViolation::LastActiveSuperuserDeactivate.flash_message()),
-        "must surface LastActiveSuperuserDeactivate flash; got: {}",
-        &body[..body.len().min(800)]
-    );
+    assert_unusable_operator_bounced_to_login(&response);
+    assert_deactivate_fence_fires(app, target_id).await;
 
     let after = snapshot_via_pool(app, target_id).await;
     assert_eq!(after, before, "target must remain active");
@@ -810,9 +850,10 @@ async fn inactive_superuser_does_not_count_toward_minimum() {
             .await
     );
 
-    // Token issued BEFORE the isolation step; auth middleware does
-    // not re-check `is_active`, so an operator whose row is then
-    // flipped to inactive can still drive this request.
+    // Token issued before isolation. The operator is then deactivated
+    // with every other superuser; Surface C denies the cookie. The
+    // inactive ghost must still not save the count -- asserted on
+    // `check_last_active_superuser` (same query the handler uses).
     let token = app
         .generate_test_token(&op_uuid.to_string(), &op_stored_username, true, true)
         .await;
@@ -835,13 +876,8 @@ async fn inactive_superuser_does_not_count_toward_minimum() {
     )
     .await;
 
-    let body = follow_redirect_and_read(app, response, &token).await;
-    assert!(
-        body.contains(RoleViolation::LastActiveSuperuserDeactivate.flash_message()),
-        "the inactive ghost superuser must NOT count -- the fence MUST fire; \
-         got body: {}",
-        &body[..body.len().min(800)]
-    );
+    assert_unusable_operator_bounced_to_login(&response);
+    assert_deactivate_fence_fires(app, target_id).await;
 
     let after = snapshot_via_pool(app, target_id).await;
     assert_eq!(after, before, "target must remain active");
@@ -874,7 +910,7 @@ async fn soft_deleted_superuser_does_not_count() {
     let ghost_id = create_simple_admin_user(&mut conn, &ghost_username).await;
     unwrap_ok!(
         diesel::update(users::table.filter(users::id.eq(ghost_id)))
-            .set(users::is_deleted.eq(true))
+            .set((users::is_deleted.eq(true), users::is_active.eq(false)))
             .execute(&mut conn)
             .await
     );
@@ -901,13 +937,8 @@ async fn soft_deleted_superuser_does_not_count() {
     )
     .await;
 
-    let body = follow_redirect_and_read(app, response, &token).await;
-    assert!(
-        body.contains(RoleViolation::LastActiveSuperuserDeactivate.flash_message()),
-        "the soft-deleted ghost superuser must NOT count -- the fence MUST fire; \
-         got body: {}",
-        &body[..body.len().min(800)]
-    );
+    assert_unusable_operator_bounced_to_login(&response);
+    assert_deactivate_fence_fires(app, target_id).await;
 
     let after = snapshot_via_pool(app, target_id).await;
     assert_eq!(after, before, "target must remain active");

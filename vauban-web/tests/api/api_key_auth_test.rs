@@ -303,6 +303,38 @@ async fn deactivated_owner_disables_key() {
     test_db::cleanup(&mut conn).await;
 }
 
+/// A key whose owner is a tombstone (`is_deleted`, and therefore
+/// `is_active=false` under CHECK `users_tombstone_is_inactive`) is
+/// rejected with 401.
+#[tokio::test]
+#[serial]
+async fn tombstone_owner_disables_key() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user = create_test_user(&mut conn, &app.auth_service, &unique_name("apikey_tomb")).await;
+    let (_uuid, raw_key) =
+        create_real_api_key(&mut conn, user.user.id, &[ApiKeyScope::Read], None).await;
+
+    {
+        use vauban_web::schema::users;
+        diesel::update(users::table.filter(users::id.eq(user.user.id)))
+            .set((users::is_active.eq(false), users::is_deleted.eq(true)))
+            .execute(&mut conn)
+            .await
+            .expect("tombstone owner");
+    }
+
+    let response = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.api_key_header(&raw_key))
+        .await;
+    assert_status(&response, 401);
+
+    test_db::cleanup(&mut conn).await;
+}
+
 // =============================================================================
 // INV-1: M2M-only (both directions)
 // =============================================================================

@@ -985,7 +985,7 @@ pub struct LoginPageQuery {
 fn is_canonical_login_reason(reason: &str) -> bool {
     matches!(
         reason,
-        "session_expired" | "session_revoked" | "account_deactivated"
+        "session_expired" | "session_revoked" | "account_deactivated" | "account_deleted"
     )
 }
 

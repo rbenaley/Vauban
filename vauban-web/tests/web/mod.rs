@@ -150,6 +150,8 @@ pub mod timezone_e2e_test;
 pub mod timezone_lints_test;
 pub mod timezone_snippet_test;
 pub mod user_edit_test;
+pub mod user_status_e2e_test;
+pub mod user_status_invariants_test;
 pub mod users_email_shared_e2e_test;
 pub mod vault_secrets_crud_web_test;
 pub mod vault_secrets_pins_test;

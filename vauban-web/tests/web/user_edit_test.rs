@@ -123,6 +123,29 @@ async fn read_is_deleted(app: &TestApp, user_id: i32) -> bool {
     )
 }
 
+async fn read_is_active(app: &TestApp, user_id: i32) -> bool {
+    let mut conn = app.get_conn().await;
+    unwrap_ok!(
+        users::table
+            .filter(users::id.eq(user_id))
+            .select(users::is_active)
+            .first(&mut conn)
+            .await
+    )
+}
+
+async fn count_auth_sessions(app: &TestApp, user_id: i32) -> i64 {
+    use vauban_web::schema::auth_sessions;
+    let mut conn = app.get_conn().await;
+    unwrap_ok!(
+        auth_sessions::table
+            .filter(auth_sessions::user_id.eq(user_id))
+            .count()
+            .get_result(&mut conn)
+            .await
+    )
+}
+
 /// Extract the signed `__vauban_flash` cookie (name=value, no attributes)
 /// from a response so it can be replayed on the follow-up GET.
 fn extract_flash_cookie(response: &axum_test::TestResponse) -> Option<String> {
@@ -1913,6 +1936,18 @@ async fn test_delete_user_with_correct_totp_succeeds() {
     let csrf = app.generate_csrf_token();
     drop(conn);
 
+    let target_name = {
+        let mut conn = app.get_conn().await;
+        get_username(&mut conn, target_id).await
+    };
+    let _target_token = app
+        .generate_test_token(&target_uuid.to_string(), &target_name, false, false)
+        .await;
+    assert!(
+        count_auth_sessions(app, target_id).await >= 1,
+        "precondition: target must have a login session"
+    );
+
     let totp = current_totp_code(&mfa_secret);
     let response = post_delete_user(app, target_uuid, &token, &csrf, Some(&totp)).await;
     let status = response.status_code().as_u16();
@@ -1932,6 +1967,15 @@ async fn test_delete_user_with_correct_totp_succeeds() {
     assert!(
         read_is_deleted(app, target_id).await,
         "target user MUST be soft-deleted"
+    );
+    assert!(
+        !read_is_active(app, target_id).await,
+        "soft-delete MUST also set is_active=false"
+    );
+    assert_eq!(
+        count_auth_sessions(app, target_id).await,
+        0,
+        "delete MUST revoke the target login sessions"
     );
 }
 

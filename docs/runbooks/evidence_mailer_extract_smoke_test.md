@@ -33,6 +33,7 @@ rtk cargo fmt --all -- --check
 rtk cargo clippy -p vauban-web-evidence -p vauban-mailer -p vauban-web -p vauban-supervisor -p shared --all-targets -- -D warnings
 bash vauban-web/scripts/check_web_evidence_crate.sh
 bash vauban-web/scripts/check_mailer_sealed.sh
+bash vauban-web/scripts/check_users_usable_filters.sh
 rtk cargo test -p shared -- sandbox -- --test-threads=1
 rtk cargo test -p vauban-web-evidence -p vauban-mailer -p vauban-web -p vauban-supervisor -- evidence_mailer -- --test-threads=1
 # hand-off:
@@ -97,9 +98,15 @@ Pass: hydrate completes; WS `recording_hydrated` still updates UI.
    mailbox (`alice <a@x>, bob <b@x>`), not N `Email queued` INFO lines.
 5. In **vauban-mailer** logs, a successful batch is **one**
    `Mailer drain: processed batch` line with `detail="sent [kind -> who; ...]"`.
+6. Recipients of `access_request.submitted` / `iacs.onboard_submitted`
+   must be **staff ∪ superuser who are usable** (`is_active` and not
+   `is_deleted`). Confirm no mailbox / username matches `*_deleted_*`
+   (tombstones). After a user delete: `is_active=false`, no remaining
+   `auth_sessions`, and that account is absent from the next fan-out.
 
 Pass: mail delivered (or accepted by lab relay); drain is mailer-only;
-queue/drain logs stay one line per batch.
+queue/drain logs stay one line per batch; only living staff/superuser
+mailboxes are queued.
 
 ## C''' -- Wrong mailbox is visible (SMTP 5xx)
 
@@ -125,6 +132,25 @@ not the SMTP drain. This section only covers synchronous 4xx/5xx.
 
 Pass: bad mailbox is `failed` + one error line; good recipients in
 the same batch still go out.
+
+## C'''' -- Tombstone cookie and API key are dead
+
+Regression: a soft-deleted account used to keep `is_active=true` and
+a live login cookie / API key, and still received JIT/IACS approval
+mail (suffixed `*_deleted_*` mailboxes → TEM `501`).
+
+1. While user U is logged in (browser cookie) and holds an API key,
+   delete U from **Accounts → Users** (step-up TOTP).
+2. Confirm the row is `is_deleted=true` **and** `is_active=false`.
+3. The next HTML request with U's cookie must 303 `/login` (banner
+   `account_deleted` if the WS force-logout landed; otherwise the
+   session row is already gone).
+4. The next `/api/v1/*` call with U's key must be **401**.
+5. Submit a new JIT (or IACS onboard) request: U must **not** appear
+   in `Emails queued`.
+
+Pass: delete disables the account, kills cookie + API key immediately,
+and removes U from the approval pool.
 
 ## C' -- Capsicum seal (0.9.36+ / staging FreeBSD regression)
 
@@ -179,7 +205,7 @@ SMTP FD path.
 
 ## E -- Full pass gate
 
-Sections A–D, C', C'' and C''' must all Pass before declaring the deploy good.
+Sections A–D, C', C'', C''' and C'''' must all Pass before declaring the deploy good.
 
 ## Rollback notes
 

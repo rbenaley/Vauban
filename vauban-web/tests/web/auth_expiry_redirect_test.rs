@@ -28,7 +28,12 @@ const LOGIN_HTML: &str = include_str!("../../templates/accounts/login.html");
 /// real navigation to `/login?reason=<reason>` for each canonical reason.
 #[test]
 fn force_logout_oob_contains_canonical_redirect_for_each_reason() {
-    for reason in ["session_revoked", "account_deactivated", "session_expired"] {
+    for reason in [
+        "session_revoked",
+        "account_deactivated",
+        "account_deleted",
+        "session_expired",
+    ] {
         let html = force_logout_oob(reason);
         assert!(
             html.contains(r#"id="force-logout""#),
@@ -201,6 +206,7 @@ fn login_page_renders_banner_for_every_reason() {
     for reason in [
         "session_revoked",
         "account_deactivated",
+        "account_deleted",
         "session_expired",
         "role_changed",
         "password_changed",

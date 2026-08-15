@@ -40,6 +40,7 @@ pub mod session_revocation;
 pub mod session_termination;
 pub mod status_vocab;
 pub mod system_health;
+pub mod user_status;
 pub mod vault_provenance;
 pub mod virtual_group;
 

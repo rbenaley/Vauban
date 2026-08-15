@@ -369,7 +369,13 @@ pub async fn update_user(
     // SERIALIZABLE tx to bound its lock window.
     if let Some(new_active) = new_is_active {
         if old_is_active && !new_active {
-            crate::handlers::web::deactivate_user(&state, target_user_id, &user_uuid_str).await;
+            crate::handlers::web::deactivate_user(
+                &state,
+                target_user_id,
+                &user_uuid_str,
+                "account_deactivated",
+            )
+            .await;
         } else if !old_is_active && new_active {
             crate::handlers::web::reactivate_user(&state, target_user_id).await;
         }

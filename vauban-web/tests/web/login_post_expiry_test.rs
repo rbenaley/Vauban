@@ -208,7 +208,12 @@ async fn login_after_session_expired_redirect_succeeds_without_manual_reload() {
 async fn login_page_with_reason_rotates_csrf() {
     let app = TestApp::spawn().await;
 
-    for reason in ["session_expired", "session_revoked", "account_deactivated"] {
+    for reason in [
+        "session_expired",
+        "session_revoked",
+        "account_deactivated",
+        "account_deleted",
+    ] {
         let old = app.generate_csrf_token();
         let page = app
             .server

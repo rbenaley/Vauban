@@ -275,6 +275,14 @@ impl User {
             false
         }
     }
+
+    /// Account may act: enabled and not a tombstone.
+    ///
+    /// Keep in lock-step with every `users::is_active.eq(true)` query,
+    /// which MUST also carry `users::is_deleted.eq(false)`.
+    pub fn is_usable(&self) -> bool {
+        crate::services::user_status::is_usable(self.is_active, self.is_deleted)
+    }
 }
 
 /// User creation request.
@@ -354,6 +362,17 @@ mod tests {
             deleted_at: None,
             last_totp_used_window: None,
         }
+    }
+
+    #[test]
+    fn test_user_is_usable_follows_active_and_not_deleted() {
+        let mut u = create_test_user();
+        assert!(u.is_usable());
+        u.is_active = false;
+        assert!(!u.is_usable());
+        u.is_active = true;
+        u.is_deleted = true;
+        assert!(!u.is_usable());
     }
 
     // ==================== AuthSource Tests ====================

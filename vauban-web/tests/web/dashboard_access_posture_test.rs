@@ -5,9 +5,10 @@
 //! a population inconsistent with `/users`:
 //!
 //! - PROD: "6/6" while only 2 users exist -- soft-deleted users were
-//!   still counted because the soft-delete handler leaves
-//!   `is_active = true` and `load_access_posture` only filtered on
-//!   `is_active`, never on `is_deleted`.
+//!   still counted because an older delete path left `is_active = true`
+//!   and `load_access_posture` only filtered on `is_active`, never on
+//!   `is_deleted`. Delete now sets both flags; the posture still
+//!   filters `is_deleted`.
 //! - INTEGRATION: "10/21" while 24 users exist -- inactive (non-deleted)
 //!   users were silently dropped from the denominator.
 //!
@@ -145,12 +146,13 @@ async fn insert_user(
 }
 
 /// Soft-delete a user the same way the production handler does: set
-/// `is_deleted = true` / `deleted_at` WITHOUT touching `is_active`.
+/// `is_deleted = true`, `is_active = false`, and `deleted_at`.
 async fn soft_delete(conn: &mut AsyncPgConnection, user_id: i32) {
     unwrap_ok!(
         diesel::update(users::table.filter(users::id.eq(user_id)))
             .set((
                 users::is_deleted.eq(true),
+                users::is_active.eq(false),
                 users::deleted_at.eq(chrono::Utc::now()),
             ))
             .execute(conn)
@@ -241,24 +243,15 @@ async fn mfa_posture_counts_non_deleted_non_service_users() {
          and the denominator (active+inactive perimeter)"
     );
 
-    // 2. Soft-deleted + MFA-on. The delete handler leaves is_active=true,
-    //    so this is exactly the production inflation case; it MUST NOT
-    //    move either count.
-    let doomed = insert_user(
-        &mut conn,
-        &unique_name("ap_deleted_mfa"),
-        true, // is_active (stays true through soft-delete, like prod)
-        false,
-        true,
-    )
-    .await;
+    // 2. Soft-deleted + MFA-on. Must not move either count: posture
+    //    filters `is_deleted = false` (delete also clears is_active).
+    let doomed = insert_user(&mut conn, &unique_name("ap_deleted_mfa"), true, false, true).await;
     soft_delete(&mut conn, doomed.id).await;
     let (on2, total2) = read_posture(app, &token).await;
     assert_eq!(
         (on2, total2),
         (on1, total1),
-        "a SOFT-DELETED user MUST NOT be counted (this is the '6/6 while \
-         only 2 users' production bug: deleted users keep is_active=true)"
+        "a SOFT-DELETED user MUST NOT be counted"
     );
 
     // 3. Service account + MFA-on. Excluded from the posture.

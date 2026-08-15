@@ -528,6 +528,7 @@ async fn soft_delete_user_raw(app: &TestApp, user_id: i32) {
     diesel::update(users::table.filter(users::id.eq(user_id)))
         .set((
             users::is_deleted.eq(true),
+            users::is_active.eq(false),
             users::deleted_at.eq(chrono::Utc::now()),
         ))
         .execute(&mut conn)

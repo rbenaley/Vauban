@@ -654,11 +654,12 @@ pub async fn iacs_offboard_self(
 }
 
 // ===================================================================
-// Mailer hook: notify superusers on submit
+// Mailer hook: notify usable staff ∪ superuser on submit
 // ===================================================================
 
-/// Queue one `iacs.onboard_submitted` email per active superuser.
-/// Best-effort, mirrors `queue_submitted_emails` for JIT.
+/// Queue one `iacs.onboard_submitted` email per usable staff or
+/// superuser (`load_approver_contacts`). Best-effort, mirrors
+/// `queue_submitted_emails` for JIT.
 async fn queue_iacs_onboard_submitted_emails(
     state: &AppState,
     request_uuid: &str,
@@ -667,18 +668,13 @@ async fn queue_iacs_onboard_submitted_emails(
     fingerprint: &str,
     justification: &str,
 ) -> Result<(), String> {
-    use crate::schema::users;
     use crate::services::mailer::{
         EmailEvent, EmailRecipient, IacsOnboardSubmittedEvent, deterministic_event_id,
     };
+    use crate::services::user_status::load_approver_contacts;
 
     let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
-    let approver_emails: Vec<(String, String)> = users::table
-        .filter(users::is_active.eq(true))
-        .filter(users::is_superuser.eq(true))
-        .filter(users::email.ne(""))
-        .select((users::email, users::username))
-        .load(&mut conn)
+    let approver_emails = load_approver_contacts(&mut conn)
         .await
         .map_err(|e| format!("approver lookup: {}", e))?;
     drop(conn);
@@ -1887,6 +1883,8 @@ async fn queue_iacs_decision_email(
     let row: Option<(String, String, String, String)> = r::table
         .inner_join(users::table.on(users::id.eq(r::user_id)))
         .filter(r::uuid.eq(*request_uuid))
+        .filter(users::is_active.eq(true))
+        .filter(users::is_deleted.eq(false))
         .filter(users::email.ne(""))
         .select((
             users::email,
@@ -1983,6 +1981,8 @@ async fn queue_iacs_offboarded_email(
     let row: Option<(String, String, String, String)> = ews::table
         .inner_join(users::table.on(users::id.eq(ews::user_id)))
         .filter(ews::uuid.eq(*ews_uuid))
+        .filter(users::is_active.eq(true))
+        .filter(users::is_deleted.eq(false))
         .filter(users::email.ne(""))
         .select((
             users::email,

@@ -1290,7 +1290,7 @@ pub async fn update_user_web(
             // correctness benefit (the tx already committed when we
             // get here).
             if old_is_active && !is_active {
-                deactivate_user(&state, user_id, &user_uuid).await;
+                deactivate_user(&state, user_id, &user_uuid, "account_deactivated").await;
             } else if !old_is_active && is_active {
                 reactivate_user(&state, user_id).await;
             }
@@ -1595,6 +1595,7 @@ pub async fn delete_user_web(
             diesel::update(users::table.filter(users::id.eq(in_tx_id)))
                 .set((
                     users::is_deleted.eq(true),
+                    users::is_active.eq(false),
                     users::deleted_at.eq(now),
                     users::updated_at.eq(now),
                     users::username.eq(format!("{}{}", current_username, suffix)),
@@ -1608,10 +1609,9 @@ pub async fn delete_user_web(
     })
     .await;
 
-    let _ = user_id; // user_id was only needed for permission gating above
-
     match tx_outcome {
         Ok(true) => {
+            deactivate_user(&state, user_id, &user_uuid, "account_deleted").await;
             // Audit: user deletion is destructive -> critical (durable ack).
             if let Err(e) = crate::services::emit_audit_critical(
                 &state,
@@ -2795,7 +2795,12 @@ pub async fn admin_user_sessions(
 /// disables API keys, force-logs out all browser sessions via WebSocket,
 /// and broadcasts updates to session pages.
 // allow-ungated: not a routed handler; internal helper invoked after the users:write gate of update_user_web
-pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
+pub async fn deactivate_user(
+    state: &AppState,
+    user_id: i32,
+    user_uuid: &str,
+    reason: &'static str,
+) {
     use crate::models::session::{ProxySession, SessionStatus};
 
     let mut conn = match state.db_pool.get().await {
@@ -2807,11 +2812,7 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
     //    WebSocket (shared revocation seam, also used on role change and
     //    password rotation).
     crate::services::session_revocation::revoke_auth_sessions(
-        state,
-        user_id,
-        user_uuid,
-        None,
-        "account_deactivated",
+        state, user_id, user_uuid, None, reason,
     )
     .await;
 
@@ -2829,12 +2830,9 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
         .unwrap_or_default();
 
     for session in &active_sessions {
-        if let Err(e) = crate::services::session_termination::terminate_live_session(
-            state,
-            session,
-            "account_deactivated",
-        )
-        .await
+        if let Err(e) =
+            crate::services::session_termination::terminate_live_session(state, session, reason)
+                .await
         {
             tracing::warn!(
                 session_uuid = %session.uuid,
@@ -2865,6 +2863,7 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
     tracing::info!(
         user_id = user_id,
         user_uuid = user_uuid,
+        reason,
         "User account deactivated: revoked all sessions and disabled API keys"
     );
 }
@@ -3017,6 +3016,7 @@ pub(crate) async fn broadcast_admin_sessions_update(state: &AppState) {
 
             let admin_uuids: Vec<String> = users::table
                 .filter(users::is_staff.eq(true).or(users::is_superuser.eq(true)))
+                .filter(users::is_active.eq(true))
                 .filter(users::is_deleted.eq(false))
                 .select(users::uuid)
                 .load::<uuid::Uuid>(&mut conn)

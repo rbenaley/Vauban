@@ -87,6 +87,24 @@ fn check_bac_handler_gates_script_exists_and_executable() {
     );
 }
 
+#[test]
+fn check_users_usable_filters_passes() {
+    let script = manifest_dir()
+        .join("scripts")
+        .join("check_users_usable_filters.sh");
+    assert!(script.exists(), "missing lint script: {}", script.display());
+    let out = Command::new("bash")
+        .arg(&script)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn {}: {}", script.display(), e));
+    assert!(
+        out.status.success(),
+        "check_users_usable_filters.sh failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 // ===================================================================
 // 2. Router shape: gated nests, no flat admin routes
 // ===================================================================

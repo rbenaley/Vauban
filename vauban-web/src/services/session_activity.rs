@@ -183,7 +183,7 @@ pub async fn is_proxy_session_live(state: &AppState, session_id: &str) -> bool {
 /// Used by the admin revoke / deactivate handlers and by the
 /// notifications re-validation arm (session expiry). `reason` feeds the
 /// login-page banner taxonomy: `session_revoked`, `account_deactivated`,
-/// `session_expired`.
+/// `account_deleted`, `session_expired`.
 pub fn force_logout_oob(reason: &str) -> String {
     format!(
         r#"<div id="force-logout" hx-swap-oob="innerHTML"><div x-data x-init="window.location.replace('/login?reason={reason}')"></div></div>"#

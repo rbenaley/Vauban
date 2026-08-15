@@ -2377,11 +2377,12 @@ async fn dispatch_approval_decision(
     }
 }
 
-/// Queue one `access_request.submitted` email per active superuser (Issue #10).
+/// Queue one `access_request.submitted` email per usable staff or
+/// superuser (Issue #10).
 ///
-/// "Active superuser" is the canonical approver pool today. A future
-/// access-rule-driven approver routing can replace this lookup without
-/// touching the call sites.
+/// The pool is `load_approver_contacts`: active, not deleted, staff OR
+/// superuser, non-empty email. A future access-rule-driven approver
+/// routing can replace that helper without touching the call sites.
 ///
 /// Best-effort: any failure here is logged and never propagated -- the
 /// access request itself is durable, and the WebSocket fan-out has
@@ -2393,18 +2394,13 @@ async fn queue_submitted_emails(
     asset_name: &str,
     protocol: &str,
 ) -> Result<(), String> {
-    use crate::schema::users;
     use crate::services::mailer::{
         AccessRequestSubmittedEvent, EmailEvent, EmailRecipient, deterministic_event_id,
     };
+    use crate::services::user_status::load_approver_contacts;
 
     let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
-    let approver_emails: Vec<(String, String)> = users::table
-        .filter(users::is_active.eq(true))
-        .filter(users::is_superuser.eq(true))
-        .filter(users::email.ne(""))
-        .select((users::email, users::username))
-        .load(&mut conn)
+    let approver_emails = load_approver_contacts(&mut conn)
         .await
         .map_err(|e| format!("approver lookup: {}", e))?;
     drop(conn);
@@ -2490,15 +2486,24 @@ async fn queue_approval_email(
 
     let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
 
-    // Requester contact details.
-    let (req_email, _req_username): (String, String) = users::table
-        .filter(users::id.eq(requester_id))
-        .select((users::email, users::username))
-        .first(&mut conn)
-        .await
-        .map_err(|e| format!("requester lookup: {}", e))?;
-    if req_email.is_empty() {
-        // No address on file -> nothing to do. Non-error.
+    // Requester contact details. Skip tombstones / inactive / empty mailbox.
+    let (req_email, _req_username, req_active, req_deleted): (String, String, bool, bool) =
+        users::table
+            .filter(users::id.eq(requester_id))
+            .select((
+                users::email,
+                users::username,
+                users::is_active,
+                users::is_deleted,
+            ))
+            .first(&mut conn)
+            .await
+            .map_err(|e| format!("requester lookup: {}", e))?;
+    if !crate::services::user_status::requester_may_receive_mail(
+        req_active,
+        req_deleted,
+        &req_email,
+    ) {
         return Ok(());
     }
 

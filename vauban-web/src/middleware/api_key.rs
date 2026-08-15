@@ -167,6 +167,7 @@ pub async fn authenticate_api_key(
         .filter(api_keys::key_hash.eq(&key_hash))
         .filter(api_keys::is_active.eq(true))
         .filter(users::is_active.eq(true))
+        .filter(users::is_deleted.eq(false))
         .select((
             api_keys::id,
             api_keys::scopes,
