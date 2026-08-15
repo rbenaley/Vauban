@@ -25,8 +25,9 @@
 //!   Two handlers retrying the same logical event collide on the
 //!   `email_outbox_event_id_unique` constraint and the second one
 //!   gracefully reports `Duplicate` (never sends twice).
-//! * No PII in logs: helpers in this module hash recipient addresses
-//!   with BLAKE3 before logging.
+//! * Operator logs name the mailbox on the **single** queue-summary
+//!   line (and on queue failures) so a wrong inbox is diagnosable.
+//!   Per-row debug still hashes the address with BLAKE3.
 
 use std::sync::Arc;
 
@@ -206,7 +207,9 @@ impl Mailer {
 
         match insert_result {
             Ok(id) => {
-                tracing::info!(
+                // Per-row breadcrumb only. Callers emit ONE info/error
+                // line via [`log_emails_queued`] for the whole fan-out.
+                tracing::debug!(
                     event_id = %event.event_id(),
                     event_kind = event.kind(),
                     recipient_hash = %hash_recipient(&recipient.address),
@@ -233,14 +236,103 @@ impl Mailer {
 }
 
 /// BLAKE3 hash of a recipient address, hex-encoded and truncated to 16
-/// chars. Used in logs to keep PII out while preserving "two events
-/// to the same address" correlation.
+/// chars. Used on the per-row debug breadcrumb to correlate two events
+/// to the same address without repeating the mailbox on every insert.
 pub fn hash_recipient(address: &str) -> String {
     let mut h = Hasher::new();
     h.update(b"vauban:mailer:recipient:");
     h.update(address.as_bytes());
     let digest = h.finalize();
     hex::encode(&digest.as_bytes()[..8])
+}
+
+/// Strip CR/LF so a caller-controlled display name cannot split a log
+/// line. [`Mailer::queue`] already rejects CRLF before INSERT; this is
+/// defense in depth for the summary formatter.
+fn sanitize_log_atom(s: &str) -> String {
+    s.replace(['\r', '\n'], "")
+}
+
+/// Operator-facing mailbox: `name <addr>` or the bare address.
+pub fn format_recipient_label(recipient: &EmailRecipient) -> String {
+    let address = sanitize_log_atom(&recipient.address);
+    if recipient.display_name.is_empty() {
+        address
+    } else {
+        format!(
+            "{} <{}>",
+            sanitize_log_atom(&recipient.display_name),
+            address
+        )
+    }
+}
+
+/// Single-line queue summary: what was queued, to whom, and any errors.
+pub fn format_queue_summary(
+    event_kind: &str,
+    recipients: &[EmailRecipient],
+    queued: usize,
+    duplicates: usize,
+    errors: &[String],
+) -> String {
+    let who = recipients
+        .iter()
+        .map(format_recipient_label)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let kind = sanitize_log_atom(event_kind);
+    if errors.is_empty() {
+        format!("{kind} -> {who} (queued={queued}, duplicates={duplicates})")
+    } else {
+        let err = errors
+            .iter()
+            .map(|e| sanitize_log_atom(e))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "{kind} -> {who} (queued={queued}, duplicates={duplicates}, failed={}) errors={err}",
+            errors.len()
+        )
+    }
+}
+
+/// Emit the single operator line for a logical notification fan-out.
+///
+/// Success is `info!`; any queue-time failure is `error!`. Never call
+/// this once per recipient -- the point is one line for the batch.
+pub fn log_emails_queued(
+    event_kind: &str,
+    recipients: &[EmailRecipient],
+    queued: usize,
+    duplicates: usize,
+    errors: &[String],
+) {
+    let recipients_label = recipients
+        .iter()
+        .map(format_recipient_label)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let detail = format_queue_summary(event_kind, recipients, queued, duplicates, errors);
+    if errors.is_empty() {
+        tracing::info!(
+            event_kind,
+            queued,
+            duplicates,
+            recipients = %recipients_label,
+            detail = %detail,
+            "Emails queued"
+        );
+    } else {
+        tracing::error!(
+            event_kind,
+            queued,
+            duplicates,
+            failed = errors.len(),
+            recipients = %recipients_label,
+            detail = %detail,
+            "Emails queue failed"
+        );
+    }
 }
 
 /// Mint a deterministic `event_id` for a notification.
@@ -1290,5 +1382,57 @@ mod tests {
             assert!(!r.subject.contains('\r'));
             assert!(!r.subject.contains('\n'));
         }
+    }
+
+    #[test]
+    fn format_recipient_label_uses_display_name_when_present() {
+        let r = EmailRecipient::new("alice@example.test", "Alice");
+        assert_eq!(format_recipient_label(&r), "Alice <alice@example.test>");
+    }
+
+    #[test]
+    fn format_recipient_label_bare_address_when_name_empty() {
+        let r = EmailRecipient::bare("bob@example.test");
+        assert_eq!(format_recipient_label(&r), "bob@example.test");
+    }
+
+    #[test]
+    fn format_queue_summary_is_one_line_for_many_recipients() {
+        let recipients = [
+            EmailRecipient::new("a@x.test", "alice"),
+            EmailRecipient::new("b@x.test", "bob"),
+        ];
+        let line = format_queue_summary("access_request.submitted", &recipients, 2, 0, &[]);
+        assert!(line.contains("access_request.submitted"));
+        assert!(line.contains("alice <a@x.test>"));
+        assert!(line.contains("bob <b@x.test>"));
+        assert!(line.contains("queued=2"));
+        assert!(!line.contains('\n'));
+        assert!(!line.contains('\r'));
+    }
+
+    #[test]
+    fn format_queue_summary_includes_errors_on_same_line() {
+        let recipients = [EmailRecipient::bare("bad@x.test")];
+        let line = format_queue_summary(
+            "access_request.submitted",
+            &recipients,
+            0,
+            0,
+            &["CRLF injection detected in recipient.address".into()],
+        );
+        assert!(line.contains("failed=1"));
+        assert!(line.contains("errors="));
+        assert!(line.contains("bad@x.test"));
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn format_queue_summary_strips_crlf_from_atoms() {
+        let recipients = [EmailRecipient::new("a@x.test", "al\nice")];
+        let line = format_queue_summary("kind\r\nX", &recipients, 1, 0, &["e\r\nrr".into()]);
+        assert!(!line.contains('\r'));
+        assert!(!line.contains('\n'));
+        assert!(line.contains("alice"));
     }
 }

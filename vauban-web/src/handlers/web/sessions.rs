@@ -2409,7 +2409,7 @@ async fn queue_submitted_emails(
         .map_err(|e| format!("approver lookup: {}", e))?;
     drop(conn);
 
-    if approver_emails.is_empty() {
+    if approver_emails.is_empty() || !state.mailer.is_enabled() {
         return Ok(());
     }
 
@@ -2419,12 +2419,17 @@ async fn queue_submitted_emails(
     );
     let business_key = format!("submitted:{}", session_uuid);
 
+    let mut queued = 0usize;
+    let mut duplicates = 0usize;
     let mut errors: Vec<String> = Vec::new();
+    let mut recipients: Vec<EmailRecipient> = Vec::new();
     for (email, username) in approver_emails {
+        let recipient = EmailRecipient::new(email.clone(), username);
+        recipients.push(recipient.clone());
         let event_id = deterministic_event_id("access_request.submitted", &business_key, &email);
         let event = EmailEvent::AccessRequestSubmitted(AccessRequestSubmittedEvent {
             event_id,
-            recipient: EmailRecipient::new(email, username),
+            recipient,
             requester_username: requester_username.to_string(),
             asset_name: asset_name.to_string(),
             protocol: protocol.to_string(),
@@ -2435,10 +2440,18 @@ async fn queue_submitted_emails(
         });
         let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
         match state.mailer.queue(&mut conn, &event).await {
-            Ok(()) | Err(crate::services::mailer::MailerError::Duplicate) => {}
-            Err(e) => errors.push(e.to_string()),
+            Ok(()) => queued += 1,
+            Err(crate::services::mailer::MailerError::Duplicate) => duplicates += 1,
+            Err(e) => errors.push(format!("{email}: {e}")),
         }
     }
+    crate::services::mailer::log_emails_queued(
+        "access_request.submitted",
+        &recipients,
+        queued,
+        duplicates,
+        &errors,
+    );
 
     if errors.is_empty() {
         Ok(())
@@ -2470,6 +2483,10 @@ async fn queue_approval_email(
         AccessRequestApprovedEvent, AccessRequestRejectedEvent, AccessRequestRevokedEvent,
         EmailEvent, EmailRecipient, deterministic_event_id,
     };
+
+    if !state.mailer.is_enabled() {
+        return Ok(());
+    }
 
     let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
 
@@ -2545,11 +2562,25 @@ async fn queue_approval_email(
         shared::messages::ApprovalDecisionKind::UpdateDuration => return Ok(()),
     };
 
+    let kind = event.kind();
+    let recipient = event.recipient().clone();
     let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
-    match state.mailer.queue(&mut conn, &event).await {
-        Ok(()) => Ok(()),
-        Err(crate::services::mailer::MailerError::Duplicate) => Ok(()),
-        Err(e) => Err(e.to_string()),
+    let (queued, duplicates, errors) = match state.mailer.queue(&mut conn, &event).await {
+        Ok(()) => (1, 0, Vec::new()),
+        Err(crate::services::mailer::MailerError::Duplicate) => (0, 1, Vec::new()),
+        Err(e) => (0, 0, vec![e.to_string()]),
+    };
+    crate::services::mailer::log_emails_queued(
+        kind,
+        std::slice::from_ref(&recipient),
+        queued,
+        duplicates,
+        &errors,
+    );
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
     }
 }
 

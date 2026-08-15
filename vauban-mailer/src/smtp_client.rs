@@ -89,6 +89,15 @@ impl SmtpError {
             | Self::InvalidServerName(_) => false,
         }
     }
+
+    /// SMTP numeric code when the server answered; `None` for transport
+    /// / protocol failures that never produced a reply line.
+    pub fn smtp_code(&self) -> Option<u16> {
+        match self {
+            Self::Server { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
 }
 
 /// Mail envelope to send.
@@ -264,6 +273,10 @@ impl SmtpSession {
         self.write_line(&format!("RCPT TO:<{}>", env.to)).await?;
         let resp = self.read_response().await?;
         if resp.code != 250 && resp.code != 251 {
+            // Permanent 5xx (550 user unknown, 553, …) is the only
+            // synchronous "wrong mailbox" signal we get. A 250 here
+            // means the *relay* accepted the recipient -- a later
+            // bounce is invisible without a DSN/webhook.
             return Err(SmtpError::Server {
                 code: resp.code,
                 message: resp.message,
@@ -292,6 +305,22 @@ impl SmtpSession {
         // End-of-data marker (single '.' on its own line).
         buf.push_str(".\r\n");
         self.write_all(buf.as_bytes()).await?;
+        let resp = self.read_response().await?;
+        if resp.code != 250 {
+            return Err(SmtpError::Server {
+                code: resp.code,
+                message: resp.message,
+            });
+        }
+        Ok(())
+    }
+
+    /// Reset the SMTP transaction so the next [`send`] can start from
+    /// `MAIL FROM` after a 4xx/5xx on the previous envelope (RFC 5321
+    /// §4.1.1.5). Without this, a 550 on `RCPT TO` leaves the session
+    /// dirty and the rest of the batch is silently lost.
+    pub async fn rset(&mut self) -> Result<(), SmtpError> {
+        self.write_line("RSET").await?;
         let resp = self.read_response().await?;
         if resp.code != 250 {
             return Err(SmtpError::Server {
@@ -569,6 +598,7 @@ mod tests {
             message: "user unknown".into(),
         };
         assert!(!e.is_transient());
+        assert_eq!(e.smtp_code(), Some(550));
     }
 
     #[test]
@@ -788,6 +818,77 @@ mod tests {
             SmtpError::Server { code, .. } => assert_eq!(code, 550),
             _ => panic!("expected SmtpError::Server, got {:?}", err),
         }
+    }
+
+    #[tokio::test]
+    async fn smtp_session_rset_after_550_allows_next_envelope() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            write_half.write_all(b"220 fake\r\n").await.unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap(); // EHLO
+            write_half.write_all(b"250 OK\r\n").await.unwrap();
+            line.clear();
+            reader.read_line(&mut line).await.unwrap(); // MAIL (bad)
+            write_half.write_all(b"550 user unknown\r\n").await.unwrap();
+            line.clear();
+            reader.read_line(&mut line).await.unwrap(); // RSET
+            assert_eq!(line.trim_end(), "RSET");
+            write_half.write_all(b"250 OK\r\n").await.unwrap();
+            line.clear();
+            reader.read_line(&mut line).await.unwrap(); // MAIL (good)
+            assert!(line.starts_with("MAIL FROM:"));
+            write_half.write_all(b"250 OK\r\n").await.unwrap();
+            line.clear();
+            reader.read_line(&mut line).await.unwrap(); // RCPT
+            write_half.write_all(b"250 OK\r\n").await.unwrap();
+            line.clear();
+            reader.read_line(&mut line).await.unwrap(); // DATA
+            write_half.write_all(b"354 go\r\n").await.unwrap();
+            let mut body = Vec::new();
+            loop {
+                let mut byte = [0u8; 1];
+                reader.read_exact(&mut byte).await.unwrap();
+                body.push(byte[0]);
+                if body.ends_with(b"\r\n.\r\n") {
+                    break;
+                }
+            }
+            write_half.write_all(b"250 OK\r\n").await.unwrap();
+            line.clear();
+            reader.read_line(&mut line).await.unwrap(); // QUIT
+            write_half.write_all(b"221 bye\r\n").await.unwrap();
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut session = SmtpSession::open(stream, "vauban-test").await.unwrap();
+        let err = session
+            .send(&MailEnvelope {
+                from: "v@e.t".into(),
+                to: "bad@e.t".into(),
+                data: "Subject: x\r\n\r\nok\r\n".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(!err.is_transient());
+        session.rset().await.unwrap();
+        session
+            .send(&MailEnvelope {
+                from: "v@e.t".into(),
+                to: "good@e.t".into(),
+                data: "Subject: x\r\n\r\nok\r\n".into(),
+            })
+            .await
+            .unwrap();
+        session.quit().await;
+        server.await.unwrap();
     }
 
     #[tokio::test]

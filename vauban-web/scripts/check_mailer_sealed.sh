@@ -85,6 +85,34 @@ if echo "$AFTER_SEAL" | grep -Eq 'Pool::builder'; then
     fail "vauban-mailer must not build a DB pool after the Capsicum seal"
 fi
 
+# Operator logs: one queue summary, SMTP 550 must not stay silent.
+if ! grep -Eq 'pub fn log_emails_queued' "$ROOT/vauban-web/src/services/mailer.rs"; then
+    fail "vauban-web mailer must expose log_emails_queued (single fan-out line)"
+fi
+QUEUED_LINE=$(grep -n '"Email queued"' "$ROOT/vauban-web/src/services/mailer.rs" | head -1 | cut -d: -f1)
+if [ -z "$QUEUED_LINE" ]; then
+    fail "Mailer::queue must keep an Email queued debug breadcrumb"
+fi
+QUEUED_WINDOW=$(sed -n "$((QUEUED_LINE - 8)),${QUEUED_LINE}p" "$ROOT/vauban-web/src/services/mailer.rs")
+if echo "$QUEUED_WINDOW" | grep -q 'info!'; then
+    fail "Mailer::queue must not info-log Email queued per recipient"
+fi
+if ! echo "$QUEUED_WINDOW" | grep -q 'debug!'; then
+    fail "Mailer::queue Email queued breadcrumb must be debug!"
+fi
+if ! grep -Eq 'log_emails_queued' "$ROOT/vauban-web/src/handlers/web/sessions.rs"; then
+    fail "JIT queue helpers must emit log_emails_queued"
+fi
+if ! grep -Eq 'Mailer drain: delivery failed' "$ROOT/vauban-mailer/src/outbox.rs"; then
+    fail "vauban-mailer must log Mailer drain: delivery failed on permanent SMTP errors"
+fi
+if ! grep -Eq 'pub async fn rset' "$ROOT/vauban-mailer/src/smtp_client.rs"; then
+    fail "vauban-mailer SMTP session must implement RSET after a failed envelope"
+fi
+if ! grep -Eq 'session\.rset\(\)' "$ROOT/vauban-mailer/src/outbox.rs"; then
+    fail "vauban-mailer drain must call session.rset() after a failed send"
+fi
+
 # Frozen discriminant pin (shared).
 if ! grep -Eq 'Service::Mailer.as_token_discriminant\(\), 9\)' "$ROOT/shared/src/messages.rs"; then
     fail "shared must pin Service::Mailer discriminant 9"

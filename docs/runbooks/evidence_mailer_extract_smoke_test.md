@@ -44,10 +44,10 @@ Suite highlights that must stay green:
 
 | Layer | Examples |
 |-------|----------|
-| Invariants + lint | `evidence_mailer_extract_invariants_test`, both `check_*.sh`, `MAILER_KINDS`, `inv_mailer_db_warmup_before_sandbox` |
-| Proptest | `evidence_mailer_extract_proptest`, sandbox `mailer_fd_kinds_disjoint_ok_overlap_rejected`, mailer `force_create_count_is_total_on_dead_url` |
-| Battle | `evidence_mailer_extract_battle_test`, `battle_mailer_validate_under_contention`, `battle_force_create_dead_url_under_contention` |
-| E2E | `evidence_mailer_extract_e2e_test`, `e2e_mailer_sandbox_wiring_staging_regression`, `e2e_mailer_db_warmup_order_staging_regression` |
+| Invariants + lint | `evidence_mailer_extract_invariants_test`, both `check_*.sh`, `MAILER_KINDS`, `inv_mailer_db_warmup_before_sandbox`, `inv_mailer_queue_is_one_summary_line`, `inv_mailer_drain_logs_smtp_failures` |
+| Proptest | `evidence_mailer_extract_proptest`, `queue_summary_is_single_line_and_names_everyone`, sandbox `mailer_fd_kinds_disjoint_ok_overlap_rejected`, mailer `force_create_count_is_total_on_dead_url`, `format_drain_detail_never_splits_lines` |
+| Battle | `evidence_mailer_extract_battle_test`, `battle_queue_summary_under_contention`, `battle_format_drain_detail_under_contention`, `battle_force_create_dead_url_under_contention` |
+| E2E | `evidence_mailer_extract_e2e_test`, `smtp_session_rset_after_550_allows_next_envelope`, `e2e_mailer_sandbox_wiring_staging_regression` |
 | Wire | `Service::Mailer.as_token_discriminant() == 9` |
 
 ## Lab prerequisites
@@ -92,8 +92,39 @@ Pass: hydrate completes; WS `recording_hydrated` still updates UI.
    then sent).
 3. In **vauban-mailer** logs, expect SMTP dialogue (EHLO / STARTTLS /
    AUTH / DATA). Web must **not** log SMTP session open.
+4. In **vauban-web** logs, a fan-out to N approvers must produce
+   **one** `Emails queued` line that names the event kind and every
+   mailbox (`alice <a@x>, bob <b@x>`), not N `Email queued` INFO lines.
+5. In **vauban-mailer** logs, a successful batch is **one**
+   `Mailer drain: processed batch` line with `detail="sent [kind -> who; ...]"`.
 
-Pass: mail delivered (or accepted by lab relay); drain is mailer-only.
+Pass: mail delivered (or accepted by lab relay); drain is mailer-only;
+queue/drain logs stay one line per batch.
+
+## C''' -- Wrong mailbox is visible (SMTP 5xx)
+
+Regression: before this lot, a `550 user unknown` (or any permanent
+SMTP reject) was written to `email_outbox.last_error` with **no**
+operator log. Staging looked like success because web only logged
+`Email queued`.
+
+1. Queue a notification to a mailbox the lab relay **rejects** at
+   `RCPT TO` / `DATA` (typo domain, `nouser@…`).
+2. Confirm the outbox row becomes `failed` (not `sent`) and
+   `last_error` contains the SMTP code (e.g. `550`).
+3. In **vauban-mailer** logs, expect **one**
+   `Mailer drain: delivery failed` line that names the recipient and
+   the SMTP error. Later rows in the same batch must still send
+   (RSET after the reject).
+4. In **vauban-web** logs, the queue summary still names that
+   mailbox -- queue ≠ delivery.
+
+Note: a relay that answers `250` then bounces later (TEM accept-then-
+DSN) is **not** visible here. That needs the provider bounce webhook,
+not the SMTP drain. This section only covers synchronous 4xx/5xx.
+
+Pass: bad mailbox is `failed` + one error line; good recipients in
+the same batch still go out.
 
 ## C' -- Capsicum seal (0.9.36+ / staging FreeBSD regression)
 
@@ -148,7 +179,7 @@ SMTP FD path.
 
 ## E -- Full pass gate
 
-Sections A–D, C' and C'' must all Pass before declaring the deploy good.
+Sections A–D, C', C'' and C''' must all Pass before declaring the deploy good.
 
 ## Rollback notes
 

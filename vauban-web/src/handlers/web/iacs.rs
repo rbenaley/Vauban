@@ -683,7 +683,7 @@ async fn queue_iacs_onboard_submitted_emails(
         .map_err(|e| format!("approver lookup: {}", e))?;
     drop(conn);
 
-    if approver_emails.is_empty() {
+    if approver_emails.is_empty() || !state.mailer.is_enabled() {
         return Ok(());
     }
 
@@ -693,12 +693,17 @@ async fn queue_iacs_onboard_submitted_emails(
     let admin_url = format!("{}/iacs/{}", state.config.mailer.base_url, request_uuid);
     let business_key = format!("submitted:{}", request_uuid);
 
+    let mut queued = 0usize;
+    let mut duplicates = 0usize;
     let mut errors: Vec<String> = Vec::new();
+    let mut recipients: Vec<EmailRecipient> = Vec::new();
     for (email, username) in approver_emails {
+        let recipient = EmailRecipient::new(email.clone(), username);
+        recipients.push(recipient.clone());
         let event_id = deterministic_event_id("iacs.onboard_submitted", &business_key, &email);
         let event = EmailEvent::IacsOnboardSubmitted(IacsOnboardSubmittedEvent {
             event_id,
-            recipient: EmailRecipient::new(email, username),
+            recipient,
             requester_username: requester_username.to_string(),
             ews_name: ews_name.to_string(),
             fingerprint: fingerprint.to_string(),
@@ -709,10 +714,18 @@ async fn queue_iacs_onboard_submitted_emails(
         });
         let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
         match state.mailer.queue(&mut conn, &event).await {
-            Ok(()) | Err(crate::services::mailer::MailerError::Duplicate) => {}
-            Err(e) => errors.push(e.to_string()),
+            Ok(()) => queued += 1,
+            Err(crate::services::mailer::MailerError::Duplicate) => duplicates += 1,
+            Err(e) => errors.push(format!("{email}: {e}")),
         }
     }
+    crate::services::mailer::log_emails_queued(
+        "iacs.onboard_submitted",
+        &recipients,
+        queued,
+        duplicates,
+        &errors,
+    );
     if errors.is_empty() {
         Ok(())
     } else {
@@ -1866,6 +1879,10 @@ async fn queue_iacs_decision_email(
         deterministic_event_id,
     };
 
+    if !state.mailer.is_enabled() {
+        return Ok(());
+    }
+
     let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
     let row: Option<(String, String, String, String)> = r::table
         .inner_join(users::table.on(users::id.eq(r::user_id)))
@@ -1924,10 +1941,25 @@ async fn queue_iacs_decision_email(
         })
     };
 
+    let kind = event.kind();
+    let recipient = event.recipient().clone();
     let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
-    match state.mailer.queue(&mut conn, &event).await {
-        Ok(()) | Err(crate::services::mailer::MailerError::Duplicate) => Ok(()),
-        Err(e) => Err(e.to_string()),
+    let (queued, duplicates, errors) = match state.mailer.queue(&mut conn, &event).await {
+        Ok(()) => (1, 0, Vec::new()),
+        Err(crate::services::mailer::MailerError::Duplicate) => (0, 1, Vec::new()),
+        Err(e) => (0, 0, vec![e.to_string()]),
+    };
+    crate::services::mailer::log_emails_queued(
+        kind,
+        std::slice::from_ref(&recipient),
+        queued,
+        duplicates,
+        &errors,
+    );
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
     }
 }
 
@@ -1942,6 +1974,10 @@ async fn queue_iacs_offboarded_email(
     use crate::services::mailer::{
         EmailEvent, EmailRecipient, IacsOffboardedEvent, deterministic_event_id,
     };
+
+    if !state.mailer.is_enabled() {
+        return Ok(());
+    }
 
     let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
     let row: Option<(String, String, String, String)> = ews::table
@@ -1976,9 +2012,24 @@ async fn queue_iacs_offboarded_email(
         from_brand: state.config.mailer.from_name.clone(),
     });
 
+    let kind = event.kind();
+    let recipient = event.recipient().clone();
     let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
-    match state.mailer.queue(&mut conn, &event).await {
-        Ok(()) | Err(crate::services::mailer::MailerError::Duplicate) => Ok(()),
-        Err(e) => Err(e.to_string()),
+    let (queued, duplicates, errors) = match state.mailer.queue(&mut conn, &event).await {
+        Ok(()) => (1, 0, Vec::new()),
+        Err(crate::services::mailer::MailerError::Duplicate) => (0, 1, Vec::new()),
+        Err(e) => (0, 0, vec![e.to_string()]),
+    };
+    crate::services::mailer::log_emails_queued(
+        kind,
+        std::slice::from_ref(&recipient),
+        queued,
+        duplicates,
+        &errors,
+    );
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
     }
 }

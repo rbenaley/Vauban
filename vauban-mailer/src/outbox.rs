@@ -12,7 +12,7 @@ use diesel_async::{
 use rustls::ClientConfig;
 use shared::messages::SmtpEncryption;
 use tokio::time::Instant;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::broker::{answer_control, request_smtp_connect};
@@ -120,7 +120,7 @@ pub async fn dispatcher_loop(ctx: DrainCtx) {
 
         match drain_outbox_once(&ctx, &tls_config).await {
             Ok(0) => debug!("Mailer drain: no rows pending"),
-            Ok(n) => info!(processed = n, "Mailer drain: processed batch"),
+            Ok(_) => {}
             Err(e) => error!(error = %e, "Mailer drain failed; will retry on next tick"),
         }
     }
@@ -183,27 +183,58 @@ async fn drain_outbox_once(
             .auth_plain(&ctx.runtime.smtp_username, &ctx.runtime.smtp_password)
             .await
     {
+        let recipients = batch
+            .iter()
+            .map(mailbox_label)
+            .collect::<Vec<_>>()
+            .join(", ");
+        error!(
+            error = %e,
+            batch = batch.len(),
+            recipients = %recipients,
+            "SMTP AUTH failed; batch will retry"
+        );
         push_batch_retry(&ctx.pool, &batch, &e.to_string()).await?;
         return Ok(batch.len());
     }
 
     let mut processed = 0usize;
+    let mut sent_to: Vec<String> = Vec::new();
+    let mut failed_to: Vec<String> = Vec::new();
+    let mut retrying_to: Vec<String> = Vec::new();
     for row in &batch {
         let envelope = build_envelope(&ctx.runtime, row);
         match session.send(&envelope).await {
             Ok(()) => {
                 mark_sent(&ctx.pool, row).await?;
                 processed += 1;
+                sent_to.push(format!("{} -> {}", row.event_kind, mailbox_label(row)));
             }
             Err(e) => {
                 let transient = e.is_transient();
-                mark_retry_or_failed(&ctx.pool, row, &e, transient, ctx.runtime.max_attempts)
-                    .await?;
+                let disposition =
+                    mark_retry_or_failed(&ctx.pool, row, &e, transient, ctx.runtime.max_attempts)
+                        .await?;
                 processed += 1;
+                let entry = format!("{} -> {} ({})", row.event_kind, mailbox_label(row), e);
+                match disposition {
+                    DeliveryDisposition::Failed => failed_to.push(entry),
+                    DeliveryDisposition::Retrying => retrying_to.push(entry),
+                }
                 if matches!(
                     e,
                     SmtpError::Io(_) | SmtpError::Tls(_) | SmtpError::Protocol(_)
                 ) {
+                    emit_drain_log(&sent_to, &failed_to, &retrying_to);
+                    session.quit().await;
+                    return Ok(processed);
+                }
+                if let Err(rset_err) = session.rset().await {
+                    error!(
+                        error = %rset_err,
+                        "SMTP RSET failed after delivery error; closing session"
+                    );
+                    emit_drain_log(&sent_to, &failed_to, &retrying_to);
                     session.quit().await;
                     return Ok(processed);
                 }
@@ -211,8 +242,71 @@ async fn drain_outbox_once(
         }
     }
 
+    emit_drain_log(&sent_to, &failed_to, &retrying_to);
     session.quit().await;
     Ok(processed)
+}
+
+fn mailbox_label(row: &OutboxEntry) -> String {
+    let address = row.recipient.replace(['\r', '\n'], "");
+    if row.recipient_name.is_empty() {
+        address
+    } else {
+        format!(
+            "{} <{}>",
+            row.recipient_name.replace(['\r', '\n'], ""),
+            address
+        )
+    }
+}
+
+fn format_drain_detail(sent_to: &[String], failed_to: &[String], retrying_to: &[String]) -> String {
+    let mut parts = Vec::new();
+    if !sent_to.is_empty() {
+        parts.push(format!("sent [{}]", sent_to.join("; ")));
+    }
+    if !failed_to.is_empty() {
+        parts.push(format!("failed [{}]", failed_to.join("; ")));
+    }
+    if !retrying_to.is_empty() {
+        parts.push(format!("retrying [{}]", retrying_to.join("; ")));
+    }
+    parts.join(" | ")
+}
+
+fn emit_drain_log(sent_to: &[String], failed_to: &[String], retrying_to: &[String]) {
+    let sent = sent_to.len();
+    let failed = failed_to.len();
+    let retrying = retrying_to.len();
+    let detail = format_drain_detail(sent_to, failed_to, retrying_to);
+    if failed > 0 {
+        error!(
+            sent,
+            failed,
+            retrying,
+            detail = %detail,
+            "Mailer drain: delivery failed"
+        );
+    } else if retrying > 0 {
+        warn!(
+            sent,
+            retrying,
+            detail = %detail,
+            "Mailer drain: retrying"
+        );
+    } else {
+        info!(
+            sent,
+            detail = %detail,
+            "Mailer drain: processed batch"
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeliveryDisposition {
+    Failed,
+    Retrying,
 }
 
 pub fn build_envelope(runtime: &MailerRuntime, row: &OutboxEntry) -> MailEnvelope {
@@ -326,10 +420,11 @@ async fn mark_sent(
         .execute(&mut conn)
         .await
         .map_err(|e| DrainError::Db(e.to_string()))?;
-    info!(
+    debug!(
         outbox_id = row.id,
         event_id = %row.event_id,
         event_kind = %row.event_kind,
+        recipient = %row.recipient,
         "Email sent"
     );
     Ok(())
@@ -341,15 +436,16 @@ async fn mark_retry_or_failed(
     err: &SmtpError,
     transient: bool,
     config_max_attempts: i32,
-) -> Result<(), DrainError> {
+) -> Result<DeliveryDisposition, DrainError> {
     let new_attempts = row.attempts + 1;
     let max_attempts = row.max_attempts.max(config_max_attempts);
+    let disposition = delivery_disposition(new_attempts, max_attempts, transient);
     let mut conn = pool
         .get()
         .await
         .map_err(|e| DrainError::Pool(e.to_string()))?;
 
-    if new_attempts >= max_attempts || !transient {
+    if disposition == DeliveryDisposition::Failed {
         let update = OutboxAttemptUpdate {
             status: "failed".to_string(),
             attempts: new_attempts,
@@ -362,6 +458,7 @@ async fn mark_retry_or_failed(
             .execute(&mut conn)
             .await
             .map_err(|e| DrainError::Db(e.to_string()))?;
+        Ok(disposition)
     } else {
         let next = backoff_after(new_attempts);
         let update = OutboxAttemptUpdate {
@@ -376,8 +473,20 @@ async fn mark_retry_or_failed(
             .execute(&mut conn)
             .await
             .map_err(|e| DrainError::Db(e.to_string()))?;
+        Ok(disposition)
     }
-    Ok(())
+}
+
+fn delivery_disposition(
+    new_attempts: i32,
+    max_attempts: i32,
+    transient: bool,
+) -> DeliveryDisposition {
+    if new_attempts >= max_attempts || !transient {
+        DeliveryDisposition::Failed
+    } else {
+        DeliveryDisposition::Retrying
+    }
 }
 
 async fn push_batch_retry(
@@ -420,6 +529,7 @@ fn compute_backoff(attempts: i32) -> Duration {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -439,5 +549,109 @@ mod tests {
     fn backoff_cap_is_one_hour() {
         assert_eq!(BACKOFF_CAP, Duration::from_hours(1));
         assert_eq!(Duration::from_hours(1), Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn delivery_disposition_550_is_failed_on_first_attempt() {
+        assert_eq!(
+            delivery_disposition(1, 5, false),
+            DeliveryDisposition::Failed
+        );
+    }
+
+    #[test]
+    fn delivery_disposition_4xx_retries_until_budget() {
+        assert_eq!(
+            delivery_disposition(1, 5, true),
+            DeliveryDisposition::Retrying
+        );
+        assert_eq!(
+            delivery_disposition(5, 5, true),
+            DeliveryDisposition::Failed
+        );
+    }
+
+    #[test]
+    fn format_drain_detail_is_one_line_with_who_and_error() {
+        let sent = ["access_request.submitted -> alice <a@x.test>".to_string()];
+        let failed = ["access_request.submitted -> bad <bad@x.test> (server returned non-success code 550: user unknown)".to_string()];
+        let line = format_drain_detail(&sent, &failed, &[]);
+        assert!(line.contains("alice <a@x.test>"));
+        assert!(line.contains("bad <bad@x.test>"));
+        assert!(line.contains("550"));
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn format_drain_detail_empty_when_nothing_processed() {
+        assert_eq!(format_drain_detail(&[], &[], &[]), "");
+    }
+
+    #[test]
+    fn drain_logs_delivery_failed_literal() {
+        let source = include_str!("outbox.rs");
+        assert!(source.contains("\"Mailer drain: delivery failed\""));
+        assert!(source.contains("session.rset()"));
+        assert!(
+            source.contains("\"Email sent\""),
+            "per-row send breadcrumb must remain (debug)"
+        );
+        let sent_idx = source.find("\"Email sent\"").expect("Email sent");
+        let window = &source[sent_idx.saturating_sub(160)..sent_idx];
+        assert!(
+            window.contains("debug!"),
+            "per-row Email sent must be debug!, not info!"
+        );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+
+        #[test]
+        fn format_drain_detail_never_splits_lines(
+            sent_n in 0usize..8,
+            fail_n in 0usize..4,
+        ) {
+            let sent: Vec<String> = (0..sent_n)
+                .map(|i| format!("kind -> user{i} <u{i}@x.test>"))
+                .collect();
+            let failed: Vec<String> = (0..fail_n)
+                .map(|i| format!("kind -> bad{i} <b{i}@x.test> (550 user unknown)"))
+                .collect();
+            let line = format_drain_detail(&sent, &failed, &[]);
+            proptest::prop_assert!(!line.contains('\r'));
+            proptest::prop_assert!(!line.contains('\n'));
+            for item in sent.iter().chain(failed.iter()) {
+                if !line.is_empty() {
+                    proptest::prop_assert!(line.contains(item));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn battle_format_drain_detail_under_contention() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+        for t in 0..8 {
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                for i in 0..64 {
+                    let sent = [format!("k -> u{t}-{i} <a@x>")];
+                    let failed = [format!("k -> b{t}-{i} <b@x> (550)")];
+                    let line = format_drain_detail(&sent, &failed, &[]);
+                    assert!(line.contains(&format!("u{t}-{i}")));
+                    assert!(line.contains("550"));
+                    assert!(!line.contains('\n'));
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("battle thread");
+        }
     }
 }

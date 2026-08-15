@@ -50,6 +50,19 @@ async fn e2e_mailer_queue_still_inserts_outbox_from_web() {
         .expect("outbox row");
     assert_eq!(status, "pending");
 
+    let summary = vauban_web::services::mailer::format_queue_summary(
+        "access_request.approved",
+        std::slice::from_ref(&event.recipient().clone()),
+        1,
+        0,
+        &[],
+    );
+    assert!(
+        summary.contains(recipient) && summary.contains("access_request.approved"),
+        "queue summary must name the event and the mailbox: {summary}"
+    );
+    assert!(!summary.contains('\n'));
+
     test_db::cleanup(&mut conn).await;
 }
 

@@ -57,6 +57,49 @@ fn inv_web_reexports_evidence_analyzer() {
 }
 
 #[test]
+fn inv_mailer_queue_is_one_summary_line() {
+    let mailer = include_str!("../../src/services/mailer.rs");
+    assert!(
+        mailer.contains("pub fn log_emails_queued"),
+        "web must expose a single-line queue summary"
+    );
+    assert!(
+        mailer.contains("pub fn format_queue_summary"),
+        "queue summary must be testable without tracing"
+    );
+    let queued = mailer
+        .find("\"Email queued\"")
+        .expect("per-row Email queued breadcrumb");
+    let window = &mailer[queued.saturating_sub(400)..queued];
+    assert!(
+        window.contains("tracing::debug!"),
+        "per-row Email queued must be debug! (fan-out uses log_emails_queued)"
+    );
+    assert!(
+        !window.contains("tracing::info!"),
+        "per-row Email queued must not be info!"
+    );
+}
+
+#[test]
+fn inv_mailer_drain_logs_smtp_failures() {
+    let outbox = include_str!("../../../vauban-mailer/src/outbox.rs");
+    assert!(
+        outbox.contains("\"Mailer drain: delivery failed\""),
+        "permanent SMTP errors (550 mailbox) must surface as one error line"
+    );
+    assert!(
+        outbox.contains("session.rset()"),
+        "drain must RSET after a failed envelope so the batch continues"
+    );
+    let smtp = include_str!("../../../vauban-mailer/src/smtp_client.rs");
+    assert!(
+        smtp.contains("pub async fn rset"),
+        "SMTP session must implement RSET"
+    );
+}
+
+#[test]
 fn inv_web_keeps_mailer_queue_not_smtp_dispatcher() {
     let mailer = include_str!("../../src/services/mailer.rs");
     assert!(

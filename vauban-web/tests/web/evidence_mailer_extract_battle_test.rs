@@ -12,6 +12,35 @@ fn repo_root() -> PathBuf {
 }
 
 #[test]
+fn battle_queue_summary_under_contention() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use vauban_web::services::mailer::{EmailRecipient, format_queue_summary};
+
+    let barrier = Arc::new(Barrier::new(8));
+    let mut handles = Vec::new();
+    for t in 0..8 {
+        let barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            for i in 0..64 {
+                let recipients = [
+                    EmailRecipient::new(format!("a{t}-{i}@x.test"), format!("alice{t}")),
+                    EmailRecipient::new(format!("b{t}-{i}@x.test"), format!("bob{t}")),
+                ];
+                let line = format_queue_summary("access_request.submitted", &recipients, 2, 0, &[]);
+                assert!(line.contains(&format!("a{t}-{i}@x.test")));
+                assert!(line.contains(&format!("b{t}-{i}@x.test")));
+                assert!(!line.contains('\n'));
+            }
+        }));
+    }
+    for h in handles {
+        h.join().expect("battle thread");
+    }
+}
+
+#[test]
 fn battle_supervisor_gate_is_mailer_not_web() {
     let main = std::fs::read_to_string(repo_root().join("vauban-supervisor/src/main.rs"))
         .expect("supervisor main");
