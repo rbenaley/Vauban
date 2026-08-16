@@ -570,6 +570,10 @@ async fn lot_a_handler_uses_helper_for_every_iacs_asset_type() {
         AssetType::IacsOpcua,
         AssetType::IacsProfinet,
         AssetType::IacsIec104,
+        AssetType::IacsEnip,
+        AssetType::IacsBacnetSc,
+        AssetType::IacsDnp3,
+        AssetType::IacsIec61850,
     ] {
         let asset_port: i32 = asset_type
             .default_port()

@@ -91,6 +91,10 @@ fn iacs_handler_does_not_smuggle_an_applicative_protocol_into_session_token() {
         "protocol: \"iacs_opcua\"",
         "protocol: \"iacs_profinet\"",
         "protocol: \"iacs_iec104\"",
+        "protocol: \"iacs_enip\"",
+        "protocol: \"iacs_bacnet_sc\"",
+        "protocol: \"iacs_dnp3\"",
+        "protocol: \"iacs_iec61850\"",
         "protocol: \"iacs_tcp\"",
         "protocol: asset.asset_type.as_str()",
         "protocol: asset_type.as_str()",
@@ -287,7 +291,13 @@ fn access_check_by_uuid_binds_iacs_tunnel_to_asset_type() {
          so a modbus-only rule cannot grant a profinet asset"
     );
     assert!(
-        access_handlers.contains("IACS_APPLICATIVE_PROTOCOLS.contains"),
-        "handle_check_access_by_uuid MUST reject iacs_tunnel on non-IACS assets"
+        access_handlers.contains("is_iacs_applicative_protocol"),
+        "handle_check_access_by_uuid MUST reject iacs_tunnel on non-IACS \
+         assets via the prefix helper (not a closed catalogue)"
+    );
+    assert!(
+        access_handlers.contains("rule_grants_asset_type"),
+        "iacs_tunnel_rule_includes_asset_type MUST use rule_grants_asset_type \
+         so a future iacs_* profile is connectable without a list edit"
     );
 }

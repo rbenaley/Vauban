@@ -16,6 +16,10 @@ fn all_profiles() -> impl Strategy<Value = ExpectedProfile> {
         Just(ExpectedProfile::OpcUa),
         Just(ExpectedProfile::Iec104),
         Just(ExpectedProfile::Profinet),
+        Just(ExpectedProfile::Enip),
+        Just(ExpectedProfile::Dnp3),
+        Just(ExpectedProfile::Iec61850),
+        Just(ExpectedProfile::BacnetSc),
         Just(ExpectedProfile::Passthrough),
     ]
 }

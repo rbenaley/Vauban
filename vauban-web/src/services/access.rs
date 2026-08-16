@@ -5,7 +5,9 @@
 ///
 /// All decisions are delegated to vauban-access via IPC; vauban-web does not
 /// run in standalone mode and therefore carries no SQL fallback.
+use diesel::dsl::sql;
 use diesel::prelude::*;
+use diesel::sql_types::Bool;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use std::sync::Arc;
 
@@ -64,6 +66,22 @@ pub async fn list_accessible_asset_ids(
         if entry.protocols.is_empty() {
             continue;
         }
+        // An "all IACS" snapshot (the pre-ADR-006 five tokens, which
+        // every later full save still contains) grants every
+        // applicative `iacs_*` via `starts_with` -- a future profile
+        // does not wait on a catalogue edit. Partial rules stay
+        // exact `eq_any`. See `rule_grants_asset_type`.
+        let all_iacs = shared::access_guard::is_legacy_all_iacs_rule(&entry.protocols);
+        let exact: Vec<String> = if all_iacs {
+            entry
+                .protocols
+                .iter()
+                .filter(|p| !shared::access_guard::is_iacs_applicative_protocol(p))
+                .cloned()
+                .collect()
+        } else {
+            entry.protocols.clone()
+        };
         // Special-case the virtual "All assets" group: instead of joining
         // through `asset_asset_groups` (which has zero rows for the
         // virtual id, by trigger invariant), enumerate every non-deleted
@@ -71,25 +89,59 @@ pub async fn list_accessible_asset_ids(
         // soft-delete and protocol semantics as a static rule, just with
         // a dynamic membership.
         if entry.asset_group_id == virtual_id {
-            let ids: Vec<i32> = assets::table
-                .filter(assets::is_deleted.eq(false))
-                .filter(assets::asset_type.eq_any(&entry.protocols))
-                .select(assets::id)
-                .load(conn)
-                .await
-                .map_err(AppError::Database)?;
+            let ids: Vec<i32> = if all_iacs {
+                assets::table
+                    .filter(assets::is_deleted.eq(false))
+                    .filter(
+                        assets::asset_type
+                            .eq_any(&exact)
+                            .or(sql::<Bool>("starts_with(assets.asset_type, 'iacs_')")),
+                    )
+                    .select(assets::id)
+                    .load(conn)
+                    .await
+                    .map_err(AppError::Database)?
+            } else {
+                assets::table
+                    .filter(assets::is_deleted.eq(false))
+                    .filter(assets::asset_type.eq_any(&exact))
+                    .select(assets::id)
+                    .load(conn)
+                    .await
+                    .map_err(AppError::Database)?
+            };
             all_ids.extend(ids);
             continue;
         }
-        let ids: Vec<i32> = assets::table
-            .inner_join(asset_asset_groups::table.on(assets::id.eq(asset_asset_groups::asset_id)))
-            .filter(asset_asset_groups::asset_group_id.eq(entry.asset_group_id))
-            .filter(assets::is_deleted.eq(false))
-            .filter(assets::asset_type.eq_any(&entry.protocols))
-            .select(assets::id)
-            .load(conn)
-            .await
-            .map_err(AppError::Database)?;
+        let ids: Vec<i32> = if all_iacs {
+            assets::table
+                .inner_join(
+                    asset_asset_groups::table.on(assets::id.eq(asset_asset_groups::asset_id)),
+                )
+                .filter(asset_asset_groups::asset_group_id.eq(entry.asset_group_id))
+                .filter(assets::is_deleted.eq(false))
+                .filter(
+                    assets::asset_type
+                        .eq_any(&exact)
+                        .or(sql::<Bool>("starts_with(assets.asset_type, 'iacs_')")),
+                )
+                .select(assets::id)
+                .load(conn)
+                .await
+                .map_err(AppError::Database)?
+        } else {
+            assets::table
+                .inner_join(
+                    asset_asset_groups::table.on(assets::id.eq(asset_asset_groups::asset_id)),
+                )
+                .filter(asset_asset_groups::asset_group_id.eq(entry.asset_group_id))
+                .filter(assets::is_deleted.eq(false))
+                .filter(assets::asset_type.eq_any(&exact))
+                .select(assets::id)
+                .load(conn)
+                .await
+                .map_err(AppError::Database)?
+        };
         all_ids.extend(ids);
     }
     all_ids.sort_unstable();

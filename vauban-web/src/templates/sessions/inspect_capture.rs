@@ -327,6 +327,10 @@ pub fn industrial_protocol_label(p: &str) -> &'static str {
         "iec104" => "IEC 60870-5-104",
         "opcua" => "OPC-UA Binary",
         "profinet" => "PROFINET",
+        "enip" => "EtherNet/IP",
+        "bacnet_sc" => "BACnet/SC",
+        "dnp3" => "DNP3",
+        "iec61850" => "IEC 61850 MMS",
         "tcp" | "" => "Generic TCP",
         _ => "Generic TCP",
     }
@@ -340,6 +344,10 @@ mod tests {
     fn industrial_protocol_label_known_values() {
         assert_eq!(industrial_protocol_label("modbus"), "Modbus/TCP");
         assert_eq!(industrial_protocol_label("iec104"), "IEC 60870-5-104");
+        assert_eq!(industrial_protocol_label("enip"), "EtherNet/IP");
+        assert_eq!(industrial_protocol_label("bacnet_sc"), "BACnet/SC");
+        assert_eq!(industrial_protocol_label("dnp3"), "DNP3");
+        assert_eq!(industrial_protocol_label("iec61850"), "IEC 61850 MMS");
         assert_eq!(industrial_protocol_label("tcp"), "Generic TCP");
         assert_eq!(industrial_protocol_label(""), "Generic TCP");
         assert_eq!(industrial_protocol_label("garbage"), "Generic TCP");

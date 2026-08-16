@@ -326,14 +326,17 @@ The 12 h figure is intentionally conservative: making the IACS TTL longer than t
 
 ## 14. Protocol recognition
 
-Typed IACS assets (`iacs_modbus`, `iacs_opcua`, `iacs_profinet`, `iacs_iec104`) are no longer labels identical to `iacs_tcp`. Two independent layers enforce the contract:
+Typed IACS assets (`iacs_modbus`, `iacs_opcua`, `iacs_profinet`,
+`iacs_iec104`, plus ADR 006 `iacs_enip` / `iacs_bacnet_sc` /
+`iacs_dnp3` / `iacs_iec61850`) are no longer labels identical to
+`iacs_tcp`. Two independent layers enforce the contract:
 
 ### 14.1 Authorization binding (`vauban-access`)
 
 When `CheckAccessByUuid(protocol="iacs_tunnel")` runs:
 
 1. Non-IACS assets (`ssh`, `rdp`) are denied immediately.
-2. Among granting access rules, at least one MUST list the asset's exact `asset_type` in `allowed_protocols` (e.g. rule `iacs_modbus` + asset `iacs_modbus`). A modbus-only rule MUST NOT grant a tunnel to an `iacs_profinet` asset in the same group.
+2. Among granting access rules, at least one MUST list the asset's exact `asset_type` in `allowed_protocols` (e.g. rule `iacs_modbus` + asset `iacs_modbus`). A modbus-only rule MUST NOT grant a tunnel to an `iacs_profinet` asset in the same group. A pre-ADR-006 "IACS (all industrial protocols)" row that still holds the five-token snapshot is treated as granting every current applicative `iacs_*` (see `expand_legacy_all_iacs_protocols`).
 
 The transport-meta token mint (`SessionToken.protocol = "iacs_tunnel"`) is unchanged.
 

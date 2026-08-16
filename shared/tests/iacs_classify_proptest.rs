@@ -3,7 +3,23 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use proptest::prelude::*;
-use shared::iacs_protocol::{WireProtocol, classify_peek};
+use shared::iacs_protocol::{ExpectedProfile, WireProtocol, classify_peek, evaluate_conformity};
+
+fn all_wire() -> [WireProtocol; 11] {
+    [
+        WireProtocol::Modbus,
+        WireProtocol::OpcUa,
+        WireProtocol::Iec104,
+        WireProtocol::Profinet,
+        WireProtocol::Enip,
+        WireProtocol::BacnetSc,
+        WireProtocol::Dnp3,
+        WireProtocol::Iec61850,
+        WireProtocol::BacnetIp,
+        WireProtocol::S7,
+        WireProtocol::Unknown,
+    ]
+}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
@@ -17,28 +33,41 @@ proptest! {
         prop_assert!(!a.as_str().is_empty());
     }
 
+    /// Random bytes must not confirm a typed profile unless they
+    /// actually match that family's magic (Unknown / other family).
+    #[test]
+    fn random_bytes_do_not_confirm_typed_profile(
+        buf in prop::collection::vec(any::<u8>(), 0..64)
+    ) {
+        let detected = classify_peek(&buf);
+        for expected in [
+            ExpectedProfile::Enip,
+            ExpectedProfile::Dnp3,
+            ExpectedProfile::BacnetSc,
+            ExpectedProfile::Iec61850,
+        ] {
+            let want = expected.expected_wire().expect("typed");
+            if detected != want {
+                let d = evaluate_conformity(expected, detected, false);
+                prop_assert_ne!(d, shared::iacs_protocol::ConformityDecision::Confirmed);
+            }
+        }
+    }
+
     /// Short prefixes that cannot complete a family header stay Unknown
     /// (or a stable known family when a complete prefix matches).
     #[test]
     fn short_prefix_is_unknown_or_stable(buf in prop::collection::vec(any::<u8>(), 0..7)) {
         let p = classify_peek(&buf);
-        // With < 3 bytes only Unknown or (len>=1 IEC104 start) possible.
-        // Property: calling twice is stable (already covered) and result
-        // is one of the five catalogue variants.
-        prop_assert!(matches!(
-            p,
-            WireProtocol::Modbus
-                | WireProtocol::OpcUa
-                | WireProtocol::Iec104
-                | WireProtocol::Profinet
-                | WireProtocol::Unknown
-        ));
-        if buf.len() < 3 && !(buf.first() == Some(&0x68) && buf.len() >= 2) {
-            // No OPC UA 3-byte tag, no Profinet 4-byte, no Modbus 8-byte.
-            // IEC104 needs 0x68 + length in 4..=253.
-            if buf.first() != Some(&0x68) {
-                prop_assert_eq!(p, WireProtocol::Unknown);
-            }
+        prop_assert!(all_wire().contains(&p));
+        // DNP3 needs 3 bytes; ENIP 24; TLS 5; TPKT 5. IEC-104 can
+        // confirm on a 2-byte `0x68` prefix.
+        if buf.len() < 3 && buf.first() != Some(&0x68) {
+            prop_assert!(
+                p == WireProtocol::Unknown
+                    || p == WireProtocol::OpcUa
+                    || p == WireProtocol::Iec104
+            );
         }
     }
 
@@ -59,8 +88,7 @@ proptest! {
             classify_peek(&[0x05, 0x00, 0x00, 0x00]),
             WireProtocol::Profinet
         );
-        // Trailing pad after a complete OPC UA tag stays OPC UA (Modbus
-        // needs protocol-id zeros at bytes 2-3 which "HEL..." does not).
+        prop_assert_eq!(classify_peek(&[0x05, 0x64, 0x05]), WireProtocol::Dnp3);
         let mut hel = b"HEL".to_vec();
         hel.extend_from_slice(&[0xFF; 16]);
         prop_assert_eq!(classify_peek(&hel), WireProtocol::OpcUa);
@@ -69,13 +97,7 @@ proptest! {
     /// `as_str` is nonempty for every catalogue variant.
     #[test]
     fn as_str_nonempty_for_all_variants(_unit in Just(())) {
-        for p in [
-            WireProtocol::Modbus,
-            WireProtocol::OpcUa,
-            WireProtocol::Iec104,
-            WireProtocol::Profinet,
-            WireProtocol::Unknown,
-        ] {
+        for p in all_wire() {
             prop_assert!(!p.as_str().is_empty());
         }
     }

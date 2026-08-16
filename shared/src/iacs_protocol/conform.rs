@@ -19,6 +19,9 @@ pub enum ConformityDecision {
 }
 
 /// Evaluate whether `detected` conforms to `expected`.
+///
+/// Any named [`WireProtocol`] other than the one this profile wants
+/// (including detect-only `BacnetIp` / `S7`) is [`ForeignProtocol`].
 pub fn evaluate_conformity(
     expected: ExpectedProfile,
     detected: WireProtocol,
@@ -35,18 +38,8 @@ pub fn evaluate_conformity(
     match detected {
         WireProtocol::Unknown if classifying => ConformityDecision::NeedMoreData,
         WireProtocol::Unknown => ConformityDecision::Unconfirmed,
-        WireProtocol::Modbus
-        | WireProtocol::OpcUa
-        | WireProtocol::Iec104
-        | WireProtocol::Profinet
-            if detected == want =>
-        {
-            ConformityDecision::Confirmed
-        }
-        WireProtocol::Modbus
-        | WireProtocol::OpcUa
-        | WireProtocol::Iec104
-        | WireProtocol::Profinet => ConformityDecision::ForeignProtocol,
+        other if other == want => ConformityDecision::Confirmed,
+        _ => ConformityDecision::ForeignProtocol,
     }
 }
 
@@ -54,6 +47,25 @@ pub fn evaluate_conformity(
 mod tests {
     use super::*;
     use crate::iacs_protocol::classify::classify_peek;
+
+    fn enip_register() -> Vec<u8> {
+        let mut p = vec![0u8; 24];
+        p[0..2].copy_from_slice(&0x0065u16.to_le_bytes());
+        p[2..4].copy_from_slice(&4u16.to_le_bytes());
+        p
+    }
+
+    fn dnp3_link() -> Vec<u8> {
+        vec![0x05, 0x64, 0x05, 0xC4, 0x01, 0x00, 0x00, 0x00]
+    }
+
+    fn s7_tpkt() -> Vec<u8> {
+        vec![0x03, 0x00, 0x00, 0x09, 0x02, 0xF0, 0x80, 0x32, 0x01]
+    }
+
+    fn bacnet_ip_bvll() -> Vec<u8> {
+        vec![0x81, 0x0B, 0x00, 0x08, 0x01, 0x20, 0xFF, 0xFF]
+    }
 
     #[test]
     fn passthrough_always_allows() {
@@ -106,6 +118,10 @@ mod tests {
             (ExpectedProfile::Modbus, WireProtocol::Iec104),
             (ExpectedProfile::OpcUa, WireProtocol::Modbus),
             (ExpectedProfile::Iec104, WireProtocol::Modbus),
+            (ExpectedProfile::Enip, WireProtocol::Dnp3),
+            (ExpectedProfile::Dnp3, WireProtocol::Enip),
+            (ExpectedProfile::BacnetSc, WireProtocol::BacnetIp),
+            (ExpectedProfile::Iec61850, WireProtocol::S7),
         ];
         for (expected, detected) in profiles {
             assert_eq!(
@@ -116,5 +132,63 @@ mod tests {
                 detected
             );
         }
+    }
+
+    #[test]
+    fn attack_enip_on_dnp3_profile_is_rejected() {
+        let detected = classify_peek(&enip_register());
+        assert_eq!(detected, WireProtocol::Enip);
+        assert_eq!(
+            evaluate_conformity(ExpectedProfile::Dnp3, detected, false),
+            ConformityDecision::ForeignProtocol
+        );
+    }
+
+    #[test]
+    fn attack_bacnet_ip_bvll_on_bacnet_sc_is_rejected() {
+        let detected = classify_peek(&bacnet_ip_bvll());
+        assert_eq!(detected, WireProtocol::BacnetIp);
+        assert_eq!(
+            evaluate_conformity(ExpectedProfile::BacnetSc, detected, false),
+            ConformityDecision::ForeignProtocol
+        );
+    }
+
+    #[test]
+    fn attack_s7_on_iec61850_is_rejected() {
+        let detected = classify_peek(&s7_tpkt());
+        assert_eq!(detected, WireProtocol::S7);
+        assert_eq!(
+            evaluate_conformity(ExpectedProfile::Iec61850, detected, false),
+            ConformityDecision::ForeignProtocol
+        );
+    }
+
+    #[test]
+    fn attack_s7_prefix_on_iec61850_is_rejected() {
+        let prefix = vec![0x03, 0x00, 0x00, 0x09, 0x02, 0xF0, 0x80];
+        let detected = classify_peek(&prefix);
+        assert_eq!(detected, WireProtocol::Unknown);
+        assert_eq!(
+            evaluate_conformity(ExpectedProfile::Iec61850, detected, true),
+            ConformityDecision::NeedMoreData
+        );
+        let mut full = prefix;
+        full.extend_from_slice(&[0x32, 0x01]);
+        let detected = classify_peek(&full);
+        assert_eq!(detected, WireProtocol::S7);
+        assert_eq!(
+            evaluate_conformity(ExpectedProfile::Iec61850, detected, true),
+            ConformityDecision::ForeignProtocol
+        );
+    }
+
+    #[test]
+    fn dnp3_confirms_on_dnp3_profile() {
+        let detected = classify_peek(&dnp3_link());
+        assert_eq!(
+            evaluate_conformity(ExpectedProfile::Dnp3, detected, false),
+            ConformityDecision::Confirmed
+        );
     }
 }

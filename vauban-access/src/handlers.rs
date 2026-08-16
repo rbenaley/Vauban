@@ -955,18 +955,26 @@ pub(crate) async fn resolve_actor_id(
 /// row's `allowed_protocols` column.
 ///
 /// For most protocols (`ssh`, `rdp`, applicative `iacs_*`) the rule
-/// holds the literal request string and a Postgres `@>` containment
-/// test ("the rule's array contains the request value") is the
-/// correct semantics. For the IACS transport-meta `iacs_tunnel`
-/// however, the rule holds the *applicative* protocol (`iacs_modbus`,
-/// `iacs_opcua`, ...) and we want a `&&` overlap test ("the rule's
-/// array intersects the expanded set"). The seam is centralised in
-/// [`shared::access_guard::expand_protocol_for_access_match`]; this
-/// helper plumbs the result into the Diesel query as a raw SQL
-/// fragment because Diesel's stable surface does not expose a
-/// generic `&& ARRAY[$bind]` helper for `Array<Nullable<Text>>`
-/// columns.
+/// holds the literal request string and a Postgres overlap test
+/// (`&&` against a one-element array) is the correct semantics.
+/// For the IACS transport-meta `iacs_tunnel` the rule holds an
+/// applicative `iacs_*` token: any such token grants the tunnel
+/// (`starts_with(p, 'iacs_')`, excluding `iacs_tunnel` itself).
+/// A future profile does not require a catalogue edit.
 fn protocol_match_filter(protocol: &str) -> diesel::expression::SqlLiteral<SqlBool> {
+    // Transport-meta: any applicative `iacs_*` on the rule grants the
+    // tunnel. Prefix match so a future profile does not wait on
+    // `IACS_APPLICATIVE_PROTOCOLS`. `iacs_tunnel` itself is excluded
+    // (the form never writes it; a hand-crafted row must not
+    // self-match).
+    if protocol == shared::access_guard::PROTOCOL_IACS_TUNNEL {
+        return sql::<SqlBool>(
+            "EXISTS (SELECT 1 FROM unnest(allowed_protocols) AS p \
+             WHERE p IS NOT NULL \
+               AND starts_with(p, 'iacs_') \
+               AND p IS DISTINCT FROM 'iacs_tunnel')",
+        );
+    }
     let expanded = shared::access_guard::expand_protocol_for_access_match(protocol);
     // Anti-injection: every element MUST go through `escape_sql_array_literal`
     // because `sql_query` here is built by string concat (Diesel's bind
@@ -985,7 +993,9 @@ fn protocol_match_filter(protocol: &str) -> diesel::expression::SqlLiteral<SqlBo
 }
 
 /// True when an active access_rule for `user_id` matches the IACS tunnel
-/// meta-protocol AND explicitly lists `asset_type` in `allowed_protocols`.
+/// meta-protocol AND grants `asset_type` via
+/// [`shared::access_guard::rule_grants_asset_type`] (exact token or
+/// pre-ADR-006 all-IACS snapshot, including future `iacs_*` profiles).
 async fn iacs_tunnel_rule_includes_asset_type(
     conn: &mut DbConnection,
     user_id: i32,
@@ -994,8 +1004,7 @@ async fn iacs_tunnel_rule_includes_asset_type(
 ) -> bool {
     use crate::schema::{access_rules, user_groups};
 
-    let type_literal = escape_sql_array_literal(asset_type);
-    let count: i64 = match access_rules::table
+    let rows: Vec<Vec<Option<String>>> = match access_rules::table
         .inner_join(user_groups::table.on(user_groups::group_id.eq(access_rules::user_group_id)))
         .filter(user_groups::user_id.eq(user_id))
         .filter(access_rules::asset_group_id.eq_any(asset_group_ids))
@@ -1009,14 +1018,11 @@ async fn iacs_tunnel_rule_includes_asset_type(
         .filter(protocol_match_filter(
             shared::access_guard::PROTOCOL_IACS_TUNNEL,
         ))
-        .filter(sql::<SqlBool>(&format!(
-            "allowed_protocols @> ARRAY[{type_literal}]::text[]"
-        )))
-        .count()
-        .get_result(conn)
+        .select(access_rules::allowed_protocols)
+        .load(conn)
         .await
     {
-        Ok(c) => c,
+        Ok(rows) => rows,
         Err(e) => {
             warn!(
                 user_id,
@@ -1027,7 +1033,10 @@ async fn iacs_tunnel_rule_includes_asset_type(
             return false;
         }
     };
-    count > 0
+    rows.into_iter().any(|protos| {
+        let flat: Vec<String> = protos.into_iter().flatten().collect();
+        shared::access_guard::rule_grants_asset_type(&flat, asset_type)
+    })
 }
 
 /// Defence-in-depth escaper for the protocol literals threaded
@@ -1312,7 +1321,7 @@ async fn handle_check_access_by_uuid(
     // the granting access_rule MUST include the asset's applicative type
     // (`iacs_modbus`, ...) -- not just any expanded `iacs_*` overlap.
     if protocol == shared::access_guard::PROTOCOL_IACS_TUNNEL
-        && !shared::access_guard::IACS_APPLICATIVE_PROTOCOLS.contains(&asset_type.as_str())
+        && !shared::access_guard::is_iacs_applicative_protocol(&asset_type)
     {
         info!(
             asset_uuid,
@@ -3332,12 +3341,7 @@ mod escape_tests {
     }
 
     #[test]
-    fn protocol_match_filter_iacs_tunnel_expands_to_overlap_with_applicative() {
-        // We can't run the SQL fragment without a Postgres connection,
-        // but we can render it and check the structure. The fragment
-        // produced for `iacs_tunnel` MUST mention every applicative
-        // IACS protocol AND use the `&&` overlap operator (NOT the
-        // `@>` containment operator that broke the pre-fix wiring).
+    fn protocol_match_filter_iacs_tunnel_uses_prefix_not_closed_catalogue() {
         use diesel::pg::Pg;
         use diesel::query_builder::{QueryBuilder, QueryFragment};
 
@@ -3347,32 +3351,23 @@ mod escape_tests {
             .expect("fragment must render");
         let sql = query_builder.finish();
         assert!(
-            sql.contains("&&"),
-            "the IACS meta-protocol filter MUST use the overlap (&&) \
-             operator, NOT the containment (@>) operator. Got: {sql}"
+            sql.contains("starts_with"),
+            "iacs_tunnel MUST match any applicative iacs_* via starts_with, \
+             not a closed catalogue. Got: {sql}"
         );
-        for needle in [
-            "'iacs_modbus'",
-            "'iacs_opcua'",
-            "'iacs_profinet'",
-            "'iacs_iec104'",
-            "'iacs_tcp'",
-        ] {
-            assert!(
-                sql.contains(needle),
-                "the IACS meta-protocol filter MUST mention {needle} \
-                 in its expansion. Got: {sql}"
-            );
-        }
-        // The transport-meta itself MUST NOT appear in the expansion --
-        // an admin who manually wrote `iacs_tunnel` into a rule
-        // (impossible via the form, possible via raw IPC) would
-        // otherwise match the request via self-reference, which is
-        // not the contract.
         assert!(
-            !sql.contains("'iacs_tunnel'"),
-            "the IACS meta-protocol MUST NOT self-include in its own \
-             expansion. Got: {sql}"
+            sql.contains("EXISTS"),
+            "iacs_tunnel filter MUST be an EXISTS unnest, not && ARRAY[...]. Got: {sql}"
+        );
+        assert!(
+            !sql.contains("&&"),
+            "closed-list overlap is the pre-factorization path; iacs_tunnel \
+             must not use it. Got: {sql}"
+        );
+        assert!(
+            sql.contains("IS DISTINCT FROM 'iacs_tunnel'"),
+            "the transport-meta MUST be excluded so a hand-crafted \
+             iacs_tunnel-only rule cannot self-match. Got: {sql}"
         );
     }
 
@@ -5593,8 +5588,8 @@ mod tests {
     // =====================================================================
 
     /// An access_rule with the canonical IACS form-side expansion
-    /// (`["iacs_modbus", "iacs_opcua", "iacs_profinet", "iacs_iec104",
-    /// "iacs_tcp"]`) MUST grant a `protocol="iacs_tunnel"` request
+    /// (`["iacs_modbus", ..., "iacs_tcp"]` -- every applicative
+    /// IACS token, ADR 006) MUST grant a `protocol="iacs_tunnel"` request
     /// on the matching (user, asset). This is the reproduction of
     /// the production bug that motivated the fix.
     #[tokio::test]
@@ -5798,6 +5793,77 @@ mod tests {
             AccessResponse::AccessChecked(r) => assert!(
                 !r.allowed,
                 "iacs_tunnel MUST be denied when rule is modbus-only but asset is profinet"
+            ),
+            other => panic!("Expected AccessChecked, got {:?}", other),
+        }
+
+        cleanup_asset(&pool, asset_id).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::RemoveGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    /// A pre-ADR-006 "IACS (all industrial protocols)" row still
+    /// persists the five-token snapshot. EtherNet/IP (and the other
+    /// ADR 006 profiles) MUST still grant `iacs_tunnel` so a rule
+    /// the operator never re-saved does not silently drop connect.
+    #[tokio::test]
+    async fn test_check_access_by_uuid_iacs_tunnel_granted_enip_on_legacy_all_rule() {
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+
+        let ug = create_test_vauban_group(&pool, &unique_name("ug_iacs_enip_legacy")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ag_iacs_enip_legacy")).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        let rule = create_test_rule(
+            &pool,
+            &unique_name("iacs_enip_legacy_rule"),
+            ug.id,
+            ag.id,
+            vec![
+                "iacs_modbus",
+                "iacs_opcua",
+                "iacs_profinet",
+                "iacs_iec104",
+                "iacs_tcp",
+            ],
+        )
+        .await;
+        let (asset_id, asset_uuid_str) =
+            insert_test_asset_with_type(&pool, &unique_name("asset_iacs_enip"), "iacs_enip", 44818)
+                .await;
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: user_uuid_str,
+                asset_uuid: asset_uuid_str,
+                protocol: "iacs_tunnel".to_string(),
+            },
+        )
+        .await;
+        match resp {
+            AccessResponse::AccessChecked(r) => assert!(
+                r.allowed,
+                "iacs_tunnel MUST be allowed for iacs_enip when the \
+                 rule is the pre-ADR-006 all-IACS snapshot"
             ),
             other => panic!("Expected AccessChecked, got {:?}", other),
         }

@@ -1091,10 +1091,12 @@ available alongside this one for archaeological purposes.
 - **Inspect Capture** (admin-only inline PCAP analyzer): the IACS
   recording bundle can now be analysed in the browser (`/sessions/
   recordings/{uuid}/inspect`) with industrial-protocol-aware
-  dissectors (Modbus/TCP, IEC-104; OPC-UA / PROFINET / DNP3 fall back
-  to passthrough). Server-rendered HTMX + Tailwind, ~10-line declarative
-  Alpine `x-data` for the tree<->hex bidirectional highlight, no inline
-  JavaScript. See `Vauban_IACS_Inspect_Capture_EN(1.0).md`. The
+  dissectors (Modbus/TCP, IEC-104, OPC-UA, PROFINET, EtherNet/IP
+  explicit, DNP3, IEC 61850 MMS; BACnet/SC handshake only --
+  ciphertext never `Cmd`). Server-rendered HTMX + Tailwind, ~10-line
+  declarative Alpine `x-data` for the tree<->hex bidirectional
+  highlight, no inline JavaScript. See
+  `Vauban_IACS_Inspect_Capture_EN(1.1).md`. The
   Recording Detail and Recordings List pages surface a contextual
   "Inspect Capture" / "Inspect" action only on finalized IACS
   recordings.

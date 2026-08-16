@@ -510,4 +510,128 @@ mod tests {
         );
         assert_upstream_empty(&mut upstream_read).await;
     }
+
+    #[tokio::test]
+    async fn dnp3_profile_rejects_enip_register_session() {
+        let (mut client, server) = duplex(64);
+        let (upstream, mut upstream_read) = duplex(64);
+        let h = handle();
+        let pump = tokio::spawn(async move {
+            filtered_copy_with_counter(
+                server,
+                upstream,
+                Arc::new(AtomicU64::new(0)),
+                h,
+                ExpectedProfile::Dnp3,
+                Uuid::new_v4(),
+                None,
+            )
+            .await
+        });
+        let mut enip = vec![0u8; 24];
+        enip[0..2].copy_from_slice(&0x0065u16.to_le_bytes());
+        client.write_all(&enip).await.unwrap();
+        drop(client);
+        assert!(matches!(
+            pump.await.unwrap(),
+            ProtocolGateOutcome::ForeignProtocol {
+                detected: WireProtocol::Enip
+            }
+        ));
+        assert_upstream_empty(&mut upstream_read).await;
+    }
+
+    #[tokio::test]
+    async fn bacnet_sc_profile_rejects_bacnet_ip_bvll() {
+        let (mut client, server) = duplex(64);
+        let (upstream, mut upstream_read) = duplex(64);
+        let h = handle();
+        let pump = tokio::spawn(async move {
+            filtered_copy_with_counter(
+                server,
+                upstream,
+                Arc::new(AtomicU64::new(0)),
+                h,
+                ExpectedProfile::BacnetSc,
+                Uuid::new_v4(),
+                None,
+            )
+            .await
+        });
+        client
+            .write_all(&[0x81, 0x0B, 0x00, 0x08, 0x01, 0x20, 0xFF, 0xFF])
+            .await
+            .unwrap();
+        drop(client);
+        assert!(matches!(
+            pump.await.unwrap(),
+            ProtocolGateOutcome::ForeignProtocol {
+                detected: WireProtocol::BacnetIp
+            }
+        ));
+        assert_upstream_empty(&mut upstream_read).await;
+    }
+
+    #[tokio::test]
+    async fn attack_s7_prefix_on_iec61850_is_rejected() {
+        let (mut client, server) = duplex(64);
+        let (upstream, mut upstream_read) = duplex(64);
+        let h = handle();
+        let pump = tokio::spawn(async move {
+            filtered_copy_with_counter(
+                server,
+                upstream,
+                Arc::new(AtomicU64::new(0)),
+                h,
+                ExpectedProfile::Iec61850,
+                Uuid::new_v4(),
+                None,
+            )
+            .await
+        });
+        client
+            .write_all(&[0x03, 0x00, 0x00, 0x09, 0x02, 0xF0, 0x80])
+            .await
+            .unwrap();
+        client.write_all(&[0x32, 0x01]).await.unwrap();
+        drop(client);
+        assert!(matches!(
+            pump.await.unwrap(),
+            ProtocolGateOutcome::ForeignProtocol {
+                detected: WireProtocol::S7
+            }
+        ));
+        assert_upstream_empty(&mut upstream_read).await;
+    }
+
+    #[tokio::test]
+    async fn iec61850_profile_rejects_s7comm() {
+        let (mut client, server) = duplex(64);
+        let (upstream, mut upstream_read) = duplex(64);
+        let h = handle();
+        let pump = tokio::spawn(async move {
+            filtered_copy_with_counter(
+                server,
+                upstream,
+                Arc::new(AtomicU64::new(0)),
+                h,
+                ExpectedProfile::Iec61850,
+                Uuid::new_v4(),
+                None,
+            )
+            .await
+        });
+        client
+            .write_all(&[0x03, 0x00, 0x00, 0x09, 0x02, 0xF0, 0x80, 0x32, 0x01])
+            .await
+            .unwrap();
+        drop(client);
+        assert!(matches!(
+            pump.await.unwrap(),
+            ProtocolGateOutcome::ForeignProtocol {
+                detected: WireProtocol::S7
+            }
+        ));
+        assert_upstream_empty(&mut upstream_read).await;
+    }
 }

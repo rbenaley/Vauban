@@ -122,7 +122,7 @@ pub struct DeleteAccessRuleWebForm {
 // Helpers
 // ============================================================================
 
-/// All 5 IACS asset_type values listed at once. Source of truth lives
+/// All IACS asset_type values listed at once. Source of truth lives
 /// on `AssetType::ALL` filtered through `is_iacs()` so a future variant
 /// added in `models/asset.rs` automatically lands in any rule the
 /// admin marked with the "IACS (all industrial protocols)" master
@@ -1076,9 +1076,15 @@ mod tests {
         );
         assert_eq!(
             from_helper.len(),
-            5,
-            "today the closed vocabulary has exactly five IACS protocols (Modbus, OPC UA, PROFINET, IEC-104, generic TCP)"
+            9,
+            "closed vocabulary has nine IACS protocols (ADR 006)"
         );
+        for p in &from_helper {
+            assert!(
+                shared::access_guard::is_iacs_applicative_protocol(p),
+                "iacs_protocols() token {p} must pass the shared prefix helper"
+            );
+        }
     }
 
     #[test]
@@ -1090,6 +1096,10 @@ mod tests {
         assert!(protos.contains(&"iacs_opcua".to_string()));
         assert!(protos.contains(&"iacs_profinet".to_string()));
         assert!(protos.contains(&"iacs_iec104".to_string()));
+        assert!(protos.contains(&"iacs_enip".to_string()));
+        assert!(protos.contains(&"iacs_bacnet_sc".to_string()));
+        assert!(protos.contains(&"iacs_dnp3".to_string()));
+        assert!(protos.contains(&"iacs_iec61850".to_string()));
         assert!(protos.contains(&"iacs_tcp".to_string()));
     }
 

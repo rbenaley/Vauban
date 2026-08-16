@@ -17,7 +17,7 @@
 //!      `kind='all'`.
 //!
 //!   4. The Rust enum's exhaustive `ALL` slice / `parse` round-trip
-//!      stays in lock-step with the canonical 7 wire strings.
+//!      stays in lock-step with the canonical 11 wire strings.
 //!
 //! These are integration tests (require Postgres) and run in the
 //! workspace-default test threads pool.
@@ -28,7 +28,38 @@ use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::Text;
 use diesel_async::RunQueryDsl;
+use shared::access_guard::{PROTOCOL_IACS_TUNNEL, is_iacs_applicative_protocol};
 use vauban_web::models::asset::AssetType;
+
+/// `AssetType::is_iacs()` is the prefix helper. A new `iacs_*`
+/// variant is industrial as soon as `as_str()` uses the prefix --
+/// no second match list. Conversely ssh/rdp/`iacs_tunnel` never are.
+#[test]
+fn asset_type_is_iacs_matches_shared_prefix_helper() {
+    for variant in AssetType::ALL {
+        assert_eq!(
+            variant.is_iacs(),
+            is_iacs_applicative_protocol(variant.as_str()),
+            "{:?} as_str={:?} drifted from is_iacs_applicative_protocol",
+            variant,
+            variant.as_str()
+        );
+        assert_ne!(
+            variant.as_str(),
+            PROTOCOL_IACS_TUNNEL,
+            "AssetType must never persist the transport-meta"
+        );
+        if variant.as_str().starts_with("iacs_") {
+            assert!(
+                variant.is_iacs(),
+                "{:?} wire token starts with iacs_ so is_iacs() must be true",
+                variant
+            );
+        }
+    }
+    assert!(!is_iacs_applicative_protocol(PROTOCOL_IACS_TUNNEL));
+    assert!(is_iacs_applicative_protocol("iacs_future_profile"));
+}
 
 #[tokio::test]
 async fn asset_type_check_constraint_matches_rust_enum() {

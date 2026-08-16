@@ -470,6 +470,10 @@ pub(crate) fn validate_required_credentials(
         | AssetType::IacsOpcua
         | AssetType::IacsProfinet
         | AssetType::IacsIec104
+        | AssetType::IacsEnip
+        | AssetType::IacsBacnetSc
+        | AssetType::IacsDnp3
+        | AssetType::IacsIec61850
         | AssetType::IacsTcp => {}
     }
 
@@ -661,6 +665,10 @@ pub(crate) fn build_connection_config(
         | AssetType::IacsOpcua
         | AssetType::IacsProfinet
         | AssetType::IacsIec104
+        | AssetType::IacsEnip
+        | AssetType::IacsBacnetSc
+        | AssetType::IacsDnp3
+        | AssetType::IacsIec61850
         | AssetType::IacsTcp => {}
     }
 
@@ -904,6 +912,10 @@ pub(crate) fn compute_updated_connection_config(
         | AssetType::IacsOpcua
         | AssetType::IacsProfinet
         | AssetType::IacsIec104
+        | AssetType::IacsEnip
+        | AssetType::IacsBacnetSc
+        | AssetType::IacsDnp3
+        | AssetType::IacsIec61850
         | AssetType::IacsTcp => {
             obj.remove("auth_type");
             obj.remove("password");

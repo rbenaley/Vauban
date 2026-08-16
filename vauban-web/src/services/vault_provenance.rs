@@ -583,6 +583,10 @@ mod tests {
             AssetType::IacsOpcua,
             AssetType::IacsProfinet,
             AssetType::IacsIec104,
+            AssetType::IacsEnip,
+            AssetType::IacsBacnetSc,
+            AssetType::IacsDnp3,
+            AssetType::IacsIec61850,
             AssetType::IacsTcp,
         ] {
             let c = candidate(

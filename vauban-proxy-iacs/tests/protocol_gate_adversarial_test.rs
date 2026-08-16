@@ -82,3 +82,40 @@ fn tcp_profile_is_passthrough() {
         ConformityDecision::AllowPassthrough
     );
 }
+
+#[test]
+fn classify_matrix_foreign_enip_vs_dnp3() {
+    use shared::iacs_protocol::{
+        ConformityDecision, ExpectedProfile, WireProtocol, evaluate_conformity,
+    };
+    assert_eq!(
+        evaluate_conformity(ExpectedProfile::Dnp3, WireProtocol::Enip, false),
+        ConformityDecision::ForeignProtocol
+    );
+    assert_eq!(
+        evaluate_conformity(ExpectedProfile::Enip, WireProtocol::Dnp3, false),
+        ConformityDecision::ForeignProtocol
+    );
+}
+
+#[test]
+fn classify_matrix_foreign_bvll_vs_bacnet_sc() {
+    use shared::iacs_protocol::{
+        ConformityDecision, ExpectedProfile, WireProtocol, evaluate_conformity,
+    };
+    assert_eq!(
+        evaluate_conformity(ExpectedProfile::BacnetSc, WireProtocol::BacnetIp, false),
+        ConformityDecision::ForeignProtocol
+    );
+}
+
+#[test]
+fn classify_matrix_foreign_s7_vs_iec61850() {
+    use shared::iacs_protocol::{
+        ConformityDecision, ExpectedProfile, WireProtocol, evaluate_conformity,
+    };
+    assert_eq!(
+        evaluate_conformity(ExpectedProfile::Iec61850, WireProtocol::S7, false),
+        ConformityDecision::ForeignProtocol
+    );
+}

@@ -37,7 +37,7 @@
 ///
 /// This file has FOUR layers of E2E coverage:
 ///
-/// 1. **Happy path (5 tests)** -- one per IACS variant. Submits the
+/// 1. **Happy path (9 tests)** -- one per IACS variant. Submits the
 ///    payload that the browser sends after the JS strip runs (no
 ///    `ssh_*` fields, no `rdp_domain`) and asserts the create handler
 ///    persists the row and redirects to its detail page.
@@ -196,6 +196,30 @@ async fn iacs_profinet_asset_creates_via_web_form() {
 #[serial]
 async fn iacs_iec104_asset_creates_via_web_form() {
     create_iacs_asset_happy_path("iacs_iec104", 2404, AssetType::IacsIec104).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn iacs_enip_asset_creates_via_web_form() {
+    create_iacs_asset_happy_path("iacs_enip", 44818, AssetType::IacsEnip).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn iacs_bacnet_sc_asset_creates_via_web_form() {
+    create_iacs_asset_happy_path("iacs_bacnet_sc", 443, AssetType::IacsBacnetSc).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn iacs_dnp3_asset_creates_via_web_form() {
+    create_iacs_asset_happy_path("iacs_dnp3", 20000, AssetType::IacsDnp3).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn iacs_iec61850_asset_creates_via_web_form() {
+    create_iacs_asset_happy_path("iacs_iec61850", 102, AssetType::IacsIec61850).await;
 }
 
 #[tokio::test]

@@ -240,7 +240,11 @@ a glance every state-changing intent the EWS sent to the asset.
 | IEC 60870-5-104                                      | `iec104`      | APCI start byte / format / sequence numbers, ASDU type ID, Cause of Transmission |
 | OPC-UA Binary (UA TCP)                               | `opcua`       | Message type header, heuristic service-id classification for `MSG` frames |
 | PROFINET DCE/RPC                                     | `profinet`    | CO PDU version / ptype / frag length |
-| BACnet/SC, MQTT/TLS, DNP3, generic                   | `passthrough` | byte count + ASCII preview |
+| EtherNet/IP explicit (CIP/TCP)                       | `enip`        | Encapsulation command, session handle, status; CIP Set / Forward_Open → `Cmd` |
+| DNP3 (IEEE 1815 / TCP)                               | `dnp3`        | Link `05 64`, dest/src; Write / Select / Operate → `Cmd` |
+| IEC 61850 MMS/TCP                                    | `iec61850`    | TPKT + COTP; MMS Read / Initiate → `Read`; Write → `Cmd`; S7-shaped TPKT stays `Read` |
+| BACnet/SC                                            | `bacnet_sc`   | TLS handshake / HTTP upgrade → `Read`; ciphertext **never** `Cmd` |
+| MQTT/TLS, S7, BACnet/IP, generic                     | `passthrough` | byte count + ASCII preview |
 
 ### 5.3 The Passthrough Floor
 
@@ -372,14 +376,21 @@ upstream-network code in the analyzer module. Inspect Capture
 
 ## 9. Limitations & Future Work
 
-- **Protocol coverage.** v1.1 ships dissectors for Modbus/TCP,
-  IEC-60870-5-104, OPC-UA Binary (UA TCP), and PROFINET DCE/RPC.
-  BACnet/SC, MQTT/TLS, DNP3, and other exotic profiles still fall
-  back to `passthrough`.
+- **Protocol coverage.** v1.1 (amended ADR 006) ships dissectors for
+  Modbus/TCP, IEC-60870-5-104, OPC-UA Binary, PROFINET DCE/RPC,
+  EtherNet/IP explicit, DNP3, IEC 61850 MMS/TCP, and BACnet/SC
+  (TLS handshake only). MQTT/TLS, S7, BACnet/IP, and other exotic
+  profiles still fall back to `passthrough`. MMS is not GOOSE/SV;
+  TPKT on port 102 is not automatically S7comm.
+- **BACnet/SC honesty.** The peek and the dissector confirm TLS (or
+  an HTTP/WebSocket upgrade), not a BACnet APDU. Encrypted records
+  never classify as `Cmd`.
 - **TCP cross-segment reassembly.** Bounded per-direction reassembly
   is implemented for length-framed protocols (Modbus, OPC-UA,
-  IEC-104). PROFINET and passthrough treat each TCP segment as an
-  atomic PDU unless a partial DCE header is detected.
+  IEC-104, ENIP, DNP3, IEC 61850 TPKT, TLS records). PROFINET and
+  passthrough treat each TCP segment as an atomic PDU unless a
+  partial DCE header is detected. Incomplete fragments never
+  classify as `Cmd`.
 - **Filter expressiveness.** Filters are bounded to direction, kind,
   and free-text search on summaries. BPF-style expressions are
   intentionally out of scope for v1.0.
@@ -405,6 +416,10 @@ vauban-web-evidence/src/analyzer/
         iec104.rs           IEC 60870-5-104
         opcua.rs            OPC-UA Binary (UA TCP)
         profinet.rs         PROFINET DCE/RPC
+        enip.rs             EtherNet/IP explicit (CIP/TCP)
+        dnp3.rs             IEEE 1815 / DNP3
+        iec61850.rs         IEC 61850 MMS/TCP (TPKT + COTP)
+        bacnet_sc.rs        BACnet/SC TLS / WS (never `Cmd` on ciphertext)
         passthrough.rs      conservative fallback (never `Cmd`)
     types.rs                PacketSummary, FieldNode, filters, paging
     mod.rs                  analyze_channel, page_summaries, analyze_packet
@@ -467,7 +482,7 @@ restore the previous filter combination.
 
 | Document | Relevance |
 |----------|-----------|
-| [Session Recording Architecture](Vauban_Recording_Architecture_EN(1.7).md) | PCAP file format, `meta.json`, integrity hash, FD broker contract |
+| [Session Recording Architecture](Vauban_Recording_Architecture_EN(1.9).md) | PCAP file format, `meta.json`, integrity hash, FD broker contract |
 | [IACS Proxy Architecture](Vauban_IACS_Proxy_Architecture_EN(1.1).md) | Upstream proxy that produced the PCAP; protocol gates |
 | [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.3).md) | Supervisor FD broker, Capsicum sandboxing |
 | [IAM Architecture](Vauban_IAM_Architecture_EN(1.1).md) | Casbin / `PermissionContext`, three-layer authorization |
@@ -478,6 +493,14 @@ restore the previous filter combination.
 
 This appendix is informational; the current sections describe the
 *current* architecture.
+
+### 1.1 (amended 17 August 2026)
+
+- ADR 006 profiles: EtherNet/IP explicit, DNP3, IEC 61850 MMS/TCP,
+  BACnet/SC (TLS handshake / opaque records). Ciphertext and
+  incomplete fragments still never classify as `Cmd`.
+- Catalogue limits documented: MMS ≠ GOOSE/SV; TPKT ≠ S7comm;
+  BACnet/SC peek confirms TLS, not a BACnet APDU.
 
 ### 1.1 (21 July 2026)
 

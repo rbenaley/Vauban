@@ -2,7 +2,7 @@
 #
 # Lint: every value of the closed `assets.asset_type` vocabulary must
 # appear (a) in the SQL CHECK constraint introduced by migration
-# 20260508000000_iacs_tunnel and (b) as a Rust variant of the
+# 20260817000000_iacs_protocol_profiles and (b) as a Rust variant of the
 # `AssetType` enum in `vauban-web/src/models/asset.rs`.
 #
 # This is a structural lint; the runtime drift between the SQL CHECK
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-MIGRATION="${REPO_ROOT}/vauban-db/migrations/20260508000000_iacs_tunnel/up.sql"
+MIGRATION="${REPO_ROOT}/vauban-db/migrations/20260817000000_iacs_protocol_profiles/up.sql"
 ENUM_FILE="${REPO_ROOT}/vauban-web/src/models/asset.rs"
 
 if [[ ! -f "${MIGRATION}" ]]; then
@@ -33,6 +33,10 @@ EXPECTED=(
     "iacs_opcua"
     "iacs_profinet"
     "iacs_iec104"
+    "iacs_enip"
+    "iacs_bacnet_sc"
+    "iacs_dnp3"
+    "iacs_iec61850"
     "iacs_tcp"
 )
 
@@ -80,4 +84,4 @@ if [[ "${fail}" -ne 0 ]]; then
     exit 1
 fi
 
-echo "OK -- assets.asset_type vocabulary in lock-step (7 entries)"
+echo "OK -- assets.asset_type vocabulary in lock-step (11 entries)"

@@ -338,3 +338,150 @@ fn modbus_split_fc06_write_yields_single_cmd() {
         "first segment should surface as a fragment"
     );
 }
+
+fn build_enip_capture() -> Vec<u8> {
+    let mut flow = synth::TcpFlow::new(
+        "uuid",
+        3,
+        synth::Endpoints::parse("192.0.2.30", 49_154, "198.51.100.22", 44818),
+    );
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&synth::build_global_header());
+    for r in synth::build_handshake(&flow, 0) {
+        buf.extend_from_slice(&r);
+    }
+    let mut set = vec![0u8; 26];
+    set[0..2].copy_from_slice(&0x006Fu16.to_le_bytes());
+    set[2..4].copy_from_slice(&2u16.to_le_bytes());
+    set[24] = 0x10; // SetAttributeSingle
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &set, 1_000) {
+        buf.extend_from_slice(&r);
+    }
+    for r in synth::build_close(&flow, 2_000) {
+        buf.extend_from_slice(&r);
+    }
+    buf
+}
+
+fn build_dnp3_operate_capture() -> Vec<u8> {
+    let mut flow = synth::TcpFlow::new(
+        "uuid",
+        4,
+        synth::Endpoints::parse("192.0.2.31", 49_155, "198.51.100.23", 20000),
+    );
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&synth::build_global_header());
+    for r in synth::build_handshake(&flow, 0) {
+        buf.extend_from_slice(&r);
+    }
+    // IEEE 1815: LENGTH=7 => user=2 + one data CRC (2) => 14 octets.
+    let operate = vec![
+        0x05, 0x64, 0x07, 0xC4, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0xC0, 0x04, 0x00, 0x00,
+    ];
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &operate, 1_000)
+    {
+        buf.extend_from_slice(&r);
+    }
+    for r in synth::build_close(&flow, 2_000) {
+        buf.extend_from_slice(&r);
+    }
+    buf
+}
+
+fn build_bacnet_sc_capture() -> Vec<u8> {
+    let mut flow = synth::TcpFlow::new(
+        "uuid",
+        5,
+        synth::Endpoints::parse("192.0.2.32", 49_156, "198.51.100.24", 443),
+    );
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&synth::build_global_header());
+    for r in synth::build_handshake(&flow, 0) {
+        buf.extend_from_slice(&r);
+    }
+    let mut hello = vec![0x16, 0x03, 0x03, 0x00, 0x20];
+    hello.resize(5 + 0x20, 0);
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &hello, 1_000) {
+        buf.extend_from_slice(&r);
+    }
+    let app = vec![0x17, 0x03, 0x03, 0x00, 0x08, 0xAA, 0xBB, 0xCC, 0xDD];
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &app, 2_000) {
+        buf.extend_from_slice(&r);
+    }
+    for r in synth::build_close(&flow, 3_000) {
+        buf.extend_from_slice(&r);
+    }
+    buf
+}
+
+#[test]
+fn enip_capture_classifies_set_attribute_as_cmd() {
+    let buf = build_enip_capture();
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Enip).unwrap();
+    let cmds: Vec<_> = summaries
+        .iter()
+        .filter(|s| s.kind == PacketKind::Cmd)
+        .collect();
+    assert_eq!(cmds.len(), 1, "SetAttributeSingle -> Cmd");
+}
+
+#[test]
+fn dnp3_capture_classifies_operate_as_cmd() {
+    let buf = build_dnp3_operate_capture();
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Dnp3).unwrap();
+    let cmds: Vec<_> = summaries
+        .iter()
+        .filter(|s| s.kind == PacketKind::Cmd)
+        .collect();
+    assert_eq!(cmds.len(), 1, "Operate -> Cmd");
+}
+
+#[test]
+fn bacnet_sc_ciphertext_never_cmd() {
+    let buf = build_bacnet_sc_capture();
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::BacnetSc).unwrap();
+    assert!(
+        summaries.iter().any(|s| s.summary.contains("handshake")),
+        "TLS handshake must appear"
+    );
+    assert!(
+        summaries.iter().all(|s| s.kind != PacketKind::Cmd),
+        "BACnet/SC ciphertext must never classify as Cmd"
+    );
+}
+
+fn build_iec61850_write_capture() -> Vec<u8> {
+    let mut flow = synth::TcpFlow::new(
+        "uuid",
+        6,
+        synth::Endpoints::parse("192.0.2.33", 49_157, "198.51.100.25", 102),
+    );
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&synth::build_global_header());
+    for r in synth::build_handshake(&flow, 0) {
+        buf.extend_from_slice(&r);
+    }
+    let mut write = vec![
+        0x03, 0x00, 0x00, 0x00, 0x06, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA5, 0x00,
+    ];
+    let len = write.len() as u16;
+    write[2..4].copy_from_slice(&len.to_be_bytes());
+    for r in synth::build_data_records(&mut flow, synth::Direction::ClientToServer, &write, 1_000) {
+        buf.extend_from_slice(&r);
+    }
+    for r in synth::build_close(&flow, 2_000) {
+        buf.extend_from_slice(&r);
+    }
+    buf
+}
+
+#[test]
+fn iec61850_capture_classifies_mms_write_as_cmd() {
+    let buf = build_iec61850_write_capture();
+    let summaries = analyze_channel_bytes(&buf, ExpectedProfile::Iec61850).unwrap();
+    let cmds: Vec<_> = summaries
+        .iter()
+        .filter(|s| s.kind == PacketKind::Cmd)
+        .collect();
+    assert_eq!(cmds.len(), 1, "MMS Write tag 0xA5 -> Cmd");
+}

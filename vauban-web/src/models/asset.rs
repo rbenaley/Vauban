@@ -46,12 +46,14 @@ where
 ///     as a TCP tunnel; never recorded as text/PTY.
 ///
 /// IACS variants encode the industrial protocol family (Modbus, OPC-UA,
-/// Profinet, IEC-60870-5-104) plus a generic catch-all (`IacsTcp`) for
-/// industrial protocols not yet profiled. The catch-all has NO default
-/// port: the asset form requires the operator to enter one explicitly.
+/// Profinet, IEC-60870-5-104, EtherNet/IP explicit, BACnet/SC, DNP3,
+/// IEC 61850 MMS) plus a generic catch-all (`IacsTcp`) for protocols
+/// not yet profiled (S7, MQTT, BACnet/IP, ...). See ADR 006. The
+/// catch-all has NO default port: the asset form requires the operator
+/// to enter one explicitly.
 ///
 /// Wire vocabulary is closed: the `assets_asset_type_chk` SQL CHECK
-/// constraint enforces the exact 7 strings below at insert time, and
+/// constraint enforces the exact 11 strings below at insert time, and
 /// the `iacs_drift_test` test extracts that constraint via
 /// `pg_get_constraintdef` and asserts it lists every variant declared
 /// here. The Rust `parse` function ALSO refuses unknown values
@@ -79,8 +81,12 @@ pub enum AssetType {
     IacsOpcua,
     IacsProfinet,
     IacsIec104,
+    IacsEnip,
+    IacsBacnetSc,
+    IacsDnp3,
+    IacsIec61850,
     /// Catch-all for industrial protocols not yet profiled by Vauban
-    /// (DNP3, BACnet, S7, EtherNet/IP, ...). No default port, the
+    /// (S7, MQTT, BACnet/IP, ...). See ADR 006. No default port; the
     /// admin must set one explicitly when creating the asset.
     IacsTcp,
 }
@@ -105,6 +111,10 @@ pub enum IacsProtocol {
     OpcUa,
     Profinet,
     Iec104,
+    Enip,
+    BacnetSc,
+    Dnp3,
+    Iec61850,
     /// Generic TCP catch-all (`IacsTcp`); see `AssetType::IacsTcp` doc.
     Tcp,
 }
@@ -116,6 +126,10 @@ impl IacsProtocol {
             Self::OpcUa => "opcua",
             Self::Profinet => "profinet",
             Self::Iec104 => "iec104",
+            Self::Enip => "enip",
+            Self::BacnetSc => "bacnet_sc",
+            Self::Dnp3 => "dnp3",
+            Self::Iec61850 => "iec61850",
             Self::Tcp => "tcp",
         }
     }
@@ -148,6 +162,10 @@ impl AssetType {
             Self::IacsOpcua => "iacs_opcua",
             Self::IacsProfinet => "iacs_profinet",
             Self::IacsIec104 => "iacs_iec104",
+            Self::IacsEnip => "iacs_enip",
+            Self::IacsBacnetSc => "iacs_bacnet_sc",
+            Self::IacsDnp3 => "iacs_dnp3",
+            Self::IacsIec61850 => "iacs_iec61850",
             Self::IacsTcp => "iacs_tcp",
         }
     }
@@ -164,6 +182,10 @@ impl AssetType {
             "iacs_opcua" => Ok(Self::IacsOpcua),
             "iacs_profinet" => Ok(Self::IacsProfinet),
             "iacs_iec104" => Ok(Self::IacsIec104),
+            "iacs_enip" => Ok(Self::IacsEnip),
+            "iacs_bacnet_sc" => Ok(Self::IacsBacnetSc),
+            "iacs_dnp3" => Ok(Self::IacsDnp3),
+            "iacs_iec61850" => Ok(Self::IacsIec61850),
             "iacs_tcp" => Ok(Self::IacsTcp),
             other => Err(AssetTypeParseError(other.to_string())),
         }
@@ -198,21 +220,27 @@ impl AssetType {
             Self::IacsProfinet => Some(34962),
             // IEC 60870-5-104 / IANA 2404.
             Self::IacsIec104 => Some(2404),
+            // EtherNet/IP explicit CIP / IANA 44818.
+            Self::IacsEnip => Some(44818),
+            // BACnet/SC over TLS (ADR 006; not UDP 47808).
+            Self::IacsBacnetSc => Some(443),
+            // DNP3 / IEEE 1815 TCP / IANA 20000.
+            Self::IacsDnp3 => Some(20000),
+            // IEC 61850 MMS / TPKT (same IANA 102 as S7).
+            Self::IacsIec61850 => Some(102),
             // No default for the generic catch-all.
             Self::IacsTcp => None,
         }
     }
 
     /// Whether this asset_type belongs to the IACS family.
+    ///
+    /// Delegates to
+    /// [`shared::access_guard::is_iacs_applicative_protocol`] so a
+    /// new `iacs_*` variant is industrial as soon as `as_str()` uses
+    /// the prefix -- no second match arm to forget.
     pub fn is_iacs(&self) -> bool {
-        matches!(
-            self,
-            Self::IacsModbus
-                | Self::IacsOpcua
-                | Self::IacsProfinet
-                | Self::IacsIec104
-                | Self::IacsTcp
-        )
+        shared::access_guard::is_iacs_applicative_protocol(self.as_str())
     }
 
     /// Whether this asset_type belongs to the classical IT family
@@ -236,6 +264,10 @@ impl AssetType {
             Self::IacsOpcua => Some(IacsProtocol::OpcUa),
             Self::IacsProfinet => Some(IacsProtocol::Profinet),
             Self::IacsIec104 => Some(IacsProtocol::Iec104),
+            Self::IacsEnip => Some(IacsProtocol::Enip),
+            Self::IacsBacnetSc => Some(IacsProtocol::BacnetSc),
+            Self::IacsDnp3 => Some(IacsProtocol::Dnp3),
+            Self::IacsIec61850 => Some(IacsProtocol::Iec61850),
             Self::IacsTcp => Some(IacsProtocol::Tcp),
             Self::Ssh | Self::Rdp => None,
         }
@@ -250,6 +282,10 @@ impl AssetType {
         AssetType::IacsOpcua,
         AssetType::IacsProfinet,
         AssetType::IacsIec104,
+        AssetType::IacsEnip,
+        AssetType::IacsBacnetSc,
+        AssetType::IacsDnp3,
+        AssetType::IacsIec61850,
         AssetType::IacsTcp,
     ];
 
@@ -264,6 +300,10 @@ impl AssetType {
             Self::IacsOpcua => "IACS - OPC UA",
             Self::IacsProfinet => "IACS - PROFINET",
             Self::IacsIec104 => "IACS - IEC 60870-5-104",
+            Self::IacsEnip => "IACS - EtherNet/IP",
+            Self::IacsBacnetSc => "IACS - BACnet/SC",
+            Self::IacsDnp3 => "IACS - DNP3",
+            Self::IacsIec61850 => "IACS - IEC 61850 MMS",
             Self::IacsTcp => "IACS - Generic TCP",
         }
     }
@@ -291,6 +331,10 @@ impl AssetType {
             Self::IacsOpcua => "OPC",
             Self::IacsProfinet => "PN",
             Self::IacsIec104 => "104",
+            Self::IacsEnip => "EIP",
+            Self::IacsBacnetSc => "BSC",
+            Self::IacsDnp3 => "DNP",
+            Self::IacsIec61850 => "618",
             Self::IacsTcp => "TCP",
         }
     }
@@ -306,6 +350,10 @@ impl AssetType {
             Self::IacsOpcua => "OPC UA",
             Self::IacsProfinet => "PROFINET",
             Self::IacsIec104 => "IEC-104",
+            Self::IacsEnip => "EtherNet/IP",
+            Self::IacsBacnetSc => "BACnet/SC",
+            Self::IacsDnp3 => "DNP3",
+            Self::IacsIec61850 => "IEC 61850",
             Self::IacsTcp => "IACS (TCP)",
         }
     }
@@ -320,7 +368,7 @@ impl AssetType {
 
     /// `(value, label)` tuples suitable for the asset_type `<select>`
     /// element in the admin asset form. Single source of truth so the
-    /// 7 entries cannot drift between create / edit / list templates.
+    /// 11 entries cannot drift between create / edit / list templates.
     ///
     /// `industrial_enabled` mirrors `[industrial].enabled` from the
     /// loaded TOML (see [`crate::config::IndustrialConfig::enabled`]).
@@ -342,7 +390,7 @@ impl AssetType {
     /// [`Self::select_options`] PLUS the synthetic
     /// `("iacs", "IACS - All Industrial Protocols")` row that lets
     /// the operator filter on EVERY `iacs_*` asset_type at once
-    /// without ticking five entries.
+    /// without ticking every IACS entry.
     ///
     /// `industrial_enabled = false` filters out every `iacs_*` variant
     /// AND the synthetic `iacs` token (see [`IACS_ALL_FILTER_TOKEN`])
@@ -390,9 +438,9 @@ impl AssetType {
     }
 
     /// `(value, label)` tuples for the industrial-protocol `<select>`
-    /// on the IACS asset edit form. Only the five applicative IACS
-    /// variants -- never SSH/RDP and never the synthetic `iacs` filter
-    /// token.
+    /// on the IACS asset edit form. Every applicative IACS variant
+    /// (`is_iacs()`) -- never SSH/RDP and never the synthetic `iacs`
+    /// filter token.
     pub fn iacs_select_options() -> Vec<(String, String)> {
         Self::iacs_variants()
             .into_iter()
@@ -504,7 +552,7 @@ impl diesel::deserialize::FromSql<diesel::sql_types::Varchar, diesel::pg::Pg> fo
             diesel::sql_types::Varchar,
             diesel::pg::Pg,
         >>::from_sql(bytes)?;
-        // The DB CHECK constraint guarantees `s` matches one of the 7
+        // The DB CHECK constraint guarantees `s` matches one of the 11
         // canonical values; an Err here means schema drift and we
         // bubble it up rather than silently coerce to `Ssh`.
         Self::parse(&s).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
@@ -784,6 +832,10 @@ mod tests {
         assert_eq!(AssetType::IacsOpcua.as_str(), "iacs_opcua");
         assert_eq!(AssetType::IacsProfinet.as_str(), "iacs_profinet");
         assert_eq!(AssetType::IacsIec104.as_str(), "iacs_iec104");
+        assert_eq!(AssetType::IacsEnip.as_str(), "iacs_enip");
+        assert_eq!(AssetType::IacsBacnetSc.as_str(), "iacs_bacnet_sc");
+        assert_eq!(AssetType::IacsDnp3.as_str(), "iacs_dnp3");
+        assert_eq!(AssetType::IacsIec61850.as_str(), "iacs_iec61850");
         assert_eq!(AssetType::IacsTcp.as_str(), "iacs_tcp");
     }
 
@@ -830,6 +882,10 @@ mod tests {
         assert_eq!(AssetType::IacsOpcua.default_port(), Some(4840));
         assert_eq!(AssetType::IacsProfinet.default_port(), Some(34962));
         assert_eq!(AssetType::IacsIec104.default_port(), Some(2404));
+        assert_eq!(AssetType::IacsEnip.default_port(), Some(44818));
+        assert_eq!(AssetType::IacsBacnetSc.default_port(), Some(443));
+        assert_eq!(AssetType::IacsDnp3.default_port(), Some(20000));
+        assert_eq!(AssetType::IacsIec61850.default_port(), Some(102));
     }
 
     #[test]
@@ -858,6 +914,10 @@ mod tests {
         assert!(AssetType::IacsOpcua.is_iacs());
         assert!(AssetType::IacsProfinet.is_iacs());
         assert!(AssetType::IacsIec104.is_iacs());
+        assert!(AssetType::IacsEnip.is_iacs());
+        assert!(AssetType::IacsBacnetSc.is_iacs());
+        assert!(AssetType::IacsDnp3.is_iacs());
+        assert!(AssetType::IacsIec61850.is_iacs());
         assert!(AssetType::IacsTcp.is_iacs());
     }
 
@@ -909,6 +969,10 @@ mod tests {
         assert_eq!(IacsProtocol::OpcUa.as_str(), "opcua");
         assert_eq!(IacsProtocol::Profinet.as_str(), "profinet");
         assert_eq!(IacsProtocol::Iec104.as_str(), "iec104");
+        assert_eq!(IacsProtocol::Enip.as_str(), "enip");
+        assert_eq!(IacsProtocol::BacnetSc.as_str(), "bacnet_sc");
+        assert_eq!(IacsProtocol::Dnp3.as_str(), "dnp3");
+        assert_eq!(IacsProtocol::Iec61850.as_str(), "iec61850");
         assert_eq!(IacsProtocol::Tcp.as_str(), "tcp");
         assert_eq!(format!("{}", IacsProtocol::Modbus), "modbus");
     }
@@ -964,6 +1028,10 @@ mod tests {
         assert_eq!(AssetType::IacsOpcua.badge_label(), "OPC");
         assert_eq!(AssetType::IacsProfinet.badge_label(), "PN");
         assert_eq!(AssetType::IacsIec104.badge_label(), "104");
+        assert_eq!(AssetType::IacsEnip.badge_label(), "EIP");
+        assert_eq!(AssetType::IacsBacnetSc.badge_label(), "BSC");
+        assert_eq!(AssetType::IacsDnp3.badge_label(), "DNP");
+        assert_eq!(AssetType::IacsIec61850.badge_label(), "618");
         assert_eq!(AssetType::IacsTcp.badge_label(), "TCP");
     }
 
@@ -1081,7 +1149,7 @@ mod tests {
     #[test]
     fn test_iacs_variants_covers_every_iacs_member() {
         let v = AssetType::iacs_variants();
-        assert_eq!(v.len(), 5);
+        assert_eq!(v.len(), 9);
         for variant in v {
             assert!(
                 variant.is_iacs(),
@@ -1157,13 +1225,17 @@ mod tests {
                 | AssetType::IacsOpcua
                 | AssetType::IacsProfinet
                 | AssetType::IacsIec104
+                | AssetType::IacsEnip
+                | AssetType::IacsBacnetSc
+                | AssetType::IacsDnp3
+                | AssetType::IacsIec61850
                 | AssetType::IacsTcp => {}
             }
         }
         assert_eq!(
             AssetType::ALL.len(),
-            7,
-            "ALL must list exactly 7 canonical variants"
+            11,
+            "ALL must list exactly 11 canonical variants"
         );
     }
 

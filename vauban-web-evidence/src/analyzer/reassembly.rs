@@ -61,9 +61,13 @@ impl TcpReassembler {
                 }]
             }
             ExpectedProfile::Profinet => self.push_profinet(payload),
-            ExpectedProfile::Modbus | ExpectedProfile::OpcUa | ExpectedProfile::Iec104 => {
-                self.push_length_framed(payload)
-            }
+            ExpectedProfile::Modbus
+            | ExpectedProfile::OpcUa
+            | ExpectedProfile::Iec104
+            | ExpectedProfile::Enip
+            | ExpectedProfile::Dnp3
+            | ExpectedProfile::Iec61850
+            | ExpectedProfile::BacnetSc => self.push_length_framed(payload),
         }
     }
 
@@ -174,8 +178,50 @@ fn expected_pdu_len(buf: &[u8], profile: ExpectedProfile) -> Option<usize> {
             }
             Some(buf.len())
         }
+        ExpectedProfile::Enip => {
+            if buf.len() < 24 {
+                return None;
+            }
+            let length = u16::from_le_bytes([buf[2], buf[3]]) as usize;
+            Some(24 + length)
+        }
+        ExpectedProfile::Dnp3 => dnp3_link_frame_len(buf),
+        ExpectedProfile::Iec61850 => {
+            if buf.len() < 4 || buf[0] != 0x03 || buf[1] != 0x00 {
+                return None;
+            }
+            let len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
+            if len < 4 {
+                return None;
+            }
+            Some(len)
+        }
+        ExpectedProfile::BacnetSc => {
+            // TLS record: type (1) + version (2) + length (2).
+            if buf.len() < 5 || buf[0] != 0x16 {
+                return None;
+            }
+            let len = u16::from_be_bytes([buf[3], buf[4]]) as usize;
+            Some(5 + len)
+        }
         ExpectedProfile::Passthrough => Some(buf.len()),
     }
+}
+
+/// IEEE 1815 link-layer size from START + LENGTH.
+/// LENGTH counts CONTROL+DEST+SRC+userdata (min 5), excluding CRCs.
+/// Header CRC is 2 octets; userdata is CRC'd in 16-octet blocks.
+fn dnp3_link_frame_len(buf: &[u8]) -> Option<usize> {
+    if buf.len() < 3 || buf[0] != 0x05 || buf[1] != 0x64 {
+        return None;
+    }
+    let length = buf[2] as usize;
+    if length < 5 {
+        return None;
+    }
+    let user = length - 5;
+    let data_crcs = if user == 0 { 0 } else { user.div_ceil(16) * 2 };
+    Some(10 + user + data_crcs)
 }
 
 #[cfg(test)]
@@ -237,5 +283,27 @@ mod tests {
         assert_eq!(b.len(), 1);
         assert!(b[0].complete);
         assert_eq!(b[0].data.len(), 32);
+    }
+
+    #[test]
+    fn dnp3_empty_userdata_frame_is_ten_bytes() {
+        let frame = [0x05u8, 0x64, 0x05, 0xC4, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(dnp3_link_frame_len(&frame), Some(10));
+        let mut reasm = TcpReassembler::new(ExpectedProfile::Dnp3);
+        let out = reasm.push(&frame);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].complete);
+        assert_eq!(out[0].data.len(), 10);
+    }
+
+    #[test]
+    fn enip_length_includes_24_byte_header() {
+        let mut p = vec![0u8; 28];
+        p[0..2].copy_from_slice(&0x0065u16.to_le_bytes());
+        p[2..4].copy_from_slice(&4u16.to_le_bytes());
+        let mut reasm = TcpReassembler::new(ExpectedProfile::Enip);
+        let out = reasm.push(&p);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].data.len(), 28);
     }
 }

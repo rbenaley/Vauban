@@ -11,3 +11,4 @@ doc-family only).
 | [003](003-local-first-recording-storage.md) | Local-first recording storage | Accepted |
 | [004](004-flat-message-enum.md) | Retain flat IPC `Message` enum | Accepted |
 | [005](005-capacity-envelope.md) | Single-appliance capacity envelope (estimated) | Accepted (estimated) |
+| [006](006-iacs-protocol-scope.md) | IACS protocol profile scope (EIP / BACnet-SC / DNP3 / IEC 61850 MMS) | Accepted |

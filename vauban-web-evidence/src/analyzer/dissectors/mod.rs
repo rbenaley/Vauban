@@ -11,7 +11,11 @@
 //! Incomplete fragments are routed through [`dissect_fragment`] so
 //! they never classify as `Cmd`.
 
+pub mod bacnet_sc;
+pub mod dnp3;
+pub mod enip;
 pub mod iec104;
+pub mod iec61850;
 pub mod modbus;
 pub mod opcua;
 pub mod passthrough;
@@ -56,6 +60,10 @@ pub fn dissect(
         ExpectedProfile::Iec104 => iec104::dissect(payload, payload_offset, direction),
         ExpectedProfile::OpcUa => opcua::dissect(payload, payload_offset, direction),
         ExpectedProfile::Profinet => profinet::dissect(payload, payload_offset, direction),
+        ExpectedProfile::Enip => enip::dissect(payload, payload_offset, direction),
+        ExpectedProfile::Dnp3 => dnp3::dissect(payload, payload_offset, direction),
+        ExpectedProfile::Iec61850 => iec61850::dissect(payload, payload_offset, direction),
+        ExpectedProfile::BacnetSc => bacnet_sc::dissect(payload, payload_offset, direction),
         ExpectedProfile::Passthrough => passthrough::dissect(payload, payload_offset, direction),
     }
 }

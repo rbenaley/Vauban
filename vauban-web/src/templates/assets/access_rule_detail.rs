@@ -126,13 +126,17 @@ mod tests {
                 "iacs_opcua".to_string(),
                 "iacs_profinet".to_string(),
                 "iacs_iec104".to_string(),
+                "iacs_enip".to_string(),
+                "iacs_bacnet_sc".to_string(),
+                "iacs_dnp3".to_string(),
+                "iacs_iec61850".to_string(),
                 "iacs_tcp".to_string(),
             ],
             ..create_test_rule()
         };
         assert_eq!(
             rule.protocols_display(),
-            "SSH, RDP, Modbus, OPC UA, PROFINET, IEC-104, IACS (TCP)"
+            "SSH, RDP, Modbus, OPC UA, PROFINET, IEC-104, EtherNet/IP, BACnet/SC, DNP3, IEC 61850, IACS (TCP)"
         );
     }
 

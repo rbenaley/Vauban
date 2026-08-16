@@ -16,6 +16,7 @@ Related architecture:
 
 - [Recording Architecture 1.8](../technical/Vauban_Recording_Architecture_EN(1.8).md) §5.4
 - Architecture analysis §16.2 (MFA HOL) / §16.3 (gzip off-thread)
+- [IACS protocol profiles smoke](iacs_protocol_profiles_smoke_test.md)
 
 ## Automated prerequisites (must be green BEFORE the manual pass)
 

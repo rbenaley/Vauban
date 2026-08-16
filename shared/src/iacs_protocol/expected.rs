@@ -7,6 +7,10 @@ pub enum ExpectedProfile {
     OpcUa,
     Iec104,
     Profinet,
+    Enip,
+    BacnetSc,
+    Dnp3,
+    Iec61850,
     /// Generic TCP catch-all (`iacs_tcp` / `tcp` label) -- no gate.
     Passthrough,
 }
@@ -19,6 +23,10 @@ impl ExpectedProfile {
             "opcua" => Self::OpcUa,
             "iec104" => Self::Iec104,
             "profinet" => Self::Profinet,
+            "enip" => Self::Enip,
+            "bacnet_sc" => Self::BacnetSc,
+            "dnp3" => Self::Dnp3,
+            "iec61850" => Self::Iec61850,
             // `tcp` and any unknown label degrade to passthrough so a
             // mislabeled row does not brick connectivity.
             _ => Self::Passthrough,
@@ -32,6 +40,10 @@ impl ExpectedProfile {
             Self::OpcUa => Some(super::classify::WireProtocol::OpcUa),
             Self::Iec104 => Some(super::classify::WireProtocol::Iec104),
             Self::Profinet => Some(super::classify::WireProtocol::Profinet),
+            Self::Enip => Some(super::classify::WireProtocol::Enip),
+            Self::BacnetSc => Some(super::classify::WireProtocol::BacnetSc),
+            Self::Dnp3 => Some(super::classify::WireProtocol::Dnp3),
+            Self::Iec61850 => Some(super::classify::WireProtocol::Iec61850),
             Self::Passthrough => None,
         }
     }
@@ -60,7 +72,27 @@ mod tests {
             ExpectedProfile::Profinet
         );
         assert_eq!(
+            ExpectedProfile::from_industrial_label("enip"),
+            ExpectedProfile::Enip
+        );
+        assert_eq!(
+            ExpectedProfile::from_industrial_label("bacnet_sc"),
+            ExpectedProfile::BacnetSc
+        );
+        assert_eq!(
+            ExpectedProfile::from_industrial_label("dnp3"),
+            ExpectedProfile::Dnp3
+        );
+        assert_eq!(
+            ExpectedProfile::from_industrial_label("iec61850"),
+            ExpectedProfile::Iec61850
+        );
+        assert_eq!(
             ExpectedProfile::from_industrial_label("tcp"),
+            ExpectedProfile::Passthrough
+        );
+        assert_eq!(
+            ExpectedProfile::from_industrial_label("bacnet_ip"),
             ExpectedProfile::Passthrough
         );
     }

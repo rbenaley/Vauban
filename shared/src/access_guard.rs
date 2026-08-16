@@ -85,7 +85,35 @@ pub const PROTOCOL_IACS_TUNNEL: &str = "iacs_tunnel";
 ///
 /// The list does NOT include `iacs_tunnel` -- the transport-meta
 /// is the *consumer* of this set, never a member.
+///
+/// Matching (listing, `iacs_tunnel` overlap, "is this IACS?") MUST
+/// go through [`is_iacs_applicative_protocol`] /
+/// [`rule_grants_asset_type`], not this slice. A future `iacs_*`
+/// asset_type is applicative without waiting for this catalogue to
+/// grow. The slice remains the known-today pin against
+/// `AssetType::ALL` (form expansion + SQL CHECK).
 pub const IACS_APPLICATIVE_PROTOCOLS: &[&str] = &[
+    "iacs_modbus",
+    "iacs_opcua",
+    "iacs_profinet",
+    "iacs_iec104",
+    "iacs_enip",
+    "iacs_bacnet_sc",
+    "iacs_dnp3",
+    "iacs_iec61850",
+    "iacs_tcp",
+];
+
+/// Snapshot of the "IACS (all industrial protocols)" form expansion
+/// persisted before ADR 006 added EtherNet/IP, BACnet/SC, DNP3 and
+/// IEC 61850. A rule that still contains this closed set was an
+/// all-IACS grant at save time; [`expand_legacy_all_iacs_protocols`]
+/// unions the current [`IACS_APPLICATIVE_PROTOCOLS`] so those assets
+/// stay visible and connectable without a mandatory re-save.
+///
+/// Partial IPC rules (e.g. Modbus only) are not this snapshot and
+/// MUST stay partial -- pinned by `attack_partial_iacs_rule_is_not_upgraded`.
+pub const IACS_LEGACY_ALL_PROTOCOLS: &[&str] = &[
     "iacs_modbus",
     "iacs_opcua",
     "iacs_profinet",
@@ -101,7 +129,8 @@ pub const IACS_APPLICATIVE_PROTOCOLS: &[&str] = &[
 ///
 /// - For the IACS transport-meta, returns every applicative
 ///   IACS protocol (`iacs_modbus`, `iacs_opcua`, `iacs_profinet`,
-///   `iacs_iec104`, `iacs_tcp`). An access rule that allows ANY
+///   `iacs_iec104`, `iacs_enip`, `iacs_bacnet_sc`, `iacs_dnp3`,
+///   `iacs_iec61850`, `iacs_tcp`). An access rule that allows ANY
 ///   of them grants the `iacs_tunnel` transport on the matching
 ///   asset. This mirrors the access-rule create/edit form's
 ///   "IACS (all industrial protocols)" master checkbox: it expands
@@ -136,6 +165,66 @@ pub fn expand_protocol_for_access_match(protocol: &str) -> Vec<String> {
             .collect();
     }
     vec![protocol.to_string()]
+}
+
+/// True when `token` is an applicative IACS `asset_type` / access-rule
+/// protocol (`iacs_modbus`, a future `iacs_foo`, ...).
+///
+/// Prefix rule: starts with `iacs_` and is not the transport-meta
+/// [`PROTOCOL_IACS_TUNNEL`]. Adding a new IACS profile whose wire
+/// token is `iacs_*` does not require updating a closed list here --
+/// `CheckAccessByUuid` and `/assets` listing follow this helper.
+/// Pinned by `is_iacs_applicative_accepts_future_profile`.
+#[must_use]
+pub fn is_iacs_applicative_protocol(token: &str) -> bool {
+    token.starts_with("iacs_") && token != PROTOCOL_IACS_TUNNEL
+}
+
+/// True when `protocols` contains every pre-ADR-006 IACS token -- the
+/// persisted shape of the web form's master checkbox before the four
+/// new profiles existed. Every later "all IACS" save is a superset,
+/// so this remains the durable "operator meant every industrial
+/// protocol" signal.
+#[must_use]
+pub fn is_legacy_all_iacs_rule(protocols: &[String]) -> bool {
+    IACS_LEGACY_ALL_PROTOCOLS
+        .iter()
+        .all(|need| protocols.iter().any(|p| p == *need))
+}
+
+/// Whether an access-rule `allowed_protocols` list grants `asset_type`.
+///
+/// Exact token match always wins. A pre-ADR-006 (or later full)
+/// "all IACS" snapshot additionally grants every applicative `iacs_*`
+/// -- including profiles added after the row was saved. Partial IPC
+/// rules (Modbus only) stay exact-match.
+///
+/// Pinned by `attack_partial_iacs_rule_is_not_upgraded` and
+/// `rule_grants_future_iacs_profile_when_legacy_all`.
+#[must_use]
+pub fn rule_grants_asset_type(protocols: &[String], asset_type: &str) -> bool {
+    if protocols.iter().any(|p| p == asset_type) {
+        return true;
+    }
+    is_legacy_all_iacs_rule(protocols) && is_iacs_applicative_protocol(asset_type)
+}
+
+/// If `protocols` is a pre-ADR-006 "all IACS" snapshot, union the
+/// **known-today** applicative catalogue. Prefer
+/// [`rule_grants_asset_type`] for matching: it covers future `iacs_*`
+/// tokens this union cannot name.
+#[must_use]
+pub fn expand_legacy_all_iacs_protocols(protocols: &[String]) -> Vec<String> {
+    if !is_legacy_all_iacs_rule(protocols) {
+        return protocols.to_vec();
+    }
+    let mut out = protocols.to_vec();
+    for p in IACS_APPLICATIVE_PROTOCOLS {
+        if !out.iter().any(|q| q == *p) {
+            out.push((*p).to_string());
+        }
+    }
+    out
 }
 
 /// Final verdict returned by [`AccessGuard::authorize`].
@@ -713,7 +802,16 @@ mod tests {
         // Concretely, the four canonical IACS protocols MUST be in
         // the expansion. A regression that drops one would silently
         // break that protocol's tunnels.
-        for needle in ["iacs_modbus", "iacs_opcua", "iacs_profinet", "iacs_iec104"] {
+        for needle in [
+            "iacs_modbus",
+            "iacs_opcua",
+            "iacs_profinet",
+            "iacs_iec104",
+            "iacs_enip",
+            "iacs_bacnet_sc",
+            "iacs_dnp3",
+            "iacs_iec61850",
+        ] {
             assert!(
                 expanded.iter().any(|p| p == needle),
                 "{needle} must be in the expansion of iacs_tunnel"
@@ -761,13 +859,124 @@ mod tests {
         }
         assert_eq!(
             IACS_APPLICATIVE_PROTOCOLS.len(),
-            5,
+            9,
             "drift guard: the applicative catalogue is currently \
-             {{iacs_modbus, iacs_opcua, iacs_profinet, iacs_iec104, \
-             iacs_tcp}} (5 entries). Adding a new IACS protocol \
+             9 iacs_* entries (ADR 006). Adding a new IACS protocol \
              requires updating this length AND the matching arms in \
              vauban-web::models::asset::AssetType."
         );
+    }
+
+    #[test]
+    fn iacs_legacy_all_is_strict_subset_of_current_applicative() {
+        for p in IACS_LEGACY_ALL_PROTOCOLS {
+            assert!(
+                IACS_APPLICATIVE_PROTOCOLS.contains(p),
+                "{p} must remain in IACS_APPLICATIVE_PROTOCOLS"
+            );
+        }
+        assert_eq!(IACS_LEGACY_ALL_PROTOCOLS.len(), 5);
+        assert!(IACS_APPLICATIVE_PROTOCOLS.len() > IACS_LEGACY_ALL_PROTOCOLS.len());
+    }
+
+    #[test]
+    fn expand_legacy_all_unions_adr006_tokens() {
+        let legacy: Vec<String> = IACS_LEGACY_ALL_PROTOCOLS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let expanded = expand_legacy_all_iacs_protocols(&legacy);
+        for p in IACS_APPLICATIVE_PROTOCOLS {
+            assert!(
+                expanded.iter().any(|q| q == *p),
+                "legacy-all rule must cover current applicative {p}"
+            );
+        }
+        assert!(expanded.iter().any(|p| p == "iacs_enip"));
+        assert!(expanded.iter().any(|p| p == "iacs_bacnet_sc"));
+        assert!(expanded.iter().any(|p| p == "iacs_dnp3"));
+        assert!(expanded.iter().any(|p| p == "iacs_iec61850"));
+    }
+
+    #[test]
+    fn expand_legacy_all_is_idempotent_on_current_catalogue() {
+        let current: Vec<String> = IACS_APPLICATIVE_PROTOCOLS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let once = expand_legacy_all_iacs_protocols(&current);
+        let twice = expand_legacy_all_iacs_protocols(&once);
+        assert_eq!(once, twice);
+        assert_eq!(once.len(), IACS_APPLICATIVE_PROTOCOLS.len());
+    }
+
+    #[test]
+    fn expand_legacy_all_keeps_ssh_rdp_when_present() {
+        let mut mixed: Vec<String> = vec!["ssh".to_string(), "rdp".to_string()];
+        mixed.extend(IACS_LEGACY_ALL_PROTOCOLS.iter().map(|s| (*s).to_string()));
+        let expanded = expand_legacy_all_iacs_protocols(&mixed);
+        assert!(expanded.iter().any(|p| p == "ssh"));
+        assert!(expanded.iter().any(|p| p == "rdp"));
+        assert!(expanded.iter().any(|p| p == "iacs_enip"));
+    }
+
+    /// A Modbus-only (or any incomplete) rule must not silently gain
+    /// EtherNet/IP / BACnet/SC / DNP3 / IEC 61850. That would let an
+    /// attacker who obtained a narrow IPC grant enumerate every new
+    /// IACS asset on `/assets`.
+    #[test]
+    fn attack_partial_iacs_rule_is_not_upgraded() {
+        let partial = vec!["iacs_modbus".to_string()];
+        let expanded = expand_legacy_all_iacs_protocols(&partial);
+        assert_eq!(expanded, partial);
+        assert!(!is_legacy_all_iacs_rule(&partial));
+
+        let four_of_five = vec![
+            "iacs_modbus".to_string(),
+            "iacs_opcua".to_string(),
+            "iacs_profinet".to_string(),
+            "iacs_iec104".to_string(),
+        ];
+        assert!(!is_legacy_all_iacs_rule(&four_of_five));
+        assert_eq!(
+            expand_legacy_all_iacs_protocols(&four_of_five),
+            four_of_five
+        );
+        assert!(!rule_grants_asset_type(&partial, "iacs_enip"));
+        assert!(!rule_grants_asset_type(
+            &four_of_five,
+            "iacs_future_profile"
+        ));
+    }
+
+    #[test]
+    fn is_iacs_applicative_accepts_future_profile() {
+        assert!(is_iacs_applicative_protocol("iacs_modbus"));
+        assert!(is_iacs_applicative_protocol("iacs_bacnet_sc"));
+        assert!(is_iacs_applicative_protocol("iacs_future_profile"));
+        assert!(!is_iacs_applicative_protocol(PROTOCOL_IACS_TUNNEL));
+        assert!(!is_iacs_applicative_protocol("ssh"));
+        assert!(!is_iacs_applicative_protocol("rdp"));
+        assert!(!is_iacs_applicative_protocol("IACS_modbus"));
+        assert!(!is_iacs_applicative_protocol(""));
+    }
+
+    #[test]
+    fn rule_grants_future_iacs_profile_when_legacy_all() {
+        let legacy: Vec<String> = IACS_LEGACY_ALL_PROTOCOLS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert!(rule_grants_asset_type(&legacy, "iacs_enip"));
+        assert!(rule_grants_asset_type(&legacy, "iacs_bacnet_sc"));
+        assert!(rule_grants_asset_type(&legacy, "iacs_future_profile"));
+        assert!(!rule_grants_asset_type(&legacy, "ssh"));
+        assert!(!rule_grants_asset_type(&legacy, PROTOCOL_IACS_TUNNEL));
+
+        let mut mixed = legacy.clone();
+        mixed.push("ssh".to_string());
+        assert!(rule_grants_asset_type(&mixed, "ssh"));
+        assert!(rule_grants_asset_type(&mixed, "iacs_future_profile"));
     }
 
     #[tokio::test]

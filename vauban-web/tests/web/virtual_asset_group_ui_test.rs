@@ -576,6 +576,10 @@ async fn u42b_iacs_master_checkbox_expands_to_every_iacs_protocol() {
         "iacs_opcua",
         "iacs_profinet",
         "iacs_iec104",
+        "iacs_enip",
+        "iacs_bacnet_sc",
+        "iacs_dnp3",
+        "iacs_iec61850",
         "iacs_tcp",
     ] {
         assert!(

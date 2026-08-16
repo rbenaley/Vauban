@@ -125,3 +125,23 @@ secrecy = { workspace = true }
 rand = "0.8"
 subtle = "2.5"
 uuid = { version = "1.11", features = ["v4", "serde"] }
+
+[[test]]
+name = "iacs_classify_proptest"
+required-features = ["iacs-protocol"]
+
+[[test]]
+name = "iacs_classify_battle_test"
+required-features = ["iacs-protocol"]
+
+[[test]]
+name = "session_token_proptest"
+required-features = ["session-token"]
+
+[[test]]
+name = "client_acl_proptest"
+required-features = ["client-acl"]
+
+[[test]]
+name = "access_guard_legacy_iacs_proptest"
+required-features = ["access-guard"]

@@ -53,6 +53,7 @@ pub mod heartbeat_frontend_test;
 pub mod heartbeat_session_keepalive_test;
 pub mod htmx_input_name_test;
 pub mod htmx_live_filter_test;
+pub mod iacs_access_rule_profiles_e2e_test;
 pub mod iacs_active_sessions_integration_test;
 pub mod iacs_active_sessions_pin_test;
 pub mod iacs_admin_ux_test;

@@ -38,7 +38,9 @@ use diesel::prelude::*;
 use diesel::sql_types::{Bool, Text};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
-/// Every migration under `vauban-db/migrations/`, compiled in.
+/// Every migration under `vauban-db/migrations/`, compiled in
+/// (includes ADR 006 `20260817000000_iacs_protocol_profiles` and
+/// `20260817160000_iacs_access_rule_profiles`).
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
 /// Version of the last migration included in the frozen baseline
