@@ -1,0 +1,96 @@
+{
+  "$schema": "https://design-tokens.github.io/community-group/format/",
+  "name": "Vauban PAM — email tokens",
+  "version": "1.0.0",
+  "color": {
+    "brand": {
+      "gold":        { "value": "#c9922f", "type": "color", "comment": "Primary brand accent — logo, version badges" },
+      "goldDeep":    { "value": "#b07f2e", "type": "color", "comment": "Link text on light backgrounds" },
+      "goldDark":    { "value": "#8f6620", "type": "color", "comment": "Link hover" },
+      "ink":         { "value": "#16202c", "type": "color", "comment": "Headings, primary button fill" }
+    },
+    "text": {
+      "primary":     { "value": "#16202c", "type": "color" },
+      "body":        { "value": "#4a4f55", "type": "color" },
+      "muted":       { "value": "#6b7684", "type": "color" },
+      "faint":       { "value": "#8a9099", "type": "color" },
+      "onDark":      { "value": "#ffffff", "type": "color" }
+    },
+    "surface": {
+      "page":        { "value": "#f2f1ee", "type": "color", "comment": "Email body background" },
+      "card":        { "value": "#ffffff", "type": "color", "comment": "600px content table" },
+      "subtle":      { "value": "#f7f6f2", "type": "color", "comment": "Raw-URL fallback block" }
+    },
+    "border": {
+      "card":        { "value": "#e2e2de", "type": "color" },
+      "subtle":      { "value": "#e6e4dd", "type": "color" },
+      "rule":        { "value": "#e8e7e2", "type": "color", "comment": "1px horizontal divider" }
+    },
+    "status": {
+      "noticeBg":     { "value": "#fdf9f0", "type": "color", "comment": "Expiry / warning callout fill" },
+      "noticeBorder": { "value": "#e0c68c", "type": "color" },
+      "noticeText":   { "value": "#6f5417", "type": "color" },
+      "noticeStrong": { "value": "#5c460f", "type": "color" },
+      "infoBg":       { "value": "#f4f9fd", "type": "color" },
+      "infoBorder":   { "value": "#bcd3e6", "type": "color" },
+      "infoText":     { "value": "#1d5c96", "type": "color" },
+      "dangerBg":     { "value": "#f6e9e9", "type": "color" },
+      "dangerBorder": { "value": "#e4c4c4", "type": "color" },
+      "dangerText":   { "value": "#8c2f2f", "type": "color" }
+    }
+  },
+  "font": {
+    "family": {
+      "sans": { "value": "Arial, Helvetica, sans-serif", "type": "fontFamily", "comment": "Email-safe substitute for IBM Plex Sans" },
+      "mono": { "value": "'Courier New', Courier, monospace", "type": "fontFamily", "comment": "Email-safe substitute for IBM Plex Mono — wordmark, raw URLs" }
+    },
+    "size": {
+      "h1":       { "value": "27px", "type": "dimension" },
+      "wordmark": { "value": "19px", "type": "dimension" },
+      "body":     { "value": "15px", "type": "dimension" },
+      "callout":  { "value": "13px", "type": "dimension" },
+      "small":    { "value": "12px", "type": "dimension" },
+      "micro":    { "value": "11px", "type": "dimension" }
+    },
+    "lineHeight": {
+      "h1":      { "value": "34px", "type": "dimension" },
+      "body":    { "value": "24px", "type": "dimension" },
+      "callout": { "value": "20px", "type": "dimension" },
+      "small":   { "value": "19px", "type": "dimension" },
+      "micro":   { "value": "17px", "type": "dimension" }
+    },
+    "letterSpacing": {
+      "wordmark": { "value": "3px", "type": "dimension" },
+      "label":    { "value": "1px", "type": "dimension" }
+    }
+  },
+  "space": {
+    "gutter":      { "value": "40px", "type": "dimension", "comment": "Left/right padding inside the card" },
+    "sectionTop":  { "value": "38px", "type": "dimension" },
+    "blockGap":    { "value": "26px", "type": "dimension" },
+    "textGap":     { "value": "18px", "type": "dimension" },
+    "outerPad":    { "value": "32px", "type": "dimension", "comment": "Page padding around the card" }
+  },
+  "size": {
+    "emailWidth": { "value": "600px", "type": "dimension" },
+    "logo":       { "value": "48px", "type": "dimension", "comment": "Rendered size; asset ships at 384px for HiDPI" }
+  },
+  "radius": {
+    "control": { "value": "6px", "type": "dimension", "comment": "Buttons, callouts, code blocks" }
+  },
+  "component": {
+    "button": {
+      "background":   { "value": "{color.brand.ink}", "type": "color" },
+      "text":         { "value": "{color.text.onDark}", "type": "color" },
+      "paddingY":     { "value": "15px", "type": "dimension" },
+      "paddingX":     { "value": "30px", "type": "dimension" },
+      "fontSize":     { "value": "15px", "type": "dimension" },
+      "borderRadius": { "value": "{radius.control}", "type": "dimension" }
+    },
+    "facts": {
+      "labelWidth": { "value": "150px", "type": "dimension", "comment": "Left column of the label/value table" },
+      "valueFont":  { "value": "{font.family.mono}", "type": "fontFamily", "comment": "Hostnames, fingerprints, usernames" },
+      "border":     { "value": "{color.border.subtle}", "type": "color" }
+    }
+  }
+}

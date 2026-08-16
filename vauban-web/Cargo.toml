@@ -132,6 +132,7 @@ async_zip = { version = "0.0.17", default-features = false, features = ["tokio"]
 flate2 = "1"
 
 [dev-dependencies]
+vauban-mailer.workspace = true
 vauban-access = { path = "../vauban-access" }
 # Round-trip tests for Inspect Capture (vauban-web-evidence analyzer)
 # synthesise real PCAP fixtures via the audit-side `iacs_pcap_synth` builders so the

@@ -38,7 +38,26 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::models::email_outbox::NewOutboxEntry;
+use crate::services::mail_templates as tpl;
 use shared::smtp::validate_no_crlf;
+
+macro_rules! html_body {
+    ($template:expr, $event:expr, $fields:expr, $facts:expr, $notice:expr, $info:expr, $danger:expr, $cta:expr $(,)?) => {
+        tpl::render_event(
+            $template,
+            tpl::RenderSpec {
+                brand: &$event.from_brand,
+                base_url: &$event.base_url,
+                fields: $fields,
+                facts: $facts,
+                notice: $notice,
+                info: $info,
+                danger: $danger,
+                cta: $cta,
+            },
+        )
+    };
+}
 
 // Re-exported for convenience: callers building events outside this
 // module can mint event_ids without importing uuid directly.
@@ -376,7 +395,8 @@ pub enum EmailEvent {
     UserMfaResetByAdmin(UserMfaResetByAdminEvent),
     SecurityMonoAdminDetected(SecurityMonoAdminDetectedEvent),
     /// IACS: a new EWS onboarding request has been submitted -- one
-    /// notification per active superuser so an admin reviews it.
+    /// notification per usable staff or superuser (`load_approver_contacts`)
+    /// so an admin reviews it.
     IacsOnboardSubmitted(IacsOnboardSubmittedEvent),
     /// IACS: an admin approved the EWS onboarding request -- the
     /// requester is informed.
@@ -449,9 +469,9 @@ impl EmailEvent {
     }
 
     /// Render the event into a `(subject, text, html)` triple. The
-    /// implementation uses a small format!()-based renderer for the
-    /// MVP; the next chantier replaces this with proper Askama
-    /// templates under `vauban-web/templates/email/`.
+    /// text body is assembled here; the HTML body is the matching
+    /// file under `vauban-web/email/` rendered by
+    /// [`crate::services::mail_templates`].
     pub fn render(&self) -> Result<RenderedEmail, RenderError> {
         match self {
             Self::AccessRequestSubmitted(e) => render_access_request_submitted(e),
@@ -525,10 +545,28 @@ fn render_access_request_submitted(
     }
     text.push_str(&format!("\nReview the request: {}\n", e.approval_url));
     text.push_str(&render_footer(&e.base_url));
+    let html = html_body!(
+        tpl::ACCESS_REQUEST_SUBMITTED_HTML,
+        e,
+        &[
+            tpl::field("__REQUESTER__", &e.requester_username),
+            tpl::field("__ASSET__", &e.asset_name),
+            tpl::field("__PROTOCOL__", &e.protocol),
+        ],
+        &[
+            ("Requester", e.requester_username.as_str()),
+            ("Asset", e.asset_name.as_str()),
+            ("Protocol", e.protocol.as_str()),
+        ],
+        e.justification.as_deref(),
+        None,
+        None,
+        Some((e.approval_url.as_str(), "Review the request")),
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -562,10 +600,31 @@ fn render_access_request_approved(
     }
     text.push_str(&format!("\nOpen the session: {}\n", e.session_url));
     text.push_str(&render_footer(&e.base_url));
+    let valid = e
+        .valid_until
+        .map(|t| format!("Valid until: {}", t.to_rfc3339()));
+    let html = html_body!(
+        tpl::ACCESS_REQUEST_APPROVED_HTML,
+        e,
+        &[
+            tpl::field("__ASSET__", &e.asset_name),
+            tpl::field("__PROTOCOL__", &e.protocol),
+            tpl::field("__APPROVER__", &e.approver_username),
+        ],
+        &[
+            ("Asset", e.asset_name.as_str()),
+            ("Protocol", e.protocol.as_str()),
+            ("Approver", e.approver_username.as_str()),
+        ],
+        valid.as_deref(),
+        None,
+        None,
+        Some((e.session_url.as_str(), "Open the session")),
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -594,10 +653,28 @@ fn render_access_request_rejected(
         text.push_str(&format!("\nReason: {}\n", r));
     }
     text.push_str(&render_footer(&e.base_url));
+    let html = html_body!(
+        tpl::ACCESS_REQUEST_REJECTED_HTML,
+        e,
+        &[
+            tpl::field("__ASSET__", &e.asset_name),
+            tpl::field("__PROTOCOL__", &e.protocol),
+            tpl::field("__APPROVER__", &e.approver_username),
+        ],
+        &[
+            ("Asset", e.asset_name.as_str()),
+            ("Protocol", e.protocol.as_str()),
+            ("Approver", e.approver_username.as_str()),
+        ],
+        None,
+        None,
+        e.reason.as_deref(),
+        None,
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -628,10 +705,28 @@ fn render_access_request_revoked(
         text.push_str(&format!("\nReason: {}\n", r));
     }
     text.push_str(&render_footer(&e.base_url));
+    let html = html_body!(
+        tpl::ACCESS_REQUEST_REVOKED_HTML,
+        e,
+        &[
+            tpl::field("__ASSET__", &e.asset_name),
+            tpl::field("__PROTOCOL__", &e.protocol),
+            tpl::field("__APPROVER__", &e.approver_username),
+        ],
+        &[
+            ("Asset", e.asset_name.as_str()),
+            ("Protocol", e.protocol.as_str()),
+            ("Approver", e.approver_username.as_str()),
+        ],
+        None,
+        None,
+        e.reason.as_deref(),
+        None,
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -659,10 +754,28 @@ fn render_access_request_expired(
         e.requester_username, e.asset_name, e.protocol
     ));
     text.push_str(&render_footer(&e.base_url));
+    let html = html_body!(
+        tpl::ACCESS_REQUEST_EXPIRED_HTML,
+        e,
+        &[
+            tpl::field("__REQUESTER__", &e.requester_username),
+            tpl::field("__ASSET__", &e.asset_name),
+            tpl::field("__PROTOCOL__", &e.protocol),
+        ],
+        &[
+            ("Requester", e.requester_username.as_str()),
+            ("Asset", e.asset_name.as_str()),
+            ("Protocol", e.protocol.as_str()),
+        ],
+        Some("This request expired without a decision."),
+        None,
+        None,
+        None,
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -686,10 +799,26 @@ fn render_user_created(e: &UserCreatedEvent) -> Result<RenderedEmail, RenderErro
     ));
     text.push_str(&format!("\nSign in: {}\n", e.login_url));
     text.push_str(&render_footer(&e.base_url));
+    let html = html_body!(
+        tpl::USER_CREATED_HTML,
+        e,
+        &[
+            tpl::field("__USERNAME__", &e.username),
+            tpl::field("__CREATED_BY__", &e.created_by),
+        ],
+        &[
+            ("Account", e.username.as_str()),
+            ("Created by", e.created_by.as_str()),
+        ],
+        None,
+        None,
+        None,
+        Some((e.login_url.as_str(), "Sign in")),
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -720,10 +849,21 @@ fn render_user_password_reset_requested(
     ));
     text.push_str("\nIf you did not request this, you can safely ignore this email.\n");
     text.push_str(&render_footer(&e.base_url));
+    let valid = format!("Link valid until: {}", e.valid_until.to_rfc3339());
+    let html = html_body!(
+        tpl::USER_PASSWORD_RESET_REQUESTED_HTML,
+        e,
+        &[tpl::field("__USERNAME__", &e.username)],
+        &[("Account", e.username.as_str())],
+        Some(valid.as_str()),
+        Some("If you did not request this, you can safely ignore this email."),
+        None,
+        Some((e.reset_url.as_str(), "Reset your password")),
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -751,10 +891,30 @@ fn render_user_locked(
         text.push_str(&format!("Locked until: {}\n", t.to_rfc3339()));
     }
     text.push_str(&render_footer(&e.base_url));
+    let locked = e
+        .locked_until
+        .map(|t| format!("Locked until: {}", t.to_rfc3339()));
+    let attempts = e.failed_attempts.to_string();
+    let html = html_body!(
+        tpl::USER_LOCKED_HTML,
+        e,
+        &[
+            tpl::field("__USERNAME__", &e.username),
+            tpl::field("__ATTEMPTS__", &attempts),
+        ],
+        &[
+            ("Account", e.username.as_str()),
+            ("Failed attempts", attempts.as_str()),
+        ],
+        None,
+        None,
+        locked.as_deref(),
+        None,
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -777,10 +937,26 @@ fn render_user_mfa_reset(e: &UserMfaResetByAdminEvent) -> Result<RenderedEmail, 
     ));
     text.push_str("\nSet up MFA again on your next sign-in.\n");
     text.push_str(&render_footer(&e.base_url));
+    let html = html_body!(
+        tpl::USER_MFA_RESET_HTML,
+        e,
+        &[
+            tpl::field("__USERNAME__", &e.username),
+            tpl::field("__ADMIN__", &e.admin_username),
+        ],
+        &[
+            ("Account", e.username.as_str()),
+            ("Administrator", e.admin_username.as_str()),
+        ],
+        None,
+        Some("Set up MFA again on the next sign-in."),
+        None,
+        None,
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -805,10 +981,23 @@ fn render_security_mono_admin(
     ));
     text.push_str("\nProvision a second administrator as soon as possible.\n");
     text.push_str(&render_footer(&e.base_url));
+    let html = html_body!(
+        tpl::SECURITY_MONO_ADMIN_HTML,
+        e,
+        &[tpl::field("__ADMIN__", &e.remaining_admin_username)],
+        &[("Remaining superuser", e.remaining_admin_username.as_str())],
+        None,
+        None,
+        Some(
+            "The platform is at risk of admin lockout if this account becomes unavailable. \
+             Provision a second administrator as soon as possible.",
+        ),
+        Some((e.base_url.as_str(), "Open the console")),
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -817,8 +1006,9 @@ fn render_security_mono_admin(
 // ============================================================================
 //
 // Four event types mirror the JIT lifecycle:
-//   * IacsOnboardSubmitted -- one row per active superuser, business_key
-//     is the request UUID so retries collapse on (kind, request, admin).
+//   * IacsOnboardSubmitted -- one row per usable staff or superuser
+//     (`load_approver_contacts`); business_key is the request UUID so
+//     retries collapse on (kind, request, admin).
 //   * IacsOnboardApproved / IacsOnboardRejected -- single row addressed
 //     to the requester; business_key is the request UUID.
 //   * IacsOffboarded -- single row addressed to the EWS owner; business
@@ -868,10 +1058,28 @@ fn render_iacs_onboard_submitted(
     }
     text.push_str(&format!("\nReview the request: {}\n", e.admin_url));
     text.push_str(&render_footer(&e.base_url));
+    let html = html_body!(
+        tpl::IACS_ONBOARD_SUBMITTED_HTML,
+        e,
+        &[
+            tpl::field("__REQUESTER__", &e.requester_username),
+            tpl::field("__EWS__", &e.ews_name),
+            tpl::field("__FINGERPRINT__", &e.fingerprint),
+        ],
+        &[
+            ("Requester", e.requester_username.as_str()),
+            ("EWS", e.ews_name.as_str()),
+            ("Fingerprint", e.fingerprint.as_str()),
+        ],
+        e.justification.as_deref(),
+        None,
+        None,
+        Some((e.admin_url.as_str(), "Review the request")),
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -903,10 +1111,28 @@ fn render_iacs_onboard_approved(
     ));
     text.push_str(&format!("\nView your requests: {}\n", e.my_requests_url));
     text.push_str(&render_footer(&e.base_url));
+    let html = html_body!(
+        tpl::IACS_ONBOARD_APPROVED_HTML,
+        e,
+        &[
+            tpl::field("__APPROVER__", &e.approver_username),
+            tpl::field("__EWS__", &e.ews_name),
+            tpl::field("__FINGERPRINT__", &e.fingerprint),
+        ],
+        &[
+            ("EWS", e.ews_name.as_str()),
+            ("Fingerprint", e.fingerprint.as_str()),
+            ("Approver", e.approver_username.as_str()),
+        ],
+        None,
+        None,
+        None,
+        Some((e.my_requests_url.as_str(), "View your requests")),
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -935,10 +1161,26 @@ fn render_iacs_onboard_rejected(
     text.push_str(&format!("\nReason: {}\n", e.reason));
     text.push_str(&format!("\nView your requests: {}\n", e.my_requests_url));
     text.push_str(&render_footer(&e.base_url));
+    let html = html_body!(
+        tpl::IACS_ONBOARD_REJECTED_HTML,
+        e,
+        &[
+            tpl::field("__APPROVER__", &e.approver_username),
+            tpl::field("__EWS__", &e.ews_name),
+        ],
+        &[
+            ("EWS", e.ews_name.as_str()),
+            ("Approver", e.approver_username.as_str()),
+        ],
+        None,
+        None,
+        Some(e.reason.as_str()),
+        Some((e.my_requests_url.as_str(), "View your requests")),
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -972,10 +1214,31 @@ fn render_iacs_offboarded(e: &IacsOffboardedEvent) -> Result<RenderedEmail, Rend
          a new onboarding request from the Vauban console.\n",
     );
     text.push_str(&render_footer(&e.base_url));
+    let html = html_body!(
+        tpl::IACS_OFFBOARDED_HTML,
+        e,
+        &[
+            tpl::field("__ADMIN__", &e.admin_username),
+            tpl::field("__EWS__", &e.ews_name),
+            tpl::field("__FINGERPRINT__", &e.fingerprint),
+        ],
+        &[
+            ("EWS", e.ews_name.as_str()),
+            ("Fingerprint", e.fingerprint.as_str()),
+            ("Administrator", e.admin_username.as_str()),
+        ],
+        None,
+        None,
+        Some(
+            "This action is irreversible. If an EWS is still needed, generate a fresh \
+             key pair and submit a new onboarding request.",
+        ),
+        None,
+    );
     Ok(RenderedEmail {
         subject,
         body_text: text,
-        body_html: None,
+        body_html: Some(html),
     })
 }
 
@@ -1434,5 +1697,168 @@ mod tests {
         assert!(!line.contains('\r'));
         assert!(!line.contains('\n'));
         assert!(line.contains("alice"));
+    }
+
+    fn catalogue_events() -> Vec<EmailEvent> {
+        vec![
+            fake_submitted_event(),
+            EmailEvent::AccessRequestApproved(AccessRequestApprovedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                asset_name: "prod-db-01".into(),
+                protocol: "ssh".into(),
+                approver_username: "admin".into(),
+                session_url: "https://vauban.test/s".into(),
+                valid_until: None,
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+            EmailEvent::AccessRequestRejected(AccessRequestRejectedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                asset_name: "prod-db-01".into(),
+                protocol: "ssh".into(),
+                approver_username: "admin".into(),
+                reason: Some("no".into()),
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+            EmailEvent::AccessRequestRevoked(AccessRequestRevokedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                asset_name: "prod-db-01".into(),
+                protocol: "ssh".into(),
+                approver_username: "admin".into(),
+                reason: None,
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+            EmailEvent::AccessRequestExpired(AccessRequestExpiredEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                requester_username: "bob".into(),
+                asset_name: "prod-db-01".into(),
+                protocol: "ssh".into(),
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+            EmailEvent::UserCreated(UserCreatedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                username: "alice".into(),
+                created_by: "admin".into(),
+                login_url: "https://vauban.test/login".into(),
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+            EmailEvent::UserPasswordResetRequested(UserPasswordResetRequestedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                username: "alice".into(),
+                reset_url: "https://vauban.test/reset".into(),
+                valid_until: Utc::now(),
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+            EmailEvent::UserLockedAfterFailedAttempts(UserLockedAfterFailedAttemptsEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                username: "alice".into(),
+                failed_attempts: 5,
+                locked_until: None,
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+            EmailEvent::UserMfaResetByAdmin(UserMfaResetByAdminEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                username: "alice".into(),
+                admin_username: "admin".into(),
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+            EmailEvent::SecurityMonoAdminDetected(SecurityMonoAdminDetectedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                remaining_admin_username: "carol".into(),
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+            EmailEvent::IacsOnboardSubmitted(IacsOnboardSubmittedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                requester_username: "bob".into(),
+                ews_name: "ews".into(),
+                fingerprint: iacs_fp().into(),
+                justification: None,
+                admin_url: "https://vauban.test/iacs".into(),
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+            EmailEvent::IacsOnboardApproved(IacsOnboardApprovedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                ews_name: "ews".into(),
+                fingerprint: iacs_fp().into(),
+                approver_username: "carol".into(),
+                my_requests_url: "https://vauban.test/my".into(),
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+            EmailEvent::IacsOnboardRejected(IacsOnboardRejectedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                ews_name: "ews".into(),
+                approver_username: "carol".into(),
+                reason: "no".into(),
+                my_requests_url: "https://vauban.test/my".into(),
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+            EmailEvent::IacsOffboarded(IacsOffboardedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                ews_name: "ews".into(),
+                fingerprint: iacs_fp().into(),
+                admin_username: "carol".into(),
+                base_url: "https://vauban.test".into(),
+                from_brand: "Vauban PAM".into(),
+            }),
+        ]
+    }
+
+    #[test]
+    fn every_event_renders_html_with_cid_and_brand() {
+        let events = catalogue_events();
+        assert_eq!(events.len(), 14);
+        let mut kinds = Vec::new();
+        for event in events {
+            let r = event.render().unwrap();
+            let html = r.body_html.expect("html body");
+            assert!(
+                html.contains("cid:vauban-logo"),
+                "{} missing cid",
+                event.kind()
+            );
+            assert!(
+                html.contains("Vauban PAM"),
+                "{} missing brand",
+                event.kind()
+            );
+            assert!(
+                !html.contains("__BRAND__"),
+                "{} leftover brand ph",
+                event.kind()
+            );
+            assert!(
+                !html.contains("__FACTS_BLOCK__"),
+                "{} leftover facts",
+                event.kind()
+            );
+            kinds.push(event.kind());
+        }
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert_eq!(kinds.len(), 14);
     }
 }

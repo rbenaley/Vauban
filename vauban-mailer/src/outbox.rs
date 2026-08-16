@@ -11,9 +11,21 @@ use diesel_async::{
 };
 use rustls::ClientConfig;
 use shared::messages::SmtpEncryption;
+use shared::smtp::EMAIL_LOGO_CID;
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+/// Star-fort logo for `cid:vauban-logo` inline attachments.
+pub const VAUBAN_LOGO_PNG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/vauban-logo.png"
+));
+
+/// RFC 2045 / RFC 5321: fold base64 at 76 columns so DATA lines stay
+/// under the 998-character hard limit (`Content-Transfer-Encoding: 8bit`
+/// does not wrap for us).
+const BASE64_FOLD: usize = 76;
 
 use crate::broker::{answer_control, request_smtp_connect};
 use crate::provision::MailerRuntime;
@@ -339,24 +351,11 @@ pub fn build_envelope(runtime: &MailerRuntime, row: &OutboxEntry) -> MailEnvelop
     data.push_str("\r\n");
 
     match &row.body_html {
+        Some(html) if !html.is_empty() && html_references_logo_cid(html) => {
+            append_related_with_logo(&mut data, row, html);
+        }
         Some(html) if !html.is_empty() => {
-            let boundary = format!("vauban-mp-{}", row.event_id.simple());
-            data.push_str(&format!(
-                "Content-Type: multipart/alternative; boundary=\"{}\"\r\n",
-                boundary
-            ));
-            data.push_str("\r\n");
-            data.push_str(&format!("--{}\r\n", boundary));
-            data.push_str("Content-Type: text/plain; charset=utf-8\r\n");
-            data.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
-            data.push_str(&row.body_text);
-            data.push_str("\r\n");
-            data.push_str(&format!("--{}\r\n", boundary));
-            data.push_str("Content-Type: text/html; charset=utf-8\r\n");
-            data.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
-            data.push_str(html);
-            data.push_str("\r\n");
-            data.push_str(&format!("--{}--\r\n", boundary));
+            append_alternative(&mut data, &row.body_text, html, &alt_boundary(row.event_id));
         }
         _ => {
             data.push_str("Content-Type: text/plain; charset=utf-8\r\n");
@@ -371,6 +370,80 @@ pub fn build_envelope(runtime: &MailerRuntime, row: &OutboxEntry) -> MailEnvelop
         to: row.recipient.clone(),
         data,
     }
+}
+
+fn html_references_logo_cid(html: &str) -> bool {
+    let needle = format!("cid:{EMAIL_LOGO_CID}");
+    html.contains(&needle)
+}
+
+fn alt_boundary(event_id: Uuid) -> String {
+    format!("vauban-alt-{}", event_id.simple())
+}
+
+fn rel_boundary(event_id: Uuid) -> String {
+    format!("vauban-rel-{}", event_id.simple())
+}
+
+fn append_alternative(data: &mut String, body_text: &str, html: &str, boundary: &str) {
+    data.push_str("Content-Type: multipart/alternative; boundary=\"");
+    data.push_str(boundary);
+    data.push_str("\"\r\n\r\n");
+    data.push_str("--");
+    data.push_str(boundary);
+    data.push_str("\r\nContent-Type: text/plain; charset=utf-8\r\n");
+    data.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
+    data.push_str(body_text);
+    data.push_str("\r\n--");
+    data.push_str(boundary);
+    data.push_str("\r\nContent-Type: text/html; charset=utf-8\r\n");
+    data.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
+    data.push_str(html);
+    data.push_str("\r\n--");
+    data.push_str(boundary);
+    data.push_str("--\r\n");
+}
+
+fn append_related_with_logo(data: &mut String, row: &OutboxEntry, html: &str) {
+    let rel = rel_boundary(row.event_id);
+    let alt = alt_boundary(row.event_id);
+    data.push_str("Content-Type: multipart/related; type=\"multipart/alternative\"; boundary=\"");
+    data.push_str(&rel);
+    data.push_str("\"\r\n\r\n--");
+    data.push_str(&rel);
+    data.push_str("\r\n");
+    append_alternative(data, &row.body_text, html, &alt);
+    data.push_str("--");
+    data.push_str(&rel);
+    data.push_str("\r\nContent-Type: image/png\r\n");
+    data.push_str("Content-Transfer-Encoding: base64\r\n");
+    data.push_str("Content-ID: <");
+    data.push_str(EMAIL_LOGO_CID);
+    data.push_str(">\r\n");
+    data.push_str("Content-Disposition: inline; filename=\"vauban-logo.png\"\r\n\r\n");
+    data.push_str(&encode_base64_folded(VAUBAN_LOGO_PNG));
+    data.push_str("\r\n--");
+    data.push_str(&rel);
+    data.push_str("--\r\n");
+}
+
+/// Encode `bytes` as RFC 2045 base64 with 76-column folding.
+pub fn encode_base64_folded(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    if encoded.is_empty() {
+        return String::new();
+    }
+    let extra = encoded.len() / BASE64_FOLD;
+    let mut out = String::with_capacity(encoded.len() + extra * 2);
+    for (i, chunk) in encoded.as_bytes().chunks(BASE64_FOLD).enumerate() {
+        if i > 0 {
+            out.push_str("\r\n");
+        }
+        // STANDARD alphabet is ASCII; empty fallback keeps this unwrap-free.
+        out.push_str(std::str::from_utf8(chunk).unwrap_or(""));
+    }
+    out
 }
 
 async fn pull_batch(
@@ -653,5 +726,315 @@ mod tests {
         for h in handles {
             h.join().expect("battle thread");
         }
+    }
+
+    fn test_runtime() -> MailerRuntime {
+        use secrecy::SecretString;
+        MailerRuntime {
+            smtp_host: "smtp.test".into(),
+            smtp_port: 25,
+            smtp_encryption: SmtpEncryption::Plaintext,
+            smtp_username: String::new(),
+            smtp_password: SecretString::from(String::new()),
+            helo_name: "vauban-test".into(),
+            from_address: "vauban@example.test".into(),
+            from_name: "Vauban PAM".into(),
+            reply_to: String::new(),
+            poll_interval_secs: 5,
+            batch_size: 10,
+            max_attempts: 5,
+            smtp_timeout_secs: 10,
+            broker_timeout_secs: 5,
+        }
+    }
+
+    fn test_row(event_id: Uuid, body_text: &str, body_html: Option<String>) -> OutboxEntry {
+        OutboxEntry {
+            id: 1,
+            event_id,
+            event_kind: "access_request.rejected".into(),
+            recipient: "alice@example.test".into(),
+            recipient_name: "Alice".into(),
+            subject: "Access denied".into(),
+            body_text: body_text.to_string(),
+            body_html,
+            status: "pending".into(),
+            attempts: 0,
+            max_attempts: 5,
+            next_retry_at: None,
+            last_error: None,
+            created_at: Utc::now(),
+            sent_at: None,
+        }
+    }
+
+    fn max_data_line_len(data: &str) -> usize {
+        data.split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line).len())
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn build_envelope_plain_text_when_html_absent() {
+        let env = build_envelope(&test_runtime(), &test_row(Uuid::nil(), "plain body", None));
+        assert!(env.data.contains("Content-Type: text/plain; charset=utf-8"));
+        assert!(!env.data.contains("multipart/"));
+        assert!(env.data.contains("plain body"));
+    }
+
+    #[test]
+    fn build_envelope_plain_text_when_html_empty() {
+        let env = build_envelope(
+            &test_runtime(),
+            &test_row(Uuid::nil(), "plain body", Some(String::new())),
+        );
+        assert!(!env.data.contains("multipart/"));
+        assert!(env.data.contains("plain body"));
+    }
+
+    #[test]
+    fn build_envelope_alternative_when_html_has_no_cid() {
+        let html = "<p>hello</p>";
+        let env = build_envelope(
+            &test_runtime(),
+            &test_row(Uuid::nil(), "plain", Some(html.into())),
+        );
+        assert!(env.data.contains("multipart/alternative"));
+        assert!(!env.data.contains("multipart/related"));
+        assert!(!env.data.contains("Content-ID:"));
+        let plain_at = env.data.find("text/plain").expect("plain part");
+        let html_at = env.data.find("text/html").expect("html part");
+        assert!(plain_at < html_at, "text must precede html");
+        assert!(env.data.contains("<p>hello</p>"));
+    }
+
+    #[test]
+    fn build_envelope_related_when_html_references_cid() {
+        let html = format!(r#"<img src="cid:{EMAIL_LOGO_CID}" alt="Vauban">"#);
+        let event_id = Uuid::new_v4();
+        let env = build_envelope(&test_runtime(), &test_row(event_id, "plain", Some(html)));
+        assert!(env.data.contains("multipart/related"));
+        assert!(env.data.contains("type=\"multipart/alternative\""));
+        assert!(env.data.contains("Content-Disposition: inline"));
+        assert!(
+            env.data
+                .contains(&format!("Content-ID: <{EMAIL_LOGO_CID}>")),
+            "Content-ID must wrap the token in angle brackets"
+        );
+        assert!(
+            !env.data
+                .contains(&format!("Content-ID: {EMAIL_LOGO_CID}\r\n")),
+            "Content-ID must not omit the brackets"
+        );
+        let rel = rel_boundary(event_id);
+        let alt = alt_boundary(event_id);
+        assert_ne!(rel, alt);
+        assert!(!rel.starts_with(&alt));
+        assert!(!alt.starts_with(&rel));
+        assert!(env.data.contains(&format!("--{rel}--")));
+        assert!(env.data.contains(&format!("--{alt}--")));
+        let plain_at = env.data.find("text/plain").expect("plain");
+        let html_at = env.data.find("text/html").expect("html");
+        let image_at = env.data.find("Content-Type: image/png").expect("image");
+        assert!(plain_at < html_at);
+        assert!(html_at < image_at);
+    }
+
+    #[test]
+    fn encode_base64_folded_wraps_at_76_and_round_trips() {
+        use base64::Engine as _;
+        let folded = encode_base64_folded(VAUBAN_LOGO_PNG);
+        assert!(!folded.is_empty());
+        for line in folded.split("\r\n") {
+            assert!(
+                line.len() <= BASE64_FOLD,
+                "base64 line {} exceeds fold",
+                line.len()
+            );
+        }
+        let compact: String = folded.split("\r\n").collect();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(compact.as_bytes())
+            .expect("decode");
+        assert_eq!(decoded, VAUBAN_LOGO_PNG);
+    }
+
+    #[test]
+    fn logo_png_is_a_real_png() {
+        assert!(!VAUBAN_LOGO_PNG.is_empty());
+        assert_eq!(&VAUBAN_LOGO_PNG[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn email_logo_cid_comes_from_shared() {
+        assert_eq!(EMAIL_LOGO_CID, shared::smtp::EMAIL_LOGO_CID);
+        let source = include_str!("outbox.rs");
+        assert!(
+            source.contains("use shared::smtp::EMAIL_LOGO_CID"),
+            "outbox must import EMAIL_LOGO_CID from shared"
+        );
+        let banned = ["const ", "EMAIL_LOGO_CID", ":"].concat();
+        assert!(
+            !source.contains(&banned),
+            "outbox must not re-declare the CID constant"
+        );
+    }
+
+    #[test]
+    fn related_envelope_lines_stay_under_998() {
+        let html = format!(r#"<img src="cid:{EMAIL_LOGO_CID}">"#);
+        let env = build_envelope(
+            &test_runtime(),
+            &test_row(Uuid::new_v4(), "plain", Some(html)),
+        );
+        assert!(
+            max_data_line_len(&env.data) <= 998,
+            "longest DATA line is {}",
+            max_data_line_len(&env.data)
+        );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+
+        #[test]
+        fn build_envelope_boundaries_are_unique_and_closed(
+            text in "[^\r\n]{0,400}",
+            html_core in "[^\r\n]{0,400}",
+            with_cid in proptest::bool::ANY,
+        ) {
+            let event_id = Uuid::new_v4();
+            let html = if with_cid {
+                format!("{html_core}<img src=\"cid:{EMAIL_LOGO_CID}\">")
+            } else {
+                html_core
+            };
+            let env = build_envelope(
+                &test_runtime(),
+                &test_row(event_id, &text, Some(html.clone())),
+            );
+            proptest::prop_assert!(max_data_line_len(&env.data) <= 998);
+            if html.is_empty() {
+                proptest::prop_assert!(!env.data.contains("multipart/"));
+                return Ok(());
+            }
+            if with_cid {
+                let rel = rel_boundary(event_id);
+                let alt = alt_boundary(event_id);
+                proptest::prop_assert_ne!(&rel, &alt);
+                proptest::prop_assert!(!rel.starts_with(&alt));
+                proptest::prop_assert!(!alt.starts_with(&rel));
+                let rel_close = format!("--{rel}--");
+                let alt_close = format!("--{alt}--");
+                proptest::prop_assert!(env.data.contains(&rel_close));
+                proptest::prop_assert!(env.data.contains(&alt_close));
+                let rel_count = env.data.matches(&rel).count();
+                let alt_count = env.data.matches(&alt).count();
+                proptest::prop_assert!(rel_count >= 3);
+                proptest::prop_assert!(alt_count >= 3);
+            } else {
+                proptest::prop_assert!(env.data.contains("multipart/alternative"));
+                proptest::prop_assert!(!env.data.contains("multipart/related"));
+            }
+        }
+    }
+
+    #[test]
+    fn battle_build_envelope_under_contention() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+        for t in 0..8 {
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                let runtime = test_runtime();
+                for i in 0..32 {
+                    let event_id = Uuid::new_v4();
+                    let html = format!("<p>t{t}-i{i}</p><img src=\"cid:{EMAIL_LOGO_CID}\">");
+                    let env = build_envelope(&runtime, &test_row(event_id, "plain", Some(html)));
+                    let rel = rel_boundary(event_id);
+                    let alt = alt_boundary(event_id);
+                    assert!(env.data.contains(&rel));
+                    assert!(env.data.contains(&alt));
+                    assert!(env.data.contains(&format!("t{t}-i{i}")));
+                    assert!(max_data_line_len(&env.data) <= 998);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("battle thread");
+        }
+    }
+
+    #[tokio::test]
+    async fn e2e_related_envelope_survives_smtp_data_and_parses() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::{TcpListener, TcpStream};
+
+        use crate::smtp_client::SmtpSession;
+
+        let html = format!(r#"<img src="cid:{EMAIL_LOGO_CID}" alt="x">"#);
+        let event_id = Uuid::new_v4();
+        let env = build_envelope(
+            &test_runtime(),
+            &test_row(event_id, "plain body", Some(html)),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            write_half.write_all(b"220 fake\r\n").await.unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            write_half.write_all(b"250 OK\r\n").await.unwrap();
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            write_half.write_all(b"250 OK\r\n").await.unwrap();
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            write_half.write_all(b"250 OK\r\n").await.unwrap();
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            write_half.write_all(b"354 go\r\n").await.unwrap();
+            let mut body = Vec::new();
+            loop {
+                let mut byte = [0u8; 1];
+                reader.read_exact(&mut byte).await.unwrap();
+                body.push(byte[0]);
+                if body.ends_with(b"\r\n.\r\n") {
+                    break;
+                }
+            }
+            write_half.write_all(b"250 OK\r\n").await.unwrap();
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            write_half.write_all(b"221 bye\r\n").await.unwrap();
+            body
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut session = SmtpSession::open(stream, "vauban-test").await.unwrap();
+        session.send(&env).await.unwrap();
+        session.quit().await;
+        let body = server.await.unwrap();
+        let s = std::str::from_utf8(&body).unwrap();
+        assert!(s.contains("multipart/related"));
+        assert!(s.contains("text/plain"));
+        assert!(s.contains("text/html"));
+        assert!(s.contains("Content-Type: image/png"));
+        let plain_at = s.find("text/plain").expect("plain");
+        let html_at = s.find("text/html").expect("html");
+        let image_at = s.find("image/png").expect("image");
+        assert!(plain_at < html_at);
+        assert!(html_at < image_at);
+        assert!(s.ends_with("\r\n.\r\n"));
+        assert!(s.contains(&format!("--{}--", rel_boundary(event_id))));
     }
 }

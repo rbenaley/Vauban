@@ -89,6 +89,71 @@ async fn queue_inserts_a_pending_row_with_event_metadata() {
     assert_eq!(row.attempts, 0);
     assert!(row.subject.contains("[Vauban]"));
     assert!(row.body_text.contains("ssh"));
+    let html = row.body_html.as_deref().expect("html persisted");
+    assert!(html.contains("cid:vauban-logo"));
+    assert!(html.contains("prod-db-01"));
+}
+
+#[tokio::test]
+async fn queued_html_round_trips_through_mailer_build_envelope() {
+    use secrecy::SecretString;
+    use shared::messages::SmtpEncryption;
+    use vauban_mailer::outbox::{OutboxEntry as MailerRow, build_envelope};
+    use vauban_mailer::provision::MailerRuntime;
+
+    let app = common::TestApp::spawn().await;
+    let mailer = Mailer::new(Arc::new(Notify::new()), true, 5);
+    let event = fake_event("alice@example.test", "html-envelope");
+    let event_id = event.event_id();
+
+    let mut conn = app.get_conn().await;
+    mailer.queue(&mut conn, &event).await.expect("queue");
+    let row = load_outbox_row(&mut conn, event_id).await.expect("row");
+
+    let runtime = MailerRuntime {
+        smtp_host: "smtp.test".into(),
+        smtp_port: 25,
+        smtp_encryption: SmtpEncryption::Plaintext,
+        smtp_username: String::new(),
+        smtp_password: SecretString::from(String::new()),
+        helo_name: "vauban-test".into(),
+        from_address: "vauban@example.test".into(),
+        from_name: "Vauban PAM".into(),
+        reply_to: String::new(),
+        poll_interval_secs: 5,
+        batch_size: 10,
+        max_attempts: 5,
+        smtp_timeout_secs: 10,
+        broker_timeout_secs: 5,
+    };
+    let mailer_row = MailerRow {
+        id: row.id,
+        event_id: row.event_id,
+        event_kind: row.event_kind,
+        recipient: row.recipient,
+        recipient_name: row.recipient_name,
+        subject: row.subject,
+        body_text: row.body_text,
+        body_html: row.body_html,
+        status: row.status,
+        attempts: row.attempts,
+        max_attempts: row.max_attempts,
+        next_retry_at: row.next_retry_at,
+        last_error: row.last_error,
+        created_at: row.created_at,
+        sent_at: row.sent_at,
+    };
+    let env = build_envelope(&runtime, &mailer_row);
+    assert!(env.data.contains("multipart/related"));
+    assert!(env.data.contains("Content-ID: <vauban-logo>"));
+    assert!(env.data.contains("text/plain"));
+    assert!(env.data.contains("text/html"));
+    assert!(env.data.contains("image/png"));
+    let plain_at = env.data.find("text/plain").expect("plain");
+    let html_at = env.data.find("text/html").expect("html");
+    let image_at = env.data.find("image/png").expect("image");
+    assert!(plain_at < html_at);
+    assert!(html_at < image_at);
 }
 
 #[tokio::test]

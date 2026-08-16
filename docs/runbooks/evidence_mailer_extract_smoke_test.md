@@ -25,6 +25,7 @@ Related architecture:
 - Architecture analysis §10.13 / §16.6
 - Lints: `vauban-web/scripts/check_web_evidence_crate.sh`,
   `vauban-web/scripts/check_mailer_sealed.sh`
+- HTML branding (follow-on): [email_html_rendering_smoke_test.md](email_html_rendering_smoke_test.md)
 
 ## Automated prerequisites (must be green BEFORE the manual pass)
 

@@ -118,4 +118,27 @@ if ! grep -Eq 'Service::Mailer.as_token_discriminant\(\), 9\)' "$ROOT/shared/src
     fail "shared must pin Service::Mailer discriminant 9"
 fi
 
+# HTML branding: CID lives in shared; mailer wraps related + folds base64.
+if ! grep -Eq 'pub const EMAIL_LOGO_CID' "$ROOT/shared/src/smtp.rs"; then
+    fail "shared/src/smtp.rs must define EMAIL_LOGO_CID"
+fi
+if ! grep -Eq 'use shared::smtp::EMAIL_LOGO_CID' "$ROOT/vauban-mailer/src/outbox.rs"; then
+    fail "vauban-mailer outbox must import EMAIL_LOGO_CID from shared"
+fi
+if ! grep -Eq 'multipart/related' "$ROOT/vauban-mailer/src/outbox.rs"; then
+    fail "vauban-mailer build_envelope must emit multipart/related"
+fi
+if ! grep -Eq 'Content-ID: <' "$ROOT/vauban-mailer/src/outbox.rs"; then
+    fail "vauban-mailer must emit Content-ID with angle brackets"
+fi
+if ! grep -Eq 'Content-Disposition: inline' "$ROOT/vauban-mailer/src/outbox.rs"; then
+    fail "vauban-mailer must mark the logo Content-Disposition: inline"
+fi
+if ! grep -Eq 'BASE64_FOLD: usize = 76' "$ROOT/vauban-mailer/src/outbox.rs"; then
+    fail "vauban-mailer must fold base64 at 76 columns"
+fi
+if ! grep -Eq 'EMAIL_LOGO_CID' "$ROOT/vauban-web/src/services/mail_templates.rs"; then
+    fail "vauban-web mail_templates must reference EMAIL_LOGO_CID"
+fi
+
 echo "check_mailer_sealed.sh: OK"

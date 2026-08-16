@@ -22,6 +22,7 @@ pub use vauban_web_evidence::analyzer as iacs_packet_analyzer;
 pub mod iacs_tunnel;
 pub mod list_filters;
 pub mod login_sessions;
+pub mod mail_templates;
 pub mod mailer;
 pub mod pending_mfa;
 pub mod rate_limit;
