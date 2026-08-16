@@ -48,6 +48,16 @@ pub fn brokered_bind<F: FnMut(ControlMessage)>(
     password: &str,
     mut on_control: F,
 ) -> LdapBindOutcome {
+    // Fail-closed BEFORE any broker / TLS work: a username that is not
+    // allowlisted must never reach the directory as a bind DN.
+    let dn = match shared::ldap_dn::substitute_bind_dn(&rt.dn_template, username) {
+        Ok(dn) => dn,
+        Err(e) => {
+            warn!(error = %e, "LDAP bind DN rejected (illegal username or template)");
+            return LdapBindOutcome::InvalidCredentials;
+        }
+    };
+
     let started = Instant::now();
     let session_id = format!("ldap-{:016x}", rand::random::<u64>());
     let broker_request_id: u64 = rand::random();
@@ -108,7 +118,6 @@ pub fn brokered_bind<F: FnMut(ControlMessage)>(
 
     // Step 4: TLS (SNI/hostname = configured host, chain validated against the
     // provisioned CA) + LDAP simple bind.
-    let dn = rt.dn_template.replace("{username}", username);
     match tls::simple_bind_over_tls(
         Arc::clone(&rt.client_config),
         &rt.host,

@@ -149,7 +149,7 @@ fn main() -> ExitCode {
     // service tracing banner so its output is script-friendly.
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("verify") {
-        return run_verify(args.get(2).map(String::as_str));
+        return run_verify(&args[2..]);
     }
 
     tracing_subscriber::fmt()
@@ -175,22 +175,37 @@ fn main() -> ExitCode {
 
 /// Offline integrity verification of a WORM segment file.
 ///
-/// Exit code 0 = chain + seals valid; 2 = tamper/usage error.
+/// Exit code 0 = chain + seals valid against the pinned key; 2 = tamper/usage.
 #[allow(clippy::print_stdout, clippy::print_stderr)]
-fn run_verify(path: Option<&str>) -> ExitCode {
-    let Some(path) = path else {
-        eprintln!("usage: vauban-audit verify <segment.jsonl>");
+fn run_verify(args: &[String]) -> ExitCode {
+    let Some((pubkey_path, segment_path)) = parse_verify_args(args) else {
+        eprintln!("usage: vauban-audit verify --pubkey <signing_key.pub> <segment.jsonl>");
         return ExitCode::from(2);
     };
-    let file = match std::fs::File::open(path) {
+    let pubkey_raw = match std::fs::read_to_string(pubkey_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("verify: cannot read pinned pubkey {pubkey_path}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let expected = match vauban_audit::worm::parse_pinned_verifying_key(&pubkey_raw) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("verify: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let file = match std::fs::File::open(segment_path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("verify: cannot open {path}: {e}");
+            eprintln!("verify: cannot open {segment_path}: {e}");
             return ExitCode::from(2);
         }
     };
     let reader = std::io::BufReader::new(file);
-    match vauban_audit::worm::verify_reader(reader, vauban_audit::worm::GENESIS_HASH, 0) {
+    match vauban_audit::worm::verify_reader(reader, vauban_audit::worm::GENESIS_HASH, 0, &expected)
+    {
         Ok(report) => {
             println!(
                 "OK: {} records ({} events, {} seals), head={}, next_seq={}",
@@ -207,6 +222,14 @@ fn run_verify(path: Option<&str>) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// `verify --pubkey <file> <segment.jsonl>` (order of the two paths is fixed).
+fn parse_verify_args(args: &[String]) -> Option<(&str, &str)> {
+    if args.len() == 3 && args[0] == "--pubkey" {
+        return Some((args[1].as_str(), args[2].as_str()));
+    }
+    None
 }
 
 fn run_service() -> Result<()> {
@@ -427,7 +450,10 @@ fn run_service() -> Result<()> {
             "audit signing key could not be unsealed; refusing to start without Ed25519 WORM seals"
         ));
     };
-    info!("Audit signing key unsealed; WORM segments will be Ed25519-sealed");
+    info!(
+        verifying_key_hex = %hex::encode(key.verifying_key().to_bytes()),
+        "Audit signing key unsealed; WORM segments will be Ed25519-sealed"
+    );
     state.signing_key = Some(key);
 
     // Eager WORM open: first fail-closed MFA critical must not pay the

@@ -139,6 +139,22 @@ pub async fn login(
         return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
     }
 
+    // Bind-DN allowlist (same charset as local account creation). Applied
+    // to the trimmed identifier before any directory IPC so a crafted
+    // value cannot steer the LDAPS simple bind. Surrounding whitespace is
+    // form noise (`normalize_username` already strips it for lookup) and
+    // must not reject a padded local login; the trimmed value (case
+    // preserved for AD) is what we hand to the bind so spaces never enter
+    // the DN. Generic InvalidCredentials: no policy oracle.
+    let bind_username = request.username.trim();
+    if !shared::ldap_dn::username_allowed_in_bind_dn(bind_username) {
+        tracing::warn!(
+            ldap_enabled = state.config.auth.ldaps.enabled,
+            "login username rejected by bind-DN allowlist; LDAPS bind not attempted"
+        );
+        return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
+    }
+
     let mut conn = state
         .db_pool
         .get()
@@ -148,9 +164,10 @@ pub async fn login(
     // Find user by username. Logins are case-insensitive: the stored
     // identity column is canonicalised to its `normalize_username` form
     // (trimmed + lower-cased) at every write site, so we look it up by
-    // the same canonical form. The RAW `request.username` is still what
-    // gets handed to the directory bind below (an LDAP/AD bind DN may use
-    // a case-exact attribute, and AD is case-insensitive anyway).
+    // the same canonical form. The trimmed `bind_username` (case
+    // preserved) is what gets handed to the directory bind below (an
+    // LDAP/AD bind DN may use a case-exact attribute; AD is
+    // case-insensitive anyway).
     let lookup_username = shared::username::normalize_username(&request.username);
     let existing_user = users
         .filter(username.eq(&lookup_username))
@@ -176,7 +193,7 @@ pub async fn login(
     // collapsed to the same generic response (anti-enumeration, SEC-04/05).
     let user = match existing_user {
         Some(u) if u.auth_source == AuthSource::Ldap => {
-            if !ldap_bind_succeeds(&state, &request.username, &request.password).await {
+            if !ldap_bind_succeeds(&state, bind_username, &request.password).await {
                 emit_audit(
                     &state,
                     AuditEvent::new(
@@ -239,9 +256,9 @@ pub async fn login(
             // bind happens against the username supplied; on success we create
             // a directory-backed local shadow account and proceed to MFA.
             if state.config.auth.ldaps.jit_enabled()
-                && ldap_bind_succeeds(&state, &request.username, &request.password).await
+                && ldap_bind_succeeds(&state, bind_username, &request.password).await
             {
-                jit_provision_ldap_user(&mut conn, &request.username).await?
+                jit_provision_ldap_user(&mut conn, bind_username).await?
             } else {
                 // Anti-enumeration: pay the same Argon2 cost as a real
                 // wrong-password failure so response timing cannot reveal

@@ -1,0 +1,18 @@
+rules:
+  - id: vauban.ldap-raw-username-replace
+    message: Interpolate bind DNs only via shared::ldap_dn::substitute_bind_dn.
+    languages: [rust]
+    severity: ERROR
+    pattern: $T.replace("{username}", $U)
+    paths:
+      exclude:
+        - shared/src/ldap_dn.rs
+        - "**/tests/**"
+        - "**/*_test.rs"
+        - "**/tests.rs"
+
+  - id: vauban.inband-verifying-key
+    message: Do not build VerifyingKey from the in-band seal pubkey; pin out of band.
+    languages: [rust]
+    severity: ERROR
+    pattern: VerifyingKey::from_bytes(&pubkey_bytes)

@@ -44,13 +44,20 @@ if [[ ! -f "${WORM}" ]]; then
 fi
 stripped_worm="$(sed 's|//.*$||' "${WORM}")"
 
-for token in 'fn append_event' 'fn seal' 'fn verify_reader' 'blake3::Hasher' 'SigningKey' 'sync_all'; do
+for token in 'fn append_event' 'fn seal' 'fn verify_reader' 'blake3::Hasher' 'SigningKey' 'sync_all' 'expected: &VerifyingKey' 'PubkeyMismatch' 'expected.to_bytes()' 'parse_pinned_verifying_key'; do
     if ! has "${token}" "${stripped_worm}"; then
         echo "[lint] forbidden: ${WORM} no longer references \`${token}\`"
-        echo "       the WORM hash-chain / Ed25519 seal / fsync durability must stay intact."
+        echo "       the WORM hash-chain / Ed25519 seal / out-of-band pin / fsync must stay intact."
         errors=1
     fi
 done
+
+# In-band pubkey must never be the sole VerifyingKey used to verify a seal.
+if grep -nE 'VerifyingKey::from_bytes\(&pubkey_bytes\)' "${WORM}" | grep -v 'allow-inband-key:' >/dev/null; then
+    echo "[lint] forbidden: ${WORM} builds VerifyingKey from the in-band seal pubkey"
+    echo "       verify against the pinned expected key; compare pubkey_bytes to expected.to_bytes()."
+    errors=1
+fi
 
 # ---- 2. main.rs wires the WORM module and persists before acking ----
 if [[ ! -f "${MAIN}" ]]; then

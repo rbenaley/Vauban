@@ -74,7 +74,7 @@ fi
 
 # 4. No direct TcpStream::connect post-Capsicum sandbox.
 sandbox_offset=$(grep -nE '^[[:space:]]*capsicum::setup_service_sandbox' "$MAIN" \
-                 | head -n1 | cut -d: -f1)
+                 | head -n1 | cut -d: -f1 || true)
 if [[ -n "$sandbox_offset" ]]; then
     if tail -n +"$sandbox_offset" "$MAIN" | grep -qE 'TcpStream::connect'; then
         echo "ERROR: TcpStream::connect found AFTER Capsicum sandbox" \

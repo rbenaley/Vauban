@@ -67,6 +67,8 @@ fn audit_worm_lint_script_covers_core_invariants() {
         "fn append_event",
         "fn seal",
         "fn verify_reader",
+        "expected: &VerifyingKey",
+        "PubkeyMismatch",
         "blake3::Hasher",
         "AuditNack",
         "events_failed",

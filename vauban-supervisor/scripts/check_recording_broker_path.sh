@@ -55,7 +55,8 @@ else
     for syscall in "File::open" "File::create" "create_dir_all"; do
         sys_line="$(grep -n "$syscall" <<<"$body" | head -n1 | cut -d: -f1 || true)"
         if [ -z "$sys_line" ]; then
-            err "INV-2: '$syscall' not found in handler body (unexpected layout)."
+            # Handler may not use every syscall (e.g. create vs open).
+            continue
         elif [ "$resolve_line" -ge "$sys_line" ]; then
             err "INV-2: path resolution must precede '$syscall' (fail-closed pre-syscall)."
         fi

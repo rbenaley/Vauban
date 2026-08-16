@@ -127,7 +127,7 @@ Restore the lab before continuing.
 | IACS ChannelEnd + MFA concurrent | Still OK per [gzip off-thread runbook](iacs_gzip_offthread_smoke_test.md) section C (gzip worker must still start) |
 | SSH or RDP session | Connect / disconnect; no audit ACK storms |
 | Bastion Watch / sessions list | No 5xx after MFA + session tests |
-| WORM segment file | Grows after MFA events; `vauban-audit verify <segment>` OK if you run it |
+| WORM segment file | Grows after MFA events; `vauban-audit verify --pubkey <signing_key.pub> <segment>` OK. Without `--pubkey` the CLI must exit 2. |
 
 ---
 

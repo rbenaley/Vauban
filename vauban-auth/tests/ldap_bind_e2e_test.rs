@@ -23,7 +23,7 @@ use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -108,6 +108,7 @@ fn server_config(pki: &TestPki) -> Arc<ServerConfig> {
 struct TestLdapServer {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
+    accepts: Arc<AtomicUsize>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -120,11 +121,14 @@ impl TestLdapServer {
         let creds = Arc::new(creds);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_t = Arc::clone(&stop);
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let accepts_t = Arc::clone(&accepts);
 
         let handle = thread::spawn(move || {
             while !stop_t.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        accepts_t.fetch_add(1, Ordering::Relaxed);
                         if let Err(e) = handle_conn(stream, Arc::clone(&cfg), &creds) {
                             eprintln!("test ldap server: connection error: {e}");
                         }
@@ -140,6 +144,7 @@ impl TestLdapServer {
         Self {
             addr,
             stop,
+            accepts,
             handle: Some(handle),
         }
     }
@@ -518,6 +523,38 @@ fn ldap_bind_missing_fd_does_not_block_and_fails_closed() {
     assert!(
         elapsed < Duration::from_secs(2),
         "recv_fd must be non-blocking; took {elapsed:?}"
+    );
+}
+
+/// A comma in the username must not steer the bind DN. Auth rejects
+/// before the broker, so the directory never sees a connection.
+#[test]
+fn comma_in_username_does_not_steer_dn() {
+    let pki = generate_pki("localhost");
+    let steered = "uid=alice,ou=admins,dc=example,dc=com,ou=people,dc=example,dc=com";
+    let server = TestLdapServer::start(&pki, vec![(steered.to_string(), "s3cret".to_string())]);
+
+    let (auth_chan, broker_chan) = IpcChannel::pair().unwrap();
+    let (auth_fd, broker_fd) = socketpair_for_fd_passing().unwrap();
+    let _broker = TestBroker::start(
+        broker_chan,
+        broker_fd,
+        BrokerBehavior::ConnectAndPass(server.addr),
+    );
+
+    let rt = runtime(
+        &pki.ca_pem,
+        "localhost",
+        server.addr.port(),
+        auth_fd.as_raw_fd(),
+    );
+    let outcome = brokered_bind(&auth_chan, &rt, "alice,ou=admins", "s3cret", |_| {});
+
+    assert_eq!(outcome, LdapBindOutcome::InvalidCredentials);
+    assert_eq!(
+        server.accepts.load(Ordering::Relaxed),
+        0,
+        "directory must not see a steered bind"
     );
 }
 

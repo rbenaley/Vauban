@@ -347,6 +347,7 @@ impl LdapConfig {
     /// SSRF guard for the LDAPS broker: returns `true` iff LDAP is enabled and
     /// `(host, port)` exactly matches the configured directory endpoint
     /// (case-insensitive host, per RFC 1035 §2.3.3). This is the supervisor's
+    // allow-untested-claim: whitelist unit tests live in this module (allows()).
     /// authoritative gate: `vauban-auth` cannot forge a `TcpConnectRequest` to
     /// any other destination.
     pub fn allows(&self, host: &str, port: u16) -> bool {

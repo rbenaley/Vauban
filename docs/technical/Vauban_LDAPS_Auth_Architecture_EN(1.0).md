@@ -67,7 +67,7 @@ sequenceDiagram
     participant DS as LDAPS directory
 
     Web->>Auth: AuthLdapBind { username, password }
-    Note over Auth: DN = dn_template.replace("{username}", ..)
+    Note over Auth: DN = substitute_bind_dn(dn_template, username)
     Auth->>Sup: TcpConnectRequest { target_service: Auth, host, port }
     Note over Sup: ldap.allows(host, port) ? else fail-closed
     Sup->>Sup: DNS + connect_timeout
@@ -219,7 +219,10 @@ login_password_min_length = 12
   duration in v1; mitigated by the tight timeout and the web IP rate limit. A
   dedicated worker is the v2 path.
 - **Direct bind only**: the target directory must accept a direct bind by
-  `dn_template`. Search-then-bind (service account + `SearchRequest`) is a v2
+  `dn_template`. `{username}` is substituted only after
+  `shared::ldap_dn::substitute_bind_dn` allowlists the identifier
+  (`[A-Za-z0-9][A-Za-z0-9._-]*`). RFC 4514 specials never reach the
+  directory. Search-then-bind (service account + `SearchRequest`) is a v2
   extension.
 - **No e-mail from the directory**: JIT-provisioned users get a deterministic
   placeholder e-mail (`{username}@ldap.local`, or the UPN when it already looks

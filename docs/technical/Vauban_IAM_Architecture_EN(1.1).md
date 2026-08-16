@@ -2647,11 +2647,14 @@ if their bounded queue is saturated, so a flood never blocks the request path.
 
 ### 16.6 Offline verification
 
-`vauban-audit verify <path>` replays a segment (or a chain of segments),
-recomputing every hash, checking sequence continuity, and verifying each
-Ed25519 seal against its embedded public key. It detects sequence gaps, broken
-chain links, per-record hash tampering, and invalid/mismatched seals. The
-unit tests in [`vauban-audit/src/worm.rs`](../../vauban-audit/src/worm.rs)
+`vauban-audit verify --pubkey <signing_key.pub> <path>` replays a segment
+from genesis, recomputing every hash, checking sequence continuity, and
+verifying each Ed25519 seal against the **out-of-band** verifying key
+(the `.pub` written by `vauban-vault seal-audit-key`). The in-band
+`pubkey` field is compared to that pin; a rewritten file with a fresh
+keypair is `PubkeyMismatch`, not `OK`. The CLI refuses to run without
+`--pubkey`. The unit tests in
+[`vauban-audit/src/worm.rs`](../../vauban-audit/src/worm.rs)
 exercise build/verify round-trips, byte flips, line deletion, reordering,
 seal verification, and inter-segment chain continuity; the
 [`scripts/check_audit_worm.sh`](../../vauban-audit/scripts/check_audit_worm.sh)

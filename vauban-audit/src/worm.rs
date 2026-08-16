@@ -27,10 +27,14 @@
 //! 2. **Sequence numbers** -- strictly monotonic `seq`, so a removed record
 //!    leaves a detectable gap even before the hash check.
 //! 3. **Ed25519 seal** -- `seal` records sign the raw chain head with the
-//!    audit signing key (seed unsealed from the vault at boot). An attacker who
-//!    can rewrite the file but does not hold the private key cannot forge a
-//!    valid seal: the chain can only be silently truncated *after* the last
-//!    seal, never edited in place.
+//!    audit signing key (seed unsealed from the vault at boot).
+//!    [`verify_reader`] takes an **out-of-band** [`VerifyingKey`] (the
+//!    `.pub` written by `vauban-vault seal-audit-key`). An attacker who
+//!    rewrites the file and embeds a new keypair cannot obtain `OK`:
+//!    the in-band `pubkey` field is compared to the pin and a mismatch
+//!    is [`VerifyError::PubkeyMismatch`]. Truncation *after* the last
+//!    seal remains a known residual (the chain cannot be edited in
+//!    place without breaking hashes).
 //!
 //! The genesis `prev` is 32 zero bytes.
 
@@ -132,6 +136,8 @@ pub enum VerifyError {
     SealHeadMismatch { line: usize },
     #[error("line {line}: malformed seal record (missing field)")]
     MalformedSeal { line: usize },
+    #[error("line {line}: seal public key does not match the pinned verifying key")]
+    PubkeyMismatch { line: usize },
 }
 
 /// Outcome of verifying one or more segments.
@@ -295,13 +301,17 @@ impl WormLog {
 /// Replay and verify a segment from `start_prev`, returning the final report.
 ///
 /// Detects: malformed JSON, sequence gaps, broken chain links, per-record hash
-/// tampering, and invalid / mismatched Ed25519 seals. For a standalone segment
-/// pass [`GENESIS_HASH`] and `start_seq = 0`; to chain multiple segments, feed
-/// the previous report's `head` / `next_seq`.
+/// tampering, seal pubkey mismatch against `expected`, and invalid Ed25519
+/// seals. For a standalone segment pass [`GENESIS_HASH`] and `start_seq = 0`;
+/// to chain multiple segments, feed the previous report's `head` / `next_seq`.
+///
+/// `expected` is the out-of-band audit verifying key (vault `.pub`). The
+/// in-band `pubkey` field is never used as the trust anchor.
 pub fn verify_reader<R: BufRead>(
     reader: R,
     start_prev: [u8; 32],
     start_seq: u64,
+    expected: &VerifyingKey,
 ) -> Result<VerifyReport, VerifyError> {
     let mut prev = start_prev;
     let mut expected_seq = start_seq;
@@ -368,15 +378,17 @@ pub fn verify_reader<R: BufRead>(
                 .ok()
                 .and_then(|v| <[u8; 32]>::try_from(v).ok())
                 .ok_or(VerifyError::MalformedSeal { line: line_no })?;
+            if pubkey_bytes != expected.to_bytes() {
+                return Err(VerifyError::PubkeyMismatch { line: line_no });
+            }
             let sig_bytes = BASE64
                 .decode(sig_b64)
                 .ok()
                 .and_then(|v| <[u8; 64]>::try_from(v).ok())
                 .ok_or(VerifyError::MalformedSeal { line: line_no })?;
-            let vk = VerifyingKey::from_bytes(&pubkey_bytes)
-                .map_err(|_| VerifyError::MalformedSeal { line: line_no })?;
             let sig = Signature::from_bytes(&sig_bytes);
-            vk.verify(&sealed_head, &sig)
+            expected
+                .verify(&sealed_head, &sig)
                 .map_err(|_| VerifyError::BadSignature { line: line_no })?;
             seals += 1;
         } else {
@@ -397,6 +409,32 @@ pub fn verify_reader<R: BufRead>(
     })
 }
 
+/// Parse a vault `.pub` file (standard base64) or a 64-char hex string
+/// into the pinned [`VerifyingKey`].
+pub fn parse_pinned_verifying_key(input: &str) -> Result<VerifyingKey, PinKeyError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(PinKeyError::Empty);
+    }
+    if let Ok(bytes) = hex::decode(trimmed)
+        && let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice())
+    {
+        return VerifyingKey::from_bytes(&arr).map_err(|_| PinKeyError::Invalid);
+    }
+    let decoded = BASE64.decode(trimmed).map_err(|_| PinKeyError::Invalid)?;
+    let arr = <[u8; 32]>::try_from(decoded.as_slice()).map_err(|_| PinKeyError::Invalid)?;
+    VerifyingKey::from_bytes(&arr).map_err(|_| PinKeyError::Invalid)
+}
+
+/// Error loading the out-of-band WORM verifying key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PinKeyError {
+    #[error("pinned verifying key file is empty")]
+    Empty,
+    #[error("pinned verifying key is not 32-byte hex or standard base64")]
+    Invalid,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,6 +444,10 @@ mod tests {
         // Deterministic test seed (NOT used in production; the real seed is
         // unsealed from the vault).
         SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    fn pin() -> VerifyingKey {
+        signing_key().verifying_key()
     }
 
     fn event(seq_hint: u64) -> AuditRecord {
@@ -441,7 +483,7 @@ mod tests {
     #[test]
     fn build_then_verify_roundtrips() {
         let bytes = build_log(5, true);
-        let report = verify_reader(Cursor::new(bytes), GENESIS_HASH, 0).unwrap();
+        let report = verify_reader(Cursor::new(bytes), GENESIS_HASH, 0, &pin()).unwrap();
         assert_eq!(report.records, 6);
         assert_eq!(report.events, 5);
         assert_eq!(report.seals, 1);
@@ -451,7 +493,7 @@ mod tests {
     #[test]
     fn empty_log_verifies_to_genesis() {
         let bytes = build_log(0, false);
-        let report = verify_reader(Cursor::new(bytes), GENESIS_HASH, 0).unwrap();
+        let report = verify_reader(Cursor::new(bytes), GENESIS_HASH, 0, &pin()).unwrap();
         assert_eq!(report.records, 0);
         assert_eq!(report.head, GENESIS_HASH);
     }
@@ -465,7 +507,7 @@ mod tests {
             .position(|w| w == b"bad password")
             .unwrap();
         bytes[pos] ^= 0x20;
-        let err = verify_reader(Cursor::new(bytes), GENESIS_HASH, 0).unwrap_err();
+        let err = verify_reader(Cursor::new(bytes), GENESIS_HASH, 0, &pin()).unwrap_err();
         assert!(
             matches!(err, VerifyError::HashMismatch { .. }),
             "got {err:?}"
@@ -480,7 +522,8 @@ mod tests {
         // Drop the 2nd record -> seq jumps 0,2,... -> gap (and broken link).
         lines.remove(1);
         let rejoined = lines.join("\n");
-        let err = verify_reader(Cursor::new(rejoined.into_bytes()), GENESIS_HASH, 0).unwrap_err();
+        let err =
+            verify_reader(Cursor::new(rejoined.into_bytes()), GENESIS_HASH, 0, &pin()).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -497,7 +540,8 @@ mod tests {
         let mut lines: Vec<&str> = text.lines().collect();
         lines.swap(1, 2);
         let rejoined = lines.join("\n");
-        let err = verify_reader(Cursor::new(rejoined.into_bytes()), GENESIS_HASH, 0).unwrap_err();
+        let err =
+            verify_reader(Cursor::new(rejoined.into_bytes()), GENESIS_HASH, 0, &pin()).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -522,7 +566,7 @@ mod tests {
             .unwrap()
             + needle.len();
         bytes[start] = if bytes[start] == b'0' { b'1' } else { b'0' };
-        let err = verify_reader(Cursor::new(bytes), GENESIS_HASH, 0).unwrap_err();
+        let err = verify_reader(Cursor::new(bytes), GENESIS_HASH, 0, &pin()).unwrap_err();
         // Editing sealed_head changes the core -> hash mismatch fires first.
         assert!(
             matches!(
@@ -536,11 +580,44 @@ mod tests {
     }
 
     #[test]
-    fn seal_signature_verifies_against_embedded_pubkey() {
+    fn seal_signature_verifies_against_pinned_pubkey() {
         let bytes = build_log(1, true);
-        // A clean sealed log must verify end to end (exercises Ed25519 verify).
-        let report = verify_reader(Cursor::new(bytes), GENESIS_HASH, 0).unwrap();
+        // A clean sealed log must verify end to end against the out-of-band pin.
+        let report = verify_reader(Cursor::new(bytes), GENESIS_HASH, 0, &pin()).unwrap();
         assert_eq!(report.seals, 1);
+    }
+
+    #[test]
+    fn forged_seal_with_alien_key_is_rejected() {
+        let alien = SigningKey::from_bytes(&[9u8; 32]);
+        let tmp = tempfile::tempfile().unwrap();
+        let mut log = WormLog::new(tmp, "seg-0".to_string(), GENESIS_HASH, 0);
+        log.append_event(&event(0)).unwrap();
+        log.seal(&alien, 1_700_000_999).unwrap();
+        log.writer.flush().unwrap();
+        let mut file = log.writer.into_inner().unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).unwrap();
+        let err = verify_reader(Cursor::new(buf), GENESIS_HASH, 0, &pin()).unwrap_err();
+        assert!(
+            matches!(err, VerifyError::PubkeyMismatch { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_pinned_verifying_key_accepts_hex_and_base64() {
+        let vk = pin();
+        let hex_s = hex::encode(vk.to_bytes());
+        let b64 = BASE64.encode(vk.to_bytes());
+        assert_eq!(parse_pinned_verifying_key(&hex_s).unwrap(), vk);
+        assert_eq!(parse_pinned_verifying_key(&b64).unwrap(), vk);
+        assert_eq!(
+            parse_pinned_verifying_key("not-a-key"),
+            Err(PinKeyError::Invalid)
+        );
+        assert_eq!(parse_pinned_verifying_key("  "), Err(PinKeyError::Empty));
     }
 
     #[test]
@@ -571,11 +648,11 @@ mod tests {
 
         // Verifying segment 2 standalone from genesis MUST fail (the first
         // record's prev points at segment 1's head, not genesis).
-        let standalone = verify_reader(Cursor::new(seg2.clone()), GENESIS_HASH, 0);
+        let standalone = verify_reader(Cursor::new(seg2.clone()), GENESIS_HASH, 0, &pin());
         assert!(standalone.is_err());
 
         // Verifying segment 2 from segment 1's head/seq MUST succeed.
-        let report = verify_reader(Cursor::new(seg2), head_after_1, seq_after_1).unwrap();
+        let report = verify_reader(Cursor::new(seg2), head_after_1, seq_after_1, &pin()).unwrap();
         assert_eq!(report.events, 2);
         assert_eq!(report.seals, 1);
     }

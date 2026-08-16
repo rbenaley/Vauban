@@ -1,0 +1,31 @@
+# cargo-deny: `just deny` runs `check advisories`.
+# Existing, accepted findings are ignored so the gate fails only on NEW
+# advisories. Do not add an ignore without a dated reason.
+
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "warn"
+ignore = [
+    # IPC wire format; no maintained bincode 2.x successor in-tree yet.
+    "RUSTSEC-2025-0141",
+    # Mysql-only diesel-async padding UB; Vauban uses Postgres.
+    "RUSTSEC-2026-0138",
+    # paste via pqcrypto-mldsa; no drop-in yet.
+    "RUSTSEC-2024-0436",
+    # pqcrypto-* / PQClean archive; migration to ml-dsa/ml-kem is a later lot.
+    "RUSTSEC-2026-0163",
+    "RUSTSEC-2026-0166",
+    "RUSTSEC-2026-0161",
+    "RUSTSEC-2026-0162",
+    # Marvin / rsa via russh + openidconnect; no patched rsa yet.
+    "RUSTSEC-2023-0071",
+    # rustls-pemfile archived; migrate to rustls-pki-types later.
+    "RUSTSEC-2025-0134",
+    # smartstring via rhai/casbin; archived upstream.
+    "RUSTSEC-2026-0249",
+    # atomic-polyfill via ironrdp/sspi (vauban-proxy-rdp lockfile).
+    "RUSTSEC-2023-0089",
+]

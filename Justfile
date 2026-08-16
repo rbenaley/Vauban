@@ -31,12 +31,58 @@ test *ARGS:
     cargo test --workspace {{ARGS}} -- --test-threads=1
     cargo test {{rdp_manifest}} {{ARGS}} -- --test-threads=1
 
-# Run clippy on all crates
+# Run clippy on all crates (warnings are errors, same as the agent cycle).
 clippy *ARGS:
-    cargo clippy --workspace {{ARGS}}
-    cargo clippy {{rdp_manifest}} {{ARGS}}
+    cargo clippy --workspace --all-targets {{ARGS}} -- -D warnings
+    cargo clippy {{rdp_manifest}} --all-targets {{ARGS}} -- -D warnings
 
-# Full validation cycle: build + clippy + test (stops on first failure).
+# Structural check_*.sh + cargo-deny advisories + Semgrep.
+# Fail-closed if cargo-deny or semgrep is missing (see docs/runbooks/local_lint_tools.md).
+lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    while IFS= read -r script; do
+        echo "==> ${script}"
+        bash "${script}"
+    done < <(find . \( -path ./target -o -path ./.git \) -prune -o -path '*/scripts/check_*.sh' -print | sort)
+    just deny
+    just semgrep
+
+# RustSec advisories on both lockfiles (cargo-deny).
+deny *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! cargo deny --version >/dev/null 2>&1; then
+        echo "cargo-deny is not installed. See docs/runbooks/local_lint_tools.md" >&2
+        exit 1
+    fi
+    cargo deny check advisories {{ARGS}}
+    cargo deny --manifest-path vauban-proxy-rdp/Cargo.toml check advisories {{ARGS}}
+
+# Semgrep class rules (untrusted interpolation + in-band verifying key).
+semgrep:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SEMGREP=""
+    if command -v semgrep >/dev/null 2>&1; then
+        SEMGREP="$(command -v semgrep)"
+    else
+        for cand in "$HOME/Library/Python/"*/bin/semgrep "$HOME/.local/bin/semgrep"; do
+            if [[ -x "${cand}" ]]; then
+                SEMGREP="${cand}"
+                break
+            fi
+        done
+    fi
+    if [[ -z "${SEMGREP}" ]]; then
+        echo "semgrep is not installed. See docs/runbooks/local_lint_tools.md" >&2
+        exit 1
+    fi
+    # pip --user installs a wrapper that execs `pysemgrep` from the same dir.
+    export PATH="$(dirname "${SEMGREP}"):${PATH}"
+    "${SEMGREP}" --config .semgrep/untrusted-input.yml --error --quiet
+
+# Full validation cycle: build + lint + clippy + test (stops on first failure).
 # Exports VAUBAN_CONFIG_DIR to the repo config/ for the duration (release
 # binaries do not fall back to compile-time workspace paths).
 validate:
@@ -44,6 +90,7 @@ validate:
     set -euo pipefail
     export VAUBAN_CONFIG_DIR="{{repo_config_dir}}"
     just build
+    just lint
     just clippy
     just test
 

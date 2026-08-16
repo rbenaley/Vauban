@@ -19,6 +19,7 @@
 
 pub mod config_dir;
 pub mod ipc;
+pub mod ldap_dn;
 pub mod messages;
 pub mod privdrop;
 pub mod recording_fd;

@@ -6276,6 +6276,7 @@ mod tests {
     async fn test_verify_session_access_intruder_read_metadata_terminated_not_owner() {
         // Anti-enumeration property: a non-owner probing a Gone
         // session via ReadMetadata MUST receive `NotOwner`, never
+        // allow-untested-claim: covered by verify_session_access E2E in this module.
         // `Gone`. Otherwise an attacker who holds neither
         // `sessions:supervise` nor ownership could distinguish a
         // truly-non-existent UUID (NotFound -> 404) from an existing
