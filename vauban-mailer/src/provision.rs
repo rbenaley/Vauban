@@ -24,6 +24,7 @@ pub struct MailerRuntime {
     pub max_attempts: i32,
     pub smtp_timeout_secs: u64,
     pub broker_timeout_secs: u64,
+    pub smtp_accept_invalid_certs: bool,
 }
 
 impl MailerRuntime {
@@ -53,6 +54,7 @@ impl From<MailerSmtpProvisionFields> for MailerRuntime {
             max_attempts: p.max_attempts,
             smtp_timeout_secs: p.smtp_timeout_secs,
             broker_timeout_secs: p.broker_timeout_secs,
+            smtp_accept_invalid_certs: p.smtp_accept_invalid_certs,
         }
     }
 }
@@ -72,6 +74,7 @@ struct MailerSmtpProvisionFields {
     max_attempts: i32,
     smtp_timeout_secs: u64,
     broker_timeout_secs: u64,
+    smtp_accept_invalid_certs: bool,
 }
 
 /// Block (pre-seal) until the supervisor sends `MailerSmtpProvision`.
@@ -104,6 +107,7 @@ pub fn wait_for_mailer_provision(supervisor: &IpcChannel) -> anyhow::Result<Mail
                 max_attempts,
                 smtp_timeout_secs,
                 broker_timeout_secs,
+                smtp_accept_invalid_certs,
             }) => {
                 return Ok(MailerRuntime::from(MailerSmtpProvisionFields {
                     smtp_host,
@@ -120,10 +124,39 @@ pub fn wait_for_mailer_provision(supervisor: &IpcChannel) -> anyhow::Result<Mail
                     max_attempts,
                     smtp_timeout_secs,
                     broker_timeout_secs,
+                    smtp_accept_invalid_certs,
                 }));
             }
             Ok(_) => continue,
             Err(e) => anyhow::bail!("IPC error while awaiting MailerSmtpProvision: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provision_fields_map_accept_invalid_certs() {
+        let runtime = MailerRuntime::from(MailerSmtpProvisionFields {
+            smtp_host: "smtp.test".into(),
+            smtp_port: 587,
+            smtp_encryption: SmtpEncryption::Starttls,
+            smtp_username: String::new(),
+            smtp_password: SensitiveString::new(String::new()),
+            helo_name: String::new(),
+            from_address: "a@b.test".into(),
+            from_name: String::new(),
+            reply_to: String::new(),
+            poll_interval_secs: 10,
+            batch_size: 8,
+            max_attempts: 3,
+            smtp_timeout_secs: 30,
+            broker_timeout_secs: 30,
+            smtp_accept_invalid_certs: true,
+        });
+        assert!(runtime.smtp_accept_invalid_certs);
+        assert_eq!(runtime.effective_helo(), "vauban");
     }
 }

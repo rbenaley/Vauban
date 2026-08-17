@@ -49,7 +49,7 @@ Suite highlights that must stay green:
 | Invariants + lint | `evidence_mailer_extract_invariants_test`, both `check_*.sh`, `MAILER_KINDS`, `inv_mailer_db_warmup_before_sandbox`, `inv_mailer_queue_is_one_summary_line`, `inv_mailer_drain_logs_smtp_failures` |
 | Proptest | `evidence_mailer_extract_proptest`, `queue_summary_is_single_line_and_names_everyone`, sandbox `mailer_fd_kinds_disjoint_ok_overlap_rejected`, mailer `force_create_count_is_total_on_dead_url`, `format_drain_detail_never_splits_lines` |
 | Battle | `evidence_mailer_extract_battle_test`, `battle_queue_summary_under_contention`, `battle_format_drain_detail_under_contention`, `battle_force_create_dead_url_under_contention` |
-| E2E | `evidence_mailer_extract_e2e_test`, `smtp_session_rset_after_550_allows_next_envelope`, `e2e_mailer_sandbox_wiring_staging_regression` |
+| E2E | `evidence_mailer_extract_e2e_test`, `smtp_session_rset_after_550_allows_next_envelope`, `e2e_mailer_sandbox_wiring_staging_regression`, `e2e_smtp_broker_localhost_reaches_ipv4_only_listener`, `e2e_self_signed_smtp_cert_is_accepted_when_skip_verify`, `attack_self_signed_smtp_cert_is_rejected_when_verify_enabled` |
 | Wire | `Service::Mailer.as_token_discriminant() == 9` |
 
 ## Lab prerequisites
@@ -189,6 +189,42 @@ Regression: after the FD-kind seal fix, mailer built the deadpool
    looping drain errors every 10 s.
 
 Pass: warm-up precedes seal; drain can talk to the pre-opened sockets.
+
+## C''' -- localhost dual-stack (IPv4-only SMTP sink)
+
+Regression: `smtp_host = "localhost"` made the supervisor broker
+`connect()` only the first `getaddrinfo` record. On macOS that is
+`[::1]:1025` while MailHog / smtp4dev bind `127.0.0.1:1025`
+(`tcp4 LISTEN`). Drain logged
+`Connection to [::1]:1025 failed: Connection refused`.
+
+1. Keep `[mailer].smtp_host = "localhost"` and an IPv4-only sink on
+   `127.0.0.1:<smtp_port>` (`lsof` / `netstat` shows `tcp4` only).
+2. Restart supervisor + mailer; queue one notification.
+3. Expect a successful drain (or SMTP 250), **not**
+   `Connection to [::1]:... failed`.
+4. Optional: `smtp_host = "127.0.0.1"` still works (literal IPv4).
+
+Pass: `localhost` reaches the IPv4 sink; no IPv6-only refuse loop.
+
+## C'''' -- self-signed SMTP (`smtp_accept_invalid_certs`)
+
+Regression: STARTTLS against a lab / internal MTA with a self-signed
+cert failed rustls webpki (`UnknownIssuer`) even after TCP connected.
+
+1. Set `[mailer].smtp_encryption = "starttls"` and
+   `smtp_accept_invalid_certs = true` (allowed in every environment,
+   including production). Restart **supervisor + mailer** together
+   (the flag rides `MailerSmtpProvision`).
+2. Queue one notification. Expect a successful drain, **not**
+   `invalid peer certificate: UnknownIssuer`.
+3. In mailer logs: `accept_invalid_certs = true` on
+   `Mailer SMTP runtime provisioned`, plus one warn
+   `SMTP TLS certificate verification is disabled`.
+4. Optional: set the flag back to `false` and confirm the self-signed
+   relay is rejected again.
+
+Pass: opt-in skip-verify reaches the self-signed sink; default remains verify-on.
 
 ## D -- Fail-closed
 

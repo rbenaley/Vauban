@@ -29,7 +29,7 @@ const BASE64_FOLD: usize = 76;
 
 use crate::broker::{answer_control, request_smtp_connect};
 use crate::provision::MailerRuntime;
-use crate::smtp_client::{MailEnvelope, SmtpError, default_client_config, open_session};
+use crate::smtp_client::{MailEnvelope, SmtpError, client_config, open_session};
 use shared::ipc::IpcChannel;
 use shared::messages::{ControlMessage, Message};
 
@@ -112,7 +112,7 @@ fn poll_supervisor_control(ctx: &DrainCtx) {
 }
 
 pub async fn dispatcher_loop(ctx: DrainCtx) {
-    let tls_config = default_client_config();
+    let tls_config = client_config(ctx.runtime.smtp_accept_invalid_certs);
     let poll = Duration::from_secs(ctx.runtime.poll_interval_secs.max(1));
     let mut next_tick = Instant::now() + poll;
     loop {
@@ -745,6 +745,7 @@ mod tests {
             max_attempts: 5,
             smtp_timeout_secs: 10,
             broker_timeout_secs: 5,
+            smtp_accept_invalid_certs: false,
         }
     }
 

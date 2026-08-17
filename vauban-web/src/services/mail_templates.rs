@@ -288,6 +288,26 @@ pub fn logo_cid_href() -> String {
     format!("cid:{EMAIL_LOGO_CID}")
 }
 
+/// Drop `<!--[if mso]>...<![endif]-->` blocks so leftover `<style>` is visible.
+#[cfg(test)]
+fn strip_mso_conditionals(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find("<!--[if mso]>") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        match after.find("<![endif]-->") {
+            Some(end) => rest = &after[end + "<![endif]-->".len()..],
+            None => {
+                out.push_str(after);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,13 +335,10 @@ mod tests {
                 "{kind} must not embed data URIs"
             );
             assert!(!html.contains("<script"), "{kind} must not carry script");
-            let without_mso = html.replace(
-                "<!--[if mso]><style>body,table,td,a{font-family:Arial,Helvetica,sans-serif !important;}</style><![endif]-->",
-                "",
-            );
+            let without_mso = strip_mso_conditionals(html);
             assert!(
                 !without_mso.contains("<style"),
-                "{kind} must not carry a style block outside the mso conditional"
+                "{kind} must not carry a style block outside an mso conditional"
             );
             for (i, line) in html.lines().enumerate() {
                 assert!(
@@ -385,5 +402,42 @@ mod tests {
     fn logo_cid_href_matches_shared_constant() {
         assert_eq!(logo_cid_href(), format!("cid:{EMAIL_LOGO_CID}"));
         assert!(!logo_cid_href().contains('<'));
+    }
+
+    #[test]
+    fn every_template_is_fluid_720_with_mso_ghost() {
+        for (kind, html) in CATALOGUE {
+            assert!(
+                !html.contains("width:600px") && !html.contains("width=\"600\""),
+                "{kind} must not pin the legacy 600px card"
+            );
+            assert!(
+                html.contains("width:100%; max-width:720px"),
+                "{kind} card/footer must be fluid up to 720px"
+            );
+            assert!(
+                html.contains("width=\"720\""),
+                "{kind} must wrap the card in an Outlook MSO ghost table"
+            );
+            assert!(
+                html.contains("<!--[if mso]>"),
+                "{kind} must carry the MSO ghost open"
+            );
+            assert!(
+                html.contains("</td></tr></table>"),
+                "{kind} must close the MSO ghost table"
+            );
+        }
+    }
+
+    #[test]
+    fn strip_mso_conditionals_drops_complete_blocks() {
+        let html = "a<!--[if mso]><style>x</style><![endif]-->b<!--[if mso]>y<![endif]-->c";
+        assert_eq!(strip_mso_conditionals(html), "abc");
+        assert_eq!(strip_mso_conditionals("plain"), "plain");
+        assert_eq!(
+            strip_mso_conditionals("a<!--[if mso]>unclosed"),
+            "a<!--[if mso]>unclosed"
+        );
     }
 }

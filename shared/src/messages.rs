@@ -3083,6 +3083,7 @@ pub enum Message {
         max_attempts: i32,
         smtp_timeout_secs: u64,
         broker_timeout_secs: u64,
+        smtp_accept_invalid_certs: bool,
     },
 }
 
@@ -4094,11 +4095,47 @@ mod tests {
             max_attempts: 5,
             smtp_timeout_secs: 30,
             broker_timeout_secs: 30,
+            smtp_accept_invalid_certs: true,
         };
         assert_eq!(msg.request_id(), None);
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        assert!(matches!(deserialized, Message::MailerSmtpProvision { .. }));
+        match deserialized {
+            Message::MailerSmtpProvision {
+                smtp_accept_invalid_certs,
+                ..
+            } => assert!(smtp_accept_invalid_certs),
+            other => panic!("Wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_message_mailer_smtp_provision_roundtrip_verify_on() {
+        let msg = Message::MailerSmtpProvision {
+            smtp_host: "smtp.example.com".to_string(),
+            smtp_port: 587,
+            smtp_encryption: SmtpEncryption::Starttls,
+            smtp_username: String::new(),
+            smtp_password: SensitiveString::new(String::new()),
+            helo_name: String::new(),
+            from_address: "vauban@example.com".to_string(),
+            from_name: String::new(),
+            reply_to: String::new(),
+            poll_interval_secs: 10,
+            batch_size: 16,
+            max_attempts: 5,
+            smtp_timeout_secs: 30,
+            broker_timeout_secs: 30,
+            smtp_accept_invalid_certs: false,
+        };
+        let deserialized: Message = deserialize(&serialize(&msg));
+        match deserialized {
+            Message::MailerSmtpProvision {
+                smtp_accept_invalid_certs,
+                ..
+            } => assert!(!smtp_accept_invalid_certs),
+            other => panic!("Wrong variant: {other:?}"),
+        }
     }
 
     #[test]

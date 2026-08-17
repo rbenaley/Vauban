@@ -1057,6 +1057,10 @@ pub struct MailerConfig {
     /// FD. The supervisor itself uses 30 s; we mirror that.
     #[serde(default = "MailerConfig::default_broker_timeout_secs")]
     pub broker_timeout_secs: u64,
+    /// When true, SMTP STARTTLS accepts self-signed / private-CA certs.
+    /// Allowed in every environment (including production). Default false.
+    #[serde(default)]
+    pub smtp_accept_invalid_certs: bool,
 }
 
 /// SMTP transport encryption mode (wire + config; canonical definition in `shared`).
@@ -1177,6 +1181,7 @@ impl Default for MailerConfig {
             max_attempts: Self::default_max_attempts(),
             smtp_timeout_secs: Self::default_smtp_timeout_secs(),
             broker_timeout_secs: Self::default_broker_timeout_secs(),
+            smtp_accept_invalid_certs: false,
         }
     }
 }
@@ -1200,6 +1205,7 @@ impl std::fmt::Debug for MailerConfig {
             .field("max_attempts", &self.max_attempts)
             .field("smtp_timeout_secs", &self.smtp_timeout_secs)
             .field("broker_timeout_secs", &self.broker_timeout_secs)
+            .field("smtp_accept_invalid_certs", &self.smtp_accept_invalid_certs)
             .finish()
     }
 }
@@ -2855,5 +2861,38 @@ login_password_min_length = 11
             .validate()
             .expect_err("password min 11 must fail validate");
         assert!(err.contains("login_password_min_length"), "got: {err}");
+    }
+
+    fn enabled_mailer() -> MailerConfig {
+        MailerConfig {
+            enabled: true,
+            from_address: "vauban@example.com".into(),
+            base_url: "https://bastion.example.com".into(),
+            smtp_host: "smtp.example.com".into(),
+            smtp_accept_invalid_certs: true,
+            ..MailerConfig::default()
+        }
+    }
+
+    #[test]
+    fn mailer_accept_invalid_certs_is_allowed_in_every_environment() {
+        let cfg = enabled_mailer();
+        assert!(cfg.validate(Environment::Development).is_ok());
+        assert!(cfg.validate(Environment::Testing).is_ok());
+        assert!(
+            cfg.validate(Environment::Production).is_ok(),
+            "self-signed SMTP must be opt-in in production, not forbidden"
+        );
+    }
+
+    #[test]
+    fn mailer_plaintext_stays_forbidden_in_production() {
+        let mut cfg = enabled_mailer();
+        cfg.smtp_encryption = SmtpEncryption::Plaintext;
+        cfg.smtp_accept_invalid_certs = true;
+        let err = cfg
+            .validate(Environment::Production)
+            .expect_err("plaintext");
+        assert!(err.contains("plaintext"));
     }
 }

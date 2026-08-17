@@ -37,7 +37,10 @@ rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target -
 ## Lab prerequisites
 
 - Mailer enabled (`[mailer] enabled = true`) with a reachable SMTP sink
-  (staging MTA or a catch-all inbox you control).
+  (staging MTA or a catch-all inbox you control). `smtp_host =
+  "localhost"` is valid when the sink listens on IPv4 only: the
+  supervisor broker tries every resolved address (`::1` then
+  `127.0.0.1`).
 - At least one usable staff or superuser with a real mailbox
   (`load_approver_contacts`).
 - Ability to open the same message in Gmail, Outlook on the web,

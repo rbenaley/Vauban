@@ -82,6 +82,34 @@ fn inv_mailer_queue_is_one_summary_line() {
 }
 
 #[test]
+fn inv_smtp_accept_invalid_certs_is_opt_in_and_wired() {
+    let default_toml = include_str!("../../../config/default.toml");
+    assert!(
+        default_toml.contains("smtp_accept_invalid_certs = false"),
+        "default must keep certificate verification on"
+    );
+    let messages = include_str!("../../../shared/src/messages.rs");
+    assert!(
+        messages.contains("smtp_accept_invalid_certs: bool"),
+        "MailerSmtpProvision must carry smtp_accept_invalid_certs"
+    );
+    let outbox = include_str!("../../../vauban-mailer/src/outbox.rs");
+    assert!(
+        outbox.contains("client_config(ctx.runtime.smtp_accept_invalid_certs)"),
+        "drain must build rustls from the provisioned flag"
+    );
+    let smtp = include_str!("../../../vauban-mailer/src/smtp_client.rs");
+    assert!(
+        smtp.contains("SmtpSkipServerCertVerify"),
+        "skip-verify path must be a named SMTP verifier"
+    );
+    assert!(
+        !smtp.contains("NoCertificateVerification"),
+        "must not reuse the retired RDP accept-any name"
+    );
+}
+
+#[test]
 fn inv_mailer_drain_logs_smtp_failures() {
     let outbox = include_str!("../../../vauban-mailer/src/outbox.rs");
     assert!(

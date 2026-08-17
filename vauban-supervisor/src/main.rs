@@ -24,6 +24,7 @@ mod acme;
 mod admin;
 mod config;
 mod recording_delete;
+mod tcp_resolve;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -1086,6 +1087,7 @@ fn send_mailer_provision(channel: &IpcChannel, mailer: &config::MailerConfig) ->
         max_attempts: mailer.max_attempts,
         smtp_timeout_secs: mailer.smtp_timeout_secs,
         broker_timeout_secs: mailer.broker_timeout_secs,
+        smtp_accept_invalid_certs: mailer.smtp_accept_invalid_certs,
     };
     channel
         .send(&msg)
@@ -2647,23 +2649,11 @@ fn handle_tcp_connect_request(
         }
     };
 
-    // Step 1: DNS resolution
-    let addr_str = format!("{}:{}", host, port);
-    let socket_addr = match addr_str.to_socket_addrs() {
-        Ok(mut addrs) => match addrs.next() {
-            Some(addr) => addr,
-            None => {
-                warn!("DNS resolution failed for {}: no addresses returned", host);
-                let response = Message::TcpConnectResponse {
-                    request_id,
-                    session_id,
-                    success: false,
-                    error: Some(format!("DNS resolution failed for {}: no addresses", host)),
-                };
-                let _ = requesting_channel.send(&response);
-                return;
-            }
-        },
+    // Step 1: DNS resolution -- every getaddrinfo record. Taking only
+    // `.next()` fails when `localhost` returns `::1` first and the
+    // sink (MailHog, lab SMTP) is bound to `127.0.0.1` only.
+    let candidates = match crate::tcp_resolve::resolve_tcp_targets(&host, port) {
+        Ok(addrs) => addrs,
         Err(e) => {
             warn!("DNS resolution failed for {}: {}", host, e);
             let response = Message::TcpConnectResponse {
@@ -2677,114 +2667,101 @@ fn handle_tcp_connect_request(
         }
     };
 
-    debug!("DNS resolved {} -> {}", host, socket_addr);
+    debug!(
+        host = %host,
+        n = candidates.len(),
+        "DNS resolved"
+    );
 
-    // === Lot 4: IACS-only anti-SSRF guard rails. Logged at info!
-    // (per-tunnel cardinality is low) so an operator forensic
-    // grepping for an industrial connect can pivot on the
-    // `target_resolved_ip` field. Other target services already
-    // have a stricter prior gate (mailer whitelist; SSH/RDP per-
-    // asset host/port crypto-bound in the token) so we only enforce
-    // these on `ProxyIacs`.
-    if matches!(target_service, Service::ProxyIacs) {
-        info!(
-            session_id = %session_id,
-            requested_host = %host,
-            requested_port = port,
-            target_resolved_ip = %socket_addr.ip(),
-            "broker iacs target resolved"
-        );
-
-        // Anti-self-listener: forbid targets that resolve to the
-        // IACS sshd's own bind address (host_part(bind_addr),
-        // port_part(bind_addr)). The check uses the RESOLVED IP so
-        // a hostname alias for `localhost` cannot bypass it.
-        if let Some((bind_host, bind_port)) = iacs_guards.bind_addr.rsplit_once(':')
-            && let Ok(bind_port) = bind_port.parse::<u16>()
-        {
-            // Resolve the listener bind host once per request. If
-            // that resolution fails we fail-open the guard (the
-            // listener is not reachable anyway), but log a warn.
-            let bind_resolved_ip: Option<std::net::IpAddr> = format!("{}:0", bind_host)
+    // Lot 4 IACS anti-SSRF: apply per resolved address, then try
+    // connect. A skipped `::1` must not hide a reachable `127.0.0.1`.
+    let iacs_target = matches!(target_service, Service::ProxyIacs);
+    let bind_ips_port: Option<(Vec<std::net::IpAddr>, u16)> = if iacs_target {
+        iacs_guards.bind_addr.rsplit_once(':').and_then(|(h, p)| {
+            let bind_port = p.parse::<u16>().ok()?;
+            let ips: Vec<std::net::IpAddr> = format!("{h}:0")
                 .to_socket_addrs()
-                .ok()
-                .and_then(|mut a| a.next())
-                .map(|s| s.ip());
+                .ok()?
+                .map(|s| s.ip())
+                .collect();
+            Some((ips, bind_port))
+        })
+    } else {
+        None
+    };
+
+    let connected = crate::tcp_resolve::connect_first_reachable(
+        &candidates,
+        Duration::from_secs(10),
+        |socket_addr| {
+            if !iacs_target {
+                return crate::tcp_resolve::AddrDecision::Accept;
+            }
+            info!(
+                session_id = %session_id,
+                requested_host = %host,
+                requested_port = port,
+                target_resolved_ip = %socket_addr.ip(),
+                "broker iacs target resolved"
+            );
+            if let Some((bind_ips, bind_port)) = bind_ips_port.as_ref() {
+                let target_ip = socket_addr.ip();
+                let listener_match = bind_ips
+                    .iter()
+                    .any(|&ip| ip == target_ip || (ip.is_unspecified() && target_ip.is_loopback()));
+                if listener_match && socket_addr.port() == *bind_port {
+                    warn!(
+                        session_id = %session_id,
+                        requested_host = %host,
+                        requested_port = port,
+                        target_resolved_ip = %target_ip,
+                        bind_addr = %iacs_guards.bind_addr,
+                        "iacs anti-SSRF: refused target == iacs sshd self-listener"
+                    );
+                    return crate::tcp_resolve::AddrDecision::Skip("Access denied".into());
+                }
+            }
             let target_ip = socket_addr.ip();
-            let listener_match = match bind_resolved_ip {
-                Some(ip) => ip == target_ip || (ip.is_unspecified() && target_ip.is_loopback()),
-                None => false,
-            };
-            if listener_match && socket_addr.port() == bind_port {
+            if target_ip.is_loopback() && !iacs_guards.allow_loopback_targets {
                 warn!(
                     session_id = %session_id,
                     requested_host = %host,
                     requested_port = port,
                     target_resolved_ip = %target_ip,
-                    bind_addr = %iacs_guards.bind_addr,
-                    "iacs anti-SSRF: refused target == iacs sshd self-listener"
+                    "iacs anti-SSRF: refused loopback target \
+                     (allow_loopback_targets=false)"
                 );
-                let response = Message::TcpConnectResponse {
-                    request_id,
-                    session_id,
-                    success: false,
-                    error: Some("Access denied".to_string()),
-                };
-                let _ = requesting_channel.send(&response);
-                return;
+                return crate::tcp_resolve::AddrDecision::Skip("Access denied".into());
             }
-        }
+            if target_ip.is_loopback() {
+                debug!(
+                    session_id = %session_id,
+                    target_resolved_ip = %target_ip,
+                    "iacs broker: loopback target accepted (dev override)"
+                );
+            }
+            crate::tcp_resolve::AddrDecision::Accept
+        },
+    );
 
-        // Anti-loopback: production deployments must point IACS
-        // tunnels at routable industrial IPs. The opt-in toggle is
-        // `industrial.iacs_tunnel.allow_loopback_targets = true`
-        // (false by default). A `true` value is logged at debug!
-        // so an operator running in dev knows the guard is off.
-        let target_ip = socket_addr.ip();
-        let is_loopback = target_ip.is_loopback();
-        if is_loopback && !iacs_guards.allow_loopback_targets {
-            warn!(
-                session_id = %session_id,
-                requested_host = %host,
-                requested_port = port,
-                target_resolved_ip = %target_ip,
-                "iacs anti-SSRF: refused loopback target \
-                 (allow_loopback_targets=false)"
-            );
+    let (tcp_stream, socket_addr) = match connected {
+        Ok(pair) => pair,
+        Err(e) => {
+            warn!("{}", e.broker_message());
             let response = Message::TcpConnectResponse {
                 request_id,
                 session_id,
                 success: false,
-                error: Some("Access denied".to_string()),
+                error: Some(if e.is_access_denied() {
+                    "Access denied".to_string()
+                } else {
+                    e.broker_message()
+                }),
             };
             let _ = requesting_channel.send(&response);
             return;
         }
-        if is_loopback {
-            debug!(
-                session_id = %session_id,
-                target_resolved_ip = %target_ip,
-                "iacs broker: loopback target accepted (dev override)"
-            );
-        }
-    }
-
-    // Step 2: Establish TCP connection
-    let tcp_stream =
-        match std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_secs(10)) {
-            Ok(stream) => stream,
-            Err(e) => {
-                warn!("TCP connection to {} failed: {}", socket_addr, e);
-                let response = Message::TcpConnectResponse {
-                    request_id,
-                    session_id,
-                    success: false,
-                    error: Some(format!("Connection to {} failed: {}", socket_addr, e)),
-                };
-                let _ = requesting_channel.send(&response);
-                return;
-            }
-        };
+    };
 
     let tcp_fd = tcp_stream.as_raw_fd();
     debug!(
@@ -2973,16 +2950,8 @@ fn handle_kerberos_kdc_request(
 
     // Resolve + connect to the SUPERVISOR-OWNED KDC endpoint. The lease
     // request carries no destination, so there is no attacker-chosen host.
-    let socket_addr = match (kdc_host.as_str(), kdc_port).to_socket_addrs() {
-        Ok(mut addrs) => match addrs.next() {
-            Some(addr) => addr,
-            None => {
-                fail(format!(
-                    "KDC endpoint {kdc_host}:{kdc_port} resolved to no address"
-                ));
-                return;
-            }
-        },
+    let kdc_addrs = match crate::tcp_resolve::resolve_tcp_targets(kdc_host.as_str(), kdc_port) {
+        Ok(addrs) => addrs,
         Err(e) => {
             fail(format!(
                 "KDC endpoint {kdc_host}:{kdc_port} resolution failed: {e}"
@@ -2990,14 +2959,16 @@ fn handle_kerberos_kdc_request(
             return;
         }
     };
-
-    let stream = match std::net::TcpStream::connect_timeout(&socket_addr, timeout) {
-        Ok(s) => s,
-        Err(e) => {
-            fail(format!("KDC connect to {socket_addr} failed: {e}"));
-            return;
-        }
-    };
+    let (stream, socket_addr) =
+        match crate::tcp_resolve::connect_first_reachable(&kdc_addrs, timeout, |_| {
+            crate::tcp_resolve::AddrDecision::Accept
+        }) {
+            Ok(pair) => pair,
+            Err(e) => {
+                fail(format!("KDC connect failed: {}", e.broker_message()));
+                return;
+            }
+        };
     let tcp_fd = stream.as_raw_fd();
 
     // FD first, then IPC notify (TcpConnect / recording convention).
@@ -5585,13 +5556,14 @@ mod tests {
              before any DNS / connect work for the proxy paths. Without this, \
              the TCP broker trusts whatever vauban-web sent.",
         );
-        let dns_idx = handler.find(".to_socket_addrs()").expect(
+        let dns_idx = handler.find("resolve_tcp_targets(").expect(
             "handle_tcp_connect_request MUST perform DNS resolution \
-             via to_socket_addrs",
+             via resolve_tcp_targets (every getaddrinfo record)",
         );
-        let connect_idx = handler
-            .find("TcpStream::connect_timeout(")
-            .expect("handle_tcp_connect_request MUST call TcpStream::connect_timeout");
+        let connect_idx = handler.find("connect_first_reachable(").expect(
+            "handle_tcp_connect_request MUST call connect_first_reachable \
+             so a refused IPv6 localhost does not hide IPv4",
+        );
         assert!(
             verify_idx < dns_idx,
             "SessionToken::verify_bytes MUST run BEFORE DNS resolution. \
@@ -5600,10 +5572,15 @@ mod tests {
         );
         assert!(
             verify_idx < connect_idx,
-            "SessionToken::verify_bytes MUST run BEFORE TcpStream::\
-             connect_timeout. The supervisor's connect() is the only \
+            "SessionToken::verify_bytes MUST run BEFORE connect_first_\
+             reachable. The supervisor's connect() is the only \
              outbound network primitive in the privsep model; running \
              it on a forged request defeats the whole gate."
+        );
+        assert!(
+            !handler.contains("addrs.next()"),
+            "handle_tcp_connect_request MUST NOT take only addrs.next() \
+             after DNS (localhost IPv6-first hides a 127.0.0.1 SMTP sink)"
         );
     }
 
@@ -5995,6 +5972,88 @@ mod tests {
                 other => panic!("expected TcpConnectResponse, got {other:?}"),
             }
         }
+    }
+
+    /// Product seam for `smtp_host = "localhost"` when the lab sink
+    /// listens on IPv4 only (`127.0.0.1:port`). getaddrinfo often
+    /// returns `::1` first; the broker must still hand a connected FD.
+    #[test]
+    fn e2e_smtp_broker_localhost_reaches_ipv4_only_listener() {
+        use shared::ipc::recv_fd;
+        use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+
+        let sink = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ipv4 smtp sink");
+        let sink_addr = sink.local_addr().unwrap();
+        let localhost_addrs: Vec<_> = ("localhost", sink_addr.port())
+            .to_socket_addrs()
+            .expect("localhost must resolve")
+            .collect();
+        assert!(
+            localhost_addrs.iter().any(|a| a.ip().is_ipv4()),
+            "this host must resolve localhost to an IPv4 address"
+        );
+
+        let (sup_sock, child_sock) = socketpair_for_fd_passing().expect("fd-passing socketpair");
+        let (sup_channel, child_channel) = IpcChannel::pair().expect("ipc pair");
+        let state = ChildState {
+            pid: 909,
+            service_key: "mailer".to_string(),
+            channel: sup_channel,
+            last_pong: Instant::now(),
+            missed_heartbeats: 0,
+            heartbeat_seq: 0,
+            respawn_count: 0,
+            last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
+            fd_passing_socket: Some(sup_sock),
+        };
+        let mut children: HashMap<String, ChildState> = HashMap::new();
+        children.insert("mailer".to_string(), state);
+
+        let mailer = crate::config::MailerConfig {
+            enabled: true,
+            smtp_host: "localhost".to_string(),
+            smtp_port: sink_addr.port(),
+            ..crate::config::MailerConfig::default()
+        };
+        let ldap = crate::config::LdapConfig::default();
+        let guards =
+            IacsTunnelGuards::from_config(&crate::config::IacsTunnelSupervisorConfig::default());
+
+        let payload = TcpConnectPayload {
+            request_id: 1025,
+            session_id: "smtp-localhost-v4".to_string(),
+            host: "localhost".to_string(),
+            port: sink_addr.port(),
+            target_service: Service::Mailer,
+            session_token: Vec::new(),
+        };
+        handle_tcp_connect_request(
+            payload,
+            &children["mailer"].channel,
+            "mailer",
+            &children,
+            &mailer,
+            &ldap,
+            &guards,
+        );
+
+        let received = recv_fd(child_sock.as_raw_fd()).expect("recv_fd after localhost broker");
+        let stream = unsafe { std::net::TcpStream::from_raw_fd(received.into_raw_fd()) };
+        let peer = stream.peer_addr().expect("peer_addr");
+        assert_eq!(peer.ip(), std::net::Ipv4Addr::LOCALHOST);
+        assert_eq!(peer.port(), sink_addr.port());
+
+        let notify = child_channel.recv().expect("fd_info");
+        match notify {
+            Message::TcpConnectResponse { success, error, .. } => {
+                assert!(success, "localhost IPv4 sink must succeed, error={error:?}");
+            }
+            other => panic!("expected TcpConnectResponse, got {other:?}"),
+        }
+        drop(sink);
     }
 
     /// Bastion Watch dashboard pin: every successful broker hand-off

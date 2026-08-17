@@ -37,3 +37,4 @@ rand = "0.8"
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros", "rt", "net", "io-util", "time"] }
 proptest = "1"
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }

@@ -668,6 +668,10 @@ pub struct MailerConfig {
     pub smtp_timeout_secs: u64,
     #[serde(default = "default_broker_timeout_secs")]
     pub broker_timeout_secs: u64,
+    /// When true, SMTP STARTTLS accepts self-signed / private-CA certs.
+    /// Allowed in every environment (including production). Default false.
+    #[serde(default)]
+    pub smtp_accept_invalid_certs: bool,
 }
 
 fn default_smtp_port() -> u16 {
@@ -720,6 +724,7 @@ impl Default for MailerConfig {
             max_attempts: default_max_attempts(),
             smtp_timeout_secs: default_smtp_timeout_secs(),
             broker_timeout_secs: default_broker_timeout_secs(),
+            smtp_accept_invalid_certs: false,
         }
     }
 }

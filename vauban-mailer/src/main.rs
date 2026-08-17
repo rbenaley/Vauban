@@ -67,6 +67,7 @@ fn run_service() -> Result<()> {
     info!(
         host = %runtime.smtp_host,
         port = runtime.smtp_port,
+        accept_invalid_certs = runtime.smtp_accept_invalid_certs,
         "Mailer SMTP runtime provisioned"
     );
 

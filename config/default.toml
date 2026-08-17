@@ -227,6 +227,7 @@ smtp_port = 587
 smtp_encryption = "starttls"            # "starttls" | "tls" | "plaintext" (dev only)
 smtp_username = ""                      # override via VAUBAN_SMTP_USERNAME
 smtp_password = ""                      # override via VAUBAN_SMTP_PASSWORD (preferred)
+smtp_accept_invalid_certs = false       # true: allow self-signed / private-CA SMTP (all envs)
 helo_name = ""                          # falls back to "vauban" if empty
 poll_interval_secs = 10
 batch_size = 16

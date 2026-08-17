@@ -35,6 +35,9 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use rustls::ClientConfig;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
 use secrecy::ExposeSecret;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -474,6 +477,24 @@ fn redact_command(line: &str) -> &str {
     }
 }
 
+/// Build a rustls client config for SMTP STARTTLS.
+///
+/// `accept_invalid_certs = false` (default) trusts `webpki-roots` and
+/// verifies the server name. `true` skips CA / name / expiry checks so
+/// an operator can talk to a self-signed lab or internal MTA. Handshake
+/// signatures are still verified against the presented key.
+pub fn client_config(accept_invalid_certs: bool) -> std::sync::Arc<ClientConfig> {
+    if accept_invalid_certs {
+        tracing::warn!(
+            "SMTP TLS certificate verification is disabled \
+             (mailer.smtp_accept_invalid_certs=true)"
+        );
+        skip_verify_client_config()
+    } else {
+        default_client_config()
+    }
+}
+
 /// Build a default `tokio-rustls` `ClientConfig` for STARTTLS:
 /// * trust roots from `webpki-roots`,
 /// * `aws-lc-rs` crypto provider (matches every other TLS user in
@@ -499,6 +520,78 @@ pub fn default_client_config() -> std::sync::Arc<ClientConfig> {
         .with_safe_default_protocol_versions()
         .expect("aws-lc-rs default provider must support safe TLS protocol versions")
         .with_root_certificates(root_store)
+        .with_no_client_auth();
+    std::sync::Arc::new(config)
+}
+
+/// Opt-in verifier for self-signed / private-CA SMTP relays.
+///
+/// Installed only when `mailer.smtp_accept_invalid_certs = true`.
+/// Default remains webpki verification. Distinct from the retired RDP
+/// accept-any session verifier.
+#[derive(Debug)]
+struct SmtpSkipServerCertVerify {
+    provider: std::sync::Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl ServerCertVerifier for SmtpSkipServerCertVerify {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+#[allow(clippy::expect_used)]
+fn skip_verify_client_config() -> std::sync::Arc<ClientConfig> {
+    let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let verifier = std::sync::Arc::new(SmtpSkipServerCertVerify {
+        provider: std::sync::Arc::clone(&provider),
+    });
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("aws-lc-rs default provider must support safe TLS protocol versions")
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
     std::sync::Arc::new(config)
 }
@@ -950,6 +1043,115 @@ mod tests {
         match err {
             SmtpError::Protocol(msg) => assert!(msg.contains("non-TLS")),
             _ => panic!("expected Protocol error, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn client_config_false_is_default_verify_path() {
+        let src = include_str!("smtp_client.rs");
+        assert!(src.contains("webpki_roots::TLS_SERVER_ROOTS"));
+        assert!(src.contains("fn skip_verify_client_config"));
+        assert!(src.contains("SmtpSkipServerCertVerify"));
+        let cfg = client_config(false);
+        assert!(std::sync::Arc::strong_count(&cfg) >= 1);
+    }
+
+    #[test]
+    fn client_config_true_installs_skip_verifier() {
+        let cfg = client_config(true);
+        assert!(std::sync::Arc::strong_count(&cfg) >= 1);
+    }
+
+    fn self_signed_server_config() -> std::sync::Arc<rustls::ServerConfig> {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        use rustls::{ServerConfig, crypto::aws_lc_rs};
+
+        let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+        let cert_der = CertificateDer::from(cert.der().to_vec());
+        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
+        let provider = std::sync::Arc::new(aws_lc_rs::default_provider());
+        let cfg = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key_der)
+            .unwrap();
+        std::sync::Arc::new(cfg)
+    }
+
+    async fn tls_handshake(client_cfg: std::sync::Arc<ClientConfig>) -> std::io::Result<()> {
+        use rustls::pki_types::ServerName;
+        use tokio::net::TcpListener;
+        use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let acceptor = TlsAcceptor::from(self_signed_server_config());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            acceptor.accept(stream).await
+        });
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let connector = TlsConnector::from(client_cfg);
+        let name = ServerName::try_from("localhost").unwrap();
+        let client = connector.connect(name, stream).await;
+        let _ = server.await;
+        client.map(|_| ())
+    }
+
+    #[tokio::test]
+    async fn attack_self_signed_smtp_cert_is_rejected_when_verify_enabled() {
+        let err = tls_handshake(default_client_config())
+            .await
+            .expect_err("webpki must reject a self-signed SMTP cert");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("UnknownIssuer")
+                || msg.contains("invalid peer certificate")
+                || msg.contains("certificate"),
+            "unexpected rustls error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn e2e_self_signed_smtp_cert_is_accepted_when_skip_verify() {
+        tls_handshake(client_config(true))
+            .await
+            .expect("smtp_accept_invalid_certs must allow a self-signed relay");
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(16))]
+
+        #[test]
+        fn proptest_client_config_builds_for_both_flags(flag: bool) {
+            let cfg = client_config(flag);
+            proptest::prop_assert!(std::sync::Arc::strong_count(&cfg) >= 1);
+        }
+    }
+
+    #[test]
+    fn battle_client_config_under_contention() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let barrier = Arc::new(Barrier::new(8));
+        let join: Vec<_> = (0..8)
+            .map(|i| {
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    for _ in 0..32 {
+                        let cfg = client_config(i % 2 == 0);
+                        assert!(std::sync::Arc::strong_count(&cfg) >= 1);
+                    }
+                })
+            })
+            .collect();
+        for h in join {
+            h.join().expect("thread");
         }
     }
 }

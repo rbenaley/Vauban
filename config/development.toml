@@ -185,16 +185,17 @@ prefix = "/api/v1"
 max_connections_per_user = 30
 
 [mailer]
-enabled = false
-from_address = ""
+enabled = true
+from_address = "support@vauban.sh"
 from_name = "Vauban PAM"
-reply_to = ""
+reply_to = "no-reply@vauban.sh"
 base_url = "https://localhost:8443"
-smtp_host = ""
-smtp_port = 587
+smtp_host = "localhost"
+smtp_port = 1025
 smtp_encryption = "starttls"
 smtp_username = ""
 smtp_password = ""
+smtp_accept_invalid_certs = true
 helo_name = ""
 poll_interval_secs = 10
 batch_size = 16

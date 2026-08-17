@@ -18,7 +18,7 @@
     },
     "surface": {
       "page":        { "value": "#f2f1ee", "type": "color", "comment": "Email body background" },
-      "card":        { "value": "#ffffff", "type": "color", "comment": "600px content table" },
+      "card":        { "value": "#ffffff", "type": "color", "comment": "Fluid content table, max 720px" },
       "subtle":      { "value": "#f7f6f2", "type": "color", "comment": "Raw-URL fallback block" }
     },
     "border": {
@@ -72,7 +72,7 @@
     "outerPad":    { "value": "32px", "type": "dimension", "comment": "Page padding around the card" }
   },
   "size": {
-    "emailWidth": { "value": "600px", "type": "dimension" },
+    "emailWidth": { "value": "720px", "type": "dimension", "comment": "Fluid card max-width; Outlook MSO ghost table" },
     "logo":       { "value": "48px", "type": "dimension", "comment": "Rendered size; asset ships at 384px for HiDPI" }
   },
   "radius": {

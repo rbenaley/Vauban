@@ -1,8 +1,9 @@
 # Transactional email HTML (Vauban PAM)
 
 Send-ready HTML bodies for every notification Vauban queues. Branding
-matches the Vauban Customer Portal mail set (`../VCP/email`): 600 px
-card, inline styles, star-fort logo via `cid:vauban-logo`, wordmark
+matches the Vauban Customer Portal mail set (`../VCP/email`): fluid
+card (`width:100%`, `max-width:720px`, Outlook MSO ghost table),
+inline styles, star-fort logo via `cid:vauban-logo`, wordmark
 driven by `__BRAND__`.
 
 These files are **not** Askama templates. They are embedded with
@@ -49,7 +50,8 @@ references that CID.
 
 ## Conventions
 
-- Nested `<table role="presentation">`, 600 px, single column.
+- Nested `<table role="presentation">`, fluid single column
+  (`width:100%` / `max-width:720px`, MSO wrapper `width="720"`).
 - Every style is inline. No `<style>` block (except the mso
   conditional comment), no JavaScript, no web fonts, no `data:` images.
 - Lines stay under 998 characters (RFC 5321 DATA limit).

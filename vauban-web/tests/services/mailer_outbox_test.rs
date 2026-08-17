@@ -125,6 +125,7 @@ async fn queued_html_round_trips_through_mailer_build_envelope() {
         max_attempts: 5,
         smtp_timeout_secs: 10,
         broker_timeout_secs: 5,
+        smtp_accept_invalid_certs: false,
     };
     let mailer_row = MailerRow {
         id: row.id,

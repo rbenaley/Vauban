@@ -31,6 +31,32 @@ fn templates_live_under_email_not_askama_templates() {
     let readme = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/email/README.md"));
     assert!(readme.contains("vauban-web/email/"));
     assert!(readme.contains("include_str"));
+    assert!(readme.contains("max-width:720px"));
+    assert!(!readme.contains("600 px"));
+}
+
+#[test]
+fn catalogue_and_tokens_pin_fluid_720() {
+    let tokens = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/email/design-tokens.json"
+    ));
+    assert!(tokens.contains("\"720px\""));
+    assert!(!tokens.contains("600px"));
+    for (kind, html) in CATALOGUE {
+        assert!(
+            html.contains("width:100%; max-width:720px"),
+            "{kind} must use the fluid 720px card"
+        );
+        assert!(
+            html.contains("width=\"720\""),
+            "{kind} must keep the Outlook MSO 720 ghost"
+        );
+        assert!(
+            !html.contains("width:600px") && !html.contains("width=\"600\""),
+            "{kind} must not regress to a fixed 600px card"
+        );
+    }
 }
 
 #[test]
