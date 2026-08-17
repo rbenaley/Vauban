@@ -372,5 +372,6 @@ Constants (v1, not configurable): `CLASSIFY_MAX_BYTES = 4096`, `CLASSIFY_TIMEOUT
 
 | Version | Date | Notes |
 |---------|------|-------|
+| 1.1 | 2026-08-17 | Crate **0.9.37**. ADR 006 profiles (`iacs_enip`, `iacs_bacnet_sc`, `iacs_dnp3`, `iacs_iec61850`) on the same peek-then-passthrough gate; prefix-based access matching for pre-ADR-006 "all IACS" rules. |
 | 1.1 | 2026-07-21 | Document revision. Boot Snapshot resync (§8.1): `IacsTunnelSnapshotRequest` / `Response`, pure `reconcile_iacs_boot`, proxy authority for "alive" after web-only restart. Lot 5: remove in-process IACS sshd from `vauban-web` (fail-closed without `proxy_iacs`; IPC-only watchdog). Updated source-of-truth and pins. Baseline also includes May 2026 amendments previously logged under the 1.0 filename: §11.1 token TTL / replay bypass (2026-05-16) and §14-15 protocol recognition (2026-05-23). |
 | 1.0 | 2026-05-15 | Initial release: per-asset target resolution, three-layer authorization, anti-SSRF guards, supervisor broker via SCM_RIGHTS, DB-driven IPC-dispatched revocation watchdog, real-time WebSocket fan-out. |

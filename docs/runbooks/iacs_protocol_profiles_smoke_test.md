@@ -1,13 +1,14 @@
 # Runbook -- IACS protocol profiles smoke test
 
 > Manual check after shipping **ADR 006** typed profiles
-> (`iacs_enip`, `iacs_bacnet_sc`, `iacs_dnp3`, `iacs_iec61850`).
-> CI covers classify / gate / Inspect dissectors and asset vocabulary;
-> staging proves a live EWS tunnel and Inspect labels on real PCAPs.
+> (`iacs_enip`, `iacs_bacnet_sc`, `iacs_dnp3`, `iacs_iec61850`) in
+> crates **0.9.37+**. CI covers classify / gate / Inspect dissectors
+> and asset vocabulary; staging proves a live EWS tunnel and Inspect
+> labels on real PCAPs.
 >
 > Audience: release / staging operators.
-> Severity: **BLOCKING** when `[industrial].enabled = true` and any of
-> the four new asset types is offered to operators.
+> Severity: **BLOCKING** for **0.9.37** when `[industrial].enabled = true`
+> and any of the four new asset types is offered to operators.
 
 Related:
 

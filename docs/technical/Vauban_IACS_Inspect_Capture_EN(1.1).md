@@ -494,7 +494,7 @@ restore the previous filter combination.
 This appendix is informational; the current sections describe the
 *current* architecture.
 
-### 1.1 (amended 17 August 2026)
+### 1.1 (amended 17 August 2026) -- crate 0.9.37
 
 - ADR 006 profiles: EtherNet/IP explicit, DNP3, IEC 61850 MMS/TCP,
   BACnet/SC (TLS handshake / opaque records). Ciphertext and

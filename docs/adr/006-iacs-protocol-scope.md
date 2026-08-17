@@ -2,6 +2,7 @@
 
 **Status:** Accepted  
 **Date:** 2026-08-17  
+**Crate:** 0.9.37  
 **Related:**
 [IACS Proxy Architecture 1.1](../technical/Vauban_IACS_Proxy_Architecture_EN(1.1).md),
 [IACS Inspect Capture 1.1](../technical/Vauban_IACS_Inspect_Capture_EN(1.1).md),
