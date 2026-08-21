@@ -75,3 +75,6 @@ rtk cargo test --lib -- issue_notify -- --test-threads=1
 - Comment bodies appear unbounded or unescaped in HTML.
 - `vcp-store` / `vcp_storage_*` targets appear in notify logs (must be
   `vcp::issue_notify`).
+- A retried enqueue creates a second `issue_mail_outbox` row for the
+  same `(issue_id, event, source_id, recipient_user_id)` (upsert
+  `or_ignore` must keep one row).

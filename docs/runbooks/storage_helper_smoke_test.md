@@ -15,6 +15,7 @@ Related:
 - Architecture: [VCP_Storage_Helper_Architecture_EN(1.2).md](../technical/VCP_Storage_Helper_Architecture_EN(1.2).md)
 - Lint: `scripts/check_storage.sh`
 - Filter: `cargo test --test integration_tests -- storage_ -- --test-threads=1`
+- Portal mirror: `StorageObject::upsert_by_scope_and_object_key` (one row per key)
 - Builds: [`builds_entitlement_smoke_test.md`](builds_entitlement_smoke_test.md)
 - Admin releases: [`admin_releases_smoke_test.md`](admin_releases_smoke_test.md)
 

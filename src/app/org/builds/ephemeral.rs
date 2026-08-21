@@ -80,12 +80,18 @@ pub(super) async fn load_eph_for(
     let mut database = db(cx);
     let rows = EphemeralDownload::all()
         .filter(EphemeralDownload::fields().user_id().eq(user_id))
+        .filter(
+            EphemeralDownload::fields()
+                .organization_id()
+                .eq(organization_id),
+        )
+        .filter(EphemeralDownload::fields().release_version().eq(version))
+        .order_by(EphemeralDownload::fields().created_at().desc())
+        .limit(1)
         .exec(&mut database)
         .await
         .unwrap_or_default();
-    rows.into_iter()
-        .filter(|r| r.organization_id == organization_id && r.release_version == version)
-        .max_by_key(|r| r.created_at)
+    rows.into_iter().next()
 }
 
 pub(super) fn panel_from_row(
@@ -269,13 +275,17 @@ async fn delete_existing_for(
 ) {
     let rows = EphemeralDownload::all()
         .filter(EphemeralDownload::fields().user_id().eq(user_id))
+        .filter(
+            EphemeralDownload::fields()
+                .organization_id()
+                .eq(organization_id),
+        )
+        .filter(EphemeralDownload::fields().release_version().eq(version))
         .exec(database)
         .await
         .unwrap_or_default();
     for row in rows {
-        if row.organization_id == organization_id && row.release_version == version {
-            let _ = row.delete().exec(database).await;
-        }
+        let _ = row.delete().exec(database).await;
     }
 }
 

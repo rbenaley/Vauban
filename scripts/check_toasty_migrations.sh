@@ -34,6 +34,8 @@ fi
 
 grep -n 'apply_pending_migrations' src/db.rs >/dev/null \
   || fail "src/db.rs must call apply_pending_migrations"
+grep -n 'embed_migrations!' src/db.rs >/dev/null \
+  || fail "src/db.rs must embed migrations via embed_migrations!"
 
 if grep -n '\.push_schema(' src/db.rs >/dev/null; then
   fail "src/db.rs must not call push_schema() (use Toasty migrations)"
@@ -45,5 +47,10 @@ fi
 
 grep -n 'toasty' Cargo.toml | grep -q 'migration' \
   || fail "Cargo.toml must enable toasty feature migration"
+
+grep -nE 'toasty = \{ version = "0\.10\.0"' Cargo.toml >/dev/null \
+  || fail "Cargo.toml must pin toasty = 0.10.0"
+grep -nE 'toasty-cli = "0\.10\.0"' Cargo.toml >/dev/null \
+  || fail "Cargo.toml must pin toasty-cli = 0.10.0"
 
 echo "check_toasty_migrations: OK"

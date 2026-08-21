@@ -48,6 +48,7 @@ pub mod slug;
 pub mod sql_search;
 pub mod storage;
 pub mod tls;
+pub mod toasty_page;
 pub mod tz;
 pub mod ui;
 

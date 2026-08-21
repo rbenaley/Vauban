@@ -20,10 +20,9 @@ Upstream: [tokio-rs/toasty](https://github.com/tokio-rs/toasty) ·
 [guide](https://tokio-rs.github.io/toasty/nightly/guide/) ·
 filter guide: `docs/guide/src/filtering-with-expressions.md`.
 
-**Confirm the pin in `Cargo.toml` before writing APIs.** As of this
-skill refresh, VCP still ships **`toasty = "0.9.0"`** (`postgresql` +
-`migration`). Do **not** call 0.10-only APIs (`embed_migrations!`,
-`.paginate()`, `toasty::stmt::IpCidr`) until the crate is bumped.
+**Confirm the pin in `Cargo.toml` before writing APIs.** VCP ships
+**`toasty = "0.10.0"`** (`postgresql` + `migration`). Pin the facade
+and `toasty-cli` together.
 
 0.10 upgrade playbook: [UPGRADE-0.10.md](UPGRADE-0.10.md).
 Re-clone tag `toasty-v0.10.0` from `tokio-rs/toasty` only when a bump
@@ -157,28 +156,30 @@ when untrusted. Do **not** call `.contains` on a string path.
 - Projections: `.select(...)` when a full model is unnecessary.
 - 0.9 already has `upsert_by_*` (VCP underuses it — see upgrade note).
 
-## Migrations (VCP today — 0.9 filesystem)
+## Migrations (VCP — hybrid 0.10)
 
 - Models under `src/models/`; schema via `toasty/` + `vcp migration`.
 - Flow: edit models → `just db-migrate-generate NAME=…` → **review SQL**
-  → `just db-migrate`.
-- `db::connect` → `apply_pending_migrations` reads
-  `Config::package_root()` (`VCP_PACKAGE_ROOT` / parent of
-  `VCP_CONFIG_DIR` / `/usr/local/share/vcp`) — **not**
-  `CARGO_MANIFEST_DIR`.
+  → `just db-migrate`. Rebuild re-embeds SQL.
+- `db::connect` → `apply_pending_migrations` uses
+  `embed_migrations!("toasty")` (compile-time `CARGO_MANIFEST_DIR`).
+- CLI `vcp migration apply` still reads `Config::package_root()`
+  (`VCP_PACKAGE_ROOT` / parent of `VCP_CONFIG_DIR` /
+  `/usr/local/share/vcp`). Same `__toasty_migrations` ids.
 - Do **not** use `push_schema` for the app DB.
 - Prod pkg: `+POST_INSTALL` runs `VCP_ENVIRONMENT=production vcp
-  migration apply` (does **not** drop the database).
+  migration apply` (does **not** drop the database). Embed at boot
+  skips already-applied ids.
 - Tests: `vcp_test` (`just db-create-test` / `just db-reset-test`).
 
-## 0.10 — ready, not yet pinned
+## 0.10 — pinned
 
 Release: [toasty-v0.10.0](https://github.com/tokio-rs/toasty/releases/tag/toasty-v0.10.0)
-(2026-08-12). Model/query APIs VCP uses are **source-compatible**.
-Breaking changes hit custom drivers / `Capability::sql` (VCP unused)
-and **MySQL TLS** (VCP unused).
+(2026-08-12). Model/query APIs VCP already used on 0.9 are
+**source-compatible**. Breaking changes hit custom drivers /
+`Capability::sql` (VCP unused) and **MySQL TLS** (VCP unused).
 
-**Exploit on bump (do not invent 0.9 workarounds):**
+**Exploit (do not invent 0.9 workarounds):**
 
 | 0.10 addition | VCP use |
 |---------------|---------|
@@ -190,15 +191,16 @@ and **MySQL TLS** (VCP unused).
 **Already in 0.9 (adopt anytime):** `upsert_by_*`, filtered/ordered
 `.include()`, `#[document]` / JSONB. See [UPGRADE-0.10.md](UPGRADE-0.10.md).
 
-When bumping: follow that file’s checklist; keep this skill’s query
-invariants; re-pin `toasty` + `toasty-cli` together.
+Keep this skill’s query invariants. Adopt remaining 0.10 surfaces
+(`embed_migrations!`, `.paginate()`, `upsert_by_*`) per
+[UPGRADE-0.10.md](UPGRADE-0.10.md).
 
 ## When unsure
 
 1. Read this skill + `Cargo.toml` pin.
-2. If the pin is still 0.9, write 0.9 APIs. If migrating, read
-   [UPGRADE-0.10.md](UPGRADE-0.10.md) and the tagged tree
-   re-clone tag `toasty-v0.10.0` from `tokio-rs/toasty`.
+2. For 0.10 APIs and the hybrid apply strategy, read
+   [UPGRADE-0.10.md](UPGRADE-0.10.md). Re-clone tag `toasty-v0.10.0`
+   from `tokio-rs/toasty` only when the upstream tree is needed.
 3. Prefer the **tagged** guide over guessing from `main`.
 
 ## Related

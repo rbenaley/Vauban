@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::models::{STORAGE_ORG_NONE, STORAGE_SCOPE_IMAGE, STORAGE_SCOPE_RELEASE, StorageObject};
 use crate::release_pkg::size_mb_from_bytes;
+use crate::toasty_page::{SCAN_PAGE_SIZE, advance_scan_page};
 
 use super::client::{StorageClient, write_and_hash};
 use super::error::{StorageError, StorageErrorCode};
@@ -75,32 +76,16 @@ pub async fn upsert_release_object(
     }
     let key = release_id.to_string();
     let ts = now_unix();
-    if let Some(mut existing) = find_release_object(db, release_id).await {
-        existing
-            .update()
-            .sha256(sha)
-            .size_bytes(size_bytes)
-            .updated_at(ts)
-            .exec(db)
-            .await
-            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("db update: {e}")))?;
-        return find_release_object(db, release_id)
-            .await
-            .ok_or_else(|| StorageError::new(StorageErrorCode::Io, "missing after update"));
-    }
-    toasty::create!(StorageObject {
-        scope: STORAGE_SCOPE_RELEASE.to_owned(),
-        object_key: key,
-        organization_id: STORAGE_ORG_NONE,
-        sha256: sha,
-        size_bytes,
-        content_type: String::new(),
-        created_at: ts,
-        updated_at: ts,
-    })
-    .exec(db)
-    .await
-    .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("db create: {e}")))
+    StorageObject::upsert_by_scope_and_object_key(STORAGE_SCOPE_RELEASE, &key)
+        .organization_id(STORAGE_ORG_NONE)
+        .sha256(sha)
+        .size_bytes(size_bytes)
+        .content_type(String::new())
+        .updated_at(ts)
+        .on_create(|row| row.created_at(ts))
+        .exec(db)
+        .await
+        .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("db upsert: {e}")))
 }
 
 /// Put one tenant image through the helper and mirror it in Postgres.
@@ -154,33 +139,16 @@ pub async fn upsert_image_object(
     }
     let key = format!("{org_id}/{image_id}.{ext}");
     let ts = now_unix();
-    if let Some(mut existing) = find_image_object(db, org_id, image_id, ext).await {
-        existing
-            .update()
-            .sha256(sha)
-            .size_bytes(size_bytes)
-            .content_type(ext.to_owned())
-            .updated_at(ts)
-            .exec(db)
-            .await
-            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("db update: {e}")))?;
-        return find_image_object(db, org_id, image_id, ext)
-            .await
-            .ok_or_else(|| StorageError::new(StorageErrorCode::Io, "missing after update"));
-    }
-    toasty::create!(StorageObject {
-        scope: STORAGE_SCOPE_IMAGE.to_owned(),
-        object_key: key,
-        organization_id: org_id,
-        sha256: sha,
-        size_bytes,
-        content_type: ext.to_owned(),
-        created_at: ts,
-        updated_at: ts,
-    })
-    .exec(db)
-    .await
-    .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("db create: {e}")))
+    StorageObject::upsert_by_scope_and_object_key(STORAGE_SCOPE_IMAGE, &key)
+        .organization_id(org_id)
+        .sha256(sha)
+        .size_bytes(size_bytes)
+        .content_type(ext.to_owned())
+        .updated_at(ts)
+        .on_create(|row| row.created_at(ts))
+        .exec(db)
+        .await
+        .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("db upsert: {e}")))
 }
 
 pub async fn delete_release_object(db: &mut Db, release_id: u64) -> Result<(), StorageError> {
@@ -194,22 +162,33 @@ pub async fn delete_release_object(db: &mut Db, release_id: u64) -> Result<(), S
 }
 
 pub async fn delete_org_objects(db: &mut Db, org_id: u64) -> Result<u32, StorageError> {
-    let rows = StorageObject::all()
-        .filter(
-            StorageObject::fields()
-                .scope()
-                .eq(STORAGE_SCOPE_IMAGE.to_owned()),
-        )
-        .filter(StorageObject::fields().organization_id().eq(org_id))
-        .exec(db)
-        .await
-        .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("db list: {e}")))?;
-    let n = rows.len() as u32;
-    for row in rows {
-        row.delete()
+    let mut page = Some(
+        StorageObject::all()
+            .filter(
+                StorageObject::fields()
+                    .scope()
+                    .eq(STORAGE_SCOPE_IMAGE.to_owned()),
+            )
+            .filter(StorageObject::fields().organization_id().eq(org_id))
+            .order_by(StorageObject::fields().id().asc())
+            .paginate(SCAN_PAGE_SIZE)
             .exec(db)
             .await
-            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("db delete: {e}")))?;
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("db list: {e}")))?,
+    );
+    let mut n = 0u32;
+    while let Some(current) = page {
+        let (items, next) = advance_scan_page(current, db)
+            .await
+            .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("db scan: {e}")))?;
+        for row in items {
+            row.delete()
+                .exec(db)
+                .await
+                .map_err(|e| StorageError::new(StorageErrorCode::Io, format!("db delete: {e}")))?;
+            n += 1;
+        }
+        page = next;
     }
     Ok(n)
 }

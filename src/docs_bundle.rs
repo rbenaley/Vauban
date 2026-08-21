@@ -8,6 +8,7 @@ use toasty::Db;
 use crate::db::now_unix;
 use crate::docs_version::unpublish_other_published;
 use crate::models::{DOC_CATEGORIES, DOC_STATUS_DRAFT, DOC_STATUS_PUBLISHED, DocArticle};
+use crate::toasty_page::{SCAN_PAGE_SIZE, advance_scan_page};
 
 /// One article ready to write or loaded from a bundle file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,44 +297,56 @@ fn ensure_export_dir(dir: &Path) -> anyhow::Result<()> {
 pub async fn export_articles_to_dir(db: &Db, dir: &Path) -> anyhow::Result<ExportReport> {
     ensure_export_dir(dir)?;
     let mut conn = db.clone();
-    let rows = DocArticle::all()
-        .include(DocArticle::fields().body())
-        .exec(&mut conn)
-        .await?;
-
+    let mut page = Some(
+        DocArticle::all()
+            .include(DocArticle::fields().body())
+            .order_by(DocArticle::fields().id().asc())
+            .paginate(SCAN_PAGE_SIZE)
+            .exec(&mut conn)
+            .await?,
+    );
     let mut exported = 0usize;
-    for row in rows {
-        let category = canonical_category(&row.category).unwrap_or(row.category.as_str());
-        let status = canonical_status(&row.status).unwrap_or(row.status.as_str());
-        let article = BundledArticle {
-            title: row.title.clone(),
-            slug: row.slug.clone(),
-            summary: row.summary.clone(),
-            category: category.to_owned(),
-            status: status.to_owned(),
-            version: row.version.clone(),
-            body: row.body.get().clone(),
-        };
-        validate_article(&article).map_err(|e| {
-            anyhow::anyhow!(
-                "cannot export slug={} version={}: {e}",
-                article.slug,
-                article.version
-            )
-        })?;
-        let name = bundle_filename(&article.slug, &article.version);
-        let path = dir.join(&name);
-        if path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .is_none_or(|s| s != name)
-        {
-            anyhow::bail!("refusing unsafe bundle filename for {}", name);
+    while let Some(current) = page {
+        let (items, next) = advance_scan_page(current, &mut conn).await?;
+        for row in items {
+            write_exported_article(dir, &row)?;
+            exported += 1;
         }
-        fs::write(&path, serialize_markdown(&article))?;
-        exported += 1;
+        page = next;
     }
     Ok(ExportReport { exported })
+}
+
+fn write_exported_article(dir: &Path, row: &DocArticle) -> anyhow::Result<()> {
+    let category = canonical_category(&row.category).unwrap_or(row.category.as_str());
+    let status = canonical_status(&row.status).unwrap_or(row.status.as_str());
+    let article = BundledArticle {
+        title: row.title.clone(),
+        slug: row.slug.clone(),
+        summary: row.summary.clone(),
+        category: category.to_owned(),
+        status: status.to_owned(),
+        version: row.version.clone(),
+        body: row.body.get().clone(),
+    };
+    validate_article(&article).map_err(|e| {
+        anyhow::anyhow!(
+            "cannot export slug={} version={}: {e}",
+            article.slug,
+            article.version
+        )
+    })?;
+    let name = bundle_filename(&article.slug, &article.version);
+    let path = dir.join(&name);
+    if path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_none_or(|s| s != name)
+    {
+        anyhow::bail!("refusing unsafe bundle filename for {}", name);
+    }
+    fs::write(&path, serialize_markdown(&article))?;
+    Ok(())
 }
 
 /// Import all `*.md` files from `dir` (fail-fast on first error).

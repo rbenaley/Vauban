@@ -76,6 +76,7 @@ is planned._
 | SMTP accept invalid certs | [`smtp_accept_invalid_certs_420c1d44.plan.md`](smtp_accept_invalid_certs_420c1d44.plan.md) | Open |
 | Storage 1.2 WebAuthn | [`storage_1.2_webauthn_70559c95.plan.md`](storage_1.2_webauthn_70559c95.plan.md) | Done |
 | Storage arch 1.2 review | [`storage_arch_1.2_review_70fe67f6.plan.md`](storage_arch_1.2_review_70fe67f6.plan.md) | Done |
+| Toasty 0.10 upgrade | [`toasty_0.10_upgrade_e6fdd5f4.plan.md`](toasty_0.10_upgrade_e6fdd5f4.plan.md) | Done |
 | Toasty query debt fix | [`toasty_query_debt_fix_d9c552ec.plan.md`](toasty_query_debt_fix_d9c552ec.plan.md) | Done |
 | Topcoat 0.5 migration | [`topcoat_0.5_migration_60d77b42.plan.md`](topcoat_0.5_migration_60d77b42.plan.md) | Done |
 | Topcoat idiomatic adoption | [`topcoat_idiomatic_adoption_820f64e6.plan.md`](topcoat_idiomatic_adoption_820f64e6.plan.md) | Done |

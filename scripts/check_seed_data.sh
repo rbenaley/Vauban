@@ -52,6 +52,17 @@ if grep -n 'pub async fn seed_if_empty' src/db.rs >/dev/null; then
   fail "seed_if_empty must stay removed (use seed_minimal_if_empty)"
 fi
 
+grep -n 'get_by_email' src/db.rs >/dev/null \
+  || fail "src/db.rs seed must resolve users via get_by_email"
+grep -n 'get_by_slug' src/db.rs >/dev/null \
+  || fail "src/db.rs seed must resolve orgs via get_by_slug"
+grep -n '\.count()' src/db.rs >/dev/null \
+  || fail "src/db.rs seed must use .count() for empty-DB checks"
+grep -n 'organization_id().eq(RELEASE_GA_ORG_ID)' src/db.rs >/dev/null \
+  || fail "upsert_ga_releases must filter GA organization_id in SQL"
+grep -n '\.count()' src/main.rs >/dev/null \
+  || fail "seed-data CLI must log .count() not all().len()"
+
 [[ -f docs/runbooks/seed_data_smoke_test.md ]] \
   || fail "missing docs/runbooks/seed_data_smoke_test.md"
 

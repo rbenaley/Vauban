@@ -61,6 +61,7 @@ fn inv_hooks_enqueue_and_skip_seed() {
     assert!(!db.contains("enqueue_issue_notify"));
     assert!(main.contains("start_issue_notify_drain"));
     assert!(!notify.contains("User::all().exec"));
+    assert!(notify.contains("upsert_by_issue_id_and_event_and_source_id_and_recipient_user_id"));
 }
 
 #[test]

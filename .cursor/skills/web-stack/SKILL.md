@@ -17,8 +17,8 @@ Upstream orientation (keep in sync with `topcoat` skill):
 - [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat)
 - [Topcoat v0.5.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0)
 - [Toasty 0.6.0 — what is new?](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
-  (VCP pins **toasty 0.9** today — confirm `Cargo.toml` / lock; 0.10
-  upgrade playbook lives in the **`toasty` skill** `UPGRADE-0.10.md`)
+  (VCP pins **toasty 0.10** — confirm `Cargo.toml` / lock; adopt notes
+  live in the **`toasty` skill** `UPGRADE-0.10.md`)
 - **ORM detail:** read the **`toasty` skill** before writing list /
   search / entitlement queries (do not assume `Model::all()` + Rust
   pagination is required).
@@ -85,7 +85,7 @@ full-table load + Rust filter/sort/page. Architecture debt summary:
 
 ### Pinning
 
-- Toasty is **0.x** — expect breaking changes (VCP pins **0.9.0**). Pin
+- Toasty is **0.x** — expect breaking changes (VCP pins **0.10.0**). Pin
   **exact** versions in `Cargo.toml` / `Cargo.lock`; bump deliberately
   after reading the changelog. Do not track git `main` ad hoc.
 - Enable the **PostgreSQL** driver feature (not SQLite) for the app
@@ -93,7 +93,7 @@ full-table load + Rust filter/sort/page. Architecture debt summary:
   pattern (that example uses SQLite — VCP uses Postgres instead).
 - Guide: [Toasty guide](https://tokio-rs.github.io/toasty/nightly/guide/).
 - Orientation: [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
-  (deferred / select / `Vec` scalars; verify against 0.9 + `toasty` skill).
+  (deferred / select / `Vec` scalars; verify against 0.10 + `toasty` skill).
 
 ### Access pattern
 

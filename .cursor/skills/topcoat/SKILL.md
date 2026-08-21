@@ -565,12 +565,12 @@ links in message bodies.
 - **ORM skill (read this):** project skill **`toasty`** — query API
   (`filter` / `limit`+`offset` / `count` / `order_by` / `ilike` /
   `in_list` / `.or`), migrations, and the ban on full-table
-  `Model::all()` + Rust filter/sort/page. Pin **0.9.0** + Postgres.
+  `Model::all()` + Rust filter/sort/page. Pin **0.10.0** + Postgres.
 - **ORM:** [Toasty](https://github.com/tokio-rs/toasty). Topcoat example:
   `examples/toasty-todo` (SQLite there; **VCP uses PostgreSQL**).
 - **Guide:** [Toasty guide](https://tokio-rs.github.io/toasty/nightly/guide/).
 - Orientation: [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
-  (deferred / select / `Vec` scalars; confirm against 0.9).
+  (deferred / select / `Vec` scalars; confirm against 0.10).
 - Wire via `app_context` + `db(cx)` today (`web-stack`). Escape hatch:
   narrow `sqlx` only after the `toasty` skill’s SQL APIs are exhausted —
   not a second data model.

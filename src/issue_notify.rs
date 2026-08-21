@@ -9,7 +9,6 @@ use crate::{
     auth::{config, db as cx_db},
     config::{ISSUE_NOTIFY_EVENT_TOKENS, IssuesNotifyConfig},
     db::now_unix,
-    issue_key::is_unique_violation,
     mail_circuit::MailCircuitBreaker,
     mail_templates::{ISSUE_EVENT_HTML, IssueMailVars, render_issue_html},
     mailer::send_issue_event_mail,
@@ -216,24 +215,24 @@ pub async fn enqueue_issue_notify(
     let now = now_unix();
     let mut inserted = 0usize;
     for recipient_user_id in recipient_ids {
-        let result = toasty::create!(IssueMailOutbox {
-            issue_id: issue.id,
-            event: event.as_str().to_owned(),
-            source_id,
-            actor_user_id,
-            recipient_user_id,
-            created_at: now,
-            sent_at: 0,
-            attempts: 0,
-            last_error: String::new(),
-            version: 1,
-        })
-        .exec(db)
-        .await;
-        match result {
-            Ok(_) => inserted += 1,
-            Err(err) if is_unique_violation(&err) => {}
-            Err(err) => return Err(err.into()),
+        let result =
+            IssueMailOutbox::upsert_by_issue_id_and_event_and_source_id_and_recipient_user_id(
+                issue.id,
+                event.as_str(),
+                source_id,
+                recipient_user_id,
+            )
+            .actor_user_id(actor_user_id)
+            .created_at(now)
+            .sent_at(0)
+            .attempts(0)
+            .last_error(String::new())
+            .version(1)
+            .or_ignore()
+            .exec(db)
+            .await?;
+        if result.is_some() {
+            inserted += 1;
         }
     }
     Ok(inserted)

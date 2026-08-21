@@ -12,6 +12,7 @@ Related:
 - [README](../../README.md) (login + seed blurb)
 - Lint: `scripts/check_seed_data.sh`
 - Filter: `cargo test --test integration_tests -- seed_data -- --test-threads=1`
+- Lookups: `get_by_email` / `get_by_slug` / `.count()` (no full-table seed scans)
 - Migrations: [`toasty_migrations_smoke_test.md`](toasty_migrations_smoke_test.md)
 
 ## Automated prerequisites

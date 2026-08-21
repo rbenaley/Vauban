@@ -19,41 +19,65 @@ async fn e2e_minimal_then_demo_catalog_counts() {
 
     let mut conn = db.clone();
     let docs = DocArticle::all().exec(&mut conn).await.expect("docs");
-    let releases = Release::all().exec(&mut conn).await.expect("releases");
-    let issues = Issue::all().exec(&mut conn).await.expect("issues");
-    let users = User::all().exec(&mut conn).await.expect("users");
+    let releases = Release::all()
+        .count()
+        .exec(&mut conn)
+        .await
+        .expect("releases");
+    let issues = Issue::all().count().exec(&mut conn).await.expect("issues");
+    let users = User::all().count().exec(&mut conn).await.expect("users");
 
     assert_eq!(docs.len(), 1, "minimal seed: one Quick start doc");
     assert_eq!(docs[0].slug, MINIMAL_DOC_SLUG);
-    assert!(releases.is_empty(), "minimal seed: no releases");
-    assert!(issues.is_empty(), "minimal seed: no issues");
-    assert_eq!(users.len(), 1, "minimal seed: l.martin only");
+    assert_eq!(releases, 0, "minimal seed: no releases");
+    assert_eq!(issues, 0, "minimal seed: no issues");
+    assert_eq!(users, 1, "minimal seed: l.martin only");
 
     // Second call is a no-op when users exist.
     seed_minimal_if_empty(&db)
         .await
         .expect("minimal seed idempotent");
-    let docs_again = DocArticle::all().exec(&mut conn).await.expect("docs");
-    assert_eq!(docs_again.len(), 1);
+    let docs_again = DocArticle::all()
+        .count()
+        .exec(&mut conn)
+        .await
+        .expect("docs");
+    assert_eq!(docs_again, 1);
 
     seed_demo_catalog(&db).await.expect("demo catalog");
 
-    let docs = DocArticle::all().exec(&mut conn).await.expect("docs");
-    let releases = Release::all().exec(&mut conn).await.expect("releases");
-    let issues = Issue::all().exec(&mut conn).await.expect("issues");
+    let docs = DocArticle::all()
+        .count()
+        .exec(&mut conn)
+        .await
+        .expect("docs");
+    let releases = Release::all()
+        .count()
+        .exec(&mut conn)
+        .await
+        .expect("releases");
+    let issues = Issue::all().count().exec(&mut conn).await.expect("issues");
 
-    assert_eq!(docs.len(), DEMO_DOC_COUNT);
-    assert_eq!(releases.len(), DEMO_RELEASE_COUNT);
-    assert_eq!(issues.len(), DEMO_ISSUE_COUNT);
+    assert_eq!(docs, DEMO_DOC_COUNT as u64);
+    assert_eq!(releases, DEMO_RELEASE_COUNT as u64);
+    assert_eq!(issues, DEMO_ISSUE_COUNT as u64);
 
     // Idempotent full seed keeps stable counts.
     seed_demo_catalog(&db).await.expect("demo catalog again");
-    let docs = DocArticle::all().exec(&mut conn).await.expect("docs");
-    let releases = Release::all().exec(&mut conn).await.expect("releases");
-    let issues = Issue::all().exec(&mut conn).await.expect("issues");
-    assert_eq!(docs.len(), DEMO_DOC_COUNT);
-    assert_eq!(releases.len(), DEMO_RELEASE_COUNT);
-    assert_eq!(issues.len(), DEMO_ISSUE_COUNT);
+    let docs = DocArticle::all()
+        .count()
+        .exec(&mut conn)
+        .await
+        .expect("docs");
+    let releases = Release::all()
+        .count()
+        .exec(&mut conn)
+        .await
+        .expect("releases");
+    let issues = Issue::all().count().exec(&mut conn).await.expect("issues");
+    assert_eq!(docs, DEMO_DOC_COUNT as u64);
+    assert_eq!(releases, DEMO_RELEASE_COUNT as u64);
+    assert_eq!(issues, DEMO_ISSUE_COUNT as u64);
 
     // Leave `vcp_test` without the demo catalog: ordinary `cleanup` preserves
     // seed release versions and would push other suites' fixtures off page 1.

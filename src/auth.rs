@@ -166,12 +166,7 @@ async fn org_context(cx: &Cx, slug: &str) -> Option<OrgContext> {
     let user = require_auth(cx).await.ok()?;
     let mut db = db(cx);
 
-    let org = Organization::all()
-        .filter(Organization::fields().slug().eq(slug))
-        .exec(&mut db)
-        .await
-        .ok()
-        .and_then(|mut rows| rows.pop())?;
+    let org = Organization::get_by_slug(&mut db, slug).await.ok()?;
 
     let is_reserved = org.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG);
     if is_reserved && user.portal_role != PORTAL_ROLE_ADMIN {
@@ -181,6 +176,7 @@ async fn org_context(cx: &Cx, slug: &str) -> Option<OrgContext> {
     let membership = Membership::all()
         .filter(Membership::fields().user_id().eq(user.id))
         .filter(Membership::fields().organization_id().eq(org.id))
+        .limit(1)
         .exec(&mut db)
         .await
         .ok()

@@ -5,9 +5,10 @@ Upstream release:
 (2026-08-12). Re-clone `tokio-rs/toasty` at tag `toasty-v0.10.0`
 when a bump needs the upstream tree.
 
-**Status:** VCP is still on **0.9.0**. This file is the migration
-checklist and the features to **exploit**, not a license to call 0.10
-APIs before the bump.
+**Status:** VCP pins **0.10.0** (`Cargo.toml` / lock). Hybrid
+`embed_migrations!`, cursor scans (`.paginate` / `advance_scan_page`),
+unique lookups, and `upsert_by_*` are in tree. Numbered SSR lists stay
+on `.limit()` / `.offset()` / `.count()`.
 
 ## What 0.10 actually is
 

@@ -29,7 +29,12 @@ async fn battle_parallel_connect_applies_migrations_once() {
 
     // Second wave: already-applied migrations must be a no-op.
     let db = db::connect(&url).await.expect("reconnect");
-    db::apply_pending_migrations(&db)
+    let report = db::apply_pending_migrations(&db)
         .await
         .expect("idempotent apply");
+    assert_eq!(report.applied(), 0);
+    assert_eq!(
+        report.skipped(),
+        db::embedded_migrations().migrations().len()
+    );
 }

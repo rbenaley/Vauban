@@ -246,6 +246,12 @@ grep -n 'fn package_root_from' src/config.rs >/dev/null \
   || fail "Config::package_root_from must exist (injectable, no set_var)"
 grep -n 'fn package_root' src/config.rs >/dev/null \
   || fail "Config::package_root must exist for Toasty migrations"
+grep -n 'migration apply' pkg/+POST_INSTALL >/dev/null \
+  || fail "+POST_INSTALL must run vcp migration apply"
+grep -n 'Toasty.toml' pkg/build-pkg.sh >/dev/null \
+  || fail "build-pkg.sh must stage Toasty.toml"
+grep -n 'share/vcp/toasty' pkg/build-pkg.sh >/dev/null \
+  || fail "build-pkg.sh must stage toasty/ under share/vcp"
 grep -n 'VCP_CONFIG_DIR' justfile >/dev/null \
   || fail "justfile must export VCP_CONFIG_DIR for integration tests"
 grep -n 'VCP_PACKAGE_ROOT' justfile >/dev/null \

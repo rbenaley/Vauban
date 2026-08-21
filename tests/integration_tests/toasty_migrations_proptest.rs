@@ -3,6 +3,23 @@
 use proptest::prelude::*;
 use toasty::migration::{History, HistoryEntry};
 
+fn real_history_entries() -> Vec<(u64, String)> {
+    let history = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/toasty/history.toml"));
+    let mut out = Vec::new();
+    let mut id = None;
+    for line in history.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("id = ") {
+            id = Some(rest.parse().expect("id"));
+        }
+        if let Some(rest) = line.strip_prefix("name = ") {
+            let name = rest.trim_matches('"').to_owned();
+            out.push((id.expect("name without id"), name));
+        }
+    }
+    out
+}
+
 proptest! {
     #![proptest_config(crate::common::prop_config(48))]
 
@@ -37,5 +54,24 @@ proptest! {
         }
         prop_assert_eq!(ids_out.len(), entries.len());
         prop_assert_eq!(names_out.len(), entries.len());
+    }
+
+    #[test]
+    fn prop_real_history_ids_names_unique_and_on_disk(
+        idx in 0usize..64,
+    ) {
+        let entries = real_history_entries();
+        prop_assume!(!entries.is_empty());
+        let i = idx % entries.len();
+        let (id, name) = &entries[i];
+        let ids: std::collections::HashSet<u64> = entries.iter().map(|(id, _)| *id).collect();
+        let names: std::collections::HashSet<&str> =
+            entries.iter().map(|(_, n)| n.as_str()).collect();
+        prop_assert_eq!(ids.len(), entries.len());
+        prop_assert_eq!(names.len(), entries.len());
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("toasty/migrations")
+            .join(name);
+        prop_assert!(path.is_file(), "missing SQL for {id} {name}");
     }
 }

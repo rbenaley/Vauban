@@ -1,14 +1,10 @@
 //! Toasty database connection, migrations, and seed data.
 
 use std::collections::HashSet;
-use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use toasty::Db;
-use toasty::db::ConnectContext;
-use toasty::migration::History;
-use toasty::schema::db::Migration;
-use toasty_cli::Config as ToastyConfig;
+use toasty::migration::{MigrationReport, MigrationSet};
 
 use crate::docs_body;
 use crate::models::{
@@ -18,6 +14,7 @@ use crate::models::{
 };
 use crate::release_pkg::release_write_keys;
 use crate::storage::upsert_release_object;
+use crate::toasty_page::{SCAN_PAGE_SIZE, advance_scan_page};
 
 /// Doc row used by minimal / full demo seed: (title, summary, category, slug).
 pub type SeedDocSpec = (&'static str, &'static str, &'static str, &'static str);
@@ -36,6 +33,15 @@ pub const DEMO_RELEASE_COUNT: usize = DEMO_GA_RELEASE_COUNT + 1;
 
 /// Demo issues created by [`seed_demo_catalog`].
 pub const DEMO_ISSUE_COUNT: usize = 2;
+
+/// Compile-time copy of `toasty/history.toml` + each `migrations/*.sql`.
+/// Path is relative to this crate (`CARGO_MANIFEST_DIR`), not `package_root()`.
+static MIGRATIONS: MigrationSet = toasty::embed_migrations!("toasty");
+
+/// Embedded migration set (ids match `__toasty_migrations` / CLI apply).
+pub fn embedded_migrations() -> MigrationSet {
+    MIGRATIONS
+}
 
 /// Full demo documentation catalog (Quick start first).
 pub fn demo_doc_catalog() -> [SeedDocSpec; DEMO_DOC_COUNT] {
@@ -309,10 +315,12 @@ const ACME_PRIVATE_BYTES: u64 = 21_443_380;
 const ACME_ORG_SLUG: &str = "acme-infrastructure";
 
 async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
-    let existing = Release::all().exec(db).await?;
+    let existing = Release::all()
+        .filter(Release::fields().organization_id().eq(RELEASE_GA_ORG_ID))
+        .exec(db)
+        .await?;
     let mut by_ver: std::collections::HashMap<String, Release> = existing
         .into_iter()
-        .filter(|r| r.organization_id == RELEASE_GA_ORG_ID)
         .map(|r| (r.version.clone(), r))
         .collect();
 
@@ -364,20 +372,17 @@ async fn upsert_ga_releases(db: &mut Db) -> anyhow::Result<()> {
 /// Upsert the Acme-private hotfix so existing demo DBs replace the legacy
 /// 7-char `signature_prefix` with a full SHA-256 digest.
 async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
-    let orgs = Organization::all().exec(db).await?;
-    let Some(org) = orgs
-        .into_iter()
-        .find(|o| o.slug.eq_ignore_ascii_case(ACME_ORG_SLUG))
-    else {
+    let Ok(org) = Organization::get_by_slug(db, ACME_ORG_SLUG).await else {
         return Ok(());
     };
 
-    let existing = Release::all().exec(db).await?;
+    let existing = Release::all()
+        .filter(Release::fields().version().eq(ACME_PRIVATE_VERSION))
+        .limit(1)
+        .exec(db)
+        .await?;
     let (sort, track) = release_write_keys(ACME_PRIVATE_VERSION, "EOL");
-    let release_id = if let Some(mut rel) = existing
-        .into_iter()
-        .find(|r| r.version == ACME_PRIVATE_VERSION)
-    {
+    let release_id = if let Some(mut rel) = existing.into_iter().next() {
         let id = rel.id;
         rel.update()
             .channel("EOL".to_owned())
@@ -423,29 +428,39 @@ async fn upsert_acme_private_release(db: &mut Db) -> anyhow::Result<()> {
 /// Recompute `v_*` / track / `client_suffix` from `version`+`channel` for every release.
 pub async fn resync_release_sort_keys(db: &Db) -> anyhow::Result<()> {
     let mut conn = db.clone();
-    let releases = Release::all().exec(&mut conn).await?;
-    for mut rel in releases {
-        let (sort, track) = release_write_keys(&rel.version, &rel.channel);
-        if rel.v_major == sort.v_major
-            && rel.v_minor == sort.v_minor
-            && rel.v_patch == sort.v_patch
-            && rel.is_industrial == sort.is_industrial
-            && rel.has_client_suffix == sort.has_client_suffix
-            && rel.client_suffix == sort.client_suffix
-            && rel.product_track == track
-        {
-            continue;
-        }
-        rel.update()
-            .v_major(sort.v_major)
-            .v_minor(sort.v_minor)
-            .v_patch(sort.v_patch)
-            .is_industrial(sort.is_industrial)
-            .has_client_suffix(sort.has_client_suffix)
-            .client_suffix(sort.client_suffix)
-            .product_track(track.to_owned())
+    let mut page = Some(
+        Release::all()
+            .order_by(Release::fields().id().asc())
+            .paginate(SCAN_PAGE_SIZE)
             .exec(&mut conn)
-            .await?;
+            .await?,
+    );
+    while let Some(current) = page {
+        let (items, next) = advance_scan_page(current, &mut conn).await?;
+        for mut rel in items {
+            let (sort, track) = release_write_keys(&rel.version, &rel.channel);
+            if rel.v_major == sort.v_major
+                && rel.v_minor == sort.v_minor
+                && rel.v_patch == sort.v_patch
+                && rel.is_industrial == sort.is_industrial
+                && rel.has_client_suffix == sort.has_client_suffix
+                && rel.client_suffix == sort.client_suffix
+                && rel.product_track == track
+            {
+                continue;
+            }
+            rel.update()
+                .v_major(sort.v_major)
+                .v_minor(sort.v_minor)
+                .v_patch(sort.v_patch)
+                .is_industrial(sort.is_industrial)
+                .has_client_suffix(sort.has_client_suffix)
+                .client_suffix(sort.client_suffix)
+                .product_track(track.to_owned())
+                .exec(&mut conn)
+                .await?;
+        }
+        page = next;
     }
     Ok(())
 }
@@ -480,41 +495,20 @@ pub async fn connect(database_url: &str) -> anyhow::Result<Db> {
     Ok(db)
 }
 
-/// Apply migrations listed in `toasty/history.toml` that are not yet recorded
-/// in `__toasty_migrations`. Paths are resolved from [`crate::config::Config::package_root`].
-pub async fn apply_pending_migrations(db: &Db) -> anyhow::Result<()> {
-    let root = crate::config::Config::package_root()?;
-    let config = ToastyConfig::load_from(&root.join("Toasty.toml"))?;
-    let history_path = root.join(config.migration.get_history_file_path());
-    let history = History::load_or_default(&history_path)?;
-
-    if history.entries().is_empty() {
-        anyhow::bail!(
-            "no Toasty migrations in {}; run: cargo run --bin vcp -- migration generate --name initial",
-            history_path.display()
+/// Apply embedded `toasty/` history ids that are not yet in `__toasty_migrations`.
+///
+/// Same ids as `vcp migration apply` (CLI still reads `Config::package_root()`).
+/// Embed path is compile-time `CARGO_MANIFEST_DIR/toasty`.
+pub async fn apply_pending_migrations(db: &Db) -> anyhow::Result<MigrationReport> {
+    let report = MIGRATIONS.apply(db).await?;
+    if report.applied() > 0 {
+        tracing::info!(
+            applied = report.applied(),
+            skipped = report.skipped(),
+            "applied Toasty migrations"
         );
     }
-
-    let migrations_dir = root.join(config.migration.get_migrations_dir());
-    let mut conn = db.driver().connect(&ConnectContext::default()).await?;
-    let applied = conn.applied_migrations().await?;
-    let applied_ids: HashSet<u64> = applied.iter().map(|m| m.id()).collect();
-
-    for entry in history.entries() {
-        if applied_ids.contains(&entry.id) {
-            continue;
-        }
-        let path = migrations_dir.join(&entry.name);
-        let sql = fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("failed to read migration {}: {e}", path.display()))?;
-        let migration = Migration::new_sql(sql);
-        conn.apply_migration(entry.id, &entry.name, &migration)
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to apply {}: {e}", entry.name))?;
-        tracing::info!(migration = %entry.name, "applied Toasty migration");
-    }
-
-    Ok(())
+    Ok(report)
 }
 
 /// Empty-DB boot seed: demo login tenant + reserved `vauban` + Quick start only.
@@ -522,8 +516,8 @@ pub async fn apply_pending_migrations(db: &Db) -> anyhow::Result<()> {
 /// No GA/private releases and no demo issues. Full catalog: [`seed_demo_catalog`].
 pub async fn seed_minimal_if_empty(db: &Db) -> anyhow::Result<()> {
     let mut db = db.clone();
-    let users = User::all().exec(&mut db).await?;
-    if !users.is_empty() {
+    let users = User::all().count().exec(&mut db).await?;
+    if users > 0 {
         return Ok(());
     }
 
@@ -558,7 +552,14 @@ pub async fn seed_demo_catalog(db: &Db) -> anyhow::Result<()> {
     let mut db = db.clone();
     let (member, org) = ensure_demo_tenants(&mut db).await?;
 
-    let existing = DocArticle::all().exec(&mut db).await?;
+    let catalog_slugs: Vec<String> = demo_doc_catalog()
+        .iter()
+        .map(|(_, _, _, slug)| (*slug).to_owned())
+        .collect();
+    let existing = DocArticle::all()
+        .filter(DocArticle::fields().slug().in_list(catalog_slugs))
+        .exec(&mut db)
+        .await?;
     let have: HashSet<String> = existing.into_iter().map(|a| a.slug).collect();
 
     for (title, summary, category, slug) in demo_doc_catalog() {
@@ -644,25 +645,22 @@ async fn create_demo_tenants(db: &mut Db) -> anyhow::Result<(User, Organization)
 
 /// Resolve Acme demo tenant; create the minimal demo tenants if the DB is empty.
 async fn ensure_demo_tenants(db: &mut Db) -> anyhow::Result<(User, Organization)> {
-    let users = User::all().exec(db).await?;
-    if users.is_empty() {
+    let users = User::all().count().exec(db).await?;
+    if users == 0 {
         return create_demo_tenants(db).await;
     }
 
-    let orgs = Organization::all().exec(db).await?;
-    let org = orgs
-        .into_iter()
-        .find(|o| o.slug.eq_ignore_ascii_case(ACME_ORG_SLUG))
-        .ok_or_else(|| {
+    let org = Organization::get_by_slug(db, ACME_ORG_SLUG)
+        .await
+        .map_err(|_| {
             anyhow::anyhow!(
                 "seed-data: organization `{ACME_ORG_SLUG}` missing; reset DB or create tenants first"
             )
         })?;
 
-    let member = users
-        .into_iter()
-        .find(|u| u.email.eq_ignore_ascii_case("l.martin@acme.example"))
-        .ok_or_else(|| {
+    let member = User::get_by_email(db, "l.martin@acme.example")
+        .await
+        .map_err(|_| {
             anyhow::anyhow!(
                 "seed-data: user `l.martin@acme.example` missing; reset DB or create tenants first"
             )
@@ -673,7 +671,15 @@ async fn ensure_demo_tenants(db: &mut Db) -> anyhow::Result<(User, Organization)
 
 /// Insert VBN-214 / VBN-208 when those keys are absent (idempotent).
 async fn ensure_demo_issues(db: &mut Db, org_id: u64, member_id: u64) -> anyhow::Result<()> {
-    let existing = Issue::all().exec(db).await?;
+    let existing = Issue::all()
+        .filter(Issue::fields().organization_id().eq(org_id))
+        .filter(
+            Issue::fields()
+                .key()
+                .in_list(["VBN-214".to_owned(), "VBN-208".to_owned()]),
+        )
+        .exec(db)
+        .await?;
     let keys: HashSet<String> = existing.into_iter().map(|i| i.key).collect();
     let now = now_unix();
 
@@ -780,63 +786,80 @@ mod seed_digest_tests {
 
 /// Backfill demo discussion rows for seeded issues that have none yet.
 async fn ensure_demo_issue_comments(db: &mut Db) -> anyhow::Result<()> {
-    let issues = Issue::all().exec(db).await?;
     let now = now_unix();
-
-    for issue in issues {
-        let comments = IssueComment::all()
-            .filter(IssueComment::fields().issue_id().eq(issue.id))
+    let mut page = Some(
+        Issue::all()
+            .order_by(Issue::fields().id().asc())
+            .paginate(SCAN_PAGE_SIZE)
             .exec(db)
-            .await?;
-        if !comments.is_empty() {
-            continue;
+            .await?,
+    );
+    while let Some(current) = page {
+        let (items, next) = advance_scan_page(current, db).await?;
+        for issue in items {
+            let comments = IssueComment::all()
+                .filter(IssueComment::fields().issue_id().eq(issue.id))
+                .exec(db)
+                .await?;
+            if !comments.is_empty() {
+                continue;
+            }
+            if issue.status.eq_ignore_ascii_case("In analysis") {
+                toasty::create!(IssueComment {
+                    issue_id: issue.id,
+                    author_user_id: 0,
+                    author_role: ISSUE_ROLE_SYSTEM.to_owned(),
+                    body: "Moved to analysis".to_owned(),
+                    kind: ISSUE_COMMENT_KIND_STATUS.to_owned(),
+                    created_at: issue.updated_at.saturating_sub(3_600).max(issue.created_at),
+                    edited_at: 0,
+                })
+                .exec(db)
+                .await?;
+                toasty::create!(IssueComment {
+                    issue_id: issue.id,
+                    author_user_id: 0,
+                    author_role: ISSUE_ROLE_SYSTEM.to_owned(),
+                    body: "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway.".to_owned(),
+                    kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
+                    created_at: issue.updated_at.max(now.saturating_sub(7_200)),
+                    edited_at: 0,
+                })
+                .exec(db)
+                .await?;
+            }
         }
-        if issue.status.eq_ignore_ascii_case("In analysis") {
-            toasty::create!(IssueComment {
-                issue_id: issue.id,
-                author_user_id: 0,
-                author_role: ISSUE_ROLE_SYSTEM.to_owned(),
-                body: "Moved to analysis".to_owned(),
-                kind: ISSUE_COMMENT_KIND_STATUS.to_owned(),
-                created_at: issue.updated_at.saturating_sub(3_600).max(issue.created_at),
-                edited_at: 0,
-            })
-            .exec(db)
-            .await?;
-            toasty::create!(IssueComment {
-                issue_id: issue.id,
-                author_user_id: 0,
-                author_role: ISSUE_ROLE_SYSTEM.to_owned(),
-                body: "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway.".to_owned(),
-                kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
-                created_at: issue.updated_at.max(now.saturating_sub(7_200)),
-                edited_at: 0,
-            })
-            .exec(db)
-            .await?;
-        }
+        page = next;
     }
     Ok(())
 }
 
 /// Replace pre-dialect thin bodies so existing local DBs pick up rich content.
 async fn refresh_thin_doc_bodies(db: &mut Db) -> anyhow::Result<()> {
-    let articles = DocArticle::all()
-        .include(DocArticle::fields().body())
-        .exec(db)
-        .await?;
-    for mut article in articles {
-        let body = article.body.get().clone();
-        if !docs_body::is_thin_seed_body(&body, &article.summary) {
-            continue;
-        }
-        let rich = seed_doc_body(&article.slug, &article.summary);
-        article
-            .update()
-            .body(rich)
-            .updated_at(now_unix())
+    let mut page = Some(
+        DocArticle::all()
+            .include(DocArticle::fields().body())
+            .order_by(DocArticle::fields().id().asc())
+            .paginate(SCAN_PAGE_SIZE)
             .exec(db)
-            .await?;
+            .await?,
+    );
+    while let Some(current) = page {
+        let (items, next) = advance_scan_page(current, db).await?;
+        for mut article in items {
+            let body = article.body.get().clone();
+            if !docs_body::is_thin_seed_body(&body, &article.summary) {
+                continue;
+            }
+            let rich = seed_doc_body(&article.slug, &article.summary);
+            article
+                .update()
+                .body(rich)
+                .updated_at(now_unix())
+                .exec(db)
+                .await?;
+        }
+        page = next;
     }
     Ok(())
 }
@@ -1048,6 +1071,10 @@ mod tests {
         assert!(
             src.contains("apply_pending_migrations"),
             "db::connect must apply pending Toasty migrations"
+        );
+        assert!(
+            src.contains("embed_migrations!"),
+            "db::connect must embed toasty/ at compile time"
         );
     }
 }

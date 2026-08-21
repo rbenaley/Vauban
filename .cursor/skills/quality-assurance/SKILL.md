@@ -115,7 +115,7 @@ production code, `scripts/check_auth_tenant.sh`, and
   App `database.url` in TOML / `vcp.conf` stays TCP (`localhost`).
 - Schema: Toasty migrations under `toasty/` applied on `db::connect`
   (`vcp migration generate|apply`; not Diesel / not `push_schema`).
-  After a 0.10 bump, `embed_migrations!` may apply the same ids at
+  After the 0.10 pin, `embed_migrations!` may apply the same ids at
   boot — see the **`toasty` skill** `UPGRADE-0.10.md`.
 - Run tests single-threaded: `just test` / `--test-threads=1`.
 - Prefer production `app::router` + model helpers over a parallel

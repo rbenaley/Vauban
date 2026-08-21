@@ -10,6 +10,7 @@ use tracing::{error, info};
 use crate::{
     config::MagicLinksConfig,
     models::{MAGIC_LINK_NOT_CONSUMED, MagicLinkToken, USER_NOT_DELETED, User},
+    toasty_page::{SCAN_PAGE_SIZE, advance_scan_page},
 };
 
 /// Generate a raw URL-safe token and its SHA-256 hex digest.
@@ -113,14 +114,22 @@ pub async fn purge_expired_tokens(
     retention_days: u64,
 ) -> anyhow::Result<u64> {
     let cutoff = purge_cutoff(now, retention_days);
-    let rows = MagicLinkToken::all()
-        .filter(MagicLinkToken::fields().expires_at().lt(cutoff))
-        .exec(db)
-        .await?;
+    let mut page = Some(
+        MagicLinkToken::all()
+            .filter(MagicLinkToken::fields().expires_at().lt(cutoff))
+            .order_by(MagicLinkToken::fields().token_hash().asc())
+            .paginate(SCAN_PAGE_SIZE)
+            .exec(db)
+            .await?,
+    );
     let mut deleted = 0u64;
-    for row in rows {
-        row.delete().exec(db).await?;
-        deleted += 1;
+    while let Some(current) = page {
+        let (items, next) = advance_scan_page(current, db).await?;
+        for row in items {
+            row.delete().exec(db).await?;
+            deleted += 1;
+        }
+        page = next;
     }
     Ok(deleted)
 }

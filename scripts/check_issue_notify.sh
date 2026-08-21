@@ -56,5 +56,7 @@ fi
 if grep -n 'enqueue_issue_notify' src/db.rs >/dev/null; then
   fail "seed / db.rs must not enqueue issue notify"
 fi
+grep -n 'upsert_by_issue_id_and_event_and_source_id_and_recipient_user_id' src/issue_notify.rs >/dev/null \
+  || fail "enqueue must use IssueMailOutbox upsert_by unique key"
 
 echo "check_issue_notify: OK"

@@ -17,6 +17,8 @@ grep -n 'bundle_filename' "$BUNDLE" >/dev/null \
   || fail "$BUNDLE must define bundle_filename"
 grep -n 'export_articles_to_dir' "$BUNDLE" >/dev/null \
   || fail "$BUNDLE must export articles to a directory"
+grep -n '\.paginate(' "$BUNDLE" >/dev/null \
+  || fail "$BUNDLE export must page with .paginate("
 grep -n 'import_articles_from_dir' "$BUNDLE" >/dev/null \
   || fail "$BUNDLE must import articles from a directory"
 grep -n 'unpublish_other_published' "$BUNDLE" >/dev/null \

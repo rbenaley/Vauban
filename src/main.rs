@@ -71,9 +71,9 @@ async fn run_seed_data() -> anyhow::Result<()> {
     db::seed_demo_catalog(&database).await?;
 
     let mut conn = database.clone();
-    let docs = DocArticle::all().exec(&mut conn).await?.len();
-    let releases = Release::all().exec(&mut conn).await?.len();
-    let issues = Issue::all().exec(&mut conn).await?.len();
+    let docs = DocArticle::all().count().exec(&mut conn).await?;
+    let releases = Release::all().count().exec(&mut conn).await?;
+    let issues = Issue::all().count().exec(&mut conn).await?;
     info!(
         docs,
         releases, issues, "seed-data complete (full demo catalog)"

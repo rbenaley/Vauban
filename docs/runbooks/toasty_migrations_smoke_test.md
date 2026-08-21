@@ -13,6 +13,8 @@ Related:
 - Guide: [Toasty schema management](https://tokio-rs.github.io/toasty/nightly/guide/schema-management.html)
 - Lint: `scripts/check_toasty_migrations.sh`
 - CLI: `cargo run --bin vcp -- migration …` / `just db-migrate`
+- Pin: Toasty **0.10.0** (`Cargo.toml` / `toasty-cli`; confirm with
+  `scripts/check_toasty_migrations.sh`)
 
 ## Automated prerequisites
 
@@ -69,3 +71,26 @@ migration apply` with staging `VCP_ENVIRONMENT` / config), then smoke login
 and one admin docs save.
 
 **Pass:** `__toasty_migrations` contains the expected rows; app serves HTML.
+Pkg upgrade must **not** drop database `vcp`.
+
+## D -- Hybrid apply (embed + CLI)
+
+`db::connect` applies **embedded** SQL (`embed_migrations!("toasty")`,
+compile-time crate root). `vcp migration apply` / `+POST_INSTALL` still
+reads `VCP_PACKAGE_ROOT` / `share/vcp/toasty` from disk. Both write the
+same `__toasty_migrations` ids — do **not** change SQL for an already
+applied id.
+
+```bash
+# After a pkg upgrade (filesystem CLI first):
+VCP_ENVIRONMENT=production vcp migration apply
+# Then boot: embed skips every recorded id.
+just run
+```
+
+**Pass:** second apply (boot or CLI) is a no-op; `__toasty_migrations`
+row count matches `toasty/history.toml`; database `vcp` is not dropped.
+
+**Fail:** embed and CLI apply different SQL for the same id, or boot
+fails because `share/vcp/toasty` is missing *and* the binary was built
+without the matching history.

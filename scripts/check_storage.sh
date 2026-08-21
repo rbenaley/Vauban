@@ -147,6 +147,8 @@ grep -n 'blob_path must be empty in production' "$CFG" >/dev/null \
 # Upsert helpers after put_commit.
 grep -n 'upsert_release_object\|upsert_image_object' "$OBJECTS" >/dev/null \
   || fail "$OBJECTS must upsert storage_objects after commit"
+grep -n 'upsert_by_scope_and_object_key' "$OBJECTS" >/dev/null \
+  || fail "$OBJECTS must use StorageObject::upsert_by_scope_and_object_key"
 
 # Engine uses cap-std Dir (soft fence).
 grep -n 'cap_std\|Dir::' "$ENGINE" >/dev/null \

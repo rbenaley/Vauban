@@ -15,6 +15,7 @@
 //! - `cargo test --test integration_tests -- request_sql_dedup -- --test-threads=1`
 //! - `cargo test --test integration_tests -- dashboard_stats -- --test-threads=1`
 //! - `cargo test --test integration_tests -- toasty_migrations -- --test-threads=1`
+//! - `cargo test --test integration_tests -- toasty_paginate -- --test-threads=1`
 //! - `cargo test --test integration_tests -- docs_search_shard -- --test-threads=1`
 //! - `cargo test --test integration_tests -- org_issues_search_shard -- --test-threads=1`
 //! - `cargo test --test integration_tests -- admin_issues_search_shard -- --test-threads=1`
@@ -148,4 +149,8 @@ mod toasty_migrations_battle_test;
 mod toasty_migrations_e2e_test;
 mod toasty_migrations_invariants_test;
 mod toasty_migrations_proptest;
+mod toasty_paginate_battle_test;
+mod toasty_paginate_e2e_test;
+mod toasty_paginate_invariants_test;
+mod toasty_paginate_proptest;
 mod topcoat_boolean_attrs_invariants_test;

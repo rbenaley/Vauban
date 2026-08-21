@@ -215,6 +215,10 @@ grep -n 'ico_copy' "$BUILDS" >/dev/null \
 
 grep -nE '#\[route\(POST' "$EPH" >/dev/null || fail "$EPH must expose POST ephemeral routes"
 grep -n 'EphemeralDownload' "$EPH" >/dev/null || fail "$EPH must persist EphemeralDownload"
+grep -n 'organization_id()' "$EPH" >/dev/null \
+  || fail "$EPH must filter organization_id in SQL"
+grep -n 'release_version()' "$EPH" >/dev/null \
+  || fail "$EPH must filter release_version in SQL"
 grep -n 'Uuid::new_v4\|uuid::' "$EPH" >/dev/null || fail "$EPH must mint UUID tokens server-side"
 grep -n 'ephemeral/revoke' "$EPH" >/dev/null || fail "$EPH must support revoke"
 grep -n 'eph_public_url' "$EPH" >/dev/null \
