@@ -10,9 +10,25 @@ suitable for the admin **Release notes** field (`FIX` / `FEAT` / `NEW` /
 
 Packages covered:
 
-`vauban-0.9.35.pkg` … `vauban-0.2.0.pkg` (list supplied by operator).
+`vauban-0.9.37.pkg` … `vauban-0.2.0.pkg` (list supplied by operator).
 
 ---
+
+### v0.9.37 (17-08-2026)
+
+FEAT: Add ADR 006 IACS profiles (EtherNet/IP, BACnet/SC, DNP3, IEC 61850 MMS) with prefix-based access matching.
+SECURITY: Pin the WORM verify key out of band and allowlist LDAP bind DNs (reject RFC 4514 specials).
+FEAT: Render branded HTML transactional mail with an inline star-fort logo (text part unchanged).
+FIX: Close soft-delete tombstone holes so deleted users lose login, API keys, and approval mail.
+FIX: Summarize mailer queue/drain on one line and surface permanent SMTP 5xx without aborting the batch.
+FIX: Pre-open the mailer Postgres pool before Capsicum seal so FreeBSD drain ticks no longer fail to connect (0.9.36 line).
+
+### v0.9.36 (15-08-2026)
+
+FIX: Declare mailer `fd_passing` as FdReceiver only so Capsicum seal no longer hits ConflictingFdRights.
+FIX: Stop listing the SCM_RIGHTS socket in `ipc_fds` to end FreeBSD mailer crash-loops.
+FEAT: Add `MAILER_KINDS` and pyramid coverage for the mailer FD-passing contract.
+FIX: Raise newsyslog rotation of `/var/log/vauban.log` to 1048576 KiB (1 GiB).
 
 ### v0.9.35 (30-07-2026)
 
