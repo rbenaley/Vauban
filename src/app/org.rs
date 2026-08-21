@@ -18,12 +18,13 @@ use topcoat::{
 
 use crate::{
     auth::require_org,
-    dashboard_stats::{DASHBOARD_ISSUES_CAP, latest_issue_by_updated_at, summarize_issue_stats},
-    db::now_unix,
+    dashboard_stats::{
+        DASHBOARD_ISSUES_CAP, issue_activity_copy, latest_issue_by_updated_at,
+        summarize_issue_stats,
+    },
     models::{DOC_STATUS_PUBLISHED, DocArticle, Issue, RESERVED_ORG_SLUG},
     nav::nav_from_cx,
     release_pkg::{org_builds_entitled, version_for_display},
-    tz::{browser_tz, format_relative, format_unix_local},
     ui::{channel_badge_class, note_tag_color},
 };
 
@@ -110,9 +111,6 @@ async fn dashboard(cx: &Cx) -> Result {
         .map(|r| r.channel.clone())
         .unwrap_or_else(|| "LTS".to_owned());
     let build_notes = latest_release.map(|r| r.notes.clone()).unwrap_or_default();
-    let build_released_on = latest_release
-        .map(|r| r.released_on.clone())
-        .unwrap_or_default();
 
     let note_lines: Vec<(String, String, &'static str)> = build_notes
         .lines()
@@ -133,27 +131,10 @@ async fn dashboard(cx: &Cx) -> Result {
         .collect();
     let channel_badge = channel_badge_class(&build_channel).to_owned();
 
-    let tz = browser_tz(cx);
-    let now = now_unix();
-    let issue_activity = latest_issue.as_ref().map(|issue| {
-        let copy = if issue.status.eq_ignore_ascii_case("In analysis") {
-            " moved to analysis"
-        } else if issue.status.eq_ignore_ascii_case("Resolved")
-            || issue.status.eq_ignore_ascii_case("Closed")
-        {
-            " was closed"
-        } else {
-            " was updated"
-        };
-        (
-            issue.key.clone(),
-            copy,
-            format_relative(issue.updated_at, now, tz),
-        )
-    });
-    let latest_doc = latest_doc_row
+    let issue_activity = latest_issue
         .as_ref()
-        .map(|a| (a.title.clone(), format_unix_local(a.updated_at, tz)));
+        .map(|issue| (issue.key.clone(), issue_activity_copy(&issue.status)));
+    let latest_doc = latest_doc_row.as_ref().map(|a| a.title.clone());
 
     view! {
         <h1 class="vb-title dash">"Dashboard"</h1>
@@ -273,12 +254,9 @@ async fn dashboard(cx: &Cx) -> Result {
                             (build_channel.clone())
                             ") certified and signed"
                         </div>
-                        <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">
-                            (build_released_on.clone())
-                        </div>
                     </div>
                 }
-                if let Some((key, copy, when)) = issue_activity {
+                if let Some((key, copy)) = issue_activity {
                     <div class="vb-activity-item">
                         <div class="vb-dot warn"></div>
                         <div style="flex: 1; font-size: 13.5px; color: #3a3f46;">
@@ -290,20 +268,14 @@ async fn dashboard(cx: &Cx) -> Result {
                             </span>
                             (copy)
                         </div>
-                        <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">
-                            (when)
-                        </div>
                     </div>
                 }
-                if let Some((title, when)) = latest_doc {
+                if let Some(title) = latest_doc {
                     <div class="vb-activity-item">
                         <div class="vb-dot muted"></div>
                         <div style="flex: 1; font-size: 13.5px; color: #3a3f46;">
                             (title)
                             " — documentation updated"
-                        </div>
-                        <div class="vb-mono" style="font-size: 11px; color: #9aa0a6;">
-                            (when)
                         </div>
                     </div>
                 }

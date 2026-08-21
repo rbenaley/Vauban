@@ -830,7 +830,7 @@ a.vb-card:hover { border-color: var(--accent); transform: translateY(-2px); }
 }
 .vb-stat-value.warn { color: var(--warn); }
 .vb-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 26px; }
-.vb-grid-2 { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; }
+.vb-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 960px) {
   .vb-grid-3, .vb-grid-2, .vb-stat-row { grid-template-columns: 1fr; }
   .vb-stat { border-right: 0; border-bottom: 1px solid var(--border); }

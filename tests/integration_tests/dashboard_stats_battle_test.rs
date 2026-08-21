@@ -89,6 +89,11 @@ async fn battle_parallel_dashboard_gets_with_issue_stats() {
             assert!(html.contains("IN ANALYSIS"), "{html}");
             assert_eq!(tile_value_after(&html, "OPEN ISSUES"), "1", "{html}");
             assert_eq!(tile_value_after(&html, "IN ANALYSIS"), "1", "{html}");
+            assert!(html.contains("vb-grid-2"), "{html}");
+            assert!(
+                !html.contains("just now") && !html.contains(" ago"),
+                "activity must stay dateless under contention: {html}"
+            );
         }));
     }
     for h in handles {

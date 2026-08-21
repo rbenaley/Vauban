@@ -139,6 +139,16 @@ async fn e2e_dashboard_issue_stats_from_org_rows() {
         html.contains("moved to analysis"),
         "latest in-analysis activity copy: {html}"
     );
+    assert!(
+        html.contains("vb-grid-2")
+            && html.contains("RECENT ACTIVITY")
+            && html.contains("LATEST CERTIFIED BUILD"),
+        "equal-width activity / latest-build panels: {html}"
+    );
+    assert!(
+        !html.contains("just now") && !html.contains(" ago"),
+        "recent activity must not render a clock: {html}"
+    );
 
     assert_eq!(
         tile_value_after(&html, "OPEN ISSUES"),

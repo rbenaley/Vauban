@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use vcp::{
-    dashboard_stats::{latest_issue_by_updated_at, summarize_issue_stats},
+    dashboard_stats::{issue_activity_copy, latest_issue_by_updated_at, summarize_issue_stats},
     models::{
         ISSUE_STATUS_CLOSED, ISSUE_STATUS_IN_ANALYSIS, ISSUE_STATUS_OPEN, ISSUE_STATUS_RESOLVED,
         Issue,
@@ -92,5 +92,34 @@ proptest! {
         // Product expectation: tens of issues/org; cap must stay above that.
         prop_assert!(n < vcp::dashboard_stats::DASHBOARD_ISSUES_CAP);
         prop_assert!(vcp::dashboard_stats::DASHBOARD_ISSUES_CAP >= 100);
+    }
+
+    #[test]
+    fn prop_activity_copy_never_looks_like_a_clock(
+        status in prop_oneof![
+            Just(ISSUE_STATUS_OPEN.to_owned()),
+            Just(ISSUE_STATUS_IN_ANALYSIS.to_owned()),
+            Just(ISSUE_STATUS_RESOLVED.to_owned()),
+            Just(ISSUE_STATUS_CLOSED.to_owned()),
+            "[A-Za-z ]{1,24}",
+        ]
+    ) {
+        let copy = issue_activity_copy(&status);
+        prop_assert!(
+            copy == " moved to analysis"
+                || copy == " was closed"
+                || copy == " was updated"
+        );
+        prop_assert!(!copy.contains("ago"));
+        prop_assert!(!copy.contains(':'));
+        prop_assert!(!copy.chars().any(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn prop_vb_grid_2_stays_equal_columns(_n in 0u8..8) {
+        let css = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
+        let equal = ".vb-grid-2 { display: grid; grid-template-columns: 1fr 1fr;";
+        prop_assert!(css.contains(equal));
+        prop_assert!(!css.contains("1.3fr 1fr"));
     }
 }

@@ -51,7 +51,11 @@ Pass: tiles equal org Issues list aggregates; no foreign-org inflation.
 2. Touch / reply on a different open issue so its `updated_at` advances.
 3. Reload dashboard — activity key should follow the newest update.
 
-Pass: activity prefers newest org issue, not insert order alone.
+Pass: activity prefers newest org issue, not insert order alone. The
+activity lines show key + copy only — **no** relative clock (`3h ago`)
+and **no** calendar date. **RECENT ACTIVITY** and **LATEST CERTIFIED
+BUILD** share the row equally (`vb-grid-2` = `1fr 1fr`); they stack
+below 960 px.
 
 ## C -- SQL shape (DEBUG)
 
@@ -67,8 +71,8 @@ Pass: single issues load + docs COUNT; no multi-COUNT issue fan-out.
 
 | Layer | Filter / artifact |
 |-------|-------------------|
-| Unit | `summarize_open_excludes_in_analysis_and_terminal` (16/3/1/1) |
-| Invariants | `inv_dashboard_open_tile_counts_fsm_open_not_non_closed`, `check_dashboard_stats.sh` |
-| Proptest | `prop_open_and_analysis_are_disjoint_fsm_counts` |
-| Battle | `battle_parallel_dashboard_gets_with_issue_stats` |
-| E2E | `e2e_dashboard_open_tile_excludes_in_analysis` (exact tile values) |
+| Unit | `summarize_open_excludes_in_analysis_and_terminal` (16/3/1/1), `issue_activity_copy_has_no_clock` |
+| Invariants | `inv_dashboard_open_tile_counts_fsm_open_not_non_closed`, `inv_dashboard_activity_is_dateless_equal_panels`, `check_dashboard_stats.sh` |
+| Proptest | `prop_open_and_analysis_are_disjoint_fsm_counts`, `prop_activity_copy_never_looks_like_a_clock` |
+| Battle | `battle_parallel_dashboard_gets_with_issue_stats` (tiles + dateless activity) |
+| E2E | `e2e_dashboard_open_tile_excludes_in_analysis`, `e2e_dashboard_issue_stats_from_org_rows` (no clock, `vb-grid-2`) |

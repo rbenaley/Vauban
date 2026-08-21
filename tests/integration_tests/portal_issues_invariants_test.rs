@@ -544,7 +544,13 @@ fn inv_dashboard_activity_not_hardcoded_dates() {
         "dashboard must not hardcode relative fixtures"
     );
     assert!(
-        src.contains("format_relative") || src.contains("released_on"),
-        "dashboard activity must use DB timestamps"
+        !src.contains("format_relative")
+            && !src.contains("format_unix_local")
+            && !src.contains("build_released_on"),
+        "dashboard activity must not render timestamps"
+    );
+    assert!(
+        src.contains("issue_activity_copy"),
+        "dashboard activity copy must come from issue_activity_copy"
     );
 }

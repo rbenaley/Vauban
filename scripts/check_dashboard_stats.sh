@@ -47,4 +47,17 @@ if [[ "$issue_alls" -ne 1 ]]; then
   fail "$DASH must call Issue::all() exactly once (got $issue_alls)"
 fi
 
+# Recent activity is copy-only (no wall-clock / relative dates).
+grep -n 'issue_activity_copy' "$DASH" >/dev/null \
+  || fail "$DASH must use issue_activity_copy for activity text"
+grep -n 'fn issue_activity_copy' "$HELPERS" >/dev/null \
+  || fail "$HELPERS must define issue_activity_copy"
+if grep -nE 'format_relative|format_unix_local|build_released_on|browser_tz' "$DASH" >/dev/null; then
+  fail "$DASH recent activity must not render dates"
+fi
+grep -n 'vb-grid-2' "$DASH" >/dev/null \
+  || fail "$DASH must use vb-grid-2 for activity / latest-build panels"
+grep -nE '\.vb-grid-2 \{ display: grid; grid-template-columns: 1fr 1fr;' styles.css >/dev/null \
+  || fail "styles.css .vb-grid-2 must be equal 1fr 1fr columns"
+
 echo "check_dashboard_stats: OK"

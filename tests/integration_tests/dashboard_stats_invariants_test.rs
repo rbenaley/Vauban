@@ -45,6 +45,7 @@ fn inv_dashboard_stats_module_exported() {
     assert!(helpers.contains("pub const DASHBOARD_ISSUES_CAP"));
     assert!(helpers.contains("pub fn summarize_issue_stats"));
     assert!(helpers.contains("pub fn latest_issue_by_updated_at"));
+    assert!(helpers.contains("pub fn issue_activity_copy"));
 }
 
 /// Pins the contract that OPEN ISSUES is FSM `Open`, not `!issue_is_closed`.
@@ -89,5 +90,37 @@ fn inv_toasty_filters_pins_dashboard_single_load() {
     assert!(
         script.contains("summarize_issue_stats") || script.contains("DASHBOARD_ISSUES_CAP"),
         "check_toasty_filters must pin dashboard_stats aggregation"
+    );
+}
+
+#[test]
+fn inv_dashboard_activity_is_dateless_equal_panels() {
+    let dash = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
+    let css = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
+    let script = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/scripts/check_dashboard_stats.sh"
+    ));
+    assert!(
+        dash.contains("issue_activity_copy") && dash.contains("vb-grid-2"),
+        "dashboard must wire dateless activity + vb-grid-2"
+    );
+    assert!(
+        !dash.contains("format_relative")
+            && !dash.contains("format_unix_local")
+            && !dash.contains("build_released_on"),
+        "dashboard must not format activity clocks"
+    );
+    assert!(
+        css.contains(".vb-grid-2 { display: grid; grid-template-columns: 1fr 1fr;"),
+        "vb-grid-2 must split activity / latest-build 50/50"
+    );
+    assert!(
+        !css.contains("1.3fr 1fr"),
+        "vb-grid-2 must not keep the old 1.3fr/1fr split"
+    );
+    assert!(
+        script.contains("issue_activity_copy") && script.contains("1fr 1fr"),
+        "check_dashboard_stats.sh must pin dateless activity + equal columns"
     );
 }

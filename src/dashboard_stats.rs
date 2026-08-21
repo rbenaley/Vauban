@@ -3,7 +3,9 @@
 //! Typical orgs have tens of issues — one org-scoped load + in-process
 //! aggregation is cheaper than multiple SQL `COUNT(*)` round-trips.
 
-use crate::models::{ISSUE_STATUS_IN_ANALYSIS, ISSUE_STATUS_OPEN, Issue};
+use crate::models::{
+    ISSUE_STATUS_CLOSED, ISSUE_STATUS_IN_ANALYSIS, ISSUE_STATUS_OPEN, ISSUE_STATUS_RESOLVED, Issue,
+};
 
 /// Safety cap for the single org issues fetch (product expectation: tens).
 pub const DASHBOARD_ISSUES_CAP: usize = 500;
@@ -33,6 +35,19 @@ pub fn summarize_issue_stats(issues: &[Issue]) -> DashboardIssueStats {
     DashboardIssueStats {
         open_count,
         in_analysis_count,
+    }
+}
+
+/// Issue line suffix for the dashboard Recent activity feed (no timestamp).
+pub fn issue_activity_copy(status: &str) -> &'static str {
+    if status.eq_ignore_ascii_case(ISSUE_STATUS_IN_ANALYSIS) {
+        " moved to analysis"
+    } else if status.eq_ignore_ascii_case(ISSUE_STATUS_RESOLVED)
+        || status.eq_ignore_ascii_case(ISSUE_STATUS_CLOSED)
+    {
+        " was closed"
+    } else {
+        " was updated"
     }
 }
 
@@ -130,6 +145,31 @@ mod tests {
         assert_eq!(stats.open_count, 0);
         assert_eq!(stats.in_analysis_count, 0);
         assert!(latest_issue_by_updated_at(&[]).is_none());
+    }
+
+    #[test]
+    fn issue_activity_copy_has_no_clock() {
+        assert_eq!(
+            issue_activity_copy(ISSUE_STATUS_IN_ANALYSIS),
+            " moved to analysis"
+        );
+        assert_eq!(issue_activity_copy(ISSUE_STATUS_RESOLVED), " was closed");
+        assert_eq!(issue_activity_copy(ISSUE_STATUS_CLOSED), " was closed");
+        assert_eq!(issue_activity_copy(ISSUE_STATUS_OPEN), " was updated");
+        for status in [
+            ISSUE_STATUS_OPEN,
+            ISSUE_STATUS_IN_ANALYSIS,
+            ISSUE_STATUS_RESOLVED,
+            ISSUE_STATUS_CLOSED,
+        ] {
+            let copy = issue_activity_copy(status);
+            assert!(
+                !copy.contains("ago")
+                    && !copy.contains(':')
+                    && !copy.chars().any(|c| c.is_ascii_digit()),
+                "activity copy must not carry a clock: {copy}"
+            );
+        }
     }
 
     proptest! {
