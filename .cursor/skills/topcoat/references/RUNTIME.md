@@ -2,7 +2,8 @@
 
 Companion to `topcoat` skill §10. VCP pins Topcoat **0.5.0**; re-verify
 the browser bundle when bumping the facade. Historical 0.4→0.5 notes:
-`UPGRADE-0.5.md`.
+`UPGRADE-0.5.md`. Next bump playbook: `UPGRADE-0.6.md` (0.6.1 lets
+`await` appear inside `$()` `ExprBlock` / `ExprIf`).
 
 ## Mental model
 
@@ -15,6 +16,12 @@ the browser bundle when bumping the facade. Historical 0.4→0.5 notes:
    (`cx.hydrate(...)`, `Signal.get/set`, bool `.dehydrate()` for `if`).
 
 No WASM on the client. No separate SPA. Prefer this over first-party UI JS.
+
+**0.6 server-side:** `#[component]` siblings in one `view!` render
+concurrently (I/O overlaps). That is HTML generation, not the browser
+runtime. Do not assume sequential DB calls inside a loop of
+components — see `UPGRADE-0.6.md`. 0.6.1 also allows `await` inside
+`$()` blocks / `if` expressions.
 
 ## `@click` / `@*` bind contract (critical)
 

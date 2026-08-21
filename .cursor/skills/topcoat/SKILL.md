@@ -3,8 +3,10 @@ name: topcoat
 description: >-
   Durable knowledge of the Topcoat framework for VCP. Use when scaffolding,
   implementing pages/components/shards/procedures, signals, @click/:bind,
-  sessions, cookies, routing, assets, Tailwind/UI, or when unsure how Topcoat
-  works. Read before inventing Axum/Askama/HTMX or first-party UI JS.
+  sessions, cookies, routing, assets, Tailwind/UI, planning a 0.5→0.6
+  upgrade, or when unsure how Topcoat works. Read before inventing
+  Axum/Askama/HTMX or first-party UI JS. Companion playbook:
+  references/UPGRADE-0.6.md.
 ---
 
 # Topcoat knowledge base (VCP)
@@ -19,23 +21,37 @@ Announcement / orientation (read when refreshing mental model):
   (2026-07-22, Carl Lerche & Julien Scholz)
 - [Release v0.5.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0)
   (2026-07-27) — WS / SSE / Datastar / mail / WASM / UDS; breaking API moves
+- [Release v0.6.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.0)
+  (2026-08-17) — concurrent components, `href!`, scoped `Cx::with`,
+  router `OriginPolicy`, 2 MiB body cap, `path_param!`, `not_found!`
+- [v0.6.1](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.1) /
+  [v0.6.2](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.2)
+  (2026-08-18) — discover rewrite, `await` in `$()` blocks, `TowerService`
 - Sibling ORM: [Toasty 0.6.0 — what is new?](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
-  (field select / deferred / `Vec` scalars; VCP pins a newer 0.x — see
-  `Cargo.toml`)
+  (field select / deferred / `Vec` scalars; VCP pins **0.10** — see
+  `Cargo.toml` / `toasty` skill)
 
 This skill captures a study of Topcoat for the **Vauban Customer Portal**.
 VCP product constraints that override framework capabilities are marked
 **VCP**. Broader conventions live in the `web-stack` skill and the
 `.cursor/rules/*.mdc` set.
 
-**Last studied:** 2026-08-01 against upstream tag **v0.5.0** (edition
-**2024**, MSRV **1.95**, workspace `unsafe_code = deny`). Source map:
-[tokio-rs/topcoat@v0.5.0](https://github.com/tokio-rs/topcoat/tree/v0.5.0).
+**Last studied:** 2026-08-22 against upstream tag **v0.6.2** (commit
+`92a76709`; edition **2024**, MSRV **1.95**, workspace
+`unsafe_code = deny`). Local clone: `/Users/mnemonic/Code/topcoat`.
+Source map:
+[tokio-rs/topcoat@v0.6.2](https://github.com/tokio-rs/topcoat/tree/v0.6.2).
 
-**VCP pin:** facade + `topcoat-cli` are **0.5.0** (`Cargo.toml` /
-`Justfile`). Write against 0.5 APIs (`slot: Result`,
-`router::error` / `router::content`, `SessionConfig`). Historical
-0.4→0.5 steps: [`references/UPGRADE-0.5.md`](references/UPGRADE-0.5.md).
+**VCP pin:** facade + `topcoat-cli` are still **0.5.0** (`Cargo.toml` /
+`Justfile`). **Write against 0.5 APIs today** (`slot: Result`,
+`#[path_param]`, `CxBuilder` on layers, `SessionConfig::trust_origin`,
+`router::error` / `router::content`, `SessionConfig`). Do **not** call
+0.6-only APIs until the pin moves.
+
+- Historical 0.4→0.5 (done): [`references/UPGRADE-0.5.md`](references/UPGRADE-0.5.md)
+- Next bump 0.5→**0.6.2** (playbook, not started):
+  [`references/UPGRADE-0.6.md`](references/UPGRADE-0.6.md)
+
 Re-check crates.io / GitHub if months have passed — early-stage.
 
 Community: Tokio Discord `#topcoat` (and `#toasty` for the ORM).
@@ -90,7 +106,7 @@ Custom serve path: `src/tls/serve.rs` (not `topcoat::start`).
 | `topcoat-runtime` | Signals, `$(...)` / `expr!`, `#[procedure]`, `#[shard]`, browser script asset |
 | `topcoat-asset` | `asset!` → `Asset` **handle** + `AssetId`; `AssetBundle`; `hosted_at` + manifest |
 | `topcoat-cookie` | Cookie jar, `cookie!`, signed/private jars, `CookieStore<T>` |
-| `topcoat-session` | BYO-storage sessions; `SessionConfig` / `SessionConfigBuilder`; `OriginLayer` |
+| `topcoat-session` | BYO-storage sessions; `SessionConfig` / `SessionConfigBuilder`. **0.5:** `.sessions()` still installs origin checks. **0.6:** origin moves to the router (`OriginPolicy`); session crate no longer owns CSRF |
 | `topcoat-mail` | `mail!` + `send`; SMTP / file / memory transports (**0.5+**) |
 | `topcoat-datastar` | Datastar SSE patches (`datastar` feature ⇒ `sse`) (**0.5+**) |
 | `topcoat-font` / `topcoat-icon` | Web fonts, Iconify |
@@ -108,9 +124,10 @@ Macro crates usually come as **trio**: runtime types + `grammar/` + `macro/`.
 **Default** (0.5): `asset`, `compression`, `cookie`, `font`, `icon`,
 `router`, `runtime`, `serve`, `session`, `view`, `discover`.
 
-**`full`** also pulls: `alpine-ajax`, `datastar`, `font-fontsource`,
-`htmx`, `icon-iconify`, `mail`, `mail-smtp`, `multipart`, `sse`,
-`tailwind`, `tower`, `ui`, `websocket`.
+**`full`** (0.5 and 0.6) also pulls: `alpine-ajax`, `datastar`,
+`font-fontsource`, `htmx`, `icon-iconify`, `mail`, `mail-smtp`,
+`multipart`, `sse`, `tailwind`, `tower`, `ui`, `websocket`. **0.6**
+adds `sitemap` to `full`.
 
 Notable optionals:
 
@@ -121,7 +138,8 @@ Notable optionals:
 | `websocket` | Needs `serve`; `content::websocket` |
 | `datastar` | Implies `sse` |
 | `mail` / `mail-smtp` | `topcoat-mail` |
-| `tower` | `TowerLayer` + `TowerRoute` |
+| `tower` | `TowerLayer` + `TowerRoute`; **0.6.2** also `TowerService` (Topcoat as Axum service) |
+| `sitemap` | **0.6+** `content::sitemap::{Sitemap, SitemapUrl}` |
 | `tailwind` / `ui` / `htmx` / `alpine-ajax` | As before |
 
 **VCP:** leave `websocket` / `datastar` / `sse` off unless a product
@@ -185,6 +203,13 @@ rebundle). Override bind with `HOST` / `PORT`. Format macros with
   attribute.** Update HTML snapshot asserts accordingly.
 - Components may be async and talk to the DB directly — no mandatory
   separate JSON API for HTML.
+- **0.6 concurrent rendering (automatic):** sibling / loop / nested
+  `#[component]` calls in one `view!` start in the same tick. Output
+  stays in source order; **await interleaves**. A `for` of N
+  components fires N I/O calls at once — do not loop unbounded
+  user-controlled rows into per-row DB components. Rendered `View`s
+  live in an arena (not `Send` to another thread). 0.5 is still
+  sequential.
 
 ### Boolean attributes and `<select>` (mandatory)
 
@@ -225,7 +250,9 @@ Upstream guides: `topcoat-view/macro/docs/view.md`, `component.md`, etc.
 - Module router: derive URL tree from `src/app.rs` + `src/app/**`
   (kebab segments; `_prefix` layouts without a URL segment;
   `segment!` overrides).
-- Path/query: `#[path_param]`, `#[query_params]`.
+- Path/query: **0.5** `#[path_param]` + `#[query_params]`. **0.6**
+  removes the attribute — `path_param!(org);` / `path_param!(id: u64)`
+  (see `UPGRADE-0.6.md`). Catch-all: `path_param!(*doc_path)`.
 - Layouts nest by path prefix (least-specific outermost).
 - Methods (**0.5+**): `#[route([GET, POST] "/…")]`, `#[route(* "/…")]`,
   `#[page(POST "/…")]`. Specific-method routes beat `*` at the same path.
@@ -236,7 +263,11 @@ Upstream guides: `topcoat-view/macro/docs/view.md`, `component.md`, etc.
 - Errors / bodies: see §6.1 (module moves in **0.5**).
 - Tower: `router::tower::{TowerLayer, TowerRoute}` behind `tower` —
   **transport** concerns, not app auth. `TowerRoute` mounts an Axum /
-  hyper service under a catch-all path for incremental migration.
+  hyper service under a catch-all path. **0.6.2** inverse:
+  `TowerService::new(topcoat_router)` as an Axum fallback. VCP keeps
+  `src/tls/serve.rs` — do not switch hosts on a pin bump.
+- **0.6 URL builders:** `href!(page_fn, Param(v))` in `view!`;
+  `.resolve(cx)` for `see_other` / mail. Optional until the pin moves.
 
 **VCP:** prefer module-based routing + discover for the portal tree.
 
@@ -251,10 +282,28 @@ Imports moved out of the router root. Prefer these paths on **0.5+**:
 | Multipart | `topcoat::router::content::multipart::Multipart` |
 | SSE | `topcoat::router::content::sse::{Sse, Event, KeepAlive, last_event_id}` |
 | WebSocket | `topcoat::router::content::websocket::{WebSocketUpgrade, Message}` |
-| Tower | `topcoat::router::tower::{TowerLayer, TowerRoute}` |
-| Unchanged at root | `StatusCode`, `Method`, `Body`, `Bytes`, `FromRequest`, `IntoResponse`, … |
+| Tower | `topcoat::router::tower::{TowerLayer, TowerRoute}` (+ `TowerService` on **0.6.2**) |
+| Unchanged at root (0.5) | `StatusCode`, `Method`, `Body`, `Bytes`, `FromRequest`, `IntoResponse`, … |
+| **0.6 move** | `Bytes` / `FromRequest` / accessors → `router::request::*`; `IntoResponse` / `Response` → `router::response::*` |
 
 Guides: `crates/topcoat-router/docs/error.md`, `content.md`, `tower.md`.
+
+### 6.3 Router 0.6 (apply only after pin bump)
+
+Full checklist: `references/UPGRADE-0.6.md`. Hits that **will not compile**
+or will **change production behavior** on VCP:
+
+| Surface | 0.5 today | 0.6.2 |
+|---------|-----------|--------|
+| Layer ctx | `&mut CxBuilder` (`security_headers`) | `&Cx`; child via `cx.with(...)` |
+| CSRF | `SessionConfig::trust_origin` | `RouterBuilder::origin_policy(OriginPolicy::…)` |
+| Path params | `#[path_param] struct Org(str)` | `path_param!(pub org);` |
+| Body extractors | Uncapped (practically) | **2 MiB** default → 413 on pkg/image multipart unless `BodyLimit` |
+| Unknown URL | Layouts still wrap 404 | Bare 404 unless `not_found!("/")` |
+| Memoize `Option` | Auto `Option<&T>` | Need `#[memoize(as_ref)]` |
+| Assets | `target/assets` search | Bundle **next to the binary** |
+
+Do **not** write these 0.6 forms while the pin is 0.5.0.
 
 ### 6.2 Layouts: `Slot` → rendered `Result` (0.5 breaking)
 
@@ -333,7 +382,9 @@ Casbin gates: `casbin-permissions.mdc`. Tenant isolation: `portal-security.mdc`.
 
 - Install: `.cookies()` on the router.
 - `cookies(cx)` → request jar; `get` / `add` / `remove`; `Set-Cookie`
-  flushed at end of request.
+  flushed at end of request. **0.6:** writing a cookie after the
+  response is sent **panics** (was a silent no-op). Keep writes in the
+  handler.
 - `cookie!` macro for attributes; combinators `default_*` / `override_*`
   for Secure, HttpOnly, SameSite, Path, Domain, MaxAge.
 - Name prefixes: `prefix_host` (`__Host-`), `prefix_secure` (`__Secure-`).
@@ -378,7 +429,7 @@ or expired. Guard with `ok_or_redirect("/login")` / unauthorized helpers.
 
 ### CSRF / OriginLayer
 
-`.sessions()` registers **`OriginLayer`**:
+**0.5 (current pin):** `.sessions()` registers **`OriginLayer`**:
 
 - For methods other than GET/HEAD/OPTIONS, requires
   `Sec-Fetch-Site: same-origin|none`, or matching `Origin` host for older
@@ -386,10 +437,18 @@ or expired. Guard with `ok_or_redirect("/login")` / unauthorized helpers.
 - Requests with neither header pass (non-browser clients).
 - Trust extra origins via `SessionConfig::builder().trust_origin(...)`.
 
-**VCP:** OriginLayer is always on (`trust_origin` from
-`server.public_origins`); mutations on POST (etc.); never
-state-changing GET. Read-only list filters may use GET forms (docs /
-issues search). Aligns with `portal-security.mdc`.
+**0.6 (on bump):** origin verification is the **router’s** outermost
+step (`OriginPolicy` / `RouterBuilder::origin_policy`), on every
+`Router`, sessions or not. `SessionConfig::trust_origin` and
+`topcoat_session::OriginLayer` are **gone**. WebSocket upgrades are
+treated as state-changing (VCP still leaves `websocket` off). See
+`UPGRADE-0.6.md`.
+
+**VCP:** keep origin checks always on (`trust_origin` / 0.6
+`trust_origins` from `server.public_origins`); mutations on POST
+(etc.); never state-changing GET; never `dangerous_disable`. Read-only
+list filters may use GET forms (docs / issues search). Aligns with
+`portal-security.mdc`.
 
 Custom `TokenStore` can put the token in `Authorization: Bearer` for M2M
 instead of a cookie.
@@ -590,7 +649,7 @@ under `/admin/…` (`web-stack`).
 | `topcoat dev` | Build, bundle, serve, watch, HMR (no custom HTTPS) |
 | `just run` | **Preferred serve**: custom TLS 1.3 HTTPS + asset bundle |
 | `topcoat fmt` | Format `view!` and other macro bodies (`just fmt`) |
-| `topcoat asset bundle` | Write `target/assets` (`just bundle`) |
+| `topcoat asset bundle` | **0.5:** `target/assets`. **0.6:** next to the scanned binary (`target/debug/assets`). `just bundle` must stay in sync — see `UPGRADE-0.6.md` |
 | `topcoat ui …` | **Out of scope** for VCP Concept UI |
 
 Validation: `just validate` = rustfmt check + `topcoat fmt` no-op +
@@ -622,12 +681,15 @@ clippy `-D warnings` + asset bundle + tests (`dev-validation-cycle.mdc` /
 
 ## 15. Upstream doc index (refresh when needed)
 
-Prefer docs at tag **v0.5.0** (or newer release) over stale memory:
+Prefer docs at tag **v0.6.2** when planning the bump; write 0.5 code
+against **v0.5.0** docs until the pin moves:
 
 | Source | Use for |
 |--------|---------|
 | [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat) | Motivation, locality, reactivity vs WASM, Axum split, roadmap |
 | [v0.5.0 release notes](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0) | Breaking changes, WS/SSE/Datastar/mail/WASM/UDS |
+| [v0.6.0–v0.6.2 notes](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.0) | Concurrent views, `href!`, `Cx::with`, origin/body/404/`path_param!` |
+| Project **`UPGRADE-0.6.md`** | VCP 0.5→0.6.2 checklist (do not apply until pin bump) |
 | [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0) | Deferred / select / `Vec` scalars / collection ops |
 | Project **`toasty` skill** | VCP ORM conventions + query anti-patterns |
 | `crates/topcoat/docs/` | Getting started, app context, mail, Datastar, UI, … |
@@ -646,9 +708,10 @@ than guessing from memory of older releases.
 | Artifact | Role |
 |----------|------|
 | `references/RUNTIME.md` | Signals / `@click` pitfalls / test contracts |
-| `references/UPGRADE-0.5.md` | 0.4 → 0.5 migration checklist for VCP |
+| `references/UPGRADE-0.5.md` | 0.4 → 0.5 migration checklist (done; historical) |
+| `references/UPGRADE-0.6.md` | 0.5 → **0.6.2** playbook (next; pin still 0.5.0) |
 | `web-stack` skill | VCP conventions (routing, `db(cx)`, page sizes) |
-| `toasty` skill | Toasty 0.9 query / migration playbook |
+| `toasty` skill | Toasty 0.10 query / migration playbook |
 | `casbin-permissions.mdc` | AuthZ gates |
 | `portal-security.mdc` | Tenancy, CSRF, secrets |
 | `tls-post-quantum.mdc` | HTTPS edge / PQ |

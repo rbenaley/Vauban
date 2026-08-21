@@ -16,6 +16,9 @@ Upstream orientation (keep in sync with `topcoat` skill):
 
 - [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat)
 - [Topcoat v0.5.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0)
+- [Topcoat v0.6.2](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.2)
+  (studied; VCP pin still 0.5.0 — playbook:
+  `topcoat` skill `references/UPGRADE-0.6.md`)
 - [Toasty 0.6.0 — what is new?](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
   (VCP pins **toasty 0.10** — confirm `Cargo.toml` / lock; adopt notes
   live in the **`toasty` skill** `UPGRADE-0.10.md`)
@@ -28,8 +31,11 @@ Depend on the facade crate `topcoat` only (internal crates are
 implementation details).
 
 **Pin:** Topcoat facade + CLI **0.5.0** (`Cargo.toml` / `Justfile`;
-edition **2024**, MSRV **1.95**, `unsafe_code = deny`). Framework detail
-lives in the `topcoat` skill. Early-stage — expect breaking changes.
+edition **2024**, MSRV **1.95**, `unsafe_code = deny`). Write 0.5 APIs
+today. Next bump is **0.6.2** (`topcoat` skill `UPGRADE-0.6.md`) — do
+not call `href!` / `Cx::with` / `path_param!` / `OriginPolicy` until
+then. Framework detail lives in the `topcoat` skill. Early-stage —
+expect breaking changes.
 Topcoat and Axum are **complementary** (Topcoat for the HTML portal;
 Axum only if a raw HTTP API seam is explicitly needed — do not rebuild
 the portal in Axum+Askama).
@@ -61,7 +67,7 @@ static-asset embedding assumptions unless explicitly requested.
 | FreeBSD Tailwind | `pkg install tailwindcss4` → CLI + `/usr/local/lib/node_modules/tailwindcss`; `build.rs` symlinks into gitignored `node_modules/` (no GitHub download) |
 | Cookies | `.cookies()`; signed / private (AES-256-GCM) jars; app `Key` in app context |
 | Sessions | `.sessions(SessionConfig)` — BYO storage of **SHA-256 token hash** + expiry |
-| CSRF | Session `OriginLayer` (Sec-Fetch-Site / Origin) — keep mutations on non-GET |
+| CSRF | **0.5:** session `OriginLayer`. **0.6:** router `OriginPolicy` (`trust_origins` from `public_origins`). Keep mutations on non-GET; never `dangerous_disable` |
 | AuthZ | Casbin-format CSV → `PolicyStore` → `PermissionContext` via `cx` — see `casbin-permissions.mdc` |
 | Dates in HTML | `vcp_tz` cookie + `format_local*` — see `timezone-localization.mdc` |
 | ORM | **Toasty** ([tokio-rs/toasty](https://github.com/tokio-rs/toasty)) |
@@ -280,7 +286,7 @@ not wait for a follow-up. Reference implementation helpers live in
 | With chips | Pager on the **same** `vb-chip-row` (chips left / `vb-chip-group`, pager right via `margin-left: auto`); chip-height face (`padding: 6px 12px`) |
 | Without chips | `vb-list-toolbar` above the table/list, pager right-aligned |
 | Filters | Chip / filter hrefs **omit** `page` (reset to 1); pager keeps other query (`q`, `cat`, `status`, `org`, …) |
-| Slice | Prefer Toasty `.limit(PAGE).offset((page-1)*PAGE)` after SQL filters (`toasty` skill). `page_slice` is only for already-bounded in-memory vecs — not a full-table load strategy |
+| Slice | Prefer Toasty `.limit(PAGE).offset((page-1)*PAGE)` after SQL filters (`toasty` skill). `page_slice` is only for already-bounded in-memory vecs — not a full-table load strategy. **0.6 concurrent components do not replace this** — a `for` of row components fires all I/O at once; still page in SQL |
 | Totals | Prefer `.count()` (or equivalent SQL) for pager page counts |
 | Live shards | Shard args include `page`; when the live search signal changes, **reset page to 1**; push search predicates into SQL |
 | Pyramid | Full `vcp-test-pyramid` for the list surface (unit helpers, invariants on markup/CSS, proptest totals, battle parallel `?page=`, e2e ≥11 fixtures, runbook section) |
@@ -349,12 +355,13 @@ From Topcoat session/cookie guides:
 - Default session cookie is hardened (`__Host-`, `Secure`, `HttpOnly`,
   `SameSite=Lax`). Persist **only** `TokenHash` + `expires_at`, never
   the raw token.
-- `.sessions()` installs an **`OriginLayer`**: non-safe methods must
-  present same-origin `Sec-Fetch-Site` (or matching `Origin`). Trust
-  origins via `server.public_origins` / `trust_origin`; Origin
-  verification is always enabled.
+- **0.5:** `.sessions()` installs an **`OriginLayer`**. Trust origins
+  via `server.public_origins` / `trust_origin`. **0.6 (on bump):**
+  `.origin_policy(OriginPolicy::new().trust_origins(...))` on the
+  router; session crate no longer owns CSRF. Always enabled — never
+  `dangerous_disable`.
 - Keep state-changing routes on `POST` (etc.); a state-changing `GET`
-  bypasses the OriginLayer by design.
+  bypasses origin verification by design.
 - App cookie defaults: helper wrapping `cookies(cx)` with Secure /
   HttpOnly / SameSite / Path; use signed or private jars when values
   must be tamper-proof or confidential.
