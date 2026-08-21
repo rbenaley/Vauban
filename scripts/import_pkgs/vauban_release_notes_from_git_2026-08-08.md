@@ -21,7 +21,7 @@ SECURITY: Pin the WORM verify key out of band and allowlist LDAP bind DNs (rejec
 FEAT: Render branded HTML transactional mail with an inline star-fort logo (text part unchanged).
 FIX: Close soft-delete tombstone holes so deleted users lose login, API keys, and approval mail.
 FIX: Summarize mailer queue/drain on one line and surface permanent SMTP 5xx without aborting the batch.
-FIX: Pre-open the mailer Postgres pool before Capsicum seal so FreeBSD drain ticks no longer fail to connect (0.9.36 line).
+FIX: Pre-open the mailer Postgres pool before Capsicum seal so FreeBSD drain ticks no longer fail to connect.
 
 ### v0.9.36 (15-08-2026)
 
