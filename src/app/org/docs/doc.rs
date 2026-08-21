@@ -3,7 +3,7 @@
 use topcoat::{
     Result,
     context::Cx,
-    router::{error::not_found, page, path_param},
+    router::{error::not_found, href, page, path_param},
     view::view,
 };
 
@@ -17,11 +17,10 @@ use crate::{
     tz::{browser_tz, format_unix_local, unix_rfc3339},
 };
 
-#[path_param]
-struct Doc(str);
+path_param!(pub(crate) doc);
 
 #[page]
-async fn doc_article_page(cx: &Cx) -> Result {
+pub(crate) async fn doc_article_page(cx: &Cx) -> Result {
     let org_slug = path_param::<Org>(cx);
     let doc_slug = path_param::<Doc>(cx);
     let ctx = require_org(cx, org_slug).await?;
@@ -48,7 +47,7 @@ async fn doc_article_page(cx: &Cx) -> Result {
     let filter = DocsFilter::from_cx(cx);
     let page = DocsFilter::page_from_cx(cx);
     let list = docs_list_view(cx, org_slug, &filter.q, &filter.cat, page).await;
-    let close_href = format!("/{org_slug}/docs");
+    let close_href = href!(super::docs_page, Org(org_slug)).resolve(cx);
     let title = article.title.clone();
     let category = article.category.clone();
     let version = article.version.clone();

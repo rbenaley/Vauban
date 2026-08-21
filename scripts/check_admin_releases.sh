@@ -46,19 +46,19 @@ grep -n 'sweep_staged_releases' "$NEW" >/dev/null \
   || fail "$NEW must sweep abandoned ceremonies before staging a new one"
 grep -nE 'name="package" type="file" required=""' "$NEW" >/dev/null \
   || fail "$NEW package input must be required (no release without a binary)"
-grep -n 'err=package' "$NEW" >/dev/null \
+grep -nE 'err=package|err: Some\("package"\)' "$NEW" >/dev/null \
   || fail "$NEW must refuse a create without a package"
 grep -n 'freebsd_pkg::inspect' "$NEW" >/dev/null \
   || fail "$NEW must inspect FreeBSD packages before staging"
-grep -n 'err=not_pkg' "$NEW" >/dev/null \
+grep -nE 'err=not_pkg|err: Some\("not_pkg"\)' "$NEW" >/dev/null \
   || fail "$NEW must refuse non-FreeBSD packages with err=not_pkg"
 grep -n 'derive_release_identity' "$NEW" >/dev/null \
   || fail "$NEW must derive version/channel from the package manifeste"
-grep -n 'err=identity' "$NEW" >/dev/null \
+grep -nE 'err=identity|err: Some\("identity"\)' "$NEW" >/dev/null \
   || fail "$NEW must refuse empty manifeste Version with err=identity"
 grep -n 'parse_released_on' "$NEW" >/dev/null \
   || fail "$NEW must parse a required release date"
-grep -n 'err=date' "$NEW" >/dev/null \
+grep -nE 'err=date|err: Some\("date"\)' "$NEW" >/dev/null \
   || fail "$NEW must refuse a missing/invalid date with err=date"
 grep -nE 'name="date"' "$NEW" >/dev/null \
   || fail "$NEW compose form must include a date field"
@@ -86,7 +86,7 @@ grep -n 'vcp-no-key-open' "$NEW" >/dev/null \
   || fail "$NEW must expose #vcp-no-key-open signal bridge"
 grep -n 'signal no_key_open' "$NEW" >/dev/null \
   || fail "$NEW must drive the no-key modal from signal no_key_open"
-grep -n 'err=no_active_key' "$NEW" >/dev/null \
+grep -nE 'err=no_active_key|err: Some\("no_active_key"\)' "$NEW" >/dev/null \
   || fail "$NEW must refuse create with err=no_active_key when no ACTIVE key"
 grep -n 'has_active_key' "$NEW" >/dev/null \
   || fail "$NEW must call StorageClient::has_active_key"
@@ -308,7 +308,7 @@ if [[ -f "$LIST" ]]; then
     || fail "$LIST must exclude STAGING rows from count and page query"
   grep -n 'sweep_staged_releases' "$LIST" >/dev/null \
     || fail "$LIST must sweep abandoned ceremonies before listing"
-  grep -n 'delete=' "$LIST" >/dev/null \
+  grep -nE 'delete=|DeleteChannelPageQ|DeleteQ' "$LIST" >/dev/null \
     || fail "$LIST must offer delete= confirm query"
   grep -n 'ico_trash' "$LIST" >/dev/null \
     || fail "$LIST must use ico_trash for Delete"

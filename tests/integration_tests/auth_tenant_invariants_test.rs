@@ -43,11 +43,11 @@ fn inv_require_org_is_memoized() {
     let fn_idx = src.find("async fn org_context").expect("org_context fn");
     let window = &src[fn_idx.saturating_sub(80)..fn_idx];
     assert!(
-        window.contains("#[memoize]"),
+        window.contains("#[memoize"),
         "org_context must be annotated with #[memoize]"
     );
     assert!(
-        src.contains("org_context(cx, slug)"),
+        src.contains("org_context(cx,"),
         "require_org must call memoized org_context"
     );
 }
@@ -181,12 +181,17 @@ fn inv_require_staff_maps_denials_to_not_found() {
 fn inv_router_trusts_public_origins() {
     let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
     assert!(
-        src.contains("trust_origin"),
-        "router must trust configured public_origins"
+        src.contains("OriginPolicy") && src.contains("trust_origins"),
+        "router must trust configured public_origins via OriginPolicy"
     );
     assert!(
-        !src.contains("dangerous_disable_origin_verification"),
-        "OriginLayer must stay enabled (no CSRF bypass switch)"
+        src.contains("max_request_body") && src.contains("BodyLimit"),
+        "router must apply configurable BodyLimit"
+    );
+    assert!(
+        !src.contains("dangerous_disable_origin_verification")
+            && !src.contains("dangerous_disable()"),
+        "OriginPolicy must stay enabled (no CSRF bypass switch)"
     );
     let conf = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/vcp.conf"));
     let default = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/default.toml"));

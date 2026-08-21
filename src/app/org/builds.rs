@@ -1,13 +1,13 @@
 //! Builds list at `/{org}/builds` — Concept expandable changelog rows.
 
-mod download;
-mod ephemeral;
-mod release_ver;
+pub(crate) mod download;
+pub(crate) mod ephemeral;
+pub(crate) mod release_ver;
 
 use topcoat::{
     Result,
     context::Cx,
-    router::{page, path_param, query_params},
+    router::{href, page, path_param, query_params},
     runtime::Event,
     view::{component, view},
 };
@@ -17,10 +17,11 @@ use crate::{
         filter_row, ico_arrow_down, ico_check, ico_chevron_down, ico_chevron_right, ico_copy,
         ico_hourglass, note_inline_text,
     },
+    app::hrefs::BuildsListQ,
     app::org::Org,
     auth::{capability_denied, config, require_org},
     db::now_unix,
-    list_page::{PagerLinks, href_with_query, page_offset, with_page_param},
+    list_page::{PagerLinks, page_offset},
     models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, RESERVED_ORG_SLUG, Release},
     perms::perms_for_user,
     release_pkg::{
@@ -55,20 +56,18 @@ pub(super) struct BuildsQuery {
 }
 
 /// Shareable builds list URL (`page=1` and empty channel omitted).
-pub fn builds_list_href(org: &str, channel: &str, page: usize, open_none: bool) -> String {
-    let mut parts = Vec::new();
-    if !channel.is_empty() {
-        parts.push(format!("channel={channel}"));
-    }
-    with_page_param(&mut parts, page);
-    if open_none {
-        parts.push("open=none".to_owned());
-    }
-    href_with_query(&format!("/{org}/builds"), &parts)
+pub fn builds_list_href(cx: &Cx, org: &str, channel: &str, page: usize, open_none: bool) -> String {
+    href!(builds_page, Org(org))
+        .query(BuildsListQ {
+            channel,
+            page,
+            open: open_none.then_some("none"),
+        })
+        .resolve(cx)
 }
 
 #[page]
-async fn builds_page(cx: &Cx) -> Result {
+pub(crate) async fn builds_page(cx: &Cx) -> Result {
     let slug = path_param::<Org>(cx);
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -178,24 +177,27 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
         industrial,
         dl_error,
     } = args;
-    let base = format!("/{org_slug}/builds");
     let org = org_slug.to_owned();
     let channel_owned = channel.to_owned();
-    let collapse_href = builds_list_href(&org, &channel_owned, page, true);
+    let collapse_href = builds_list_href(cx, &org, &channel_owned, page, true);
     let org_for_pager = org.clone();
     let channel_for_pager = channel_owned.clone();
     let pager = PagerLinks::from_hrefs(page, page_count, |n| {
-        builds_list_href(&org_for_pager, &channel_for_pager, n, false)
+        builds_list_href(cx, &org_for_pager, &channel_for_pager, n, false)
     });
     let pager_opt = if pager.show() { Some(pager) } else { None };
 
     let filter_channels = builds_channel_filter_chips(org_slug, lts, industrial);
     let mut chips: Vec<(String, String, bool)> = Vec::with_capacity(1 + filter_channels.len());
-    chips.push(("All".to_owned(), base.clone(), channel.is_empty()));
+    chips.push((
+        "All".to_owned(),
+        builds_list_href(cx, &org, "", 1, false),
+        channel.is_empty(),
+    ));
     for ch in filter_channels {
         chips.push((
             channel_filter_label(ch).to_owned(),
-            format!("{base}?channel={ch}"),
+            builds_list_href(cx, &org, ch, 1, false),
             channel.eq_ignore_ascii_case(ch),
         ));
     }
@@ -241,14 +243,17 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
 
     // Dismissing the modal without JS lands on the same view, minus dl_error.
     let dismiss_href = match open_version {
-        Some(ver) => {
-            let mut parts = Vec::with_capacity(1);
-            if !channel_owned.is_empty() {
-                parts.push(format!("channel={channel_owned}"));
-            }
-            href_with_query(&format!("/{org}/builds/{ver}"), &parts)
-        }
-        None => builds_list_href(&org, &channel_owned, page, false),
+        Some(ver) => href!(
+            release_ver::build_detail_page,
+            Org(org.as_str()),
+            release_ver::ReleaseVer(ver)
+        )
+        .query(crate::app::hrefs::ChannelPageQ {
+            channel: &channel_owned,
+            page: 1,
+        })
+        .resolve(cx),
+        None => builds_list_href(cx, &org, &channel_owned, page, false),
     };
 
     view! {
@@ -276,12 +281,16 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
                     let is_open = open_version.is_some_and(|v| v == rel.version);
                     let row_href = if is_open {
                         collapse_href.clone()
-                    } else if channel_owned.is_empty() {
-                        format!("/{}/builds/{}", org, rel.version)
                     } else {
-                        format!(
-                            "/{}/builds/{}?channel={}", org, rel.version, channel_owned
+                        href!(
+                            release_ver::build_detail_page,
+                            Org(org.as_str()),
+                            release_ver::ReleaseVer(rel.version.as_str())
                         )
+                            .query(crate::app::hrefs::ChannelQ {
+                                channel: &channel_owned,
+                            })
+                            .resolve(cx)
                     };
                     let row_class = if is_open {
                         "vb-build-row open"
@@ -292,10 +301,18 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
                     let size_label = format!("{} MB", blob.size_mb);
                     let dl_label = format!("Download ({size_label})");
                     let channel_badge = channel_badge_class(&rel.channel).to_owned();
-                    let eph_action = format!("/{}/builds/{}/ephemeral", org, rel.version);
-                    let revoke_action = format!(
-                        "/{}/builds/{}/ephemeral/revoke", org, rel.version
-                    );
+                    let eph_action = href!(
+                        ephemeral::builds_eph_generate,
+                        Org(org.as_str()),
+                        release_ver::ReleaseVer(rel.version.as_str())
+                    )
+                        .resolve(cx);
+                    let revoke_action = href!(
+                        ephemeral::builds_eph_revoke,
+                        Org(org.as_str()),
+                        release_ver::ReleaseVer(rel.version.as_str())
+                    )
+                        .resolve(cx);
                     let open_panel = if is_open { eph_model.clone() } else { None };
                     let sha256 = blob.sha256.clone();
                     let version_label = version_for_display(&rel.version).to_owned();
@@ -450,7 +467,12 @@ async fn build_download_actions(cx: &Cx, actions: BuildDownloadActions) -> Resul
         list_channel,
         eph_panel,
     } = actions;
-    let dl_action = format!("/{org}/builds/{version}/download");
+    let dl_action = href!(
+        download::builds_download,
+        Org(org.as_str()),
+        release_ver::ReleaseVer(version.as_str())
+    )
+    .resolve(cx);
     let package_name = package_file_name(&version, &release_channel);
     let verify_cmd = sha256_cmd(&package_name);
     let sha_copy = sha256.clone();
@@ -872,7 +894,7 @@ pub(crate) async fn load_releases_for_org(
 }
 
 /// Version lookup with the same SQL visibility net as the builds list.
-pub(super) async fn find_visible_release_by_version(
+pub(crate) async fn find_visible_release_by_version(
     db: &mut toasty::Db,
     version: &str,
     org_id: u64,
@@ -913,10 +935,13 @@ pub(super) async fn find_visible_release_by_version(
 
 #[cfg(test)]
 mod builds_entitlement_page_tests {
-    use super::{builds_list_href, release_visible_to_org};
+    use super::release_visible_to_org;
+    use crate::app::hrefs::BuildsListQ;
+    use crate::app::org::Org;
     use crate::models::{
         RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED, Release,
     };
+    use topcoat::{context::Cx, router::href};
 
     fn sample_release(status: &str, organization_id: u64) -> Release {
         let sort = crate::release_pkg::version_sort_fields("v1.0.0");
@@ -940,17 +965,45 @@ mod builds_entitlement_page_tests {
 
     #[test]
     fn builds_entitlement_builds_list_href_omits_page_one() {
-        assert_eq!(builds_list_href("acme", "", 1, false), "/acme/builds");
+        let cx = Cx::default();
         assert_eq!(
-            builds_list_href("acme", "LTS", 1, false),
+            href!("/{org}/builds", Org("acme"))
+                .query(BuildsListQ {
+                    channel: "",
+                    page: 1,
+                    open: None,
+                })
+                .resolve(&cx),
+            "/acme/builds"
+        );
+        assert_eq!(
+            href!("/{org}/builds", Org("acme"))
+                .query(BuildsListQ {
+                    channel: "LTS",
+                    page: 1,
+                    open: None,
+                })
+                .resolve(&cx),
             "/acme/builds?channel=LTS"
         );
         assert_eq!(
-            builds_list_href("acme", "LTS", 2, false),
+            href!("/{org}/builds", Org("acme"))
+                .query(BuildsListQ {
+                    channel: "LTS",
+                    page: 2,
+                    open: None,
+                })
+                .resolve(&cx),
             "/acme/builds?channel=LTS&page=2"
         );
         assert_eq!(
-            builds_list_href("acme", "", 2, true),
+            href!("/{org}/builds", Org("acme"))
+                .query(BuildsListQ {
+                    channel: "",
+                    page: 2,
+                    open: Some("none"),
+                })
+                .resolve(&cx),
             "/acme/builds?page=2&open=none"
         );
     }

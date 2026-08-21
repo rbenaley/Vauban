@@ -13,9 +13,11 @@ fail() {
 DL="src/app/org/builds/download.rs"
 BUILDS="src/app/org/builds.rs"
 EPH="src/app/org/builds/ephemeral.rs"
+EPH_GET="src/app/releases/eph_token/eph_pkg.rs"
 
 [[ -f "$DL" ]] || fail "missing $DL"
 [[ -f "$EPH" ]] || fail "missing $EPH"
+[[ -f "$EPH_GET" ]] || fail "missing $EPH_GET"
 
 grep -nE '#\[route\(POST' "$DL" >/dev/null || fail "$DL must expose POST download route"
 grep -n 'builds_download' "$DL" >/dev/null || fail "$DL must gate on builds_download"
@@ -42,10 +44,10 @@ if grep -n 'text/plain' "$DL" >/dev/null; then
   fail "$DL session POST must not render a plain-text error page (use the modal redirect)"
 fi
 # Public cURL surface keeps machine-readable text + status.
-grep -n 'text/plain' "$EPH" >/dev/null \
-  || fail "$EPH public GET must keep plain-text helper errors (machine surface)"
-grep -n 'SERVICE_UNAVAILABLE' "$EPH" >/dev/null \
-  || fail "$EPH public GET must keep 503 on helper failure"
+grep -n 'text/plain' "$EPH_GET" >/dev/null \
+  || fail "$EPH_GET public GET must keep plain-text helper errors (machine surface)"
+grep -n 'SERVICE_UNAVAILABLE' "$EPH_GET" >/dev/null \
+  || fail "$EPH_GET public GET must keep 503 on helper failure"
 
 grep -n 'dl_error' "$BUILDS" >/dev/null \
   || fail "$BUILDS must read the dl_error query param"
@@ -56,7 +58,8 @@ grep -n 'vb-confirm-root' "$BUILDS" >/dev/null \
 grep -n 'aria-modal="true"' "$BUILDS" >/dev/null \
   || fail "$BUILDS download modal must set role dialog / aria-modal"
 
-grep -n '/download' "$BUILDS" >/dev/null || fail "$BUILDS UI must post to download route"
+grep -nE '/download|builds_download' "$BUILDS" >/dev/null \
+  || fail "$BUILDS UI must post to download route"
 grep -n 'builds_download' "$BUILDS" >/dev/null || fail "$BUILDS must consult builds_download"
 grep -n 'release_visible_to_org\|load_releases_for_org' "$BUILDS" >/dev/null \
   || fail "$BUILDS must filter releases by org (GA or targeted)"
@@ -70,6 +73,8 @@ grep -n 'find_visible_release_by_version' "$DL" >/dev/null \
   || fail "$DL must use find_visible_release_by_version (SQL tenant net) before storage get"
 grep -n 'find_visible_release_by_version' "$EPH" >/dev/null \
   || fail "$EPH must use find_visible_release_by_version (SQL tenant net)"
+grep -n 'find_visible_release_by_version' "$EPH_GET" >/dev/null \
+  || fail "$EPH_GET must use find_visible_release_by_version (SQL tenant net)"
 
 # Concept fidelity: default-open + server mint + Topcoat signals (countdown/copy).
 grep -n 'open=none' "$BUILDS" >/dev/null \

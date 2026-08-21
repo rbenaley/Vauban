@@ -175,7 +175,7 @@ if grep -nE 'bin/assets|/usr/local/bin/assets' pkg/build-pkg.sh >/dev/null; then
   fail "build-pkg.sh must not stage assets under bin/ (use share/vcp/assets)"
 fi
 grep -n 'manifest.toml' pkg/build-pkg.sh >/dev/null \
-  || fail "build-pkg.sh must require target/assets/manifest.toml before packaging"
+  || fail "build-pkg.sh must require a release assets/manifest.toml before packaging"
 grep -n 'VCP_PACKAGE_ROOT' pkg/rc.d/vcp >/dev/null \
   || fail "rc.d/vcp must export VCP_PACKAGE_ROOT for share/vcp/assets"
 grep -n 'load_dir\|load_asset_bundle' src/app.rs >/dev/null \

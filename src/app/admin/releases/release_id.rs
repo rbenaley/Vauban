@@ -7,11 +7,12 @@ use topcoat::{
     router::{
         content::Form,
         error::{SeeOther, not_found, see_other},
-        page, path_param, route,
+        href, page, path_param, route,
     },
     view::view,
 };
 
+use crate::app::admin::releases::admin_releases_page;
 use crate::{
     auth::{capability_denied, db, require_staff, storage},
     docs_version::is_delete_confirm,
@@ -24,8 +25,7 @@ use crate::{
     storage::{delete_release_object, find_release_object},
 };
 
-#[path_param]
-struct ReleaseId(str);
+path_param!(pub(crate) release_id);
 
 #[derive(Deserialize)]
 struct UpdateReleaseForm {
@@ -72,7 +72,7 @@ async fn require_releases_manage(cx: &Cx) -> Result<()> {
 }
 
 #[page]
-async fn admin_releases_edit_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_releases_edit_page(cx: &Cx) -> Result {
     let raw = path_param::<ReleaseId>(cx);
     require_releases_manage(cx).await?;
 
@@ -95,7 +95,7 @@ async fn admin_releases_edit_page(cx: &Cx) -> Result {
         .await
         .unwrap_or_default();
 
-    let action = format!("/admin/releases/{id}");
+    let action = href!(admin_releases_update, ReleaseId(id.to_string())).resolve(cx);
     let org_id = rel.organization_id;
     let ga_selected = org_id == RELEASE_GA_ORG_ID;
     // Track-scoped channel select: LTS↔EOL or Stable↔EOL (never LTS↔Stable).
@@ -111,7 +111,7 @@ async fn admin_releases_edit_page(cx: &Cx) -> Result {
         <div>
             <a
                 class="vb-back"
-                href="/admin/releases"
+                href=(href!(admin_releases_page))
                 style="margin-bottom: 16px; margin-top: 0;"
             >
                 "Release manager"
@@ -167,7 +167,7 @@ async fn admin_releases_edit_page(cx: &Cx) -> Result {
                         <button class="vb-btn" type="submit">"Save"</button>
                         <a
                             class="vb-link"
-                            href="/admin/releases"
+                            href=(href!(admin_releases_page))
                             style="margin: 0; align-self: center;"
                         >
                             "Cancel"
@@ -180,7 +180,10 @@ async fn admin_releases_edit_page(cx: &Cx) -> Result {
 }
 
 #[route(POST "/admin/releases/{release_id}")]
-async fn admin_releases_update(cx: &Cx, Form(form): Form<UpdateReleaseForm>) -> Result<SeeOther> {
+pub(crate) async fn admin_releases_update(
+    cx: &Cx,
+    Form(form): Form<UpdateReleaseForm>,
+) -> Result<SeeOther> {
     let raw = path_param::<ReleaseId>(cx);
     require_releases_manage(cx).await?;
 
@@ -195,7 +198,9 @@ async fn admin_releases_update(cx: &Cx, Form(form): Form<UpdateReleaseForm>) -> 
         crate::release_pkg::apply_edit_channel(&rel.version, &rel.channel, &form.channel)
     else {
         // Illegal LTS↔Stable (or unknown channel): keep the edit form.
-        return Ok(see_other(&format!("/admin/releases/{id}")));
+        return Ok(see_other(
+            href!(admin_releases_edit_page, ReleaseId(id.to_string())).resolve(cx),
+        ));
     };
     let notes = form.notes.trim().to_owned();
     let organization_id = {
@@ -227,11 +232,11 @@ async fn admin_releases_update(cx: &Cx, Form(form): Form<UpdateReleaseForm>) -> 
         .exec(&mut database)
         .await;
 
-    Ok(see_other("/admin/releases"))
+    Ok(see_other(href!(admin_releases_page).resolve(cx)))
 }
 
 #[route(POST "/admin/releases/{release_id}/publish")]
-async fn admin_releases_publish(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn admin_releases_publish(cx: &Cx) -> Result<SeeOther> {
     let raw = path_param::<ReleaseId>(cx);
     require_releases_manage(cx).await?;
 
@@ -245,7 +250,7 @@ async fn admin_releases_publish(cx: &Cx) -> Result<SeeOther> {
     let mut database = db(cx);
     if find_release_object(&mut database, id).await.is_none() {
         // No storage row: refuse publish (capability-safe — no chatty error).
-        return Ok(see_other("/admin/releases"));
+        return Ok(see_other(href!(admin_releases_page).resolve(cx)));
     }
 
     let _ = rel
@@ -254,16 +259,19 @@ async fn admin_releases_publish(cx: &Cx) -> Result<SeeOther> {
         .exec(&mut database)
         .await;
 
-    Ok(see_other("/admin/releases"))
+    Ok(see_other(href!(admin_releases_page).resolve(cx)))
 }
 
 #[route(POST "/admin/releases/{release_id}/unpublish")]
-async fn admin_releases_unpublish(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn admin_releases_unpublish(cx: &Cx) -> Result<SeeOther> {
     set_release_status(cx, RELEASE_STATUS_HIDDEN).await
 }
 
 #[route(POST "/admin/releases/{release_id}/delete")]
-async fn admin_releases_delete(cx: &Cx, Form(form): Form<DeleteReleaseForm>) -> Result<SeeOther> {
+pub(crate) async fn admin_releases_delete(
+    cx: &Cx,
+    Form(form): Form<DeleteReleaseForm>,
+) -> Result<SeeOther> {
     let raw = path_param::<ReleaseId>(cx);
     require_releases_manage(cx).await?;
 
@@ -275,9 +283,14 @@ async fn admin_releases_delete(cx: &Cx, Form(form): Form<DeleteReleaseForm>) -> 
     };
 
     if !is_delete_confirm(&form.confirm) {
-        return Ok(see_other(&format!(
-            "/admin/releases?delete={id}&err=confirm"
-        )));
+        return Ok(see_other(
+            href!(crate::app::admin::releases::admin_releases_page)
+                .query(crate::app::hrefs::DeleteErrQ {
+                    delete: id,
+                    err: "confirm",
+                })
+                .resolve(cx),
+        ));
     }
 
     let store = storage(cx);
@@ -294,14 +307,21 @@ async fn admin_releases_delete(cx: &Cx, Form(form): Form<DeleteReleaseForm>) -> 
                     rp_id: ch.rp_id,
                     allow_credentials: ch.allow_credentials,
                 });
-                return Ok(see_other(&format!(
-                    "/admin/releases/delete-confirm?token={token}"
-                )));
+                return Ok(see_other(
+                    href!(crate::app::admin::releases::delete_confirm::admin_releases_delete_confirm_page)
+                        .query(crate::app::hrefs::TokenQ { token: &token })
+                        .resolve(cx),
+                ));
             }
             Err(_) => {
-                return Ok(see_other(&format!(
-                    "/admin/releases?delete={id}&err=webauthn"
-                )));
+                return Ok(see_other(
+                    href!(crate::app::admin::releases::admin_releases_page)
+                        .query(crate::app::hrefs::DeleteErrQ {
+                            delete: id,
+                            err: "webauthn",
+                        })
+                        .resolve(cx),
+                ));
             }
         }
     }
@@ -311,7 +331,7 @@ async fn admin_releases_delete(cx: &Cx, Form(form): Form<DeleteReleaseForm>) -> 
     let _ = delete_release_object(&mut database, id).await;
     let _ = rel.delete().exec(&mut database).await;
 
-    Ok(see_other("/admin/releases"))
+    Ok(see_other(href!(admin_releases_page).resolve(cx)))
 }
 
 async fn set_release_status(cx: &Cx, status: &str) -> Result<SeeOther> {
@@ -332,5 +352,5 @@ async fn set_release_status(cx: &Cx, status: &str) -> Result<SeeOther> {
         .exec(&mut database)
         .await;
 
-    Ok(see_other("/admin/releases"))
+    Ok(see_other(href!(admin_releases_page).resolve(cx)))
 }

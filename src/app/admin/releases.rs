@@ -1,25 +1,23 @@
 //! Admin releases list at `/admin/releases`.
 
-mod confirm;
-mod delete_confirm;
-mod new;
-mod release_id;
-mod staging;
+pub(crate) mod confirm;
+pub(crate) mod delete_confirm;
+pub(crate) mod new;
+pub(crate) mod release_id;
+pub(crate) mod staging;
 
 use topcoat::{
     Result,
     context::Cx,
-    router::{page, query_params},
+    router::{href, page, query_params},
     view::view,
 };
 
+use crate::app::admin::releases::new::admin_releases_new_page;
 use crate::{
     app::_components::{filter_row, ico_trash},
     auth::{capability_denied, require_staff},
-    list_page::{
-        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_offset,
-        parse_page, with_page_param,
-    },
+    list_page::{LIST_PAGE_SIZE, PagerLinks, clamp_page, page_count, page_offset, parse_page},
     models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, RELEASE_STATUS_STAGING, Release},
     perms::perms_for_user,
     storage::{BlobDisplay, release_blob_display},
@@ -40,24 +38,21 @@ struct AdminReleasesQuery {
 }
 
 /// Shareable admin releases list URL (`page=1` and empty channel omitted).
-pub fn admin_releases_list_href(channel: &str, page: usize) -> String {
-    let mut parts = Vec::new();
-    if !channel.is_empty() {
-        parts.push(format!("channel={channel}"));
-    }
-    with_page_param(&mut parts, page);
-    href_with_query("/admin/releases", &parts)
+pub fn admin_releases_list_href(cx: &Cx, channel: &str, page: usize) -> String {
+    href!(admin_releases_page)
+        .query(crate::app::hrefs::ChannelPageQ { channel, page })
+        .resolve(cx)
 }
 
 /// Delete-confirm overlay URL — keeps channel/page, never sticky `err`.
-fn admin_releases_delete_href(channel: &str, page: usize, id: u64) -> String {
-    let mut parts = Vec::new();
-    if !channel.is_empty() {
-        parts.push(format!("channel={channel}"));
-    }
-    parts.push(format!("delete={id}"));
-    with_page_param(&mut parts, page);
-    href_with_query("/admin/releases", &parts)
+fn admin_releases_delete_href(cx: &Cx, channel: &str, page: usize, id: u64) -> String {
+    href!(admin_releases_page)
+        .query(crate::app::hrefs::DeleteChannelPageQ {
+            channel,
+            delete: id,
+            page,
+        })
+        .resolve(cx)
 }
 
 /// Normalize an unknown / empty channel query to All (`""`).
@@ -73,7 +68,7 @@ fn normalize_channel_filter(raw: Option<&str>) -> &str {
 }
 
 #[page]
-async fn admin_releases_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_releases_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -166,21 +161,21 @@ async fn admin_releases_page(cx: &Cx) -> Result {
     // Pager keeps channel + page — never sticky `delete` / `err`.
     let channel_for_pager = channel_owned.clone();
     let pager = PagerLinks::from_hrefs(page, pages, |n| {
-        admin_releases_list_href(&channel_for_pager, n)
+        admin_releases_list_href(cx, &channel_for_pager, n)
     });
     let pager_opt = Some(pager);
 
     let mut chips: Vec<(String, String, bool)> = Vec::with_capacity(1 + CHANNEL_CHIPS.len());
     chips.push((
         "All".to_owned(),
-        admin_releases_list_href("", 1),
+        admin_releases_list_href(cx, "", 1),
         channel.is_empty(),
     ));
     for ch in CHANNEL_CHIPS {
         chips.push((
             channel_filter_label(ch).to_owned(),
             // Chip hrefs omit `page` so a filter change resets to page 1.
-            admin_releases_list_href(ch, 1),
+            admin_releases_list_href(cx, ch, 1),
             channel.eq_ignore_ascii_case(ch),
         ));
     }
@@ -202,7 +197,7 @@ async fn admin_releases_page(cx: &Cx) -> Result {
                     "Publish signed builds that appear in the customer Builds list."
                 </p>
             </div>
-            <a class="vb-btn" href="/admin/releases/new">"+ New release"</a>
+            <a class="vb-btn" href=(href!(admin_releases_new_page))>"+ New release"</a>
         </div>
 
         filter_row(chips: &chips, pager: &pager_opt)
@@ -231,10 +226,23 @@ async fn admin_releases_page(cx: &Cx) -> Result {
                     };
                     let channel_badge = channel_badge_class(&rel.channel).to_owned();
                     let status_badge = release_status_badge_class(&rel.status).to_owned();
-                    let edit_href = format!("/admin/releases/{}", rel.id);
-                    let publish_action = format!("/admin/releases/{}/publish", rel.id);
-                    let unpublish_action = format!("/admin/releases/{}/unpublish", rel.id);
+                    let edit_href = href!(
+                        release_id::admin_releases_edit_page,
+                        release_id::ReleaseId(rel.id.to_string())
+                    )
+                        .resolve(cx);
+                    let publish_action = href!(
+                        release_id::admin_releases_publish,
+                        release_id::ReleaseId(rel.id.to_string())
+                    )
+                        .resolve(cx);
+                    let unpublish_action = href!(
+                        release_id::admin_releases_unpublish,
+                        release_id::ReleaseId(rel.id.to_string())
+                    )
+                        .resolve(cx);
                     let delete_href = admin_releases_delete_href(
+                        cx,
                         &channel_owned,
                         page,
                         rel.id,
@@ -288,8 +296,12 @@ async fn admin_releases_page(cx: &Cx) -> Result {
             }
         </div>
         if let Some(target) = delete_target {
-            let cancel = admin_releases_list_href(&channel_owned, page);
-            let action = format!("/admin/releases/{}/delete", target.id);
+            let cancel = admin_releases_list_href(cx, &channel_owned, page);
+            let action = href!(
+                release_id::admin_releases_delete,
+                release_id::ReleaseId(target.id.to_string())
+            )
+                .resolve(cx);
             <div
                 class="vb-confirm-root"
                 role="dialog"
@@ -354,26 +366,66 @@ mod tests {
 
     #[test]
     fn list_href_omits_page_one_and_empty_channel() {
-        assert_eq!(admin_releases_list_href("", 1), "/admin/releases");
+        let cx = Cx::default();
         assert_eq!(
-            admin_releases_list_href("LTS", 1),
+            href!("/admin/releases")
+                .query(crate::app::hrefs::ChannelPageQ {
+                    channel: "",
+                    page: 1
+                })
+                .resolve(&cx),
+            "/admin/releases"
+        );
+        assert_eq!(
+            href!("/admin/releases")
+                .query(crate::app::hrefs::ChannelPageQ {
+                    channel: "LTS",
+                    page: 1
+                })
+                .resolve(&cx),
             "/admin/releases?channel=LTS"
         );
         assert_eq!(
-            admin_releases_list_href("LTS", 2),
+            href!("/admin/releases")
+                .query(crate::app::hrefs::ChannelPageQ {
+                    channel: "LTS",
+                    page: 2
+                })
+                .resolve(&cx),
             "/admin/releases?channel=LTS&page=2"
         );
-        assert_eq!(admin_releases_list_href("", 3), "/admin/releases?page=3");
+        assert_eq!(
+            href!("/admin/releases")
+                .query(crate::app::hrefs::ChannelPageQ {
+                    channel: "",
+                    page: 3
+                })
+                .resolve(&cx),
+            "/admin/releases?page=3"
+        );
     }
 
     #[test]
     fn delete_href_keeps_channel_and_page() {
+        let cx = Cx::default();
         assert_eq!(
-            admin_releases_delete_href("", 1, 42),
+            href!("/admin/releases")
+                .query(crate::app::hrefs::DeleteChannelPageQ {
+                    channel: "",
+                    delete: 42,
+                    page: 1
+                })
+                .resolve(&cx),
             "/admin/releases?delete=42"
         );
         assert_eq!(
-            admin_releases_delete_href("Stable", 2, 7),
+            href!("/admin/releases")
+                .query(crate::app::hrefs::DeleteChannelPageQ {
+                    channel: "Stable",
+                    delete: 7,
+                    page: 2
+                })
+                .resolve(&cx),
             "/admin/releases?channel=Stable&delete=7&page=2"
         );
     }

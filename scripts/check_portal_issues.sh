@@ -28,7 +28,7 @@ grep -n 'issues_write' "$LIST" >/dev/null || fail "$LIST must gate writes on iss
 grep -n 'organization_id' "$LIST" >/dev/null || fail "$LIST must scope issues by organization_id"
 grep -n 'allocate_issue_key' "$LIST" >/dev/null \
   || fail "$LIST must allocate keys via allocate_issue_key"
-grep -n 'err=create' "$LIST" >/dev/null \
+grep -nE 'err=create|err: Some\("create"\)' "$LIST" >/dev/null \
   || fail "$LIST must redirect to err=create on failed create"
 if grep -nE 'existing\.len\(\)\s*\+\s*200|len\(\)\s*\+\s*200' "$LIST" >/dev/null 2>&1; then
   fail "$LIST must not forge keys via existing.len() + 200"

@@ -3,11 +3,19 @@
 //! Shard POSTs hit `/_topcoat/shards/{id}` — there is no `{org}` path
 //! segment. Tenant must come from the shard argument (re-authorized below).
 
-use topcoat::{Result, context::Cx, router::error::not_found, runtime::shard, view::view};
+use topcoat::{
+    Result,
+    context::Cx,
+    router::{error::not_found, href},
+    runtime::shard,
+    view::view,
+};
 
 use super::load_filtered_issues_page;
 use crate::{
     app::_components::{severity_badge, status_badge},
+    app::org::Org,
+    app::org::issues::issue_key::{IssueKey, issue_detail_page},
     auth::{capability_denied, require_org},
     db::now_unix,
     docs_search::normalize_org_slug,
@@ -67,7 +75,10 @@ pub async fn issues_search_results(
                         "{} · opened by {} · updated {}", issue.component, opener,
                         updated
                     );
-                    <a class="vb-row" href=(format!("/{}/issues/{}", org, issue.key))>
+                    <a
+                        class="vb-row"
+                        href=(href!(issue_detail_page, Org(org.as_str()), IssueKey(issue.key.as_str())))
+                    >
                         <div
                             class="vb-mono"
                             style="color: var(--accent); font-size: 12px; font-weight: 700; width: 76px; flex: none;"

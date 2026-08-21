@@ -6,10 +6,17 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{IntoResponse, Response, content::Form, error::see_other, page, route},
+    router::{
+        content::Form,
+        error::see_other,
+        href, page,
+        response::{IntoResponse, Response},
+        route,
+    },
 };
 
 use super::form::{CompanyFormView, company_form_response, render_company_form};
+use crate::app::admin::companies::admin_companies_page;
 use crate::{
     auth::{capability_denied, config, db, require_staff},
     companies_accounts::{
@@ -61,17 +68,22 @@ impl CompanyComposeForm {
     }
 }
 
-fn form_view(
-    form: &CompanyComposeForm,
-    emails: Vec<String>,
+struct NewFormState {
     lts: i32,
     industrial: i32,
     max: usize,
     max_lts: usize,
     error: Option<String>,
+}
+
+fn form_view(
+    cx: &Cx,
+    form: &CompanyComposeForm,
+    emails: Vec<String>,
+    state: NewFormState,
 ) -> CompanyFormView {
     CompanyFormView {
-        action: "/admin/companies/new".to_owned(),
+        action: href!(admin_companies_create).resolve(cx),
         title: "New client company".to_owned(),
         submit_label: "Create company".to_owned(),
         name: form.name.clone(),
@@ -79,17 +91,17 @@ fn form_view(
         contact_email: form.contact_email.clone(),
         vat: form.vat.clone(),
         address: form.address.clone(),
-        lts_subscriptions: lts,
-        industrial_lts_subscriptions: industrial,
+        lts_subscriptions: state.lts,
+        industrial_lts_subscriptions: state.industrial,
         emails,
-        max_accounts: max,
-        max_lts,
-        error,
+        max_accounts: state.max,
+        max_lts: state.max_lts,
+        error: state.error,
     }
 }
 
 #[page]
-async fn admin_companies_new_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_companies_new_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
@@ -101,7 +113,7 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
     render_company_form(
         cx,
         CompanyFormView {
-            action: "/admin/companies/new".to_owned(),
+            action: href!(admin_companies_create).resolve(cx),
             title: "New client company".to_owned(),
             submit_label: "Create company".to_owned(),
             name: String::new(),
@@ -121,7 +133,10 @@ async fn admin_companies_new_page(cx: &Cx) -> Result {
 }
 
 #[route(POST "/admin/companies/new")]
-async fn admin_companies_create(cx: &Cx, Form(form): Form<CompanyComposeForm>) -> Result<Response> {
+pub(crate) async fn admin_companies_create(
+    cx: &Cx,
+    Form(form): Form<CompanyComposeForm>,
+) -> Result<Response> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
@@ -144,7 +159,18 @@ async fn admin_companies_create(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
     if action.starts_with("remove:") {
         return company_form_response(
             cx,
-            form_view(&form, emails, lts, industrial, max, max_lts, None),
+            form_view(
+                cx,
+                &form,
+                emails,
+                NewFormState {
+                    lts,
+                    industrial,
+                    max,
+                    max_lts,
+                    error: None,
+                },
+            ),
         )
         .await;
     }
@@ -155,7 +181,18 @@ async fn admin_companies_create(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
         }
         return company_form_response(
             cx,
-            form_view(&form, emails, lts, industrial, max, max_lts, None),
+            form_view(
+                cx,
+                &form,
+                emails,
+                NewFormState {
+                    lts,
+                    industrial,
+                    max,
+                    max_lts,
+                    error: None,
+                },
+            ),
         )
         .await;
     }
@@ -163,13 +200,24 @@ async fn admin_companies_create(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
     match save_new_company(cx, &form, &emails, max, max_lts).await {
         // 303 See Other (PRG). Do not use redirect()/307 — it re-POSTs to the
         // list URL and browsers download an empty "companies" file.
-        Ok(()) => see_other("/admin/companies").into_response(cx),
+        Ok(()) => see_other(href!(admin_companies_page).resolve(cx)).into_response(cx),
         Err(msg) => {
             // Re-read counts after failed save attempt (may be invalid).
             let (lts, industrial) = form.lts_counts(max_lts);
             company_form_response(
                 cx,
-                form_view(&form, emails, lts, industrial, max, max_lts, Some(msg)),
+                form_view(
+                    cx,
+                    &form,
+                    emails,
+                    NewFormState {
+                        lts,
+                        industrial,
+                        max,
+                        max_lts,
+                        error: Some(msg),
+                    },
+                ),
             )
             .await
         }

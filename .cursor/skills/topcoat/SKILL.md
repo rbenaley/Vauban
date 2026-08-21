@@ -42,15 +42,12 @@ VCP product constraints that override framework capabilities are marked
 Source map:
 [tokio-rs/topcoat@v0.6.2](https://github.com/tokio-rs/topcoat/tree/v0.6.2).
 
-**VCP pin:** facade + `topcoat-cli` are still **0.5.0** (`Cargo.toml` /
-`Justfile`). **Write against 0.5 APIs today** (`slot: Result`,
-`#[path_param]`, `CxBuilder` on layers, `SessionConfig::trust_origin`,
-`router::error` / `router::content`, `SessionConfig`). Do **not** call
-0.6-only APIs until the pin moves.
+**VCP pin:** facade + `topcoat-cli` **0.6.2** (`Cargo.toml` /
+`Justfile`). Use `href!`, `path_param!`, `OriginPolicy`, `BodyLimit`,
+`Cx::with`, and `not_found!`. Keep 0.5 notes historical.
 
 - Historical 0.4→0.5 (done): [`references/UPGRADE-0.5.md`](references/UPGRADE-0.5.md)
-- Next bump 0.5→**0.6.2** (playbook, not started):
-  [`references/UPGRADE-0.6.md`](references/UPGRADE-0.6.md)
+- 0.5→**0.6.2** (done): [`references/UPGRADE-0.6.md`](references/UPGRADE-0.6.md)
 
 Re-check crates.io / GitHub if months have passed — early-stage.
 
@@ -267,7 +264,7 @@ Upstream guides: `topcoat-view/macro/docs/view.md`, `component.md`, etc.
   `TowerService::new(topcoat_router)` as an Axum fallback. VCP keeps
   `src/tls/serve.rs` — do not switch hosts on a pin bump.
 - **0.6 URL builders:** `href!(page_fn, Param(v))` in `view!`;
-  `.resolve(cx)` for `see_other` / mail. Optional until the pin moves.
+  `.resolve(cx)` for `see_other` / mail. Required for in-app portal URLs.
 
 **VCP:** prefer module-based routing + discover for the portal tree.
 
@@ -303,7 +300,14 @@ or will **change production behavior** on VCP:
 | Memoize `Option` | Auto `Option<&T>` | Need `#[memoize(as_ref)]` |
 | Assets | `target/assets` search | Bundle **next to the binary** |
 
-Do **not** write these 0.6 forms while the pin is 0.5.0.
+Write these 0.6 forms (VCP is on 0.6.2).
+
+**Concurrent `for` in `view!` (0.6):** each `#[component]` iteration
+starts together. Keep SQL paging in the page/shard (`limit`/`offset`)
+and pass already-loaded rows into the loop. Do **not** turn list rows
+into N DB-hitting components (`src/list_page.rs` stays `?page=N`).
+Hot spots today are chips/pager/note lines and search-shard row markup
+— they render preloaded structs only.
 
 ### 6.2 Layouts: `Slot` → rendered `Result` (0.5 breaking)
 
@@ -336,7 +340,7 @@ Rules:
 
 - Do **not** invent `301` / `302` / raw `Response::builder().status(...).header(LOCATION, …)` when one of the three helpers fits.
 - `ok_or_redirect("/login")` is fine for auth gates (uses the temporary redirect path).
-- Canonical trailing-slash (and similar wide URL fixes): root `#[layer]` + `redirect_permanent` + pure path helper — see `src/http_canonical.rs` and `references/RUNTIME.md`.
+- Canonical trailing-slash (and similar wide URL fixes): pathless `Layer` (`path() -> None`) + `redirect_permanent` + pure path helper — see `src/http_canonical.rs` and `references/RUNTIME.md`. `#[layer]` in `app` is scoped to `/` and does **not** run on unmatched `/login/`.
 - Open redirects: only allow origin-relative `Location` values you control; never bounce to an untrusted query param.
 
 Detail and PRG notes: `references/RUNTIME.md` § Redirects.
@@ -709,7 +713,7 @@ than guessing from memory of older releases.
 |----------|------|
 | `references/RUNTIME.md` | Signals / `@click` pitfalls / test contracts |
 | `references/UPGRADE-0.5.md` | 0.4 → 0.5 migration checklist (done; historical) |
-| `references/UPGRADE-0.6.md` | 0.5 → **0.6.2** playbook (next; pin still 0.5.0) |
+| `references/UPGRADE-0.6.md` | 0.5 → **0.6.2** playbook (VCP on 0.6.2) |
 | `web-stack` skill | VCP conventions (routing, `db(cx)`, page sizes) |
 | `toasty` skill | Toasty 0.10 query / migration playbook |
 | `casbin-permissions.mdc` | AuthZ gates |

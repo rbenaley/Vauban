@@ -3,11 +3,13 @@
 //! Shard POSTs hit `/_topcoat/shards/{id}` — admin layout does not run.
 //! Always re-authorize with `require_staff` before loading data.
 
-use topcoat::{Result, context::Cx, runtime::shard, view::view};
+use topcoat::{Result, context::Cx, router::href, runtime::shard, view::view};
 
 use super::load::company_cards_page;
 use crate::{
     app::_components::ico_trash,
+    app::admin::companies::admin_companies_page,
+    app::admin::companies::company_id::{CompanyId, admin_companies_edit_page},
     auth::{capability_denied, require_staff},
     companies_accounts::{format_company_address, format_technical_contact},
     companies_search::normalize_query,
@@ -45,15 +47,17 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
                 <div class="vb-empty">(empty_label)</div>
             } else {
                 for card in page_cards {
-                    let edit_href = format!("/admin/companies/{}", card.org.id);
-                    let delete_href = if q.is_empty() {
-                        format!("/admin/companies?delete={}", card.org.id)
-                    } else {
-                        format!(
-                            "/admin/companies?q={}&delete={}", urlencoding_encode(& q),
-                            card.org.id
-                        )
-                    };
+                    let edit_href = href!(
+                        admin_companies_edit_page,
+                        CompanyId(card.org.id.to_string())
+                    )
+                        .resolve(cx);
+                    let delete_href = href!(admin_companies_page)
+                        .query(crate::app::hrefs::DeleteSearchQ {
+                            q: &q,
+                            delete: card.org.id,
+                        })
+                        .resolve(cx);
                     let count = card.emails.len();
                     let count_label = if count == 1 {
                         "1 account".to_owned()
@@ -141,18 +145,4 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
             }
         </div>
     }
-}
-
-fn urlencoding_encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }

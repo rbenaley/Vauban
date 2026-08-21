@@ -112,7 +112,7 @@ just test             # ensure-vcp-test + test-profile asset bundle + cargo test
 just fmt              # cargo fmt + topcoat fmt
 just fmt-check        # pure check (rewrites nothing if already clean)
 just clippy           # clippy with warnings as errors
-just bundle           # cargo build + force topcoat asset bundle → target/assets
+just bundle           # cargo build + force topcoat asset bundle next to the binary
 just bundle --release # release binary + force asset bundle
 just dev              # topcoat HMR (no custom TLS); prefer just run for HTTPS
 just db-migrate       # apply pending Toasty migrations (dev DB)
@@ -125,15 +125,15 @@ just docs-import DIR=./docs-bundle   # import Markdown bundle (upsert)
 
 Recipes that need the Topcoat CLI (`run`, `bundle`, `release`, `fmt`,
 `validate`, `dev`, …) call `ensure-topcoat`, which installs or upgrades the
-pinned `topcoat-cli` 0.5.0 when `topcoat` is missing or the wrong version on
+pinned `topcoat-cli` 0.6.2 when `topcoat` is missing or the wrong version on
 `PATH` / `$CARGO_HOME/bin` (a stale CLI panics on `signal` pretty-print).
 No manual `cargo install` and no prior `just validate` are required before
 `just run`.
 
 `just run` / `just build` keep the asset catalog in sync: they rebundle
 when `target/{debug,release}/vcp` is newer than
-`target/assets/manifest.toml`, the manifest is missing, or the last bundle
-was for another Cargo profile (stamp `target/assets/.bundle-profile`).
+`target/{debug,release}/assets/manifest.toml`, the manifest is missing, or the last bundle
+was for another Cargo profile (stamp next to that manifest).
 `just test` / `just validate` always bundle from the Cargo **test**
 profile so integration-test AssetIds match; a later `just run` detects
 the profile change and rebundles debug/release. Use `just bundle` to

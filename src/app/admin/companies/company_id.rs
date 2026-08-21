@@ -7,14 +7,16 @@ use topcoat::{
     Result,
     context::Cx,
     router::{
-        IntoResponse, Response,
         content::Form,
         error::{SeeOther, not_found, see_other},
-        page, path_param, route,
+        href, page, path_param,
+        response::{IntoResponse, Response},
+        route,
     },
 };
 
 use super::form::{CompanyFormView, company_form_response, render_company_form};
+use crate::app::admin::companies::admin_companies_page;
 use crate::{
     auth::{capability_denied, config, db, require_staff},
     companies_accounts::{
@@ -27,8 +29,7 @@ use crate::{
     perms::perms_for_user,
 };
 
-#[path_param]
-struct CompanyId(str);
+path_param!(pub(crate) company_id);
 
 #[derive(Deserialize)]
 struct CompanyComposeForm {
@@ -120,13 +121,14 @@ struct EditFormState {
 }
 
 fn edit_view(
+    cx: &Cx,
     id: u64,
     form: &CompanyComposeForm,
     emails: Vec<String>,
     state: EditFormState,
 ) -> CompanyFormView {
     CompanyFormView {
-        action: format!("/admin/companies/{id}"),
+        action: href!(admin_companies_update, CompanyId(id.to_string())).resolve(cx),
         title: "Edit client company".to_owned(),
         submit_label: "Save changes".to_owned(),
         name: form.name.clone(),
@@ -144,7 +146,7 @@ fn edit_view(
 }
 
 #[page]
-async fn admin_companies_edit_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_companies_edit_page(cx: &Cx) -> Result {
     let raw = path_param::<CompanyId>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -164,7 +166,7 @@ async fn admin_companies_edit_page(cx: &Cx) -> Result {
     render_company_form(
         cx,
         CompanyFormView {
-            action: format!("/admin/companies/{id}"),
+            action: href!(admin_companies_update, CompanyId(id.to_string())).resolve(cx),
             title: "Edit client company".to_owned(),
             submit_label: "Save changes".to_owned(),
             name: org.name,
@@ -184,7 +186,10 @@ async fn admin_companies_edit_page(cx: &Cx) -> Result {
 }
 
 #[route(POST "/admin/companies/{company_id}")]
-async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -> Result<Response> {
+pub(crate) async fn admin_companies_update(
+    cx: &Cx,
+    Form(form): Form<CompanyComposeForm>,
+) -> Result<Response> {
     let raw = path_param::<CompanyId>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -215,6 +220,7 @@ async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
         return company_form_response(
             cx,
             edit_view(
+                cx,
                 id,
                 &form,
                 emails,
@@ -237,6 +243,7 @@ async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
         return company_form_response(
             cx,
             edit_view(
+                cx,
                 id,
                 &form,
                 emails,
@@ -264,12 +271,13 @@ async fn admin_companies_update(cx: &Cx, Form(form): Form<CompanyComposeForm>) -
     match save_edit(cx, org, &fields, &emails, max, max_lts).await {
         // 303 See Other (PRG). Do not use redirect()/307 — it re-POSTs to the
         // list URL and browsers download an empty "companies" file.
-        Ok(()) => see_other("/admin/companies").into_response(cx),
+        Ok(()) => see_other(href!(admin_companies_page).resolve(cx)).into_response(cx),
         Err(msg) => {
             let (lts, industrial) = form.lts_counts(max_lts);
             company_form_response(
                 cx,
                 edit_view(
+                    cx,
                     id,
                     &form,
                     emails,
@@ -345,7 +353,10 @@ async fn save_edit(
 }
 
 #[route(POST "/admin/companies/{company_id}/delete")]
-async fn admin_companies_delete(cx: &Cx, Form(form): Form<DeleteCompanyForm>) -> Result<SeeOther> {
+pub(crate) async fn admin_companies_delete(
+    cx: &Cx,
+    Form(form): Form<DeleteCompanyForm>,
+) -> Result<SeeOther> {
     let raw = path_param::<CompanyId>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -360,14 +371,19 @@ async fn admin_companies_delete(cx: &Cx, Form(form): Form<DeleteCompanyForm>) ->
     };
 
     if !is_delete_confirm(&form.confirm) {
-        return Ok(see_other(&format!(
-            "/admin/companies?delete={id}&err=confirm"
-        )));
+        return Ok(see_other(
+            href!(admin_companies_page)
+                .query(crate::app::hrefs::DeleteErrQ {
+                    delete: id,
+                    err: "confirm",
+                })
+                .resolve(cx),
+        ));
     }
 
     let org_name = org.name.clone();
     let mut database = db(cx);
     let _ = delete_org_with_accounts(cx, &mut database, id, &org_name).await;
 
-    Ok(see_other("/admin/companies"))
+    Ok(see_other(href!(admin_companies_page).resolve(cx)))
 }

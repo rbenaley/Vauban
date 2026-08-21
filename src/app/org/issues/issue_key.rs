@@ -6,7 +6,7 @@ use topcoat::{
     router::{
         content::multipart::Multipart,
         error::{SeeOther, not_found, redirect, see_other},
-        page, path_param, query_params, route,
+        href, page, path_param, query_params, route,
     },
     view::view,
 };
@@ -35,8 +35,7 @@ use crate::{
     tz::{browser_tz, format_relative, format_unix_local, unix_rfc3339},
 };
 
-#[path_param]
-struct IssueKey(str);
+path_param!(pub(crate) issue_key);
 
 #[query_params]
 struct OrgIssueDetailQuery {
@@ -44,11 +43,21 @@ struct OrgIssueDetailQuery {
 }
 
 #[page]
-async fn issue_detail_page(cx: &Cx) -> Result {
+pub(crate) async fn issue_detail_page(cx: &Cx) -> Result {
     let org_slug = path_param::<Org>(cx);
     let key = path_param::<IssueKey>(cx);
     if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Err(redirect(&format!("/admin/issues/{key}?org={RESERVED_ORG_SLUG}")).into());
+        return Err(redirect(
+            href!(
+                crate::app::admin::issues::issue_key::admin_issue_detail_page,
+                crate::app::admin::issues::issue_key::IssueKey(key)
+            )
+            .query(crate::app::hrefs::AdminIssueOrgQ {
+                org: RESERVED_ORG_SLUG,
+            })
+            .resolve(cx),
+        )
+        .into());
     }
     let ctx = require_org(cx, org_slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -109,10 +118,11 @@ async fn issue_detail_page(cx: &Cx) -> Result {
     let opener_thumbs =
         thumbs_for_comment(org_slug, &attachments, ISSUE_ATTACHMENT_OPENER_COMMENT_ID);
 
-    let list_href = format!("/{org_slug}/issues");
-    let reply_action = format!("/{org_slug}/issues/{}/reply", issue.key);
-    let close_action = format!("/{org_slug}/issues/{}/close", issue.key);
-    let reopen_action = format!("/{org_slug}/issues/{}/reopen", issue.key);
+    let list_href = href!(crate::app::org::issues::issues_page, Org(org_slug)).resolve(cx);
+    let reply_action = href!(reply_issue, Org(org_slug), IssueKey(issue.key.as_str())).resolve(cx);
+    let close_action = href!(close_issue, Org(org_slug), IssueKey(issue.key.as_str())).resolve(cx);
+    let reopen_action =
+        href!(reopen_issue, Org(org_slug), IssueKey(issue.key.as_str())).resolve(cx);
     let state = IssueState::try_from(issue.status.as_str()).unwrap_or(IssueState::Open);
     let is_resolved = state == IssueState::Resolved;
     let is_closed = state == IssueState::Closed;
@@ -334,50 +344,74 @@ async fn parse_reply_multipart(mut multipart: Multipart) -> Result<ReplyMultipar
 }
 
 #[route(GET "/vauban/issues/{issue_key}")]
-async fn redirect_reserved_issue_detail(cx: &Cx) -> Result {
+pub(crate) async fn redirect_reserved_issue_detail(cx: &Cx) -> Result {
     let key = path_param::<IssueKey>(cx);
-    Err(redirect(&format!("/admin/issues/{key}?org={RESERVED_ORG_SLUG}")).into())
+    Err(redirect(
+        href!(
+            crate::app::admin::issues::issue_key::admin_issue_detail_page,
+            crate::app::admin::issues::issue_key::IssueKey(key)
+        )
+        .query(crate::app::hrefs::AdminIssueOrgQ {
+            org: RESERVED_ORG_SLUG,
+        })
+        .resolve(cx),
+    )
+    .into())
 }
 
 /// Admin detail target for a reserved-slug POST, anchored on the reply box.
-fn reserved_admin_reply_target(key: &str) -> String {
-    with_reply_anchor(&format!("/admin/issues/{key}?org={RESERVED_ORG_SLUG}"))
+fn reserved_admin_reply_target(cx: &Cx, key: &str) -> String {
+    with_reply_anchor(
+        &href!(
+            crate::app::admin::issues::issue_key::admin_issue_detail_page,
+            crate::app::admin::issues::issue_key::IssueKey(key)
+        )
+        .query(crate::app::hrefs::AdminIssueOrgQ {
+            org: RESERVED_ORG_SLUG,
+        })
+        .resolve(cx),
+    )
 }
 
 /// Org detail target after a reply / close / reopen, anchored on the reply box
 /// so the browser lands on the newest message instead of the page header.
-fn org_reply_target(org_slug: &str, key: &str, err: Option<&str>) -> String {
-    match err {
-        Some(code) => with_reply_anchor(&format!("/{org_slug}/issues/{key}?err={code}")),
-        None => with_reply_anchor(&format!("/{org_slug}/issues/{key}")),
-    }
+fn org_reply_target(cx: &Cx, org_slug: &str, key: &str, err: Option<&str>) -> String {
+    with_reply_anchor(
+        &href!(
+            issue_detail_page,
+            crate::app::org::Org(org_slug),
+            IssueKey(key)
+        )
+        .query(crate::app::hrefs::ErrQ { err })
+        .resolve(cx),
+    )
 }
 
 /// POST alias: keep `see_other` (303) so the follow-up is GET, not a re-POST.
 #[route(POST "/vauban/issues/{issue_key}/reply")]
-async fn redirect_reserved_issue_reply(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn redirect_reserved_issue_reply(cx: &Cx) -> Result<SeeOther> {
     let key = path_param::<IssueKey>(cx);
-    Ok(see_other(&reserved_admin_reply_target(key)))
+    Ok(see_other(reserved_admin_reply_target(cx, key)))
 }
 
 #[route(POST "/vauban/issues/{issue_key}/close")]
-async fn redirect_reserved_issue_close(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn redirect_reserved_issue_close(cx: &Cx) -> Result<SeeOther> {
     let key = path_param::<IssueKey>(cx);
-    Ok(see_other(&reserved_admin_reply_target(key)))
+    Ok(see_other(reserved_admin_reply_target(cx, key)))
 }
 
 #[route(POST "/vauban/issues/{issue_key}/reopen")]
-async fn redirect_reserved_issue_reopen(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn redirect_reserved_issue_reopen(cx: &Cx) -> Result<SeeOther> {
     let key = path_param::<IssueKey>(cx);
-    Ok(see_other(&reserved_admin_reply_target(key)))
+    Ok(see_other(reserved_admin_reply_target(cx, key)))
 }
 
 #[route(POST "/{org}/issues/{issue_key}/reply")]
-async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
+pub(crate) async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let org_slug = path_param::<Org>(cx);
     let key = path_param::<IssueKey>(cx);
     if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Ok(see_other(&reserved_admin_reply_target(key)));
+        return Ok(see_other(reserved_admin_reply_target(cx, key)));
     }
     let ctx = require_org(cx, org_slug).await.map_err(|_| not_found())?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -388,11 +422,16 @@ async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let form = parse_reply_multipart(multipart).await?;
     let body = form.body.trim().to_owned();
     if body.is_empty() {
-        return Ok(see_other(&org_reply_target(org_slug, key, None)));
+        return Ok(see_other(org_reply_target(cx, org_slug, key, None)));
     }
     let max_att = config(cx).issues.max_attachments_per_comment.max(1);
     if form.screenshots.len() > max_att {
-        return Ok(see_other(&org_reply_target(org_slug, key, Some("attach"))));
+        return Ok(see_other(org_reply_target(
+            cx,
+            org_slug,
+            key,
+            Some("attach"),
+        )));
     }
 
     let mut database = db(cx);
@@ -412,7 +451,7 @@ async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     };
 
     if issue_is_closed(&issue.status) {
-        return Ok(see_other(&org_reply_target(org_slug, key, None)));
+        return Ok(see_other(org_reply_target(cx, org_slug, key, None)));
     }
 
     let client = storage(cx);
@@ -431,7 +470,12 @@ async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
             Ok(t) => t,
             Err(err) => {
                 crate::storage::log::portal_attach_failed("org_reply_screenshots", &err);
-                return Ok(see_other(&org_reply_target(org_slug, key, Some("attach"))));
+                return Ok(see_other(org_reply_target(
+                    cx,
+                    org_slug,
+                    key,
+                    Some("attach"),
+                )));
             }
         }
     };
@@ -455,7 +499,12 @@ async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     .exec(&mut database)
     .await
     else {
-        return Ok(see_other(&org_reply_target(org_slug, key, Some("reply"))));
+        return Ok(see_other(org_reply_target(
+            cx,
+            org_slug,
+            key,
+            Some("reply"),
+        )));
     };
     if let Err(err) = enqueue_issue_notify(
         &mut database,
@@ -494,21 +543,26 @@ async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
             error = %err,
             "issue reply attach_many failed"
         );
-        return Ok(see_other(&org_reply_target(org_slug, key, Some("attach"))));
+        return Ok(see_other(org_reply_target(
+            cx,
+            org_slug,
+            key,
+            Some("attach"),
+        )));
     }
 
     let _ = issue.update().updated_at(now).exec(&mut database).await;
 
-    Ok(see_other(&org_reply_target(org_slug, key, None)))
+    Ok(see_other(org_reply_target(cx, org_slug, key, None)))
 }
 
 #[route(POST "/{org}/issues/{issue_key}/close")]
-async fn close_issue(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn close_issue(cx: &Cx) -> Result<SeeOther> {
     org_advance_issue(cx, IssueEvent::Close).await
 }
 
 #[route(POST "/{org}/issues/{issue_key}/reopen")]
-async fn reopen_issue(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn reopen_issue(cx: &Cx) -> Result<SeeOther> {
     org_advance_issue(cx, IssueEvent::Reopen).await
 }
 
@@ -516,7 +570,7 @@ async fn org_advance_issue(cx: &Cx, event: IssueEvent) -> Result<SeeOther> {
     let org_slug = path_param::<Org>(cx);
     let key = path_param::<IssueKey>(cx);
     if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Ok(see_other(&reserved_admin_reply_target(key)));
+        return Ok(see_other(reserved_admin_reply_target(cx, key)));
     }
     let ctx = require_org(cx, org_slug).await.map_err(|_| not_found())?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -550,19 +604,20 @@ async fn org_advance_issue(cx: &Cx, event: IssueEvent) -> Result<SeeOther> {
     {
         Ok((..)) => {
             drain_pending(cx).await;
-            Ok(see_other(&org_reply_target(org_slug, key, None)))
+            Ok(see_other(org_reply_target(cx, org_slug, key, None)))
         }
         Err(PersistError::Fsm(_)) | Err(PersistError::UnknownStatus(_)) => {
-            Ok(see_other(&org_reply_target(org_slug, key, None)))
+            Ok(see_other(org_reply_target(cx, org_slug, key, None)))
         }
-        Err(PersistError::Conflict) => Ok(see_other(&org_reply_target(
+        Err(PersistError::Conflict) => Ok(see_other(org_reply_target(
+            cx,
             org_slug,
             key,
             Some(ISSUE_ERR_CONFLICT),
         ))),
         Err(PersistError::Db(err)) => {
             tracing::warn!(org = %org_slug, key = %key, error = %err, "issue advance failed");
-            Ok(see_other(&org_reply_target(org_slug, key, None)))
+            Ok(see_other(org_reply_target(cx, org_slug, key, None)))
         }
     }
 }

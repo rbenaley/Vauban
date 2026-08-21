@@ -7,19 +7,21 @@ use topcoat::{
     Result,
     context::Cx,
     router::{
-        Body, Response, StatusCode,
+        Body, StatusCode,
         content::Form,
         error::{forbidden, not_found},
-        header, path_param, route,
+        header, href, path_param,
+        response::Response,
+        route,
     },
 };
 
 use super::find_visible_release_by_version;
-use super::release_ver::ReleaseVer;
+use super::release_ver::{ReleaseVer, build_detail_page};
 use crate::{
+    app::hrefs::DownloadErrorQ,
     app::org::Org,
     auth::{db, require_org, storage},
-    list_page::href_with_query,
     perms::perms_for_user,
     release_pkg::{org_builds_entitled, package_file_name},
     storage::find_release_object,
@@ -98,29 +100,34 @@ struct DlRedirectForm {
 }
 
 /// Builds URL that reopens the release row and asks the page for a modal.
-pub fn download_error_href(org: &str, ver: &str, channel: &str, err: DlError) -> String {
-    let mut parts = Vec::with_capacity(2);
-    let channel = channel.trim();
-    if !channel.is_empty() {
-        parts.push(format!("channel={channel}"));
-    }
-    parts.push(format!("{DL_ERROR_PARAM}={}", err.as_code()));
-    href_with_query(&format!("/{org}/builds/{ver}"), &parts)
+pub fn download_error_href(cx: &Cx, org: &str, ver: &str, channel: &str, err: DlError) -> String {
+    href!(build_detail_page, Org(org), ReleaseVer(ver))
+        .query(DownloadErrorQ {
+            channel: channel.trim(),
+            dl_error: err.as_code(),
+        })
+        .resolve(cx)
 }
 
 /// Stay on Builds: PRG back to the open row so the page can raise the modal.
-fn redirect_with_error(org: &str, ver: &str, channel: &str, err: DlError) -> Result<Response> {
+fn redirect_with_error(
+    cx: &Cx,
+    org: &str,
+    ver: &str,
+    channel: &str,
+    err: DlError,
+) -> Result<Response> {
     Ok(Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(
             header::LOCATION,
-            download_error_href(org, ver, channel, err),
+            download_error_href(cx, org, ver, channel, err),
         )
         .body(Body::from(""))?)
 }
 
 #[route(POST "/{org}/builds/{release_ver}/download")]
-async fn builds_download(cx: &Cx, Form(form): Form<DlRedirectForm>) -> Result<Response> {
+pub(crate) async fn builds_download(cx: &Cx, Form(form): Form<DlRedirectForm>) -> Result<Response> {
     let org_slug = path_param::<Org>(cx);
     let ver = path_param::<ReleaseVer>(cx);
     let ctx = require_org(cx, org_slug).await.map_err(|_| not_found())?;
@@ -151,7 +158,7 @@ async fn builds_download(cx: &Cx, Form(form): Form<DlRedirectForm>) -> Result<Re
     };
 
     let Some(obj) = find_release_object(&mut database, rel.id).await else {
-        return redirect_with_error(org_slug, ver, channel, DlError::Missing);
+        return redirect_with_error(cx, org_slug, ver, channel, DlError::Missing);
     };
 
     let client = storage(cx);
@@ -163,13 +170,13 @@ async fn builds_download(cx: &Cx, Form(form): Form<DlRedirectForm>) -> Result<Re
             } else {
                 DlError::Unavailable
             };
-            return redirect_with_error(org_slug, ver, channel, err);
+            return redirect_with_error(cx, org_slug, ver, channel, err);
         }
     };
 
     let mut bytes = Vec::with_capacity(size.min(64 * 1024 * 1024) as usize);
     if file.read_to_end(&mut bytes).is_err() {
-        return redirect_with_error(org_slug, ver, channel, DlError::Unavailable);
+        return redirect_with_error(cx, org_slug, ver, channel, DlError::Unavailable);
     }
 
     let filename = package_file_name(&rel.version, &rel.channel);
@@ -185,25 +192,54 @@ async fn builds_download(cx: &Cx, Form(form): Form<DlRedirectForm>) -> Result<Re
 
 #[cfg(test)]
 mod tests {
-    use super::{DL_ERROR_PARAM, DOWNLOAD_UNAVAILABLE, DlError, download_error_href};
+    use super::{DL_ERROR_PARAM, DOWNLOAD_UNAVAILABLE, DlError, Org, ReleaseVer};
 
     const ALL: [DlError; 3] = [DlError::Missing, DlError::Unavailable, DlError::Integrity];
 
     #[test]
     fn error_href_omits_empty_channel() {
+        let cx = topcoat::context::Cx::default();
         assert_eq!(
-            download_error_href("acme", "v1.0.0", "", DlError::Unavailable),
+            topcoat::router::href!(
+                "/{org}/builds/{release_ver}",
+                Org("acme"),
+                ReleaseVer("v1.0.0")
+            )
+            .query(crate::app::hrefs::DownloadErrorQ {
+                channel: "",
+                dl_error: DlError::Unavailable.as_code(),
+            })
+            .resolve(&cx),
             "/acme/builds/v1.0.0?dl_error=unavailable"
         );
         assert_eq!(
-            download_error_href("acme", "v1.0.0", "  ", DlError::Missing),
+            topcoat::router::href!(
+                "/{org}/builds/{release_ver}",
+                Org("acme"),
+                ReleaseVer("v1.0.0")
+            )
+            .query(crate::app::hrefs::DownloadErrorQ {
+                channel: "",
+                dl_error: DlError::Missing.as_code(),
+            })
+            .resolve(&cx),
             "/acme/builds/v1.0.0?dl_error=missing"
         );
     }
 
     #[test]
     fn error_href_keeps_channel_filter() {
-        let href = download_error_href("acme", "v0.8.6-acme1", "Stable", DlError::Integrity);
+        let cx = topcoat::context::Cx::default();
+        let href = topcoat::router::href!(
+            "/{org}/builds/{release_ver}",
+            Org("acme"),
+            ReleaseVer("v0.8.6-acme1")
+        )
+        .query(crate::app::hrefs::DownloadErrorQ {
+            channel: "Stable",
+            dl_error: DlError::Integrity.as_code(),
+        })
+        .resolve(&cx);
         assert_eq!(
             href,
             "/acme/builds/v0.8.6-acme1?channel=Stable&dl_error=integrity"

@@ -22,7 +22,7 @@ use chrono::Local;
 use http::{Method, Version};
 use hyper::body::Incoming;
 use hyper::service::Service;
-use topcoat::router::{Request, Response, RouterService};
+use topcoat::router::{RouterService, request::Request, response::Response};
 use tracing::{error, info, warn};
 
 /// Append-only writer for Apache CLF lines (shared across connections).

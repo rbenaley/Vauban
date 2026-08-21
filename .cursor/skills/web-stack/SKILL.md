@@ -17,7 +17,7 @@ Upstream orientation (keep in sync with `topcoat` skill):
 - [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat)
 - [Topcoat v0.5.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0)
 - [Topcoat v0.6.2](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.2)
-  (studied; VCP pin still 0.5.0 — playbook:
+  (VCP pin **0.6.2** — playbook:
   `topcoat` skill `references/UPGRADE-0.6.md`)
 - [Toasty 0.6.0 — what is new?](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
   (VCP pins **toasty 0.10** — confirm `Cargo.toml` / lock; adopt notes
@@ -30,12 +30,11 @@ VCP is a **Topcoat** application ([tokio-rs/topcoat](https://github.com/tokio-rs
 Depend on the facade crate `topcoat` only (internal crates are
 implementation details).
 
-**Pin:** Topcoat facade + CLI **0.5.0** (`Cargo.toml` / `Justfile`;
-edition **2024**, MSRV **1.95**, `unsafe_code = deny`). Write 0.5 APIs
-today. Next bump is **0.6.2** (`topcoat` skill `UPGRADE-0.6.md`) — do
-not call `href!` / `Cx::with` / `path_param!` / `OriginPolicy` until
-then. Framework detail lives in the `topcoat` skill. Early-stage —
-expect breaking changes.
+**Pin:** Topcoat facade + CLI **0.6.2** (`Cargo.toml` / `Justfile`;
+edition **2024**, MSRV **1.95**, `unsafe_code = deny`). Use `href!` for
+in-app URLs, `path_param!`, `OriginPolicy`, and `BodyLimit` (see
+`topcoat` skill `UPGRADE-0.6.md`). Framework detail lives in the
+`topcoat` skill. Early-stage — expect breaking changes.
 Topcoat and Axum are **complementary** (Topcoat for the HTML portal;
 Axum only if a raw HTTP API seam is explicitly needed — do not rebuild
 the portal in Axum+Askama).

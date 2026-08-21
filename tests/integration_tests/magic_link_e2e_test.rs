@@ -19,12 +19,12 @@ use crate::common::{
     unique_slug,
 };
 
-async fn body_text(resp: topcoat::router::Response) -> String {
+async fn body_text(resp: topcoat::router::response::Response) -> String {
     let bytes = resp.into_body().collect().await.expect("body").to_bytes();
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn location(resp: &topcoat::router::Response) -> Option<&str> {
+fn location(resp: &topcoat::router::response::Response) -> Option<&str> {
     resp.headers().get("location").and_then(|v| v.to_str().ok())
 }
 
@@ -106,7 +106,10 @@ async fn e2e_vcp_admin_jit_lands_on_vauban() {
     };
     let html = {
         let cx = Cx::default();
-        sent[0].html().map(|v| v.render(&cx)).unwrap_or_default()
+        sent[0]
+            .html()
+            .map(|v| v.clone().render(&cx))
+            .unwrap_or_default()
     };
     assert!(
         html.contains(r#"src="cid:vauban-logo""#)

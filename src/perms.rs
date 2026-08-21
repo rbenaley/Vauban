@@ -120,12 +120,14 @@ pub fn policy(cx: &Cx) -> Arc<PolicyStore> {
 }
 
 #[memoize]
-pub async fn require_perms(cx: &Cx, role: &str) -> PermissionContext {
-    policy(cx).context_for_role(role)
+pub async fn require_perms(cx: &Cx, role: usize) -> PermissionContext {
+    policy(cx).context_for_role(&crate::request_intern::interned(cx, role))
 }
 
 pub async fn perms_for_user(cx: &Cx, user: &AuthUser) -> PermissionContext {
-    require_perms(cx, user.role.as_str()).await.clone()
+    require_perms(cx, crate::request_intern::intern(cx, &user.role))
+        .await
+        .clone()
 }
 
 #[allow(dead_code)]

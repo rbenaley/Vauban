@@ -6,16 +6,20 @@ use topcoat::{
     Result,
     context::Cx,
     router::{
-        Body, Response, StatusCode,
+        Body, StatusCode,
         content::multipart::Multipart,
         error::{SeeOther, see_other},
-        header, page, query_params, route,
+        header, href, page, query_params,
+        response::Response,
+        route,
     },
     runtime::Event,
     view::view,
 };
 
 use super::staging::{STAGING_TTL_SECS, rollback_staged_release, sweep_staged_releases};
+use crate::app::admin::releases::admin_releases_page;
+use crate::app::hrefs::ErrQ;
 use crate::{
     auth::{capability_denied, db, require_staff, storage},
     freebsd_pkg,
@@ -100,7 +104,7 @@ fn missing_active_key_for_publish(store: &StorageClient) -> bool {
 }
 
 #[page]
-async fn admin_releases_new_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_releases_new_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -136,7 +140,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
         <div>
             <a
                 class="vb-back"
-                href="/admin/releases"
+                href=(href!(admin_releases_page))
                 style="margin-bottom: 16px; margin-top: 0;"
             >
                 "Release manager"
@@ -177,7 +181,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                     <div class="vb-confirm-actions">
                         <a
                             class="vb-btn muted compact"
-                            href="/admin/releases/new"
+                            href=(href!(admin_releases_new_page))
                             @click=$(|e: Event| {
                                 e.prevent_default();
                                 not_pkg_open.set(false);
@@ -207,7 +211,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                     <div class="vb-confirm-actions">
                         <a
                             class="vb-btn muted compact"
-                            href="/admin/releases/new"
+                            href=(href!(admin_releases_new_page))
                             @click=$(|e: Event| {
                                 e.prevent_default();
                                 no_key_open.set(false);
@@ -223,7 +227,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                     id="vcp-release-create"
                     class="vb-form"
                     method="POST"
-                    action="/admin/releases/new"
+                    action=(href!(admin_releases_create))
                     enctype="multipart/form-data"
                     @submit="(async (e) => { e.prevent_default(); const form = e.current_target.inner; if (!form.reportValidity()) { return; } const keyRes = await fetch('/admin/releases/new/require-active-key', { method: 'GET', credentials: 'same-origin' }); if (keyRes.status === 422) { const bridge = document.getElementById('vcp-no-key-open'); if (bridge) { bridge.click(); } return; } if (!keyRes.ok) { return; } const input = form.querySelector('#package'); const file = input && input.files && input.files[0]; if (!file) { return; } const fd = new FormData(); fd.append('package', file, file.name || 'upload.pkg'); const res = await fetch('/admin/releases/new/validate-pkg', { method: 'POST', body: fd, credentials: 'same-origin' }); if (res.status === 204) { HTMLFormElement.prototype.submit.call(form); return; } input.value = ''; const bridge = document.getElementById('vcp-not-pkg-open'); if (bridge) { bridge.click(); } })"
                 >
@@ -271,7 +275,7 @@ async fn admin_releases_new_page(cx: &Cx) -> Result {
                         <button class="vb-btn" type="submit">"Publish"</button>
                         <a
                             class="vb-link"
-                            href="/admin/releases"
+                            href=(href!(admin_releases_page))
                             style="margin: 0; align-self: center;"
                         >
                             "Cancel"
@@ -342,7 +346,7 @@ async fn parse_create_multipart(mut multipart: Multipart) -> Result<CreateReleas
 
 /// Preflight: is this upload a FreeBSD package? Never stages or opens helper I/O.
 #[route(POST "/admin/releases/new/validate-pkg")]
-async fn admin_releases_validate_pkg(cx: &Cx, multipart: Multipart) -> Result<Response> {
+pub(crate) async fn admin_releases_validate_pkg(cx: &Cx, multipart: Multipart) -> Result<Response> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -366,7 +370,7 @@ async fn admin_releases_validate_pkg(cx: &Cx, multipart: Multipart) -> Result<Re
 /// Runs on Publish click before validate-pkg / WebAuthn so the browser never
 /// opens a passkey prompt against an empty allowCredentials list.
 #[route(GET "/admin/releases/new/require-active-key")]
-async fn admin_releases_require_active_key(cx: &Cx) -> Result<Response> {
+pub(crate) async fn admin_releases_require_active_key(cx: &Cx) -> Result<Response> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -384,7 +388,7 @@ async fn admin_releases_require_active_key(cx: &Cx) -> Result<Response> {
 }
 
 #[route(POST "/admin/releases/new")]
-async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
+pub(crate) async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -393,29 +397,59 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
 
     let store = storage(cx);
     if missing_active_key_for_publish(store.as_ref()) {
-        return Ok(see_other("/admin/releases/new?err=no_active_key"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("no_active_key"),
+                })
+                .resolve(cx),
+        ));
     }
 
     let form = parse_create_multipart(multipart).await?;
 
     // Date is mandatory — never invent a default (no Unix-epoch placeholder).
     let Some(released_on) = parse_released_on(&form.date) else {
-        return Ok(see_other("/admin/releases/new?err=date"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ { err: Some("date") })
+                .resolve(cx),
+        ));
     };
     // A release without its binary is never worth a row: refuse before any
     // write so the compose form stays the only place to retry.
     let Some(package) = form.package else {
-        return Ok(see_other("/admin/releases/new?err=package"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("package"),
+                })
+                .resolve(cx),
+        ));
     };
     // Fail closed before STAGING / put_begin: only a real FreeBSD package may
     // open an upload ceremony.
     let pkg_info = match freebsd_pkg::inspect(&package) {
         Ok(info) => info,
-        Err(_) => return Ok(see_other("/admin/releases/new?err=not_pkg")),
+        Err(_) => {
+            return Ok(see_other(
+                href!(admin_releases_new_page)
+                    .query(ErrQ {
+                        err: Some("not_pkg"),
+                    })
+                    .resolve(cx),
+            ));
+        }
     };
     // Version + LTS/Stable come from the manifeste — never from form fields.
     let Some(identity) = crate::release_pkg::derive_release_identity(&pkg_info.version) else {
-        return Ok(see_other("/admin/releases/new?err=identity"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("identity"),
+                })
+                .resolve(cx),
+        ));
     };
     let version = identity.version;
     let channel = identity.channel.to_owned();
@@ -453,7 +487,13 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
     .exec(&mut database)
     .await
     else {
-        return Ok(see_other("/admin/releases/new?err=upload"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("upload"),
+                })
+                .resolve(cx),
+        ));
     };
 
     // From here the row is staged: every failure path below must roll it back.
@@ -466,17 +506,35 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
     let Ok((upload_id, mut file)) = store.put_begin_release(created.id, package.len() as u64)
     else {
         rollback_staged_release(cx, created.id, None, false).await;
-        return Ok(see_other("/admin/releases/new?err=upload"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("upload"),
+                })
+                .resolve(cx),
+        ));
     };
     let Ok((_written, sha)) = write_and_hash(&mut file, Cursor::new(package.as_slice())) else {
         rollback_staged_release(cx, created.id, Some(&upload_id), false).await;
-        return Ok(see_other("/admin/releases/new?err=upload"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("upload"),
+                })
+                .resolve(cx),
+        ));
     };
 
     if store.webauthn_required() {
         let Ok(prep) = store.put_prepare_release(&upload_id, created.id, &sha) else {
             rollback_staged_release(cx, created.id, Some(&upload_id), false).await;
-            return Ok(see_other("/admin/releases/new?err=upload"));
+            return Ok(see_other(
+                href!(admin_releases_new_page)
+                    .query(ErrQ {
+                        err: Some("upload"),
+                    })
+                    .resolve(cx),
+            ));
         };
         let token = store.stash_pending_release(crate::storage::PendingReleaseCeremony {
             upload_id,
@@ -490,19 +548,35 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
             expires_at: StorageClient::ceremony_ttl_unix(STAGING_TTL_SECS),
             pkg_info,
         });
-        return Ok(see_other(&format!("/admin/releases/confirm?token={token}")));
+        return Ok(see_other(
+            href!(crate::app::admin::releases::confirm::admin_releases_confirm_page)
+                .query(crate::app::hrefs::TokenQ { token: &token })
+                .resolve(cx),
+        ));
     }
 
     let Ok((size_bytes, sha256)) = store.put_commit_release(&upload_id, created.id, &sha) else {
         rollback_staged_release(cx, created.id, Some(&upload_id), false).await;
-        return Ok(see_other("/admin/releases/new?err=upload"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("upload"),
+                })
+                .resolve(cx),
+        ));
     };
     if upsert_release_object(&mut database, created.id, &sha256, size_bytes)
         .await
         .is_err()
     {
         rollback_staged_release(cx, created.id, None, true).await;
-        return Ok(see_other("/admin/releases/new?err=upload"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("upload"),
+                })
+                .resolve(cx),
+        ));
     }
     if created
         .update()
@@ -512,11 +586,17 @@ async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther
         .is_err()
     {
         rollback_staged_release(cx, created.id, None, true).await;
-        return Ok(see_other("/admin/releases/new?err=upload"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("upload"),
+                })
+                .resolve(cx),
+        ));
     }
     store.unmark_staged_release(created.id);
 
-    Ok(see_other("/admin/releases"))
+    Ok(see_other(href!(admin_releases_page).resolve(cx)))
 }
 
 #[cfg(test)]

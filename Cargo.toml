@@ -50,7 +50,7 @@ toasty = { version = "0.10.0", features = ["postgresql", "migration"] }
 toasty-cli = "0.10.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
-topcoat = { version = "0.5.0", features = ["tailwind", "font-fontsource", "mail", "mail-smtp", "multipart"] }
+topcoat = { version = "0.6.2", features = ["tailwind", "font-fontsource", "mail", "mail-smtp", "multipart"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
@@ -62,7 +62,7 @@ zstd = "0.13"
 capsicum = "0.4"
 
 [build-dependencies]
-topcoat = { version = "0.5.0", default-features = false, features = ["tailwind"] }
+topcoat = { version = "0.6.2", default-features = false, features = ["tailwind"] }
 
 [dev-dependencies]
 bytes = "1"

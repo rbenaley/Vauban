@@ -7,12 +7,14 @@ use topcoat::{
     router::{
         content::Form,
         error::{SeeOther, redirect, see_other},
-        page, query_params, route,
+        href, page, query_params, route,
     },
     view::view,
 };
 
 use super::staging::rollback_staged_release;
+use crate::app::admin::releases::{admin_releases_page, new::admin_releases_new_page};
+use crate::app::hrefs::ErrQ;
 use crate::{
     app::VCP_WEBAUTHN_JS,
     auth::{capability_denied, db, require_staff, storage},
@@ -28,7 +30,7 @@ struct ConfirmQuery {
 }
 
 #[page]
-async fn admin_releases_confirm_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_releases_confirm_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -41,11 +43,11 @@ async fn admin_releases_confirm_page(cx: &Cx) -> Result {
         .filter(|t| !t.is_empty())
         .map(str::to_owned)
     else {
-        return Err(redirect("/admin/releases").into());
+        return Err(redirect(href!(admin_releases_page).resolve(cx)).into());
     };
     let store = storage(cx);
     let Some(pending) = store.peek_pending_release(&token) else {
-        return Err(redirect("/admin/releases").into());
+        return Err(redirect(href!(admin_releases_page).resolve(cx)).into());
     };
 
     let summary = pending.summary.clone();
@@ -59,7 +61,7 @@ async fn admin_releases_confirm_page(cx: &Cx) -> Result {
         <div>
             <a
                 class="vb-back"
-                href="/admin/releases"
+                href=(href!(admin_releases_page))
                 style="margin-bottom: 16px; margin-top: 0;"
             >
                 "Release manager"
@@ -102,7 +104,7 @@ async fn admin_releases_confirm_page(cx: &Cx) -> Result {
                         <form
                             id="vcp-webauthn-form"
                             method="POST"
-                            action="/admin/releases/confirm"
+                            action=(href!(admin_releases_confirm_post))
                         >
                             <input
                                 type="hidden"
@@ -120,7 +122,7 @@ async fn admin_releases_confirm_page(cx: &Cx) -> Result {
                             </button>
                         </form>
                     </div>
-                    <form method="POST" action="/admin/releases/confirm/cancel">
+                    <form method="POST" action=(href!(admin_releases_confirm_cancel))>
                         <input type="hidden" name="token" value=(token_hidden)>
                         <button class="vb-btn muted compact" type="submit">
                             "Cancel publish"
@@ -143,7 +145,10 @@ struct ConfirmForm {
 }
 
 #[route(POST "/admin/releases/confirm")]
-async fn admin_releases_confirm_post(cx: &Cx, Form(form): Form<ConfirmForm>) -> Result<SeeOther> {
+pub(crate) async fn admin_releases_confirm_post(
+    cx: &Cx,
+    Form(form): Form<ConfirmForm>,
+) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -151,11 +156,15 @@ async fn admin_releases_confirm_post(cx: &Cx, Form(form): Form<ConfirmForm>) -> 
     }
     let store = storage(cx);
     let Some(pending) = store.take_pending_release(form.token.trim()) else {
-        return Ok(see_other("/admin/releases"));
+        return Ok(see_other(href!(admin_releases_page).resolve(cx)));
     };
     if form.assertion.trim().is_empty() {
         let t = store.stash_pending_release(pending);
-        return Ok(see_other(&format!("/admin/releases/confirm?token={t}")));
+        return Ok(see_other(
+            href!(admin_releases_confirm_page)
+                .query(crate::app::hrefs::TokenQ { token: &t })
+                .resolve(cx),
+        ));
     }
     let Ok((size_bytes, sha256)) = store.put_commit_release_asserted(
         &pending.upload_id,
@@ -164,7 +173,13 @@ async fn admin_releases_confirm_post(cx: &Cx, Form(form): Form<ConfirmForm>) -> 
         Some(form.assertion.trim()),
     ) else {
         rollback_staged_release(cx, pending.release_id, Some(&pending.upload_id), false).await;
-        return Ok(see_other("/admin/releases/new?err=upload"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("upload"),
+                })
+                .resolve(cx),
+        ));
     };
 
     let mut database = db(cx);
@@ -173,7 +188,13 @@ async fn admin_releases_confirm_post(cx: &Cx, Form(form): Form<ConfirmForm>) -> 
         .is_err()
     {
         rollback_staged_release(cx, pending.release_id, None, true).await;
-        return Ok(see_other("/admin/releases/new?err=upload"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("upload"),
+                })
+                .resolve(cx),
+        ));
     }
     let rows = Release::all()
         .filter(Release::fields().id().eq(pending.release_id))
@@ -182,7 +203,13 @@ async fn admin_releases_confirm_post(cx: &Cx, Form(form): Form<ConfirmForm>) -> 
         .unwrap_or_default();
     let Some(mut rel) = rows.into_iter().next() else {
         rollback_staged_release(cx, pending.release_id, None, true).await;
-        return Ok(see_other("/admin/releases/new?err=upload"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("upload"),
+                })
+                .resolve(cx),
+        ));
     };
     if rel
         .update()
@@ -192,11 +219,17 @@ async fn admin_releases_confirm_post(cx: &Cx, Form(form): Form<ConfirmForm>) -> 
         .is_err()
     {
         rollback_staged_release(cx, pending.release_id, None, true).await;
-        return Ok(see_other("/admin/releases/new?err=upload"));
+        return Ok(see_other(
+            href!(admin_releases_new_page)
+                .query(ErrQ {
+                    err: Some("upload"),
+                })
+                .resolve(cx),
+        ));
     }
     store.unmark_staged_release(pending.release_id);
 
-    Ok(see_other("/admin/releases"))
+    Ok(see_other(href!(admin_releases_page).resolve(cx)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,7 +240,10 @@ struct CancelForm {
 /// Explicit abort of an in-flight publish: discard the upload and the staged
 /// release so the admin lands back on a Release manager that never saw it.
 #[route(POST "/admin/releases/confirm/cancel")]
-async fn admin_releases_confirm_cancel(cx: &Cx, Form(form): Form<CancelForm>) -> Result<SeeOther> {
+pub(crate) async fn admin_releases_confirm_cancel(
+    cx: &Cx,
+    Form(form): Form<CancelForm>,
+) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -217,5 +253,5 @@ async fn admin_releases_confirm_cancel(cx: &Cx, Form(form): Form<CancelForm>) ->
     if let Some(pending) = store.take_pending_release(form.token.trim()) {
         rollback_staged_release(cx, pending.release_id, Some(&pending.upload_id), false).await;
     }
-    Ok(see_other("/admin/releases"))
+    Ok(see_other(href!(admin_releases_page).resolve(cx)))
 }

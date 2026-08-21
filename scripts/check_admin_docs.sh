@@ -63,7 +63,7 @@ grep -n 'monospace chips' src/docs_body.rs >/dev/null \
   || fail "DIALECT_HINT must mention inline monospace chips"
 
 # Versioning UX: Save redirects to list; published save bumps version.
-grep -nE 'see_other\("/admin/docs"\)|see_other\(&list\)' "$DOC" >/dev/null \
+grep -nE 'see_other\("/admin/docs"\)|see_other\(&list\)|href!\(admin_docs_page\)' "$DOC" >/dev/null \
   || fail "$DOC Save must redirect to /admin/docs list"
 grep -n 'bump_version' "$DOC" >/dev/null \
   || fail "$DOC must bump version when saving a published article"
@@ -95,7 +95,7 @@ if grep -n 'vb-badge soft' "$LIST" | grep -q 'article.status'; then
 fi
 grep -n 'fn doc_status_badge_class' src/ui.rs >/dev/null \
   || fail "src/ui.rs must define doc_status_badge_class"
-grep -n 'delete=' "$LIST" >/dev/null \
+grep -nE 'delete=|DeleteQ' "$LIST" >/dev/null \
   || fail "$LIST Delete must open ?delete= confirm"
 grep -n 'ico_trash\|Delete permanently' "$LIST" >/dev/null \
   || fail "$LIST must include delete confirm UI"

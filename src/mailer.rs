@@ -15,10 +15,12 @@ use topcoat::{
     Result,
     context::{Cx, app_context, try_app_context},
     mail::{Attachment, Mail, Mailbox, Receipt, SendError, Transport, TransportFuture, send},
+    router::href,
     view::{Unescaped, view},
 };
 
 use crate::{
+    app::{hrefs::TokenQ, login::login_magic},
     config::{Config, MagicLinksConfig, MailConfig, SmtpEncryption},
     mail_circuit::MailCircuitBreaker,
     mail_templates::{
@@ -39,8 +41,8 @@ pub struct ConfiguredSmtpTransport {
 impl Transport for ConfiguredSmtpTransport {
     fn send<'a>(&'a self, cx: &'a Cx, mail: Mail) -> TransportFuture<'a> {
         Box::pin(async move {
-            let raw = mail.formatted(cx)?;
             let envelope = smtp_envelope(&mail).map_err(SendError::delivery)?;
+            let raw = mail.formatted(cx)?;
             self.inner
                 .send_raw(&envelope, &raw)
                 .await
@@ -142,20 +144,22 @@ fn reply_to_mailbox(ml: &MagicLinksConfig) -> Result<Option<Mailbox>> {
     Ok(Some(Mailbox::new(reply)?))
 }
 
-fn magic_link_url(public_origin: &str, raw_token: &str) -> String {
-    let origin = public_origin.trim_end_matches('/');
-    format!("{origin}/login/magic?token={raw_token}")
+fn magic_link_url(cx: &Cx, raw_token: &str) -> String {
+    href!(login_magic)
+        .query(TokenQ { token: raw_token })
+        .absolute()
+        .resolve(cx)
 }
 
 /// Sign-in magic link (login form request).
 pub async fn send_login_magic_link(
     cx: &Cx,
     ml: &MagicLinksConfig,
-    public_origin: &str,
+    _public_origin: &str,
     to_email: &str,
     raw_token: &str,
 ) -> Result<()> {
-    let url = magic_link_url(public_origin, raw_token);
+    let url = magic_link_url(cx, raw_token);
     let ttl = ml.token_ttl_secs.div_ceil(60);
     let text = format!(
         "Sign in to the Vauban Customer Portal:\n\n{url}\n\n\
@@ -186,12 +190,12 @@ pub async fn send_login_magic_link(
 pub async fn send_invitation_mail(
     cx: &Cx,
     ml: &MagicLinksConfig,
-    public_origin: &str,
+    _public_origin: &str,
     to_email: &str,
     org_name: &str,
     raw_token: &str,
 ) -> Result<()> {
-    let url = magic_link_url(public_origin, raw_token);
+    let url = magic_link_url(cx, raw_token);
     let ttl = ml.token_ttl_secs.div_ceil(60);
     let text = format!(
         "You have been invited to the Vauban Customer Portal for {org_name}.\n\n\
@@ -408,11 +412,12 @@ mod tests {
     }
 
     #[test]
-    fn magic_link_url_strips_trailing_slash() {
-        assert_eq!(
-            magic_link_url("https://access.vauban.sh/", "abc"),
-            "https://access.vauban.sh/login/magic?token=abc"
-        );
+    fn magic_link_href_query_uses_token() {
+        let cx = topcoat::context::Cx::default();
+        let url = href!("/login/magic")
+            .query(crate::app::hrefs::TokenQ { token: "abc" })
+            .resolve(&cx);
+        assert_eq!(url, "/login/magic?token=abc");
     }
 
     #[test]

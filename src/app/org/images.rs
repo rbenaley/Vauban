@@ -6,8 +6,8 @@ use topcoat::{
     Result,
     context::Cx,
     router::{
-        Body, Response, StatusCode, content::multipart::Multipart, error::not_found, header,
-        path_param, route,
+        Body, StatusCode, content::multipart::Multipart, error::not_found, header, href,
+        path_param, response::Response, route,
     },
 };
 
@@ -21,8 +21,7 @@ use crate::{
     },
 };
 
-#[path_param]
-struct ImageFile(str);
+path_param!(pub(crate) image_file);
 
 fn content_type_for_ext(ext: &str) -> &'static str {
     match ext {
@@ -89,7 +88,7 @@ async fn authorize_image_org_id(cx: &Cx, org_slug: &str) -> Result<u64> {
 
 /// Upload one image for the path org. AuthZ (membership) before any IPC.
 #[route(POST "/{org}/images")]
-async fn org_image_upload(cx: &Cx, mut multipart: Multipart) -> Result<Response> {
+pub(crate) async fn org_image_upload(cx: &Cx, mut multipart: Multipart) -> Result<Response> {
     let org_slug = path_param::<Org>(cx);
     let ctx = require_org(cx, org_slug).await.map_err(|_| not_found())?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -151,14 +150,17 @@ async fn org_image_upload(cx: &Cx, mut multipart: Multipart) -> Result<Response>
     Ok(Response::builder()
         .status(StatusCode::CREATED)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .header(header::LOCATION, format!("/{org_slug}/images/{body}"))
+        .header(
+            header::LOCATION,
+            href!(org_image_get, Org(org_slug), ImageFile(body.as_str())).resolve(cx),
+        )
         .body(Body::from(body))?)
 }
 
 /// Serve an org image. Cross-tenant client / missing DB row -> 404 **before** IPC.
 /// Casbin `admin_view` + issues access may fetch without org membership.
 #[route(GET "/{org}/images/{image_file}")]
-async fn org_image_get(cx: &Cx) -> Result<Response> {
+pub(crate) async fn org_image_get(cx: &Cx) -> Result<Response> {
     let org_slug = path_param::<Org>(cx);
     let raw = path_param::<ImageFile>(cx).to_string();
     let Some((image_id, ext)) = parse_image_file(&raw) else {

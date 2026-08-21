@@ -441,7 +441,7 @@ fn inv_key_dashboard_ui_pinned() {
     );
     assert!(page.contains("data-mode=\"create\""), "E1 ceremony root");
     assert!(
-        page.contains("err=label"),
+        page.contains("err=label") || page.contains("err: Some(\"label\")"),
         "empty admin_label must redirect with err=label"
     );
     assert!(

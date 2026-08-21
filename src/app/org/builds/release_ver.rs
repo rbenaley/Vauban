@@ -20,12 +20,10 @@ use crate::{
     release_pkg::org_builds_entitled,
 };
 
-/// `{release_ver}` segment for detail / download / ephemeral routes.
-#[path_param]
-pub(super) struct ReleaseVer(str);
+path_param!(pub(crate) release_ver);
 
 #[page]
-async fn build_detail_page(cx: &Cx) -> Result {
+pub(crate) async fn build_detail_page(cx: &Cx) -> Result {
     let org_slug = path_param::<Org>(cx);
     let ver = path_param::<ReleaseVer>(cx);
     let ctx = require_org(cx, org_slug).await?;

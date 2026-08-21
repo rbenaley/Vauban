@@ -13,10 +13,10 @@ fail() {
 pin_memo() {
   local file="$1"
   local fn="$2"
-  grep -n '#\[memoize\]' "$file" >/dev/null \
+  grep -nE '#\[memoize' "$file" >/dev/null \
     || fail "$file must use #[memoize]"
   awk -v fn="$fn" '
-    /#\[memoize\]/ { memo=1; next }
+    /#\[memoize/ { memo=1; next }
     memo && $0 ~ ("fn " fn) { found=1; exit }
     /^[[:space:]]*(pub )?async fn |^[[:space:]]*fn / && memo && $0 !~ fn { memo=0 }
     END { exit !found }

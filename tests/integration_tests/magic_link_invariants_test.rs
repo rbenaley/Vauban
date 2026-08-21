@@ -23,7 +23,10 @@ fn inv_login_is_email_only_signal_procedure_no_check_email_page() {
     assert!(login.contains("cooldown_mm_ss"));
     assert!(login.contains("LOGIN_LINK_ERROR"));
     assert!(login.contains("LOGIN_UNAVAILABLE_MESSAGE"));
-    assert!(login.contains("/login?error="));
+    assert!(
+        login.contains("/login?error=")
+            || login.contains("LoginErrorQ") && login.contains("error: LOGIN_LINK_ERROR")
+    );
     assert!(login.contains("This sign-in link is invalid or has expired"));
     assert!(login.contains("Sign-in is temporarily unavailable. Please try again later."));
     assert!(login.contains("Delivery can take a few minutes"));

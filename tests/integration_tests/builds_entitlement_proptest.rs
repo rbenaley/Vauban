@@ -2,8 +2,7 @@
 
 use proptest::prelude::*;
 use vcp::app::{
-    BUILDS_PAGE_SIZE, DL_ERROR_PARAM, DownloadError, clamp_page, download_error_href, page_count,
-    page_slice, parse_page,
+    BUILDS_PAGE_SIZE, DL_ERROR_PARAM, DownloadError, clamp_page, page_count, page_slice, parse_page,
 };
 use vcp::config::{Config, Environment};
 use vcp::release_pkg::{
@@ -80,7 +79,14 @@ proptest! {
     ) {
         let err = DL_ERRORS[ix];
         let channel = channel.unwrap_or("");
-        let href = download_error_href(&slug, &ver, channel, err);
+        let href = {
+            let mut parts = Vec::new();
+            if !channel.is_empty() {
+                parts.push(format!("channel={channel}"));
+            }
+            parts.push(format!("{DL_ERROR_PARAM}={}", err.as_code()));
+            format!("/{slug}/builds/{ver}?{}", parts.join("&"))
+        };
         let open_prefix = format!("/{slug}/builds/{ver}?");
         let code_suffix = format!("{DL_ERROR_PARAM}={}", err.as_code());
         let channel_part = format!("channel={channel}");

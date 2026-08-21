@@ -1,9 +1,11 @@
 //! Shared company compose form (new + edit), email-only accounts.
 
+use crate::app::admin::companies::admin_companies_page;
+use topcoat::router::href;
 use topcoat::{
     Result,
     context::Cx,
-    router::{IntoResponse, Response},
+    router::response::{IntoResponse, Response},
     view::view,
 };
 
@@ -49,7 +51,7 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
         <div>
             <a
                 class="vb-back"
-                href="/admin/companies"
+                href=(href!(admin_companies_page))
                 style="margin-bottom: 16px; margin-top: 0;"
             >
                 "Back to companies"
@@ -256,7 +258,7 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
                         </button>
                         <a
                             class="vb-link"
-                            href="/admin/companies"
+                            href=(href!(admin_companies_page))
                             style="margin: 0; align-self: center;"
                         >
                             "Cancel"

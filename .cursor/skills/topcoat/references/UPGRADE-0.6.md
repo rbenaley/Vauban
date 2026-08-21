@@ -14,11 +14,9 @@ Studied tree: clone `tokio-rs/topcoat` at tag **v0.6.2**
 (`92a76709`). Facade docs: `crates/topcoat/CHANGELOG.md`,
 `crates/topcoat/docs/`, `AGENTS.md`.
 
-**Status:** VCP still pins **0.5.0** (`Cargo.toml` / `Justfile`
-`topcoat_cli_version`). This file is the checklist and the features to
-**exploit**. Do **not** call 0.6-only APIs (`href!`, `Cx::with`,
-`path_param!`, `OriginPolicy`, `not_found!`, `BodyLimit`) until the
-facade + CLI are bumped together.
+**Status:** VCP on **0.6.2** (`Cargo.toml` / `Justfile`
+`topcoat_cli_version`). Keep 0.5 notes historical. Portal URLs use
+`href!`; HTTP bodies use `[server] max_request_body_mib` + `BodyLimit`.
 
 Bump target: **0.6.2** (not 0.6.0). 0.6.1/0.6.2 are compile/runtime
 fixes VCP needs (`module_router!` + `rewrite`, `await` in `$()`,
@@ -119,8 +117,12 @@ Gone: `Cx::insert`, `Cx::get_mut`, `Cx::detach`, `CxBuilder`.
 `ContextMap` → `AppContext` (tests / custom `Cx::new` only).
 `Next::run` is `#[must_use]`.
 
-Root `#[layer]` (no path) still wraps **every** request including 404/405.
-Path-scoped layers do **not** run on unmatched URLs (see §5).
+`#[layer]` (even with no string) is **path-scoped** from the module tree
+(`app` → `/`). It wraps **matched** routes only — unmatched URLs
+(`/login/`) never run it. A layer that must see 404/405 (trailing-slash
+308, security headers on misses) implements `Layer` with `path() -> None`
+and is registered via `.layer(...)` on the builder. Path-scoped layers
+still do **not** run on unmatched URLs (see §5).
 
 ### 3. Origin / CSRF (`src/app.rs`, lints)
 

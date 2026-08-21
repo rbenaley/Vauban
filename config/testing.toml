@@ -6,6 +6,7 @@ environment = "testing"
 host = "127.0.0.1"
 port = 3001
 public_origins = ["https://localhost:3001"]
+max_request_body_mib = 2048
 access_log_path = "logs/vcp-access.log"
 pid_file = "/tmp/vcp.pid"
 

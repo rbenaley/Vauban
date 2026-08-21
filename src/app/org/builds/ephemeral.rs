@@ -1,31 +1,27 @@
 //! Server-issued ephemeral download links (POST/PRG; no client JS).
 
-use std::io::Read;
-
 use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
     router::{
-        Body, Response, StatusCode,
         content::Form,
         error::{SeeOther, forbidden, not_found, see_other},
-        header, path_param, route,
+        href, path_param, route,
     },
 };
 use uuid::Uuid;
 
-use super::download::{DOWNLOAD_UNAVAILABLE, INTEGRITY_MISMATCH};
 use super::find_visible_release_by_version;
 use super::release_ver::ReleaseVer;
 use crate::{
     app::org::Org,
-    auth::{db, require_org, storage},
+    auth::{db, require_org},
     db::now_unix,
     models::{EPH_DOWNLOAD_TTL_SECS, EphemeralDownload, Release},
     perms::perms_for_user,
     release_pkg::org_builds_entitled,
-    storage::{find_release_object, storage_http_status},
+    storage::find_release_object,
 };
 
 #[derive(Debug, Deserialize)]
@@ -43,7 +39,7 @@ pub(super) struct EphPanel {
     pub expires_at: i64,
 }
 
-pub(super) use crate::release_pkg::package_file_name;
+pub(crate) use crate::release_pkg::package_file_name;
 
 pub(super) fn eph_public_url(
     public_origin: &str,
@@ -115,22 +111,22 @@ pub(super) fn panel_from_row(
     }
 }
 
-fn redirect_detail(org: &str, ver: &str, form: &EphRedirectForm) -> SeeOther {
-    let mut qs = Vec::new();
-    if let Some(ch) = form
+fn redirect_detail(cx: &Cx, org: &str, ver: &str, form: &EphRedirectForm) -> SeeOther {
+    let channel = form
         .channel
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-    {
-        qs.push(format!("channel={ch}"));
-    }
-    let path = if qs.is_empty() {
-        format!("/{org}/builds/{ver}")
-    } else {
-        format!("/{org}/builds/{ver}?{}", qs.join("&"))
-    };
-    see_other(&path)
+        .unwrap_or("");
+    see_other(
+        href!(
+            super::release_ver::build_detail_page,
+            Org(org),
+            ReleaseVer(ver)
+        )
+        .query(crate::app::hrefs::ChannelQ { channel })
+        .resolve(cx),
+    )
 }
 
 async fn require_downloadable_release(
@@ -172,101 +168,6 @@ async fn require_downloadable_release(
     Ok((ctx, release))
 }
 
-/// Public GET for a short-lived download token (no session).
-///
-/// Token / package segments are read from the absolute route capture map
-/// (this module already owns `{release_ver}` via [`ReleaseVer`]; Topcoat
-/// allows only one `#[path_param]` / `segment!` registration per module).
-#[route(GET "/releases/{eph_token}/{eph_pkg}")]
-async fn ephemeral_download_get(cx: &Cx) -> Result<Response> {
-    let mut token = None;
-    let mut pkg = None;
-    for (key, value) in topcoat::router::raw_path_params(cx) {
-        match key {
-            "eph_token" => token = Some(value.to_owned()),
-            "eph_pkg" => pkg = Some(value.to_owned()),
-            _ => {}
-        }
-    }
-    let Some(token) = token else {
-        return Err(not_found().into());
-    };
-    let Some(_pkg) = pkg else {
-        return Err(not_found().into());
-    };
-
-    let mut database = db(cx);
-    let rows = EphemeralDownload::all()
-        .filter(EphemeralDownload::fields().token().eq(token))
-        .limit(1)
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
-    let Some(row) = rows.into_iter().next() else {
-        return Err(not_found().into());
-    };
-    let now = now_unix();
-    if row.expires_at <= now {
-        return Err(not_found().into());
-    }
-
-    let Some(org) = crate::models::Organization::get_by_id(&mut database, row.organization_id)
-        .await
-        .ok()
-    else {
-        return Err(not_found().into());
-    };
-    let Some(rel) = find_visible_release_by_version(
-        &mut database,
-        &row.release_version,
-        org.id,
-        &org.slug,
-        org.lts_subscriptions,
-        org.industrial_lts_subscriptions,
-    )
-    .await
-    else {
-        return Err(not_found().into());
-    };
-    let Some(obj) = find_release_object(&mut database, rel.id).await else {
-        return Err(not_found().into());
-    };
-
-    let client = storage(cx);
-    let (size, _sha, mut file) = match client.get_release(rel.id, &obj.sha256) {
-        Ok(v) => v,
-        Err(e) => {
-            let status = StatusCode::from_u16(storage_http_status(&e))
-                .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
-            let body = if e.code == crate::storage::StorageErrorCode::IntegrityMismatch {
-                INTEGRITY_MISMATCH
-            } else {
-                DOWNLOAD_UNAVAILABLE
-            };
-            return Ok(Response::builder()
-                .status(status)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from(body))?);
-        }
-    };
-    let mut bytes = Vec::with_capacity(size.min(64 * 1024 * 1024) as usize);
-    if file.read_to_end(&mut bytes).is_err() {
-        return Ok(Response::builder()
-            .status(StatusCode::SERVICE_UNAVAILABLE)
-            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Body::from(DOWNLOAD_UNAVAILABLE))?);
-    }
-    let filename = package_file_name(&rel.version, &rel.channel);
-    let disposition = format!("attachment; filename=\"{filename}\"");
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/octet-stream")
-        .header(header::CONTENT_DISPOSITION, disposition)
-        .header(header::CONTENT_LENGTH, bytes.len().to_string())
-        .header("X-Content-Type-Options", "nosniff")
-        .body(Body::from(bytes))?)
-}
-
 async fn delete_existing_for(
     database: &mut toasty::Db,
     user_id: u64,
@@ -290,7 +191,10 @@ async fn delete_existing_for(
 }
 
 #[route(POST "/{org}/builds/{release_ver}/ephemeral")]
-async fn builds_eph_generate(cx: &Cx, Form(form): Form<EphRedirectForm>) -> Result<SeeOther> {
+pub(crate) async fn builds_eph_generate(
+    cx: &Cx,
+    Form(form): Form<EphRedirectForm>,
+) -> Result<SeeOther> {
     let org_slug = path_param::<Org>(cx);
     let ver = path_param::<ReleaseVer>(cx);
     let (ctx, _release) = require_downloadable_release(cx, org_slug, ver).await?;
@@ -310,11 +214,14 @@ async fn builds_eph_generate(cx: &Cx, Form(form): Form<EphRedirectForm>) -> Resu
     .exec(&mut database)
     .await;
 
-    Ok(redirect_detail(org_slug, ver, &form))
+    Ok(redirect_detail(cx, org_slug, ver, &form))
 }
 
 #[route(POST "/{org}/builds/{release_ver}/ephemeral/revoke")]
-async fn builds_eph_revoke(cx: &Cx, Form(form): Form<EphRedirectForm>) -> Result<SeeOther> {
+pub(crate) async fn builds_eph_revoke(
+    cx: &Cx,
+    Form(form): Form<EphRedirectForm>,
+) -> Result<SeeOther> {
     let org_slug = path_param::<Org>(cx);
     let ver = path_param::<ReleaseVer>(cx);
     let (ctx, _release) = require_downloadable_release(cx, org_slug, ver).await?;
@@ -322,7 +229,7 @@ async fn builds_eph_revoke(cx: &Cx, Form(form): Form<EphRedirectForm>) -> Result
     let mut database = db(cx);
     delete_existing_for(&mut database, ctx.user.id, ctx.org.id, ver).await;
 
-    Ok(redirect_detail(org_slug, ver, &form))
+    Ok(redirect_detail(cx, org_slug, ver, &form))
 }
 
 #[cfg(test)]

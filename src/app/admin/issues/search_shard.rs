@@ -45,14 +45,17 @@ async fn resolve_org_id_sql(db: &mut toasty::Db, raw: &str) -> Option<u64> {
 }
 
 /// Request-scoped org hint resolve (page pager + shard share one lookup).
-#[memoize]
-async fn resolve_org_id_memo(cx: &Cx, raw: &str) -> Option<u64> {
+#[memoize(as_ref)]
+async fn resolve_org_id_memo(cx: &Cx, raw: usize) -> Option<u64> {
+    let raw = crate::request_intern::interned(cx, raw);
     let mut database = crate::auth::db(cx);
-    resolve_org_id_sql(&mut database, raw).await
+    resolve_org_id_sql(&mut database, &raw).await
 }
 
 async fn resolve_org_id(cx: &Cx, raw: &str) -> Option<u64> {
-    resolve_org_id_memo(cx, raw).await.copied()
+    resolve_org_id_memo(cx, crate::request_intern::intern(cx, raw))
+        .await
+        .copied()
 }
 
 macro_rules! admin_issues_filtered_query {
@@ -110,7 +113,13 @@ pub async fn admin_issues_search_results(
         };
     }
 
-    let total = *count_admin_filtered_issues_memo(cx, &q, &org_filter, &status).await;
+    let total = *count_admin_filtered_issues_memo(
+        cx,
+        crate::request_intern::intern(cx, &q),
+        crate::request_intern::intern(cx, &org_filter),
+        crate::request_intern::intern(cx, &status),
+    )
+    .await;
     let pages = page_count(total, LIST_PAGE_SIZE);
     let page = clamp_page(page, pages);
     let mut database = crate::auth::db(cx);
@@ -157,8 +166,10 @@ pub async fn admin_issues_search_results(
                         .map(|o| format!("{} ({})", o.name, o.slug))
                         .unwrap_or_else(|| format!("org#{}", issue.organization_id));
                     let href = super::issue_key::admin_issue_detail_href(
+                        cx,
                         &issue.key,
                         org_slug,
+                        None,
                     );
                     let updated = format_relative(issue.updated_at, now, tz);
                     let meta = format!(
@@ -198,16 +209,19 @@ pub async fn admin_issues_search_results(
 #[memoize]
 async fn count_admin_filtered_issues_memo(
     cx: &Cx,
-    q: &str,
-    org_filter: &str,
-    status: &str,
+    q: usize,
+    org_filter: usize,
+    status: usize,
 ) -> usize {
-    let org_id = resolve_org_id(cx, org_filter).await;
+    let q = crate::request_intern::interned(cx, q);
+    let org_filter = crate::request_intern::interned(cx, org_filter);
+    let status = crate::request_intern::interned(cx, status);
+    let org_id = resolve_org_id(cx, org_filter.as_str()).await;
     if !org_filter.is_empty() && org_id.is_none() {
         return 0;
     }
     let mut database = crate::auth::db(cx);
-    admin_issues_filtered_query!(org_id, q, status)
+    admin_issues_filtered_query!(org_id, q.as_str(), status.as_str())
         .count()
         .exec(&mut database)
         .await
@@ -221,5 +235,11 @@ pub(super) async fn count_admin_filtered_issues(
     org_filter: &str,
     status: &str,
 ) -> usize {
-    *count_admin_filtered_issues_memo(cx, q, org_filter, status).await
+    *count_admin_filtered_issues_memo(
+        cx,
+        crate::request_intern::intern(cx, q),
+        crate::request_intern::intern(cx, org_filter),
+        crate::request_intern::intern(cx, status),
+    )
+    .await
 }

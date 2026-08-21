@@ -1,26 +1,24 @@
 //! Documentation list at `/{org}/docs`.
 
-mod doc;
-mod search_shard;
+pub(crate) mod doc;
+pub(crate) mod search_shard;
 
 pub(super) use search_shard::docs_search_results;
 
 use topcoat::{
     Result,
     context::{Cx, memoize},
-    router::{page, path_param, query_params},
+    router::{href, page, path_param, query_params},
     view::view,
 };
 
 use crate::{
     app::_components::filter_row,
+    app::hrefs::SearchListQ,
     app::org::Org,
     auth::{capability_denied, require_org},
     docs_search::{normalize_category, normalize_query},
-    list_page::{
-        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_offset,
-        parse_page, with_page_param,
-    },
+    list_page::{LIST_PAGE_SIZE, PagerLinks, clamp_page, page_count, page_offset, parse_page},
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
     sql_search::ilike_contains,
@@ -43,20 +41,19 @@ struct DocsQuery {
 }
 
 /// Shareable docs list URL (`page=1` and empty filters omitted).
-pub(super) fn docs_list_href(org: &str, q: &str, cat: &str, page: usize) -> String {
-    let mut parts = Vec::new();
-    if !q.is_empty() {
-        parts.push(format!("q={}", urlencoding_encode(q)));
-    }
-    if !cat.is_empty() {
-        parts.push(format!("cat={}", urlencoding_encode(cat)));
-    }
-    with_page_param(&mut parts, page);
-    href_with_query(&format!("/{org}/docs"), &parts)
+pub(super) fn docs_list_href(cx: &Cx, org: &str, q: &str, cat: &str, page: usize) -> String {
+    href!(docs_page, Org(org))
+        .query(SearchListQ {
+            q,
+            status: "",
+            cat,
+            page,
+        })
+        .resolve(cx)
 }
 
 #[page]
-async fn docs_page(cx: &Cx) -> Result {
+pub(crate) async fn docs_page(cx: &Cx) -> Result {
     let slug = path_param::<Org>(cx);
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -118,10 +115,10 @@ macro_rules! docs_filtered_query {
 
 /// Request-scoped COUNT so list page + embedded shard share one SQL round-trip.
 #[memoize]
-async fn count_filtered_docs_memo(cx: &Cx, q: &str, cat: &str) -> usize {
+async fn count_filtered_docs_memo(cx: &Cx, q: usize, cat: usize) -> usize {
     let filter = DocsFilter {
-        q: q.to_owned(),
-        cat: cat.to_owned(),
+        q: crate::request_intern::interned(cx, q),
+        cat: crate::request_intern::interned(cx, cat),
     };
     let mut database = crate::auth::db(cx);
     docs_filtered_query!(&filter)
@@ -133,7 +130,12 @@ async fn count_filtered_docs_memo(cx: &Cx, q: &str, cat: &str) -> usize {
 
 /// Count matching published docs (SQL; memoized per request).
 pub(super) async fn count_filtered_docs(cx: &Cx, filter: &DocsFilter) -> usize {
-    *count_filtered_docs_memo(cx, &filter.q, &filter.cat).await
+    *count_filtered_docs_memo(
+        cx,
+        crate::request_intern::intern(cx, &filter.q),
+        crate::request_intern::intern(cx, &filter.cat),
+    )
+    .await
 }
 
 /// One page of matching docs (SQL `ORDER BY updated_at DESC` + limit/offset).
@@ -174,18 +176,18 @@ pub(super) async fn docs_list_view(
     let q_for_pager = q_value.clone();
     let cat_for_pager = cat_owned.clone();
     let pager = PagerLinks::from_hrefs(page, pages, |n| {
-        docs_list_href(&org_for_pager, &q_for_pager, &cat_for_pager, n)
+        docs_list_href(cx, &org_for_pager, &q_for_pager, &cat_for_pager, n)
     });
     let pager_opt = if pager.show() { Some(pager) } else { None };
 
-    let base = format!("/{org_slug}/docs");
+    let base = href!(docs_page, Org(org_slug)).resolve(cx);
     // Chip hrefs omit `page` (reset). All clears filters; category chips keep q.
     let mut chips: Vec<(String, String, bool)> =
         vec![("All".to_owned(), base.clone(), cat.is_empty())];
     for c in CATEGORIES {
         chips.push((
             (*c).to_owned(),
-            docs_list_href(&org, q, c, 1),
+            docs_list_href(cx, &org, q, c, 1),
             cat.eq_ignore_ascii_case(c),
         ));
     }
@@ -229,30 +231,36 @@ pub(super) async fn docs_list_view(
     }
 }
 
-fn urlencoding_encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod docs_list_href_tests {
-    use super::docs_list_href;
+    use crate::app::hrefs::SearchListQ;
+    use crate::app::org::Org;
+    use topcoat::{context::Cx, router::href};
 
     #[test]
     fn docs_list_href_omits_page_one_and_empty_filters() {
-        assert_eq!(docs_list_href("acme", "", "", 1), "/acme/docs");
-        assert_eq!(docs_list_href("acme", "ssh", "", 1), "/acme/docs?q=ssh");
+        let cx = Cx::default();
+        assert_eq!(href!("/{org}/docs", Org("acme")).resolve(&cx), "/acme/docs");
         assert_eq!(
-            docs_list_href("acme", "ssh", "API", 2),
+            href!("/{org}/docs", Org("acme"))
+                .query(SearchListQ {
+                    q: "ssh",
+                    status: "",
+                    cat: "",
+                    page: 1,
+                })
+                .resolve(&cx),
+            "/acme/docs?q=ssh"
+        );
+        assert_eq!(
+            href!("/{org}/docs", Org("acme"))
+                .query(SearchListQ {
+                    q: "ssh",
+                    status: "",
+                    cat: "API",
+                    page: 2,
+                })
+                .resolve(&cx),
             "/acme/docs?q=ssh&cat=API&page=2"
         );
     }

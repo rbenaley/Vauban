@@ -1,22 +1,20 @@
 //! Admin documentation list at `/admin/docs`.
 
-mod doc;
-mod new;
+pub(crate) mod doc;
+pub(crate) mod new;
 
 use topcoat::{
     Result,
     context::Cx,
-    router::{page, query_params},
+    router::{href, page, query_params},
     view::view,
 };
 
+use crate::app::admin::docs::new::admin_docs_new_page;
 use crate::{
     app::_components::{ico_trash, list_toolbar},
     auth::{capability_denied, require_staff},
-    list_page::{
-        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
-        with_page_param,
-    },
+    list_page::{LIST_PAGE_SIZE, PagerLinks, clamp_page, page_count, parse_page},
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
     ui::doc_status_badge_class,
@@ -31,7 +29,7 @@ struct AdminDocsQuery {
 }
 
 #[page]
-async fn admin_docs_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_docs_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
@@ -81,9 +79,9 @@ async fn admin_docs_page(cx: &Cx) -> Result {
         .unwrap_or_default();
     // Pager keeps only `page` — never sticky `delete` / `err` (overlay query).
     let pager = PagerLinks::from_hrefs(page, pages, |n| {
-        let mut parts = Vec::new();
-        with_page_param(&mut parts, n);
-        href_with_query("/admin/docs", &parts)
+        href!(admin_docs_page)
+            .query(crate::app::hrefs::PageQ { page: n })
+            .resolve(cx)
     });
 
     view! {
@@ -97,7 +95,7 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                     "Write, version, publish or hide knowledge-base articles."
                 </p>
             </div>
-            <a class="vb-btn" href="/admin/docs/new">"+ New article"</a>
+            <a class="vb-btn" href=(href!(admin_docs_new_page))>"+ New article"</a>
         </div>
 
         list_toolbar(links: &pager)
@@ -129,12 +127,26 @@ async fn admin_docs_page(cx: &Cx) -> Result {
                         </tr>
                     } else {
                         for article in page_articles {
-                            let edit_href = format!("/admin/docs/{}", article.id);
-                            let publish_action = format!("/admin/docs/{}/publish", article.id);
-                            let unpublish_action = format!(
-                                "/admin/docs/{}/unpublish", article.id
-                            );
-                            let delete_href = format!("/admin/docs?delete={}", article.id);
+                            let edit_href = href!(
+                                doc::admin_docs_edit_page,
+                                doc::Doc(article.id.to_string())
+                            )
+                                .resolve(cx);
+                            let publish_action = href!(
+                                doc::admin_docs_publish,
+                                doc::Doc(article.id.to_string())
+                            )
+                                .resolve(cx);
+                            let unpublish_action = href!(
+                                doc::admin_docs_unpublish,
+                                doc::Doc(article.id.to_string())
+                            )
+                                .resolve(cx);
+                            let delete_href = href!(admin_docs_page)
+                                .query(crate::app::hrefs::DeleteQ {
+                                    delete: article.id,
+                                })
+                                .resolve(cx);
                             let is_published = article.status == DOC_STATUS_PUBLISHED;
                             let status_badge = doc_status_badge_class(&article.status)
                                 .to_owned();
@@ -199,8 +211,12 @@ async fn admin_docs_page(cx: &Cx) -> Result {
         </div>
 
         if let Some(target) = delete_target {
-            let cancel = "/admin/docs".to_owned();
-            let action = format!("/admin/docs/{}/delete", target.id);
+            let cancel = href!(admin_docs_page).resolve(cx);
+            let action = href!(
+                doc::admin_docs_delete,
+                doc::Doc(target.id.to_string())
+            )
+                .resolve(cx);
             <div
                 class="vb-confirm-root"
                 role="dialog"

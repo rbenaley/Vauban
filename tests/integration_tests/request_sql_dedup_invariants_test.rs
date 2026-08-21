@@ -50,7 +50,10 @@ fn inv_admin_issues_resolve_and_count_memoized() {
     ));
     assert!(src.contains("fn resolve_org_id_memo"));
     assert!(src.contains("fn count_admin_filtered_issues_memo"));
-    assert!(src.contains("count_admin_filtered_issues_memo(cx"));
+    assert!(
+        src.contains("count_admin_filtered_issues_memo(cx")
+            || src.contains("count_admin_filtered_issues_memo(\n        cx")
+    );
 }
 
 #[test]

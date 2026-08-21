@@ -18,11 +18,11 @@ use crate::common::{
 };
 use vcp::models::{MEMBERSHIP_ROLE_ORG, PORTAL_ROLE_ADMIN};
 
-async fn body_bytes(resp: topcoat::router::Response) -> bytes::Bytes {
+async fn body_bytes(resp: topcoat::router::response::Response) -> bytes::Bytes {
     resp.into_body().collect().await.expect("body").to_bytes()
 }
 
-async fn body_text(resp: topcoat::router::Response) -> String {
+async fn body_text(resp: topcoat::router::response::Response) -> String {
     String::from_utf8_lossy(&body_bytes(resp).await).into_owned()
 }
 

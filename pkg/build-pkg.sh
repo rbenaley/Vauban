@@ -42,7 +42,7 @@ done
 
 # Topcoat release bundle: staged under share/vcp/assets (VCP_PACKAGE_ROOT).
 # Runtime loads via AssetBundle::load_dir (see src/app.rs::load_asset_bundle).
-ASSETS_SRC="${PROJECT_ROOT}/target/assets"
+ASSETS_SRC="${RELEASE_DIR}/assets"
 if [ ! -f "${ASSETS_SRC}/manifest.toml" ]; then
     echo "ERROR: missing ${ASSETS_SRC}/manifest.toml" >&2
     echo "Run 'just release' (builds + topcoat asset bundle --release)." >&2

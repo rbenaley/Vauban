@@ -56,6 +56,12 @@ grep -n 'should_redirect_trailing_slash' "$HELPERS" >/dev/null \
   || fail "$HELPERS must define should_redirect_trailing_slash"
 grep -n 'redirect_permanent' src/app.rs >/dev/null \
   || fail "src/app.rs must use topcoat redirect_permanent for trailing slashes"
+grep -n 'struct SecurityHeaders' src/app.rs >/dev/null \
+  || fail "src/app.rs must register a pathless SecurityHeaders layer"
+# 0.6: #[layer] in app/ is scoped to / and skips unmatched /login/.
+if grep -nE '^#\[layer\]' src/app.rs >/dev/null; then
+  fail "src/app.rs security layer must not use #[layer] (path-scoped; misses 404)"
+fi
 grep -n 'trailing_slash_redirect_location' src/app.rs >/dev/null \
   || fail "src/app.rs security layer must call trailing_slash_redirect_location"
 grep -n 'should_redirect_trailing_slash' src/app.rs >/dev/null \
@@ -81,7 +87,7 @@ grep -n 'header::CACHE_CONTROL' "$APP" >/dev/null \
 grep -n 'contains_key(header::CACHE_CONTROL)' "$APP" >/dev/null \
   || fail "$APP must only set no-store when Cache-Control is absent"
 # Handler Err(redirect) must become a Response in-layer so headers still apply.
-grep -n 'error.into_response(cx)' "$APP" >/dev/null \
+grep -nE 'error\.into_response\(&?cx\)' "$APP" >/dev/null \
   || fail "$APP security layer must convert next.run Err via into_response"
 if grep -nE 'next\.run\(cx, body\)\.await\?' "$APP" >/dev/null; then
   fail "$APP must not ?-propagate next.run Err (skips headers on redirects)"

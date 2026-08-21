@@ -108,7 +108,8 @@ grep -n 'max_accounts_per_org' "$LIST" >/dev/null || fail "$LIST must read max_a
 grep -n 'COMPANIES_PAGE_SIZE' "$LIST" >/dev/null || fail "$LIST must use COMPANIES_PAGE_SIZE"
 grep -n 'list_toolbar' "$LIST" >/dev/null || fail "$LIST must use list_toolbar pager"
 grep -n 'page: Option<u32>' "$LIST" >/dev/null || fail "$LIST AdminCompaniesQuery must include page"
-grep -n 'with_page_param' "$LIST" >/dev/null || fail "$LIST pager must use with_page_param"
+grep -nE 'with_page_param|SearchQ \{ q, page \}' "$LIST" >/dev/null \
+  || fail "$LIST pager must use with_page_param"
 grep -n 'admin_companies_search_results' "$LIST" >/dev/null \
   || fail "$LIST must invoke live search shard"
 grep -n 'type="search"' "$LIST" >/dev/null || fail "$LIST must expose search input"
@@ -122,9 +123,10 @@ grep -n 'data-company-subscriptions' "$SHARD" >/dev/null \
 grep -n 'lts_subscriptions' "$SHARD" >/dev/null \
   || fail "$SHARD must render org.lts_subscriptions"
 grep -n 'vb-account-pill' "$SHARD" >/dev/null || fail "$SHARD must render account pills"
-grep -n '/admin/companies/{}' "$SHARD" >/dev/null \
+grep -nE '/admin/companies/\{\}|admin_companies_edit_page' "$SHARD" >/dev/null \
   || fail "$SHARD Edit links must use company id"
-grep -n 'delete=' "$SHARD" >/dev/null || fail "$SHARD must open delete confirm"
+grep -nE 'delete=|DeleteSearchQ|DeleteQ' "$SHARD" >/dev/null \
+  || fail "$SHARD must open delete confirm"
 grep -n 'ico_trash' "$SHARD" >/dev/null || fail "$SHARD must use ico_trash"
 grep -n 'company_cards_page' "$SHARD" >/dev/null \
   || fail "$SHARD must page via company_cards_page (memoized SQL load)"

@@ -222,6 +222,14 @@ pub struct ServerConfig {
     #[serde(default)]
     pub public_origins: Vec<String>,
 
+    /// Maximum HTTP request body size in MiB (Topcoat `BodyLimit`).
+    ///
+    /// Must cover the largest legitimate multipart (pkg publish, images).
+    /// Helper quotas (`storage.max_artifact_bytes` / `max_image_bytes`) stay
+    /// the object-size gates; this is the HTTP buffer ceiling.
+    #[serde(default = "default_max_request_body_mib")]
+    pub max_request_body_mib: u64,
+
     /// Apache Common Log Format access log path.
     ///
     /// Production default: `/var/log/vcp-access.log`. Non-production: under
@@ -235,6 +243,23 @@ pub struct ServerConfig {
     pub pid_file: String,
 
     pub tls: TlsConfig,
+}
+
+/// One mebibyte in bytes (`server.max_request_body_mib` conversion).
+pub const MIB: u64 = 1024 * 1024;
+
+fn default_max_request_body_mib() -> u64 {
+    2048
+}
+
+impl ServerConfig {
+    /// HTTP body limit in bytes for Topcoat `BodyLimit::max`.
+    pub fn max_request_body_bytes(&self) -> usize {
+        self.max_request_body_mib
+            .saturating_mul(MIB)
+            .try_into()
+            .unwrap_or(usize::MAX)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -941,7 +966,7 @@ impl Config {
         }
     }
 
-    fn validate(&self) -> anyhow::Result<()> {
+    pub fn validate(&self) -> anyhow::Result<()> {
         if self.server.host.trim().is_empty() {
             anyhow::bail!("server.host must not be empty");
         }
@@ -976,6 +1001,21 @@ impl Config {
             if !origin.starts_with("https://") {
                 anyhow::bail!("public_origins entry must start with https:// (got {origin})");
             }
+        }
+        if self.server.max_request_body_mib == 0 {
+            anyhow::bail!("server.max_request_body_mib must be at least 1");
+        }
+        let http_bytes = self.server.max_request_body_mib.saturating_mul(MIB);
+        let object_ceiling = self
+            .storage
+            .max_artifact_bytes
+            .max(self.storage.max_image_bytes);
+        if http_bytes < object_ceiling {
+            anyhow::bail!(
+                "server.max_request_body_mib ({} MiB) must cover storage.max_artifact_bytes \
+                 and storage.max_image_bytes (need at least {object_ceiling} bytes)",
+                self.server.max_request_body_mib
+            );
         }
         if let Some(acme) = &self.server.tls.acme {
             acme.validate()?;
@@ -1223,6 +1263,8 @@ mod tests {
             cfg.server.access_log_path
         );
         assert_eq!(cfg.server.pid_file, "/tmp/vcp.pid");
+        assert_eq!(cfg.server.max_request_body_mib, 2048);
+        assert_eq!(cfg.server.max_request_body_bytes(), 2048 * MIB as usize);
         assert_eq!(cfg.login.max_attempts, 10);
         assert_eq!(cfg.login.window_secs, 300);
         assert_eq!(cfg.login.lockout_secs, 900);
@@ -1359,6 +1401,7 @@ mod tests {
         assert_eq!(cfg.server.port, 443);
         assert_eq!(cfg.server.access_log_path, "/var/log/vcp-access.log");
         assert_eq!(cfg.server.pid_file, "/var/run/vcp/vcp.pid");
+        assert_eq!(cfg.server.max_request_body_mib, 2048);
         assert_eq!(cfg.primary_public_origin(), "https://access.vauban.sh");
         assert_eq!(cfg.login.max_attempts, 10);
         assert_eq!(cfg.login.window_secs, 300);
@@ -1412,6 +1455,47 @@ mod tests {
         cfg.server.public_origins = vec!["http://localhost:3000".to_owned()];
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("HTTPS only"));
+    }
+
+    #[test]
+    fn rejects_zero_max_request_body_mib() {
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Development,
+        )
+        .unwrap();
+        cfg.server.max_request_body_mib = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("max_request_body_mib"));
+    }
+
+    #[test]
+    fn rejects_request_body_smaller_than_artifact_quota() {
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Development,
+        )
+        .unwrap();
+        cfg.storage.max_artifact_bytes = 8 * MIB;
+        cfg.storage.max_image_bytes = MIB;
+        cfg.server.max_request_body_mib = 4;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("max_request_body_mib"));
+        assert!(err.contains("max_artifact_bytes"));
+    }
+
+    #[test]
+    fn accepts_request_body_covering_artifact_quota() {
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Development,
+        )
+        .unwrap();
+        cfg.storage.max_artifact_bytes = 512 * 1024;
+        cfg.storage.max_image_bytes = 256 * 1024;
+        cfg.server.max_request_body_mib = 1;
+        cfg.validate().expect("1 MiB HTTP covers 512 KiB artifact");
+        assert_eq!(cfg.server.max_request_body_bytes(), MIB as usize);
     }
 
     #[test]
@@ -1718,6 +1802,36 @@ mod proptest_tests {
             .unwrap();
             cfg.magiclinks.token_ttl_secs = ttl;
             prop_assert!(cfg.validate().is_ok());
+        }
+    }
+
+    proptest! {
+        #![proptest_config(crate::proptest_util::default_config())]
+
+        #[test]
+        fn request_body_mib_must_cover_object_quotas(
+            artifact_mib in 1u64..=64,
+            image_mib in 1u64..=16,
+            body_mib in 0u64..=128,
+        ) {
+            let mut cfg = Config::load_with_environment(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+                Environment::Development,
+            )
+            .unwrap();
+            cfg.storage.max_artifact_bytes = artifact_mib.saturating_mul(MIB);
+            cfg.storage.max_image_bytes = image_mib.saturating_mul(MIB);
+            cfg.server.max_request_body_mib = body_mib;
+            let need = artifact_mib.max(image_mib);
+            if body_mib == 0 || body_mib < need {
+                prop_assert!(cfg.validate().is_err());
+            } else {
+                prop_assert!(cfg.validate().is_ok());
+                prop_assert_eq!(
+                    cfg.server.max_request_body_bytes(),
+                    (body_mib.saturating_mul(MIB)) as usize
+                );
+            }
         }
     }
 

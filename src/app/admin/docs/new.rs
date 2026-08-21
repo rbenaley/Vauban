@@ -7,11 +7,12 @@ use topcoat::{
     router::{
         content::Form,
         error::{SeeOther, see_other},
-        page, route,
+        href, page, route,
     },
     view::view,
 };
 
+use crate::app::admin::docs::admin_docs_page;
 use crate::{
     auth::{capability_denied, db, require_staff},
     db::now_unix,
@@ -32,7 +33,7 @@ struct CreateDocForm {
 }
 
 #[page]
-async fn admin_docs_new_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_docs_new_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
@@ -43,7 +44,7 @@ async fn admin_docs_new_page(cx: &Cx) -> Result {
         <div>
             <a
                 class="vb-back"
-                href="/admin/docs"
+                href=(href!(admin_docs_page))
                 style="margin-bottom: 16px; margin-top: 0;"
             >
                 "Back to articles"
@@ -51,7 +52,7 @@ async fn admin_docs_new_page(cx: &Cx) -> Result {
             <h1 class="vb-title">"Compose article"</h1>
             <p class="vb-lead">"Draft or publish a knowledge-base article."</p>
             <div class="vb-panel" style="padding: 24px;">
-                <form class="vb-form" method="POST" action="/admin/docs/new">
+                <form class="vb-form" method="POST" action=(href!(admin_docs_create))>
                     <label for="title">"Title"</label>
                     <input
                         id="title"
@@ -94,7 +95,11 @@ async fn admin_docs_new_page(cx: &Cx) -> Result {
                             "Publish article"
                         </button>
                         <button class="vb-btn muted" type="submit">"Save draft"</button>
-                        <a class="vb-link" href="/admin/docs" style="margin: 0;">
+                        <a
+                            class="vb-link"
+                            href=(href!(admin_docs_page))
+                            style="margin: 0;"
+                        >
                             "Cancel"
                         </a>
                     </div>
@@ -105,7 +110,10 @@ async fn admin_docs_new_page(cx: &Cx) -> Result {
 }
 
 #[route(POST "/admin/docs/new")]
-async fn admin_docs_create(cx: &Cx, Form(form): Form<CreateDocForm>) -> Result<SeeOther> {
+pub(crate) async fn admin_docs_create(
+    cx: &Cx,
+    Form(form): Form<CreateDocForm>,
+) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
@@ -114,7 +122,7 @@ async fn admin_docs_create(cx: &Cx, Form(form): Form<CreateDocForm>) -> Result<S
 
     let title = form.title.trim().to_owned();
     if title.is_empty() {
-        return Ok(see_other("/admin/docs/new"));
+        return Ok(see_other(href!(admin_docs_new_page).resolve(cx)));
     }
     let category = form.category.trim().to_owned();
     let body = form.body.trim().to_owned();
@@ -164,5 +172,5 @@ async fn admin_docs_create(cx: &Cx, Form(form): Form<CreateDocForm>) -> Result<S
     .exec(&mut database)
     .await;
 
-    Ok(see_other("/admin/docs"))
+    Ok(see_other(href!(admin_docs_page).resolve(cx)))
 }

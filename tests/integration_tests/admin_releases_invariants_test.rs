@@ -49,16 +49,16 @@ fn inv_admin_releases_create_is_post_and_gated() {
         !src.contains("\"1970-01-01\".to_owned()") && !src.contains("\"1970-01-01\".into()"),
         "create must not invent a Unix-epoch default for released_on"
     );
-    assert!(src.contains("err=date"));
+    assert!(src.contains("err=date") || src.contains("err: Some(\"date\")"));
     assert!(src.contains("parse_released_on"));
-    assert!(src.contains("err=package"));
+    assert!(src.contains("err=package") || src.contains("err: Some(\"package\")"));
     assert!(src.contains("freebsd_pkg::inspect"));
-    assert!(src.contains("err=not_pkg"));
+    assert!(src.contains("err=not_pkg") || src.contains("err: Some(\"not_pkg\")"));
     assert!(
         src.contains("derive_release_identity"),
         "create must derive version/channel from the package manifeste"
     );
-    assert!(src.contains("err=identity"));
+    assert!(src.contains("err=identity") || src.contains("err: Some(\"identity\")"));
     assert!(
         !src.contains("name=\"version\"") && !src.contains("name=\"channel\""),
         "compose form must not collect version or channel"
@@ -76,7 +76,7 @@ fn inv_admin_releases_create_is_post_and_gated() {
         src.contains("signal no_key_open")
             && src.contains("id=\"vcp-no-key-open\"")
             && src.contains("require-active-key")
-            && src.contains("err=no_active_key")
+            && (src.contains("err=no_active_key") || src.contains("err: Some(\"no_active_key\")"))
             && src.contains("has_active_key")
             && src.contains("No active security key"),
         "publish must modal-gate on zero ACTIVE keys before WebAuthn"
@@ -254,7 +254,7 @@ fn inv_admin_releases_list_actions_and_badges() {
     assert!(src.contains("Unpublish"));
     assert!(src.contains("Publish"));
     assert!(
-        src.contains("format!(\"/admin/releases/{}\", rel.id)"),
+        src.contains("admin_releases_edit_page") && src.contains("ReleaseId(rel.id.to_string())"),
         "Edit must link by release id"
     );
     assert!(

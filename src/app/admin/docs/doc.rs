@@ -7,11 +7,12 @@ use topcoat::{
     router::{
         content::Form,
         error::{SeeOther, not_found, see_other},
-        page, path_param, route,
+        href, page, path_param, route,
     },
     view::view,
 };
 
+use crate::app::admin::docs::admin_docs_page;
 use crate::{
     app::_components::ico_issues,
     auth::{capability_denied, db, require_staff},
@@ -22,8 +23,7 @@ use crate::{
     tz::{browser_tz, format_unix_local, unix_rfc3339},
 };
 
-#[path_param]
-struct Doc(str);
+path_param!(pub(crate) doc);
 
 #[derive(Deserialize)]
 struct UpdateDocForm {
@@ -55,7 +55,7 @@ fn parse_doc_id(raw: &str) -> Option<u64> {
 }
 
 #[page]
-async fn admin_docs_edit_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_docs_edit_page(cx: &Cx) -> Result {
     let doc_raw = path_param::<Doc>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -70,7 +70,7 @@ async fn admin_docs_edit_page(cx: &Cx) -> Result {
         return Err(not_found().into());
     };
 
-    let action = format!("/admin/docs/{doc_id}");
+    let action = href!(admin_docs_update, Doc(doc_id.to_string())).resolve(cx);
     let is_published = article.status == DOC_STATUS_PUBLISHED;
     let tz = browser_tz(cx);
     let updated = format_unix_local(article.updated_at, tz);
@@ -86,7 +86,7 @@ async fn admin_docs_edit_page(cx: &Cx) -> Result {
         <div>
             <a
                 class="vb-back"
-                href="/admin/docs"
+                href=(href!(admin_docs_page))
                 style="margin-bottom: 16px; margin-top: 0;"
             >
                 "Back to articles"
@@ -157,7 +157,11 @@ async fn admin_docs_edit_page(cx: &Cx) -> Result {
                         style="display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; align-items: center;"
                     >
                         <button class="vb-btn" type="submit">(save_label)</button>
-                        <a class="vb-link" href="/admin/docs" style="margin: 0;">
+                        <a
+                            class="vb-link"
+                            href=(href!(admin_docs_page))
+                            style="margin: 0;"
+                        >
                             "Cancel"
                         </a>
                     </div>
@@ -168,7 +172,10 @@ async fn admin_docs_edit_page(cx: &Cx) -> Result {
 }
 
 #[route(POST "/admin/docs/{doc}")]
-async fn admin_docs_update(cx: &Cx, Form(form): Form<UpdateDocForm>) -> Result<SeeOther> {
+pub(crate) async fn admin_docs_update(
+    cx: &Cx,
+    Form(form): Form<UpdateDocForm>,
+) -> Result<SeeOther> {
     let doc_raw = path_param::<Doc>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -228,21 +235,24 @@ async fn admin_docs_update(cx: &Cx, Form(form): Form<UpdateDocForm>) -> Result<S
             .await;
     }
 
-    Ok(see_other("/admin/docs"))
+    Ok(see_other(href!(admin_docs_page).resolve(cx)))
 }
 
 #[route(POST "/admin/docs/{doc}/publish")]
-async fn admin_docs_publish(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn admin_docs_publish(cx: &Cx) -> Result<SeeOther> {
     set_status(cx, DOC_STATUS_PUBLISHED).await
 }
 
 #[route(POST "/admin/docs/{doc}/unpublish")]
-async fn admin_docs_unpublish(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn admin_docs_unpublish(cx: &Cx) -> Result<SeeOther> {
     set_status(cx, DOC_STATUS_DRAFT).await
 }
 
 #[route(POST "/admin/docs/{doc}/delete")]
-async fn admin_docs_delete(cx: &Cx, Form(form): Form<DeleteDocForm>) -> Result<SeeOther> {
+pub(crate) async fn admin_docs_delete(
+    cx: &Cx,
+    Form(form): Form<DeleteDocForm>,
+) -> Result<SeeOther> {
     let doc_raw = path_param::<Doc>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -258,15 +268,20 @@ async fn admin_docs_delete(cx: &Cx, Form(form): Form<DeleteDocForm>) -> Result<S
     };
 
     if !is_delete_confirm(&form.confirm) {
-        return Ok(see_other(&format!(
-            "/admin/docs?delete={doc_id}&err=confirm"
-        )));
+        return Ok(see_other(
+            href!(admin_docs_page)
+                .query(crate::app::hrefs::DeleteErrQ {
+                    delete: doc_id,
+                    err: "confirm",
+                })
+                .resolve(cx),
+        ));
     }
 
     let mut database = db(cx);
     let _ = article.delete().exec(&mut database).await;
 
-    Ok(see_other("/admin/docs"))
+    Ok(see_other(href!(admin_docs_page).resolve(cx)))
 }
 
 async fn set_status(cx: &Cx, status: &str) -> Result<SeeOther> {
@@ -293,5 +308,5 @@ async fn set_status(cx: &Cx, status: &str) -> Result<SeeOther> {
     if status == DOC_STATUS_PUBLISHED {
         let _ = unpublish_other_published(&mut database, &article.slug, article.id).await;
     }
-    Ok(see_other("/admin/docs"))
+    Ok(see_other(href!(admin_docs_page).resolve(cx)))
 }

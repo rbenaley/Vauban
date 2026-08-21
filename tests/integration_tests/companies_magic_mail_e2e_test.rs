@@ -46,7 +46,9 @@ fn mail_text(mail: &topcoat::mail::Mail) -> String {
 
 fn mail_html(mail: &topcoat::mail::Mail) -> String {
     let cx = Cx::default();
-    mail.html().map(|v| v.render(&cx)).unwrap_or_default()
+    mail.html()
+        .map(|v| v.clone().render(&cx))
+        .unwrap_or_default()
 }
 
 #[tokio::test]

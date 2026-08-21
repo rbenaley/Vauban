@@ -324,7 +324,7 @@ async fn battle_parallel_close_reopen_under_detail_reads() {
 
     // Whichever way the race resolves, the operator must land back on the
     // reply box: the anchor cannot depend on who won.
-    fn assert_anchored(resp: &topcoat::router::Response, what: &str) {
+    fn assert_anchored(resp: &topcoat::router::response::Response, what: &str) {
         assert!(
             status(resp).is_redirection() || status(resp) == StatusCode::OK,
             "{what} got {}",

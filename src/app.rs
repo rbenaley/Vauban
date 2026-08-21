@@ -1,10 +1,12 @@
 //! Module router root: `/` redirect, `/login`, `/{org}/…`.
 
 mod _components;
-mod admin;
+pub(crate) mod admin;
+pub mod hrefs;
 mod issue_thumbs;
-mod login;
-mod org;
+pub(crate) mod login;
+pub(crate) mod org;
+pub(crate) mod releases;
 
 pub(crate) use issue_thumbs::{
     DiscussionPane, DiscussionRow, issue_discussion, shot_file_input, thumbs_for_comment,
@@ -15,6 +17,7 @@ pub use crate::list_page::{
     BUILDS_PAGE_SIZE, LIST_PAGE_SIZE, clamp_page, page_count, page_slice, parse_page,
 };
 pub use admin::admin_releases_list_href;
+pub use org::Org;
 pub use org::builds_list_href;
 pub use org::{DL_ERROR_PARAM, DownloadError, download_error_href};
 
@@ -24,15 +27,18 @@ use toasty::Db;
 use topcoat::{
     Result,
     asset::{Asset, AssetBundle, AssetConfig, RouterBuilderAssetExt, asset},
-    context::{Cx, CxBuilder, try_app_context},
+    context::{Cx, try_app_context},
     cookie::RouterBuilderCookieExt,
     font,
     mail::{MailConfig as TopcoatMailConfig, MemoryTransport, RouterBuilderMailExt},
     router::{
-        Body, HeaderValue, IntoResponse, Next, Response, Router, RouterBuilderDiscoverExt,
-        StatusCode,
-        error::{redirect, redirect_permanent},
-        header, layer, layout, method, route, uri,
+        Body, BodyLimit, HeaderValue, Layer, LayerFuture, Next, OriginPolicy, Path, Router,
+        RouterBuilderDiscoverExt, StatusCode,
+        error::{NotFoundError, redirect, redirect_permanent},
+        header, href, layout,
+        request::{method, uri},
+        response::{IntoResponse, Response},
+        route,
     },
     session::{RouterBuilderSessionExt, SessionConfig},
     tailwind,
@@ -71,6 +77,7 @@ use crate::{
     mail_circuit::MailCircuitBreaker,
     mailer::build_smtp_transport,
     perms::PolicyStore,
+    request_intern::StringIntern,
     storage::StorageClient,
 };
 
@@ -131,11 +138,9 @@ fn router_with_mail(
     mail: TopcoatMailConfig,
     mail_circuit: Arc<MailCircuitBreaker>,
 ) -> Router {
-    let mut sessions = SessionConfig::builder();
-    for origin in &cfg.server.public_origins {
-        sessions = sessions.trust_origin(origin.clone());
-    }
-    let sessions = sessions.build();
+    let sessions = SessionConfig::default();
+    let origin_policy =
+        OriginPolicy::new().trust_origins(cfg.server.public_origins.iter().cloned());
 
     let assets = load_assets(cfg.environment);
     let enable_hsts = EnableHsts(cfg.environment == Environment::Production);
@@ -148,6 +153,11 @@ fn router_with_mail(
     }));
 
     topcoat::router::module_router!()
+        .origin_policy(origin_policy)
+        .layer(BodyLimit::max(cfg.server.max_request_body_bytes()))
+        // Pathless: 0.6 `#[layer]` in this module is scoped to `/` and does
+        // not run on unmatched URLs (trailing-slash `/login/` is a miss).
+        .layer(SecurityHeaders)
         .cookies()
         .sessions(sessions)
         .assets(assets)
@@ -159,6 +169,7 @@ fn router_with_mail(
         .app_context(login_limiter)
         .app_context(mail_circuit)
         .app_context(storage)
+        .base_url(cfg.primary_public_origin())
         .discover()
         .build()
 }
@@ -176,7 +187,7 @@ fn load_assets(env: Environment) -> AssetConfig {
     };
     let config = AssetConfig::serve(bundle);
     // Tailwind's asset! path includes OUT_DIR, so a rebuild without rebundle
-    // leaves stale IDs in target/assets/manifest.toml and panics on first HTML
+    // leaves stale IDs in the exe-adjacent assets/manifest.toml and panics on first HTML
     // render. Fail at boot with an actionable message instead.
     require_catalog_assets(
         &config,
@@ -195,8 +206,10 @@ fn load_assets(env: Environment) -> AssetConfig {
     config
 }
 
-/// Prefer the packaged (or `VCP_PACKAGE_ROOT`) share tree; fall back to Topcoat's
-/// conventional walk from the binary (`target/assets` for local `just run`).
+/// Prefer the packaged (or `VCP_PACKAGE_ROOT`) share tree; fall back to
+/// Topcoat 0.6 exe-adjacent `assets/` (`target/{profile}/vcp` + `assets/`).
+/// Integration tests run from `target/{profile}/deps/`, so walk parents for
+/// `assets/manifest.toml` after `AssetBundle::load()` (next to current_exe).
 ///
 /// Only treat `package_root/assets` as a bundle when `manifest.toml` is present —
 /// the checkout source tree also has an `assets/` directory of unbundled inputs.
@@ -205,6 +218,31 @@ fn load_asset_bundle() -> std::io::Result<AssetBundle> {
         let packaged = pkg_root.join("assets");
         if packaged.join("manifest.toml").is_file() {
             return AssetBundle::load_dir(packaged);
+        }
+    }
+    if let Ok(bundle) = AssetBundle::load() {
+        return Ok(bundle);
+    }
+    if let Ok(pkg_root) = Config::package_root() {
+        for rel in [
+            "target/debug/assets",
+            "target/test/assets",
+            "target/release/assets",
+        ] {
+            let candidate = pkg_root.join(rel);
+            if candidate.join("manifest.toml").is_file() {
+                return AssetBundle::load_dir(candidate);
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(std::path::Path::to_path_buf);
+        while let Some(parent) = dir {
+            let candidate = parent.join("assets");
+            if candidate.join("manifest.toml").is_file() {
+                return AssetBundle::load_dir(candidate);
+            }
+            dir = parent.parent().map(std::path::Path::to_path_buf);
         }
     }
     AssetBundle::load()
@@ -223,13 +261,22 @@ fn require_catalog_assets(config: &AssetConfig, env: Environment, assets: &[(&st
     panic!(
         "asset catalog is stale or incomplete (missing: {}); \
          rebuild the bundle with `just bundle` or `just run` so binary AssetIds \
-         match target/assets (environment={env:?})",
+         match the exe-adjacent assets/ bundle (environment={env:?})",
         missing.join(", "),
     );
 }
 
+use _components::branded_404_body;
+
 #[layout]
 pub(crate) async fn root_layout(slot: Result) -> Result {
+    let content = match slot {
+        Err(error) if error.downcast_ref::<NotFoundError>().is_some() => view! {
+            (topcoat::router::StatusCode::NOT_FOUND)
+            branded_404_body()
+        },
+        content => content,
+    }?;
     view! {
         <!DOCTYPE html>
         <html lang="en">
@@ -248,13 +295,26 @@ pub(crate) async fn root_layout(slot: Result) -> Result {
                 topcoat::runtime::script()
                 topcoat::dev::script()
             </head>
-            <body>(slot?)</body>
+            <body>(content)</body>
         </html>
     }
 }
 
-#[layer]
-async fn security_headers(cx: &mut CxBuilder, body: Body, next: Next<'_>) -> Result<Response> {
+/// Site-wide security headers + trailing-slash 308. `path()` is `None` so
+/// unmatched URLs (`/login/`) still run this layer (Topcoat 0.6).
+struct SecurityHeaders;
+
+impl Layer for SecurityHeaders {
+    fn path(&self) -> Option<&Path> {
+        None
+    }
+
+    fn handle<'a>(&'a self, cx: &'a Cx, body: Body, next: Next<'a>) -> LayerFuture<'a> {
+        Box::pin(async move { security_headers(cx, body, next).await })
+    }
+}
+
+async fn security_headers(cx: &Cx, body: Body, next: Next<'_>) -> Result<Response> {
     let enable_hsts = try_app_context::<EnableHsts>(cx)
         .map(|h| h.0)
         .unwrap_or(false);
@@ -267,12 +327,13 @@ async fn security_headers(cx: &mut CxBuilder, body: Body, next: Next<'_>) -> Res
     } else {
         None
     };
+    let cx = cx.with(StringIntern::default());
     let mut response = match redirect_to {
-        Some(location) => redirect_permanent(&location).into_response(cx)?,
-        None => match next.run(cx, body).await {
+        Some(location) => redirect_permanent(&location).into_response(&cx)?,
+        None => match next.run(&cx, body).await {
             Ok(response) => response,
             // Handler `Err(redirect/…)` must still get security headers — do not `?` out.
-            Err(error) => error.into_response(cx)?,
+            Err(error) => error.into_response(&cx)?,
         },
     };
 
@@ -311,19 +372,22 @@ fn apply_security_headers(headers: &mut http::HeaderMap, enable_hsts: bool) {
 /// Entry: authenticated users land on their portal home or org picker; others go to login.
 /// Navigational GET -> `redirect` (307), not `see_other` (303 PRG).
 #[route(GET "/")]
-async fn root(cx: &Cx) -> Result {
+pub(crate) async fn root(cx: &Cx) -> Result {
     if let Some(user) = current_user(cx).await {
         match post_auth_landing(cx, user).await? {
             PostAuthLanding::Org(slug) => {
-                return Err(redirect(&format!("/{slug}")).into());
+                return Err(redirect(
+                    href!(crate::app::org::dashboard, crate::app::org::Org(slug)).resolve(cx),
+                )
+                .into());
             }
             PostAuthLanding::ChooseOrg => {
-                return Err(redirect("/choose-org").into());
+                return Err(redirect(href!(crate::app::login::choose_org_page).resolve(cx)).into());
             }
             PostAuthLanding::None => {}
         }
     }
-    Err(redirect("/login").into())
+    Err(redirect(href!(crate::app::login::login_page).resolve(cx)).into())
 }
 
 /// Fixed-path icon probes (`/favicon.ico`, apple-touch). Outside `asset!`

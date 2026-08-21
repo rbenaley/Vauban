@@ -113,16 +113,19 @@ async fn search_org_ids(db: &mut Db, q: &str) -> anyhow::Result<Vec<u64>> {
 
 /// Request-scoped page load so list pager + embedded shard share one hydrate.
 #[memoize]
-async fn company_cards_page_memo(cx: &Cx, q: &str, page: usize) -> (Vec<CompanyCard>, usize) {
+async fn company_cards_page_memo(cx: &Cx, q: usize, page: usize) -> (Vec<CompanyCard>, usize) {
+    let q = crate::request_intern::interned(cx, q);
     let mut database = crate::auth::db(cx);
-    load_company_cards_page(&mut database, q, page)
+    load_company_cards_page(&mut database, &q, page)
         .await
         .unwrap_or_else(|_| (Vec::new(), 0))
 }
 
 /// Count + one page of company cards (memoized per request via [`company_cards_page`]).
 pub(super) async fn company_cards_page(cx: &Cx, q: &str, page: usize) -> (Vec<CompanyCard>, usize) {
-    company_cards_page_memo(cx, q, page).await.clone()
+    company_cards_page_memo(cx, crate::request_intern::intern(cx, q), page)
+        .await
+        .clone()
 }
 
 /// Count + one page of company cards for admin list/shard (SQL core).

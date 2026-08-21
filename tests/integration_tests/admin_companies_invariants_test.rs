@@ -206,7 +206,7 @@ fn inv_admin_companies_list_concept_and_edit_delete() {
     assert!(shard.contains("USER ACCOUNTS"));
     assert!(shard.contains("vb-account-pill"));
     assert!(shard.contains("ico_trash"));
-    assert!(shard.contains("delete="));
+    assert!(shard.contains("delete=") || shard.contains("DeleteSearchQ"));
     assert!(
         shard.contains("format_company_address"),
         "shard must join multi-line addresses with COMPANY_DISPLAY_SEP"

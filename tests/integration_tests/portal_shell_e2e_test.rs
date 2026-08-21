@@ -9,9 +9,41 @@ use crate::common::{
     post_form, seed_release_digest, status, test_db, test_router, unique_email, unique_slug,
 };
 
-async fn body_text(resp: topcoat::router::Response) -> String {
+async fn body_text(resp: topcoat::router::response::Response) -> String {
     let bytes = resp.into_body().collect().await.expect("body").to_bytes();
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[tokio::test]
+async fn e2e_unknown_path_is_branded_404() {
+    let _guard = db_lock().lock().await;
+    let router = test_router().await;
+    let resp = get(&router, "/no-such-page", None).await;
+    assert_eq!(status(&resp), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn e2e_unknown_org_path_is_branded_404_with_shell() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let email = unique_email("shell-404");
+    let slug = unique_slug("shell-404");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "org").await;
+    let router = test_router().await;
+    let cookie = login_cookie(&router, &email).await;
+    let resp = get(
+        &router,
+        &format!("/{slug}/docs/no-such-article"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&resp), StatusCode::NOT_FOUND);
+    let html = body_text(resp).await;
+    assert!(
+        html.contains("data-vcp-404=\"1\"") && html.contains("vb-shell"),
+        "matched-org 404 must keep rail chrome: {html}"
+    );
 }
 
 #[tokio::test]

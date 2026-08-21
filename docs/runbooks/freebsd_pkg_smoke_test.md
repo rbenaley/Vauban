@@ -185,7 +185,7 @@ refused` in a tight loop, `vcp_store` is down — start the store first
 
 `daemon -r` restarts the portal every second when the release Topcoat
 bundle is missing at `/usr/local/share/vcp/assets` (staged from
-`target/assets` by `just release` + `just package`). Symptom in
+`target/release/assets` by `just release` + `just package`). Symptom in
 `/var/log/vcp.log`: panic at `src/app.rs` after
 `vcp listening on https://0.0.0.0:443`.
 
@@ -193,7 +193,7 @@ bundle is missing at `/usr/local/share/vcp/assets` (staged from
 service vcp stop
 ls /usr/local/share/vcp/assets/manifest.toml
 # Hotfix until the next pkg rebuild (from the release checkout):
-#   cp -R target/assets /usr/local/share/vcp/assets
+#   cp -R target/release/assets /usr/local/share/vcp/assets
 #   chmod -R a+rX /usr/local/share/vcp/assets
 # Remove a leftover layout from older packages:
 #   rm -rf /usr/local/bin/assets

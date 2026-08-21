@@ -3,11 +3,19 @@
 //! Shard POSTs hit `/_topcoat/shards/{id}` — there is no `{org}` path
 //! segment. Tenant must come from the shard argument (re-authorized below).
 
-use topcoat::{Result, context::Cx, router::error::not_found, runtime::shard, view::view};
+use topcoat::{
+    Result,
+    context::Cx,
+    router::{error::not_found, href},
+    runtime::shard,
+    view::view,
+};
 
 use super::{DocsFilter, load_filtered_docs_page};
 use crate::{
     app::_components::ico_chevron_right,
+    app::org::Org,
+    app::org::docs::doc::{Doc, doc_article_page},
     auth::{capability_denied, require_org},
     docs_search::normalize_org_slug,
     list_page::parse_page,
@@ -43,7 +51,10 @@ pub async fn docs_search_results(
                 <div class="vb-empty">"No matching articles."</div>
             } else {
                 for article in page_items {
-                    <a class="vb-row" href=(format!("/{}/docs/{}", org, article.slug))>
+                    <a
+                        class="vb-row"
+                        href=(href!(doc_article_page, Org(org.as_str()), Doc(article.slug.as_str())))
+                    >
                         <div style="flex: 1; min-width: 0;">
                             <div style="font-weight: 700;">(article.title.clone())</div>
                             <div

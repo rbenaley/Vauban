@@ -1,7 +1,7 @@
 //! Aggregated issue tracker at `/admin/issues` (all orgs, staff-only).
 
-mod issue_key;
-mod search_shard;
+pub(crate) mod issue_key;
+pub(crate) mod search_shard;
 
 pub(super) use search_shard::admin_issues_search_results;
 use search_shard::count_admin_filtered_issues;
@@ -9,7 +9,7 @@ use search_shard::count_admin_filtered_issues;
 use topcoat::{
     Result,
     context::Cx,
-    router::{page, query_params},
+    router::{href, page, query_params},
     view::view,
 };
 
@@ -17,10 +17,7 @@ use crate::{
     app::_components::filter_row,
     auth::{capability_denied, require_staff},
     issues_search::{normalize_org_filter, normalize_query, normalize_status},
-    list_page::{
-        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
-        with_page_param,
-    },
+    list_page::{LIST_PAGE_SIZE, PagerLinks, clamp_page, page_count, parse_page},
     perms::perms_for_user,
 };
 
@@ -36,7 +33,7 @@ struct AdminIssuesQuery {
 }
 
 #[page]
-async fn admin_issues_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_issues_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.issues_read {
@@ -60,7 +57,7 @@ async fn admin_issues_page(cx: &Cx) -> Result {
     let page = clamp_page(parse_page(raw_page), pages);
     let page_init = page.to_string();
 
-    let base = "/admin/issues".to_owned();
+    let base = href!(admin_issues_page).resolve(cx);
     let q_value = query.and_then(|q| q.q.clone()).unwrap_or_default();
     let org_value = org_filter.clone();
     let status_owned = status.clone();
@@ -68,13 +65,13 @@ async fn admin_issues_page(cx: &Cx) -> Result {
     let mut chips: Vec<(String, String, bool)> = Vec::with_capacity(1 + STATUSES.len());
     chips.push((
         "All".to_owned(),
-        chip_href(&base, &q, &org_filter, ""),
+        chip_href(cx, &q, &org_filter, ""),
         status.is_empty(),
     ));
     for s in STATUSES {
         chips.push((
             (*s).to_owned(),
-            chip_href(&base, &q, &org_filter, s),
+            chip_href(cx, &q, &org_filter, s),
             status.eq_ignore_ascii_case(s),
         ));
     }
@@ -83,7 +80,7 @@ async fn admin_issues_page(cx: &Cx) -> Result {
     let org_for_pager = org_filter.clone();
     let status_for_pager = status.clone();
     let pager = PagerLinks::from_hrefs(page, pages, |n| {
-        list_href(&base, &q_for_pager, &org_for_pager, &status_for_pager, n)
+        list_href(cx, &q_for_pager, &org_for_pager, &status_for_pager, n)
     });
     let pager_opt = if pager.show() { Some(pager) } else { None };
 
@@ -151,35 +148,17 @@ async fn admin_issues_page(cx: &Cx) -> Result {
 }
 
 /// Chip / filter href — omits `page` so filters reset to page 1.
-fn chip_href(base: &str, q: &str, org: &str, status: &str) -> String {
-    list_href(base, q, org, status, 1)
+fn chip_href(cx: &Cx, q: &str, org: &str, status: &str) -> String {
+    list_href(cx, q, org, status, 1)
 }
 
-fn list_href(base: &str, q: &str, org: &str, status: &str, page: usize) -> String {
-    let mut parts = Vec::new();
-    if !q.is_empty() {
-        parts.push(format!("q={}", urlencoding_encode(q)));
-    }
-    if !org.is_empty() {
-        parts.push(format!("org={}", urlencoding_encode(org)));
-    }
-    if !status.is_empty() {
-        parts.push(format!("status={}", urlencoding_encode(status)));
-    }
-    with_page_param(&mut parts, page);
-    href_with_query(base, &parts)
-}
-
-fn urlencoding_encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
+fn list_href(cx: &Cx, q: &str, org: &str, status: &str, page: usize) -> String {
+    href!(admin_issues_page)
+        .query(crate::app::hrefs::AdminIssuesListQ {
+            q,
+            org,
+            status,
+            page,
+        })
+        .resolve(cx)
 }

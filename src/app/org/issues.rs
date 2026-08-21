@@ -1,8 +1,8 @@
 //! Issue tracker list at `/{org}/issues`.
 
-mod issue_key;
-mod new;
-mod search_shard;
+pub(crate) mod issue_key;
+pub(crate) mod new;
+pub(crate) mod search_shard;
 
 pub(super) use search_shard::issues_search_results;
 
@@ -12,13 +12,15 @@ use topcoat::{
     router::{
         content::multipart::Multipart,
         error::{SeeOther, not_found, redirect, see_other},
-        page, path_param, query_params, route,
+        href, page, path_param, query_params, route,
     },
     view::view,
 };
 
+use crate::app::admin::issues::admin_issues_page;
 use crate::{
     app::_components::{filter_row, ico_plus},
+    app::hrefs::SearchListQ,
     app::org::Org,
     auth::{capability_denied, config, db, require_org, storage},
     db::now_unix,
@@ -32,10 +34,7 @@ use crate::{
     },
     issue_notify::{NotifyEvent, drain_pending, enqueue_issue_notify},
     issues_search::{normalize_query, normalize_status},
-    list_page::{
-        LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_offset,
-        parse_page, with_page_param,
-    },
+    list_page::{LIST_PAGE_SIZE, PagerLinks, clamp_page, page_count, page_offset, parse_page},
     models::{
         ISSUE_ATTACHMENT_OPENER_COMMENT_ID, ISSUE_MAIL_SOURCE_CREATE, Issue, RESERVED_ORG_SLUG,
     },
@@ -54,34 +53,33 @@ struct IssuesQuery {
 }
 
 /// Shareable issues list URL (`page=1` and empty filters omitted).
-pub(super) fn issues_list_href(org: &str, q: &str, status: &str, page: usize) -> String {
-    let mut parts = Vec::new();
-    if !q.is_empty() {
-        parts.push(format!("q={}", urlencoding_encode(q)));
-    }
-    if !status.is_empty() {
-        parts.push(format!("status={}", urlencoding_encode(status)));
-    }
-    with_page_param(&mut parts, page);
-    href_with_query(&format!("/{org}/issues"), &parts)
+pub(super) fn issues_list_href(cx: &Cx, org: &str, q: &str, status: &str, page: usize) -> String {
+    href!(issues_page, Org(org))
+        .query(SearchListQ {
+            q,
+            status,
+            cat: "",
+            page,
+        })
+        .resolve(cx)
 }
 
 #[route(GET "/vauban/issues")]
-async fn redirect_reserved_issues_list() -> Result {
-    Err(redirect("/admin/issues").into())
+pub(crate) async fn redirect_reserved_issues_list(cx: &Cx) -> Result {
+    Err(redirect(href!(admin_issues_page).resolve(cx)).into())
 }
 
 /// POST alias: keep `see_other` (303) so the follow-up is GET, not a re-POST.
 #[route(POST "/vauban/issues")]
-async fn redirect_reserved_issues_create() -> Result<SeeOther> {
-    Ok(see_other("/admin/issues"))
+pub(crate) async fn redirect_reserved_issues_create(cx: &Cx) -> Result<SeeOther> {
+    Ok(see_other(href!(admin_issues_page).resolve(cx)))
 }
 
 #[page]
-async fn issues_page(cx: &Cx) -> Result {
+pub(crate) async fn issues_page(cx: &Cx) -> Result {
     let slug = path_param::<Org>(cx);
     if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Err(redirect("/admin/issues").into());
+        return Err(redirect(href!(admin_issues_page).resolve(cx)).into());
     }
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -103,7 +101,7 @@ async fn issues_page(cx: &Cx) -> Result {
     let pages = page_count(total, LIST_PAGE_SIZE);
     page = clamp_page(page, pages);
 
-    let base = format!("/{}/issues", slug);
+    let base = href!(issues_page, Org(slug)).resolve(cx);
     let q_value = query.as_ref().and_then(|q| q.q.clone()).unwrap_or_default();
     let org = slug.to_owned();
     let status_owned = status.clone();
@@ -111,7 +109,7 @@ async fn issues_page(cx: &Cx) -> Result {
     let q_for_pager = q.clone();
     let status_for_pager = status_owned.clone();
     let pager = PagerLinks::from_hrefs(page, pages, |n| {
-        issues_list_href(&org_for_pager, &q_for_pager, &status_for_pager, n)
+        issues_list_href(cx, &org_for_pager, &q_for_pager, &status_for_pager, n)
     });
     let pager_opt = if pager.show() { Some(pager) } else { None };
 
@@ -121,7 +119,7 @@ async fn issues_page(cx: &Cx) -> Result {
     for s in STATUSES {
         chips.push((
             (*s).to_owned(),
-            issues_list_href(&org, &q, s, 1),
+            issues_list_href(cx, &org, &q, s, 1),
             status.eq_ignore_ascii_case(s),
         ));
     }
@@ -138,7 +136,10 @@ async fn issues_page(cx: &Cx) -> Result {
         >
             <h1 class="vb-title" style="margin: 0;">"Issue tracker"</h1>
             if perms.issues_write {
-                <a class="vb-btn vb-btn-ico" href=(format!("/{}/issues/new", slug))>
+                <a
+                    class="vb-btn vb-btn-ico"
+                    href=(href!(new::new_issue_page, Org(slug)))
+                >
                     (ico_plus(cx, 14).await?)
                     <span>"Report an issue"</span>
                 </a>
@@ -210,9 +211,11 @@ macro_rules! org_issues_filtered_query {
 
 /// Request-scoped COUNT so list page + embedded shard share one SQL round-trip.
 #[memoize]
-async fn count_filtered_issues_memo(cx: &Cx, org_id: u64, q: &str, status: &str) -> usize {
+async fn count_filtered_issues_memo(cx: &Cx, org_id: u64, q: usize, status: usize) -> usize {
+    let q = crate::request_intern::interned(cx, q);
+    let status = crate::request_intern::interned(cx, status);
     let mut database = db(cx);
-    org_issues_filtered_query!(org_id, q, status)
+    org_issues_filtered_query!(org_id, q.as_str(), status.as_str())
         .count()
         .exec(&mut database)
         .await
@@ -221,7 +224,13 @@ async fn count_filtered_issues_memo(cx: &Cx, org_id: u64, q: &str, status: &str)
 
 /// Count org issues matching `q` / `status` (SQL; memoized per request).
 pub(super) async fn count_filtered_issues(cx: &Cx, org_id: u64, q: &str, status: &str) -> usize {
-    *count_filtered_issues_memo(cx, org_id, q, status).await
+    *count_filtered_issues_memo(
+        cx,
+        org_id,
+        crate::request_intern::intern(cx, q),
+        crate::request_intern::intern(cx, status),
+    )
+    .await
 }
 
 /// One page of org issues matching `q` / `status` (SQL order + limit/offset).
@@ -290,31 +299,37 @@ async fn parse_report_multipart(mut multipart: Multipart) -> Result<ReportMultip
 }
 
 #[route(POST "/{org}/issues")]
-async fn report_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
+pub(crate) async fn report_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let slug = path_param::<Org>(cx);
     if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Ok(see_other("/admin/issues"));
+        return Ok(see_other(href!(admin_issues_page).resolve(cx)));
     }
     let ctx = require_org(cx, slug).await.map_err(|_| not_found())?;
     let perms = perms_for_user(cx, &ctx.user).await;
     if !perms.issues_write {
-        return Ok(see_other(&format!("/{slug}/issues")));
+        return Ok(see_other(href!(issues_page, Org(slug)).resolve(cx)));
     }
 
     let form = parse_report_multipart(multipart).await?;
     let title = form.title.trim().to_owned();
     let Some(component) = normalize_issue_component(&form.component).map(str::to_owned) else {
-        return Ok(see_other(&format!("/{slug}/issues/new")));
+        return Ok(see_other(href!(new::new_issue_page, Org(slug)).resolve(cx)));
     };
     let severity = form.severity.trim().to_owned();
     let details = form.details.trim().to_owned();
 
     if title.is_empty() {
-        return Ok(see_other(&format!("/{slug}/issues")));
+        return Ok(see_other(href!(issues_page, Org(slug)).resolve(cx)));
     }
     let max_att = config(cx).issues.max_attachments_per_comment.max(1);
     if form.screenshots.len() > max_att {
-        return Ok(see_other(&format!("/{slug}/issues/new?err=attach")));
+        return Ok(see_other(
+            href!(new::new_issue_page, Org(slug))
+                .query(crate::app::hrefs::ErrQ {
+                    err: Some("attach"),
+                })
+                .resolve(cx),
+        ));
     }
 
     let mut database = db(cx);
@@ -335,7 +350,13 @@ async fn report_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
             Ok(t) => t,
             Err(err) => {
                 crate::storage::log::portal_attach_failed("org_issue_create_screenshots", &err);
-                return Ok(see_other(&format!("/{slug}/issues/new?err=attach")));
+                return Ok(see_other(
+                    href!(new::new_issue_page, Org(slug))
+                        .query(crate::app::hrefs::ErrQ {
+                            err: Some("attach"),
+                        })
+                        .resolve(cx),
+                ));
             }
         }
     };
@@ -402,9 +423,26 @@ async fn report_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
                         error = %err,
                         "issue create attach_many failed after insert"
                     );
-                    return Ok(see_other(&format!("/{slug}/issues/{key}?err=attach")));
+                    return Ok(see_other(
+                        href!(
+                            issue_key::issue_detail_page,
+                            Org(slug),
+                            issue_key::IssueKey(key.as_str())
+                        )
+                        .query(crate::app::hrefs::ErrQ {
+                            err: Some("attach"),
+                        })
+                        .resolve(cx),
+                    ));
                 }
-                return Ok(see_other(&format!("/{slug}/issues/{key}")));
+                return Ok(see_other(
+                    href!(
+                        issue_key::issue_detail_page,
+                        Org(slug),
+                        issue_key::IssueKey(key.as_str())
+                    )
+                    .resolve(cx),
+                ));
             }
             Err(err) if is_unique_violation(&err) && attempt + 1 < ISSUE_KEY_CREATE_ATTEMPTS => {
                 tracing::warn!(
@@ -439,33 +477,48 @@ async fn report_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     if let Some(err) = last_err {
         tracing::warn!(org = %slug, error = %err, "issue create exhausted retries");
     }
-    Ok(see_other(&format!("/{slug}/issues?err=create")))
-}
-
-fn urlencoding_encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
+    Ok(see_other(
+        href!(issues_page, Org(slug))
+            .query(crate::app::hrefs::ErrQ {
+                err: Some("create"),
+            })
+            .resolve(cx),
+    ))
 }
 
 #[cfg(test)]
 mod issues_list_href_tests {
-    use super::issues_list_href;
+    use crate::app::hrefs::SearchListQ;
+    use crate::app::org::Org;
+    use topcoat::{context::Cx, router::href};
 
     #[test]
     fn issues_list_href_omits_page_one_and_empty_filters() {
-        assert_eq!(issues_list_href("acme", "", "", 1), "/acme/issues");
-        assert_eq!(issues_list_href("acme", "ssh", "", 1), "/acme/issues?q=ssh");
+        let cx = Cx::default();
         assert_eq!(
-            issues_list_href("acme", "ssh", "Open", 2),
+            href!("/{org}/issues", Org("acme")).resolve(&cx),
+            "/acme/issues"
+        );
+        assert_eq!(
+            href!("/{org}/issues", Org("acme"))
+                .query(SearchListQ {
+                    q: "ssh",
+                    status: "",
+                    cat: "",
+                    page: 1,
+                })
+                .resolve(&cx),
+            "/acme/issues?q=ssh"
+        );
+        assert_eq!(
+            href!("/{org}/issues", Org("acme"))
+                .query(SearchListQ {
+                    q: "ssh",
+                    status: "Open",
+                    cat: "",
+                    page: 2,
+                })
+                .resolve(&cx),
             "/acme/issues?q=ssh&status=Open&page=2"
         );
     }

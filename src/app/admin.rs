@@ -1,23 +1,25 @@
 //! Global admin tools under `/admin/…` — gated by [`crate::auth::require_staff`].
 
-mod companies;
-mod docs;
-mod issues;
-mod key;
-mod releases;
+pub(crate) mod companies;
+pub(crate) mod docs;
+pub(crate) mod issues;
+pub(crate) mod key;
+pub(crate) mod releases;
 
 pub use releases::admin_releases_list_href;
 
 use topcoat::{
     Result,
     context::Cx,
-    router::{error::redirect, layout, route},
+    router::{error::NotFoundError, error::redirect, href, layout, not_found, route},
     view::view,
 };
 
+not_found!("/admin");
+
 use crate::{
     app::{
-        _components::{vb_rail, vb_topbar},
+        _components::{branded_404_body, vb_rail, vb_topbar},
         root_layout,
     },
     auth::require_staff,
@@ -30,6 +32,13 @@ async fn admin_layout(cx: &Cx, slot: Result) -> Result {
     let _staff = require_staff(cx).await?;
     let (section, crumb) = nav_from_cx(cx);
     let org_slug = RESERVED_ORG_SLUG.to_owned();
+    let inner = match slot {
+        Err(error) if error.downcast_ref::<NotFoundError>().is_some() => view! {
+            (topcoat::router::StatusCode::NOT_FOUND)
+            branded_404_body()
+        },
+        content => content,
+    }?;
 
     view! {
         cx =>
@@ -37,7 +46,7 @@ async fn admin_layout(cx: &Cx, slot: Result) -> Result {
             vb_rail(org_slug: &org_slug, section: section)
             <div class="vb-main">
                 vb_topbar(org_slug: &org_slug, crumb: &crumb)
-                <div class="vb-scroll"><div class="vb-screen">(slot?)</div></div>
+                <div class="vb-scroll"><div class="vb-screen">(inner)</div></div>
             </div>
         </div>
     }
@@ -53,7 +62,7 @@ pub(crate) async fn render_admin_page(cx: &Cx, slot: Result) -> Result {
 /// Hub redirects to the first admin tool (Issues).
 /// Navigational GET -> `redirect` (307), not `see_other` (303 PRG).
 #[route(GET "/admin")]
-async fn admin_index(cx: &Cx) -> Result {
+pub(crate) async fn admin_index(cx: &Cx) -> Result {
     let _staff = require_staff(cx).await?;
-    Err(redirect("/admin/issues").into())
+    Err(redirect(href!(issues::admin_issues_page).resolve(cx)).into())
 }

@@ -11,11 +11,11 @@ use crate::common::{
     test_config, test_db, test_router, test_router_with_config, unique_email, unique_slug,
 };
 
-fn location(resp: &topcoat::router::Response) -> Option<&str> {
+fn location(resp: &topcoat::router::response::Response) -> Option<&str> {
     resp.headers().get("location").and_then(|v| v.to_str().ok())
 }
 
-async fn body_text(resp: topcoat::router::Response) -> String {
+async fn body_text(resp: topcoat::router::response::Response) -> String {
     let bytes = resp.into_body().collect().await.expect("body").to_bytes();
     String::from_utf8_lossy(&bytes).into_owned()
 }

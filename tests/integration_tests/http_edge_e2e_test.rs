@@ -12,7 +12,7 @@ use crate::common::{
     db_lock, get, install_crypto_once, post_form, request, status, test_config, test_router,
 };
 
-fn header<'a>(resp: &'a topcoat::router::Response, name: &str) -> Option<&'a str> {
+fn header<'a>(resp: &'a topcoat::router::response::Response, name: &str) -> Option<&'a str> {
     resp.headers().get(name).and_then(|v| v.to_str().ok())
 }
 

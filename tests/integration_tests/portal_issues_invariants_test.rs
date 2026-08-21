@@ -86,7 +86,7 @@ fn inv_report_issue_safe_key_allocation() {
         "report_issue must call allocate_issue_key"
     );
     assert!(
-        src.contains("err=create"),
+        src.contains("err=create") || src.contains("err: Some(\"create\")"),
         "failed create must redirect with err=create"
     );
     assert!(

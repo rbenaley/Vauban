@@ -149,7 +149,7 @@ fn inv_failed_download_redirects_to_builds_modal() {
     // Public cURL surface keeps machine-readable text + status.
     let eph = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/app/org/builds/ephemeral.rs"
+        "/src/app/releases/eph_token/eph_pkg.rs"
     ));
     assert!(
         eph.contains("text/plain") && eph.contains("SERVICE_UNAVAILABLE"),

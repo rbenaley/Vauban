@@ -26,7 +26,7 @@ cargo_home := env_var_or_default("CARGO_HOME", env_var("HOME") + "/.cargo")
 export PATH := cargo_home + "/bin:" + env_var("PATH")
 
 # Keep in sync with README / topcoat facade pin in Cargo.toml.
-topcoat_cli_version := "0.5.0"
+topcoat_cli_version := "0.6.2"
 
 # ensure-vcp-test probe (Unix socket). App tests use config/testing.toml (TCP).
 vcp_test_url := "postgresql://vcp_test:vcp_test@/vcp_test"
@@ -94,10 +94,10 @@ ensure-vcp-test:
 cargo-build *ARGS:
     cargo build {{ARGS}}
 
-# Refresh target/assets when missing, older than the vcp binary, or built for
-# a different Cargo profile. Topcoat 0.5 Tailwind AssetIds embed OUT_DIR — a
-# rebuild without rebundle (or a test-profile bundle left behind after
-# `just test`) leaves a stale manifest and panics on first HTML render.
+# Refresh exe-adjacent assets/ when missing, older than the vcp binary, or
+# built for a different Cargo profile. Topcoat 0.6 writes next to the scanned
+# binary (`target/{debug,release}/assets`). A rebuild without rebundle leaves
+# stale AssetIds and panics on first HTML render.
 [private]
 ensure-asset-bundle *ARGS: ensure-topcoat
     #!/usr/bin/env bash
@@ -109,8 +109,9 @@ ensure-asset-bundle *ARGS: ensure-topcoat
       fi
     done
     bin="target/${profile}/vcp"
-    manifest="target/assets/manifest.toml"
-    stamp="target/assets/.bundle-profile"
+    assets_dir="$(dirname "$bin")/assets"
+    manifest="${assets_dir}/manifest.toml"
+    stamp="${assets_dir}/.bundle-profile"
     if [[ ! -f "$bin" ]]; then
       echo "error: missing ${bin}; build the binary before bundling assets" >&2
       exit 1
@@ -130,14 +131,14 @@ ensure-asset-bundle *ARGS: ensure-topcoat
     echo "ensure-asset-bundle: bundling assets for ${bin} (profile=${profile})…" >&2
     # Explicit --bin: the package also ships `vcp-store`.
     topcoat asset bundle --bin vcp {{ARGS}}
-    mkdir -p target/assets
+    mkdir -p "$assets_dir"
     printf '%s\n' "$profile" >"$stamp"
 
 # Build the binary and refresh assets when the binary is newer than the
 # manifest (or the manifest is missing / wrong profile).
 build *ARGS: (cargo-build ARGS) (ensure-asset-bundle ARGS)
 
-# Force-bundle Topcoat assets into target/assets (always runs the bundler).
+# Force-bundle Topcoat assets next to the binary (always runs the bundler).
 # Builds first: the bundler scans the compiled binary for asset! decls
 # (Tailwind OUT_DIR CSS, fonts, etc.). Profile must match the binary:
 # `just bundle` | `just bundle --release`.
@@ -151,8 +152,9 @@ bundle *ARGS: ensure-topcoat (cargo-build ARGS)
       fi
     done
     topcoat asset bundle --bin vcp {{ARGS}}
-    mkdir -p target/assets
-    printf '%s\n' "$profile" >target/assets/.bundle-profile
+    assets_dir="target/${profile}/assets"
+    mkdir -p "$assets_dir"
+    printf '%s\n' "$profile" >"${assets_dir}/.bundle-profile"
 
 # Check without producing binaries
 check *ARGS:
@@ -214,9 +216,13 @@ ensure-test-asset-bundle *ARGS: ensure-topcoat
     cargo test --no-run {{ARGS}}
     echo "ensure-test-asset-bundle: bundling assets (profile=test)…" >&2
     topcoat asset bundle --bin vcp --profile test
-    assets_dir="${CARGO_TARGET_DIR:-target}/assets"
-    mkdir -p "$assets_dir"
-    printf '%s\n' "test" >"$assets_dir/.bundle-profile"
+    # 0.6 writes next to the scanned binary. Test bins live under deps/;
+    # also stamp debug/test profile dirs so load_asset_bundle can walk up.
+    for assets_dir in target/debug/assets target/test/assets; do
+      if [[ -f "${assets_dir}/manifest.toml" ]]; then
+        printf '%s\n' "test" >"${assets_dir}/.bundle-profile"
+      fi
+    done
 
 # Run tests (single-threaded). Ensures vcp_test + test-profile asset bundle.
 # Config roots come from exported VCP_CONFIG_DIR / VCP_PACKAGE_ROOT (no set_var).
@@ -237,8 +243,8 @@ release: ensure-topcoat
     set -euo pipefail
     cargo build --release
     topcoat asset bundle --bin vcp --release
-    mkdir -p target/assets
-    printf '%s\n' "release" >target/assets/.bundle-profile
+    mkdir -p target/release/assets
+    printf '%s\n' "release" >target/release/assets/.bundle-profile
 
 # FreeBSD package (requires FreeBSD host + pkg(8) + prior `just release`).
 package:
@@ -248,7 +254,7 @@ package:
 # Examples: just run | just run --release
 # Smoke: curl -k https://127.0.0.1:3000/login
 # Builds then refreshes assets when needed (see ensure-asset-bundle) so
-# binary AssetIds match target/assets. Prefer this over bare `cargo run`.
+# binary AssetIds match the exe-adjacent assets/ bundle. Prefer this over bare `cargo run`.
 # Fail closed early when server.pid_file (default /tmp/vcp.pid) names a
 # live process named `vcp` — not a generic "port in use" check.
 run *ARGS:

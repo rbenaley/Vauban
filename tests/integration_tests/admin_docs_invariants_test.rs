@@ -143,7 +143,7 @@ fn inv_admin_list_uses_id_and_sorts() {
     );
     assert!(src.contains("Unpublish"));
     assert!(src.contains("Publish"));
-    assert!(src.contains("delete="));
+    assert!(src.contains("delete=") || src.contains("DeleteQ"));
     assert!(src.contains("ico_trash"));
     assert!(src.contains("Delete permanently"));
     assert!(

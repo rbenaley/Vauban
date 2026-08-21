@@ -1,11 +1,26 @@
 use topcoat::{
     Result,
     context::Cx,
+    router::href,
     view::{component, view},
 };
 
 use crate::{
-    auth::require_org, nav::NavSection, perms::perms_for_user, release_pkg::org_builds_entitled, ui,
+    app::{
+        admin::{
+            companies::admin_companies_page, docs::admin_docs_page, issues::admin_issues_page,
+            key::admin_key_page, releases::admin_releases_page,
+        },
+        org::{
+            Org, account::account_page, builds::builds_page, dashboard, docs::docs_page,
+            issues::issues_page,
+        },
+    },
+    auth::require_org,
+    nav::NavSection,
+    perms::perms_for_user,
+    release_pkg::org_builds_entitled,
+    ui,
 };
 
 use super::icons::{
@@ -25,16 +40,21 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
         ctx.org.industrial_lts_subscriptions,
     );
 
-    let home_href = format!("/{org_slug}");
-    let docs_href = format!("/{org_slug}/docs");
-    let builds_href = format!("/{org_slug}/builds");
+    let home_href = href!(dashboard, Org(org_slug)).resolve(cx);
+    let docs_href = href!(docs_page, Org(org_slug)).resolve(cx);
+    let builds_href = href!(builds_page, Org(org_slug)).resolve(cx);
     // Staff Issues live under `/admin/issues` (not `/{org}/issues`).
     let issues_href = if show_admin {
-        "/admin/issues".to_owned()
+        href!(admin_issues_page).resolve(cx)
     } else {
-        format!("/{org_slug}/issues")
+        href!(issues_page, Org(org_slug)).resolve(cx)
     };
-    let account_href = format!("/{org_slug}/account");
+    let account_href = href!(account_page, Org(org_slug)).resolve(cx);
+    let admin_issues = href!(admin_issues_page);
+    let admin_docs = href!(admin_docs_page);
+    let admin_releases = href!(admin_releases_page);
+    let admin_companies = href!(admin_companies_page);
+    let admin_key = href!(admin_key_page);
     let initials = ui::org_initials(&org_name);
 
     view! {
@@ -89,28 +109,28 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
                 <div class="vb-rail-rule"></div>
                 <div class="vb-rail-admin">"ADMIN"</div>
                 <a
-                    href="/admin/issues"
+                    href=(admin_issues)
                     class=(rail_class(section == NavSection::AdminIssues))
                 >
                     (ico_issues(cx, 17).await?)
                     <span class="lbl">"Issues"</span>
                 </a>
                 <a
-                    href="/admin/docs"
+                    href=(admin_docs)
                     class=(rail_class(section == NavSection::AdminDocs))
                 >
                     (ico_edit(cx, 17).await?)
                     <span class="lbl">"Docs"</span>
                 </a>
                 <a
-                    href="/admin/releases"
+                    href=(admin_releases)
                     class=(rail_class(section == NavSection::AdminReleases))
                 >
                     (ico_release(cx, 17).await?)
                     <span class="lbl">"Rel."</span>
                 </a>
                 <a
-                    href="/admin/companies"
+                    href=(admin_companies)
                     class=(rail_class(section == NavSection::AdminCompanies))
                 >
                     (ico_orgs(cx, 17).await?)
@@ -118,7 +138,7 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
                 </a>
                 if perms.key_manage {
                     <a
-                        href="/admin/key"
+                        href=(admin_key)
                         class=(rail_class(section == NavSection::AdminKey))
                     >
                         (ico_key(cx, 17).await?)

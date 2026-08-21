@@ -25,6 +25,7 @@
 //! - `cargo test --test integration_tests -- companies_magic_mail -- --test-threads=1`
 //! - `cargo test --test integration_tests -- choose_org -- --test-threads=1`
 //! - `cargo test --test integration_tests -- topcoat_boolean_attrs -- --test-threads=1`
+//! - `cargo test --test integration_tests -- topcoat_0_6 -- --test-threads=1`
 //! - `cargo test --test integration_tests -- storage_ -- --test-threads=1`
 //! - `cargo test --test integration_tests -- seed_data -- --test-threads=1`
 //! - `cargo test --test integration_tests -- freebsd_pkg -- --test-threads=1`
@@ -153,4 +154,8 @@ mod toasty_paginate_battle_test;
 mod toasty_paginate_e2e_test;
 mod toasty_paginate_invariants_test;
 mod toasty_paginate_proptest;
+mod topcoat_0_6_battle_test;
+mod topcoat_0_6_e2e_test;
+mod topcoat_0_6_invariants_test;
+mod topcoat_0_6_proptest;
 mod topcoat_boolean_attrs_invariants_test;

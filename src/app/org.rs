@@ -1,10 +1,10 @@
 //! Org-scoped routes under `/{org}/…`.
 
-mod account;
-mod builds;
-mod docs;
-mod images;
-mod issues;
+pub(crate) mod account;
+pub(crate) mod builds;
+pub(crate) mod docs;
+pub(crate) mod images;
+pub(crate) mod issues;
 
 pub use builds::builds_list_href;
 pub use builds::{DL_ERROR_PARAM, DownloadError, download_error_href};
@@ -12,7 +12,7 @@ pub use builds::{DL_ERROR_PARAM, DownloadError, download_error_href};
 use topcoat::{
     Result,
     context::Cx,
-    router::{layout, page, path_param},
+    router::{error::NotFoundError, href, layout, page, path_param},
     view::view,
 };
 
@@ -28,10 +28,11 @@ use crate::{
     ui::{channel_badge_class, note_tag_color},
 };
 
-use super::_components::{ico_builds, ico_docs, ico_issues, note_inline_text, vb_rail, vb_topbar};
+use super::_components::{
+    branded_404_body, ico_builds, ico_docs, ico_issues, note_inline_text, vb_rail, vb_topbar,
+};
 
-#[path_param]
-pub struct Org(str);
+path_param!(pub org);
 
 #[layout]
 async fn org_layout(cx: &Cx, slot: Result) -> Result {
@@ -40,6 +41,13 @@ async fn org_layout(cx: &Cx, slot: Result) -> Result {
     let _ctx = require_org(cx, slug).await?;
     let (section, crumb) = nav_from_cx(cx);
     let org_slug = slug.to_owned();
+    let inner = match slot {
+        Err(error) if error.downcast_ref::<NotFoundError>().is_some() => view! {
+            (topcoat::router::StatusCode::NOT_FOUND)
+            branded_404_body()
+        },
+        content => content,
+    }?;
 
     view! {
         cx =>
@@ -47,14 +55,14 @@ async fn org_layout(cx: &Cx, slot: Result) -> Result {
             vb_rail(org_slug: &org_slug, section: section)
             <div class="vb-main">
                 vb_topbar(org_slug: &org_slug, crumb: &crumb)
-                <div class="vb-scroll"><div class="vb-screen">(slot?)</div></div>
+                <div class="vb-scroll"><div class="vb-screen">(inner)</div></div>
             </div>
         </div>
     }
 }
 
 #[page]
-async fn dashboard(cx: &Cx) -> Result {
+pub(crate) async fn dashboard(cx: &Cx) -> Result {
     let slug = path_param::<Org>(cx);
     let ctx = require_org(cx, slug).await?;
     let lts = ctx.org.lts_subscriptions;
@@ -98,10 +106,12 @@ async fn dashboard(cx: &Cx) -> Result {
         .next();
 
     let issues_href = if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        "/admin/issues".to_owned()
+        href!(crate::app::admin::issues::admin_issues_page).resolve(cx)
     } else {
-        format!("/{slug}/issues")
+        href!(issues::issues_page, Org(slug)).resolve(cx)
     };
+    let docs_href = href!(docs::docs_page, Org(slug)).resolve(cx);
+    let builds_href = href!(builds::builds_page, Org(slug)).resolve(cx);
 
     let latest_release = releases.first();
     let build_version = latest_release
@@ -157,7 +167,7 @@ async fn dashboard(cx: &Cx) -> Result {
         <div class="vb-grid-3">
             <a
                 class="vb-card"
-                href=(format!("/{}/docs", slug))
+                href=(docs_href.clone())
                 style="padding: 20px; min-height: 168px;"
             >
                 <div
@@ -185,7 +195,7 @@ async fn dashboard(cx: &Cx) -> Result {
             if show_builds {
                 <a
                     class="vb-card"
-                    href=(format!("/{}/builds", slug))
+                    href=(builds_href.clone())
                     style="padding: 20px; min-height: 168px;"
                 >
                     <div
@@ -318,7 +328,7 @@ async fn dashboard(cx: &Cx) -> Result {
                 if show_builds {
                     <a
                         class="vb-link"
-                        href=(format!("/{}/builds", slug))
+                        href=(builds_href.clone())
                         style="display: inline-block; margin-top: 14px;"
                     >
                         "All builds"

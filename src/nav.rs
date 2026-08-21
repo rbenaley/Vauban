@@ -1,6 +1,6 @@
 //! Org chrome navigation: active section + crumb derived from the request path.
 
-use topcoat::{context::Cx, router::uri};
+use topcoat::{context::Cx, router::request::uri};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavSection {

@@ -6,7 +6,7 @@ use topcoat::{
     mail::Mailbox,
     router::{
         error::{SeeOther, redirect, see_other},
-        layout, page, query_params, route,
+        href, layout, page, query_params, route,
     },
     runtime::{Event, procedure},
     session,
@@ -14,7 +14,11 @@ use topcoat::{
 };
 
 use crate::{
-    app::root_layout,
+    app::{
+        hrefs::LoginErrorQ,
+        org::{Org, dashboard},
+        root_layout,
+    },
     auth::{
         PostAuthLanding, client_orgs_for_user, current_user, db, delete_session_hash,
         persist_session, post_auth_landing,
@@ -43,8 +47,14 @@ pub(crate) const LOGIN_LINK_ERROR_MESSAGE: &str =
 pub(crate) const LOGIN_UNAVAILABLE_MESSAGE: &str =
     "Sign-in is temporarily unavailable. Please try again later.";
 
-fn see_other_login_link_error() -> SeeOther {
-    see_other(&format!("/login?error={LOGIN_LINK_ERROR}"))
+fn see_other_login_link_error(cx: &Cx) -> SeeOther {
+    see_other(
+        href!(login_page)
+            .query(LoginErrorQ {
+                error: LOGIN_LINK_ERROR,
+            })
+            .resolve(cx),
+    )
 }
 
 #[query_params]
@@ -165,15 +175,15 @@ async fn request_login_link(cx: &Cx, email: String) -> Result<f64> {
 }
 
 #[page]
-async fn login_page(cx: &Cx) -> Result {
+pub(crate) async fn login_page(cx: &Cx) -> Result {
     // Valid session: skip the login form and land on the portal home / picker.
     if let Some(user) = current_user(cx).await {
         match post_auth_landing(cx, user).await? {
             PostAuthLanding::Org(slug) => {
-                return Err(redirect(&format!("/{slug}")).into());
+                return Err(redirect(href!(dashboard, Org(slug)).resolve(cx)).into());
             }
             PostAuthLanding::ChooseOrg => {
-                return Err(redirect("/choose-org").into());
+                return Err(redirect(href!(choose_org_page).resolve(cx)).into());
             }
             PostAuthLanding::None => {}
         }
@@ -381,7 +391,7 @@ struct MagicQuery {
 }
 
 #[route(GET "/login/magic")]
-async fn login_magic(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn login_magic(cx: &Cx) -> Result<SeeOther> {
     let raw = topcoat::router::query_params::<MagicQuery>(cx)
         .ok()
         .and_then(|q| q.token.clone())
@@ -392,33 +402,33 @@ async fn login_magic(cx: &Cx) -> Result<SeeOther> {
         .ok()
         .flatten()
     else {
-        return Ok(see_other_login_link_error());
+        return Ok(see_other_login_link_error(cx));
     };
 
     let session = session::start(cx).await?;
     persist_session(cx, session, user.id).await?;
 
     match post_auth_landing(cx, &user).await? {
-        PostAuthLanding::Org(slug) => Ok(see_other(&format!("/{slug}"))),
-        PostAuthLanding::ChooseOrg => Ok(see_other("/choose-org")),
+        PostAuthLanding::Org(slug) => Ok(see_other(href!(dashboard, Org(slug)).resolve(cx))),
+        PostAuthLanding::ChooseOrg => Ok(see_other(href!(choose_org_page).resolve(cx))),
         PostAuthLanding::None => {
             if let Some(hash) = session::stop(cx).await? {
                 delete_session_hash(cx, &hash).await?;
             }
-            Ok(see_other("/login"))
+            Ok(see_other(href!(login_page).resolve(cx)))
         }
     }
 }
 
 /// Multi-org picker after magic-link / session entry when N>1 client memberships.
 #[route(GET "/choose-org")]
-async fn choose_org_page(cx: &Cx) -> Result {
+pub(crate) async fn choose_org_page(cx: &Cx) -> Result {
     let Some(user) = current_user(cx).await else {
-        return Err(redirect("/login").into());
+        return Err(redirect(href!(login_page).resolve(cx)).into());
     };
 
     if user.portal_role == PORTAL_ROLE_ADMIN {
-        return Err(redirect(&format!("/{RESERVED_ORG_SLUG}")).into());
+        return Err(redirect(href!(dashboard, Org(RESERVED_ORG_SLUG)).resolve(cx)).into());
     }
 
     let clients = client_orgs_for_user(cx, user.id).await?;
@@ -427,10 +437,12 @@ async fn choose_org_page(cx: &Cx) -> Result {
             if let Some(hash) = session::stop(cx).await? {
                 delete_session_hash(cx, &hash).await?;
             }
-            return Err(redirect("/login").into());
+            return Err(redirect(href!(login_page).resolve(cx)).into());
         }
         1 => {
-            return Err(redirect(&format!("/{}", clients[0].slug)).into());
+            return Err(
+                redirect(href!(dashboard, Org(clients[0].slug.as_str())).resolve(cx)).into(),
+            );
         }
         _ => {}
     }
@@ -444,7 +456,10 @@ async fn choose_org_page(cx: &Cx) -> Result {
         <ul class="vb-login-org-list">
             for org in &clients {
                 <li>
-                    <a class="vb-login-org-link" href=(format!("/{}", org.slug))>
+                    <a
+                        class="vb-login-org-link"
+                        href=(href!(dashboard, Org(org.slug.as_str())))
+                    >
                         <span class="vb-login-org-name">(org.name.clone())</span>
                         <span class="vb-login-org-slug vb-mono">
                             (org.slug.clone())
@@ -459,11 +474,11 @@ async fn choose_org_page(cx: &Cx) -> Result {
 }
 
 #[route(POST "/logout")]
-async fn logout(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn logout(cx: &Cx) -> Result<SeeOther> {
     if let Some(hash) = session::stop(cx).await? {
         delete_session_hash(cx, &hash).await?;
     }
-    Ok(see_other("/login"))
+    Ok(see_other(href!(login_page).resolve(cx)))
 }
 
 #[cfg(test)]

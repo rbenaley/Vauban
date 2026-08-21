@@ -1,8 +1,9 @@
 //! Property tests for release metadata shaping and status badges.
 
 use proptest::prelude::*;
+use topcoat::{context::Cx, router::href};
 use vcp::{
-    app::admin_releases_list_href,
+    app::hrefs::ChannelPageQ,
     docs_version::is_delete_confirm,
     freebsd_pkg::{FreeBsdPkgInfo, craft_minimal_pkg, inspect},
     models::{RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED},
@@ -21,7 +22,9 @@ proptest! {
         channel in prop_oneof![Just(""), Just("LTS"), Just("Stable"), Just("EOL")],
         page in 1usize..20,
     ) {
-        let href = admin_releases_list_href(channel, page);
+        let href = href!("/admin/releases")
+            .query(ChannelPageQ { channel, page })
+            .resolve(&Cx::default());
         prop_assert!(href.starts_with("/admin/releases"));
         if channel.is_empty() {
             prop_assert!(!href.contains("channel="));

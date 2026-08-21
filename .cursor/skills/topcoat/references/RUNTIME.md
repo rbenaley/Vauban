@@ -131,10 +131,13 @@ Trailing-slash canonicalization (VCP):
 
 - Pure helper: `http_canonical::trailing_slash_redirect_location`
 - Safe methods only (`GET` / `HEAD`) via `should_redirect_trailing_slash`
-- Root layer calls `redirect_permanent(&location).into_response(cx)?`
+- Pathless `Layer` (`path() -> None`, registered with `.layer(...)`) calls
+  `redirect_permanent(&location).into_response(&cx)?`
 - Do **not** use `MOVED_PERMANENTLY` (301) when `redirect_permanent` fits
+- Do **not** use `#[layer]` in `src/app.rs` for this: 0.6 scopes it to `/`
+  and skips unmatched `/login/`
 
-In a `#[layer]`, convert with `IntoResponse` so security headers can still
+In a pathless layer, convert with `IntoResponse` so security headers can still
 be applied to the redirect response before returning `Ok(response)`.
 Do **not** `?`-propagate `next.run(...).await` when the layer must decorate
 responses: handler `Err(redirect(...))` would skip header application.

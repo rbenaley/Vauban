@@ -17,7 +17,7 @@ use proptest::test_runner::FileFailurePersistence;
 use toasty::Db;
 use tokio::sync::Mutex;
 use topcoat::mail::MemoryTransport;
-use topcoat::router::{Body, Method, Request, Response, Router, StatusCode};
+use topcoat::router::{Body, Method, Router, StatusCode, request::Request, response::Response};
 use vcp::{
     app,
     auth::persist_session_record,

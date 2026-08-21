@@ -12,7 +12,7 @@ use crate::common::{
     urlencoding_encode,
 };
 
-async fn body_text(resp: topcoat::router::Response) -> String {
+async fn body_text(resp: topcoat::router::response::Response) -> String {
     let bytes = resp.into_body().collect().await.expect("body").to_bytes();
     String::from_utf8_lossy(&bytes).into_owned()
 }

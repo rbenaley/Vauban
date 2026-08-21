@@ -12,19 +12,17 @@ use topcoat::{
     router::{
         content::Form,
         error::{SeeOther, see_other},
-        page, query_params, route,
+        href, page, query_params, route,
     },
     view::view,
 };
 
+use crate::app::hrefs::ErrQ;
 use crate::{
     app::_components::{ico_key, list_toolbar},
     app::VCP_WEBAUTHN_JS,
     auth::{capability_denied, config, require_staff, storage},
-    list_page::{
-        KEY_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
-        with_named_page_param,
-    },
+    list_page::{KEY_PAGE_SIZE, PagerLinks, clamp_page, page_count, parse_page},
     perms::perms_for_user,
     storage::webauthn::extract_attested_credential,
 };
@@ -73,19 +71,28 @@ fn sanitize_enrolled_fingerprint(raw: &str) -> Option<String> {
     }
 }
 
-fn key_list_href(pending_page: usize, active_page: usize) -> String {
-    let mut parts = Vec::new();
-    with_named_page_param(&mut parts, "pending_page", pending_page);
-    with_named_page_param(&mut parts, "active_page", active_page);
-    href_with_query("/admin/key", &parts)
+fn key_list_href(cx: &Cx, pending_page: usize, active_page: usize) -> String {
+    href!(admin_key_page)
+        .query(crate::app::hrefs::KeyPagesQ {
+            pending_page,
+            active_page,
+        })
+        .resolve(cx)
 }
 
-fn key_revoke_href(pending_page: usize, active_page: usize, credential_id_hex: &str) -> String {
-    let mut parts = Vec::new();
-    with_named_page_param(&mut parts, "pending_page", pending_page);
-    with_named_page_param(&mut parts, "active_page", active_page);
-    parts.push(format!("revoke={credential_id_hex}"));
-    href_with_query("/admin/key", &parts)
+fn key_revoke_href(
+    cx: &Cx,
+    pending_page: usize,
+    active_page: usize,
+    credential_id_hex: &str,
+) -> String {
+    href!(admin_key_page)
+        .query(crate::app::hrefs::KeyRevokeListQ {
+            pending_page,
+            active_page,
+            revoke: credential_id_hex,
+        })
+        .resolve(cx)
 }
 
 /// Compact fingerprint for table cells; full value stays in `title` + CLI command.
@@ -114,7 +121,7 @@ struct AdminKeyQuery {
 }
 
 #[page]
-async fn admin_key_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_key_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.key_manage {
@@ -155,10 +162,10 @@ async fn admin_key_page(cx: &Cx) -> Result {
     let active = parse_cred_list(&active_json);
 
     let pending_pager = PagerLinks::from_hrefs(pending_page, pending_pages, |n| {
-        key_list_href(n, active_page)
+        key_list_href(cx, n, active_page)
     });
     let active_pager = PagerLinks::from_hrefs(active_page, active_pages, |n| {
-        key_list_href(pending_page, n)
+        key_list_href(cx, pending_page, n)
     });
 
     // Hex-only fingerprint (E1 banner). Not tied to the current pending page.
@@ -269,7 +276,7 @@ async fn admin_key_page(cx: &Cx) -> Result {
                     id="vcp-webauthn-form"
                     class="vb-form"
                     method="POST"
-                    action="/admin/key/enrol"
+                    action=(href!(admin_key_enrol))
                     style="max-width: 560px;"
                 >
                     <label for="admin_label">"Key label"</label>
@@ -418,6 +425,7 @@ async fn admin_key_page(cx: &Cx) -> Result {
                             let fp_full = row.fingerprint.clone();
                             let fp_short = short_fingerprint(&row.fingerprint);
                             let revoke_href = key_revoke_href(
+                                cx,
                                 pending_page_for_links,
                                 active_page_for_links,
                                 &row.credential_id_hex,
@@ -475,7 +483,11 @@ async fn admin_key_page(cx: &Cx) -> Result {
                             "."
                         </p>
                     }
-                    <form class="vb-form" method="POST" action="/admin/key/revoke">
+                    <form
+                        class="vb-form"
+                        method="POST"
+                        action=(href!(admin_key_revoke))
+                    >
                         <input type="hidden" name="credential_id_hex" value=(cred)>
                         <label for="confirm">"Confirm"</label>
                         <input
@@ -486,7 +498,10 @@ async fn admin_key_page(cx: &Cx) -> Result {
                             autocomplete="off"
                         >
                         <div class="vb-confirm-actions">
-                            <a class="vb-btn muted compact" href="/admin/key">
+                            <a
+                                class="vb-btn muted compact"
+                                href=(href!(admin_key_page))
+                            >
                                 "Cancel"
                             </a>
                             <button
@@ -512,7 +527,7 @@ struct EnrolForm {
 }
 
 #[route(POST "/admin/key/enrol")]
-async fn admin_key_enrol(cx: &Cx, Form(form): Form<EnrolForm>) -> Result<SeeOther> {
+pub(crate) async fn admin_key_enrol(cx: &Cx, Form(form): Form<EnrolForm>) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.key_manage {
@@ -521,24 +536,48 @@ async fn admin_key_enrol(cx: &Cx, Form(form): Form<EnrolForm>) -> Result<SeeOthe
     // Label before attestation: same order as the ceremony JS, and keeps the
     // empty-label denial path testable without a real WebAuthn payload.
     let Some(label) = crate::storage::normalize_admin_label(&form.admin_label) else {
-        return Ok(see_other("/admin/key?err=label"));
+        return Ok(see_other(
+            href!(admin_key_page)
+                .query(ErrQ { err: Some("label") })
+                .resolve(cx),
+        ));
     };
     let Ok(att) = serde_json::from_str::<Value>(form.attestation.trim()) else {
-        return Ok(see_other("/admin/key?err=attestation"));
+        return Ok(see_other(
+            href!(admin_key_page)
+                .query(ErrQ {
+                    err: Some("attestation"),
+                })
+                .resolve(cx),
+        ));
     };
     let att_obj = att
         .pointer("/response/attestationObject")
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let Ok((cred_id, cose)) = extract_attested_credential(att_obj) else {
-        return Ok(see_other("/admin/key?err=attestation"));
+        return Ok(see_other(
+            href!(admin_key_page)
+                .query(ErrQ {
+                    err: Some("attestation"),
+                })
+                .resolve(cx),
+        ));
     };
     let store = storage(cx);
     match store.key_enrol_stage(&cred_id, &cose, &staff.user.id.to_string(), label, false) {
-        Ok(fp) => Ok(see_other(&format!("/admin/key?enrolled={fp}"))),
+        Ok(fp) => Ok(see_other(
+            href!(admin_key_page)
+                .query(crate::app::hrefs::EnrolledQ { enrolled: &fp })
+                .resolve(cx),
+        )),
         Err(err) => {
             crate::storage::log::portal_storage_failed("admin_key_enrol", &err);
-            Ok(see_other("/admin/key?err=enrol"))
+            Ok(see_other(
+                href!(admin_key_page)
+                    .query(ErrQ { err: Some("enrol") })
+                    .resolve(cx),
+            ))
         }
     }
 }
@@ -550,7 +589,7 @@ struct RevokeForm {
 }
 
 #[route(POST "/admin/key/revoke")]
-async fn admin_key_revoke(cx: &Cx, Form(form): Form<RevokeForm>) -> Result<SeeOther> {
+pub(crate) async fn admin_key_revoke(cx: &Cx, Form(form): Form<RevokeForm>) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.key_manage {
@@ -560,17 +599,42 @@ async fn admin_key_revoke(cx: &Cx, Form(form): Form<RevokeForm>) -> Result<SeeOt
     if form.confirm.trim() != "revoke" {
         // Only hex reaches the redirect (decode gate below re-validates on POST).
         if hexid.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Ok(see_other(&format!("/admin/key?revoke={hexid}&err=confirm")));
+            return Ok(see_other(
+                href!(admin_key_page)
+                    .query(crate::app::hrefs::KeyRevokeQ {
+                        revoke: hexid,
+                        err: "confirm",
+                    })
+                    .resolve(cx),
+            ));
         }
-        return Ok(see_other("/admin/key?err=revoke"));
+        return Ok(see_other(
+            href!(admin_key_page)
+                .query(ErrQ {
+                    err: Some("revoke"),
+                })
+                .resolve(cx),
+        ));
     }
     let Ok(cred) = hex::decode(hexid) else {
-        return Ok(see_other("/admin/key?err=revoke"));
+        return Ok(see_other(
+            href!(admin_key_page)
+                .query(ErrQ {
+                    err: Some("revoke"),
+                })
+                .resolve(cx),
+        ));
     };
     let store = storage(cx);
     match store.key_revoke(&cred) {
-        Ok(()) => Ok(see_other("/admin/key")),
-        Err(_) => Ok(see_other("/admin/key?err=revoke")),
+        Ok(()) => Ok(see_other(href!(admin_key_page).resolve(cx))),
+        Err(_) => Ok(see_other(
+            href!(admin_key_page)
+                .query(ErrQ {
+                    err: Some("revoke"),
+                })
+                .resolve(cx),
+        )),
     }
 }
 

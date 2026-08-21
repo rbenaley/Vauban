@@ -9,6 +9,7 @@ port = 3000
 # Format: https://host[:port] — first entry is the primary link host.
 # Localhost only: WebAuthn rp_id cannot be an IP (open https://localhost:3000).
 public_origins = ["https://localhost:3000"]
+max_request_body_mib = 2048
 access_log_path = "logs/vcp-access.log"
 pid_file = "/tmp/vcp.pid"
 

@@ -51,13 +51,13 @@ if ! grep -n 'ok_or_else(not_found)' src/auth.rs >/dev/null; then
 fi
 
 # Org context must be request-memoized (layout + page share one lookup).
-if ! grep -nE '#\[memoize\]' src/auth.rs >/dev/null; then
+if ! grep -nE '#\[memoize' src/auth.rs >/dev/null; then
   fail "src/auth.rs must use #[memoize]"
 fi
-if ! awk '/#\[memoize\]/{m=1; next} m && /async fn org_context/{found=1; exit} /^pub |^async |^fn /{m=0} END{exit !found}' src/auth.rs; then
+if ! awk '/#\[memoize/{m=1; next} m && /async fn org_context/{found=1; exit} /^pub |^async |^fn /{m=0} END{exit !found}' src/auth.rs; then
   fail "#[memoize] must annotate org_context (backing require_org)"
 fi
-if ! grep -n 'org_context(cx, slug)' src/auth.rs >/dev/null; then
+if ! grep -n 'org_context(cx,' src/auth.rs >/dev/null; then
   fail "require_org must call memoized org_context"
 fi
 
@@ -204,14 +204,24 @@ if awk '
   fail "require_org_admin must not return forbidden (anti-enumeration)"
 fi
 
-# OriginLayer CSRF must stay enabled (no config / API bypass).
+# OriginPolicy CSRF must stay enabled (no config / API bypass).
 if grep -REn --include='*.rs' --include='*.toml' --include='*.conf' \
   -e 'dangerous_disable_origin_verification' \
+  -e 'dangerous_disable()' \
   src/ config/ >/dev/null 2>&1; then
-  fail "dangerous_disable_origin_verification must not appear in src/ or config/"
+  fail "dangerous_disable origin bypass must not appear in src/ or config/"
 fi
-if ! grep -n 'trust_origin' src/app.rs >/dev/null; then
-  fail "router must trust_origin from server.public_origins"
+if ! grep -n 'OriginPolicy' src/app.rs >/dev/null; then
+  fail "router must register OriginPolicy"
+fi
+if ! grep -n 'trust_origins' src/app.rs >/dev/null; then
+  fail "router must trust_origins from server.public_origins"
+fi
+if ! grep -n 'BodyLimit' src/app.rs >/dev/null; then
+  fail "router must register BodyLimit from server.max_request_body_bytes"
+fi
+if ! grep -n 'max_request_body_bytes' src/app.rs >/dev/null; then
+  fail "router must apply server.max_request_body_bytes"
 fi
 
 # Login is passwordless magic-link with rate limiting.

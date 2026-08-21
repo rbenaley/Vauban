@@ -5,6 +5,7 @@ mod chips;
 mod docs_formatted;
 mod icons;
 mod modal;
+mod not_found;
 mod note_inline;
 mod pager;
 mod rail;
@@ -18,6 +19,7 @@ pub use icons::{
     ico_hourglass, ico_issues, ico_key, ico_paperclip, ico_plus, ico_trash,
 };
 pub use modal::article_modal_shell;
+pub use not_found::branded_404_body;
 pub use note_inline::note_inline_text;
 pub use pager::list_toolbar;
 pub use rail::vb_rail;

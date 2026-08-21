@@ -1,7 +1,7 @@
 use topcoat::{
     Result,
     context::Cx,
-    router::{page, path_param},
+    router::{href, page, path_param},
     view::view,
 };
 
@@ -16,7 +16,7 @@ use crate::{
 };
 
 #[page]
-async fn account_page(cx: &Cx) -> Result {
+pub(crate) async fn account_page(cx: &Cx) -> Result {
     let slug = path_param::<Org>(cx);
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -122,7 +122,7 @@ async fn account_page(cx: &Cx) -> Result {
             </div>
         </div>
 
-        <form method="POST" action="/logout">
+        <form method="POST" action=(href!(crate::app::login::logout))>
             <button class="vb-btn ghost" type="submit">"Sign out"</button>
         </form>
     }

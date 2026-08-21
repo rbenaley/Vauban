@@ -7,11 +7,12 @@ use topcoat::{
     router::{
         content::Form,
         error::{SeeOther, redirect, see_other},
-        page, query_params, route,
+        href, page, query_params, route,
     },
     view::view,
 };
 
+use crate::app::admin::releases::admin_releases_page;
 use crate::{
     app::VCP_WEBAUTHN_JS,
     auth::{capability_denied, db, require_staff, storage},
@@ -26,7 +27,7 @@ struct DeleteConfirmQuery {
 }
 
 #[page]
-async fn admin_releases_delete_confirm_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_releases_delete_confirm_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -39,11 +40,11 @@ async fn admin_releases_delete_confirm_page(cx: &Cx) -> Result {
         .filter(|t| !t.is_empty())
         .map(str::to_owned)
     else {
-        return Err(redirect("/admin/releases").into());
+        return Err(redirect(href!(admin_releases_page).resolve(cx)).into());
     };
     let store = storage(cx);
     let Some(pending) = store.peek_pending_delete(&token) else {
-        return Err(redirect("/admin/releases").into());
+        return Err(redirect(href!(admin_releases_page).resolve(cx)).into());
     };
     let summary = pending.summary.clone();
     let challenge = pending.challenge.clone();
@@ -77,7 +78,7 @@ async fn admin_releases_delete_confirm_page(cx: &Cx) -> Result {
                     <form
                         id="vcp-webauthn-form"
                         method="POST"
-                        action="/admin/releases/delete-confirm"
+                        action=(href!(admin_releases_delete_confirm_post))
                     >
                         <input type="hidden" name="token" value=(token_hidden)>
                         <input
@@ -104,7 +105,7 @@ struct DeleteConfirmForm {
 }
 
 #[route(POST "/admin/releases/delete-confirm")]
-async fn admin_releases_delete_confirm_post(
+pub(crate) async fn admin_releases_delete_confirm_post(
     cx: &Cx,
     Form(form): Form<DeleteConfirmForm>,
 ) -> Result<SeeOther> {
@@ -115,16 +116,18 @@ async fn admin_releases_delete_confirm_post(
     }
     let store = storage(cx);
     let Some(pending) = store.take_pending_delete(form.token.trim()) else {
-        return Ok(see_other("/admin/releases"));
+        return Ok(see_other(href!(admin_releases_page).resolve(cx)));
     };
     let Some(id) = pending.release_id else {
-        return Ok(see_other("/admin/releases"));
+        return Ok(see_other(href!(admin_releases_page).resolve(cx)));
     };
     if form.assertion.trim().is_empty() {
         let t = store.stash_pending_delete(pending);
-        return Ok(see_other(&format!(
-            "/admin/releases/delete-confirm?token={t}"
-        )));
+        return Ok(see_other(
+            href!(admin_releases_delete_confirm_page)
+                .query(crate::app::hrefs::TokenQ { token: &t })
+                .resolve(cx),
+        ));
     }
     if store
         .delete_release_asserted(id, Some(form.assertion.trim()))
@@ -141,5 +144,5 @@ async fn admin_releases_delete_confirm_post(
             let _ = rel.delete().exec(&mut database).await;
         }
     }
-    Ok(see_other("/admin/releases"))
+    Ok(see_other(href!(admin_releases_page).resolve(cx)))
 }

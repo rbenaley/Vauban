@@ -101,7 +101,8 @@ not only in `.0`. Tracing may show `Apache CLF access log reopened`.
 
 ```bash
 # After loading /login in a browser, pick a hashed asset URL from the HTML,
-# or list target/assets and hit a known /_topcoat/assets/... URL.
+# or list target/debug/assets (exe-adjacent 0.6 bundle) and hit a known
+# /_topcoat/assets/... URL.
 curl -k -sI "https://127.0.0.1:3000/_topcoat/assets/<hashed-file>"
 ```
 

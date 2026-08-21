@@ -3,10 +3,11 @@
 use topcoat::{
     Result,
     context::Cx,
-    router::{error::redirect, page, path_param, route},
+    router::{error::redirect, href, page, path_param, route},
     view::view,
 };
 
+use crate::app::admin::issues::admin_issues_page;
 use crate::{
     app::org::Org,
     app::shot_file_input,
@@ -17,15 +18,15 @@ use crate::{
 };
 
 #[route(GET "/vauban/issues/new")]
-async fn redirect_reserved_issues_new() -> Result {
-    Err(redirect("/admin/issues").into())
+pub(crate) async fn redirect_reserved_issues_new(cx: &Cx) -> Result {
+    Err(redirect(href!(admin_issues_page).resolve(cx)).into())
 }
 
 #[page]
-async fn new_issue_page(cx: &Cx) -> Result {
+pub(crate) async fn new_issue_page(cx: &Cx) -> Result {
     let slug = path_param::<Org>(cx);
     if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
-        return Err(redirect("/admin/issues").into());
+        return Err(redirect(href!(admin_issues_page).resolve(cx)).into());
     }
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -33,8 +34,8 @@ async fn new_issue_page(cx: &Cx) -> Result {
         return Err(capability_denied().into());
     }
 
-    let list_href = format!("/{slug}/issues");
-    let action = format!("/{slug}/issues");
+    let list_href = href!(crate::app::org::issues::issues_page, Org(slug)).resolve(cx);
+    let action = href!(crate::app::org::issues::report_issue, Org(slug)).resolve(cx);
     let max_att = config(cx).issues.max_attachments_per_comment.max(1);
 
     view! {

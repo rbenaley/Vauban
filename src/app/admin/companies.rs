@@ -1,28 +1,26 @@
 //! Admin companies at `/admin/companies` — Concept card layout.
 
-mod company_id;
-mod form;
-mod load;
-mod new;
-mod search_shard;
+pub(crate) mod company_id;
+pub(crate) mod form;
+pub(crate) mod load;
+pub(crate) mod new;
+pub(crate) mod search_shard;
 
 pub(super) use search_shard::admin_companies_search_results;
 
 use topcoat::{
     Result,
     context::Cx,
-    router::{page, query_params},
+    router::{href, page, query_params},
     view::view,
 };
 
+use crate::app::admin::companies::new::admin_companies_new_page;
 use crate::{
     app::_components::list_toolbar,
     auth::{capability_denied, config, require_staff},
     companies_search::normalize_query,
-    list_page::{
-        COMPANIES_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, parse_page,
-        with_page_param,
-    },
+    list_page::{COMPANIES_PAGE_SIZE, PagerLinks, clamp_page, page_count, parse_page},
     perms::perms_for_user,
 };
 
@@ -38,7 +36,7 @@ struct AdminCompaniesQuery {
 }
 
 #[page]
-async fn admin_companies_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_companies_page(cx: &Cx) -> Result {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
@@ -78,13 +76,9 @@ async fn admin_companies_page(cx: &Cx) -> Result {
 
     // Pager keeps `q` + `page` — never sticky `delete` / `err` (overlay query).
     let q_for_pager = q.clone();
-    let pager = PagerLinks::from_hrefs(page, pages, |n| list_href(&q_for_pager, n));
+    let pager = PagerLinks::from_hrefs(page, pages, |n| list_href(cx, &q_for_pager, n));
 
-    let cancel = if q.is_empty() {
-        "/admin/companies".to_owned()
-    } else {
-        format!("/admin/companies?q={}", urlencoding_encode(&q))
-    };
+    let cancel = list_href(cx, &q, 1);
 
     view! {
         cx =>
@@ -102,11 +96,15 @@ async fn admin_companies_page(cx: &Cx) -> Result {
                     " user accounts."
                 </p>
             </div>
-            <a class="vb-btn" href="/admin/companies/new">"+ New company"</a>
+            <a class="vb-btn" href=(href!(admin_companies_new_page))>"+ New company"</a>
         </div>
 
         // Filter only (shareable ?q=); live results use the shard. Not a mutation.
-        <form method="GET" action="/admin/companies" style="margin-bottom: 16px;">
+        <form
+            method="GET"
+            action=(href!(admin_companies_page).resolve(cx))
+            style="margin-bottom: 16px;"
+        >
             <input
                 class="vb-search"
                 type="search"
@@ -125,7 +123,11 @@ async fn admin_companies_page(cx: &Cx) -> Result {
         admin_companies_search_results(q: $(query.get()), page: $(page.get()))
 
         if let Some(target) = delete_target {
-            let action = format!("/admin/companies/{}/delete", target.org.id);
+            let action = href!(
+                company_id::admin_companies_delete,
+                company_id::CompanyId(target.org.id.to_string())
+            )
+                .resolve(cx);
             <div
                 class="vb-confirm-root"
                 role="dialog"
@@ -176,25 +178,8 @@ async fn admin_companies_page(cx: &Cx) -> Result {
     }
 }
 
-fn list_href(q: &str, page: usize) -> String {
-    let mut parts = Vec::new();
-    if !q.is_empty() {
-        parts.push(format!("q={}", urlencoding_encode(q)));
-    }
-    with_page_param(&mut parts, page);
-    href_with_query("/admin/companies", &parts)
-}
-
-fn urlencoding_encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
+fn list_href(cx: &Cx, q: &str, page: usize) -> String {
+    href!(admin_companies_page)
+        .query(crate::app::hrefs::SearchQ { q, page })
+        .resolve(cx)
 }

@@ -7,11 +7,12 @@ use topcoat::{
     router::{
         content::{Form, multipart::Multipart},
         error::{SeeOther, not_found, see_other},
-        page, path_param, query_params, route,
+        href, page, path_param, query_params, route,
     },
     view::view,
 };
 
+use crate::app::admin::issues::admin_issues_page;
 use crate::{
     app::_components::{ico_check, ico_hourglass, ico_paperclip, severity_badge, status_badge},
     app::{DiscussionPane, DiscussionRow, issue_discussion, shot_file_input, thumbs_for_comment},
@@ -38,8 +39,7 @@ use crate::{
     tz::{browser_tz, format_relative, format_unix_local, unix_rfc3339},
 };
 
-#[path_param]
-struct IssueKey(str);
+path_param!(pub(crate) issue_key);
 
 #[query_params]
 struct AdminIssueDetailQuery {
@@ -55,7 +55,7 @@ struct EditCommentForm {
 }
 
 #[page]
-async fn admin_issue_detail_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_issue_detail_page(cx: &Cx) -> Result {
     let key = path_param::<IssueKey>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -125,12 +125,12 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
     let opener_thumbs =
         thumbs_for_comment(org_slug, &attachments, ISSUE_ATTACHMENT_OPENER_COMMENT_ID);
 
-    let list_href = "/admin/issues".to_owned();
-    let reply_action = admin_issue_action(&issue.key, "reply", org_slug_for_q);
-    let close_action = admin_issue_action(&issue.key, "close", org_slug_for_q);
-    let reopen_action = admin_issue_action(&issue.key, "reopen", org_slug_for_q);
-    let start_action = admin_issue_action(&issue.key, "start-analysis", org_slug_for_q);
-    let resolve_action = admin_issue_action(&issue.key, "resolve", org_slug_for_q);
+    let list_href = href!(admin_issues_page).resolve(cx);
+    let reply_action = admin_issue_action(cx, &issue.key, "reply", org_slug_for_q);
+    let close_action = admin_issue_action(cx, &issue.key, "close", org_slug_for_q);
+    let reopen_action = admin_issue_action(cx, &issue.key, "reopen", org_slug_for_q);
+    let start_action = admin_issue_action(cx, &issue.key, "start-analysis", org_slug_for_q);
+    let resolve_action = admin_issue_action(cx, &issue.key, "resolve", org_slug_for_q);
     let state = IssueState::try_from(issue.status.as_str()).unwrap_or(IssueState::Open);
     let is_open = state == IssueState::Open;
     let is_in_analysis = state == IssueState::InAnalysis;
@@ -147,6 +147,7 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
         &mut timeline,
         &comments,
         SupportEditCtx {
+            cx,
             perms: &perms,
             issue_key: key,
             org_hint: org_slug_for_q,
@@ -413,7 +414,7 @@ async fn parse_admin_reply_multipart(mut multipart: Multipart) -> Result<ReplyMu
 }
 
 #[route(POST "/admin/issues/{issue_key}/reply")]
-async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
+pub(crate) async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let key = path_param::<IssueKey>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -421,19 +422,20 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
         .ok()
         .and_then(|q| q.org.clone())
         .unwrap_or_default();
-    let detail = admin_reply_target(key, &org_hint, None);
+    let detail = admin_reply_target(cx, key, &org_hint, None);
     if !perms.issues_write {
-        return Ok(see_other(&detail));
+        return Ok(see_other(detail));
     }
 
     let form = parse_admin_reply_multipart(multipart).await?;
     let body = form.body.trim().to_owned();
     if body.is_empty() {
-        return Ok(see_other(&detail));
+        return Ok(see_other(detail));
     }
     let max_att = config(cx).issues.max_attachments_per_comment.max(1);
     if form.screenshots.len() > max_att {
-        return Ok(see_other(&admin_reply_target(
+        return Ok(see_other(admin_reply_target(
+            cx,
             key,
             &org_hint,
             Some("attach"),
@@ -442,11 +444,11 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
 
     let mut database = db(cx);
     let Some(mut issue) = load_admin_issue_by_key(&mut database, key, &org_hint).await else {
-        return Ok(see_other("/admin/issues"));
+        return Ok(see_other(href!(admin_issues_page).resolve(cx)));
     };
 
     if issue_is_closed(&issue.status) {
-        return Ok(see_other(&detail));
+        return Ok(see_other(detail));
     }
 
     let client = storage(cx);
@@ -465,7 +467,8 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
             Ok(t) => t,
             Err(err) => {
                 crate::storage::log::portal_attach_failed("admin_reply_screenshots", &err);
-                return Ok(see_other(&admin_reply_target(
+                return Ok(see_other(admin_reply_target(
+                    cx,
                     key,
                     &org_hint,
                     Some("attach"),
@@ -487,7 +490,8 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     .exec(&mut database)
     .await
     else {
-        return Ok(see_other(&admin_reply_target(
+        return Ok(see_other(admin_reply_target(
+            cx,
             key,
             &org_hint,
             Some("reply"),
@@ -520,7 +524,8 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
         .await
     {
         tracing::warn!(key = %key, error = %err, "admin reply attach_many failed");
-        return Ok(see_other(&admin_reply_target(
+        return Ok(see_other(admin_reply_target(
+            cx,
             key,
             &org_hint,
             Some("attach"),
@@ -529,11 +534,14 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
 
     let _ = issue.update().updated_at(now).exec(&mut database).await;
 
-    Ok(see_other(&detail))
+    Ok(see_other(detail))
 }
 
 #[route(POST "/admin/issues/{issue_key}/edit-comment")]
-async fn admin_edit_comment(cx: &Cx, Form(form): Form<EditCommentForm>) -> Result<SeeOther> {
+pub(crate) async fn admin_edit_comment(
+    cx: &Cx,
+    Form(form): Form<EditCommentForm>,
+) -> Result<SeeOther> {
     let key = path_param::<IssueKey>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -541,7 +549,7 @@ async fn admin_edit_comment(cx: &Cx, Form(form): Form<EditCommentForm>) -> Resul
         .ok()
         .and_then(|q| q.org.clone())
         .unwrap_or_default();
-    let detail = admin_reply_target(key, &org_hint, None);
+    let detail = admin_reply_target(cx, key, &org_hint, None);
     if !perms.issues_write || !perms.admin_view {
         return Err(capability_denied().into());
     }
@@ -550,7 +558,7 @@ async fn admin_edit_comment(cx: &Cx, Form(form): Form<EditCommentForm>) -> Resul
     };
     let body = form.body.trim().to_owned();
     if body.is_empty() {
-        return Ok(see_other(&detail));
+        return Ok(see_other(detail));
     }
 
     let mut database = db(cx);
@@ -581,29 +589,29 @@ async fn admin_edit_comment(cx: &Cx, Form(form): Form<EditCommentForm>) -> Resul
         .is_err()
     {
         tracing::warn!(key = %key, comment_id, "admin comment edit failed");
-        return Ok(see_other(&detail));
+        return Ok(see_other(detail));
     }
     let _ = issue.update().updated_at(now).exec(&mut database).await;
-    Ok(see_other(&detail))
+    Ok(see_other(detail))
 }
 
 #[route(POST "/admin/issues/{issue_key}/close")]
-async fn admin_close_issue(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn admin_close_issue(cx: &Cx) -> Result<SeeOther> {
     admin_advance_issue(cx, IssueEvent::Close).await
 }
 
 #[route(POST "/admin/issues/{issue_key}/reopen")]
-async fn admin_reopen_issue(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn admin_reopen_issue(cx: &Cx) -> Result<SeeOther> {
     admin_advance_issue(cx, IssueEvent::Reopen).await
 }
 
 #[route(POST "/admin/issues/{issue_key}/start-analysis")]
-async fn admin_start_analysis_issue(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn admin_start_analysis_issue(cx: &Cx) -> Result<SeeOther> {
     admin_advance_issue(cx, IssueEvent::StartAnalysis).await
 }
 
 #[route(POST "/admin/issues/{issue_key}/resolve")]
-async fn admin_resolve_issue(cx: &Cx) -> Result<SeeOther> {
+pub(crate) async fn admin_resolve_issue(cx: &Cx) -> Result<SeeOther> {
     admin_advance_issue(cx, IssueEvent::Resolve).await
 }
 
@@ -615,14 +623,14 @@ async fn admin_advance_issue(cx: &Cx, event: IssueEvent) -> Result<SeeOther> {
         .ok()
         .and_then(|q| q.org.clone())
         .unwrap_or_default();
-    let detail = admin_reply_target(key, &org_hint, None);
+    let detail = admin_reply_target(cx, key, &org_hint, None);
     if !perms.issues_write {
-        return Ok(see_other(&detail));
+        return Ok(see_other(detail));
     }
 
     let mut database = db(cx);
     let Some(issue) = load_admin_issue_by_key(&mut database, key, &org_hint).await else {
-        return Ok(see_other("/admin/issues"));
+        return Ok(see_other(href!(admin_issues_page).resolve(cx)));
     };
 
     match advance_issue_with_retry(
@@ -636,26 +644,37 @@ async fn admin_advance_issue(cx: &Cx, event: IssueEvent) -> Result<SeeOther> {
     {
         Ok((..)) => {
             drain_pending(cx).await;
-            Ok(see_other(&detail))
+            Ok(see_other(detail))
         }
-        Err(PersistError::Fsm(_)) | Err(PersistError::UnknownStatus(_)) => Ok(see_other(&detail)),
-        Err(PersistError::Conflict) => Ok(see_other(&admin_reply_target(
+        Err(PersistError::Fsm(_)) | Err(PersistError::UnknownStatus(_)) => Ok(see_other(detail)),
+        Err(PersistError::Conflict) => Ok(see_other(admin_reply_target(
+            cx,
             key,
             &org_hint,
             Some(ISSUE_ERR_CONFLICT),
         ))),
         Err(PersistError::Db(err)) => {
             tracing::warn!(key = %key, error = %err, "admin issue advance failed");
-            Ok(see_other(&detail))
+            Ok(see_other(detail))
         }
     }
 }
 
-fn admin_issue_action(key: &str, action: &str, org_slug: &str) -> String {
-    if org_slug.is_empty() {
-        format!("/admin/issues/{key}/{action}")
-    } else {
-        format!("/admin/issues/{key}/{action}?org={org_slug}")
+fn admin_issue_action(cx: &Cx, key: &str, action: &str, org_slug: &str) -> String {
+    let q = crate::app::hrefs::AdminIssueOrgQ { org: org_slug };
+    match action {
+        "reply" => href!(admin_reply_issue, IssueKey(key)).query(q).resolve(cx),
+        "close" => href!(admin_close_issue, IssueKey(key)).query(q).resolve(cx),
+        "reopen" => href!(admin_reopen_issue, IssueKey(key))
+            .query(q)
+            .resolve(cx),
+        "start-analysis" => href!(admin_start_analysis_issue, IssueKey(key))
+            .query(q)
+            .resolve(cx),
+        "resolve" => href!(admin_resolve_issue, IssueKey(key))
+            .query(q)
+            .resolve(cx),
+        other => panic!("unknown admin issue action {other}"),
     }
 }
 
@@ -663,25 +682,27 @@ fn admin_issue_action(key: &str, action: &str, org_slug: &str) -> String {
 /// the browser lands on the newest message instead of the page header.
 ///
 /// Any `err` code is appended to the query string, before the fragment.
-fn admin_reply_target(key: &str, org_hint: &str, err: Option<&str>) -> String {
-    let detail = admin_issue_detail_href(key, org_hint);
-    let href = match err {
-        Some(code) => {
-            let sep = if detail.contains('?') { '&' } else { '?' };
-            format!("{detail}{sep}err={code}")
-        }
-        None => detail,
-    };
-    with_reply_anchor(&href)
+fn admin_reply_target(cx: &Cx, key: &str, org_hint: &str, err: Option<&str>) -> String {
+    with_reply_anchor(&admin_issue_detail_href(cx, key, org_hint, err))
 }
 
 /// Detail URL for an admin issue. Always include `?org=` when known so
 /// org-scoped keys like `VBN-200` cannot open the wrong tenant's ticket.
-pub(super) fn admin_issue_detail_href(key: &str, org_hint: &str) -> String {
+pub(super) fn admin_issue_detail_href(
+    cx: &Cx,
+    key: &str,
+    org_hint: &str,
+    err: Option<&str>,
+) -> String {
     if org_hint.is_empty() {
-        format!("/admin/issues/{key}")
+        href!(admin_issue_detail_page, IssueKey(key))
+            .query(crate::app::hrefs::ErrQ { err })
+            .resolve(cx)
     } else {
-        format!("/admin/issues/{key}?org={org_hint}")
+        href!(admin_issue_detail_page, IssueKey(key))
+            .query(crate::app::hrefs::AdminIssueOrgQ { org: org_hint })
+            .query(crate::app::hrefs::ErrQ { err })
+            .resolve(cx)
     }
 }
 
@@ -779,6 +800,7 @@ fn pick_issue_by_key(
 }
 
 struct SupportEditCtx<'a> {
+    cx: &'a Cx,
     perms: &'a PermissionContext,
     issue_key: &'a str,
     org_hint: &'a str,
@@ -800,18 +822,16 @@ fn decorate_support_edit(
             continue;
         }
         row.can_edit = true;
-        let detail = admin_issue_detail_href(ctx.issue_key, ctx.org_hint);
-        let sep = if detail.contains('?') { '&' } else { '?' };
-        row.edit_href = format!("{detail}{sep}edit={}#comment-{}", comment.id, comment.id);
+        let detail = admin_issue_detail_href(ctx.cx, ctx.issue_key, ctx.org_hint, None);
+        let edit = href!(admin_issue_detail_page, IssueKey(ctx.issue_key))
+            .query(crate::app::hrefs::AdminIssueOrgQ { org: ctx.org_hint })
+            .query(crate::app::hrefs::EditCommentQ { edit: comment.id })
+            .resolve(ctx.cx);
+        row.edit_href = format!("{edit}#comment-{}", comment.id);
         row.edit_cancel = format!("{detail}#comment-{}", comment.id);
-        row.edit_action = if ctx.org_hint.is_empty() {
-            format!("/admin/issues/{}/edit-comment", ctx.issue_key)
-        } else {
-            format!(
-                "/admin/issues/{}/edit-comment?org={}",
-                ctx.issue_key, ctx.org_hint
-            )
-        };
+        row.edit_action = href!(admin_edit_comment, IssueKey(ctx.issue_key))
+            .query(crate::app::hrefs::AdminIssueOrgQ { org: ctx.org_hint })
+            .resolve(ctx.cx);
         row.editing = ctx.editing_id == Some(comment.id);
     }
 }
@@ -922,12 +942,17 @@ mod tests {
 
     #[test]
     fn admin_issue_detail_href_includes_org_query() {
+        let cx = Cx::default();
         assert_eq!(
-            admin_issue_detail_href("VBN-200", "acme-infrastructure"),
+            href!("/admin/issues/{issue_key}", IssueKey("VBN-200"))
+                .query(crate::app::hrefs::AdminIssueOrgQ {
+                    org: "acme-infrastructure"
+                })
+                .resolve(&cx),
             "/admin/issues/VBN-200?org=acme-infrastructure"
         );
         assert_eq!(
-            admin_issue_detail_href("VBN-200", ""),
+            href!("/admin/issues/{issue_key}", IssueKey("VBN-200")).resolve(&cx),
             "/admin/issues/VBN-200"
         );
     }

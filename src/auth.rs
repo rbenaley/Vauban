@@ -113,7 +113,7 @@ pub async fn persist_session_record(
     Ok(())
 }
 
-#[memoize]
+#[memoize(as_ref)]
 async fn session_user(cx: &Cx) -> Option<User> {
     let Ok(Some(token_hash)) = session::token_hash(cx).await else {
         return None;
@@ -161,12 +161,15 @@ fn auth_user_from(user: &User, casbin_role: String) -> AuthUser {
 ///
 /// Staff Casbin context uses `portal_role` (`admin`) even on `/vauban` preview.
 /// Reserved org `vauban` is staff-only.
-#[memoize]
-async fn org_context(cx: &Cx, slug: &str) -> Option<OrgContext> {
+#[memoize(as_ref)]
+async fn org_context(cx: &Cx, slug: usize) -> Option<OrgContext> {
+    let slug = crate::request_intern::interned(cx, slug);
     let user = require_auth(cx).await.ok()?;
     let mut db = db(cx);
 
-    let org = Organization::get_by_slug(&mut db, slug).await.ok()?;
+    let org = Organization::get_by_slug(&mut db, slug.as_str())
+        .await
+        .ok()?;
 
     let is_reserved = org.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG);
     if is_reserved && user.portal_role != PORTAL_ROLE_ADMIN {
@@ -202,7 +205,10 @@ async fn org_context(cx: &Cx, slug: &str) -> Option<OrgContext> {
 ///
 /// Backed by memoized [`org_context`] so layout + page share one lookup.
 pub async fn require_org(cx: &Cx, slug: &str) -> Result<OrgContext, NotFoundError> {
-    org_context(cx, slug).await.cloned().ok_or_else(not_found)
+    org_context(cx, crate::request_intern::intern(cx, slug))
+        .await
+        .cloned()
+        .ok_or_else(not_found)
 }
 
 /// Vauban Support gate for `/admin/*`. Missing session, client, or missing
