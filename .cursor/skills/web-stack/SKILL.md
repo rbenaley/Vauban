@@ -17,7 +17,8 @@ Upstream orientation (keep in sync with `topcoat` skill):
 - [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat)
 - [Topcoat v0.5.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0)
 - [Toasty 0.6.0 — what is new?](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
-  (VCP pins **toasty 0.9** — confirm APIs against `Cargo.toml` / lock)
+  (VCP pins **toasty 0.9** today — confirm `Cargo.toml` / lock; 0.10
+  upgrade playbook lives in the **`toasty` skill** `UPGRADE-0.10.md`)
 - **ORM detail:** read the **`toasty` skill** before writing list /
   search / entitlement queries (do not assume `Model::all()` + Rust
   pagination is required).
