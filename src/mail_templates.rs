@@ -16,6 +16,12 @@ pub const USER_LEAVE_HTML: &str = include_str!(concat!(
     "/email/user-leave.html"
 ));
 
+/// Issue create / comment / status notification.
+pub const ISSUE_EVENT_HTML: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/email/issue-event.html"
+));
+
 /// Star-fort logo for `cid:vauban-logo` inline attachments.
 pub const VAUBAN_LOGO_PNG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -28,6 +34,11 @@ const PH_ORG: &str = "__ORG_NAME__";
 const PH_URL: &str = "__MAGIC_URL__";
 const PH_FROM: &str = "__FROM_ADDRESS__";
 const PH_TTL: &str = "__TTL_MINUTES__";
+const PH_ISSUE_KEY: &str = "__ISSUE_KEY__";
+const PH_ISSUE_TITLE: &str = "__ISSUE_TITLE__";
+const PH_EVENT_LABEL: &str = "__EVENT_LABEL__";
+const PH_EXCERPT: &str = "__EXCERPT__";
+const PH_ISSUE_URL: &str = "__ISSUE_URL__";
 
 /// Values injected into HTML templates before send.
 #[derive(Debug, Clone, Copy)]
@@ -70,6 +81,30 @@ pub fn render_html(template: &str, vars: TemplateVars<'_>) -> String {
     out
 }
 
+/// Values injected into [`ISSUE_EVENT_HTML`].
+#[derive(Debug, Clone, Copy)]
+pub struct IssueMailVars<'a> {
+    pub org_name: &'a str,
+    pub issue_key: &'a str,
+    pub issue_title: &'a str,
+    pub event_label: &'a str,
+    pub excerpt: &'a str,
+    pub issue_url: &'a str,
+    pub from_address: &'a str,
+}
+
+/// Substitute issue-mail placeholders. All text fields are HTML-escaped.
+pub fn render_issue_html(template: &str, vars: IssueMailVars<'_>) -> String {
+    template
+        .replace(PH_ORG, &html_escape(vars.org_name))
+        .replace(PH_ISSUE_KEY, &html_escape(vars.issue_key))
+        .replace(PH_ISSUE_TITLE, &html_escape(vars.issue_title))
+        .replace(PH_EVENT_LABEL, &html_escape(vars.event_label))
+        .replace(PH_EXCERPT, &html_escape(vars.excerpt))
+        .replace(PH_ISSUE_URL, &html_escape(vars.issue_url))
+        .replace(PH_FROM, &html_escape(vars.from_address))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +115,7 @@ mod tests {
             ("join", USER_JOIN_HTML),
             ("login", USER_LOGIN_HTML),
             ("leave", USER_LEAVE_HTML),
+            ("issue", ISSUE_EVENT_HTML),
         ] {
             assert!(
                 html.contains(r#"src="cid:vauban-logo""#),
@@ -103,6 +139,9 @@ mod tests {
         assert!(USER_LEAVE_HTML.contains(PH_ORG));
         assert!(!USER_LEAVE_HTML.contains(PH_URL));
         assert!(!USER_LEAVE_HTML.contains(PH_TTL));
+        assert!(ISSUE_EVENT_HTML.contains(PH_ISSUE_KEY));
+        assert!(ISSUE_EVENT_HTML.contains(PH_ISSUE_URL));
+        assert!(ISSUE_EVENT_HTML.contains(PH_EXCERPT));
         assert!(!VAUBAN_LOGO_PNG.is_empty());
         assert_eq!(&VAUBAN_LOGO_PNG[..8], b"\x89PNG\r\n\x1a\n");
     }
@@ -135,5 +174,27 @@ mod tests {
             html_escape(r#"a&b<c>"d'e"#),
             "a&amp;b&lt;c&gt;&quot;d&#39;e"
         );
+    }
+
+    #[test]
+    fn render_issue_escapes_excerpt() {
+        let html = render_issue_html(
+            ISSUE_EVENT_HTML,
+            IssueMailVars {
+                org_name: "Acme <x>",
+                issue_key: "VBN-200",
+                issue_title: "Boom & bust",
+                event_label: "Support replied",
+                excerpt: "<script>alert(1)</script>",
+                issue_url: "https://x.test/a?b=1&c=2",
+                from_address: "no-reply@vauban.sh",
+            },
+        );
+        assert!(html.contains("Acme &lt;x&gt;"));
+        assert!(html.contains("Boom &amp; bust"));
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(!html.contains("<script>alert"));
+        assert!(html.contains("b=1&amp;c=2"));
+        assert!(!html.contains(PH_ISSUE_KEY));
     }
 }

@@ -465,6 +465,7 @@ pub async fn open(database_url: &str) -> anyhow::Result<Db> {
             crate::models::Issue,
             crate::models::IssueComment,
             crate::models::IssueAttachment,
+            crate::models::IssueMailOutbox,
             crate::models::EphemeralDownload,
         ))
         .connect(database_url)
@@ -700,6 +701,7 @@ async fn ensure_demo_issues(db: &mut Db, org_id: u64, member_id: u64) -> anyhow:
             body: "Moved to analysis".to_owned(),
             kind: ISSUE_COMMENT_KIND_STATUS.to_owned(),
             created_at: now - 10_800,
+            edited_at: 0,
         })
         .exec(db)
         .await?;
@@ -711,6 +713,7 @@ async fn ensure_demo_issues(db: &mut Db, org_id: u64, member_id: u64) -> anyhow:
             body: "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway.".to_owned(),
             kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
             created_at: now - 7_200,
+            edited_at: 0,
         })
         .exec(db)
         .await?;
@@ -796,6 +799,7 @@ async fn ensure_demo_issue_comments(db: &mut Db) -> anyhow::Result<()> {
                 body: "Moved to analysis".to_owned(),
                 kind: ISSUE_COMMENT_KIND_STATUS.to_owned(),
                 created_at: issue.updated_at.saturating_sub(3_600).max(issue.created_at),
+                edited_at: 0,
             })
             .exec(db)
             .await?;
@@ -806,6 +810,7 @@ async fn ensure_demo_issue_comments(db: &mut Db) -> anyhow::Result<()> {
                 body: "Thanks — we are correlating proxy latency with concurrent session count. Initial analysis underway.".to_owned(),
                 kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
                 created_at: issue.updated_at.max(now.saturating_sub(7_200)),
+                edited_at: 0,
             })
             .exec(db)
             .await?;

@@ -40,6 +40,10 @@ fn inv_builds_and_dashboard_wire_note_inline_text() {
         "/src/app/org/builds.rs"
     ));
     let org = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
+    let formatted = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/_components/docs_formatted.rs"
+    ));
     let comp = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/app/_components/note_inline.rs"
@@ -53,6 +57,10 @@ fn inv_builds_and_dashboard_wire_note_inline_text() {
     assert!(
         org.contains("note_inline_text"),
         "org dashboard must use note_inline_text"
+    );
+    assert!(
+        formatted.contains("note_inline_text"),
+        "KB / issue comment renderer must use note_inline_text"
     );
     assert!(
         comp.contains("vb-inline-code") && comp.contains("parse_inline_code"),

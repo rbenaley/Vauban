@@ -351,7 +351,13 @@ pub struct IssueComment {
 
     /// Unix timestamp (seconds).
     pub created_at: i64,
+
+    /// Unix timestamp when the body was last edited; [`COMMENT_NOT_EDITED`] if never.
+    pub edited_at: i64,
 }
+
+/// `IssueComment.edited_at` sentinel: body never edited after create.
+pub const COMMENT_NOT_EDITED: i64 = 0;
 
 /// Default for `[issues].max_attachments_per_comment` (liaison rows; blobs
 /// stay under org quota). Prefer the live config value at request time.
@@ -397,6 +403,46 @@ pub struct IssueAttachment {
 
     /// Display order within the issue (ascending).
     pub sort_order: i64,
+}
+
+/// `IssueMailOutbox.source_id` when the event is issue create (no comment row).
+pub const ISSUE_MAIL_SOURCE_CREATE: u64 = 0;
+
+/// Pending / failed issue notification row. `sent_at == 0` means not delivered.
+#[derive(Debug, Clone, Model)]
+#[table = "issue_mail_outbox"]
+#[unique(issue_id, event, source_id, recipient_user_id)]
+pub struct IssueMailOutbox {
+    #[key]
+    #[auto]
+    pub id: u64,
+
+    #[index]
+    pub issue_id: u64,
+
+    /// `create` / `comment` / `support_comment` / `status`.
+    pub event: String,
+
+    /// Comment id, or [`ISSUE_MAIL_SOURCE_CREATE`].
+    pub source_id: u64,
+
+    pub actor_user_id: u64,
+
+    pub recipient_user_id: u64,
+
+    pub created_at: i64,
+
+    /// Unix seconds when delivered; `0` while pending.
+    #[index]
+    pub sent_at: i64,
+
+    pub attempts: u64,
+
+    /// Truncated last SMTP error (never a full comment body).
+    pub last_error: String,
+
+    #[version]
+    pub version: u64,
 }
 
 /// TTL for Concept-style ephemeral download links (seconds).

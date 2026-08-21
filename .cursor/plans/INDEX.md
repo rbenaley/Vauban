@@ -54,6 +54,7 @@ is planned._
 | Issue close reopen | [`issue_close_reopen_954c4a67.plan.md`](issue_close_reopen_954c4a67.plan.md) | Done |
 | Issue image attachments | [`issue_image_attachments_98d24998.plan.md`](issue_image_attachments_98d24998.plan.md) | Done |
 | Issue lifecycle FSM | [`issue_lifecycle_fsm_02ac8ded.plan.md`](issue_lifecycle_fsm_02ac8ded.plan.md) | Done |
+| Issue notify mail | [`issue_notify_mail_901c78cb.plan.md`](issue_notify_mail_901c78cb.plan.md) | Done |
 | Issues live search shards | [`issues_live_search_shards_d44946a2.plan.md`](issues_live_search_shards_d44946a2.plan.md) | Done |
 | List pagination standard | [`list_pagination_standard_4c1f389a.plan.md`](list_pagination_standard_4c1f389a.plan.md) | Done |
 | Login signal UX | [`login_signal_ux_5fb30469.plan.md`](login_signal_ux_5fb30469.plan.md) | Done |

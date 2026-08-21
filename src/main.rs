@@ -182,6 +182,7 @@ async fn run_server() -> anyhow::Result<()> {
     db::seed_minimal_if_empty(&database).await?;
 
     vcp::magic_link::start_magic_link_purge(database.clone(), cfg.magiclinks.clone());
+    vcp::issue_notify::start_issue_notify_drain(database.clone(), cfg.issues.notify.clone());
 
     let policy = Arc::new(perms::PolicyStore::load_from_csv(&cfg.access.policy_path)?);
     let (tls_config, resolver) = tls::build_server_config(&cfg)?;

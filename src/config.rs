@@ -378,24 +378,107 @@ fn default_max_lts_subscriptions() -> usize {
     crate::models::MAX_LTS_SUBSCRIPTIONS_DEFAULT
 }
 
-/// Issue tracker limits (`[issues]`).
+/// Closed catalogue for `[issues.notify]` event tokens.
+pub const ISSUE_NOTIFY_EVENT_TOKENS: &[&str] = &["create", "comment", "support_comment", "status"];
+
+/// Issue tracker limits (`[issues]`) and mail policy (`[issues.notify]`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct IssuesConfig {
     /// Max screenshots linked to one comment (or the opening description).
     #[serde(default = "default_max_attachments_per_comment")]
     pub max_attachments_per_comment: usize,
+    #[serde(default)]
+    pub notify: IssuesNotifyConfig,
 }
 
 impl Default for IssuesConfig {
     fn default() -> Self {
         Self {
             max_attachments_per_comment: default_max_attachments_per_comment(),
+            notify: IssuesNotifyConfig::default(),
         }
     }
 }
 
 fn default_max_attachments_per_comment() -> usize {
     crate::models::DEFAULT_MAX_ATTACHMENTS_PER_COMMENT
+}
+
+/// Issue notification policy (`[issues.notify]`). SMTP stays in `[mail]`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct IssuesNotifyConfig {
+    #[serde(default = "default_notify_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_notify_exclude_actor")]
+    pub exclude_actor: bool,
+    #[serde(default = "default_support_events")]
+    pub support_events: Vec<String>,
+    #[serde(default = "default_company_events")]
+    pub company_events: Vec<String>,
+    #[serde(default = "default_notify_max_attempts")]
+    pub max_attempts: u32,
+    #[serde(default = "default_notify_drain_interval_secs")]
+    pub drain_interval_secs: u64,
+}
+
+impl Default for IssuesNotifyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_notify_enabled(),
+            exclude_actor: default_notify_exclude_actor(),
+            support_events: default_support_events(),
+            company_events: default_company_events(),
+            max_attempts: default_notify_max_attempts(),
+            drain_interval_secs: default_notify_drain_interval_secs(),
+        }
+    }
+}
+
+impl IssuesNotifyConfig {
+    /// No enqueue / drain (seed helpers and unused wrappers).
+    pub fn silent() -> Self {
+        Self {
+            enabled: false,
+            ..Self::default()
+        }
+    }
+
+    pub fn drain_interval_duration(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.drain_interval_secs)
+    }
+}
+
+fn default_notify_enabled() -> bool {
+    true
+}
+
+fn default_notify_exclude_actor() -> bool {
+    true
+}
+
+fn default_support_events() -> Vec<String> {
+    vec![
+        "create".to_owned(),
+        "comment".to_owned(),
+        "support_comment".to_owned(),
+        "status".to_owned(),
+    ]
+}
+
+fn default_company_events() -> Vec<String> {
+    vec!["support_comment".to_owned()]
+}
+
+fn default_notify_max_attempts() -> u32 {
+    5
+}
+
+fn default_notify_drain_interval_secs() -> u64 {
+    30
+}
+
+fn is_known_notify_event(token: &str) -> bool {
+    ISSUE_NOTIFY_EVENT_TOKENS.contains(&token)
 }
 
 /// Blob helper IPC mode (`[storage].ipc`).
@@ -899,7 +982,24 @@ impl Config {
         }
         self.validate_mail()?;
         self.validate_magiclinks()?;
+        self.validate_issues_notify()?;
         self.validate_storage()?;
+        Ok(())
+    }
+
+    fn validate_issues_notify(&self) -> anyhow::Result<()> {
+        let n = &self.issues.notify;
+        if n.max_attempts == 0 {
+            anyhow::bail!("issues.notify.max_attempts must be greater than zero");
+        }
+        if n.drain_interval_secs == 0 {
+            anyhow::bail!("issues.notify.drain_interval_secs must be greater than zero");
+        }
+        for token in n.support_events.iter().chain(n.company_events.iter()) {
+            if !is_known_notify_event(token) {
+                anyhow::bail!("issues.notify: unknown event token `{token}`");
+            }
+        }
         Ok(())
     }
 
@@ -1129,6 +1229,15 @@ mod tests {
         assert_eq!(cfg.org.max_accounts_per_org, 5);
         assert_eq!(cfg.org.max_lts_subscriptions, 99);
         assert_eq!(cfg.issues.max_attachments_per_comment, 5);
+        assert!(cfg.issues.notify.enabled);
+        assert!(cfg.issues.notify.exclude_actor);
+        assert_eq!(
+            cfg.issues.notify.support_events,
+            vec!["create", "comment", "support_comment", "status"]
+        );
+        assert_eq!(cfg.issues.notify.company_events, vec!["support_comment"]);
+        assert_eq!(cfg.issues.notify.max_attempts, 5);
+        assert_eq!(cfg.issues.notify.drain_interval_secs, 30);
         assert_eq!(cfg.mail.smtp_host, "localhost");
         assert_eq!(cfg.mail.smtp_port, 1025);
         assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Starttls);
@@ -1257,6 +1366,8 @@ mod tests {
         assert_eq!(cfg.org.max_accounts_per_org, 5);
         assert_eq!(cfg.org.max_lts_subscriptions, 99);
         assert_eq!(cfg.issues.max_attachments_per_comment, 5);
+        assert!(cfg.issues.notify.enabled);
+        assert_eq!(cfg.issues.notify.company_events, vec!["support_comment"]);
         assert_eq!(cfg.mail.smtp_host, "smtp.tem.scaleway.com");
         assert_eq!(cfg.mail.smtp_port, 587);
         assert_eq!(cfg.mail.smtp_encryption, SmtpEncryption::Starttls);
@@ -1369,6 +1480,34 @@ smtp_encryption = "starttls"
         cfg.magiclinks.token_ttl_secs = 0;
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("token_ttl_secs"));
+    }
+
+    #[test]
+    fn rejects_unknown_issue_notify_event() {
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Development,
+        )
+        .unwrap();
+        cfg.issues.notify.support_events = vec!["nightly".to_owned()];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("unknown event token"), "{err}");
+    }
+
+    #[test]
+    fn rejects_zero_issue_notify_attempts_and_drain() {
+        let mut cfg = Config::load_with_environment(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config"),
+            Environment::Development,
+        )
+        .unwrap();
+        cfg.issues.notify.max_attempts = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("max_attempts"), "{err}");
+        cfg.issues.notify.max_attempts = 5;
+        cfg.issues.notify.drain_interval_secs = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("drain_interval_secs"), "{err}");
     }
 
     #[test]

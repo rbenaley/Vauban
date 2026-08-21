@@ -41,22 +41,26 @@ grep -n 'DOC_STATUS_PUBLISHED' "$CLIENT_DOC" >/dev/null \
 if grep -n 'quick_start_blocks\|is_seed_placeholder_or_outline\|placeholder_blocks' "$CLIENT_DOC" >/dev/null 2>&1; then
   fail "$CLIENT_DOC must not bypass DB body with hardcoded HTML helpers"
 fi
-grep -n 'docs_body::parse\|docs_body::' "$CLIENT_DOC" >/dev/null \
-  || fail "$CLIENT_DOC must render via docs_body::parse"
+grep -n 'docs_formatted_body' "$CLIENT_DOC" >/dev/null \
+  || fail "$CLIENT_DOC must render via docs_formatted_body"
+grep -n 'docs_body::parse' src/app/_components/docs_formatted.rs >/dev/null \
+  || fail "docs_formatted_body must parse via docs_body::parse"
 test -f src/docs_body.rs || fail "src/docs_body.rs dialect parser must exist"
 grep -n 'pub fn parse' src/docs_body.rs >/dev/null \
   || fail "docs_body.rs must export parse"
 grep -n 'pub fn escape_html' src/docs_body.rs >/dev/null \
   || fail "docs_body.rs must export escape_html"
 # Paired `` `inline` `` in article prose uses the same chips as release notes.
-grep -n 'note_inline_text' "$CLIENT_DOC" >/dev/null \
-  || fail "$CLIENT_DOC must render prose via note_inline_text (inline code chips)"
+grep -n 'note_inline_text' src/app/_components/docs_formatted.rs >/dev/null \
+  || fail "docs_formatted_body must render prose via note_inline_text (inline code chips)"
 grep -n 'vb-inline-code' src/app/_components/note_inline.rs >/dev/null \
   || fail "note_inline_text must emit vb-inline-code"
-grep -n 'inline.*monospace\|monospace chips\|`inline`' "$NEW" >/dev/null \
-  || fail "$NEW formatting hint must mention inline monospace chips"
-grep -n 'inline.*monospace\|monospace chips\|`inline`' "$DOC" >/dev/null \
-  || fail "$DOC formatting hint must mention inline monospace chips"
+grep -n 'DIALECT_HINT' "$NEW" >/dev/null \
+  || fail "$NEW must show DIALECT_HINT"
+grep -n 'DIALECT_HINT' "$DOC" >/dev/null \
+  || fail "$DOC must show DIALECT_HINT"
+grep -n 'monospace chips' src/docs_body.rs >/dev/null \
+  || fail "DIALECT_HINT must mention inline monospace chips"
 
 # Versioning UX: Save redirects to list; published save bumps version.
 grep -nE 'see_other\("/admin/docs"\)|see_other\(&list\)' "$DOC" >/dev/null \

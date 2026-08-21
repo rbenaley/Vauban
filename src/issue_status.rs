@@ -6,7 +6,9 @@
 
 use toasty::Db;
 
+use crate::config::IssuesNotifyConfig;
 use crate::issue_fsm::{IssueEvent, IssueState, TransitionError, timeline_body};
+use crate::issue_notify::{NotifyEvent, enqueue_issue_notify};
 use crate::models::{
     ISSUE_COMMENT_KIND_STATUS, ISSUE_ROLE_SYSTEM, ISSUE_STATUS_CLOSED, ISSUE_STATUS_RESOLVED,
     Issue, IssueComment,
@@ -86,6 +88,8 @@ pub async fn advance_issue(
     db: &mut Db,
     issue: &mut Issue,
     event: IssueEvent,
+    actor_user_id: u64,
+    notify: &IssuesNotifyConfig,
 ) -> Result<AdvanceOutcome, PersistError> {
     let state = IssueState::try_from(issue.status.as_str())
         .map_err(|_| PersistError::UnknownStatus(issue.status.clone()))?;
@@ -113,19 +117,38 @@ pub async fn advance_issue(
         return Err(map_db(err));
     }
 
-    toasty::create!(IssueComment {
+    let comment = toasty::create!(IssueComment {
         issue_id: issue.id,
         author_user_id: 0,
         author_role: ISSUE_ROLE_SYSTEM.to_owned(),
         body,
         kind: ISSUE_COMMENT_KIND_STATUS.to_owned(),
         created_at: now,
+        edited_at: 0,
     })
     .exec(&mut tx)
     .await
     .map_err(map_db)?;
 
     tx.commit().await.map_err(map_db)?;
+
+    if let Err(err) = enqueue_issue_notify(
+        db,
+        notify,
+        issue,
+        NotifyEvent::Status,
+        comment.id,
+        actor_user_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "vcp::issue_notify",
+            issue_id = issue.id,
+            error = %err,
+            "status notify enqueue failed after commit"
+        );
+    }
 
     // Instance update reloads changed fields (including bumped `version`).
     issue.status = new_status;
@@ -138,12 +161,14 @@ pub async fn advance_issue_with_retry(
     db: &mut Db,
     issue_id: u64,
     event: IssueEvent,
+    actor_user_id: u64,
+    notify: &IssuesNotifyConfig,
 ) -> Result<(Issue, AdvanceOutcome), PersistError> {
     for attempt in 0..ADVANCE_MAX_ATTEMPTS {
         let mut issue = load_issue_by_id(db, issue_id)
             .await?
             .ok_or_else(|| PersistError::Db(format!("issue id {issue_id} missing")))?;
-        match advance_issue(db, &mut issue, event).await {
+        match advance_issue(db, &mut issue, event, actor_user_id, notify).await {
             Ok(outcome) => return Ok((issue, outcome)),
             Err(PersistError::Conflict) if attempt + 1 < ADVANCE_MAX_ATTEMPTS => continue,
             Err(e) => return Err(e),
@@ -167,7 +192,14 @@ pub async fn close_issue_status(
     db: &mut Db,
     issue: &mut Issue,
 ) -> Result<AdvanceOutcome, PersistError> {
-    advance_issue(db, issue, IssueEvent::Close).await
+    advance_issue(
+        db,
+        issue,
+        IssueEvent::Close,
+        0,
+        &IssuesNotifyConfig::silent(),
+    )
+    .await
 }
 
 /// Convenience: Reopen event via advance.
@@ -175,7 +207,14 @@ pub async fn reopen_issue_status(
     db: &mut Db,
     issue: &mut Issue,
 ) -> Result<AdvanceOutcome, PersistError> {
-    advance_issue(db, issue, IssueEvent::Reopen).await
+    advance_issue(
+        db,
+        issue,
+        IssueEvent::Reopen,
+        0,
+        &IssuesNotifyConfig::silent(),
+    )
+    .await
 }
 
 #[cfg(test)]

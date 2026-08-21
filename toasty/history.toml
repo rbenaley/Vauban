@@ -89,3 +89,13 @@ snapshot_name = "0016_snapshot.toml"
 id = 9012559200699637841
 name = "0017_release_product_track.sql"
 snapshot_name = "0017_snapshot.toml"
+
+[[migrations]]
+id = 9122559200699637852
+name = "0018_issue_mail_outbox.sql"
+snapshot_name = "0018_snapshot.toml"
+
+[[migrations]]
+id = 9232559200699637863
+name = "0019_issue_comment_edited_at.sql"
+snapshot_name = "0019_snapshot.toml"

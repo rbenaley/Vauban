@@ -265,6 +265,7 @@ async fn e2e_issue_detail_shows_seeded_comment_and_reply() {
             body: support_body.to_owned(),
             kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
             created_at: now - 1_000,
+            edited_at: 0,
         })
         .exec(&mut conn)
         .await

@@ -1,6 +1,6 @@
 # Vauban Customer Portal — transactional email templates
 
-Three send-ready HTML emails for the Vauban Customer Portal, plus the
+Four send-ready HTML emails for the Vauban Customer Portal, plus the
 design tokens they were built from.
 
 ## Contents
@@ -10,6 +10,7 @@ design tokens they were built from.
 | `user-join.html`  | User added — invitation | Invitation to {org} — Vauban Customer Portal |
 | `user-login.html` | User login — magic link | Sign in to Vauban Customer Portal |
 | `user-leave.html` | User removed — access revoked | Access removed — {org} |
+| `issue-event.html` | Issue create / comment / status | `[{key}] …` |
 | `design-tokens.json`    | Colors, type, spacing, component values | — |
 | `vauban-logo.png`       | Star-fort logo, 384px (rendered at 48px) | — |
 

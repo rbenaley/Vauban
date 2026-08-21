@@ -243,6 +243,7 @@ async fn battle_concurrent_issue_comment_creates() {
                 body: format!("reply-{i}"),
                 kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
                 created_at: vcp::db::now_unix(),
+                edited_at: 0,
             })
             .exec(&mut conn)
             .await
@@ -450,7 +451,14 @@ async fn battle_close_reopen_cas_exactly_one_winner() {
             .next()
             .expect("issue");
         barrier_a.wait().await;
-        advance_issue(&mut conn, &mut issue, IssueEvent::Close).await
+        advance_issue(
+            &mut conn,
+            &mut issue,
+            IssueEvent::Close,
+            0,
+            &vcp::config::IssuesNotifyConfig::silent(),
+        )
+        .await
     });
     let h2 = tokio::spawn(async move {
         let db = vcp::db::connect(&url_b).await.expect("db");
@@ -465,7 +473,14 @@ async fn battle_close_reopen_cas_exactly_one_winner() {
             .next()
             .expect("issue");
         barrier_b.wait().await;
-        advance_issue(&mut conn, &mut issue, IssueEvent::Reopen).await
+        advance_issue(
+            &mut conn,
+            &mut issue,
+            IssueEvent::Reopen,
+            0,
+            &vcp::config::IssuesNotifyConfig::silent(),
+        )
+        .await
     });
 
     let r1 = h1.await.expect("join close");

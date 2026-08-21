@@ -186,23 +186,31 @@ a.vb-modal-close:hover { background: #f5f6f4; }
 /* Full-bleed body: horizontal padding matches .vb-modal-head so the title and
    the prose share one left edge. */
 .vb-modal-body { padding: 26px 28px 30px; }
-.vb-modal-body h3 {
+.vb-modal-body h3,
+.vb-issue-prose h3 {
   font-size: 17px; font-weight: 800; color: #14171c; margin: 26px 0 10px; letter-spacing: -0.01em;
 }
-.vb-modal-body h3:first-child { margin-top: 0; }
-.vb-modal-body p {
+.vb-modal-body h3:first-child,
+.vb-issue-prose h3:first-child { margin-top: 0; }
+.vb-modal-body p,
+.vb-issue-prose p {
   font-size: 15px; line-height: 1.7; color: #3a3f46; margin: 0 0 14px;
   text-wrap: pretty;
 }
-.vb-modal-body ul { margin: 0 0 16px; padding-left: 0; list-style: none; }
-.vb-modal-body li {
+.vb-modal-body ul,
+.vb-issue-prose ul { margin: 0 0 16px; padding-left: 0; list-style: none; }
+.vb-modal-body li,
+.vb-issue-prose li {
   font-size: 15px; line-height: 1.6; color: #3a3f46; margin-bottom: 8px;
   padding-left: 22px; position: relative;
 }
-.vb-modal-body li::before {
+.vb-modal-body li::before,
+.vb-issue-prose li::before {
   content: ""; position: absolute; left: 4px; top: 0.55em;
   width: 5px; height: 5px; border-radius: 1px; background: var(--accent);
 }
+.vb-issue-prose .vb-pre,
+.vb-issue-prose .vb-callout { margin-bottom: 12px; }
 /* Catalog grids (/{org}/builds + /admin/releases): same gap/padding tokens so
    inter-column spacing matches; each surface owns its track template. */
 /* Fixed tracks beat auto-layout drift but cannot shrink: scroll instead of

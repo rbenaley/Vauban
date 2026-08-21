@@ -249,6 +249,18 @@ pub async fn send_revocation_mail(
     .await
 }
 
+/// Issue lifecycle notification (create / comment / status).
+pub async fn send_issue_event_mail(
+    cx: &Cx,
+    ml: &MagicLinksConfig,
+    to_email: &str,
+    subject: &str,
+    text: &str,
+    html: String,
+) -> Result<()> {
+    send_branded_mail(cx, ml, to_email, subject, text, html).await
+}
+
 async fn send_branded_mail(
     cx: &Cx,
     ml: &MagicLinksConfig,

@@ -11,6 +11,9 @@
 
 use std::fmt;
 
+/// Hint shown under compose / reply textareas (docs + issue comments).
+pub const DIALECT_HINT: &str = "Formatting · ## Heading · blank line = new paragraph · - item for bullet lists · ::: callout … ::: · ``` to fence a code block · `inline` for monospace chips";
+
 /// Parsed document block ready for server-side `view!` rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
@@ -267,6 +270,12 @@ Need 2 GB RAM.
             )
         );
         assert_eq!(blocks[1], Block::List(vec!["Use `user@host`".into()]));
+    }
+
+    #[test]
+    fn dialect_hint_mentions_fences_and_inline() {
+        assert!(DIALECT_HINT.contains("```"));
+        assert!(DIALECT_HINT.contains("monospace chips"));
     }
 
     #[test]

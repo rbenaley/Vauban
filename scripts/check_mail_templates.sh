@@ -6,7 +6,7 @@ cd "$ROOT"
 
 fail() { echo "check_mail_templates: $*" >&2; exit 1; }
 
-for f in email/user-join.html email/user-login.html email/user-leave.html; do
+for f in email/user-join.html email/user-login.html email/user-leave.html email/issue-event.html; do
   [[ -f "$f" ]] || fail "missing $f"
   grep -q 'cid:vauban-logo' "$f" || fail "$f must use cid:vauban-logo"
   if grep -q 'data:image' "$f"; then
@@ -34,7 +34,7 @@ fi
 
 MAILER=src/mailer.rs
 TMPL=src/mail_templates.rs
-grep -n 'USER_JOIN_HTML\|USER_LOGIN_HTML\|USER_LEAVE_HTML' "$MAILER" >/dev/null \
+grep -n 'USER_JOIN_HTML\|USER_LOGIN_HTML\|USER_LEAVE_HTML\|send_issue_event_mail' "$MAILER" >/dev/null \
   || fail "$MAILER must render branded HTML templates"
 grep -n 'Attachment::inline' "$MAILER" >/dev/null \
   || fail "$MAILER must attach cid logo via Attachment::inline"

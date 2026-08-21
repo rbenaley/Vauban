@@ -17,6 +17,8 @@ use topcoat::{
 };
 
 use crate::{
+    app::_components::docs_formatted_body,
+    docs_body::DIALECT_HINT,
     issue_attachments::{attachment_cap_hint, gallery_src},
     models::{ISSUE_COMMENT_KIND_STATUS, IssueAttachment},
 };
@@ -55,6 +57,15 @@ pub struct DiscussionRow {
     pub when: String,
     pub support_side: bool,
     pub thumbs: Vec<ThumbView>,
+    pub comment_id: u64,
+    /// Show Edit on Support comments (`/admin/issues` only).
+    pub can_edit: bool,
+    pub editing: bool,
+    pub edit_href: String,
+    pub edit_action: String,
+    pub edit_cancel: String,
+    /// Non-empty when the body was edited after create.
+    pub edited_label: String,
 }
 
 pub fn thumbs_for_comment(
@@ -296,10 +307,15 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
                     } else {
                         "font-size: 9.5px; color: #fff; background: #5a5f66; padding: 1px 6px; border-radius: 3px;"
                     };
-                    <div style=(align)>
+                    let comment_anchor = if row.comment_id > 0 {
+                        format!("comment-{}", row.comment_id)
+                    } else {
+                        String::new()
+                    };
+                    <div style=(align) id=(comment_anchor)>
                         <div class=(bubble_class)>
                             <div
-                                style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;"
+                                style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;"
                             >
                                 <span style=(name_style)>(row.author_name.clone())</span>
                                 <span class="vb-mono" style=(badge_bg)>
@@ -311,12 +327,58 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
                                 >
                                     (row.when.clone())
                                 </span>
+                                if row.can_edit && !row.editing {
+                                    <a
+                                        class="vb-mono"
+                                        href=(row.edit_href.clone())
+                                        style="font-size: 10px; color: var(--accent); text-decoration: none;"
+                                    >
+                                        "Edit"
+                                    </a>
+                                }
                             </div>
-                            <div
-                                style="font-size: 13.5px; line-height: 1.55; color: #3a3f46; white-space: pre-wrap;"
-                            >
-                                (row.body.clone())
-                            </div>
+                            if row.editing {
+                                <form method="POST" action=(row.edit_action.clone())>
+                                    <input
+                                        type="hidden"
+                                        name="comment_id"
+                                        value=(row.comment_id.to_string())
+                                    >
+                                    <textarea
+                                        name="body"
+                                        required=""
+                                        style="width: 100%; min-height: 76px; font-size: 13.5px; padding: 10px 12px; border: 1px solid #e0e2de; border-radius: 4px; background: #fbfcfb; resize: vertical; font-family: 'Hanken Grotesk', sans-serif; line-height: 1.5; margin-bottom: 10px;"
+                                    >
+                                        (row.body.clone())
+                                    </textarea>
+                                    <p class="vb-form-hint">(DIALECT_HINT)</p>
+                                    <div
+                                        style="display: flex; gap: 10px; justify-content: flex-end;"
+                                    >
+                                        <a class="vb-btn muted" href=(row.edit_cancel.clone())>
+                                            "Cancel"
+                                        </a>
+                                        <button class="vb-btn" type="submit">"Save"</button>
+                                    </div>
+                                </form>
+                            } else {
+                                <div
+                                    class="vb-issue-prose"
+                                    style="font-size: 13.5px; line-height: 1.55; color: #3a3f46;"
+                                >
+                                    docs_formatted_body(body: &row.body)
+                                </div>
+                                if !row.edited_label.is_empty() {
+                                    <div
+                                        class="vb-mono"
+                                        style="font-size: 10px; color: #9aa0a6; margin-top: 6px;"
+                                    >
+                                        (format!(
+                                            "Edited · {}", row.edited_label.clone()
+                                        ))
+                                    </div>
+                                }
+                            }
                             if !row.thumbs.is_empty() {
                                 <div class="vb-issue-thumbs">
                                     for thumb in row.thumbs.clone() {

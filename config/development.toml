@@ -74,3 +74,11 @@ max_lts_subscriptions = 99
 
 [issues]
 max_attachments_per_comment = 5
+
+[issues.notify]
+enabled = true
+exclude_actor = true
+support_events = ["create", "comment", "support_comment", "status"]
+company_events = ["support_comment"]
+max_attempts = 5
+drain_interval_secs = 30

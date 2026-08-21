@@ -26,9 +26,9 @@ use vcp::{
     magic_link::{active_user_by_email, issue_token},
     models::{
         AuthSession, DOC_STATUS_PUBLISHED, DocArticle, EphemeralDownload, Issue, IssueAttachment,
-        IssueComment, MEMBERSHIP_ROLE_ORG, MagicLinkToken, Membership, Organization,
-        PORTAL_ROLE_ADMIN, PORTAL_ROLE_ORG, RESERVED_ORG_SLUG, Release, STORAGE_SCOPE_IMAGE,
-        USER_NOT_DELETED, User,
+        IssueComment, IssueMailOutbox, MEMBERSHIP_ROLE_ORG, MagicLinkToken, Membership,
+        Organization, PORTAL_ROLE_ADMIN, PORTAL_ROLE_ORG, RESERVED_ORG_SLUG, Release,
+        STORAGE_SCOPE_IMAGE, USER_NOT_DELETED, User,
     },
     perms::PolicyStore,
     storage::{StorageClient, upsert_release_object, write_and_hash},
@@ -111,6 +111,11 @@ pub async fn test_router_with_config(cfg: Config) -> Router {
 /// Router with [`MemoryTransport`] for asserting outbound mail without SMTP.
 pub async fn test_router_with_memory_mail(memory: MemoryTransport) -> Router {
     let cfg = test_config().await;
+    test_router_with_memory_mail_config(memory, cfg).await
+}
+
+/// Memory-mail router with a caller-supplied [`Config`] (e.g. notify disabled).
+pub async fn test_router_with_memory_mail_config(memory: MemoryTransport, cfg: Config) -> Router {
     let database = test_db().await;
     let policy = std::sync::Arc::new(
         PolicyStore::load_from_csv(&cfg.access.policy_path).expect("load policy"),
@@ -372,8 +377,24 @@ pub async fn cleanup(db: &Db) {
     }
 
     let issues = Issue::all().exec(&mut db).await.unwrap_or_default();
+    let drop_issue_ids: Vec<u64> = issues
+        .iter()
+        .filter(|issue| {
+            test_org_ids.contains(&issue.organization_id) || issue.key.starts_with("TEST-")
+        })
+        .map(|issue| issue.id)
+        .collect();
+    let outbox = IssueMailOutbox::all()
+        .exec(&mut db)
+        .await
+        .unwrap_or_default();
+    for row in outbox {
+        if drop_issue_ids.contains(&row.issue_id) {
+            let _ = row.delete().exec(&mut db).await;
+        }
+    }
     for issue in issues {
-        if test_org_ids.contains(&issue.organization_id) || issue.key.starts_with("TEST-") {
+        if drop_issue_ids.contains(&issue.id) {
             let _ = Issue::delete_by_id(&mut db, issue.id).await;
         }
     }

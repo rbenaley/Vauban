@@ -9,10 +9,9 @@ use topcoat::{
 
 use super::{DocsFilter, docs_list_view};
 use crate::{
-    app::_components::{article_modal_shell, ico_issues, note_inline_text},
+    app::_components::{article_modal_shell, docs_formatted_body},
     app::org::Org,
     auth::{capability_denied, require_org},
-    docs_body::{self, Block},
     models::{DOC_STATUS_PUBLISHED, DocArticle},
     perms::perms_for_user,
     tz::{browser_tz, format_unix_local, unix_rfc3339},
@@ -57,8 +56,6 @@ async fn doc_article_page(cx: &Cx) -> Result {
     let tz = browser_tz(cx);
     let updated = format_unix_local(article.updated_at, tz);
     let updated_rfc = unix_rfc3339(article.updated_at);
-    let blocks = render_body_blocks(cx, &body_text).await;
-
     view! {
         cx =>
         (list?)
@@ -73,59 +70,8 @@ async fn doc_article_page(cx: &Cx) -> Result {
                     "Updated "
                     <time datetime=(updated_rfc)>(updated)</time>
                 </p>
-                (blocks?)
+                docs_formatted_body(body: &body_text)
             }
         )
-    }
-}
-
-/// Render dialect body from DB (no slug-specific HTML bypass).
-async fn render_body_blocks(cx: &Cx, body: &str) -> Result {
-    let blocks = docs_body::parse(body);
-    view! {
-        cx =>
-        for block in blocks {
-            (render_block(cx, block).await?)
-        }
-    }
-}
-
-async fn render_block(cx: &Cx, block: Block) -> Result {
-    match block {
-        Block::Heading(text) => {
-            view! { cx => <h3>note_inline_text(text: &text)</h3> }
-        }
-        Block::Paragraph(text) => {
-            view! {
-                cx =>
-                <p style="white-space: pre-wrap;">note_inline_text(text: &text)</p>
-            }
-        }
-        Block::Pre(text) => {
-            // Fenced ``` blocks stay literal; only paired `…` in prose/lists/callouts
-            // become mono chips (same helper as release notes).
-            view! { cx => <pre class="vb-pre">(text)</pre> }
-        }
-        Block::Callout(text) => {
-            view! {
-                cx =>
-                <div class="vb-callout">
-                    (ico_issues(cx, 16).await?)
-                    <span style="white-space: pre-wrap;">
-                        note_inline_text(text: &text)
-                    </span>
-                </div>
-            }
-        }
-        Block::List(items) => {
-            view! {
-                cx =>
-                <ul>
-                    for item in items {
-                        <li>note_inline_text(text: &item)</li>
-                    }
-                </ul>
-            }
-        }
     }
 }

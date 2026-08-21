@@ -44,7 +44,16 @@ fn inv_email_tree_placeholders_and_no_base64() {
         env!("CARGO_MANIFEST_DIR"),
         "/email/user-leave.html"
     ));
-    for (name, html) in [("join", join), ("login", login), ("leave", leave)] {
+    let issue = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/email/issue-event.html"
+    ));
+    for (name, html) in [
+        ("join", join),
+        ("login", login),
+        ("leave", leave),
+        ("issue", issue),
+    ] {
         assert!(html.contains(r#"src="cid:vauban-logo""#), "{name} cid");
         assert!(!html.contains("data:image"), "{name} no data URI");
     }

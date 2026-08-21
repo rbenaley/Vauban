@@ -28,6 +28,9 @@
 //! - `cargo test --test integration_tests -- seed_data -- --test-threads=1`
 //! - `cargo test --test integration_tests -- freebsd_pkg -- --test-threads=1`
 //! - `cargo test --test integration_tests -- smtp_certs -- --test-threads=1`
+//! - `cargo test --test integration_tests -- issue_notify -- --test-threads=1`
+//! - `cargo test --test integration_tests -- issue_comment_edit -- --test-threads=1`
+//! - `cargo test --test integration_tests -- issue_comment_format -- --test-threads=1`
 
 mod admin_companies_battle_test;
 mod admin_companies_e2e_test;
@@ -83,6 +86,18 @@ mod http_edge_battle_test;
 mod http_edge_e2e_test;
 mod http_edge_invariants_test;
 mod http_edge_proptest;
+mod issue_comment_edit_battle_test;
+mod issue_comment_edit_e2e_test;
+mod issue_comment_edit_invariants_test;
+mod issue_comment_edit_proptest;
+mod issue_comment_format_battle_test;
+mod issue_comment_format_e2e_test;
+mod issue_comment_format_invariants_test;
+mod issue_comment_format_proptest;
+mod issue_notify_battle_test;
+mod issue_notify_e2e_test;
+mod issue_notify_invariants_test;
+mod issue_notify_proptest;
 mod magic_link_battle_test;
 mod magic_link_e2e_test;
 mod magic_link_invariants_test;

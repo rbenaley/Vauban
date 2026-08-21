@@ -17,12 +17,14 @@ use crate::{
     app::{DiscussionPane, DiscussionRow, issue_discussion, shot_file_input, thumbs_for_comment},
     auth::{capability_denied, config, db, require_org, storage},
     db::now_unix,
+    docs_body::DIALECT_HINT,
     issue_anchor::{ISSUE_REPLY_ANCHOR, with_reply_anchor},
     issue_attachments::{
         ScreenshotUpload, attach_many, issue_attachment_list_limit, list_for_issue,
         screenshot_from_part, store_screenshot_uploads,
     },
     issue_fsm::{IssueEvent, IssueState},
+    issue_notify::{comment_event_for_actor, drain_pending, enqueue_issue_notify},
     issue_status::{ISSUE_ERR_CONFLICT, PersistError, advance_issue_with_retry, issue_is_closed},
     models::{
         ISSUE_ATTACHMENT_OPENER_COMMENT_ID, ISSUE_COMMENT_KIND_COMMENT, ISSUE_ROLE_REPORTER,
@@ -281,6 +283,7 @@ async fn issue_detail_page(cx: &Cx) -> Result {
                             placeholder="Add a reply…"
                             style="width: 100%; min-height: 76px; font-size: 14px; padding: 10px 12px; border: 1px solid #e0e2de; border-radius: 4px; background: #fbfcfb; resize: vertical; font-family: 'Hanken Grotesk', sans-serif; line-height: 1.5; margin-bottom: 12px;"
                         ></textarea>
+                        <p class="vb-form-hint">(DIALECT_HINT)</p>
                         <div class="vb-drop vb-drop-inline">
                             shot_file_input(
                                 label: view! {
@@ -447,12 +450,31 @@ async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
         body,
         kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
         created_at: now,
+        edited_at: 0,
     })
     .exec(&mut database)
     .await
     else {
         return Ok(see_other(&org_reply_target(org_slug, key, Some("reply"))));
     };
+    if let Err(err) = enqueue_issue_notify(
+        &mut database,
+        &config(cx).issues.notify,
+        &issue,
+        comment_event_for_actor(&ctx.user.portal_role),
+        comment.id,
+        ctx.user.id,
+    )
+    .await
+    {
+        tracing::warn!(
+            org = %org_slug,
+            key = %key,
+            error = %err,
+            "issue comment notify enqueue failed"
+        );
+    }
+    drain_pending(cx).await;
 
     if !tokens.is_empty()
         && let Err(err) = attach_many(
@@ -517,8 +539,20 @@ async fn org_advance_issue(cx: &Cx, event: IssueEvent) -> Result<SeeOther> {
         return Err(capability_denied().into());
     };
 
-    match advance_issue_with_retry(&mut database, issue.id, event).await {
-        Ok(_) | Err(PersistError::Fsm(_)) | Err(PersistError::UnknownStatus(_)) => {
+    match advance_issue_with_retry(
+        &mut database,
+        issue.id,
+        event,
+        ctx.user.id,
+        &config(cx).issues.notify,
+    )
+    .await
+    {
+        Ok((..)) => {
+            drain_pending(cx).await;
+            Ok(see_other(&org_reply_target(org_slug, key, None)))
+        }
+        Err(PersistError::Fsm(_)) | Err(PersistError::UnknownStatus(_)) => {
             Ok(see_other(&org_reply_target(org_slug, key, None)))
         }
         Err(PersistError::Conflict) => Ok(see_other(&org_reply_target(
@@ -564,6 +598,13 @@ fn build_discussion_rows(
                 } else {
                     Vec::new()
                 },
+                comment_id: c.id,
+                can_edit: false,
+                editing: false,
+                edit_href: String::new(),
+                edit_action: String::new(),
+                edit_cancel: String::new(),
+                edited_label: String::new(),
             }
         })
         .collect()

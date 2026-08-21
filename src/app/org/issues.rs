@@ -30,12 +30,15 @@ use crate::{
         ISSUE_KEY_CREATE_ATTEMPTS, ISSUE_KEY_PREFIX, allocate_issue_key, is_unique_violation,
         parse_vbn_suffix,
     },
+    issue_notify::{NotifyEvent, drain_pending, enqueue_issue_notify},
     issues_search::{normalize_query, normalize_status},
     list_page::{
         LIST_PAGE_SIZE, PagerLinks, clamp_page, href_with_query, page_count, page_offset,
         parse_page, with_page_param,
     },
-    models::{ISSUE_ATTACHMENT_OPENER_COMMENT_ID, Issue, RESERVED_ORG_SLUG},
+    models::{
+        ISSUE_ATTACHMENT_OPENER_COMMENT_ID, ISSUE_MAIL_SOURCE_CREATE, Issue, RESERVED_ORG_SLUG,
+    },
     perms::perms_for_user,
     sql_search::ilike_contains,
 };
@@ -363,6 +366,24 @@ async fn report_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
         .await
         {
             Ok(created) => {
+                if let Err(err) = enqueue_issue_notify(
+                    &mut database,
+                    &config(cx).issues.notify,
+                    &created,
+                    NotifyEvent::Create,
+                    ISSUE_MAIL_SOURCE_CREATE,
+                    ctx.user.id,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        org = %slug,
+                        key = %key,
+                        error = %err,
+                        "issue create notify enqueue failed"
+                    );
+                }
+                drain_pending(cx).await;
                 if !tokens.is_empty()
                     && let Err(err) = attach_many(
                         &mut database,

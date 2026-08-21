@@ -37,8 +37,10 @@ grep -n 'note_inline_text' "$BUILDS" >/dev/null \
   || fail "$BUILDS changelog must call note_inline_text"
 grep -n 'note_inline_text' "$ORG" >/dev/null \
   || fail "$ORG dashboard Latest build notes must call note_inline_text"
-grep -n 'note_inline_text' src/app/org/docs/doc.rs >/dev/null \
-  || fail "KB article modal must call note_inline_text for prose chips"
+grep -n 'docs_formatted_body' src/app/org/docs/doc.rs >/dev/null \
+  || fail "KB article modal must render via docs_formatted_body"
+grep -n 'note_inline_text' src/app/_components/docs_formatted.rs >/dev/null \
+  || fail "docs_formatted_body must call note_inline_text for prose chips"
 
 # Do not leave plain (text) as the only changelog body on those surfaces.
 if grep -nE '^\s*<span>\(text\)</span>\s*$' "$BUILDS" >/dev/null 2>&1; then

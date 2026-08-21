@@ -1,10 +1,11 @@
 //! Issue detail at `/admin/issues/{issue_key}` (cross-org, staff-only).
 
+use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
     router::{
-        content::multipart::Multipart,
+        content::{Form, multipart::Multipart},
         error::{SeeOther, not_found, see_other},
         page, path_param, query_params, route,
     },
@@ -16,20 +17,23 @@ use crate::{
     app::{DiscussionPane, DiscussionRow, issue_discussion, shot_file_input, thumbs_for_comment},
     auth::{capability_denied, config, db, require_staff, storage},
     db::now_unix,
+    docs_body::DIALECT_HINT,
     id_lookups::{orgs_by_ids, users_by_ids},
     issue_anchor::{ISSUE_REPLY_ANCHOR, with_reply_anchor},
     issue_attachments::{
         ScreenshotUpload, attach_many, issue_attachment_list_limit, list_for_issue,
         screenshot_from_part, store_screenshot_uploads,
     },
+    issue_comment_edit::{COMMENT_NOT_EDITED, can_edit_support_comment},
     issue_fsm::{IssueEvent, IssueState},
+    issue_notify::{NotifyEvent, drain_pending, enqueue_issue_notify},
     issue_status::{ISSUE_ERR_CONFLICT, PersistError, advance_issue_with_retry, issue_is_closed},
     models::{
         ISSUE_ATTACHMENT_OPENER_COMMENT_ID, ISSUE_COMMENT_KIND_COMMENT, ISSUE_ROLE_REPORTER,
         ISSUE_ROLE_SUPPORT, ISSUE_ROLE_SYSTEM, Issue, IssueAttachment, IssueComment, Organization,
         User,
     },
-    perms::perms_for_user,
+    perms::{PermissionContext, perms_for_user},
     sql_search::escape_ilike_literal,
     tz::{browser_tz, format_relative, format_unix_local, unix_rfc3339},
 };
@@ -41,6 +45,13 @@ struct IssueKey(str);
 struct AdminIssueDetailQuery {
     org: Option<String>,
     err: Option<String>,
+    edit: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EditCommentForm {
+    comment_id: String,
+    body: String,
 }
 
 #[page]
@@ -126,8 +137,24 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
     let is_resolved = state == IssueState::Resolved;
     let is_closed = state == IssueState::Closed;
     let can_write = perms.issues_write;
+    let editing_id = detail_q
+        .as_ref()
+        .and_then(|q| q.edit.as_deref())
+        .and_then(|s| s.parse::<u64>().ok());
 
-    let timeline = build_discussion_rows(&comments, &users, &attachments, org_slug, now, tz);
+    let mut timeline = build_discussion_rows(&comments, &users, &attachments, org_slug, now, tz);
+    decorate_support_edit(
+        &mut timeline,
+        &comments,
+        SupportEditCtx {
+            perms: &perms,
+            issue_key: key,
+            org_hint: org_slug_for_q,
+            editing_id,
+            now,
+            tz,
+        },
+    );
 
     view! {
         <div class="vb-issue-pane">
@@ -317,6 +344,7 @@ async fn admin_issue_detail_page(cx: &Cx) -> Result {
                             placeholder="Add a support reply…"
                             style="width: 100%; min-height: 76px; font-size: 14px; padding: 10px 12px; border: 1px solid #e0e2de; border-radius: 4px; background: #fbfcfb; resize: vertical; font-family: 'Hanken Grotesk', sans-serif; line-height: 1.5; margin-bottom: 12px;"
                         ></textarea>
+                        <p class="vb-form-hint">(DIALECT_HINT)</p>
                         <div class="vb-drop vb-drop-inline">
                             shot_file_input(
                                 label: view! {
@@ -454,6 +482,7 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
         body,
         kind: ISSUE_COMMENT_KIND_COMMENT.to_owned(),
         created_at: now,
+        edited_at: 0,
     })
     .exec(&mut database)
     .await
@@ -464,6 +493,19 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
             Some("reply"),
         )));
     };
+    if let Err(err) = enqueue_issue_notify(
+        &mut database,
+        &config(cx).issues.notify,
+        &issue,
+        NotifyEvent::SupportComment,
+        comment.id,
+        staff.user.id,
+    )
+    .await
+    {
+        tracing::warn!(key = %key, error = %err, "admin comment notify enqueue failed");
+    }
+    drain_pending(cx).await;
 
     if !tokens.is_empty()
         && let Err(err) = attach_many(
@@ -487,6 +529,61 @@ async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
 
     let _ = issue.update().updated_at(now).exec(&mut database).await;
 
+    Ok(see_other(&detail))
+}
+
+#[route(POST "/admin/issues/{issue_key}/edit-comment")]
+async fn admin_edit_comment(cx: &Cx, Form(form): Form<EditCommentForm>) -> Result<SeeOther> {
+    let key = path_param::<IssueKey>(cx);
+    let staff = require_staff(cx).await?;
+    let perms = perms_for_user(cx, &staff.user).await;
+    let org_hint = query_params::<AdminIssueDetailQuery>(cx)
+        .ok()
+        .and_then(|q| q.org.clone())
+        .unwrap_or_default();
+    let detail = admin_reply_target(key, &org_hint, None);
+    if !perms.issues_write || !perms.admin_view {
+        return Err(capability_denied().into());
+    }
+    let Some(comment_id) = form.comment_id.trim().parse::<u64>().ok() else {
+        return Err(capability_denied().into());
+    };
+    let body = form.body.trim().to_owned();
+    if body.is_empty() {
+        return Ok(see_other(&detail));
+    }
+
+    let mut database = db(cx);
+    let Some(mut issue) = load_admin_issue_by_key(&mut database, key, &org_hint).await else {
+        return Err(capability_denied().into());
+    };
+    let rows = IssueComment::all()
+        .filter(IssueComment::fields().id().eq(comment_id))
+        .filter(IssueComment::fields().issue_id().eq(issue.id))
+        .limit(1)
+        .exec(&mut database)
+        .await
+        .unwrap_or_default();
+    let Some(mut comment) = rows.into_iter().next() else {
+        return Err(capability_denied().into());
+    };
+    if !can_edit_support_comment(&perms, &comment.kind, &comment.author_role) {
+        return Err(capability_denied().into());
+    }
+
+    let now = now_unix();
+    if comment
+        .update()
+        .body(body)
+        .edited_at(now)
+        .exec(&mut database)
+        .await
+        .is_err()
+    {
+        tracing::warn!(key = %key, comment_id, "admin comment edit failed");
+        return Ok(see_other(&detail));
+    }
+    let _ = issue.update().updated_at(now).exec(&mut database).await;
     Ok(see_other(&detail))
 }
 
@@ -528,10 +625,20 @@ async fn admin_advance_issue(cx: &Cx, event: IssueEvent) -> Result<SeeOther> {
         return Ok(see_other("/admin/issues"));
     };
 
-    match advance_issue_with_retry(&mut database, issue.id, event).await {
-        Ok(_) | Err(PersistError::Fsm(_)) | Err(PersistError::UnknownStatus(_)) => {
+    match advance_issue_with_retry(
+        &mut database,
+        issue.id,
+        event,
+        staff.user.id,
+        &config(cx).issues.notify,
+    )
+    .await
+    {
+        Ok((..)) => {
+            drain_pending(cx).await;
             Ok(see_other(&detail))
         }
+        Err(PersistError::Fsm(_)) | Err(PersistError::UnknownStatus(_)) => Ok(see_other(&detail)),
         Err(PersistError::Conflict) => Ok(see_other(&admin_reply_target(
             key,
             &org_hint,
@@ -671,6 +778,44 @@ fn pick_issue_by_key(
     }
 }
 
+struct SupportEditCtx<'a> {
+    perms: &'a PermissionContext,
+    issue_key: &'a str,
+    org_hint: &'a str,
+    editing_id: Option<u64>,
+    now: i64,
+    tz: chrono_tz::Tz,
+}
+
+fn decorate_support_edit(
+    rows: &mut [DiscussionRow],
+    comments: &[IssueComment],
+    ctx: SupportEditCtx<'_>,
+) {
+    for (row, comment) in rows.iter_mut().zip(comments.iter()) {
+        if comment.edited_at != COMMENT_NOT_EDITED {
+            row.edited_label = format_relative(comment.edited_at, ctx.now, ctx.tz);
+        }
+        if !can_edit_support_comment(ctx.perms, &comment.kind, &comment.author_role) {
+            continue;
+        }
+        row.can_edit = true;
+        let detail = admin_issue_detail_href(ctx.issue_key, ctx.org_hint);
+        let sep = if detail.contains('?') { '&' } else { '?' };
+        row.edit_href = format!("{detail}{sep}edit={}#comment-{}", comment.id, comment.id);
+        row.edit_cancel = format!("{detail}#comment-{}", comment.id);
+        row.edit_action = if ctx.org_hint.is_empty() {
+            format!("/admin/issues/{}/edit-comment", ctx.issue_key)
+        } else {
+            format!(
+                "/admin/issues/{}/edit-comment?org={}",
+                ctx.issue_key, ctx.org_hint
+            )
+        };
+        row.editing = ctx.editing_id == Some(comment.id);
+    }
+}
+
 fn build_discussion_rows(
     comments: &[IssueComment],
     users: &[User],
@@ -702,6 +847,13 @@ fn build_discussion_rows(
                 } else {
                     Vec::new()
                 },
+                comment_id: c.id,
+                can_edit: false,
+                editing: false,
+                edit_href: String::new(),
+                edit_action: String::new(),
+                edit_cancel: String::new(),
+                edited_label: String::new(),
             }
         })
         .collect()

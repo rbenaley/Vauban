@@ -70,12 +70,20 @@ fn inv_client_doc_modal_uses_docs_body_parser() {
         "must not bypass thin seed bodies"
     );
     assert!(
-        src.contains("docs_body"),
-        "client modal must parse dialect via docs_body"
+        src.contains("docs_formatted_body"),
+        "client modal must render dialect via docs_formatted_body"
+    );
+    let formatted = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/_components/docs_formatted.rs"
+    ));
+    assert!(
+        formatted.contains("docs_body::parse"),
+        "shared renderer must parse dialect via docs_body"
     );
     assert!(
-        src.contains("note_inline_text"),
-        "client modal must render paired backticks via note_inline_text"
+        formatted.contains("note_inline_text"),
+        "shared renderer must render paired backticks via note_inline_text"
     );
 }
 
@@ -90,8 +98,13 @@ fn inv_docs_compose_hint_mentions_inline_code() {
         "/src/app/admin/docs/doc.rs"
     ));
     assert!(
-        new.contains("monospace chips") && edit.contains("monospace chips"),
-        "compose + edit hints must document `inline` monospace chips"
+        new.contains("DIALECT_HINT") && edit.contains("DIALECT_HINT"),
+        "compose + edit must show DIALECT_HINT"
+    );
+    let dialect = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/docs_body.rs"));
+    assert!(
+        dialect.contains("monospace chips"),
+        "DIALECT_HINT must document `inline` monospace chips"
     );
 }
 

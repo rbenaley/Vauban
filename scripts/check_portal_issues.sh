@@ -335,4 +335,8 @@ if grep -n 'with_reply_anchor' src/app/admin/issues/search_shard.rs >/dev/null 2
   fail "list hrefs must not carry the reply anchor"
 fi
 
+bash scripts/check_issue_notify.sh
+bash scripts/check_issue_comment_edit.sh
+bash scripts/check_issue_comment_format.sh
+
 echo "check_portal_issues: OK"

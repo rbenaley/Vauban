@@ -15,6 +15,9 @@ Related:
 - Filter: `cargo test --test integration_tests -- portal_issues -- --test-threads=1`
 - Auth denials: [`auth_tenant_smoke_test.md`](auth_tenant_smoke_test.md)
 - Image upload helper: [`storage_helper_smoke_test.md`](storage_helper_smoke_test.md) (§ B + gallery follow-on)
+- Issue notification mail: [`issue_notify_smoke_test.md`](issue_notify_smoke_test.md)
+- Support comment edit: [`issue_comment_edit_smoke_test.md`](issue_comment_edit_smoke_test.md)
+- Comment docs dialect: [`issue_comment_format_smoke_test.md`](issue_comment_format_smoke_test.md)
 
 ## Automated prerequisites
 
