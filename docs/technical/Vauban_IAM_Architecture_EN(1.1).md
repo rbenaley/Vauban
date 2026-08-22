@@ -75,6 +75,7 @@ The migration was driven by three goals:
 - [Vauban_Vault_Architecture_EN(1.2).md](Vauban_Vault_Architecture_EN(1.2).md) -- Secrets management (MFA secrets, credential encryption)
 - [Vauban_RDP_Architecture_EN(1.0).md](Vauban_RDP_Architecture_EN(1.0).md) -- RDP proxy implementation
 - [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) -- Defense-in-depth RBAC re-check (`shared::access_guard`) shared by every proxy
+- [Vauban_LDAPS_Auth_Architecture_EN(1.1).md](Vauban_LDAPS_Auth_Architecture_EN(1.1).md) -- Directory bind, JIT provision, User Group aggregation
 - [docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md) -- Operational runbook for the proxy <-> access pipe / RBAC re-check failure mode
 
 ---

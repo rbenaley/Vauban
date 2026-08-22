@@ -10,7 +10,7 @@
 
 Related:
 
-- [LDAPS Auth Architecture 1.0](../technical/Vauban_LDAPS_Auth_Architecture_EN(1.0).md)
+- [LDAPS Auth Architecture 1.1](../technical/Vauban_LDAPS_Auth_Architecture_EN(1.1).md)
 - Lint: `vauban-auth/scripts/check_ldap_dn_escaping.sh`
 
 ## Automated prerequisites

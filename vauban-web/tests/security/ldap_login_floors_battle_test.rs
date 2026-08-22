@@ -72,7 +72,7 @@ fn battle_supervisor_validate_runs_even_when_ldaps_disabled() {
 
 #[test]
 fn battle_architecture_doc_documents_floors_vs_local_policy() {
-    let doc = read("docs/technical/Vauban_LDAPS_Auth_Architecture_EN(1.0).md");
+    let doc = read("docs/technical/Vauban_LDAPS_Auth_Architecture_EN(1.1).md");
     assert!(
         doc.contains("login_username_min_length") && doc.contains("login_password_min_length"),
         "LDAPS architecture doc must document the login_*_min_length knobs"

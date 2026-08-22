@@ -12,3 +12,5 @@ doc-family only).
 | [004](004-flat-message-enum.md) | Retain flat IPC `Message` enum | Accepted |
 | [005](005-capacity-envelope.md) | Single-appliance capacity envelope (estimated) | Accepted (estimated) |
 | [006](006-iacs-protocol-scope.md) | IACS protocol profile scope (EIP / BACnet-SC / DNP3 / IEC 61850 MMS) | Accepted |
+| [007](007-ldap-group-aggregation-phase-1.md) | LDAP User Group aggregation (Phase 1, login-only) | Accepted |
+| [008](008-ldaps-mapping-file-dsl.md) | LDAPS mapping file (`static` / `match`) | Accepted |

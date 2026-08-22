@@ -4,6 +4,12 @@
 **Date:** 1 June 2026
 **Status:** Implemented (v1 -- direct bind)
 
+> **Superseded** for group aggregation and the mapping file by
+> [Vauban_LDAPS_Auth_Architecture_EN(1.1).md](Vauban_LDAPS_Auth_Architecture_EN(1.1).md)
+> ([ADR 007](../adr/007-ldap-group-aggregation-phase-1.md),
+> [ADR 008](../adr/008-ldaps-mapping-file-dsl.md)). This 1.0 snapshot
+> remains the bind-only design as shipped (no group synchronization).
+
 ---
 
 ## Table of Contents
