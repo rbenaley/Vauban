@@ -25,6 +25,20 @@ use vauban_web::{
     services::rate_limit::RateLimiter,
 };
 
+/// Mapping compiled by [`TestApp::spawn_ldap_aggregation`].
+pub const TEST_AGGREGATION_MAPPING: &[u8] = b"\
+resolve user-attr memberOf\n\
+static cn=vauban-admins,ou=groups,dc=example,dc=com Administrators\n\
+match cn={name},ou=groups,dc=example,dc=com {name}\n";
+
+/// Directory key that [`TEST_AGGREGATION_MAPPING`] `match` captures as `name`.
+pub fn test_aggregation_group_key(name: &str) -> String {
+    format!("cn={name},ou=groups,dc=example,dc=com")
+}
+
+/// Static-rule key that maps to the reserved target `Administrators`.
+pub const TEST_ADMINS_DIRECTORY_KEY: &str = "cn=vauban-admins,ou=groups,dc=example,dc=com";
+
 /// Shared fingerprint map backing the [`StaticHostIdentityVerifier`]:
 /// `(ip, port) -> fingerprint presented when challenged`. Tests seed it
 /// through [`TestApp::pin_host_fingerprint`].
@@ -310,12 +324,43 @@ impl TestApp {
         Self::create_inner_with(auth_ipc_client, |_| {}).await
     }
 
+    /// LDAP-enabled app with aggregation compiled from a test mapping
+    /// (threshold 3). Shares the Auth IPC stub with [`Self::spawn_ldap`].
+    pub async fn spawn_ldap_aggregation() -> &'static TestApp {
+        static LDAP_AGG_APP: OnceCell<TestApp> = OnceCell::const_new();
+        LDAP_AGG_APP
+            .get_or_init(|| async {
+                let auth_client = Self::shared_ldap_auth_client().await;
+                let mapping = std::sync::Arc::new(
+                    vauban_web::services::ldap_aggregation::LdapMappingRuntime::from_provision(
+                        true,
+                        TEST_AGGREGATION_MAPPING,
+                        3,
+                    )
+                    .expect("test aggregation mapping"),
+                );
+                Self::create_inner_with_mapping(Some(auth_client), |_| {}, Some(mapping)).await
+            })
+            .await
+    }
+
     /// Same as [`Self::create_inner`] with a config mutator applied right
     /// after loading `testing.toml`, BEFORE any state is derived from the
     /// config (client ACL, auth service, ...).
     async fn create_inner_with(
         auth_ipc_client: Option<std::sync::Arc<vauban_web::ipc::AuthIpcClient>>,
         mutate_config: impl FnOnce(&mut Config),
+    ) -> Self {
+        Self::create_inner_with_mapping(auth_ipc_client, mutate_config, None).await
+    }
+
+    /// Same as [`Self::create_inner_with`] plus an optional compiled mapping.
+    async fn create_inner_with_mapping(
+        auth_ipc_client: Option<std::sync::Arc<vauban_web::ipc::AuthIpcClient>>,
+        mutate_config: impl FnOnce(&mut Config),
+        ldap_mapping: Option<
+            std::sync::Arc<vauban_web::services::ldap_aggregation::LdapMappingRuntime>,
+        >,
     ) -> Self {
         // Load test configuration from workspace root config/testing.toml
         let mut config = unwrap_ok!(Config::load_with_environment(
@@ -459,6 +504,7 @@ impl TestApp {
                 challenges: std::sync::Arc::clone(&identity_challenges),
             }),
             vault_provenance: vauban_web::services::vault_provenance::ProvenanceCache::new(),
+            ldap_mapping,
         };
 
         // Build router
@@ -1729,7 +1775,7 @@ pub mod auth_ipc_test_service {
         PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
     };
     use shared::ipc::IpcChannel;
-    use shared::messages::{LdapBindOutcome, Message};
+    use shared::messages::{LdapBindAndSearchOutcome, LdapBindOutcome, Message};
     use vauban_web::ipc::AuthIpcClient;
 
     /// Counts `AuthLdapBind` messages received by the stub. Used by login-floor
@@ -1769,6 +1815,32 @@ pub mod auth_ipc_test_service {
     /// Username whose bind always reports the directory as unreachable, used to
     /// prove that local accounts keep working when the DS is down.
     pub const LDAP_DOWN_USERNAME: &str = "test_ldap_dsdown";
+
+    /// Search outcome the stub returns after a successful bind.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum StubSearchMode {
+        /// Case A: return the configured group keys.
+        Complete,
+        /// Case B.
+        IncompleteNotFound,
+        /// Case C.
+        IncompleteUnreachable,
+    }
+
+    static STUB_SEARCH_MODE: std::sync::Mutex<StubSearchMode> =
+        std::sync::Mutex::new(StubSearchMode::Complete);
+    static STUB_GROUP_KEYS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    /// Configure the bind-and-search stub (serial tests must reset after).
+    pub fn set_stub_search(mode: StubSearchMode, keys: Vec<String>) {
+        *STUB_SEARCH_MODE.lock().expect("stub search mode") = mode;
+        *STUB_GROUP_KEYS.lock().expect("stub group keys") = keys;
+    }
+
+    /// Restore complete + empty keys.
+    pub fn reset_stub_search() {
+        set_stub_search(StubSearchMode::Complete, Vec::new());
+    }
 
     pub struct InProcessAuthService {
         pub auth_client: Arc<AuthIpcClient>,
@@ -1814,6 +1886,49 @@ pub mod auth_ipc_test_service {
                         let msg = Message::AuthLdapBindResponse {
                             request_id,
                             outcome,
+                        };
+                        if svc_channel.send(&msg).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Message::AuthLdapBindAndSearch {
+                        request_id,
+                        username,
+                        password,
+                    }) => {
+                        LDAP_BIND_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+                        let bind = stub_outcome(&username, password.as_str());
+                        let (outcome, group_keys) = match bind {
+                            LdapBindOutcome::InvalidCredentials => {
+                                (LdapBindAndSearchOutcome::BindInvalidCredentials, Vec::new())
+                            }
+                            LdapBindOutcome::Unreachable => {
+                                (LdapBindAndSearchOutcome::BindUnreachable, Vec::new())
+                            }
+                            LdapBindOutcome::TlsError => {
+                                (LdapBindAndSearchOutcome::BindTlsError, Vec::new())
+                            }
+                            LdapBindOutcome::Success => {
+                                let mode = *STUB_SEARCH_MODE.lock().expect("stub search mode");
+                                match mode {
+                                    StubSearchMode::Complete => (
+                                        LdapBindAndSearchOutcome::Complete,
+                                        STUB_GROUP_KEYS.lock().expect("stub keys").clone(),
+                                    ),
+                                    StubSearchMode::IncompleteNotFound => {
+                                        (LdapBindAndSearchOutcome::IncompleteNotFound, Vec::new())
+                                    }
+                                    StubSearchMode::IncompleteUnreachable => (
+                                        LdapBindAndSearchOutcome::IncompleteUnreachable,
+                                        Vec::new(),
+                                    ),
+                                }
+                            }
+                        };
+                        let msg = Message::AuthLdapBindAndSearchResponse {
+                            request_id,
+                            outcome,
+                            group_keys,
                         };
                         if svc_channel.send(&msg).is_err() {
                             break;

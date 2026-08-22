@@ -66,6 +66,28 @@ pub fn simple_bind_over_tls<S: Read + Write>(
     ldap::simple_bind_on_stream(&mut tls, dn, password)
 }
 
+/// TLS + bind + optional resolve-plan search on the same stream.
+pub fn bind_and_search_over_tls<S: Read + Write>(
+    config: Arc<ClientConfig>,
+    server_name: &str,
+    sock: &mut S,
+    dn: &str,
+    password: &[u8],
+    plan: &shared::ldap_mapping::ResolvePlan,
+) -> io::Result<(i64, ldap::SearchCollect)> {
+    let name = ServerName::try_from(server_name.to_string())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid TLS server name"))?;
+    let mut conn = ClientConnection::new(config, name)
+        .map_err(|e| io::Error::other(format!("rustls client init failed: {e}")))?;
+    let mut tls = rustls::Stream::new(&mut conn, sock);
+    let code = ldap::simple_bind_on_stream(&mut tls, dn, password)?;
+    if code != ldap::LDAP_SUCCESS || plan.is_empty() {
+        return Ok((code, ldap::SearchCollect::Complete(Vec::new())));
+    }
+    let collected = ldap::collect_resolve_plan(&mut tls, dn, plan)?;
+    Ok((code, collected))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

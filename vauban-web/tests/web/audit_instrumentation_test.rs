@@ -81,6 +81,15 @@ fn auth_seam_is_instrumented() {
     );
     // The privileged elevation (MFA pass + API login) must be fail-closed.
     assert!(src("handlers/auth.rs").contains("emit_audit_critical"));
+    assert_seam(
+        "services/ldap_aggregation.rs",
+        &[
+            "AuditEventType::LdapAggregationReplaced",
+            "AuditEventType::LdapAggregationEmptied",
+            "AuditEventType::LdapAggregationPurgedFailsafe",
+            "ldap_aggregation_emptied_from_nonempty",
+        ],
+    );
 }
 
 #[test]

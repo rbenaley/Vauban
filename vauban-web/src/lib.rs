@@ -161,6 +161,10 @@ pub struct AppState {
     /// In-memory caches (verification successes TTL 60 s, DNS TTL 60 s)
     /// for the vault provenance pipeline. Mismatches are never cached.
     pub vault_provenance: services::vault_provenance::ProvenanceCache,
+    /// LDAPS mapping compiled from `WebLdapMappingProvision`. `None` when
+    /// LDAP is disabled or the process is not under supervisor. The
+    /// `aggregation_enabled` flag inside is the authority (not web TOML).
+    pub ldap_mapping: Option<std::sync::Arc<services::ldap_aggregation::LdapMappingRuntime>>,
 }
 
 #[cfg(test)]

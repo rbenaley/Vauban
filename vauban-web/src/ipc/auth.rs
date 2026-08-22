@@ -8,7 +8,7 @@
 
 use crate::error::{AppError, AppResult};
 use crate::ipc::correlated::{CorrelatedIpcCore, CorrelatedIpcErrorExt, deliver_or_warn};
-use shared::messages::{LdapBindOutcome, Message, SensitiveString};
+use shared::messages::{LdapBindAndSearchOutcome, LdapBindOutcome, Message, SensitiveString};
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
@@ -28,6 +28,19 @@ enum AuthResponse {
     LdapBind {
         outcome: LdapBindOutcome,
     },
+    LdapBindAndSearch {
+        outcome: LdapBindAndSearchOutcome,
+        group_keys: Vec<String>,
+    },
+}
+
+/// Reply to [`AuthIpcClient::ldap_bind_and_search`].
+#[derive(Debug, Clone)]
+pub struct LdapBindAndSearchReply {
+    /// Bind-then-search outcome (bind failures never increment aggregation).
+    pub outcome: LdapBindAndSearchOutcome,
+    /// Directory keys collected on [`LdapBindAndSearchOutcome::Complete`].
+    pub group_keys: Vec<String>,
 }
 
 pub struct AuthIpcClient {
@@ -87,6 +100,32 @@ impl AuthIpcClient {
         }
     }
 
+    /// Bind then search (Phase 1 aggregation). Bind-level failures use the
+    /// `Bind*` outcomes and must not increment the web fail-closed counter.
+    pub async fn ldap_bind_and_search(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> AppResult<LdapBindAndSearchReply> {
+        let request_id = self.core.alloc_id();
+        let msg = Message::AuthLdapBindAndSearch {
+            request_id,
+            username: username.to_string(),
+            password: SensitiveString::new(password.to_string()),
+        };
+        debug!(request_id, "AuthLdapBindAndSearch request sent");
+        match self.call(msg, request_id).await? {
+            AuthResponse::LdapBindAndSearch {
+                outcome,
+                group_keys,
+            } => Ok(LdapBindAndSearchReply {
+                outcome,
+                group_keys,
+            }),
+            _ => Err(AppError::Ipc("unexpected auth response type".to_string())),
+        }
+    }
+
     /// Perform an LDAPS simple bind against the configured directory.
     ///
     /// The auth service brokers a TCP socket through the supervisor, terminates
@@ -130,6 +169,14 @@ impl AuthIpcClient {
                 AuthResponse::Hash { hash, error }
             }
             Message::AuthLdapBindResponse { outcome, .. } => AuthResponse::LdapBind { outcome },
+            Message::AuthLdapBindAndSearchResponse {
+                outcome,
+                group_keys,
+                ..
+            } => AuthResponse::LdapBindAndSearch {
+                outcome,
+                group_keys,
+            },
             other => {
                 warn!("Unexpected message from Auth service: {:?}", other);
                 return;

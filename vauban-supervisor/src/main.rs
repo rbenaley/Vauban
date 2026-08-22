@@ -894,6 +894,14 @@ fn run_supervisor() -> Result<()> {
         } else {
             warn!("vauban-auth not started, skipping LDAP provisioning");
         }
+        if let Some(web_state) = children.get("web") {
+            match send_web_ldap_mapping_provision(&web_state.channel, &config.auth.ldaps) {
+                Ok(()) => info!("Sent LDAP mapping provision to vauban-web via IPC"),
+                Err(e) => error!("Failed to provision LDAP mapping to vauban-web: {e}"),
+            }
+        } else {
+            warn!("vauban-web not started, skipping LDAP mapping provision");
+        }
     }
 
     if config.mailer.enabled {
@@ -1051,7 +1059,28 @@ fn send_ldap_provision(channel: &IpcChannel, ldap: &config::LdapConfig) -> Resul
     };
     channel
         .send(&msg)
-        .context("Failed to send AuthLdapProvision to vauban-auth")
+        .context("Failed to send AuthLdapProvision to vauban-auth")?;
+    let agg = Message::AuthLdapAggregationProvision {
+        resolve_plan: if ldap.aggregation_enabled {
+            ldap.validate_mapping_file()?.resolve_plan()
+        } else {
+            shared::ldap_mapping::ResolvePlan::default()
+        },
+    };
+    channel
+        .send(&agg)
+        .context("Failed to send AuthLdapAggregationProvision to vauban-auth")
+}
+
+/// Ship raw mapping bytes to web (pre-seal). Empty bytes when aggregation is off.
+fn send_web_ldap_mapping_provision(channel: &IpcChannel, ldap: &config::LdapConfig) -> Result<()> {
+    let msg = Message::WebLdapMappingProvision {
+        aggregation_enabled: ldap.aggregation_enabled,
+        file_bytes: ldap.mapping_file_bytes()?,
+    };
+    channel
+        .send(&msg)
+        .context("Failed to send WebLdapMappingProvision to vauban-web")
 }
 
 /// Provision SMTP relay configuration to vauban-mailer BEFORE it seals
@@ -1963,6 +1992,14 @@ fn respawn_service(
                         error!("Failed to read TLS certs for respawned vauban-web: {}", e);
                     }
                 }
+                if config.auth.ldaps.enabled {
+                    match send_web_ldap_mapping_provision(&state.channel, &config.auth.ldaps) {
+                        Ok(()) => info!("Sent LDAP mapping provision to respawned vauban-web"),
+                        Err(e) => {
+                            error!("Failed to provision LDAP mapping to respawned vauban-web: {e}")
+                        }
+                    }
+                }
             }
 
             // Re-provision LDAPS config to a respawned vauban-auth BEFORE it
@@ -2243,6 +2280,16 @@ fn respawn_linked_group(
                                     e
                                 );
                             }
+                        }
+                    }
+                    if service_key == "web" && config.auth.ldaps.enabled {
+                        match send_web_ldap_mapping_provision(&state.channel, &config.auth.ldaps) {
+                            Ok(()) => info!(
+                                "Sent LDAP mapping provision to respawned vauban-web (linked)"
+                            ),
+                            Err(e) => error!(
+                                "Failed to provision LDAP mapping to respawned vauban-web (linked): {e}"
+                            ),
                         }
                     }
 

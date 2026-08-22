@@ -31,7 +31,7 @@ use crate::services::auth::{AuthService, Claims, is_encrypted_mfa_secret};
 use crate::services::{emit_audit, emit_audit_critical};
 use crate::templates::accounts::{MfaSetupTemplate, MfaVerifyTemplate};
 use crate::templates::base::BaseTemplate;
-use shared::messages::AuditEventType;
+use shared::messages::{AuditEventType, LdapBindAndSearchOutcome, LdapBindOutcome};
 
 /// Local alias preserved so the call sites below stay readable. The actual
 /// classification logic lives in [`crate::services::auth::is_encrypted_mfa_secret`]
@@ -191,21 +191,27 @@ pub async fn login(
     //
     // Every LDAP failure mode (bad password, directory down, TLS error) is
     // collapsed to the same generic response (anti-enumeration, SEC-04/05).
+    let mut ldap_search: Option<crate::services::ldap_aggregation::LdapSearchForSync> = None;
     let user = match existing_user {
         Some(u) if u.auth_source == AuthSource::Ldap => {
-            if !ldap_bind_succeeds(&state, bind_username, &request.password).await {
-                emit_audit(
-                    &state,
-                    AuditEvent::new(
-                        AuditEventType::AuthFailure,
-                        r#"{"reason":"ldap_bind_failed","auth_source":"ldap"}"#,
-                    )
-                    .user(&request.username)
-                    .ip(Some(client_addr.ip())),
-                );
-                return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
+            match ldap_authenticate(&state, bind_username, &request.password).await {
+                LdapCredentialResult::Failed => {
+                    emit_audit(
+                        &state,
+                        AuditEvent::new(
+                            AuditEventType::AuthFailure,
+                            r#"{"reason":"ldap_bind_failed","auth_source":"ldap"}"#,
+                        )
+                        .user(&request.username)
+                        .ip(Some(client_addr.ip())),
+                    );
+                    return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
+                }
+                LdapCredentialResult::Succeeded { search } => {
+                    ldap_search = search;
+                    u
+                }
             }
-            u
         }
         Some(u) => {
             let password_valid = if let Some(ref client) = state.auth_ipc_client {
@@ -255,10 +261,26 @@ pub async fn login(
             // Unknown username: try LDAP JIT provisioning if configured. The
             // bind happens against the username supplied; on success we create
             // a directory-backed local shadow account and proceed to MFA.
-            if state.config.auth.ldaps.jit_enabled()
-                && ldap_bind_succeeds(&state, bind_username, &request.password).await
-            {
-                jit_provision_ldap_user(&mut conn, bind_username).await?
+            if state.config.auth.ldaps.jit_enabled() {
+                match ldap_authenticate(&state, bind_username, &request.password).await {
+                    LdapCredentialResult::Succeeded { search } => {
+                        ldap_search = search;
+                        jit_provision_ldap_user(&mut conn, bind_username).await?
+                    }
+                    LdapCredentialResult::Failed => {
+                        crate::services::auth::equalize_login_timing(&state).await;
+                        emit_audit(
+                            &state,
+                            AuditEvent::new(
+                                AuditEventType::AuthFailure,
+                                r#"{"reason":"unknown_user"}"#,
+                            )
+                            .user(&request.username)
+                            .ip(Some(client_addr.ip())),
+                        );
+                        return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
+                    }
+                }
             } else {
                 // Anti-enumeration: pay the same Argon2 cost as a real
                 // wrong-password failure so response timing cannot reveal
@@ -288,6 +310,21 @@ pub async fn login(
             .ip(Some(client_addr.ip())),
         );
         return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
+    }
+
+    // Phase 1 aggregation: replace-set / hold / purge after a successful
+    // bind. Local accounts never reach this (ldap_search stays None). Bind
+    // failures returned above and do not increment the incomplete streak.
+    if user.auth_source == AuthSource::Ldap
+        && let Some(search) = ldap_search
+        && let Err(e) =
+            crate::services::ldap_aggregation::sync_after_login(&state, &user, search).await
+    {
+        tracing::warn!(
+            error = %e,
+            username = %user.username,
+            "LDAP aggregation sync failed"
+        );
     }
 
     // MFA handling - for web (HTMX), redirect to MFA pages
@@ -663,27 +700,84 @@ pub async fn login_web(
 /// never accept it -- LDAP users authenticate exclusively through the bind.
 const LDAP_PASSWORD_SENTINEL: &str = "!ldap-no-local-login";
 
-/// Forward an LDAP simple bind to vauban-auth and reduce the coarse outcome to
-/// a boolean. Returns `false` (fail-closed) when LDAP is disabled or the auth
-/// IPC client is unavailable. The distinct non-success outcomes are logged
-/// internally but NEVER surfaced to the caller (anti-enumeration, SEC-04/05).
-async fn ldap_bind_succeeds(state: &AppState, login_name: &str, password: &str) -> bool {
+/// Outcome of directory credential verification (bind, optionally search).
+enum LdapCredentialResult {
+    /// Bind failed or LDAP is unavailable. Caller emits generic InvalidCredentials.
+    Failed,
+    /// Bind succeeded. `search` is `Some` only when aggregation is on.
+    Succeeded {
+        search: Option<crate::services::ldap_aggregation::LdapSearchForSync>,
+    },
+}
+
+/// Forward an LDAP bind (and search when aggregation is provisioned) to
+/// vauban-auth. Bind-level failures never increment the aggregation
+/// counter. Distinct non-success outcomes are logged internally but NEVER
+/// surfaced to the caller (anti-enumeration, SEC-04/05).
+async fn ldap_authenticate(
+    state: &AppState,
+    login_name: &str,
+    password: &str,
+) -> LdapCredentialResult {
     if !state.config.auth.ldaps.enabled {
-        return false;
+        return LdapCredentialResult::Failed;
     }
     let Some(ref client) = state.auth_ipc_client else {
         tracing::error!("LDAP login attempted but auth IPC client is not configured");
-        return false;
+        return LdapCredentialResult::Failed;
     };
-    match client.ldap_bind(login_name, password).await {
-        Ok(shared::messages::LdapBindOutcome::Success) => true,
-        Ok(outcome) => {
-            tracing::info!(?outcome, login_name, "LDAP bind rejected");
-            false
+    let aggregation_on = state
+        .ldap_mapping
+        .as_ref()
+        .is_some_and(|m| m.aggregation_enabled);
+
+    if aggregation_on {
+        match client.ldap_bind_and_search(login_name, password).await {
+            Ok(reply) => match reply.outcome {
+                LdapBindAndSearchOutcome::BindInvalidCredentials
+                | LdapBindAndSearchOutcome::BindUnreachable
+                | LdapBindAndSearchOutcome::BindTlsError => {
+                    tracing::info!(
+                        outcome = ?reply.outcome,
+                        login_name,
+                        "LDAP bind rejected"
+                    );
+                    LdapCredentialResult::Failed
+                }
+                LdapBindAndSearchOutcome::Complete => LdapCredentialResult::Succeeded {
+                    search: Some(crate::services::ldap_aggregation::LdapSearchForSync::Complete(
+                        reply.group_keys,
+                    )),
+                },
+                LdapBindAndSearchOutcome::IncompleteNotFound => LdapCredentialResult::Succeeded {
+                    search: Some(
+                        crate::services::ldap_aggregation::LdapSearchForSync::IncompleteNotFound,
+                    ),
+                },
+                LdapBindAndSearchOutcome::IncompleteUnreachable => {
+                    LdapCredentialResult::Succeeded {
+                        search: Some(
+                            crate::services::ldap_aggregation::LdapSearchForSync::IncompleteUnreachable,
+                        ),
+                    }
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, login_name, "LDAP bind-and-search IPC error");
+                LdapCredentialResult::Failed
+            }
         }
-        Err(e) => {
-            tracing::warn!(error = %e, login_name, "LDAP bind IPC error");
-            false
+    } else {
+        match client.ldap_bind(login_name, password).await {
+            Ok(LdapBindOutcome::Success) => LdapCredentialResult::Succeeded { search: None },
+            Ok(outcome) => {
+                tracing::info!(?outcome, login_name, "LDAP bind rejected");
+                LdapCredentialResult::Failed
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, login_name, "LDAP bind IPC error");
+                LdapCredentialResult::Failed
+            }
         }
     }
 }
@@ -691,8 +785,10 @@ async fn ldap_bind_succeeds(state: &AppState, login_name: &str, password: &str) 
 /// Just-in-time provision a directory-backed account after a successful LDAP
 /// bind for a username Vauban had never seen. The shadow row carries
 /// `auth_source = Ldap`, the username as `external_id`, a sentinel password
-/// hash, and `is_active = true`. MFA is NOT pre-enabled, so the caller routes
-/// the user through `/mfa/setup` exactly like any other first login.
+/// hash, and `is_active = true`. JIT writes no `user_groups`; aggregation
+/// (when provisioned) runs in the login handler immediately after this
+/// insert. MFA is NOT pre-enabled, so the caller routes the user through
+/// `/mfa/setup` exactly like any other first login.
 async fn jit_provision_ldap_user(
     conn: &mut diesel_async::AsyncPgConnection,
     login_name: &str,

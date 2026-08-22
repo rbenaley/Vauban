@@ -19,6 +19,7 @@
     clippy::print_stderr
 )]
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
@@ -33,10 +34,13 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use shared::ipc::{IpcChannel, poll_readable, send_fd, socketpair_for_fd_passing};
 use shared::messages::{LdapBindOutcome, Message, Service};
 
-use vauban_auth::bind::{LdapRuntime, brokered_bind};
+use shared::messages::LdapBindAndSearchOutcome;
+use vauban_auth::bind::{LdapRuntime, brokered_bind, brokered_bind_and_search};
 use vauban_auth::ldap::{
-    LDAP_INVALID_CREDENTIALS, LDAP_SUCCESS, encode_bind_response, parse_bind_request,
-    read_ldap_message,
+    LDAP_INSUFFICIENT_ACCESS, LDAP_INVALID_CREDENTIALS, LDAP_SUCCESS, MAX_SEARCH_LDAP_MESSAGE,
+    PartialAttribute, SearchEntry, SearchFilter, encode_bind_response, encode_search_result_done,
+    encode_search_result_entry, parse_bind_request, parse_search_request, read_ldap_message,
+    read_ldap_message_max,
 };
 use vauban_auth::tls::build_client_config;
 
@@ -112,13 +116,27 @@ struct TestLdapServer {
     handle: Option<JoinHandle<()>>,
 }
 
+#[derive(Default, Clone)]
+struct SearchDirectory {
+    member_of: HashMap<String, Vec<String>>,
+    /// (group dn, member dns, mail)
+    groups: Vec<(String, Vec<String>, Option<String>)>,
+    range_on_member_of: bool,
+    done_code: Option<i64>,
+}
+
 impl TestLdapServer {
     fn start(pki: &TestPki, creds: Vec<(String, String)>) -> Self {
+        Self::start_with_dir(pki, creds, SearchDirectory::default())
+    }
+
+    fn start_with_dir(pki: &TestPki, creds: Vec<(String, String)>, dir: SearchDirectory) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let addr = listener.local_addr().unwrap();
         let cfg = server_config(pki);
         let creds = Arc::new(creds);
+        let dir = Arc::new(dir);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_t = Arc::clone(&stop);
         let accepts = Arc::new(AtomicUsize::new(0));
@@ -129,7 +147,9 @@ impl TestLdapServer {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         accepts_t.fetch_add(1, Ordering::Relaxed);
-                        if let Err(e) = handle_conn(stream, Arc::clone(&cfg), &creds) {
+                        if let Err(e) =
+                            handle_conn(stream, Arc::clone(&cfg), &creds, Arc::clone(&dir))
+                        {
                             eprintln!("test ldap server: connection error: {e}");
                         }
                     }
@@ -163,6 +183,7 @@ fn handle_conn(
     mut stream: TcpStream,
     cfg: Arc<ServerConfig>,
     creds: &[(String, String)],
+    dir: Arc<SearchDirectory>,
 ) -> std::io::Result<()> {
     // The accepted socket inherits the listener's non-blocking flag on macOS;
     // restore blocking semantics so the TLS handshake reads don't EAGAIN.
@@ -187,6 +208,68 @@ fn handle_conn(
 
     tls.write_all(&encode_bind_response(message_id, code))?;
     tls.flush()?;
+
+    if code != LDAP_SUCCESS {
+        return Ok(());
+    }
+
+    while let Ok(raw) = read_ldap_message_max(&mut tls, MAX_SEARCH_LDAP_MESSAGE) {
+        let Ok((sid, base, _subtree, filter, _attrs)) = parse_search_request(&raw) else {
+            break;
+        };
+        let done = dir.done_code.unwrap_or(LDAP_SUCCESS);
+        if done != LDAP_SUCCESS {
+            tls.write_all(&encode_search_result_done(sid, done))?;
+            tls.flush()?;
+            continue;
+        }
+        match filter {
+            SearchFilter::Present(_) => {
+                let values = dir.member_of.get(&base).cloned().unwrap_or_default();
+                let type_ = if dir.range_on_member_of {
+                    "memberOf;range=0-1499"
+                } else {
+                    "memberOf"
+                };
+                let entry = SearchEntry {
+                    object_name: base,
+                    attributes: vec![PartialAttribute {
+                        type_: type_.into(),
+                        values,
+                    }],
+                };
+                tls.write_all(&encode_search_result_entry(sid, &entry))?;
+            }
+            SearchFilter::Equality { attr, value } => {
+                for (gdn, members, mail) in &dir.groups {
+                    if !members.iter().any(|m| m == &value) {
+                        continue;
+                    }
+                    if !attr.eq_ignore_ascii_case("member")
+                        && !attr.eq_ignore_ascii_case("uniqueMember")
+                    {
+                        continue;
+                    }
+                    let attributes = mail
+                        .as_ref()
+                        .map(|m| {
+                            vec![PartialAttribute {
+                                type_: "mail".into(),
+                                values: vec![m.clone()],
+                            }]
+                        })
+                        .unwrap_or_default();
+                    let entry = SearchEntry {
+                        object_name: gdn.clone(),
+                        attributes,
+                    };
+                    tls.write_all(&encode_search_result_entry(sid, &entry))?;
+                }
+            }
+        }
+        tls.write_all(&encode_search_result_done(sid, LDAP_SUCCESS))?;
+        tls.flush()?;
+    }
     Ok(())
 }
 
@@ -320,6 +403,7 @@ fn runtime(ca_pem: &str, host: &str, port: u16, fd_sock: RawFd) -> LdapRuntime {
         dn_template: DN_TEMPLATE.to_string(),
         timeout: Duration::from_secs(5),
         fd_passing_socket: fd_sock,
+        resolve_plan: shared::ldap_mapping::ResolvePlan::default(),
     }
 }
 
@@ -441,7 +525,7 @@ fn ldap_bind_supervisor_refusal_returns_unreachable() {
 }
 
 #[test]
-fn ldap_bind_untrusted_ca_returns_tls_error() {
+fn forged_ldap_ca_is_rejected() {
     let pki = generate_pki("localhost");
     let dn = DN_TEMPLATE.replace("{username}", "alice");
     let server = TestLdapServer::start(&pki, vec![(dn, "s3cret".to_string())]);
@@ -529,7 +613,7 @@ fn ldap_bind_missing_fd_does_not_block_and_fails_closed() {
 /// A comma in the username must not steer the bind DN. Auth rejects
 /// before the broker, so the directory never sees a connection.
 #[test]
-fn comma_in_username_does_not_steer_dn() {
+fn attack_comma_in_username_does_not_steer_bind_dn() {
     let pki = generate_pki("localhost");
     let steered = "uid=alice,ou=admins,dc=example,dc=com,ou=people,dc=example,dc=com";
     let server = TestLdapServer::start(&pki, vec![(steered.to_string(), "s3cret".to_string())]);
@@ -572,6 +656,163 @@ fn bind_request_response_codec_round_trips_over_public_api() {
         vauban_auth::ldap::parse_bind_response(&response).unwrap(),
         LDAP_SUCCESS
     );
+}
+
+fn bind_and_search_helper(
+    pki: &TestPki,
+    server: &TestLdapServer,
+    plan: shared::ldap_mapping::ResolvePlan,
+) -> (LdapBindAndSearchOutcome, Vec<String>) {
+    let (auth_chan, broker_chan) = IpcChannel::pair().unwrap();
+    let (auth_fd, broker_fd) = socketpair_for_fd_passing().unwrap();
+    let _broker = TestBroker::start(
+        broker_chan,
+        broker_fd,
+        BrokerBehavior::ConnectAndPass(server.addr),
+    );
+    let mut rt = runtime(
+        &pki.ca_pem,
+        "localhost",
+        server.addr.port(),
+        auth_fd.as_raw_fd(),
+    );
+    rt.resolve_plan = plan;
+    brokered_bind_and_search(&auth_chan, &rt, "alice", "s3cret", |_| {})
+}
+
+#[test]
+fn bind_and_search_memberof_complete() {
+    let pki = generate_pki("localhost");
+    let dn = DN_TEMPLATE.replace("{username}", "alice");
+    let mut member_of = HashMap::new();
+    member_of.insert(
+        dn.clone(),
+        vec![
+            "CN=Ops,DC=example,DC=com".into(),
+            "CN=Dev,DC=example,DC=com".into(),
+        ],
+    );
+    let server = TestLdapServer::start_with_dir(
+        &pki,
+        vec![(dn, "s3cret".into())],
+        SearchDirectory {
+            member_of,
+            ..SearchDirectory::default()
+        },
+    );
+    let plan = shared::ldap_mapping::parse(b"resolve user-attr memberOf\n")
+        .unwrap()
+        .resolve_plan();
+    let (outcome, keys) = bind_and_search_helper(&pki, &server, plan);
+    assert_eq!(outcome, LdapBindAndSearchOutcome::Complete);
+    assert_eq!(keys.len(), 2);
+}
+
+#[test]
+fn bind_and_search_reverse_member() {
+    let pki = generate_pki("localhost");
+    let dn = DN_TEMPLATE.replace("{username}", "alice");
+    let server = TestLdapServer::start_with_dir(
+        &pki,
+        vec![(dn.clone(), "s3cret".into())],
+        SearchDirectory {
+            groups: vec![("CN=Ops,OU=groups,DC=example,DC=com".into(), vec![dn], None)],
+            ..SearchDirectory::default()
+        },
+    );
+    let plan = shared::ldap_mapping::parse(
+        b"resolve group-attr member base OU=groups,DC=example,DC=com\n",
+    )
+    .unwrap()
+    .resolve_plan();
+    let (outcome, keys) = bind_and_search_helper(&pki, &server, plan);
+    assert_eq!(outcome, LdapBindAndSearchOutcome::Complete);
+    assert_eq!(keys, vec!["CN=Ops,OU=groups,DC=example,DC=com".to_string()]);
+}
+
+#[test]
+fn bind_and_search_range_is_incomplete() {
+    let pki = generate_pki("localhost");
+    let dn = DN_TEMPLATE.replace("{username}", "alice");
+    let mut member_of = HashMap::new();
+    member_of.insert(dn.clone(), vec!["CN=Partial,DC=x".into()]);
+    let server = TestLdapServer::start_with_dir(
+        &pki,
+        vec![(dn, "s3cret".into())],
+        SearchDirectory {
+            member_of,
+            range_on_member_of: true,
+            ..SearchDirectory::default()
+        },
+    );
+    let plan = shared::ldap_mapping::parse(b"resolve user-attr memberOf\n")
+        .unwrap()
+        .resolve_plan();
+    let (outcome, keys) = bind_and_search_helper(&pki, &server, plan);
+    assert_eq!(outcome, LdapBindAndSearchOutcome::IncompleteUnreachable);
+    assert!(keys.is_empty());
+}
+
+#[test]
+fn bind_and_search_insufficient_access_is_not_found() {
+    let pki = generate_pki("localhost");
+    let dn = DN_TEMPLATE.replace("{username}", "alice");
+    let server = TestLdapServer::start_with_dir(
+        &pki,
+        vec![(dn, "s3cret".into())],
+        SearchDirectory {
+            done_code: Some(LDAP_INSUFFICIENT_ACCESS),
+            ..SearchDirectory::default()
+        },
+    );
+    let plan = shared::ldap_mapping::parse(b"resolve user-attr memberOf\n")
+        .unwrap()
+        .resolve_plan();
+    let (outcome, keys) = bind_and_search_helper(&pki, &server, plan);
+    assert_eq!(outcome, LdapBindAndSearchOutcome::IncompleteNotFound);
+    assert!(keys.is_empty());
+}
+
+#[test]
+fn battle_parallel_bind_and_search() {
+    let pki = generate_pki("localhost");
+    let dn = DN_TEMPLATE.replace("{username}", "alice");
+    let mut member_of = HashMap::new();
+    member_of.insert(dn.clone(), vec!["CN=Ops,DC=x".into()]);
+    let server = TestLdapServer::start_with_dir(
+        &pki,
+        vec![(dn, "s3cret".into())],
+        SearchDirectory {
+            member_of,
+            ..SearchDirectory::default()
+        },
+    );
+    let plan = shared::ldap_mapping::parse(b"resolve user-attr memberOf\n")
+        .unwrap()
+        .resolve_plan();
+    let pki = Arc::new(pki);
+    let plan = Arc::new(plan);
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+        let pki = Arc::clone(&pki);
+        let plan = Arc::clone(&plan);
+        let addr = server.addr;
+        handles.push(thread::spawn(move || {
+            let (auth_chan, broker_chan) = IpcChannel::pair().unwrap();
+            let (auth_fd, broker_fd) = socketpair_for_fd_passing().unwrap();
+            let _broker =
+                TestBroker::start(broker_chan, broker_fd, BrokerBehavior::ConnectAndPass(addr));
+            let mut rt = runtime(&pki.ca_pem, "localhost", addr.port(), auth_fd.as_raw_fd());
+            rt.resolve_plan = (*plan).clone();
+            let (outcome, keys) =
+                brokered_bind_and_search(&auth_chan, &rt, "alice", "s3cret", |_| {});
+            assert_eq!(outcome, LdapBindAndSearchOutcome::Complete);
+            assert_eq!(keys, vec!["CN=Ops,DC=x".to_string()]);
+        }));
+    }
+    for h in handles {
+        h.join().expect("worker");
+    }
 }
 
 #[test]

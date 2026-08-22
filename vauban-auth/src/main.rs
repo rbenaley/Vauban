@@ -232,14 +232,18 @@ fn build_ldap_runtime(
         .context("LDAP enabled but no VAUBAN_FD_PASSING_SOCKET provided by supervisor")?;
 
     let deadline = Instant::now() + Duration::from_secs(10);
-    let provision = loop {
+    let mut bind_provision = None;
+    let mut resolve_plan = None;
+    while bind_provision.is_none() || resolve_plan.is_none() {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            anyhow::bail!("timed out waiting for AuthLdapProvision from supervisor");
+            anyhow::bail!(
+                "timed out waiting for AuthLdapProvision / AuthLdapAggregationProvision from supervisor"
+            );
         }
         let ms = remaining.as_millis().min(i32::MAX as u128) as i32;
         let ready = poll_readable(&[supervisor.read_fd()], ms)
-            .context("poll error while waiting for AuthLdapProvision")?;
+            .context("poll error while waiting for LDAP provision")?;
         if ready.is_empty() {
             continue;
         }
@@ -249,19 +253,24 @@ fn build_ldap_runtime(
                 dn_template,
                 ca_pem,
                 timeout_secs,
-            }) => break (url, dn_template, ca_pem, timeout_secs),
+            }) => bind_provision = Some((url, dn_template, ca_pem, timeout_secs)),
+            Ok(Message::AuthLdapAggregationProvision { resolve_plan: plan }) => {
+                resolve_plan = Some(plan);
+            }
             Ok(other) => {
                 // Heartbeats etc. may interleave; ignore until provisioning.
                 warn!(
-                    "Ignoring {:?} while awaiting AuthLdapProvision",
+                    "Ignoring {:?} while awaiting LDAP provision",
                     std::mem::discriminant(&other)
                 );
             }
-            Err(e) => anyhow::bail!("IPC error while awaiting AuthLdapProvision: {e}"),
+            Err(e) => anyhow::bail!("IPC error while awaiting LDAP provision: {e}"),
         }
-    };
+    }
 
-    let (url, dn_template, ca_pem, timeout_secs) = provision;
+    let (url, dn_template, ca_pem, timeout_secs) =
+        bind_provision.context("AuthLdapProvision missing after wait")?;
+    let resolve_plan = resolve_plan.context("AuthLdapAggregationProvision missing after wait")?;
     let (host, port) = vauban_auth::parse_ldaps_endpoint(&url)
         .with_context(|| format!("invalid ldaps:// url from supervisor: {url:?}"))?;
     let client_config = vauban_auth::tls::build_client_config(&ca_pem)
@@ -274,6 +283,7 @@ fn build_ldap_runtime(
         dn_template,
         timeout: Duration::from_secs(timeout_secs.max(1)),
         fd_passing_socket,
+        resolve_plan,
     })
 }
 
@@ -390,6 +400,11 @@ fn dispatch_message(
             username,
             password,
         } => handle_ldap_bind(reply, supervisor, state, request_id, username, password),
+        Message::AuthLdapBindAndSearch {
+            request_id,
+            username,
+            password,
+        } => handle_ldap_bind_and_search(reply, supervisor, state, request_id, username, password),
         other => handle_message(reply, state, other),
     }
 }
@@ -441,6 +456,53 @@ fn handle_ldap_bind(
     reply.send(&Message::AuthLdapBindResponse {
         request_id,
         outcome,
+    })?;
+    Ok(())
+}
+
+fn handle_ldap_bind_and_search(
+    reply: &IpcChannel,
+    supervisor: &IpcChannel,
+    state: &mut ServiceState,
+    request_id: u64,
+    username: String,
+    password: SensitiveString,
+) -> Result<()> {
+    state.requests_processed += 1;
+    let runtime = state.ldap.clone();
+    let (outcome, group_keys) = match runtime {
+        Some(rt) => vauban_auth::bind::brokered_bind_and_search(
+            supervisor,
+            &rt,
+            &username,
+            password.as_str(),
+            |ctrl| {
+                let _ = handle_control(supervisor, state, ctrl);
+            },
+        ),
+        None => {
+            warn!(
+                request_id,
+                "AuthLdapBindAndSearch received but LDAP is not configured; fail-closed"
+            );
+            (
+                shared::messages::LdapBindAndSearchOutcome::BindUnreachable,
+                Vec::new(),
+            )
+        }
+    };
+    if matches!(
+        outcome,
+        shared::messages::LdapBindAndSearchOutcome::BindInvalidCredentials
+            | shared::messages::LdapBindAndSearchOutcome::BindUnreachable
+            | shared::messages::LdapBindAndSearchOutcome::BindTlsError
+    ) {
+        state.requests_failed += 1;
+    }
+    reply.send(&Message::AuthLdapBindAndSearchResponse {
+        request_id,
+        outcome,
+        group_keys,
     })?;
     Ok(())
 }

@@ -25,10 +25,14 @@ use diesel_async::AsyncPgConnection;
 use diesel_async::RunQueryDsl as _;
 
 use crate::common::auth_ipc_test_service::{
-    LDAP_DOWN_USERNAME, LDAP_GOOD_PASSWORD, ldap_bind_attempt_count, reset_ldap_bind_attempt_count,
+    LDAP_DOWN_USERNAME, LDAP_GOOD_PASSWORD, StubSearchMode, ldap_bind_attempt_count,
+    reset_ldap_bind_attempt_count, reset_stub_search, set_stub_search,
 };
-use crate::common::{TestApp, test_db, unwrap_ok};
+use crate::common::{
+    TEST_ADMINS_DIRECTORY_KEY, TestApp, test_aggregation_group_key, test_db, unwrap_ok,
+};
 use crate::fixtures::unique_name;
+use shared::messages::VaubanGroupInfo;
 use vauban_web::models::user::{AuthSource, NewUser, User};
 use vauban_web::schema::{auth_sessions, users};
 
@@ -412,5 +416,322 @@ async fn password_meeting_floors_still_reaches_ldap_stub() {
         "AuthLdapBind must be attempted when credentials meet login mins"
     );
 
+    test_db::cleanup(&mut conn).await;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 aggregation (replace-set / A-B-C / local isolation)
+// ---------------------------------------------------------------------------
+
+async fn ensure_group(app: &TestApp, name: &str) -> VaubanGroupInfo {
+    let groups = unwrap_ok!(app.app_state.access_client.list_vauban_groups().await);
+    if let Some(g) = groups
+        .into_iter()
+        .find(|g| g.name.eq_ignore_ascii_case(name))
+    {
+        return g;
+    }
+    unwrap_ok!(
+        app.app_state
+            .access_client
+            .create_vauban_group(name, None)
+            .await
+    )
+}
+
+async fn user_group_names(app: &TestApp, user_id: i32) -> Vec<String> {
+    let groups = unwrap_ok!(app.app_state.access_client.list_user_groups(user_id).await);
+    let mut names: Vec<String> = groups.into_iter().map(|g| g.name).collect();
+    names.sort();
+    names
+}
+
+fn incomplete_streak(app: &TestApp) -> u32 {
+    let rt = app.app_state.ldap_mapping.as_ref().expect("runtime");
+    std::sync::atomic::AtomicU32::load(&rt.incomplete_streak, std::sync::atomic::Ordering::SeqCst)
+}
+
+fn reset_aggregation(app: &TestApp) {
+    reset_stub_search();
+    if let Some(rt) = app.app_state.ldap_mapping.as_ref() {
+        rt.reset_counters();
+    }
+}
+
+/// Case A: mapped directory key becomes a `user_groups` row via access IPC.
+#[tokio::test]
+#[serial]
+async fn aggregation_replace_set_adds_mapped_group() {
+    let app = TestApp::spawn_ldap_aggregation().await;
+    reset_aggregation(app);
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_ldap_agg_a");
+    let group_name = unique_name("ops");
+    let group = ensure_group(app, &group_name).await;
+    let user = insert_ldap_user(&mut conn, &username, false).await;
+
+    set_stub_search(
+        StubSearchMode::Complete,
+        vec![test_aggregation_group_key(&group_name)],
+    );
+    let response = login_web_htmx(app, &username, LDAP_GOOD_PASSWORD).await;
+    assert_eq!(hx_redirect(&response).as_deref(), Some("/mfa/setup"));
+
+    let names = user_group_names(app, user.id).await;
+    assert!(
+        names.iter().any(|n| n == &group_name),
+        "expected {group_name} in {names:?}"
+    );
+    assert_eq!(group.name, group_name);
+
+    reset_aggregation(app);
+    test_db::cleanup(&mut conn).await;
+}
+
+/// `static` reserved target: only the static key grants Administrators.
+#[tokio::test]
+#[serial]
+async fn aggregation_reserved_target_only_via_static_key() {
+    let app = TestApp::spawn_ldap_aggregation().await;
+    reset_aggregation(app);
+    let mut conn = app.get_conn().await;
+
+    let admins = ensure_group(app, "Administrators").await;
+    let username = unique_name("test_ldap_agg_res");
+    let user = insert_ldap_user(&mut conn, &username, false).await;
+
+    set_stub_search(
+        StubSearchMode::Complete,
+        vec![test_aggregation_group_key("Administrators")],
+    );
+    let _ = login_web_htmx(app, &username, LDAP_GOOD_PASSWORD).await;
+    assert!(
+        !user_group_names(app, user.id)
+            .await
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case("Administrators")),
+        "match must not grant the reserved static target"
+    );
+
+    set_stub_search(
+        StubSearchMode::Complete,
+        vec![TEST_ADMINS_DIRECTORY_KEY.to_string()],
+    );
+    let _ = login_web_htmx(app, &username, LDAP_GOOD_PASSWORD).await;
+    assert!(
+        user_group_names(app, user.id)
+            .await
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case("Administrators")),
+        "static key must grant Administrators"
+    );
+    let _ = admins.id;
+
+    reset_aggregation(app);
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Local accounts never receive LDAP replace-set memberships.
+#[tokio::test]
+#[serial]
+async fn aggregation_does_not_touch_local_account_groups() {
+    let app = TestApp::spawn_ldap_aggregation().await;
+    reset_aggregation(app);
+    let mut conn = app.get_conn().await;
+
+    let group_name = unique_name("localhold");
+    let mapped = unique_name("mapped");
+    let hold = ensure_group(app, &group_name).await;
+    let _mapped = ensure_group(app, &mapped).await;
+
+    let username = unique_name("test_local_iso");
+    let password = "LocalBreakGlass-1!";
+    let password_hash = unwrap_ok!(app.auth_service.hash_password(password));
+    let new_user = NewUser {
+        uuid: ::uuid::Uuid::new_v4(),
+        username: username.clone(),
+        email: format!("{}@test.vauban.io", username),
+        password_hash,
+        first_name: None,
+        last_name: None,
+        phone: None,
+        is_active: true,
+        is_staff: false,
+        is_superuser: false,
+        is_service_account: false,
+        mfa_enabled: false,
+        mfa_enforced: false,
+        mfa_secret: None,
+        preferences: serde_json::json!({}),
+        auth_source: AuthSource::Local,
+        external_id: None,
+    };
+    let user: User = unwrap_ok!(
+        diesel::insert_into(users::table)
+            .values(&new_user)
+            .get_result(&mut conn)
+            .await
+    );
+    unwrap_ok!(
+        app.app_state
+            .access_client
+            .add_group_member(hold.id, user.id)
+            .await
+    );
+
+    reset_ldap_bind_attempt_count();
+    let before = ldap_bind_attempt_count();
+    set_stub_search(
+        StubSearchMode::Complete,
+        vec![test_aggregation_group_key(&mapped)],
+    );
+    let response = login_web_htmx(app, &username, password).await;
+    assert_eq!(hx_redirect(&response).as_deref(), Some("/mfa/setup"));
+    assert_eq!(
+        ldap_bind_attempt_count(),
+        before,
+        "local login must not send LDAP bind or bind-and-search"
+    );
+    assert_eq!(user_group_names(app, user.id).await, vec![group_name]);
+
+    reset_aggregation(app);
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Case B: search not-found holds memberships and does not deactivate.
+#[tokio::test]
+#[serial]
+async fn search_entry_not_found_does_not_deactivate() {
+    let app = TestApp::spawn_ldap_aggregation().await;
+    reset_aggregation(app);
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_ldap_agg_b");
+    let group_name = unique_name("holdb");
+    let group = ensure_group(app, &group_name).await;
+    let user = insert_ldap_user(&mut conn, &username, false).await;
+    unwrap_ok!(
+        app.app_state
+            .access_client
+            .add_group_member(group.id, user.id)
+            .await
+    );
+
+    set_stub_search(StubSearchMode::IncompleteNotFound, Vec::new());
+    let response = login_web_htmx(app, &username, LDAP_GOOD_PASSWORD).await;
+    assert_eq!(hx_redirect(&response).as_deref(), Some("/mfa/setup"));
+
+    let reloaded = reload_user(&mut conn, &username)
+        .await
+        .expect("user remains");
+    assert!(reloaded.is_active, "case B must not deactivate");
+    assert!(!reloaded.is_staff);
+    assert!(!reloaded.is_superuser);
+    assert_eq!(user_group_names(app, user.id).await, vec![group_name]);
+    assert_eq!(incomplete_streak(app), 1);
+
+    reset_aggregation(app);
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Case C at threshold: purge groups, keep the account active; case A restores.
+#[tokio::test]
+#[serial]
+async fn aggregation_purge_c_does_not_deactivate_then_restores() {
+    let app = TestApp::spawn_ldap_aggregation().await;
+    reset_aggregation(app);
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_ldap_agg_c");
+    let group_name = unique_name("holdc");
+    let group = ensure_group(app, &group_name).await;
+    let user = insert_ldap_user(&mut conn, &username, false).await;
+    unwrap_ok!(
+        app.app_state
+            .access_client
+            .add_group_member(group.id, user.id)
+            .await
+    );
+
+    set_stub_search(StubSearchMode::IncompleteUnreachable, Vec::new());
+    for _ in 0..3 {
+        let response = login_web_htmx(app, &username, LDAP_GOOD_PASSWORD).await;
+        assert_eq!(hx_redirect(&response).as_deref(), Some("/mfa/setup"));
+    }
+
+    let reloaded = reload_user(&mut conn, &username)
+        .await
+        .expect("user remains");
+    assert!(reloaded.is_active, "purge must not deactivate");
+    assert!(user_group_names(app, user.id).await.is_empty());
+
+    set_stub_search(
+        StubSearchMode::Complete,
+        vec![test_aggregation_group_key(&group_name)],
+    );
+    let response = login_web_htmx(app, &username, LDAP_GOOD_PASSWORD).await;
+    assert_eq!(hx_redirect(&response).as_deref(), Some("/mfa/setup"));
+    assert!(
+        user_group_names(app, user.id)
+            .await
+            .iter()
+            .any(|n| n == &group_name),
+        "case A must restore membership after purge"
+    );
+    assert_eq!(incomplete_streak(app), 0);
+
+    reset_aggregation(app);
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Bind failure (wrong password) must not increment the aggregation streak.
+#[tokio::test]
+#[serial]
+async fn bind_failure_does_not_increment_aggregation_streak() {
+    let app = TestApp::spawn_ldap_aggregation().await;
+    reset_aggregation(app);
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_ldap_agg_bindfail");
+    insert_ldap_user(&mut conn, &username, false).await;
+    set_stub_search(StubSearchMode::IncompleteUnreachable, Vec::new());
+
+    let response = login_web_htmx(app, &username, LDAP_WRONG_PASSWORD).await;
+    assert!(hx_redirect(&response).is_none());
+    assert_eq!(incomplete_streak(app), 0);
+
+    reset_aggregation(app);
+    test_db::cleanup(&mut conn).await;
+}
+
+/// JIT first login runs aggregation immediately (no `user_groups` from JIT).
+#[tokio::test]
+#[serial]
+async fn jit_first_login_applies_aggregation() {
+    let app = TestApp::spawn_ldap_aggregation().await;
+    reset_aggregation(app);
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_ldap_agg_jit");
+    let group_name = unique_name("jitops");
+    ensure_group(app, &group_name).await;
+    set_stub_search(
+        StubSearchMode::Complete,
+        vec![test_aggregation_group_key(&group_name)],
+    );
+
+    let response = login_web_htmx(app, &username, LDAP_GOOD_PASSWORD).await;
+    assert_eq!(hx_redirect(&response).as_deref(), Some("/mfa/setup"));
+    let provisioned = reload_user(&mut conn, &username).await.expect("JIT user");
+    assert_eq!(provisioned.auth_source, AuthSource::Ldap);
+    assert!(
+        user_group_names(app, provisioned.id)
+            .await
+            .iter()
+            .any(|n| n == &group_name)
+    );
+
+    reset_aggregation(app);
     test_db::cleanup(&mut conn).await;
 }

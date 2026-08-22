@@ -32,6 +32,18 @@ pub struct TlsCertData {
     pub key_pem: SensitiveString,
 }
 
+/// Raw mapping-file provision received from the supervisor via IPC.
+pub struct LdapMappingProvisionData {
+    pub aggregation_enabled: bool,
+    pub file_bytes: Vec<u8>,
+}
+
+/// One-shot boot channels handed back by [`SupervisorClient::new`].
+pub struct SupervisorBootChannels {
+    pub tls_cert_rx: std::sync::mpsc::Receiver<TlsCertData>,
+    pub ldap_mapping_rx: std::sync::mpsc::Receiver<LdapMappingProvisionData>,
+}
+
 /// Result of a TCP connect request.
 #[derive(Debug)]
 pub struct TcpConnectResult {
@@ -93,6 +105,8 @@ pub struct SupervisorClientInner {
     cert_expiry: OnceLock<Arc<crate::tasks::CertExpiry>>,
     /// One-shot channel for receiving TLS cert data from supervisor at startup.
     tls_cert_tx: Mutex<Option<std::sync::mpsc::SyncSender<TlsCertData>>>,
+    /// One-shot channel for receiving the LDAPS mapping file pre-seal.
+    ldap_mapping_tx: Mutex<Option<std::sync::mpsc::SyncSender<LdapMappingProvisionData>>>,
     /// DB pool for admin command processing (set after pool creation).
     admin_db_pool: OnceLock<crate::db::DbPool>,
     /// Tokio runtime handle for running async admin commands from the sync IPC thread.
@@ -128,12 +142,13 @@ impl SupervisorClient {
         write_fd: RawFd,
         fd_passing_socket: Option<RawFd>,
         server_handle: Option<axum_server::Handle<SocketAddr>>,
-    ) -> (Self, std::sync::mpsc::Receiver<TlsCertData>) {
+    ) -> (Self, SupervisorBootChannels) {
         // Create IPC channel from file descriptors
         // SAFETY: FDs are passed from supervisor and are valid
         let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
 
         let (tls_cert_tx, tls_cert_rx) = std::sync::mpsc::sync_channel(1);
+        let (ldap_mapping_tx, ldap_mapping_rx) = std::sync::mpsc::sync_channel(1);
 
         let inner = Arc::new(SupervisorClientInner {
             channel,
@@ -150,6 +165,7 @@ impl SupervisorClient {
             acme_resolver: OnceLock::new(),
             cert_expiry: OnceLock::new(),
             tls_cert_tx: Mutex::new(Some(tls_cert_tx)),
+            ldap_mapping_tx: Mutex::new(Some(ldap_mapping_tx)),
             admin_db_pool: OnceLock::new(),
             tokio_handle: OnceLock::new(),
             broker_latency: Arc::new(BrokerLatencyTracker::default()),
@@ -168,7 +184,10 @@ impl SupervisorClient {
                 inner,
                 _thread_handle: thread_handle,
             },
-            tls_cert_rx,
+            SupervisorBootChannels {
+                tls_cert_rx,
+                ldap_mapping_rx,
+            },
         )
     }
 
@@ -537,6 +556,31 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     );
                 }
             }
+            Ok(Message::WebLdapMappingProvision {
+                aggregation_enabled,
+                file_bytes,
+            }) => {
+                info!(
+                    aggregation_enabled,
+                    bytes = file_bytes.len(),
+                    "Received LDAP mapping provision from supervisor"
+                );
+                let tx = inner
+                    .ldap_mapping_tx
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                if let Some(tx) = tx {
+                    let _ = tx.send(LdapMappingProvisionData {
+                        aggregation_enabled,
+                        file_bytes,
+                    });
+                } else {
+                    warn!(
+                        "WebLdapMappingProvision received but no receiver (already consumed or duplicate)"
+                    );
+                }
+            }
             Ok(Message::AcmeChallengeInstall {
                 request_id: _,
                 domain,
@@ -731,6 +775,14 @@ mod tests {
             source.contains("tls_cert_tx"),
             "TlsCertProvision handler must use tls_cert_tx channel"
         );
+        assert!(
+            source.contains("Message::WebLdapMappingProvision"),
+            "supervisor_ipc_loop must handle WebLdapMappingProvision"
+        );
+        assert!(
+            source.contains("ldap_mapping_tx"),
+            "WebLdapMappingProvision handler must use ldap_mapping_tx"
+        );
     }
 
     #[test]
@@ -774,7 +826,7 @@ mod tests {
         let write_fd = d_write.into_raw_fd();
         drop(c_write);
         drop(d_read);
-        let (client, _tls_rx) = SupervisorClient::new(read_fd, write_fd, None, None);
+        let (client, _boot) = SupervisorClient::new(read_fd, write_fd, None, None);
         client
     }
 

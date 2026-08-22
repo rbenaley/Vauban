@@ -28,5 +28,7 @@ pub use proxy_rdp::{CertFetchIdentity, ProxyRdpClient, RdpSessionOpenRequest, Rd
 pub use proxy_ssh::{
     HostKeyFetchIdentity, ProxySshClient, SshSessionOpenRequest, SshSessionOpened,
 };
-pub use supervisor::{SupervisorClient, TlsCertData};
+pub use supervisor::{
+    LdapMappingProvisionData, SupervisorBootChannels, SupervisorClient, TlsCertData,
+};
 pub use vault::VaultCryptoClient;

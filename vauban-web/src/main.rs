@@ -33,14 +33,12 @@ use vauban_web::ipc::{AccessIpcClient, AuthIpcClient, SupervisorClient, VaultCry
 
 /// Initialize the supervisor client if running under supervisor.
 ///
-/// Returns the supervisor client and a TLS cert receiver if IPC is available, None otherwise.
-/// The client spawns a dedicated thread for IPC communication (heartbeat, TCP brokering).
-/// The `server_handle` is used for graceful shutdown.
+/// Returns the supervisor client and pre-seal boot channels if IPC is available.
 fn init_supervisor_client(
     server_handle: axum_server::Handle<std::net::SocketAddr>,
 ) -> (
     Option<Arc<SupervisorClient>>,
-    Option<std::sync::mpsc::Receiver<vauban_web::ipc::TlsCertData>>,
+    Option<vauban_web::ipc::SupervisorBootChannels>,
 ) {
     use std::os::unix::io::RawFd;
 
@@ -71,7 +69,7 @@ fn init_supervisor_client(
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
     }
 
-    let (client, tls_cert_rx) = SupervisorClient::new(
+    let (client, boot) = SupervisorClient::new(
         ipc_read_fd,
         ipc_write_fd,
         fd_passing_socket,
@@ -81,7 +79,7 @@ fn init_supervisor_client(
         fd_passing = fd_passing_socket.is_some(),
         "Supervisor client initialized (running under supervisor)"
     );
-    (Some(Arc::new(client)), Some(tls_cert_rx))
+    (Some(Arc::new(client)), Some(boot))
 }
 
 use vauban_web::{
@@ -401,7 +399,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize supervisor client if running under supervisor
     // This must be done early, before any async runtime setup
-    let (supervisor_client, tls_cert_rx) = init_supervisor_client(server_handle.clone());
+    let (supervisor_client, boot_channels) = init_supervisor_client(server_handle.clone());
+    let (tls_cert_rx, ldap_mapping_rx) = match boot_channels {
+        Some(c) => (Some(c.tls_cert_rx), Some(c.ldap_mapping_rx)),
+        None => (None, None),
+    };
 
     // Install the default crypto provider for rustls (aws-lc-rs)
     // This must be done before any TLS operations
@@ -517,6 +519,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     } else {
+        None
+    };
+
+    // LDAPS mapping: when LDAP is enabled, the supervisor always sends
+    // WebLdapMappingProvision pre-seal. Missing provision refuses boot
+    // (web does not treat its own TOML aggregation_enabled as authority).
+    let ldap_mapping = if config.auth.ldaps.enabled {
+        use std::time::Duration;
+        let rx = ldap_mapping_rx
+            .ok_or("auth.ldaps.enabled but no supervisor mapping channel (refuse boot)")?;
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(data) => {
+                let rt =
+                    vauban_web::services::ldap_aggregation::LdapMappingRuntime::from_provision(
+                        data.aggregation_enabled,
+                        &data.file_bytes,
+                        config.auth.ldaps.aggregation_fail_closed_threshold,
+                    )?;
+                tracing::info!(
+                    aggregation_enabled = rt.aggregation_enabled,
+                    "LDAP mapping provision compiled"
+                );
+                Some(Arc::new(rt))
+            }
+            Err(e) => {
+                return Err(format!("timed out waiting for WebLdapMappingProvision: {e}").into());
+            }
+        }
+    } else {
+        let _ = ldap_mapping_rx;
         None
     };
 
@@ -870,6 +902,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             vauban_web::services::vault_provenance::ProxyHostIdentityVerifier,
         ),
         vault_provenance: vauban_web::services::vault_provenance::ProvenanceCache::new(),
+        ldap_mapping,
     };
 
     // Bind DB pool for SSH/RDP RecordingLossObserved (process_incoming already running).
@@ -2604,9 +2637,9 @@ mod tests {
         // Without IPC environment variables, should return (None, None)
         // (service not running under supervisor)
         let handle = axum_server::Handle::new();
-        let (client, cert_rx) = init_supervisor_client(handle);
+        let (client, boot) = init_supervisor_client(handle);
         assert!(client.is_none());
-        assert!(cert_rx.is_none());
+        assert!(boot.is_none());
     }
 
     /// Test IPC message handling for Drain/DrainComplete cycle.

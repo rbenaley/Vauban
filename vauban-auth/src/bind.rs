@@ -11,7 +11,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use shared::ipc::{IpcChannel, poll_readable, recv_fd};
-use shared::messages::{ControlMessage, LdapBindOutcome, Message, Service};
+use shared::messages::{
+    ControlMessage, LdapBindAndSearchOutcome, LdapBindOutcome, Message, Service,
+};
 use tracing::warn;
 
 use crate::{outcome_from_result_code, tls};
@@ -34,6 +36,8 @@ pub struct LdapRuntime {
     pub timeout: Duration,
     /// SCM_RIGHTS socket on which the supervisor hands us the connected FD.
     pub fd_passing_socket: RawFd,
+    /// Compiled resolve plan (empty when aggregation is off).
+    pub resolve_plan: shared::ldap_mapping::ResolvePlan,
 }
 
 /// Run one LDAP bind. `on_control` is invoked for every
@@ -127,6 +131,114 @@ pub fn brokered_bind<F: FnMut(ControlMessage)>(
     ) {
         Ok(code) => outcome_from_result_code(code),
         Err(e) => classify_bind_error(&e),
+    }
+}
+
+/// Bind then collect group keys on the same brokered TLS stream.
+pub fn brokered_bind_and_search<F: FnMut(ControlMessage)>(
+    supervisor: &IpcChannel,
+    rt: &LdapRuntime,
+    username: &str,
+    password: &str,
+    mut on_control: F,
+) -> (LdapBindAndSearchOutcome, Vec<String>) {
+    let dn = match shared::ldap_dn::substitute_bind_dn(&rt.dn_template, username) {
+        Ok(dn) => dn,
+        Err(e) => {
+            warn!(error = %e, "LDAP bind DN rejected (illegal username or template)");
+            return (LdapBindAndSearchOutcome::BindInvalidCredentials, Vec::new());
+        }
+    };
+
+    let started = Instant::now();
+    let session_id = format!("ldap-{:016x}", rand::random::<u64>());
+    let broker_request_id: u64 = rand::random();
+
+    let request = Message::TcpConnectRequest {
+        request_id: broker_request_id,
+        session_id: session_id.clone(),
+        host: rt.host.clone(),
+        port: rt.port,
+        target_service: Service::Auth,
+        session_token: Vec::new(),
+    };
+    if let Err(e) = supervisor.send(&request) {
+        warn!("LDAP broker request send failed: {e}");
+        return (LdapBindAndSearchOutcome::BindUnreachable, Vec::new());
+    }
+
+    match wait_for_tcp_connect_response(supervisor, &session_id, rt.timeout, &mut on_control) {
+        Some(true) => {}
+        Some(false) => {
+            warn!(host = %rt.host, port = rt.port, "supervisor refused LDAP broker connect");
+            return (LdapBindAndSearchOutcome::BindUnreachable, Vec::new());
+        }
+        None => {
+            warn!("timed out awaiting LDAP broker response");
+            return (LdapBindAndSearchOutcome::BindUnreachable, Vec::new());
+        }
+    }
+
+    let owned_fd = match receive_brokered_fd(rt.fd_passing_socket) {
+        Some(fd) => fd,
+        None => {
+            warn!("no brokered FD available after successful broker response");
+            return (LdapBindAndSearchOutcome::BindUnreachable, Vec::new());
+        }
+    };
+
+    let mut tcp = unsafe { std::net::TcpStream::from_raw_fd(owned_fd.into_raw_fd()) };
+    let remaining = rt.timeout.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        warn!("LDAP timeout budget exhausted before TLS handshake");
+        return (LdapBindAndSearchOutcome::BindUnreachable, Vec::new());
+    }
+    let _ = tcp.set_read_timeout(Some(remaining));
+    let _ = tcp.set_write_timeout(Some(remaining));
+
+    match tls::bind_and_search_over_tls(
+        Arc::clone(&rt.client_config),
+        &rt.host,
+        &mut tcp,
+        &dn,
+        password.as_bytes(),
+        &rt.resolve_plan,
+    ) {
+        Ok((code, collect)) => {
+            if code != crate::ldap::LDAP_SUCCESS {
+                return (bind_code_to_search_outcome(code), Vec::new());
+            }
+            match collect {
+                crate::ldap::SearchCollect::Complete(keys) => {
+                    (LdapBindAndSearchOutcome::Complete, keys)
+                }
+                crate::ldap::SearchCollect::IncompleteNotFound => {
+                    (LdapBindAndSearchOutcome::IncompleteNotFound, Vec::new())
+                }
+                crate::ldap::SearchCollect::IncompleteUnreachable => {
+                    (LdapBindAndSearchOutcome::IncompleteUnreachable, Vec::new())
+                }
+            }
+        }
+        Err(e) => (classify_bind_error_as_search(&e), Vec::new()),
+    }
+}
+
+fn bind_code_to_search_outcome(code: i64) -> LdapBindAndSearchOutcome {
+    match outcome_from_result_code(code) {
+        LdapBindOutcome::Success => LdapBindAndSearchOutcome::Complete,
+        LdapBindOutcome::InvalidCredentials => LdapBindAndSearchOutcome::BindInvalidCredentials,
+        LdapBindOutcome::Unreachable => LdapBindAndSearchOutcome::BindUnreachable,
+        LdapBindOutcome::TlsError => LdapBindAndSearchOutcome::BindTlsError,
+    }
+}
+
+fn classify_bind_error_as_search(e: &std::io::Error) -> LdapBindAndSearchOutcome {
+    match classify_bind_error(e) {
+        LdapBindOutcome::Unreachable => LdapBindAndSearchOutcome::BindUnreachable,
+        LdapBindOutcome::TlsError => LdapBindAndSearchOutcome::BindTlsError,
+        LdapBindOutcome::InvalidCredentials => LdapBindAndSearchOutcome::BindInvalidCredentials,
+        LdapBindOutcome::Success => LdapBindAndSearchOutcome::Complete,
     }
 }
 

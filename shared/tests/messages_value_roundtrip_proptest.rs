@@ -6,7 +6,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use proptest::prelude::*;
-use shared::messages::{AuditEventType, IpcPageParams, LdapBindOutcome, Service};
+use shared::messages::{
+    AuditEventType, IpcPageParams, LdapBindAndSearchOutcome, LdapBindOutcome, Service,
+};
 
 fn encode<T: serde::Serialize>(value: &T) -> Vec<u8> {
     bincode::serde::encode_to_vec(value, bincode::config::standard()).expect("encode")
@@ -42,6 +44,17 @@ fn ldap_outcomes() -> impl Strategy<Value = LdapBindOutcome> {
     ]
 }
 
+fn ldap_bind_and_search_outcomes() -> impl Strategy<Value = LdapBindAndSearchOutcome> {
+    prop_oneof![
+        Just(LdapBindAndSearchOutcome::BindInvalidCredentials),
+        Just(LdapBindAndSearchOutcome::BindUnreachable),
+        Just(LdapBindAndSearchOutcome::BindTlsError),
+        Just(LdapBindAndSearchOutcome::Complete),
+        Just(LdapBindAndSearchOutcome::IncompleteNotFound),
+        Just(LdapBindAndSearchOutcome::IncompleteUnreachable),
+    ]
+}
+
 fn audit_events() -> impl Strategy<Value = AuditEventType> {
     // Representative sample — discriminant pins stay in unit tests.
     prop_oneof![
@@ -69,6 +82,13 @@ proptest! {
     fn ldap_bind_outcome_value_roundtrip(o in ldap_outcomes()) {
         let bytes = encode(&o);
         let back: LdapBindOutcome = decode(&bytes);
+        prop_assert_eq!(back, o);
+    }
+
+    #[test]
+    fn ldap_bind_and_search_outcome_value_roundtrip(o in ldap_bind_and_search_outcomes()) {
+        let bytes = encode(&o);
+        let back: LdapBindAndSearchOutcome = decode(&bytes);
         prop_assert_eq!(back, o);
     }
 

@@ -704,6 +704,7 @@ async fn build_state_from(app: &TestApp) -> vauban_web::AppState {
         login_timing_sacrifice_hash: std::sync::Arc::new(String::new()),
         host_identity_verifier: std::sync::Arc::clone(&app.app_state.host_identity_verifier),
         vault_provenance: vauban_web::services::vault_provenance::ProvenanceCache::new(),
+        ldap_mapping: None,
     }
 }
 

@@ -20,6 +20,8 @@
 pub mod config_dir;
 pub mod ipc;
 pub mod ldap_dn;
+pub mod ldap_filter;
+pub mod ldap_mapping;
 pub mod messages;
 pub mod privdrop;
 pub mod recording_fd;

@@ -305,6 +305,10 @@ pub struct WebLdapConfig {
     /// create/change only).
     #[serde(default = "WebLdapConfig::default_login_password_min_length")]
     pub login_password_min_length: usize,
+    /// Fail-closed purge threshold. Not the aggregation authority (that
+    /// comes from `WebLdapMappingProvision`).
+    #[serde(default = "WebLdapConfig::default_aggregation_fail_closed_threshold")]
+    pub aggregation_fail_closed_threshold: u32,
 }
 
 impl Default for WebLdapConfig {
@@ -314,6 +318,7 @@ impl Default for WebLdapConfig {
             order: Self::default_order(),
             login_username_min_length: Self::default_login_username_min_length(),
             login_password_min_length: Self::default_login_password_min_length(),
+            aggregation_fail_closed_threshold: Self::default_aggregation_fail_closed_threshold(),
         }
     }
 }
@@ -329,6 +334,10 @@ impl WebLdapConfig {
 
     fn default_login_password_min_length() -> usize {
         shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR
+    }
+
+    fn default_aggregation_fail_closed_threshold() -> u32 {
+        3
     }
 
     /// Whether the LDAP backend participates in JIT provisioning of unknown

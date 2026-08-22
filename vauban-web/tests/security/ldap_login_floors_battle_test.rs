@@ -99,6 +99,9 @@ fn battle_development_toml_carries_full_ldaps_block_like_vauban_conf() {
         "order",
         "login_username_min_length",
         "login_password_min_length",
+        "mapping_path",
+        "aggregation_enabled",
+        "aggregation_fail_closed_threshold",
     ] {
         assert!(prod.contains(key), "vauban.conf missing {key}");
         assert!(

@@ -340,6 +340,9 @@ order = ["local"]
 # floors: username >= 3, password >= 12 (boot fails if lower).
 login_username_min_length = 3
 login_password_min_length = 12
+# Consecutive incomplete searches before purge (0 = never). Authority for
+# aggregation_enabled is the supervisor provision, not this TOML.
+aggregation_fail_closed_threshold = 3
 
 # ------------------------------------------------------------------------------
 # Kerberos KDC brokering (RDP "kerberos_restricted_admin" auth mode)

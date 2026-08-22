@@ -131,3 +131,46 @@ fn web_and_supervisor_defaults_reference_shared_floors() {
         "supervisor defaults must reference shared floor constants"
     );
 }
+
+/// Production configs never enable plaintext `ldap://` as the live URL.
+#[test]
+fn shipped_configs_do_not_set_plaintext_ldap_url() {
+    for rel in [
+        "config/vauban.conf",
+        "config/default.toml",
+        "config/development.toml",
+    ] {
+        let body = read(rel);
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') || trimmed.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !trimmed.contains("url = \"ldap://"),
+                "{rel} must not assign a plaintext ldap:// url (got {trimmed})"
+            );
+        }
+    }
+}
+
+/// `dn_template` is a bind name template, not a filesystem path.
+#[test]
+fn dn_template_is_not_used_as_a_filesystem_path() {
+    let sup = read("vauban-supervisor/src/config.rs");
+    assert!(
+        sup.contains("std::fs::read(&self.mapping_path)"),
+        "aggregation file is read from mapping_path"
+    );
+    assert!(
+        !sup.contains("fs::read(&self.dn_template)")
+            && !sup.contains("fs::read_to_string(&self.dn_template)"),
+        "dn_template must not be opened as a path"
+    );
+    let main = read("vauban-supervisor/src/main.rs");
+    assert!(
+        !main.contains("fs::read(&ldap.dn_template)")
+            && !main.contains("fs::read_to_string(&ldap.dn_template)"),
+        "supervisor provision must not treat dn_template as a path"
+    );
+}

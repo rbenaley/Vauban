@@ -54,4 +54,5 @@ Pass: in-band pubkey is never the sole verifier.
 ## Related links
 
 - [LDAPS bind-DN smoke](ldaps_bind_dn_smoke_test.md)
+- [LDAPS aggregation Phase 1 smoke](ldaps_aggregation_smoke_test.md)
 - [WORM eager-boot smoke](worm_eager_boot_smoke_test.md)

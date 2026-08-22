@@ -320,6 +320,9 @@ pub struct RbacResult {
 /// The web layer collapses every non-`Success` variant to a single generic
 /// "invalid credentials" response to avoid account/directory enumeration
 /// (SEC-04/05); the distinct variants exist only for internal logging.
+///
+/// Layout is frozen (ADR 007): bind-and-search uses
+/// [`LdapBindAndSearchOutcome`], not new variants here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LdapBindOutcome {
     /// Bind succeeded (LDAP resultCode 0).
@@ -331,6 +334,31 @@ pub enum LdapBindOutcome {
     Unreachable,
     /// TLS handshake or certificate validation failed.
     TlsError,
+}
+
+/// Outcome of [`Message::AuthLdapBindAndSearch`] after the bind step.
+///
+/// Bind-level failures reuse the 1.0 bind vocabulary and do **not**
+/// increment the aggregation fail-closed counter (search never ran).
+/// After bind success, `Complete` is case A; `IncompleteNotFound` is
+/// case B; `IncompleteUnreachable` is case C. Phase 1 gives B and C
+/// the same hold effect in web.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LdapBindAndSearchOutcome {
+    /// Bind rejected (`invalidCredentials` or other bind-level refusal).
+    BindInvalidCredentials,
+    /// Directory unreachable before or during bind (broker / connect / timeout).
+    BindUnreachable,
+    /// TLS handshake or certificate validation failed at bind.
+    BindTlsError,
+    /// Bind succeeded and group keys were fully collected (case A).
+    Complete,
+    /// Bind succeeded; entry not found or unreadable (`noSuchObject` /
+    /// empty / `insufficientAccessRights`) -- case B.
+    IncompleteNotFound,
+    /// Bind succeeded; search timed out, truncated, ranged, overflowed,
+    /// or was referral-only -- case C.
+    IncompleteUnreachable,
 }
 
 /// Access check result from vauban-access (instance-level authorization).
@@ -1684,11 +1712,18 @@ pub enum AuditEventType {
     /// (possible MITM / IP squatting). Security-critical: emitted via
     /// `emit_audit_critical` and NEVER cached.
     VaultHostIdentityMismatch,
+    // ---- appended for LDAPS group aggregation Phase 1 ----
+    /// Case A: `user_groups` replaced from mapped directory keys.
+    LdapAggregationReplaced,
+    /// Case A produced an empty mapped set (may follow a nonempty one).
+    LdapAggregationEmptied,
+    /// Fail-closed threshold crossed: LDAP group memberships purged.
+    LdapAggregationPurgedFailsafe,
 }
 
 impl AuditEventType {
     /// Number of variants. Pinned by `audit_event_type_count_is_pinned`.
-    pub const COUNT: usize = 58;
+    pub const COUNT: usize = 61;
 
     /// Every variant, for table-driven tests and drift checks.
     pub const ALL: [AuditEventType; Self::COUNT] = [
@@ -1750,6 +1785,9 @@ impl AuditEventType {
         AuditEventType::SecretAccessRuleDeleted,
         AuditEventType::VaultProvenanceDenied,
         AuditEventType::VaultHostIdentityMismatch,
+        AuditEventType::LdapAggregationReplaced,
+        AuditEventType::LdapAggregationEmptied,
+        AuditEventType::LdapAggregationPurgedFailsafe,
     ];
 
     /// Coarse category, for log pivoting and the drift test. EXHAUSTIVE match
@@ -1757,9 +1795,12 @@ impl AuditEventType {
     #[must_use]
     pub fn category(&self) -> &'static str {
         match self {
-            AuditEventType::AuthSuccess | AuditEventType::AuthFailure | AuditEventType::Logout => {
-                "auth"
-            }
+            AuditEventType::AuthSuccess
+            | AuditEventType::AuthFailure
+            | AuditEventType::Logout
+            | AuditEventType::LdapAggregationReplaced
+            | AuditEventType::LdapAggregationEmptied
+            | AuditEventType::LdapAggregationPurgedFailsafe => "auth",
             AuditEventType::MfaEnrolled
             | AuditEventType::MfaReset
             | AuditEventType::MfaChallengePassed
@@ -3085,6 +3126,42 @@ pub enum Message {
         broker_timeout_secs: u64,
         smtp_accept_invalid_certs: bool,
     },
+
+    // ========== LDAPS aggregation Phase 1 (append-only) ==========
+    //
+    // WIRE COMPATIBILITY: appended AFTER MailerSmtpProvision. Do NOT
+    // insert these next to AuthLdapProvision -- that would shift
+    // SSH / Kerberos / IACS / recording / mailer discriminants.
+    /// Web asks auth to bind then collect directory group keys.
+    AuthLdapBindAndSearch {
+        request_id: u64,
+        username: String,
+        password: SensitiveString,
+    },
+    /// Auth's response to [`Message::AuthLdapBindAndSearch`].
+    ///
+    /// `group_keys` is populated only when `outcome` is
+    /// [`LdapBindAndSearchOutcome::Complete`].
+    AuthLdapBindAndSearchResponse {
+        request_id: u64,
+        outcome: LdapBindAndSearchOutcome,
+        group_keys: Vec<String>,
+    },
+    /// Supervisor ships the raw mapping file to web **pre-seal**.
+    ///
+    /// A compiled AST on the wire is rejected: both sides call
+    /// `shared::ldap_mapping::parse`. `file_bytes` is empty when
+    /// aggregation is off.
+    WebLdapMappingProvision {
+        aggregation_enabled: bool,
+        file_bytes: Vec<u8>,
+    },
+    /// Supervisor ships the compiled resolve plan to auth **pre-seal**.
+    ///
+    /// Empty when aggregation is off. Auth never sees User Group names.
+    AuthLdapAggregationProvision {
+        resolve_plan: crate::ldap_mapping::ResolvePlan,
+    },
 }
 
 impl Message {
@@ -3142,6 +3219,8 @@ impl Message {
             | Message::AdminResponse { request_id, .. }
             | Message::AuthLdapBind { request_id, .. }
             | Message::AuthLdapBindResponse { request_id, .. }
+            | Message::AuthLdapBindAndSearch { request_id, .. }
+            | Message::AuthLdapBindAndSearchResponse { request_id, .. }
             | Message::SshPushPublicKey { request_id, .. }
             | Message::SshPushPublicKeyResult { request_id, .. }
             | Message::SshTestKeyAuth { request_id, .. }
@@ -3461,7 +3540,7 @@ mod tests {
         // and ALL together when appending a variant (never reorder existing
         // ones -- bincode encodes the index).
         assert_eq!(AuditEventType::ALL.len(), AuditEventType::COUNT);
-        assert_eq!(AuditEventType::COUNT, 58);
+        assert_eq!(AuditEventType::COUNT, 61);
     }
 
     #[test]
@@ -4167,17 +4246,11 @@ mod tests {
         }
     }
 
-    /// WIRE COMPATIBILITY pin: the LDAP variants are the LAST three in the
-    /// `Message` enum. Bincode encodes variants by ordinal index, so they
-    /// MUST stay appended at the end (any earlier insertion shifts every
-    /// subsequent discriminant and breaks already-deployed peers). This test
-    /// fails loudly if a future variant is inserted after them in the source.
+    /// WIRE COMPATIBILITY pin: `AuthLdapProvision` layout stays frozen
+    /// (four fields). Phase-1 aggregation variants are appended *after*
+    /// `MailerSmtpProvision`, never next to the v1 LDAP trio.
     #[test]
     fn test_ldap_message_variants_are_appended_last() {
-        // Encoding a value whose discriminant is the maximum currently known
-        // must round-trip; if a variant is inserted *after* AuthLdapProvision,
-        // this still passes, but the companion source-ordering comment +
-        // the explicit indices below document the contract.
         let provision = Message::AuthLdapProvision {
             url: "ldaps://x:636".to_string(),
             dn_template: "{username}".to_string(),
@@ -4187,6 +4260,66 @@ mod tests {
         let bytes = serialize(&provision);
         let decoded: Message = deserialize(&bytes);
         assert!(matches!(decoded, Message::AuthLdapProvision { .. }));
+
+        let agg = Message::AuthLdapAggregationProvision {
+            resolve_plan: crate::ldap_mapping::ResolvePlan::default(),
+        };
+        assert_eq!(agg.request_id(), None);
+        let decoded: Message = deserialize(&serialize(&agg));
+        assert!(matches!(
+            decoded,
+            Message::AuthLdapAggregationProvision { .. }
+        ));
+
+        let map = Message::WebLdapMappingProvision {
+            aggregation_enabled: false,
+            file_bytes: Vec::new(),
+        };
+        assert_eq!(map.request_id(), None);
+        let decoded: Message = deserialize(&serialize(&map));
+        assert!(matches!(decoded, Message::WebLdapMappingProvision { .. }));
+    }
+
+    #[test]
+    fn test_auth_ldap_bind_and_search_roundtrip() {
+        let msg = Message::AuthLdapBindAndSearch {
+            request_id: 7,
+            username: "alice".to_string(),
+            password: SensitiveString::new("s3cret".to_string()),
+        };
+        assert_eq!(msg.request_id(), Some(7));
+        let decoded: Message = deserialize(&serialize(&msg));
+        match decoded {
+            Message::AuthLdapBindAndSearch {
+                request_id,
+                username,
+                password,
+            } => {
+                assert_eq!(request_id, 7);
+                assert_eq!(username, "alice");
+                assert_eq!(password.as_str(), "s3cret");
+            }
+            other => panic!("Wrong variant: {other:?}"),
+        }
+
+        let resp = Message::AuthLdapBindAndSearchResponse {
+            request_id: 7,
+            outcome: LdapBindAndSearchOutcome::Complete,
+            group_keys: vec!["CN=Ops,DC=x".to_string()],
+        };
+        let decoded: Message = deserialize(&serialize(&resp));
+        match decoded {
+            Message::AuthLdapBindAndSearchResponse {
+                request_id,
+                outcome,
+                group_keys,
+            } => {
+                assert_eq!(request_id, 7);
+                assert_eq!(outcome, LdapBindAndSearchOutcome::Complete);
+                assert_eq!(group_keys, vec!["CN=Ops,DC=x".to_string()]);
+            }
+            other => panic!("Wrong variant: {other:?}"),
+        }
     }
 
     #[test]

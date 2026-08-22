@@ -62,5 +62,6 @@ Pass: local-part bind works; `@` in the typed username fails closed.
 
 ## Related links
 
+- [LDAPS aggregation Phase 1 smoke](ldaps_aggregation_smoke_test.md)
 - [WORM eager-boot smoke](worm_eager_boot_smoke_test.md)
 - [Adversarial review](adversarial_review.md)

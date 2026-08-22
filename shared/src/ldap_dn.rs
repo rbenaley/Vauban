@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_comma_steer() {
+    fn attack_comma_in_username_does_not_steer_bind_dn() {
         assert_eq!(
             substitute_bind_dn(DN_TEMPLATE, "alice,ou=admins"),
             Err(BindDnError::IllegalUsername)

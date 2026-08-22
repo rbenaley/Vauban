@@ -270,6 +270,20 @@ pub struct LdapConfig {
     #[allow(dead_code)]
     #[serde(default = "default_ldap_login_password_min_length")]
     pub login_password_min_length: usize,
+    /// Path to `ldaps_mapping.conf` (resolve + static/match). Default matches
+    /// the Casbin sibling install path.
+    #[serde(default = "default_ldap_mapping_path")]
+    pub mapping_path: String,
+    /// When true, login performs bind-and-search and maps keys to User Groups.
+    /// Requires a readable mapping file with at least one `resolve` line.
+    #[serde(default)]
+    pub aggregation_enabled: bool,
+    /// Consecutive incomplete resolutions before web purges `user_groups`
+    /// (0 = never purge). Consumed by vauban-web; accepted here for a
+    /// single `[auth.ldaps]` schema.
+    #[allow(dead_code)]
+    #[serde(default = "default_ldap_aggregation_fail_closed_threshold")]
+    pub aggregation_fail_closed_threshold: u32,
 }
 
 fn default_ldap_ca_cert_file() -> String {
@@ -292,6 +306,14 @@ fn default_ldap_login_password_min_length() -> usize {
     shared::validation::LDAP_LOGIN_PASSWORD_MIN_FLOOR
 }
 
+fn default_ldap_mapping_path() -> String {
+    "/usr/local/etc/vauban/access/ldaps_mapping.conf".to_string()
+}
+
+fn default_ldap_aggregation_fail_closed_threshold() -> u32 {
+    3
+}
+
 impl Default for LdapConfig {
     fn default() -> Self {
         Self {
@@ -303,6 +325,9 @@ impl Default for LdapConfig {
             order: default_ldap_order(),
             login_username_min_length: default_ldap_login_username_min_length(),
             login_password_min_length: default_ldap_login_password_min_length(),
+            mapping_path: default_ldap_mapping_path(),
+            aggregation_enabled: false,
+            aggregation_fail_closed_threshold: default_ldap_aggregation_fail_closed_threshold(),
         }
     }
 }
@@ -392,7 +417,60 @@ impl LdapConfig {
         if self.dn_template.is_empty() {
             anyhow::bail!("[auth.ldaps] dn_template must be set when ldaps is enabled");
         }
+        if self.aggregation_enabled {
+            self.validate_mapping_file()?;
+        }
         Ok(())
+    }
+
+    /// Fail-closed mapping-file checks used when aggregation is on.
+    pub fn validate_mapping_file(&self) -> Result<shared::ldap_mapping::MappingFile> {
+        let meta = std::fs::metadata(&self.mapping_path).with_context(|| {
+            format!(
+                "[auth.ldaps] mapping_path is unreadable: {}",
+                self.mapping_path
+            )
+        })?;
+        let len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
+        if len > shared::ldap_mapping::MAX_MAPPING_FILE_BYTES {
+            anyhow::bail!(
+                "[auth.ldaps] mapping file exceeds 128 KiB ({} bytes): {}",
+                meta.len(),
+                self.mapping_path
+            );
+        }
+        let bytes = std::fs::read(&self.mapping_path).with_context(|| {
+            format!(
+                "[auth.ldaps] failed to read mapping_path: {}",
+                self.mapping_path
+            )
+        })?;
+        let ast = shared::ldap_mapping::parse(&bytes).map_err(|e| {
+            anyhow::anyhow!(
+                "[auth.ldaps] mapping file refused parse ({}): {e}",
+                self.mapping_path
+            )
+        })?;
+        if !ast.has_resolve() {
+            anyhow::bail!(
+                "[auth.ldaps] aggregation_enabled requires at least one resolve line in {}",
+                self.mapping_path
+            );
+        }
+        Ok(ast)
+    }
+
+    /// Raw mapping bytes shipped to web (empty when aggregation is off).
+    pub fn mapping_file_bytes(&self) -> Result<Vec<u8>> {
+        if !self.aggregation_enabled {
+            return Ok(Vec::new());
+        }
+        std::fs::read(&self.mapping_path).with_context(|| {
+            format!(
+                "[auth.ldaps] failed to read mapping_path: {}",
+                self.mapping_path
+            )
+        })
     }
 }
 
@@ -2109,6 +2187,114 @@ mod tests {
             ..LdapConfig::default()
         };
         assert!(l.validate().is_ok());
+    }
+
+    #[test]
+    fn comments_only_mapping_refuses_boot_when_aggregation_on() {
+        let shipped =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/access/ldaps_mapping.conf");
+        let l = LdapConfig {
+            enabled: true,
+            url: "ldaps://dc1.example.com:636".to_string(),
+            dn_template: "{username}@example.com".to_string(),
+            mapping_path: shipped.to_string_lossy().into_owned(),
+            aggregation_enabled: true,
+            ..LdapConfig::default()
+        };
+        let err = l.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("resolve"),
+            "comments-only catalogue must refuse boot: {err}"
+        );
+    }
+
+    #[test]
+    fn aggregation_on_accepts_file_with_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ldaps_mapping.conf");
+        std::fs::write(&path, "resolve  user-attr  memberOf\n").unwrap();
+        let l = LdapConfig {
+            enabled: true,
+            url: "ldaps://dc1.example.com:636".to_string(),
+            dn_template: "{username}@example.com".to_string(),
+            mapping_path: path.to_string_lossy().into_owned(),
+            aggregation_enabled: true,
+            ..LdapConfig::default()
+        };
+        assert!(l.validate().is_ok());
+    }
+
+    #[test]
+    fn vauban_conf_has_no_groups_base_dn() {
+        let conf = include_str!("../../config/vauban.conf");
+        assert!(
+            !conf.contains("groups_base_dn"),
+            "groups_base_dn must not appear in vauban.conf"
+        );
+        assert!(conf.contains("mapping_path"));
+        assert!(conf.contains("aggregation_enabled"));
+        assert!(conf.contains("aggregation_fail_closed_threshold"));
+    }
+
+    #[test]
+    fn pkg_installs_mapping_next_to_policy() {
+        let pkg = include_str!("../../pkg/build-pkg.sh");
+        assert!(pkg.contains("ldaps_mapping.conf"));
+        assert!(pkg.contains("access/ldaps_mapping.conf"));
+        assert!(pkg.contains("policy.csv"));
+    }
+
+    #[test]
+    fn oversized_mapping_file_refuses_validate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ldaps_mapping.conf");
+        let mut body = vec![b'#'; shared::ldap_mapping::MAX_MAPPING_FILE_BYTES + 1];
+        body[0] = b'\n';
+        std::fs::write(&path, &body).unwrap();
+        let l = LdapConfig {
+            enabled: true,
+            url: "ldaps://dc1.example.com:636".to_string(),
+            dn_template: "{username}@example.com".to_string(),
+            mapping_path: path.to_string_lossy().into_owned(),
+            aggregation_enabled: true,
+            ..LdapConfig::default()
+        };
+        let err = l.validate().unwrap_err().to_string();
+        assert!(err.contains("128 KiB") || err.contains("exceeds"), "{err}");
+    }
+
+    #[test]
+    fn battle_mapping_parse_under_barrier() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ldaps_mapping.conf");
+        std::fs::write(&path, "resolve  user-attr  memberOf\n").unwrap();
+        let path = Arc::new(path.to_string_lossy().into_owned());
+        const N: usize = 8;
+        let barrier = Arc::new(Barrier::new(N));
+        let mut handles = Vec::with_capacity(N);
+        for _ in 0..N {
+            let barrier = Arc::clone(&barrier);
+            let path = Arc::clone(&path);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                let l = LdapConfig {
+                    enabled: true,
+                    url: "ldaps://dc1.example.com:636".to_string(),
+                    dn_template: "{username}@example.com".to_string(),
+                    mapping_path: (*path).clone(),
+                    aggregation_enabled: true,
+                    ..LdapConfig::default()
+                };
+                l.validate()
+                    .expect("resolve file must parse under contention");
+            }));
+        }
+        for h in handles {
+            h.join().expect("worker panicked");
+        }
     }
 
     #[test]
