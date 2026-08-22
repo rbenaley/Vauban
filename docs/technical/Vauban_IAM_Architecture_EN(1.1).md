@@ -2811,7 +2811,8 @@ sequenceDiagram
 ├── config/
 │   └── access/
 │       ├── model.conf              # Casbin RBAC model definition
-│       └── default_policy.csv      # Default three-role policy
+│       ├── default_policy.csv      # Default three-role policy
+│       └── ldaps_mapping.conf      # LDAPS resolve + User Group mapping (commented catalogue)
 ├── shared/src/
 │   └── messages.rs                 # AccessRequest, AccessResponse, Auth messages
 ├── vauban-auth/

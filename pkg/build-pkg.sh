@@ -59,6 +59,7 @@ done
 install -m 644 "${PROJECT_ROOT}/config/vauban.conf" "${STAGING}/usr/local/etc/vauban/vauban.conf"
 install -m 644 "${PROJECT_ROOT}/config/access/model.conf" "${STAGING}/usr/local/etc/vauban/access/model.conf"
 install -m 644 "${PROJECT_ROOT}/config/access/default_policy.csv" "${STAGING}/usr/local/etc/vauban/access/policy.csv"
+install -m 644 "${PROJECT_ROOT}/config/access/ldaps_mapping.conf" "${STAGING}/usr/local/etc/vauban/access/ldaps_mapping.conf"
 
 cp -R "${PROJECT_ROOT}/vauban-db/migrations/"* "${STAGING}/usr/local/share/vauban/migrations/"
 
@@ -89,6 +90,7 @@ libexec/vauban/vauban-web
 etc/vauban/vauban.conf
 etc/vauban/access/model.conf
 etc/vauban/access/policy.csv
+etc/vauban/access/ldaps_mapping.conf
 PLIST_STATIC
 
 for _mig_dir in $(ls -d "${STAGING}/usr/local/share/vauban/migrations"/*/ 2>/dev/null | sort); do

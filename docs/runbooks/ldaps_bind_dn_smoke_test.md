@@ -11,6 +11,11 @@
 Related:
 
 - [LDAPS Auth Architecture 1.1](../technical/Vauban_LDAPS_Auth_Architecture_EN(1.1).md)
+  (Appendix B -- directory coverage)
+- [ADR 007](../adr/007-ldap-group-aggregation-phase-1.md) -- aggregation
+- [ADR 008](../adr/008-ldaps-mapping-file-dsl.md) -- mapping file
+  (`resolve` / `static` / `match`; uncomment a vendor block in
+  `config/access/ldaps_mapping.conf`)
 - Lint: `vauban-auth/scripts/check_ldap_dn_escaping.sh`
 
 ## Automated prerequisites
