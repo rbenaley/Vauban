@@ -1,4 +1,4 @@
-//! Shared SSR list pagination helpers (`LIST_PAGE_SIZE`, slice, hrefs).
+//! Shared SSR list pagination helpers (`LIST_PAGE_SIZE`, slice, pager).
 
 /// Max rows rendered per list page (SSR GET `?page=`).
 pub const LIST_PAGE_SIZE: usize = 10;
@@ -57,27 +57,6 @@ pub fn page_slice<T>(items: &[T], page: usize, page_size: usize) -> &[T] {
     }
     let end = (start + page_size).min(items.len());
     &items[start..end]
-}
-
-/// Append `page=N` when `page > 1`. `parts` are already-encoded `key=value` pairs.
-pub fn with_page_param(parts: &mut Vec<String>, page: usize) {
-    with_named_page_param(parts, "page", page);
-}
-
-/// Append `{name}=N` when `page > 1` (e.g. `pending_page`, `active_page`).
-pub fn with_named_page_param(parts: &mut Vec<String>, name: &str, page: usize) {
-    if page > 1 {
-        parts.push(format!("{name}={page}"));
-    }
-}
-
-/// Build `path` or `path?a=1&page=2` from encoded query parts.
-pub fn href_with_query(path: &str, parts: &[String]) -> String {
-    if parts.is_empty() {
-        path.to_owned()
-    } else {
-        format!("{path}?{}", parts.join("&"))
-    }
 }
 
 /// Model for [`crate::app::_components::vb_pager`].
@@ -162,15 +141,26 @@ mod list_page_tests {
     }
 
     #[test]
-    fn list_page_with_page_param_omits_page_one() {
-        let mut parts = vec!["channel=LTS".to_owned()];
-        with_page_param(&mut parts, 1);
-        assert_eq!(parts, vec!["channel=LTS".to_owned()]);
-        with_page_param(&mut parts, 2);
-        assert_eq!(parts, vec!["channel=LTS".to_owned(), "page=2".to_owned()]);
+    fn list_page_pager_from_hrefs_omits_page_one_in_caller() {
+        let pager = PagerLinks::from_hrefs(2, 3, |n| {
+            if n > 1 {
+                format!("/acme/builds?channel=LTS&page={n}")
+            } else {
+                "/acme/builds?channel=LTS".to_owned()
+            }
+        });
+        assert_eq!(pager.page, 2);
+        assert_eq!(pager.page_count, 3);
+        assert_eq!(pager.pages[0], (1, "/acme/builds?channel=LTS".to_owned()));
         assert_eq!(
-            href_with_query("/acme/builds", &parts),
-            "/acme/builds?channel=LTS&page=2"
+            pager.pages[1],
+            (2, "/acme/builds?channel=LTS&page=2".to_owned())
         );
+        assert_eq!(pager.prev_href.as_deref(), Some("/acme/builds?channel=LTS"));
+        assert_eq!(
+            pager.next_href.as_deref(),
+            Some("/acme/builds?channel=LTS&page=3")
+        );
+        assert!(pager.show());
     }
 }

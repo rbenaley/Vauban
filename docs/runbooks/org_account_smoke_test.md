@@ -39,6 +39,8 @@ just test --test integration_tests -- org_account -- --test-threads=1
 3. Expect company **name**, **plan**, **status**, **address**, **VAT**,
    technical contact, **Vauban LTS** / **Industrial LTS** counts, and
    **USER ACCOUNTS** pills matching `/admin/companies` for that org.
+   On reserved `/vauban/account`, Address is the live portal build
+   (`VCP — v0.1.0 [<8-char SHA>]`), not `Vauban — reserved preview tenant`.
    Multi-line addresses must appear joined with ` · ` (same separator as
    technical contact). SUBSCRIPTION must **not** show Supported builds.
 4. No Concept **SIGNED-IN USER** mockup label — company fiche + pill highlight

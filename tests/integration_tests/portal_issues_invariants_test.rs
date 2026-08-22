@@ -534,19 +534,26 @@ fn inv_issue_post_actions_anchor_on_the_reply_box() {
 
 #[test]
 fn inv_dashboard_activity_not_hardcoded_dates() {
-    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
+    let src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/dashboard_tiles.rs"
+    ));
+    let page = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
     assert!(
-        !src.contains("\"Jun 23\""),
+        !src.contains("\"Jun 23\"") && !page.contains("\"Jun 23\""),
         "dashboard must not hardcode Jun 23"
     );
     assert!(
-        !src.contains("\"3h ago\""),
+        !src.contains("\"3h ago\"") && !page.contains("\"3h ago\""),
         "dashboard must not hardcode relative fixtures"
     );
     assert!(
         !src.contains("format_relative")
             && !src.contains("format_unix_local")
-            && !src.contains("build_released_on"),
+            && !src.contains("build_released_on")
+            && !page.contains("format_relative")
+            && !page.contains("format_unix_local")
+            && !page.contains("build_released_on"),
         "dashboard activity must not render timestamps"
     );
     assert!(

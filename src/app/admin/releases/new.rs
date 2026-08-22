@@ -13,7 +13,7 @@ use topcoat::{
         response::Response,
         route,
     },
-    runtime::Event,
+    runtime::{Event, procedure},
     view::view,
 };
 
@@ -33,8 +33,10 @@ use crate::{
 /// Stable JSON body when validate-pkg rejects a non-FreeBSD upload.
 const NOT_PKG_JSON: &str = r#"{"ok":false,"code":"not_pkg"}"#;
 
-/// Stable JSON when publish is refused because vcp-store has no ACTIVE key.
-const NO_ACTIVE_KEY_JSON: &str = r#"{"ok":false,"code":"no_active_key"}"#;
+/// `require_active_key` procedure: ACTIVE key present / WebAuthn not required.
+const REQUIRE_KEY_OK: f64 = 1.0;
+/// `require_active_key` procedure: WebAuthn required and vcp-store has no ACTIVE key.
+const REQUIRE_KEY_MISSING: f64 = 0.0;
 
 #[query_params]
 struct NewReleaseQuery {
@@ -88,13 +90,6 @@ fn not_pkg_response() -> Result<Response> {
         .body(Body::from(NOT_PKG_JSON))?)
 }
 
-fn no_active_key_response() -> Result<Response> {
-    Ok(Response::builder()
-        .status(StatusCode::UNPROCESSABLE_ENTITY)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(NO_ACTIVE_KEY_JSON))?)
-}
-
 /// Fail closed when WebAuthn is required and vcp-store has no ACTIVE key.
 fn missing_active_key_for_publish(store: &StorageClient) -> bool {
     if !store.webauthn_required() {
@@ -131,11 +126,13 @@ pub(crate) async fn admin_releases_new_page(cx: &Cx) -> Result {
 
     let not_pkg_init = show_not_pkg;
     let no_key_init = show_no_key;
+    let validate_href = href!(admin_releases_validate_pkg).resolve(cx);
 
     view! {
         cx =>
         signal not_pkg_open = not_pkg_init;
         signal no_key_open = no_key_init;
+        signal pkg_go = false;
 
         <div>
             <a
@@ -158,12 +155,16 @@ pub(crate) async fn admin_releases_new_page(cx: &Cx) -> Result {
                 style="display: none"
                 @click=$(|_e| not_pkg_open.set(true))
             ></button>
-            <button
-                type="button"
-                id="vcp-no-key-open"
-                style="display: none"
-                @click=$(|_e| no_key_open.set(true))
-            ></button>
+            <div
+                id="vcp-pkg-tick"
+                aria-hidden="true"
+                :style=$(if pkg_go.get() {
+                    "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;animation:vb-pkg-kick 80ms linear 1 forwards"
+                } else {
+                    "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none"
+                })
+                @animationend="(async (_e) => { const form = document.getElementById('vcp-release-create'); if (!form || !form.reportValidity()) { return; } const input = form.querySelector('#package'); const file = input && input.files && input.files[0]; if (!file) { return; } const fd = new FormData(); fd.append('package', file, file.name || 'upload.pkg'); const url = form.getAttribute('data-validate-pkg'); const res = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' }); if (res.status === 204) { HTMLFormElement.prototype.submit.call(form); return; } input.value = ''; const bridge = document.getElementById('vcp-not-pkg-open'); if (bridge) { bridge.click(); } })"
+            ></div>
             <div
                 class="vb-confirm-root"
                 role="dialog"
@@ -229,7 +230,16 @@ pub(crate) async fn admin_releases_new_page(cx: &Cx) -> Result {
                     method="POST"
                     action=(href!(admin_releases_create))
                     enctype="multipart/form-data"
-                    @submit="(async (e) => { e.prevent_default(); const form = e.current_target.inner; if (!form.reportValidity()) { return; } const keyRes = await fetch('/admin/releases/new/require-active-key', { method: 'GET', credentials: 'same-origin' }); if (keyRes.status === 422) { const bridge = document.getElementById('vcp-no-key-open'); if (bridge) { bridge.click(); } return; } if (!keyRes.ok) { return; } const input = form.querySelector('#package'); const file = input && input.files && input.files[0]; if (!file) { return; } const fd = new FormData(); fd.append('package', file, file.name || 'upload.pkg'); const res = await fetch('/admin/releases/new/validate-pkg', { method: 'POST', body: fd, credentials: 'same-origin' }); if (res.status === 204) { HTMLFormElement.prototype.submit.call(form); return; } input.value = ''; const bridge = document.getElementById('vcp-not-pkg-open'); if (bridge) { bridge.click(); } })"
+                    data-validate-pkg=(validate_href.clone())
+                    @submit=$(async |e: Event| {
+                        e.prevent_default();
+                        pkg_go.set(false);
+                        if require_active_key().await < 1.0 {
+                            no_key_open.set(true);
+                        } else {
+                            pkg_go.set(true);
+                        }
+                    })
                 >
                     <div
                         style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end;"
@@ -369,8 +379,8 @@ pub(crate) async fn admin_releases_validate_pkg(cx: &Cx, multipart: Multipart) -
 ///
 /// Runs on Publish click before validate-pkg / WebAuthn so the browser never
 /// opens a passkey prompt against an empty allowCredentials list.
-#[route(GET "/admin/releases/new/require-active-key")]
-pub(crate) async fn admin_releases_require_active_key(cx: &Cx) -> Result<Response> {
+#[procedure]
+async fn require_active_key(cx: &Cx) -> Result<f64> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -379,12 +389,9 @@ pub(crate) async fn admin_releases_require_active_key(cx: &Cx) -> Result<Respons
 
     let store = storage(cx);
     if missing_active_key_for_publish(store.as_ref()) {
-        return no_active_key_response();
+        return Ok(REQUIRE_KEY_MISSING);
     }
-
-    Ok(Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .body(Body::from(""))?)
+    Ok(REQUIRE_KEY_OK)
 }
 
 #[route(POST "/admin/releases/new")]
@@ -602,8 +609,8 @@ pub(crate) async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Resu
 #[cfg(test)]
 mod tests {
     use super::{
-        NO_ACTIVE_KEY_JSON, NOT_PKG_JSON, create_error_message, is_no_active_key_error,
-        is_not_pkg_error, parse_released_on,
+        NOT_PKG_JSON, create_error_message, is_no_active_key_error, is_not_pkg_error,
+        parse_released_on,
     };
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -615,33 +622,49 @@ mod tests {
     }
 
     #[test]
-    fn no_active_key_json_is_stable() {
-        assert!(NO_ACTIVE_KEY_JSON.contains(r#""code":"no_active_key""#));
-        assert!(NO_ACTIVE_KEY_JSON.contains(r#""ok":false"#));
-    }
-
-    #[test]
     fn validate_submit_source_pins_preflight() {
         let src = include_str!("new.rs");
         assert!(src.contains("validate-pkg"));
-        assert!(src.contains("require-active-key"));
-        assert!(src.contains("@submit=\"(async (e)"));
+        assert!(src.contains("#[procedure]"));
+        assert!(src.contains("fn require_active_key"));
+        assert!(src.contains("@submit=$("));
+        assert!(src.contains("require_active_key().await"));
+        assert!(src.contains("no_key_open.set(true)"));
         assert!(src.contains("form.reportValidity()"));
         assert!(src.contains("FormData"));
         assert!(src.contains("HTMLFormElement.prototype.submit"));
+        assert!(src.contains("data-validate-pkg"));
+        // One-shot CSS (`linear 1`) never fires animationiteration — only
+        // animationend. A dead tick looks like "Publish does nothing".
+        assert!(src.contains("@animationend"));
+        assert!(src.contains("vb-pkg-kick"));
+        assert!(src.contains("id=\"vcp-pkg-tick\""));
+        let view = src.split_once("#[cfg(test)]").expect("tests").0;
+        assert!(
+            !view.contains("@animationiteration"),
+            "validate-pkg must not sit on a one-shot animationiteration"
+        );
+        assert!(
+            !view.contains("0.01s"),
+            "sub-frame one-shot animations are skipped; use vb-pkg-kick (~80ms + opacity)"
+        );
+        let submit = src.split_once("@submit=$(").expect("submit").1;
+        assert!(
+            submit.contains("else"),
+            "$() early return after await is compiled into a nested IIFE; pkg_go must be in else"
+        );
         assert!(src.contains("vcp-not-pkg-open"));
-        assert!(src.contains("vcp-no-key-open"));
         assert!(src.contains("signal no_key_open"));
+        assert!(!src.contains("GET \"/admin/releases/new/require-active-key\""));
         assert!(src.contains("id=\"vcp-release-create\""));
         assert!(src.contains("name=\"date\""));
         assert!(src.contains("type=\"date\""));
         assert!(src.contains("required=\"\""));
         assert!(!src.contains("\"1970-01-01\".to_owned()"));
-        // Active-key gate runs before validate-pkg in the submit handler.
-        let submit = src.split_once("@submit=\"(async (e)").expect("submit").1;
-        let key_at = submit.find("require-active-key").expect("key preflight");
-        let pkg_at = submit.find("validate-pkg").expect("pkg preflight");
-        assert!(key_at < pkg_at);
+        let submit = src.split_once("@submit=$(").expect("submit").1;
+        let key_at = submit.find("require_active_key").expect("key preflight");
+        let pkg_go_at = submit.find("pkg_go.set(true)").expect("pkg preflight kick");
+        assert!(key_at < pkg_go_at);
     }
 
     #[test]

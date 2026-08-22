@@ -614,3 +614,31 @@ fn inv_storage_ops_logging_not_silent() {
     assert!(org_issue.contains("portal_attach_failed"));
     assert!(org_new.contains("portal_attach_failed"));
 }
+
+#[test]
+fn inv_machine_503_uses_retry_after_helper() {
+    let helper = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/storage/http.rs"));
+    assert!(helper.contains("STORE_RETRY_AFTER_SECS"));
+    assert!(helper.contains("service_unavailable"));
+    assert!(helper.contains("machine_plain_response"));
+    assert!(helper.contains("RETRY_AFTER") || helper.contains("Retry-After"));
+
+    let images = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/images.rs"
+    ));
+    let eph = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/releases/eph_token/eph_pkg.rs"
+    ));
+    for (name, src) in [("images", images), ("eph_pkg", eph)] {
+        assert!(
+            src.contains("machine_plain_response"),
+            "{name} must use machine_plain_response for storage errors"
+        );
+        assert!(
+            !src.contains(".status(StatusCode::SERVICE_UNAVAILABLE)"),
+            "{name} must not build a bare 503 without Retry-After"
+        );
+    }
+}

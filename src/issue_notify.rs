@@ -10,7 +10,7 @@ use crate::{
     config::{ISSUE_NOTIFY_EVENT_TOKENS, IssuesNotifyConfig},
     db::now_unix,
     mail_circuit::MailCircuitBreaker,
-    mail_templates::{ISSUE_EVENT_HTML, IssueMailVars, render_issue_html},
+    mail_templates::IssueMailVars,
     mailer::send_issue_event_mail,
     models::{
         ISSUE_MAIL_SOURCE_CREATE, Issue, IssueComment, IssueMailOutbox, Membership, Organization,
@@ -325,19 +325,16 @@ async fn deliver_one(
     let url = issue_url(origin, event, &issue, &org, &recipient);
     let subject = issue_subject(event, &issue);
     let text = issue_text(&org, &issue, event, &excerpt, &url);
-    let html = render_issue_html(
-        ISSUE_EVENT_HTML,
-        IssueMailVars {
-            org_name: &org.name,
-            issue_key: &issue.key,
-            issue_title: &issue.title,
-            event_label: event.label(),
-            excerpt: &excerpt,
-            issue_url: &url,
-            from_address: cfg.magiclinks.from_address.trim(),
-        },
-    );
-    match send_issue_event_mail(cx, &cfg.magiclinks, &recipient.email, &subject, &text, html).await
+    let vars = IssueMailVars {
+        org_name: &org.name,
+        issue_key: &issue.key,
+        issue_title: &issue.title,
+        event_label: event.label(),
+        excerpt: &excerpt,
+        issue_url: &url,
+        from_address: cfg.magiclinks.from_address.trim(),
+    };
+    match send_issue_event_mail(cx, &cfg.magiclinks, &recipient.email, &subject, &text, vars).await
     {
         Ok(()) => {
             mark_sent(db, row).await?;

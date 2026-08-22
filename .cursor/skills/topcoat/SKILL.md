@@ -307,7 +307,10 @@ starts together. Keep SQL paging in the page/shard (`limit`/`offset`)
 and pass already-loaded rows into the loop. Do **not** turn list rows
 into N DB-hitting components (`src/list_page.rs` stays `?page=N`).
 Hot spots today are chips/pager/note lines and search-shard row markup
-— they render preloaded structs only.
+— they render preloaded structs only. Org dashboard tiles are sibling
+`#[component]`s over `#[memoize]` loaders (`src/app/org/dashboard_tiles.rs`).
+Transactional mail uses `mail!` + `view!` bodies (`src/mail_views.rs`);
+`email/*.html` are visual fixtures only.
 
 ### 6.2 Layouts: `Slot` → rendered `Result` (0.5 breaking)
 

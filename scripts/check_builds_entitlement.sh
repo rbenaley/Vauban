@@ -43,11 +43,13 @@ grep -n 'dl_error' "$DL" >/dev/null \
 if grep -n 'text/plain' "$DL" >/dev/null; then
   fail "$DL session POST must not render a plain-text error page (use the modal redirect)"
 fi
-# Public cURL surface keeps machine-readable text + status.
-grep -n 'text/plain' "$EPH_GET" >/dev/null \
-  || fail "$EPH_GET public GET must keep plain-text helper errors (machine surface)"
+# Public cURL surface keeps machine-readable text + status + Retry-After.
+grep -n 'machine_plain_response' "$EPH_GET" >/dev/null \
+  || fail "$EPH_GET public GET must use machine_plain_response"
 grep -n 'SERVICE_UNAVAILABLE' "$EPH_GET" >/dev/null \
   || fail "$EPH_GET public GET must keep 503 on helper failure"
+grep -n 'text/plain' src/storage/http.rs >/dev/null \
+  || fail "src/storage/http.rs must emit text/plain machine bodies"
 
 grep -n 'dl_error' "$BUILDS" >/dev/null \
   || fail "$BUILDS must read the dl_error query param"
@@ -164,12 +166,12 @@ if grep -n 'page_slice(' "$BUILDS" >/dev/null; then
   fail "$BUILDS list must not page_slice (use SQL limit/offset)"
 fi
 # Dashboard uses the shared ordered loader.
-grep -n 'load_releases_for_org' src/app/org.rs >/dev/null \
+grep -n 'load_releases_for_org' src/app/org/dashboard_tiles.rs >/dev/null \
   || fail "org dashboard must load releases via load_releases_for_org (SQL-ordered)"
 # VERSION labels omit +LTS (channel badge / package basename keep LTS track).
 grep -n 'version_for_display' "$BUILDS" >/dev/null \
   || fail "$BUILDS must render VERSION via version_for_display"
-grep -n 'version_for_display' src/app/org.rs >/dev/null \
+grep -n 'version_for_display' src/app/org/dashboard_tiles.rs >/dev/null \
   || fail "org dashboard must render build version via version_for_display"
 grep -n 'RESERVED_ORG_SLUG' "$BUILDS" >/dev/null \
   || fail "$BUILDS release visibility must special-case RESERVED_ORG_SLUG"

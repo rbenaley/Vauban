@@ -2,9 +2,8 @@
 
 use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
-use vcp::models::Organization;
-
-use vcp::models::MEMBERSHIP_ROLE_ORG;
+use vcp::build_info::product_label;
+use vcp::models::{MEMBERSHIP_ROLE_ORG, Organization, RESERVED_ORG_SLUG};
 
 use crate::common::{
     cleanup, create_membership, create_org_with_membership, create_test_org, create_test_user,
@@ -56,6 +55,10 @@ async fn e2e_org_account_shows_company_fiche_fields() {
     let html = body_text(page).await;
 
     assert!(html.contains("42 Account Street"), "{html}");
+    assert!(
+        !html.contains("data-vcp-build"),
+        "client account must not swap Address for the portal build: {html}"
+    );
     assert!(html.contains("FR424242424"), "{html}");
     assert!(
         html.contains("data-account-lts=\"3\"") || html.contains(">3<"),
@@ -90,6 +93,41 @@ async fn e2e_org_account_shows_company_fiche_fields() {
     assert!(
         html.contains("Sign out") || html.contains("logout"),
         "{html}"
+    );
+
+    cleanup(&db).await;
+}
+
+/// Reserved `/vauban/account` shows the live crate + git SHA, not the seed placeholder.
+#[tokio::test]
+async fn e2e_reserved_account_shows_vcp_build_label() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let email = unique_email("acct-build");
+    let slug = unique_slug("acct-build");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+
+    let cookie = login_cookie(&router, &email).await.expect("cookie");
+    let page = get(
+        &router,
+        &format!("/{RESERVED_ORG_SLUG}/account"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status(&page), StatusCode::OK);
+    let html = body_text(page).await;
+    let label = product_label();
+
+    assert!(
+        html.contains(&label) && html.contains("data-vcp-build"),
+        "reserved account must render {label}: {html}"
+    );
+    assert!(
+        !html.contains("reserved preview tenant"),
+        "must not show the seed placeholder: {html}"
     );
 
     cleanup(&db).await;

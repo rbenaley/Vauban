@@ -8,7 +8,8 @@ use topcoat::router::StatusCode;
 use vcp::models::{RELEASE_GA_ORG_ID, RELEASE_STATUS_HIDDEN, RELEASE_STATUS_PUBLISHED, Release};
 
 use crate::common::{
-    cleanup, create_org_with_membership, db_lock, get, login_cookie, post_form, status, test_db,
+    call_require_active_key, cleanup, create_org_with_membership, db_lock, get, login_cookie,
+    post_form, procedure_require_key_ok, require_active_key_procedure_path, status, test_db,
     test_router, unique_email, unique_slug,
 };
 
@@ -663,6 +664,76 @@ async fn battle_parallel_validate_pkg_preflight() {
             .expect("releases")
             .len();
         assert_eq!(after, before, "validate-pkg must never create rows");
+    }
+
+    cleanup(&db).await;
+}
+
+/// Parallel require_active_key procedure posts: staff stay 1.0; clients 404.
+#[tokio::test]
+async fn battle_parallel_require_active_key() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let router = Arc::new(test_router().await);
+    let staff_email = unique_email("battle-reqkey-staff");
+    let staff_slug = unique_slug("battle-reqkey-staff");
+    let (_staff, _sorg) =
+        create_org_with_membership(&db, &staff_email, "password", &staff_slug, "admin").await;
+    let staff_cookie = login_cookie(router.as_ref(), &staff_email)
+        .await
+        .expect("staff cookie");
+    let path =
+        require_active_key_procedure_path(router.as_ref(), Some(staff_cookie.as_str())).await;
+
+    let client_email = unique_email("battle-reqkey-client");
+    let client_slug = unique_slug("battle-reqkey-client");
+    let (_client, _corg) =
+        create_org_with_membership(&db, &client_email, "password", &client_slug, "member").await;
+    let client_cookie = login_cookie(router.as_ref(), &client_email)
+        .await
+        .expect("client cookie");
+
+    let n = 8usize;
+    let barrier = Arc::new(Barrier::new(n * 2));
+    let mut staff_handles = Vec::with_capacity(n);
+    let mut deny_handles = Vec::with_capacity(n);
+    for _ in 0..n {
+        let staff_router = Arc::clone(&router);
+        let staff_barrier = Arc::clone(&barrier);
+        let staff_path = path.clone();
+        let staff_ck = staff_cookie.clone();
+        staff_handles.push(tokio::spawn(async move {
+            staff_barrier.wait().await;
+            let resp = call_require_active_key(
+                staff_router.as_ref(),
+                &staff_path,
+                Some(staff_ck.as_str()),
+            )
+            .await;
+            (status(&resp), procedure_require_key_ok(resp).await)
+        }));
+        let deny_router = Arc::clone(&router);
+        let deny_barrier = Arc::clone(&barrier);
+        let deny_path = path.clone();
+        let deny_ck = client_cookie.clone();
+        deny_handles.push(tokio::spawn(async move {
+            deny_barrier.wait().await;
+            let resp =
+                call_require_active_key(deny_router.as_ref(), &deny_path, Some(deny_ck.as_str()))
+                    .await;
+            status(&resp)
+        }));
+    }
+
+    for h in staff_handles {
+        let (st, ok) = h.await.expect("join staff");
+        assert_eq!(st, StatusCode::OK);
+        assert!(ok, "staff require_active_key must stay 1.0 under flood");
+    }
+    for h in deny_handles {
+        assert_eq!(h.await.expect("join deny"), StatusCode::NOT_FOUND);
     }
 
     cleanup(&db).await;

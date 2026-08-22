@@ -417,6 +417,13 @@ async fn e2e_release_mirror_digest_mismatch_redirects_with_integrity_modal() {
     let pkg = vcp::release_pkg::package_file_name(&version, identity.channel);
     let public = get(&router, &format!("/releases/{token}/{pkg}"), None).await;
     assert_eq!(status(&public), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        public
+            .headers()
+            .get(http::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()),
+        Some(vcp::storage::STORE_RETRY_AFTER_SECS.to_string().as_str())
+    );
     assert_eq!(body_text(public).await.trim(), "integrity mismatch");
 
     cleanup(&db).await;

@@ -1,6 +1,9 @@
 use std::env;
+use std::process::Command;
 
 fn main() {
+    emit_git_hash();
+
     let mut config = topcoat::tailwind::BuildConfig::new().input("styles.css");
 
     if let Some(path) = env::var_os("TAILWIND_CLI") {
@@ -18,6 +21,22 @@ fn main() {
     ensure_freebsd_tailwind_package();
 
     config.render().unwrap();
+}
+
+/// Short SHA for account / ops identity (`VCP — v0.1.0 [2745693a]`).
+fn emit_git_hash() {
+    let git_hash = Command::new("git")
+        .args(["rev-parse", "--short=8", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned());
+    println!("cargo:rustc-env=VCP_GIT_HASH={git_hash}");
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs/");
 }
 
 /// FreeBSD has no GitHub standalone Tailwind asset. Prefer the `tailwindcss4`

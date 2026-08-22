@@ -9,9 +9,9 @@ use crate::{
     app::org::Org,
     auth::{capability_denied, db, require_org},
     companies_accounts::{
-        account_member_pill_class, format_company_address, format_technical_contact,
+        account_address_display, account_member_pill_class, format_technical_contact,
     },
-    models::Membership,
+    models::{Membership, RESERVED_ORG_SLUG},
     perms::perms_for_user,
 };
 
@@ -47,7 +47,8 @@ pub(crate) async fn account_page(cx: &Cx) -> Result {
     }
     member_emails.sort();
 
-    let address = format_company_address(&org.address);
+    let address = account_address_display(&org.slug, &org.address);
+    let reserved_build = org.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG);
     let vat = if org.vat.trim().is_empty() {
         "—".to_owned()
     } else {
@@ -73,7 +74,13 @@ pub(crate) async fn account_page(cx: &Cx) -> Result {
             <div class="vb-section-label">"COMPANY"</div>
             <div class="vb-kv">
                 <span class="vb-muted">"Address"</span>
-                <span>(address)</span>
+                if reserved_build {
+                    <span class="vb-mono" data-vcp-build=(address.clone())>
+                        (address)
+                    </span>
+                } else {
+                    <span>(address)</span>
+                }
             </div>
             <div class="vb-kv">
                 <span class="vb-muted">"VAT"</span>

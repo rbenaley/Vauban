@@ -14,19 +14,16 @@ use lettre::{
 use topcoat::{
     Result,
     context::{Cx, app_context, try_app_context},
-    mail::{Attachment, Mail, Mailbox, Receipt, SendError, Transport, TransportFuture, send},
+    mail::{Attachment, Mail, Mailbox, Receipt, SendError, Transport, TransportFuture, mail, send},
     router::href,
-    view::{Unescaped, view},
 };
 
 use crate::{
     app::{hrefs::TokenQ, login::login_magic},
     config::{Config, MagicLinksConfig, MailConfig, SmtpEncryption},
     mail_circuit::MailCircuitBreaker,
-    mail_templates::{
-        LOGO_CONTENT_ID, TemplateVars, USER_JOIN_HTML, USER_LEAVE_HTML, USER_LOGIN_HTML,
-        VAUBAN_LOGO_PNG, render_html,
-    },
+    mail_templates::{IssueMailVars, LOGO_CONTENT_ID, VAUBAN_LOGO_PNG},
+    mail_views::{issue_mail_html, join_mail_html, leave_mail_html, login_mail_html},
 };
 
 /// lettre-backed SMTP transport configured from `[mail]`.
@@ -166,24 +163,20 @@ pub async fn send_login_magic_link(
          This link expires in {ttl} minutes and can be used only once.\n\
          If you did not request this, you can ignore this email.\n"
     );
-    let html = render_html(
-        USER_LOGIN_HTML,
-        TemplateVars {
-            org_name: None,
-            magic_url: Some(&url),
-            from_address: ml.from_address.trim(),
-            ttl_minutes: Some(ttl),
+    let from_addr = ml.from_address.trim();
+    let built = mail! {
+        from: from_mailbox(ml)?,
+        to: Mailbox::new(to_email.trim())?,
+        reply_to: reply_to_list(ml)?,
+        subject: "Sign in to Vauban Customer Portal",
+        html: {
+            cx =>
+            login_mail_html(magic_url: &url, from_address: from_addr, ttl_minutes: ttl)
         },
-    );
-    send_branded_mail(
-        cx,
-        ml,
-        to_email,
-        "Sign in to Vauban Customer Portal",
-        &text,
-        html,
-    )
-    .await
+        text: &text,
+        attachments: logo_attachment(),
+    }?;
+    deliver_branded(cx, to_email, built).await
 }
 
 /// Invitation when a company account is created or revived.
@@ -202,24 +195,26 @@ pub async fn send_invitation_mail(
          Sign in with this link:\n\n{url}\n\n\
          This link expires in {ttl} minutes and can be used only once.\n"
     );
-    let html = render_html(
-        USER_JOIN_HTML,
-        TemplateVars {
-            org_name: Some(org_name),
-            magic_url: Some(&url),
-            from_address: ml.from_address.trim(),
-            ttl_minutes: Some(ttl),
+    let from_addr = ml.from_address.trim();
+    let subject = format!("Invitation to {org_name} — Vauban Customer Portal");
+    let built = mail! {
+        from: from_mailbox(ml)?,
+        to: Mailbox::new(to_email.trim())?,
+        reply_to: reply_to_list(ml)?,
+        subject: &subject,
+        html: {
+            cx =>
+            join_mail_html(
+                org_name: org_name,
+                magic_url: &url,
+                from_address: from_addr,
+                ttl_minutes: ttl
+            )
         },
-    );
-    send_branded_mail(
-        cx,
-        ml,
-        to_email,
-        &format!("Invitation to {org_name} — Vauban Customer Portal"),
-        &text,
-        html,
-    )
-    .await
+        text: &text,
+        attachments: logo_attachment(),
+    }?;
+    deliver_branded(cx, to_email, built).await
 }
 
 /// Access revoked when a company membership is removed (org-scoped notice).
@@ -233,24 +228,18 @@ pub async fn send_revocation_mail(
         "Your access to the Vauban Customer Portal for {org_name} has been removed.\n\n\
          If you believe this is a mistake, contact your administrator.\n"
     );
-    let html = render_html(
-        USER_LEAVE_HTML,
-        TemplateVars {
-            org_name: Some(org_name),
-            magic_url: None,
-            from_address: ml.from_address.trim(),
-            ttl_minutes: None,
-        },
-    );
-    send_branded_mail(
-        cx,
-        ml,
-        to_email,
-        &format!("Access removed — {org_name}"),
-        &text,
-        html,
-    )
-    .await
+    let from_addr = ml.from_address.trim();
+    let subject = format!("Access removed — {org_name}");
+    let built = mail! {
+        from: from_mailbox(ml)?,
+        to: Mailbox::new(to_email.trim())?,
+        reply_to: reply_to_list(ml)?,
+        subject: &subject,
+        html: { cx => leave_mail_html(org_name: org_name, from_address: from_addr) },
+        text: &text,
+        attachments: logo_attachment(),
+    }?;
+    deliver_branded(cx, to_email, built).await
 }
 
 /// Issue lifecycle notification (create / comment / status).
@@ -260,37 +249,34 @@ pub async fn send_issue_event_mail(
     to_email: &str,
     subject: &str,
     text: &str,
-    html: String,
+    vars: IssueMailVars<'_>,
 ) -> Result<()> {
-    send_branded_mail(cx, ml, to_email, subject, text, html).await
+    let built = mail! {
+        from: from_mailbox(ml)?,
+        to: Mailbox::new(to_email.trim())?,
+        reply_to: reply_to_list(ml)?,
+        subject: subject,
+        html: { cx => issue_mail_html(vars: vars) },
+        text: text,
+        attachments: logo_attachment(),
+    }?;
+    deliver_branded(cx, to_email, built).await
 }
 
-async fn send_branded_mail(
-    cx: &Cx,
-    ml: &MagicLinksConfig,
-    to_email: &str,
-    subject: &str,
-    text: &str,
-    html: String,
-) -> Result<()> {
-    let from = from_mailbox(ml)?;
-    let to = Mailbox::new(to_email.trim())?;
-    let html_view = view! { cx => (Unescaped::new_unchecked(html)) }?;
-    let mut builder = Mail::builder()
-        .from(from)
-        .to([to])
-        .subject(subject)
-        .html(html_view)
-        .text(text)
-        .attachments([Attachment::inline(
-            LOGO_CONTENT_ID,
-            "image/png",
-            VAUBAN_LOGO_PNG,
-        )]);
-    if let Some(reply) = reply_to_mailbox(ml)? {
-        builder = builder.reply_to([reply]);
-    }
-    match send(cx, builder.build()).await {
+fn reply_to_list(ml: &MagicLinksConfig) -> Result<Vec<Mailbox>> {
+    Ok(reply_to_mailbox(ml)?.into_iter().collect())
+}
+
+fn logo_attachment() -> [Attachment; 1] {
+    [Attachment::inline(
+        LOGO_CONTENT_ID,
+        "image/png",
+        VAUBAN_LOGO_PNG,
+    )]
+}
+
+async fn deliver_branded(cx: &Cx, to_email: &str, built: Mail) -> Result<()> {
+    match send(cx, built).await {
         Ok(receipt) => {
             if let Some(breaker) = try_app_context::<Arc<MailCircuitBreaker>>(cx) {
                 breaker.record_success();

@@ -19,10 +19,15 @@ fn inv_check_dashboard_stats_script() {
 
 #[test]
 fn inv_dashboard_uses_single_issue_load_and_summarize() {
-    let dash = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
+    let dash = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/dashboard_tiles.rs"
+    ));
+    let page = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
     assert!(dash.contains("summarize_issue_stats"));
     assert!(dash.contains("DASHBOARD_ISSUES_CAP"));
     assert!(dash.contains("latest_issue_by_updated_at"));
+    assert!(dash.contains("#[memoize]"));
     assert_eq!(
         dash.matches("Issue::all()").count(),
         1,
@@ -31,6 +36,14 @@ fn inv_dashboard_uses_single_issue_load_and_summarize() {
     assert!(
         !dash.contains("ISSUE_STATUS_RESOLVED") && !dash.contains("ISSUE_STATUS_CLOSED"),
         "dashboard must not multi-COUNT by status constants"
+    );
+    assert!(
+        page.contains("dash_stat_build")
+            && page.contains("dash_stat_open")
+            && page.contains("dash_stat_analysis")
+            && page.contains("dash_card_docs")
+            && page.contains("dash_activity"),
+        "dashboard page must compose sibling tile components"
     );
 }
 
@@ -95,20 +108,27 @@ fn inv_toasty_filters_pins_dashboard_single_load() {
 
 #[test]
 fn inv_dashboard_activity_is_dateless_equal_panels() {
-    let dash = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
+    let dash = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/dashboard_tiles.rs"
+    ));
+    let page = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
     let css = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
     let script = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/scripts/check_dashboard_stats.sh"
     ));
     assert!(
-        dash.contains("issue_activity_copy") && dash.contains("vb-grid-2"),
+        dash.contains("issue_activity_copy") && page.contains("vb-grid-2"),
         "dashboard must wire dateless activity + vb-grid-2"
     );
     assert!(
         !dash.contains("format_relative")
             && !dash.contains("format_unix_local")
-            && !dash.contains("build_released_on"),
+            && !dash.contains("build_released_on")
+            && !page.contains("format_relative")
+            && !page.contains("format_unix_local")
+            && !page.contains("build_released_on"),
         "dashboard must not format activity clocks"
     );
     assert!(

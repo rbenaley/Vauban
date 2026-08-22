@@ -108,8 +108,10 @@ grep -n 'max_accounts_per_org' "$LIST" >/dev/null || fail "$LIST must read max_a
 grep -n 'COMPANIES_PAGE_SIZE' "$LIST" >/dev/null || fail "$LIST must use COMPANIES_PAGE_SIZE"
 grep -n 'list_toolbar' "$LIST" >/dev/null || fail "$LIST must use list_toolbar pager"
 grep -n 'page: Option<u32>' "$LIST" >/dev/null || fail "$LIST AdminCompaniesQuery must include page"
-grep -nE 'with_page_param|SearchQ \{ q, page \}' "$LIST" >/dev/null \
-  || fail "$LIST pager must use with_page_param"
+grep -n 'href!(admin_companies_page)' "$LIST" >/dev/null \
+  || fail "$LIST pager must use href!(admin_companies_page)"
+grep -n 'SearchQ' "$LIST" >/dev/null \
+  || fail "$LIST pager must query SearchQ"
 grep -n 'admin_companies_search_results' "$LIST" >/dev/null \
   || fail "$LIST must invoke live search shard"
 grep -n 'type="search"' "$LIST" >/dev/null || fail "$LIST must expose search input"

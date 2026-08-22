@@ -20,7 +20,7 @@ COMPANIES_SYNC="src/companies_accounts.rs"
 ORG_ISSUES="src/app/org/issues.rs"
 ADMIN_ISSUES_SHARD="src/app/admin/issues/search_shard.rs"
 ADMIN_DOCS="src/app/admin/docs.rs"
-ORG_DASH="src/app/org.rs"
+ORG_DASH="src/app/org/dashboard_tiles.rs"
 
 [[ -f "$DOCS" ]] || fail "missing $DOCS"
 

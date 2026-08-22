@@ -13,7 +13,7 @@ fail() {
 HELPER="src/release_notes.rs"
 COMP="src/app/_components/note_inline.rs"
 BUILDS="src/app/org/builds.rs"
-ORG="src/app/org.rs"
+ORG="src/app/org/dashboard_tiles.rs"
 CSS="styles.css"
 
 [[ -f "$HELPER" ]] || fail "missing $HELPER"

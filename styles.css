@@ -495,6 +495,11 @@ a.vb-eph-seg-btn:hover, button.vb-eph-seg-btn:hover { color: #14171c; }
   from { transform: translateX(0); }
   to { transform: translateX(0.01px); }
 }
+/* One-shot kick after require_active_key. Must not be 0.01s / 0.01px — browsers skip that and never fire animationend. */
+@keyframes vb-pkg-kick {
+  from { opacity: 0; }
+  to { opacity: 0.02; }
+}
 .vb-ephemeral-expired {
   padding: 16px; display: flex; align-items: center; justify-content: space-between;
   gap: 16px; flex-wrap: wrap;

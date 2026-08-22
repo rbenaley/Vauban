@@ -83,7 +83,7 @@ and confirm the detail gallery — see
    the **Download unavailable** modal (never a plain-text page). Image upload
    on artifact routes → **503** (upload unavailable) — not a silent 200.
 3. Machine surface unchanged: `curl -i https://…/releases/{token}/{pkg}` →
-   **503** with body `download unavailable`.
+   **503** with body `download unavailable` and `Retry-After: 30`.
 4. Restart helper; retry → success without restarting portal (or after
    one reconnect if the client held a dead FD).
 
@@ -99,7 +99,8 @@ and confirm the detail gallery — see
    restore a backup where mirror ≠ SQLite).
 2. Attempt the portal download as an entitled user → **303** to
    `?dl_error=integrity` and the **Signature check failed** modal. Image GET
-   and `curl /releases/{token}/{pkg}` → **503** (`integrity mismatch`).
+   and `curl /releases/{token}/{pkg}` → **503** (`integrity mismatch`)
+   with `Retry-After: 30`.
    Helper must **not** issue an FD (`integrity_mismatch`).
 3. Restore the correct mirror digest (or re-upload); retry → **200**.
 

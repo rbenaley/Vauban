@@ -48,6 +48,7 @@ is planned._
 | DB-backed editorial content | [`db-backed_editorial_content_b6911b21.plan.md`](db-backed_editorial_content_b6911b21.plan.md) | Done |
 | Docs CLI MD bundle | [`docs_cli_md_bundle_0d4c230a.plan.md`](docs_cli_md_bundle_0d4c230a.plan.md) | Done |
 | Email HTML templates location | [`email_html_templates_location_28ea4c65.plan.md`](email_html_templates_location_28ea4c65.plan.md) | Done |
+| Exploit Topcoat 0.6 | [`exploit_topcoat_0.6_3cea697e.plan.md`](exploit_topcoat_0.6_3cea697e.plan.md) | Done |
 | FreeBSD pkg validation | [`freebsd_pkg_validation_158d8575.plan.md`](freebsd_pkg_validation_158d8575.plan.md) | Done |
 | FreeBSD Tailwind CLI | [`freebsd_tailwind_cli_d526732f.plan.md`](freebsd_tailwind_cli_d526732f.plan.md) | Done |
 | Industrial LTS builds | [`industrial_lts_builds_6b65e0e9.plan.md`](industrial_lts_builds_6b65e0e9.plan.md) | Done |
@@ -79,6 +80,7 @@ is planned._
 | Toasty 0.10 upgrade | [`toasty_0.10_upgrade_e6fdd5f4.plan.md`](toasty_0.10_upgrade_e6fdd5f4.plan.md) | Done |
 | Toasty query debt fix | [`toasty_query_debt_fix_d9c552ec.plan.md`](toasty_query_debt_fix_d9c552ec.plan.md) | Done |
 | Topcoat 0.5 migration | [`topcoat_0.5_migration_60d77b42.plan.md`](topcoat_0.5_migration_60d77b42.plan.md) | Done |
+| Topcoat 0.6.2 upgrade | [`topcoat_0.6.2_upgrade_88699e43.plan.md`](topcoat_0.6.2_upgrade_88699e43.plan.md) | Done |
 | Topcoat idiomatic adoption | [`topcoat_idiomatic_adoption_820f64e6.plan.md`](topcoat_idiomatic_adoption_820f64e6.plan.md) | Done |
 | UI polish CSS pyramid | [`ui_polish_css_pyramid_40fa6ffc.plan.md`](ui_polish_css_pyramid_40fa6ffc.plan.md) | Done |
 | vcp-store helper impl | [`vcp-store_helper_impl_0af4c10d.plan.md`](vcp-store_helper_impl_0af4c10d.plan.md) | Done |

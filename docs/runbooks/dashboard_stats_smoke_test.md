@@ -34,6 +34,17 @@ rtk cargo test --lib dashboard_stats -- --test-threads=1
 - Seed client: `l.martin@acme.example` / `password` → `/acme-infrastructure`.
 - Optional: create a few issues with mixed statuses under that org.
 
+## A0 -- Concurrent tiles still agree
+
+1. Sign in as the client user; open `/{org}` dashboard.
+2. Confirm **OPEN ISSUES** / **IN ANALYSIS** tiles match the issue-tracker
+   card (`N open`) and Recent activity still shows the newest org issue.
+3. Confirm **CURRENT BUILD** matches the LTS card version (when entitled)
+   and the Latest certified build panel.
+
+Pass: sibling `#[component]` tiles (0.6 concurrent render) show one
+consistent snapshot; no tile/card/activity mismatch on a single reload.
+
 ## A -- Stat tiles match Issues list
 
 1. Sign in as the client user; open `/{org}` dashboard.

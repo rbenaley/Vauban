@@ -8,6 +8,7 @@
 pub mod acme;
 pub mod app;
 pub mod auth;
+pub mod build_info;
 pub mod cli;
 pub mod companies_accounts;
 pub mod companies_search;
@@ -36,6 +37,7 @@ pub mod login_limit;
 pub mod magic_link;
 pub mod mail_circuit;
 pub mod mail_templates;
+pub mod mail_views;
 pub mod mailer;
 pub mod models;
 pub mod nav;

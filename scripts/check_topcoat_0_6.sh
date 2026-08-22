@@ -82,4 +82,9 @@ if grep -REn --include='*.rs' -e 'format!\("/admin|format!\("/\{|see_other\(form
   fail "portal URLs must use href!, not format! path strings"
 fi
 
+if grep -REn --include='*.rs' -e 'href_with_query|with_page_param|with_named_page_param' src/ >/dev/null 2>&1; then
+  grep -REn --include='*.rs' -e 'href_with_query|with_page_param|with_named_page_param' src/ >&2 || true
+  fail "list URLs must use href!(…).query(…); do not rebuild query strings"
+fi
+
 echo "check_topcoat_0_6: ok"

@@ -234,7 +234,7 @@ grep -n 'Vauban Support' "$DETAIL" >/dev/null \
   || fail "$DETAIL must label support-side authors as Vauban Support"
 
 # No hardcodéd Concept relative-date fixtures.
-if grep -nE '"3h ago"|"Jun 20"|"Jun 23"' "$DETAIL" "$LIST" src/app/org.rs >/dev/null 2>&1; then
+if grep -nE '"3h ago"|"Jun 20"|"Jun 23"' "$DETAIL" "$LIST" src/app/org.rs src/app/org/dashboard_tiles.rs >/dev/null 2>&1; then
   fail "issue/dashboard UI must not hardcode relative-date fixtures"
 fi
 

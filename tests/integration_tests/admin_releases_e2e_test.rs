@@ -9,9 +9,11 @@ use vcp::models::{
 
 use crate::common::{
     MultipartFile, assert_topcoat_click_handlers_are_functions,
-    assert_topcoat_submit_handlers_are_functions, cleanup, create_org_with_membership, db_lock,
-    get, login_cookie, post_form, post_multipart, post_multipart_with_files, status, test_config,
-    test_db, test_router, test_router_with_config, unique_email, unique_slug, urlencoding_encode,
+    assert_topcoat_submit_handlers_are_functions, call_require_active_key, cleanup,
+    create_org_with_membership, db_lock, get, login_cookie, post_form, post_multipart,
+    post_multipart_with_files, procedure_require_key_ok, require_active_key_procedure_path, status,
+    test_config, test_db, test_router, test_router_with_config, unique_email, unique_slug,
+    urlencoding_encode,
 };
 
 /// Every create now carries its binary: the portal refuses a release row
@@ -159,8 +161,11 @@ async fn e2e_admin_create_rejects_non_freebsd_package() {
     assert!(
         html.contains("id=\"vcp-not-pkg-open\"")
             && html.contains("id=\"vcp-release-create\"")
-            && html.contains("validate-pkg"),
-        "compose page must wire submit preflight + signal bridge: {html}"
+            && html.contains("validate-pkg")
+            && html.contains("vcp-pkg-tick")
+            && html.contains("animationend")
+            && !html.contains("animationiteration"),
+        "compose page must wire submit preflight on animationend (not a dead one-shot iteration): {html}"
     );
     assert_topcoat_submit_handlers_are_functions(&html);
     assert_topcoat_click_handlers_are_functions(&html);
@@ -1689,17 +1694,12 @@ async fn e2e_publish_without_active_key_refuses_before_webauthn() {
     let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
     let cookie = login(&router, &email).await;
 
-    let preflight = get(
-        &router,
-        "/admin/releases/new/require-active-key",
-        cookie.as_deref(),
-    )
-    .await;
-    assert_eq!(status(&preflight), StatusCode::UNPROCESSABLE_ENTITY);
-    let preflight_body = body_text(preflight).await;
+    let path = require_active_key_procedure_path(&router, cookie.as_deref()).await;
+    let preflight = call_require_active_key(&router, &path, cookie.as_deref()).await;
+    assert_eq!(status(&preflight), StatusCode::OK);
     assert!(
-        preflight_body.contains("no_active_key"),
-        "preflight JSON must name no_active_key: {preflight_body}"
+        !procedure_require_key_ok(preflight).await,
+        "require_active_key must return 0.0 when vcp-store has no ACTIVE key"
     );
 
     let craft_ver = unique_slug("v-nokey");
@@ -1731,7 +1731,8 @@ async fn e2e_publish_without_active_key_refuses_before_webauthn() {
     assert!(status(&page).is_success());
     let html = body_text(page).await;
     assert!(
-        html.contains("No active security key") && html.contains("id=\"vcp-no-key-open\""),
+        html.contains("No active security key")
+            && html.contains("aria-label=\"No active security key\""),
         "compose must surface the no-key modal: {html}"
     );
 
@@ -1746,6 +1747,49 @@ async fn e2e_publish_without_active_key_refuses_before_webauthn() {
 
     cleanup(&db).await;
     drop(blob);
+}
+
+#[tokio::test]
+async fn e2e_require_active_key_denies_anonymous_and_client() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = test_router().await;
+
+    let staff_email = unique_email("rel-key-staff");
+    let staff_slug = unique_slug("rel-key-staff");
+    let (_staff, _sorg) =
+        create_org_with_membership(&db, &staff_email, "password", &staff_slug, "admin").await;
+    let staff_cookie = login(&router, &staff_email).await;
+    let path = require_active_key_procedure_path(&router, staff_cookie.as_deref()).await;
+
+    let anon = call_require_active_key(&router, &path, None).await;
+    assert_eq!(
+        status(&anon),
+        StatusCode::NOT_FOUND,
+        "anonymous require_active_key must 404"
+    );
+
+    let client_email = unique_email("rel-key-client");
+    let client_slug = unique_slug("rel-key-client");
+    let (_client, _corg) =
+        create_org_with_membership(&db, &client_email, "password", &client_slug, "member").await;
+    let client_cookie = login(&router, &client_email).await;
+    let denied = call_require_active_key(&router, &path, client_cookie.as_deref()).await;
+    assert_eq!(
+        status(&denied),
+        StatusCode::NOT_FOUND,
+        "client require_active_key must 404"
+    );
+
+    let ok = call_require_active_key(&router, &path, staff_cookie.as_deref()).await;
+    assert_eq!(status(&ok), StatusCode::OK);
+    assert!(
+        procedure_require_key_ok(ok).await,
+        "staff require_active_key must be 1.0 when WebAuthn is not required"
+    );
+
+    cleanup(&db).await;
 }
 
 /// Abandoning the WebAuthn signature must publish nothing: the staged row is

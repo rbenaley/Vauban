@@ -1,9 +1,9 @@
 # Topcoat runtime playbook (VCP)
 
-Companion to `topcoat` skill §10. VCP pins Topcoat **0.5.0**; re-verify
-the browser bundle when bumping the facade. Historical 0.4→0.5 notes:
-`UPGRADE-0.5.md`. Next bump playbook: `UPGRADE-0.6.md` (0.6.1 lets
-`await` appear inside `$()` `ExprBlock` / `ExprIf`).
+Companion to `topcoat` skill §10. VCP pins Topcoat **0.6.2**; re-verify
+the browser bundle when bumping the facade. Historical 0.4→0.5 /
+0.5→0.6 notes: `UPGRADE-0.5.md`, `UPGRADE-0.6.md` (0.6.1 lets `await`
+appear inside `$()` `ExprBlock` / `ExprIf`).
 
 ## Mental model
 
@@ -22,6 +22,24 @@ concurrently (I/O overlaps). That is HTML generation, not the browser
 runtime. Do not assume sequential DB calls inside a loop of
 components — see `UPGRADE-0.6.md`. 0.6.1 also allows `await` inside
 `$()` blocks / `if` expressions.
+
+**VCP example:** org dashboard tiles (`src/app/org.rs` +
+`src/app/org/dashboard_tiles.rs`) are sibling components that share
+`#[memoize]` loaders (one `Issue::all()`, entitled releases, published
+docs). Concurrent callers share the in-flight future — do not split
+issue tiles into per-status SQL `COUNT`.
+
+**Publish compose:** `require_active_key` is a `#[procedure]` called from
+`@submit=$(async …)` (same pattern as login `request_login_link`).
+`POST /admin/releases/new/validate-pkg` stays a Multipart route — file
+bytes are not procedure args. Interpolate that URL with `href!` (e.g.
+`data-validate-pkg`); do not `fetch` `/admin/releases/new/require-active-key`.
+FormData lives in a raw `@animationend` on a one-shot `vb-pkg-kick` tick
+(kicked by `pkg_go` after the procedure). Do **not** hang that preflight
+on `@animationiteration` with `animation-iteration-count: 1` — that event
+never fires, and Publish looks like a no-op. `$()` `return` after `await`
+is compiled into a nested IIFE; put `pkg_go.set(true)` in `else`, not
+after `return`.
 
 ## `@click` / `@*` bind contract (critical)
 

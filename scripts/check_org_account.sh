@@ -20,10 +20,19 @@ grep -n 'require_org' "$PAGE" >/dev/null \
   || fail "$PAGE must call require_org"
 grep -n 'capability_denied' "$PAGE" >/dev/null \
   || fail "$PAGE must deny missing capability"
-grep -n 'format_company_address' "$PAGE" >/dev/null \
-  || fail "$PAGE must display address via format_company_address"
+grep -n 'account_address_display' "$PAGE" >/dev/null \
+  || fail "$PAGE must display address via account_address_display"
 grep -n 'org.address' "$PAGE" >/dev/null \
   || fail "$PAGE must read org.address"
+grep -n 'data-vcp-build' "$PAGE" >/dev/null \
+  || fail "$PAGE must mark the reserved-tenant build on data-vcp-build"
+HELPERS="src/companies_accounts.rs"
+grep -n 'fn account_address_display' "$HELPERS" >/dev/null \
+  || fail "$HELPERS must define account_address_display"
+grep -n 'fn product_label' src/build_info.rs >/dev/null \
+  || fail "src/build_info.rs must define product_label"
+grep -n 'VCP_GIT_HASH' build.rs >/dev/null \
+  || fail "build.rs must emit VCP_GIT_HASH"
 grep -n 'org.vat' "$PAGE" >/dev/null \
   || fail "$PAGE must render org.vat"
 grep -n 'lts_subscriptions' "$PAGE" >/dev/null \
@@ -54,7 +63,6 @@ fi
 LOGIN="src/app/login.rs"
 grep -n 'acme-infrastructure' "$LOGIN" >/dev/null \
   && fail "$LOGIN must not hardcode acme-infrastructure as login landing fallback"
-HELPERS="src/companies_accounts.rs"
 grep -n 'fn is_signed_in_member' "$HELPERS" >/dev/null \
   || fail "$HELPERS must define is_signed_in_member"
 grep -n 'fn account_member_pill_class' "$HELPERS" >/dev/null \

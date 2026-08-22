@@ -17,7 +17,8 @@ use crate::{
     models::Organization,
     perms::perms_for_user,
     storage::{
-        find_image_object, is_uuid_key, normalize_image_ext, put_tenant_image, storage_http_status,
+        find_image_object, is_uuid_key, machine_plain_response, normalize_image_ext,
+        put_tenant_image, storage_http_status,
     },
 };
 
@@ -140,10 +141,7 @@ pub(crate) async fn org_image_upload(cx: &Cx, mut multipart: Multipart) -> Resul
         Err(e) => {
             let status = StatusCode::from_u16(storage_http_status(&e))
                 .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
-            return Ok(Response::builder()
-                .status(status)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from(e.code.as_str()))?);
+            return machine_plain_response(cx, status, e.code.as_str());
         }
     };
 
@@ -188,18 +186,12 @@ pub(crate) async fn org_image_get(cx: &Cx) -> Result<Response> {
             } else {
                 "image unavailable"
             };
-            return Ok(Response::builder()
-                .status(status)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from(body))?);
+            return machine_plain_response(cx, status, body);
         }
     };
     let mut bytes = Vec::with_capacity(size.min(16 * 1024 * 1024) as usize);
     if file.read_to_end(&mut bytes).is_err() {
-        return Ok(Response::builder()
-            .status(StatusCode::SERVICE_UNAVAILABLE)
-            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Body::from("image unavailable"))?);
+        return machine_plain_response(cx, StatusCode::SERVICE_UNAVAILABLE, "image unavailable");
     }
 
     Ok(Response::builder()

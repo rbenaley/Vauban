@@ -47,9 +47,14 @@ rtk cargo test --test integration_tests -- builds_entitlement_ -- --test-threads
    nothing is created. The package is mandatory: submitting without one
    is refused and creates nothing. A random binary / non-pkg upload
    raises the Concept confirm modal (**Not a FreeBSD package**) **without
-   wiping Date / Org / Notes** (Topcoat runtime preflight to
-   `validate-pkg`); re-pick a real `.pkg` and Publish again. Creates
-   nothing until a valid package is accepted.
+   wiping Date / Org / Notes** (Topcoat `$()` calls `require_active_key`,
+   then `@animationend` / `vb-pkg-kick` POSTs `validate-pkg` — in-process
+   tests never click Publish in a browser; a one-shot
+   `animationiteration` is a silent client no-op); re-pick a real
+   `.pkg` and Publish again. Creates nothing until a valid package is
+   accepted. With WebAuthn required and **no ACTIVE key** in vcp-store,
+   Publish opens the **No active security key** signal modal and must
+   **not** start a passkey prompt.
 3. With WebAuthn enabled, confirm `/admin/releases/confirm` shows the
    parsed package summary (`Name`, `Version`, `Origin`, `Architecture`,
    …) **before** you sign — then complete the ceremony.

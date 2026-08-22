@@ -27,8 +27,12 @@ fn inv_account_page_reads_org_and_members() {
     assert!(src.contains("require_org"));
     assert!(src.contains("org.address"));
     assert!(
-        src.contains("format_company_address"),
-        "account must format multi-line addresses for display"
+        src.contains("account_address_display"),
+        "account must format addresses (reserved tenant = live build label)"
+    );
+    assert!(
+        src.contains("data-vcp-build"),
+        "reserved /vauban/account must expose data-vcp-build"
     );
     assert!(src.contains("org.vat"));
     assert!(src.contains("lts_subscriptions"));
@@ -57,6 +61,18 @@ fn inv_account_page_reads_org_and_members() {
     ));
     assert!(helpers.contains("fn is_signed_in_member"));
     assert!(helpers.contains("fn account_member_pill_class"));
+    assert!(
+        helpers.contains("fn account_address_display"),
+        "reserved vauban address must resolve through account_address_display"
+    );
+    let build = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/build_info.rs"));
+    assert!(build.contains("fn product_label"));
+    assert!(build.contains("VCP_GIT_HASH"));
+    let build_rs = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"));
+    assert!(
+        build_rs.contains("VCP_GIT_HASH") && build_rs.contains("rev-parse"),
+        "build.rs must bake a short git SHA"
+    );
     let css = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/styles.css"));
     assert!(
         css.contains(".vb-account-pill.is-you"),

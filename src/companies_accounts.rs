@@ -11,11 +11,13 @@ use topcoat::{
 
 use crate::{
     auth::invalidate_sessions_for_user,
+    build_info::product_label,
     config::Config,
     magic_link::{invalidate_tokens_for_user, issue_token},
     mailer::{send_invitation_mail, send_revocation_mail},
     models::{
-        MEMBERSHIP_ROLE_ORG, Membership, PORTAL_ROLE_ORG, USER_NOT_DELETED, User, is_portal_org,
+        MEMBERSHIP_ROLE_ORG, Membership, PORTAL_ROLE_ORG, RESERVED_ORG_SLUG, USER_NOT_DELETED,
+        User, is_portal_org,
     },
 };
 
@@ -140,6 +142,16 @@ pub fn format_company_address(address: &str) -> String {
         "—".to_owned()
     } else {
         lines.join(COMPANY_DISPLAY_SEP)
+    }
+}
+
+/// Address row on `/{org}/account`. Reserved `vauban` shows the live build
+/// (`VCP — v0.1.0 [hash]`) instead of the seed placeholder.
+pub fn account_address_display(slug: &str, stored_address: &str) -> String {
+    if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
+        product_label()
+    } else {
+        format_company_address(stored_address)
     }
 }
 
@@ -507,6 +519,27 @@ mod tests {
         assert!(
             format_company_address("A\nB").contains(COMPANY_DISPLAY_SEP),
             "address sep must match technical contact glyph"
+        );
+    }
+
+    #[test]
+    fn reserved_account_address_is_live_build_label() {
+        let stored = "Vauban — reserved preview tenant";
+        assert_eq!(
+            account_address_display(RESERVED_ORG_SLUG, stored),
+            product_label()
+        );
+        assert_eq!(account_address_display("VAUBAN", stored), product_label());
+        assert_eq!(
+            account_address_display("acme-infrastructure", stored),
+            stored
+        );
+        assert_eq!(
+            account_address_display("acme-infrastructure", "42 Account Street"),
+            "42 Account Street"
+        );
+        assert!(
+            !account_address_display(RESERVED_ORG_SLUG, stored).contains("reserved preview tenant")
         );
     }
 

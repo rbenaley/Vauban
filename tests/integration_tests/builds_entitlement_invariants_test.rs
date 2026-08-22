@@ -117,9 +117,12 @@ fn inv_builds_and_dashboard_use_version_for_display() {
         builds.contains("version_for_display"),
         "builds list must strip +LTS via version_for_display"
     );
-    let org = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
+    let dash = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/dashboard_tiles.rs"
+    ));
     assert!(
-        org.contains("version_for_display"),
+        dash.contains("version_for_display"),
         "org dashboard must strip +LTS via version_for_display"
     );
 }
@@ -152,8 +155,8 @@ fn inv_failed_download_redirects_to_builds_modal() {
         "/src/app/releases/eph_token/eph_pkg.rs"
     ));
     assert!(
-        eph.contains("text/plain") && eph.contains("SERVICE_UNAVAILABLE"),
-        "public ephemeral GET must stay a 503 text surface"
+        eph.contains("machine_plain_response") && eph.contains("SERVICE_UNAVAILABLE"),
+        "public ephemeral GET must stay a 503 text surface with Retry-After"
     );
 
     let builds = include_str!(concat!(
@@ -356,9 +359,12 @@ fn inv_builds_concept_ephemeral_server_side() {
         "builds must not Rust-sort on the hot path"
     );
 
-    let org = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
+    let dash = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/dashboard_tiles.rs"
+    ));
     assert!(
-        org.contains("load_releases_for_org"),
+        dash.contains("load_releases_for_org"),
         "dashboard latest build must use load_releases_for_org (SQL-ordered)"
     );
     assert!(

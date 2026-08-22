@@ -749,6 +749,54 @@ pub async fn call_request_login_link(router: &Router, email: &str) -> Response {
     post_json(router, &path, None, &request_login_link_json(email)).await
 }
 
+/// Resolve `require_active_key` from staff compose HTML (`GET /admin/releases/new`).
+pub async fn require_active_key_procedure_path(
+    router: &Router,
+    staff_cookie: Option<&str>,
+) -> String {
+    let page = get(router, "/admin/releases/new", staff_cookie).await;
+    assert_eq!(
+        status(&page),
+        StatusCode::OK,
+        "GET /admin/releases/new must succeed before calling require_active_key"
+    );
+    let html = {
+        let bytes = page
+            .into_body()
+            .collect()
+            .await
+            .expect("compose body")
+            .to_bytes();
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    procedure_path_from_html(&html).expect("procedure path in /admin/releases/new SSR HTML")
+}
+
+/// POST `require_active_key()` (no args).
+pub async fn call_require_active_key(
+    router: &Router,
+    path: &str,
+    cookie: Option<&str>,
+) -> Response {
+    post_json(router, path, cookie, "null").await
+}
+
+/// Parse `require_active_key` JSON body (`1.0` ok / `0.0` missing ACTIVE key).
+pub async fn procedure_require_key_ok(resp: Response) -> bool {
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("procedure body")
+        .to_bytes();
+    let text = String::from_utf8_lossy(&bytes);
+    let status: f64 = text
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("expected require_active_key f64 body, got {text:?}"));
+    status > 0.0
+}
+
 /// Parse `request_login_link` JSON body (`1.0` accepted / `0.0` unavailable).
 pub async fn procedure_login_link_accepted(resp: Response) -> bool {
     let bytes = resp

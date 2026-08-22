@@ -37,7 +37,8 @@ Automated coverage (CI): `cargo test --test integration_tests -- magic_link comp
    (no redirect to `/login/check-email`). The typed address is recalled; **Resend
    in MM:SS** starts at `05:00` when `token_ttl_secs = 300` (button disabled).
 4. In Mailpit/TEM: receive **HTML** “Sign in to Vauban Customer Portal”
-   (Vauban branding, CID logo, bulletproof button) with link
+   (Vauban branding, CID `vauban-logo`, no raw tokens in logs, bulletproof
+   button) with link
    `/login/magic?token=…`, plus a plain-text alternative.
 5. Open link within 300 seconds → land on `/vauban` as admin (`/admin` works).
 6. Reuse the same link → rejected to `/login?error=link` with the generic banner

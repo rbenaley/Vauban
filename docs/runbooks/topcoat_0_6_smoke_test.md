@@ -25,6 +25,7 @@ assets and pkg publish.
 | Ephemeral URL | `GET /releases/{token}/{pkg}` still streams the pkg after generate | 404 / wrong segment parse |
 | Client click-through | After login, Home → Docs → Issues → Account; every in-app `<a href>` is a portal path (no raw typed URLs drifting from routes) | Broken link or 404 on a rail item |
 | Admin click-through | Releases list → New release (or confirm) and Companies list → New company; PRG `Location` matches the list/edit page | 303 to a hand-written stale path |
+| List pager | Companies / docs / issues `?page=2` is `href!` + query struct (shareable) | Hand-built `href_with_query` strings drifting from routes |
 
 ## Related
 

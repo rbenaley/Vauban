@@ -80,12 +80,19 @@ grep -nE '\"not_pkg\"(\s*\|\s*\"no_active_key\")?\s*=>' "$NEW" >/dev/null \
   || fail "$NEW must keep not_pkg (and no_active_key) off the inline red banner"
 grep -nE '#\[route\(POST "/admin/releases/new/validate-pkg"\)\]' "$NEW" >/dev/null \
   || fail "$NEW must expose POST validate-pkg preflight"
-grep -nE '#\[route\(GET "/admin/releases/new/require-active-key"\)\]' "$NEW" >/dev/null \
-  || fail "$NEW must expose GET require-active-key preflight"
-grep -n 'vcp-no-key-open' "$NEW" >/dev/null \
-  || fail "$NEW must expose #vcp-no-key-open signal bridge"
+grep -nE '#\[procedure\]' "$NEW" >/dev/null \
+  || fail "$NEW must expose require_active_key as a procedure"
+grep -n 'fn require_active_key' "$NEW" >/dev/null \
+  || fail "$NEW must define require_active_key"
+if grep -nE '#\[route\(GET "/admin/releases/new/require-active-key"\)\]' "$NEW" >/dev/null; then
+  fail "$NEW must not keep the GET require-active-key route"
+fi
+grep -n 'no_key_open.set(true)' "$NEW" >/dev/null \
+  || fail "$NEW must open the no-key modal from the procedure result"
 grep -n 'signal no_key_open' "$NEW" >/dev/null \
   || fail "$NEW must drive the no-key modal from signal no_key_open"
+grep -n 'data-validate-pkg' "$NEW" >/dev/null \
+  || fail "$NEW must interpolate validate-pkg via data-validate-pkg"
 grep -nE 'err=no_active_key|err: Some\("no_active_key"\)' "$NEW" >/dev/null \
   || fail "$NEW must refuse create with err=no_active_key when no ACTIVE key"
 grep -n 'has_active_key' "$NEW" >/dev/null \
@@ -103,8 +110,22 @@ grep -n 'id="vcp-not-pkg-open"' "$NEW" >/dev/null \
   || fail "$NEW must expose #vcp-not-pkg-open signal bridge"
 grep -n 'id="vcp-release-create"' "$NEW" >/dev/null \
   || fail "$NEW form must be id=vcp-release-create"
-grep -n '@submit="(async (e)' "$NEW" >/dev/null \
-  || fail "$NEW must intercept submit with an async function expression"
+grep -n '@submit=$(' "$NEW" >/dev/null \
+  || fail "$NEW must intercept submit with \$() async (require_active_key)"
+grep -n 'require_active_key().await' "$NEW" >/dev/null \
+  || fail "$NEW submit must await require_active_key"
+# One-shot `linear 1` never emits animationiteration (only animationend).
+# In-process tests never click Publish; this pin is the client-path gate.
+grep -n '@animationend' "$NEW" >/dev/null \
+  || fail "$NEW validate-pkg tick must use @animationend (one-shot CSS)"
+grep -n 'vb-pkg-kick' "$NEW" >/dev/null \
+  || fail "$NEW validate-pkg tick must use vb-pkg-kick (not a skipped 0.01s/0.01px anim)"
+if awk '/^#\[cfg\(test\)\]/{exit} {print}' "$NEW" | grep -n '@animationiteration' >/dev/null; then
+  fail "$NEW must not hang validate-pkg on a one-shot animationiteration"
+fi
+if awk '/^#\[cfg\(test\)\]/{exit} {print}' "$NEW" | grep -n '0.01s' >/dev/null; then
+  fail "$NEW must not use a 0.01s tick (browsers skip it; animationend never fires)"
+fi
 grep -n 'signal not_pkg_open' "$NEW" >/dev/null \
   || fail "$NEW must drive the modal from signal not_pkg_open"
 grep -n 'StatusCode::NO_CONTENT' "$NEW" >/dev/null \
@@ -204,6 +225,8 @@ fi
 
 grep -n 'fn release_status_badge_class' "$UI" >/dev/null \
   || fail "$UI must define release_status_badge_class"
+grep -n '@keyframes vb-pkg-kick' "$CSS" >/dev/null \
+  || fail "$CSS must define vb-pkg-kick (Publish validate-pkg one-shot)"
 grep -n 'status-published' "$CSS" >/dev/null \
   || fail "$CSS must style .status-published"
 grep -n 'status-hidden' "$CSS" >/dev/null \

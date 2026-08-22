@@ -69,13 +69,21 @@ fn inv_admin_releases_create_is_post_and_gated() {
             && src.contains("signal not_pkg_open")
             && src.contains("id=\"vcp-not-pkg-open\"")
             && src.contains("id=\"vcp-release-create\"")
-            && src.contains("@submit=\"(async (e)"),
+            && src.contains("@submit=$(")
+            && src.contains("@animationend")
+            && src.contains("vb-pkg-kick")
+            && !src
+                .split_once("#[cfg(test)]")
+                .expect("new.rs tests")
+                .0
+                .contains("@animationiteration"),
         "not_pkg must use signal modal + submit preflight (Builds confirm chrome)"
     );
     assert!(
         src.contains("signal no_key_open")
-            && src.contains("id=\"vcp-no-key-open\"")
-            && src.contains("require-active-key")
+            && src.contains("fn require_active_key")
+            && src.contains("#[procedure]")
+            && !src.contains("GET \"/admin/releases/new/require-active-key\"")
             && (src.contains("err=no_active_key") || src.contains("err: Some(\"no_active_key\")"))
             && src.contains("has_active_key")
             && src.contains("No active security key"),

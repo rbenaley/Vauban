@@ -32,7 +32,8 @@ implementation details).
 
 **Pin:** Topcoat facade + CLI **0.6.2** (`Cargo.toml` / `Justfile`;
 edition **2024**, MSRV **1.95**, `unsafe_code = deny`). Use `href!` for
-in-app URLs, `path_param!`, `OriginPolicy`, and `BodyLimit` (see
+in-app URLs, `path_param!`, `OriginPolicy`, `BodyLimit`, and machine 503s
+via `service_unavailable` + `machine_plain_response` (see
 `topcoat` skill `UPGRADE-0.6.md`). Framework detail lives in the
 `topcoat` skill. Early-stage — expect breaking changes.
 Topcoat and Axum are **complementary** (Topcoat for the HTML portal;
@@ -280,7 +281,7 @@ not wait for a follow-up. Reference implementation helpers live in
 | Rule | Detail |
 |------|--------|
 | Page size | `LIST_PAGE_SIZE = 10` (`src/list_page.rs`) for table/row lists. **Exception:** admin companies cards use `COMPANIES_PAGE_SIZE = 3` (dense Concept cards). |
-| Query | `page: Option<u32>` (1-based); omit `page=1` from URLs |
+| Query | `page: Option<u32>` (1-based); omit `page=1` from URLs. Build list URLs with `href!(page).query(SearchQ|…)` — not `href_with_query` / `with_page_param` |
 | Controls | `<a href>` only — no shards, signals, or first-party JS for the pager |
 | With chips | Pager on the **same** `vb-chip-row` (chips left / `vb-chip-group`, pager right via `margin-left: auto`); chip-height face (`padding: 6px 12px`) |
 | Without chips | `vb-list-toolbar` above the table/list, pager right-aligned |

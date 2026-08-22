@@ -39,7 +39,10 @@ fn inv_builds_and_dashboard_wire_note_inline_text() {
         env!("CARGO_MANIFEST_DIR"),
         "/src/app/org/builds.rs"
     ));
-    let org = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
+    let org = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/dashboard_tiles.rs"
+    ));
     let formatted = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/app/_components/docs_formatted.rs"

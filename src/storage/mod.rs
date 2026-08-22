@@ -14,6 +14,7 @@ pub mod capsicum;
 pub mod client;
 pub mod engine;
 pub mod error;
+pub mod http;
 pub mod ids;
 pub mod ipc;
 pub mod log;
@@ -29,6 +30,7 @@ pub use client::{
 };
 pub use engine::{ObjectStat, PrepareOk, PutBeginOk, StorageEngine, sha256_hex, write_abs_file};
 pub use error::{StorageError, StorageErrorCode};
+pub use http::{STORE_RETRY_AFTER_SECS, machine_plain_response};
 pub use ids::{
     StorageScope, image_rel_path, is_uuid_key, normalize_image_ext, release_rel_path, tmp_rel_path,
 };

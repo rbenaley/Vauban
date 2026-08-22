@@ -20,13 +20,18 @@ fn inv_check_mail_templates_script() {
 #[test]
 fn inv_mailer_sends_html_text_and_cid_logo() {
     let mailer = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/mailer.rs"));
-    assert!(mailer.contains("send_branded_mail"));
-    assert!(mailer.contains("USER_JOIN_HTML"));
-    assert!(mailer.contains("USER_LOGIN_HTML"));
-    assert!(mailer.contains("USER_LEAVE_HTML"));
+    assert!(mailer.contains("deliver_branded"));
+    assert!(mailer.contains("mail!"));
+    assert!(mailer.contains("login_mail_html"));
+    assert!(mailer.contains("join_mail_html"));
+    assert!(mailer.contains("leave_mail_html"));
+    assert!(mailer.contains("issue_mail_html"));
     assert!(mailer.contains("Attachment::inline"));
     assert!(mailer.contains("LOGO_CONTENT_ID"));
-    assert!(mailer.contains("Unescaped::new_unchecked"));
+    assert!(
+        !mailer.contains("Unescaped"),
+        "mailer must not use Unescaped on the send path"
+    );
     assert!(
         !mailer.contains("send_text_mail"),
         "plain-only send_text_mail path must be gone"

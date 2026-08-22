@@ -11,7 +11,8 @@ fail() {
 }
 
 HELPERS="src/dashboard_stats.rs"
-DASH="src/app/org.rs"
+DASH="src/app/org/dashboard_tiles.rs"
+PAGE="src/app/org.rs"
 
 [[ -f "$HELPERS" ]] || fail "missing $HELPERS"
 grep -n 'fn summarize_issue_stats' "$HELPERS" >/dev/null \
@@ -38,6 +39,8 @@ grep -n 'DASHBOARD_ISSUES_CAP' "$DASH" >/dev/null \
   || fail "$DASH must cap dashboard issues fetch"
 grep -n 'organization_id().eq' "$DASH" >/dev/null \
   || fail "$DASH must filter issues by organization_id"
+grep -n '#\[memoize\]' "$DASH" >/dev/null \
+  || fail "$DASH must memoize dashboard loaders"
 # Reject the old multi-COUNT pattern for issue tiles.
 if grep -nE 'ISSUE_STATUS_RESOLVED|ISSUE_STATUS_CLOSED' "$DASH" >/dev/null; then
   fail "$DASH must not COUNT by ISSUE_STATUS_* for dashboard tiles (use summarize_issue_stats)"
@@ -47,6 +50,20 @@ if [[ "$issue_alls" -ne 1 ]]; then
   fail "$DASH must call Issue::all() exactly once (got $issue_alls)"
 fi
 
+# Page composes sibling #[component] tiles (0.6 concurrent I/O).
+grep -n 'dash_stat_build' "$PAGE" >/dev/null \
+  || fail "$PAGE must compose dash_stat_build"
+grep -n 'dash_stat_open' "$PAGE" >/dev/null \
+  || fail "$PAGE must compose dash_stat_open"
+grep -n 'dash_stat_analysis' "$PAGE" >/dev/null \
+  || fail "$PAGE must compose dash_stat_analysis"
+grep -n 'dash_card_docs' "$PAGE" >/dev/null \
+  || fail "$PAGE must compose dash_card_docs"
+grep -n 'dash_activity' "$PAGE" >/dev/null \
+  || fail "$PAGE must compose dash_activity"
+grep -n '#\[component\]' "$DASH" >/dev/null \
+  || fail "$DASH must declare sibling dashboard components"
+
 # Recent activity is copy-only (no wall-clock / relative dates).
 grep -n 'issue_activity_copy' "$DASH" >/dev/null \
   || fail "$DASH must use issue_activity_copy for activity text"
@@ -55,8 +72,11 @@ grep -n 'fn issue_activity_copy' "$HELPERS" >/dev/null \
 if grep -nE 'format_relative|format_unix_local|build_released_on|browser_tz' "$DASH" >/dev/null; then
   fail "$DASH recent activity must not render dates"
 fi
-grep -n 'vb-grid-2' "$DASH" >/dev/null \
-  || fail "$DASH must use vb-grid-2 for activity / latest-build panels"
+if grep -nE 'format_relative|format_unix_local|build_released_on|browser_tz' "$PAGE" >/dev/null; then
+  fail "$PAGE recent activity must not render dates"
+fi
+grep -n 'vb-grid-2' "$PAGE" >/dev/null \
+  || fail "$PAGE must use vb-grid-2 for activity / latest-build panels"
 grep -nE '\.vb-grid-2 \{ display: grid; grid-template-columns: 1fr 1fr;' styles.css >/dev/null \
   || fail "styles.css .vb-grid-2 must be equal 1fr 1fr columns"
 

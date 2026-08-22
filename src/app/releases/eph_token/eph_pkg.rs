@@ -16,7 +16,7 @@ use crate::{
     auth::{db, storage},
     db::now_unix,
     models::{EphemeralDownload, Organization},
-    storage::{find_release_object, storage_http_status},
+    storage::{find_release_object, machine_plain_response, storage_http_status},
 };
 
 path_param!(pub(crate) eph_pkg);
@@ -74,18 +74,12 @@ pub(crate) async fn ephemeral_download_get(cx: &Cx) -> Result<Response> {
             } else {
                 DOWNLOAD_UNAVAILABLE
             };
-            return Ok(Response::builder()
-                .status(status)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from(body))?);
+            return machine_plain_response(cx, status, body);
         }
     };
     let mut bytes = Vec::with_capacity(size.min(64 * 1024 * 1024) as usize);
     if file.read_to_end(&mut bytes).is_err() {
-        return Ok(Response::builder()
-            .status(StatusCode::SERVICE_UNAVAILABLE)
-            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Body::from(DOWNLOAD_UNAVAILABLE))?);
+        return machine_plain_response(cx, StatusCode::SERVICE_UNAVAILABLE, DOWNLOAD_UNAVAILABLE);
     }
     let filename = package_file_name(&rel.version, &rel.channel);
     let disposition = format!("attachment; filename=\"{filename}\"");
