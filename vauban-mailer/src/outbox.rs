@@ -1,5 +1,6 @@
 //! Outbox drain loop (FOR UPDATE SKIP LOCKED + SMTP batch send).
 
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -31,7 +32,7 @@ use crate::broker::{answer_control, request_smtp_connect};
 use crate::provision::MailerRuntime;
 use crate::smtp_client::{MailEnvelope, SmtpError, client_config, open_session};
 use shared::ipc::IpcChannel;
-use shared::messages::{ControlMessage, Message};
+use shared::messages::Message;
 
 const BACKOFF_CAP: Duration = Duration::from_hours(1);
 const BACKOFF_BASE: Duration = Duration::from_secs(30);
@@ -94,19 +95,74 @@ pub struct DrainCtx {
     pub shutdown: Arc<AtomicBool>,
 }
 
-fn poll_supervisor_control(ctx: &DrainCtx) {
-    while let Ok(ready) = shared::ipc::poll_readable(&[ctx.supervisor.read_fd()], 0) {
-        if ready.is_empty() {
+/// Drain pending supervisor control messages without blocking.
+///
+/// Uses `try_recv` so a spurious `AsyncFd` wake cannot hang the idle
+/// loop on `recv()` / `poll(NONE)`.
+pub fn poll_supervisor_control(supervisor: &IpcChannel, shutdown: &AtomicBool) {
+    while let Ok(Message::Control(ctrl)) = supervisor.try_recv() {
+        if answer_control(supervisor, ctrl, shutdown) {
             break;
         }
-        match ctx.supervisor.recv() {
-            Ok(Message::Control(ControlMessage::Shutdown)) => {
-                AtomicBool::store(&ctx.shutdown, true, Ordering::SeqCst);
-                break;
+    }
+}
+
+/// Raw-fd wrapper so Tokio can watch the supervisor pipe without taking
+/// ownership (the [`IpcChannel`] keeps the `OwnedFd`).
+struct BorrowedRawFd(RawFd);
+
+impl AsRawFd for BorrowedRawFd {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0
+    }
+}
+
+/// Sleep until `next_tick`, but wake as soon as the supervisor pipe is
+/// readable so `Shutdown` / `Ping` are not held until the drain interval.
+pub async fn wait_for_tick_or_control(
+    supervisor: &IpcChannel,
+    shutdown: &AtomicBool,
+    next_tick: Instant,
+) {
+    poll_supervisor_control(supervisor, shutdown);
+    if AtomicBool::load(shutdown, Ordering::SeqCst) || Instant::now() >= next_tick {
+        return;
+    }
+
+    let async_fd = match tokio::io::unix::AsyncFd::new(BorrowedRawFd(supervisor.read_fd())) {
+        Ok(fd) => fd,
+        Err(e) => {
+            warn!(error = %e, "Failed to wrap supervisor fd; falling back to short sleep");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            poll_supervisor_control(supervisor, shutdown);
+            return;
+        }
+    };
+
+    loop {
+        if AtomicBool::load(shutdown, Ordering::SeqCst) || Instant::now() >= next_tick {
+            return;
+        }
+        tokio::select! {
+            () = tokio::time::sleep_until(next_tick) => {
+                return;
             }
-            Ok(Message::Control(ctrl)) => answer_control(&ctx.supervisor, ctrl),
-            Ok(_) => break,
-            Err(_) => break,
+            ready = async_fd.readable() => {
+                match ready {
+                    Ok(mut guard) => {
+                        poll_supervisor_control(supervisor, shutdown);
+                        guard.clear_ready();
+                        if AtomicBool::load(shutdown, Ordering::SeqCst) {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        poll_supervisor_control(supervisor, shutdown);
+                        return;
+                    }
+                }
+            }
         }
     }
 }
@@ -120,15 +176,15 @@ pub async fn dispatcher_loop(ctx: DrainCtx) {
             info!("Mailer dispatcher shutting down");
             break;
         }
-        poll_supervisor_control(&ctx);
+        wait_for_tick_or_control(&ctx.supervisor, &ctx.shutdown, next_tick).await;
         if AtomicBool::load(&ctx.shutdown, Ordering::SeqCst) {
+            info!("Mailer dispatcher shutting down");
             break;
         }
-
-        tokio::time::sleep_until(next_tick).await;
+        if Instant::now() < next_tick {
+            continue;
+        }
         next_tick = Instant::now() + poll;
-
-        poll_supervisor_control(&ctx);
 
         match drain_outbox_once(&ctx, &tls_config).await {
             Ok(0) => debug!("Mailer drain: no rows pending"),
@@ -174,6 +230,7 @@ async fn drain_outbox_once(
         &host,
         port,
         ctx.runtime.broker_timeout_secs,
+        &ctx.shutdown,
     )
     .await
     .map_err(DrainError::Broker)?;
@@ -605,6 +662,127 @@ fn compute_backoff(attempts: i32) -> Duration {
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use shared::messages::ControlMessage;
+
+    #[test]
+    fn inv_dispatcher_wakes_on_ipc_not_only_on_sleep() {
+        let source = include_str!("outbox.rs");
+        assert!(
+            source.contains("tokio::select!"),
+            "dispatcher idle wait must select! between tick and IPC"
+        );
+        assert!(
+            source.contains("wait_for_tick_or_control"),
+            "dispatcher must use wait_for_tick_or_control"
+        );
+        assert!(
+            source.contains("async_fd.readable()"),
+            "idle wait must watch the supervisor pipe via AsyncFd"
+        );
+        assert!(
+            source.contains("try_recv()"),
+            "control poll must use try_recv to stay non-blocking"
+        );
+        assert!(
+            source.contains("\"Mailer dispatcher shutting down\""),
+            "dispatcher must log a clean shutdown"
+        );
+        let sleep_until_count = source.matches("sleep_until").count();
+        assert!(
+            sleep_until_count >= 1,
+            "tick deadline must still use sleep_until"
+        );
+        assert!(
+            !source.contains("tokio::time::sleep_until(next_tick).await;\n        next_tick"),
+            "must not sleep the full poll interval without a select! peer"
+        );
+    }
+
+    #[test]
+    fn poll_supervisor_control_shutdown_sets_flag() {
+        let (parent, child) = shared::ipc::IpcChannel::pair().expect("ipc pair");
+        let shutdown = AtomicBool::new(false);
+        parent
+            .send(&Message::Control(ControlMessage::Shutdown))
+            .expect("send Shutdown");
+        poll_supervisor_control(&child, &shutdown);
+        assert!(AtomicBool::load(&shutdown, Ordering::SeqCst));
+    }
+
+    #[test]
+    fn poll_supervisor_control_ping_does_not_set_flag() {
+        let (parent, child) = shared::ipc::IpcChannel::pair().expect("ipc pair");
+        let shutdown = AtomicBool::new(false);
+        parent
+            .send(&Message::Control(ControlMessage::Ping { seq: 7 }))
+            .expect("send Ping");
+        poll_supervisor_control(&child, &shutdown);
+        assert!(!AtomicBool::load(&shutdown, Ordering::SeqCst));
+        match parent.recv().expect("pong") {
+            Message::Control(ControlMessage::Pong { seq, .. }) => assert_eq!(seq, 7),
+            other => panic!("expected Pong, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_for_tick_or_control_wakes_on_shutdown_before_tick() {
+        let (parent, child) = shared::ipc::IpcChannel::pair().expect("ipc pair");
+        let shutdown = AtomicBool::new(false);
+        let next_tick = Instant::now() + Duration::from_secs(30);
+        let started = std::time::Instant::now();
+        let waiter = tokio::spawn(async move {
+            wait_for_tick_or_control(&child, &shutdown, next_tick).await;
+            AtomicBool::load(&shutdown, Ordering::SeqCst)
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        parent
+            .send(&Message::Control(ControlMessage::Shutdown))
+            .expect("send Shutdown");
+        let flagged = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("waiter joined in time")
+            .expect("waiter task");
+        assert!(flagged, "Shutdown must set the flag");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "must not wait the 30s poll interval"
+        );
+    }
+
+    #[tokio::test]
+    async fn battle_wait_for_tick_or_control_under_contention() {
+        use std::sync::Arc;
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(8));
+        let mut handles = Vec::new();
+        let mut senders = Vec::new();
+        for _ in 0..8 {
+            let (parent, child) = shared::ipc::IpcChannel::pair().expect("ipc pair");
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let barrier = Arc::clone(&barrier);
+            let shutdown_task = Arc::clone(&shutdown);
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                let next = Instant::now() + Duration::from_secs(30);
+                wait_for_tick_or_control(&child, &shutdown_task, next).await;
+                AtomicBool::load(&shutdown_task, Ordering::SeqCst)
+            }));
+            senders.push(parent);
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        for parent in &senders {
+            parent
+                .send(&Message::Control(ControlMessage::Shutdown))
+                .expect("send Shutdown");
+        }
+        for handle in handles {
+            let flagged = tokio::time::timeout(Duration::from_secs(2), handle)
+                .await
+                .expect("join")
+                .expect("task");
+            assert!(flagged, "each waiter must observe Shutdown");
+        }
+    }
 
     #[test]
     fn pull_batch_uses_for_update_skip_locked() {

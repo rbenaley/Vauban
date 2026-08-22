@@ -1,11 +1,13 @@
 //! Supervisor-brokered SMTP TCP connect (Service::Mailer target).
 
 use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use shared::ipc::{IpcChannel, poll_readable, recv_fd};
 use shared::messages::{ControlMessage, Message, Service};
 use tokio::net::TcpStream;
+use tracing::info;
 
 /// Ask the supervisor to connect to the configured SMTP relay and return a
 /// non-blocking tokio TCP stream received via SCM_RIGHTS.
@@ -15,6 +17,7 @@ pub async fn request_smtp_connect(
     host: &str,
     port: u16,
     broker_timeout_secs: u64,
+    shutdown: &AtomicBool,
 ) -> Result<TcpStream, String> {
     let request_id: u64 = rand::random();
     let session_id = format!("mailer-{:016x}", rand::random::<u64>());
@@ -32,6 +35,9 @@ pub async fn request_smtp_connect(
 
     let deadline = std::time::Instant::now() + Duration::from_secs(broker_timeout_secs.max(1));
     loop {
+        if shutdown.load(Ordering::SeqCst) {
+            return Err("shutdown requested".into());
+        }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             return Err("SMTP broker request timeout".into());
@@ -43,7 +49,11 @@ pub async fn request_smtp_connect(
             continue;
         }
         match supervisor.recv() {
-            Ok(Message::Control(ctrl)) => answer_control(supervisor, ctrl),
+            Ok(Message::Control(ctrl)) => {
+                if answer_control(supervisor, ctrl, shutdown) {
+                    return Err("shutdown requested".into());
+                }
+            }
             Ok(Message::TcpConnectResponse {
                 request_id: rid,
                 success,
@@ -85,34 +95,214 @@ fn recv_fd_with_poll(fd_socket: i32, timeout: Duration) -> Result<OwnedFd, Strin
     }
 }
 
-/// Handle control messages during blocking broker waits (heartbeats).
-pub fn answer_control(supervisor: &IpcChannel, msg: ControlMessage) {
+/// Handle a supervisor control message on the sealed-leaf channel.
+///
+/// Returns `true` when `Shutdown` was received so the caller can leave
+/// a blocking broker wait instead of swallowing the signal.
+pub fn answer_control(supervisor: &IpcChannel, msg: ControlMessage, shutdown: &AtomicBool) -> bool {
     match msg {
         ControlMessage::Ping { seq } => {
             let _ = supervisor.send(&Message::Control(ControlMessage::Pong {
                 seq,
                 stats: shared::messages::ServiceStats::default(),
             }));
+            false
         }
         ControlMessage::Drain => {
             let _ = supervisor.send(&Message::Control(ControlMessage::DrainComplete {
                 pending_requests: 0,
             }));
+            false
         }
-        ControlMessage::DrainComplete { .. }
-        | ControlMessage::Pong { .. }
-        | ControlMessage::Shutdown => {}
+        ControlMessage::Shutdown => {
+            info!("Shutdown requested, setting graceful shutdown flag");
+            shutdown.store(true, Ordering::SeqCst);
+            true
+        }
+        ControlMessage::DrainComplete { .. } | ControlMessage::Pong { .. } => false,
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
+    use super::*;
+    use shared::messages::Message;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
     #[test]
     fn broker_targets_service_mailer() {
         let src = include_str!("broker.rs");
         assert!(
             src.contains("target_service: Service::Mailer"),
             "SMTP broker MUST target Service::Mailer"
+        );
+    }
+
+    #[test]
+    fn answer_control_shutdown_sets_flag() {
+        let (parent, child) = IpcChannel::pair().expect("ipc pair");
+        let shutdown = AtomicBool::new(false);
+        assert!(answer_control(&child, ControlMessage::Shutdown, &shutdown));
+        assert!(shutdown.load(Ordering::SeqCst));
+        drop(parent);
+    }
+
+    #[test]
+    fn answer_control_ping_replies_pong_without_shutdown() {
+        let (parent, child) = IpcChannel::pair().expect("ipc pair");
+        let shutdown = AtomicBool::new(false);
+        assert!(!answer_control(
+            &child,
+            ControlMessage::Ping { seq: 42 },
+            &shutdown
+        ));
+        assert!(!shutdown.load(Ordering::SeqCst));
+        match parent.recv().expect("pong") {
+            Message::Control(ControlMessage::Pong { seq, .. }) => assert_eq!(seq, 42),
+            other => panic!("expected Pong, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn answer_control_drain_replies_complete_without_shutdown() {
+        let (parent, child) = IpcChannel::pair().expect("ipc pair");
+        let shutdown = AtomicBool::new(false);
+        assert!(!answer_control(&child, ControlMessage::Drain, &shutdown));
+        assert!(!shutdown.load(Ordering::SeqCst));
+        match parent.recv().expect("drain complete") {
+            Message::Control(ControlMessage::DrainComplete { pending_requests }) => {
+                assert_eq!(pending_requests, 0);
+            }
+            other => panic!("expected DrainComplete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn answer_control_pong_and_drain_complete_are_ignored() {
+        let (parent, child) = IpcChannel::pair().expect("ipc pair");
+        let shutdown = AtomicBool::new(false);
+        assert!(!answer_control(
+            &child,
+            ControlMessage::Pong {
+                seq: 1,
+                stats: shared::messages::ServiceStats::default(),
+            },
+            &shutdown
+        ));
+        assert!(!answer_control(
+            &child,
+            ControlMessage::DrainComplete {
+                pending_requests: 3
+            },
+            &shutdown
+        ));
+        assert!(!shutdown.load(Ordering::SeqCst));
+        drop(parent);
+    }
+
+    #[test]
+    fn inv_answer_control_does_not_swallow_shutdown() {
+        let src = include_str!("broker.rs");
+        assert!(
+            src.contains("ControlMessage::Shutdown =>"),
+            "answer_control must match Shutdown explicitly"
+        );
+        let swallow = format!("| {} => {{}}", "ControlMessage::Shutdown");
+        assert!(
+            !src.contains(&swallow),
+            "Shutdown must not be folded into a no-op arm"
+        );
+        assert!(
+            src.contains("shutdown.store(true, Ordering::SeqCst)"),
+            "Shutdown must set the shared flag"
+        );
+        assert!(
+            src.contains("\"Shutdown requested, setting graceful shutdown flag\""),
+            "Shutdown must log the same INFO literal as the other leaves"
+        );
+        assert!(
+            src.contains("if answer_control(supervisor, ctrl, shutdown)"),
+            "broker wait must honor answer_control's Shutdown return"
+        );
+        assert!(
+            src.contains("return Err(\"shutdown requested\".into())"),
+            "broker wait must abort on Shutdown"
+        );
+    }
+
+    fn control_from_byte(b: u8) -> ControlMessage {
+        match b % 5 {
+            0 => ControlMessage::Drain,
+            1 => ControlMessage::DrainComplete {
+                pending_requests: u32::from(b),
+            },
+            2 => ControlMessage::Ping { seq: u64::from(b) },
+            3 => ControlMessage::Pong {
+                seq: u64::from(b),
+                stats: shared::messages::ServiceStats::default(),
+            },
+            _ => ControlMessage::Shutdown,
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(48))]
+
+        #[test]
+        fn answer_control_shutdown_in_any_sequence_sets_flag(bytes in proptest::collection::vec(0u8..20, 1..16)) {
+            let (parent, child) = IpcChannel::pair().expect("ipc pair");
+            let shutdown = AtomicBool::new(false);
+            let mut saw_shutdown = false;
+            for b in &bytes {
+                let msg = control_from_byte(*b);
+                if matches!(msg, ControlMessage::Shutdown) {
+                    saw_shutdown = true;
+                }
+                let _ = answer_control(&child, msg, &shutdown);
+                while parent.try_recv().is_ok() {}
+            }
+            proptest::prop_assert_eq!(shutdown.load(Ordering::SeqCst), saw_shutdown);
+            drop(parent);
+        }
+    }
+
+    #[test]
+    fn battle_answer_control_shutdown_under_contention() {
+        use std::sync::Barrier;
+        use std::thread;
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+        for t in 0..8 {
+            let shutdown = Arc::clone(&shutdown);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                let (parent, child) = IpcChannel::pair().expect("ipc pair");
+                barrier.wait();
+                for i in 0..64 {
+                    let msg = if i == 31 && t == 3 {
+                        ControlMessage::Shutdown
+                    } else if i % 2 == 0 {
+                        ControlMessage::Ping {
+                            seq: (t * 64 + i) as u64,
+                        }
+                    } else {
+                        ControlMessage::Drain
+                    };
+                    let _ = answer_control(&child, msg, &shutdown);
+                }
+                drop(parent);
+            }));
+        }
+        for h in handles {
+            h.join().expect("battle thread");
+        }
+        assert!(
+            shutdown.load(Ordering::SeqCst),
+            "the injected Shutdown must win under contention"
         );
     }
 }

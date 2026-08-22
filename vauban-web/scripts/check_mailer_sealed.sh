@@ -141,4 +141,31 @@ if ! grep -Eq 'EMAIL_LOGO_CID' "$ROOT/vauban-web/src/services/mail_templates.rs"
     fail "vauban-web mail_templates must reference EMAIL_LOGO_CID"
 fi
 
+# Idle wait must wake on supervisor IPC (Shutdown/Ping), not only on poll_interval.
+if ! grep -Eq 'tokio::select!' "$ROOT/vauban-mailer/src/outbox.rs"; then
+    fail "vauban-mailer dispatcher must tokio::select! between tick and IPC"
+fi
+if ! grep -Eq 'fn wait_for_tick_or_control' "$ROOT/vauban-mailer/src/outbox.rs"; then
+    fail "vauban-mailer must expose wait_for_tick_or_control"
+fi
+if ! grep -Eq 'async_fd\.readable\(\)' "$ROOT/vauban-mailer/src/outbox.rs"; then
+    fail "vauban-mailer idle wait must watch the supervisor pipe via AsyncFd"
+fi
+if ! grep -Eq 'try_recv\(\)' "$ROOT/vauban-mailer/src/outbox.rs"; then
+    fail "vauban-mailer control poll must use try_recv (non-blocking)"
+fi
+PROD_BROKER=$(awk 'BEGIN{p=1} /^#\[cfg\(test\)\]/{p=0} p' "$ROOT/vauban-mailer/src/broker.rs")
+if echo "$PROD_BROKER" | grep -Eq '\| ControlMessage::Shutdown => \{\}'; then
+    fail "vauban-mailer must not swallow Shutdown in answer_control"
+fi
+if ! grep -Eq 'shutdown\.store\(true, Ordering::SeqCst\)' "$ROOT/vauban-mailer/src/broker.rs"; then
+    fail "vauban-mailer answer_control must set the shutdown flag"
+fi
+if ! grep -Eq 'return Err\("shutdown requested"' "$ROOT/vauban-mailer/src/broker.rs"; then
+    fail "vauban-mailer broker wait must abort on Shutdown"
+fi
+if ! grep -Eq 'Shutdown requested, setting graceful shutdown flag' "$ROOT/vauban-mailer/src/broker.rs"; then
+    fail "vauban-mailer must log Shutdown with the shared leaf literal"
+fi
+
 echo "check_mailer_sealed.sh: OK"

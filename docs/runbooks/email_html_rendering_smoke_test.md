@@ -18,6 +18,7 @@ Related:
 - [vauban-web/email/README.md](../../vauban-web/email/README.md)
 - [email_html_dormant_events.md](email_html_dormant_events.md)
 - [evidence_mailer_extract_smoke_test.md](evidence_mailer_extract_smoke_test.md)
+- [mailer_shutdown_smoke_test.md](mailer_shutdown_smoke_test.md)
 - Lints: `vauban-web/scripts/check_mailer_sealed.sh`
 
 ## Automated prerequisites

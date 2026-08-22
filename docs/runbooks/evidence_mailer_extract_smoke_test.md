@@ -26,6 +26,7 @@ Related architecture:
 - Lints: `vauban-web/scripts/check_web_evidence_crate.sh`,
   `vauban-web/scripts/check_mailer_sealed.sh`
 - HTML branding (follow-on): [email_html_rendering_smoke_test.md](email_html_rendering_smoke_test.md)
+- Graceful stop: [mailer_shutdown_smoke_test.md](mailer_shutdown_smoke_test.md)
 
 ## Automated prerequisites (must be green BEFORE the manual pass)
 
@@ -46,10 +47,10 @@ Suite highlights that must stay green:
 
 | Layer | Examples |
 |-------|----------|
-| Invariants + lint | `evidence_mailer_extract_invariants_test`, both `check_*.sh`, `MAILER_KINDS`, `inv_mailer_db_warmup_before_sandbox`, `inv_mailer_queue_is_one_summary_line`, `inv_mailer_drain_logs_smtp_failures` |
-| Proptest | `evidence_mailer_extract_proptest`, `queue_summary_is_single_line_and_names_everyone`, sandbox `mailer_fd_kinds_disjoint_ok_overlap_rejected`, mailer `force_create_count_is_total_on_dead_url`, `format_drain_detail_never_splits_lines` |
-| Battle | `evidence_mailer_extract_battle_test`, `battle_queue_summary_under_contention`, `battle_format_drain_detail_under_contention`, `battle_force_create_dead_url_under_contention` |
-| E2E | `evidence_mailer_extract_e2e_test`, `smtp_session_rset_after_550_allows_next_envelope`, `e2e_mailer_sandbox_wiring_staging_regression`, `e2e_smtp_broker_localhost_reaches_ipv4_only_listener`, `e2e_self_signed_smtp_cert_is_accepted_when_skip_verify`, `attack_self_signed_smtp_cert_is_rejected_when_verify_enabled` |
+| Invariants + lint | `evidence_mailer_extract_invariants_test`, both `check_*.sh`, `MAILER_KINDS`, `inv_mailer_db_warmup_before_sandbox`, `inv_mailer_queue_is_one_summary_line`, `inv_mailer_drain_logs_smtp_failures`, `inv_mailer_shutdown_wakes_on_ipc` |
+| Proptest | `evidence_mailer_extract_proptest`, `queue_summary_is_single_line_and_names_everyone`, sandbox `mailer_fd_kinds_disjoint_ok_overlap_rejected`, mailer `force_create_count_is_total_on_dead_url`, `format_drain_detail_never_splits_lines`, `answer_control_shutdown_in_any_sequence_sets_flag` |
+| Battle | `evidence_mailer_extract_battle_test`, `battle_queue_summary_under_contention`, `battle_format_drain_detail_under_contention`, `battle_force_create_dead_url_under_contention`, `battle_answer_control_shutdown_under_contention`, `battle_wait_for_tick_or_control_under_contention` |
+| E2E | `evidence_mailer_extract_e2e_test`, `smtp_session_rset_after_550_allows_next_envelope`, `e2e_mailer_sandbox_wiring_staging_regression`, `e2e_smtp_broker_localhost_reaches_ipv4_only_listener`, `e2e_self_signed_smtp_cert_is_accepted_when_skip_verify`, `attack_self_signed_smtp_cert_is_rejected_when_verify_enabled`, `mailer_shutdown_e2e_test` |
 | Wire | `Service::Mailer.as_token_discriminant() == 9` |
 
 ## Lab prerequisites

@@ -264,3 +264,26 @@ fn inv_pkg_creates_vb_mailer_909() {
         "pkg/build-pkg.sh must stage vauban-mailer binary"
     );
 }
+
+#[test]
+fn inv_mailer_shutdown_wakes_on_ipc() {
+    let outbox = include_str!("../../../vauban-mailer/src/outbox.rs");
+    let broker = include_str!("../../../vauban-mailer/src/broker.rs");
+    assert!(
+        outbox.contains("tokio::select!") && outbox.contains("wait_for_tick_or_control"),
+        "dispatcher idle wait must select! between tick and supervisor IPC"
+    );
+    assert!(
+        outbox.contains("async_fd.readable()"),
+        "idle wait must watch the supervisor pipe"
+    );
+    assert!(
+        !broker.contains("| ControlMessage::Shutdown => {}"),
+        "answer_control must not swallow Shutdown"
+    );
+    assert!(
+        broker.contains("shutdown.store(true, Ordering::SeqCst)")
+            && broker.contains("return Err(\"shutdown requested\".into())"),
+        "Shutdown must trip the flag and abort the broker wait"
+    );
+}
