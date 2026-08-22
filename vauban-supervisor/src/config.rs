@@ -1332,6 +1332,18 @@ mod tests {
         )
     }
 
+    /// `default.toml` only -- no `development.toml` overlay.
+    fn load_default_toml_only() -> SupervisorConfig {
+        let path = test_config_dir().join("default.toml");
+        let contents = std::fs::read_to_string(&path).expect("config/default.toml must exist");
+        config::Config::builder()
+            .add_source(config::File::from_str(&contents, config::FileFormat::Toml))
+            .build()
+            .expect("build default.toml")
+            .try_deserialize()
+            .expect("deserialize default.toml")
+    }
+
     // ==================== Development Config Tests ====================
 
     #[test]
@@ -1927,10 +1939,19 @@ mod tests {
 
     #[test]
     fn mailer_loaded_from_default_toml_is_disabled() {
-        let config = test_config();
+        let config = load_default_toml_only();
         assert!(
             !config.mailer.enabled,
             "default.toml ships with mailer disabled (operator must opt-in)"
+        );
+    }
+
+    #[test]
+    fn mailer_development_toml_opts_in() {
+        let config = test_config();
+        assert!(
+            config.mailer.enabled,
+            "development.toml enables the sealed mailer for the local SMTP sink"
         );
     }
 
