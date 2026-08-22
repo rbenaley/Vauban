@@ -151,8 +151,8 @@ sequenceDiagram
     else bind succeeds
         Note over Auth: SearchRequest on the same TLS session
         Auth->>Web: outcome + group_keys (may be empty)
-        Note over Web: JIT provision if unknown; MFA unchanged
-        Web->>Web: apply mapping AST (static then match)
+        Note over Web: JIT provision if unknown, MFA unchanged
+        Note over Web: apply mapping AST (static then match)
         Web->>DB: replace user_groups for this LDAP user
     end
 ```
