@@ -49,10 +49,13 @@ tower-sessions = "0.14"
 # Validation
 validator = { version = "0.20", features = ["derive"] }
 
-# Cryptography (Post-Quantum)
-pqcrypto-mlkem = "0.1"
-pqcrypto-mldsa = "0.1"
-pqcrypto-traits = "0.3"
+# Cryptography (Post-Quantum hybrid: X25519+ML-KEM-768, Ed25519+ML-DSA-65).
+# ml-kem 0.3 matches russh 0.61 (kem 0.3). PQC generate/encapsulate use
+# the crates' `getrandom` feature (rand_core 0.10). Classical X25519 /
+# Ed25519 stay on workspace `rand 0.8` -- do not bump web to rand 0.9
+# just for these two crates.
+ml-kem = { version = "0.3.2", features = ["zeroize", "getrandom"] }
+ml-dsa = { version = "0.1.1", features = ["zeroize"] }
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 aes-gcm = "0.10"

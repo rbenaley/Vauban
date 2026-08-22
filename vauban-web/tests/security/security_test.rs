@@ -5591,84 +5591,107 @@ fn test_optional_secret_debug_redacts() {
 }
 
 // =============================================================================
-// Post-Quantum Secret Key Zeroize Regression Tests
+// Post-Quantum RustCrypto (ml-kem / ml-dsa) Regression Tests
 // =============================================================================
 
-/// crypto.rs must define zeroize_pq_secret_key helper.
-#[test]
-fn test_has_zeroize_pq_helper() {
-    let source = include_str!("../../src/crypto.rs");
+fn hybrid_secret_struct_derives_zeroize_on_drop(source: &str, name: &str) {
+    let needle = format!("pub struct {name}");
+    let idx = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("{name} missing"));
+    let window = &source[idx.saturating_sub(160)..idx];
     assert!(
-        source.contains("fn zeroize_pq_secret_key"),
-        "crypto.rs must define zeroize_pq_secret_key helper function"
+        window.contains("ZeroizeOnDrop"),
+        "{name} must derive ZeroizeOnDrop"
     );
 }
 
-/// HybridKemSecretKey Drop must call zeroize on PQ key.
+/// crypto.rs must not carry the PQClean / unsafe zeroize helper.
 #[test]
-fn test_kem_drop_zeroizes_pq_key() {
+fn test_crypto_has_no_pqcrypto_or_unsafe_zeroize() {
     let source = include_str!("../../src/crypto.rs");
-    // Find the Drop impl for HybridKemSecretKey and verify it calls zeroize
+    let prod = source
+        .split("#[cfg(test)]")
+        .next()
+        .expect("production half of crypto.rs");
     assert!(
-        source.contains("impl Drop for HybridKemSecretKey"),
-        "HybridKemSecretKey must implement Drop"
+        !prod.contains("pqcrypto"),
+        "crypto.rs production half must not import pqcrypto-*"
     );
-    // The Drop impl must not be empty (the old version had an empty body)
-    let drop_start = source
-        .find("impl Drop for HybridKemSecretKey")
-        .expect("HybridKemSecretKey Drop not found");
-    let drop_end = drop_start + source[drop_start..].find("\n}\n").unwrap_or(600) + 3;
-    let drop_body = &source[drop_start..drop_end];
     assert!(
-        drop_body.contains("zeroize_pq_secret_key"),
-        "HybridKemSecretKey Drop must call zeroize_pq_secret_key"
+        !prod.contains("zeroize_pq_secret_key"),
+        "legacy zeroize_pq_secret_key helper must be gone"
+    );
+    assert!(
+        !prod.contains("trait PqSecretKeyBytes"),
+        "PqSecretKeyBytes was a pqcrypto adapter and must be gone"
+    );
+    assert!(
+        !prod.contains("unsafe {") && !prod.contains("unsafe fn") && !prod.contains("as *mut"),
+        "crypto.rs must not use an unsafe block after the RustCrypto swap"
     );
 }
 
-/// HybridSigSecretKey Drop must call zeroize on PQ key.
+/// Hybrid secret keys must derive ZeroizeOnDrop (no manual Drop + as_ptr).
 #[test]
-fn test_sig_drop_zeroizes_pq_key() {
+fn test_hybrid_secret_keys_derive_zeroize_on_drop() {
     let source = include_str!("../../src/crypto.rs");
+    hybrid_secret_struct_derives_zeroize_on_drop(source, "HybridKemSecretKey");
+    hybrid_secret_struct_derives_zeroize_on_drop(source, "HybridSigSecretKey");
     assert!(
-        source.contains("impl Drop for HybridSigSecretKey"),
-        "HybridSigSecretKey must implement Drop"
+        !source.contains("impl Drop for HybridKemSecretKey"),
+        "HybridKemSecretKey must not hand-roll Drop; use ZeroizeOnDrop"
     );
-    let drop_start = source
-        .find("impl Drop for HybridSigSecretKey")
-        .expect("HybridSigSecretKey Drop not found");
-    let drop_end = drop_start + source[drop_start..].find("\n}\n").unwrap_or(600) + 3;
-    let drop_body = &source[drop_start..drop_end];
     assert!(
-        drop_body.contains("zeroize_pq_secret_key"),
-        "HybridSigSecretKey Drop must call zeroize_pq_secret_key"
+        !source.contains("impl Drop for HybridSigSecretKey"),
+        "HybridSigSecretKey must not hand-roll Drop; use ZeroizeOnDrop"
     );
 }
 
-/// PqSecretKeyBytes trait must be implemented for both PQ key types.
+/// Web crate must depend on RustCrypto ml-kem / ml-dsa, not pqcrypto.
 #[test]
-fn test_pq_secret_key_bytes_trait_impls() {
-    let source = include_str!("../../src/crypto.rs");
+fn test_web_cargo_toml_uses_rustcrypto_pqc() {
+    let toml = include_str!("../../Cargo.toml");
     assert!(
-        source.contains("impl PqSecretKeyBytes for mlkem768::SecretKey"),
-        "PqSecretKeyBytes must be implemented for mlkem768::SecretKey"
+        !toml.contains("pqcrypto"),
+        "vauban-web/Cargo.toml must not depend on pqcrypto-*"
     );
     assert!(
-        source.contains("impl PqSecretKeyBytes for mldsa65::SecretKey"),
-        "PqSecretKeyBytes must be implemented for mldsa65::SecretKey"
+        toml.contains("ml-kem"),
+        "vauban-web/Cargo.toml must depend on ml-kem"
+    );
+    assert!(
+        toml.contains("ml-dsa"),
+        "vauban-web/Cargo.toml must depend on ml-dsa"
     );
 }
 
-/// The zeroize helper must actually call zeroize() on the raw bytes.
+/// deny.toml must not keep the retired PQClean / paste ignores.
 #[test]
-fn test_zeroize_helper_calls_zeroize() {
-    let source = include_str!("../../src/crypto.rs");
-    let helper_start = source
-        .find("fn zeroize_pq_secret_key")
-        .expect("zeroize_pq_secret_key not found");
-    let helper_body = &source[helper_start..helper_start + 500];
+fn test_deny_toml_has_no_pqclean_ignores() {
+    let deny = include_str!("../../../deny.toml");
+    for id in [
+        "RUSTSEC-2024-0436",
+        "RUSTSEC-2026-0161",
+        "RUSTSEC-2026-0162",
+        "RUSTSEC-2026-0163",
+        "RUSTSEC-2026-0166",
+    ] {
+        assert!(
+            !deny.contains(id),
+            "deny.toml must not ignore {id} after the RustCrypto swap"
+        );
+    }
+}
+
+/// Workspace lockfile must not retain PQClean crates after Lot A.
+#[test]
+fn test_workspace_lock_has_no_pqcrypto() {
+    let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../Cargo.lock"))
+        .expect("workspace Cargo.lock");
     assert!(
-        helper_body.contains("slice.zeroize()"),
-        "zeroize_pq_secret_key must call slice.zeroize()"
+        !lock.contains("name = \"pqcrypto"),
+        "Cargo.lock must not contain pqcrypto-* after the RustCrypto swap"
     );
 }
 
