@@ -88,6 +88,10 @@ fn auth_seam_is_instrumented() {
             "AuditEventType::LdapAggregationEmptied",
             "AuditEventType::LdapAggregationPurgedFailsafe",
             "ldap_aggregation_emptied_from_nonempty",
+            "ldap_aggregation_replaced",
+            "ldap_aggregation_emptied",
+            "ldap_aggregation_purged_failsafe",
+            "serde_json::to_string",
         ],
     );
 }

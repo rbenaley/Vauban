@@ -2,8 +2,12 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::collections::BTreeSet;
+
 use proptest::prelude::*;
-use vauban_web::services::ldap_aggregation::{AggregationAction, AggregationCase, decide_action};
+use vauban_web::services::ldap_aggregation::{
+    AggregationAction, AggregationCase, build_aggregation_delta, decide_action,
+};
 
 fn case_strategy() -> impl Strategy<Value = AggregationCase> {
     prop_oneof![
@@ -46,5 +50,37 @@ proptest! {
         } else {
             prop_assert_eq!(action, AggregationAction::Hold);
         }
+    }
+
+    #[test]
+    fn delta_added_removed_are_set_difference(
+        desired in prop::collection::btree_set("[a-z]{1,6}", 0..12),
+        previous in prop::collection::btree_set("[a-z]{1,6}", 0..12),
+    ) {
+        let catalogue: Vec<(i32, String)> = desired
+            .union(&previous)
+            .enumerate()
+            .map(|(i, n)| (i as i32 + 1, n.clone()))
+            .collect();
+        let current: Vec<(i32, String)> = catalogue
+            .iter()
+            .filter(|(_, n)| previous.contains(n))
+            .cloned()
+            .collect();
+        let delta = build_aggregation_delta(&desired, &catalogue, &current, None);
+        let added: BTreeSet<String> = delta.payload.added.iter().cloned().collect();
+        let removed: BTreeSet<String> = delta.payload.removed.iter().cloned().collect();
+        prop_assert!(added.is_disjoint(&removed));
+        prop_assert_eq!(
+            &added,
+            &desired.difference(&previous).cloned().collect::<BTreeSet<_>>()
+        );
+        prop_assert_eq!(
+            &removed,
+            &previous.difference(&desired).cloned().collect::<BTreeSet<_>>()
+        );
+        prop_assert_eq!(delta.payload.desired, desired.len());
+        prop_assert_eq!(delta.payload.previous, previous.len());
+        prop_assert!(delta.payload.unmapped.is_empty());
     }
 }

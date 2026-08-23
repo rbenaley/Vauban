@@ -279,14 +279,18 @@ structured names:
 | `ldap_aggregation_emptied` | Case A applied the empty set (also emit `replaced`) |
 | `ldap_aggregation_purged_failsafe` | Case C crossed the purge threshold |
 
-Fields: `user_uuid`, `added` / `removed` (User Group UUIDs),
-`source` (directory id; Phase 1 has one). A case A that moves a
-user from **one or more** groups to **zero** also emits a
-structured `warn!` (`ldap_aggregation_emptied_from_nonempty`) so a
-misconfigured mapping or a missing `resolve` line is visible
-without waiting for the case C counter -- case A **resets** that
-counter, so an always-empty complete read would otherwise hide
-the regression.
+Fields (WORM `details` JSON and the matching `vauban-web` `info!`
+line): `added` / `removed` / `unmapped` are **User Group names**
+(not UUIDs, not directory DNs), plus `desired` / `previous` counts.
+`unmapped` is the `apply` name set with no existing catalogue row.
+Lists are sorted and capped at 64 names (`truncated: true` when
+cut). A purge event also carries `streak`. Phase 1 has one
+directory source. A case A that moves a user from **one or more**
+groups to **zero** also emits a structured `warn!`
+(`ldap_aggregation_emptied_from_nonempty`) so a misconfigured
+mapping or a missing `resolve` line is visible without waiting for
+the case C counter -- case A **resets** that counter, so an
+always-empty complete read would otherwise hide the regression.
 
 ### 5.5 When LDAP I/O runs
 
@@ -951,6 +955,7 @@ Phase 2:
 | 1.1 | 21 August 2026 | Bind-and-search on the same FD; mapping file `static` / `match`; replace-set; A/B/C; threat inventory; login-only LDAP I/O in Phase 1 |
 | 1.1 (amended, no version bump) | 22 August 2026 | Case B no longer deactivates (same hold path as C); AD `memberOf;range=` is case C; key-list caps 1024 / 192 KiB / search PDU 256 KiB; mapping provision is raw bytes + shared parser; web derives `aggregation_enabled` from provision; audit events; `\` rejected in the mapping file |
 | 1.1 (amended, no version bump) | 22 August 2026 | `resolve` + `static` / `match` in one file; `groups_base_dn` removed from `vauban.conf`; shipped commented catalogue; Appendix B vendor coverage |
+| 1.1 (amended, no version bump) | 24 August 2026 | Aggregation audit `details` / web `info!` carry User Group **names** (`added` / `removed` / `unmapped`), not UUIDs or directory DNs |
 
 ---
 

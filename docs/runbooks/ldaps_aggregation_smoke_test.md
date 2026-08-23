@@ -56,8 +56,10 @@ rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target -
 3. Log in as the known good user (web or API). Expect the usual MFA path.
 4. Confirm `user_groups` equals the mapped set (replace-set). Local
    accounts on the same host are unchanged.
-5. Audit / logs show `ldap_aggregation_replaced` (and
-   `ldap_aggregation_emptied` only if the mapped set is empty).
+5. `vauban-web` INFO shows `ldap_aggregation_replaced` with
+   `added=[...]` (User Group names). If the mapped set is empty,
+   also `ldap_aggregation_emptied` (`unmapped=[...]` when `apply`
+   produced a name that does not exist in Vauban).
 
 Pass: login succeeds; LDAP shadow membership matches the mapping; no
 `is_superuser` / `is_staff` change; MFA unchanged.
