@@ -72,6 +72,14 @@ install -m 555 "${SCRIPT_DIR}/rc.d/vauban" "${STAGING}/usr/local/etc/rc.d/vauban
 install -m 644 "${SCRIPT_DIR}/newsyslog.conf.d/vauban.conf" \
     "${STAGING}/usr/local/etc/newsyslog.conf.d/vauban.conf"
 
+# Privsep layout catalogue + apply helper (issue #40). The supervisor
+# verifies the same repo file via include_str!; this copy is for
+# +POST_INSTALL after sed -i has replaced vauban.conf.
+install -m 644 "${SCRIPT_DIR}/privsep_fs_layout.list" \
+    "${STAGING}/usr/local/share/vauban/privsep_fs_layout.list"
+install -m 555 "${SCRIPT_DIR}/privsep_fs_apply.sh" \
+    "${STAGING}/usr/local/share/vauban/privsep_fs_apply.sh"
+
 # ---- Generate plist from staged migrations ---------------------------------
 echo "==> Generating plist..."
 PLIST="${SCRIPT_DIR}/plist"
@@ -91,6 +99,8 @@ etc/vauban/vauban.conf
 etc/vauban/access/model.conf
 etc/vauban/access/policy.csv
 etc/vauban/access/ldaps_mapping.conf
+share/vauban/privsep_fs_layout.list
+share/vauban/privsep_fs_apply.sh
 PLIST_STATIC
 
 for _mig_dir in $(ls -d "${STAGING}/usr/local/share/vauban/migrations"/*/ 2>/dev/null | sort); do

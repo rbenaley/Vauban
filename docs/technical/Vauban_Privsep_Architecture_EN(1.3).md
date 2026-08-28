@@ -12,6 +12,12 @@
 > peer mesh; SSH/RDP media write on proxy-owned FDs (`shared::recording_fd`);
 > Kerberos KDC is supervisor FD-pass only; web/AccessGuard IPC uses
 > `shared::correlated_ipc` (0.9.31).
+>
+> **1.3 amended 28 August 2026 (no version bump, issue #40):** production
+> + privsep boots verify `pkg/privsep_fs_layout.list` before spawn
+> (verify-only). Exit 100 remains the recover-and-respawn code; a leaf
+> that exits before its first heartbeat is fail-closed (no linked
+> restart). See §6.2, §7.4, §7.5, §7.6.
 
 ---
 
@@ -99,6 +105,7 @@ via pre-seal IPC.
 - [ADR 003 -- Local-first storage](../adr/003-local-first-recording-storage.md) -- local write path; remote async only
 - [ADR 004 -- Flat Message enum](../adr/004-flat-message-enum.md) -- retain shared flat IPC `Message`
 - [docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md) -- Operational runbook for the IPC topology / RBAC re-check failure mode
+- [docs/runbooks/privsep_fs_layout_smoke_test.md](../runbooks/privsep_fs_layout_smoke_test.md) -- Staging check for the production+privsep FS catalogue gate (issue #40)
 
 ### 2.2 Architecture Diagram
 
@@ -963,7 +970,12 @@ After `cap_enter()`, new connections cannot be opened. If a database connection 
 
 1. The service logs the error
 2. The service exits with code 100 (special "respawn me" code)
-3. The supervisor detects the exit and respawns the service
+3. The supervisor detects the exit and respawns the service **only
+   if** that process had already sent a heartbeat, **or** the exit
+   code is 100 (recoverable mid-life DB loss can fire before the
+   first Pong). Any other exit before the first Pong is a boot
+   failure: the supervisor does **not** respawn and does **not**
+   restart a linked group.
 4. The new service opens a fresh connection
 
 ```rust
@@ -1033,13 +1045,18 @@ pub struct ServiceStats {
 
 To prevent crash loops, the supervisor limits respawns:
 
-- Maximum 10 respawns per hour per service
-- After exceeding the limit, the service enters degraded mode
+- Maximum 10 respawns per hour per service (runtime crashes after the
+  first heartbeat, and exit 100)
+- A leaf that exits before its first heartbeat with any code other
+  than 100 is **not** respawned (boot fail-closed; issue #40)
+- After exceeding the hourly limit, the supervisor **stops calling
+  respawn** for that service and logs the refusal. That is the
+  operational "degraded" signal -- there is no separate mode flag.
 - Manual intervention required
 
 ### 7.5 Linked Restart Groups
 
-Services that share inter-process pipes (e.g., `vauban-web` and `vauban-proxy-ssh`) form **linked restart groups**. When any service in a group crashes, the anonymous Unix pipe connecting them becomes broken. Since new file descriptors cannot be created after `cap_enter()`, all services in the group must be restarted together to re-establish communication.
+Services that share inter-process pipes (e.g., `vauban-web` and `vauban-proxy-ssh`) form **linked restart groups**. When a service that has **already heartbeated** crashes, the anonymous Unix pipe connecting them becomes broken. Since new file descriptors cannot be created after `cap_enter()`, all services in the group must be restarted together to re-establish communication. A process that never reached its main loop (config `EACCES`, missing binary, exit 1 before the first Pong) is a boot failure: the supervisor refuses respawn and **must not** SIGTERM the rest of the group.
 
 #### 7.5.1 Linked Groups
 
@@ -1076,6 +1093,23 @@ sequenceDiagram
 - **Automatic Recovery**: No manual intervention needed when a linked service crashes
 - **Clean State**: Both services start fresh with new pipe connections
 - **No Stale Connections**: Eliminates "broken pipe" errors on the surviving service
+
+### 7.6 Boot filesystem layout
+
+On `environment = production` **and** `privsep = true`, the supervisor
+parses `pkg/privsep_fs_layout.list` (compile-time `include_str!`) and
+**verifies** owner / mode / NFSv4 or POSIX ACEs **before** creating
+pipes or forking. It never `chmod` / `chown` / `setfacl` at boot
+(same contract as the schema check: no silent repair). A mismatch
+aborts with a remediation command (`privsep_fs_apply.sh`). Development
+and `privsep = false` skip the check.
+
+`+POST_INSTALL` applies the same catalogue **after** `sed -i` on
+`vauban.conf` (a new inode drops ACEs). Operators who `cp` a template
+over the live file must re-run apply; they must not expect a
+crash-restart loop to "heal" `vb-web` (issue #40).
+
+Staging: [privsep_fs_layout_smoke_test.md](../runbooks/privsep_fs_layout_smoke_test.md).
 
 ---
 

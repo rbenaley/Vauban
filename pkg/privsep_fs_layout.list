@@ -1,0 +1,18 @@
+# Privsep filesystem layout -- single source of truth.
+# Consumed by pkg/privsep_fs_apply.sh (install) and vauban-supervisor
+# (compile-time include_str! verify). Do not add chmod/chown/setfacl
+# in +POST_INSTALL; add a row here instead.
+#
+# kind  path  owner  group  mode  acl_who  ace  inherit  flags
+# acl_who: ALL | login | login,login | -
+# inherit: none | fd:r
+# flags: required | if_exists
+
+dir  ${PREFIX}/etc/vauban              root  wheel     0750  ALL              rx  fd:r   required
+dir  ${PREFIX}/etc/vauban/certs        root  wheel     0700  -                -   none   required
+dir  ${PREFIX}/etc/vauban/access       root  wheel     0750  vb-access        rx  fd:r   required
+file ${PREFIX}/etc/vauban/vauban.conf  root  wheel     0600  ALL              r   none   required
+dir  /var/vauban/vault                 root  vb-vault  0750  -                -   none   required
+file /var/vauban/vault/master.key      root  vb-vault  0440  -                -   none   if_exists
+dir  /var/vauban/recordings            root  wheel     0750  vb-audit,vb-web  rx  fd:r   required
+dir  /var/vauban/audit                 root  vb-audit  0750  vb-audit         rx  fd:r   required

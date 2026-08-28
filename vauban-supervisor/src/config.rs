@@ -1115,7 +1115,7 @@ impl SupervisorConfig {
     }
 
     /// Find the configuration directory via [`shared::config_dir::find_config_dir`].
-    fn find_config_dir() -> Result<PathBuf> {
+    pub(crate) fn find_config_dir() -> Result<PathBuf> {
         // Compile-time workspace `config/` is only consulted under
         // `ConfigDirProfile::Debug` (release packages never use it).
         let workspace_config = Path::new(env!("CARGO_MANIFEST_DIR"))

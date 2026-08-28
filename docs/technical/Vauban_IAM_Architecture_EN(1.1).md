@@ -2150,7 +2150,7 @@ Authorization is enforced at multiple layers:
 | `vauban-access` ships an unknown `AccessResponse` variant on the re-check pipe | `AccessGuard` collapses to `AccessDecision::Denied` (fail-closed); structurally tested |
 | `vauban-access` replies after the proxy already timed out, OR forges a `request_id` | Dispatcher drops the orphan response; the late reply cannot contaminate any subsequent `authorize()` call |
 | Database connection lost in `vauban-access` | `AccessResponse::Error` returned; web shows error page |
-| Invalid Casbin policy file | Service fails to start; supervisor does not respawn indefinitely |
+| Invalid Casbin policy file | Service fails to start; supervisor does not respawn a leaf that never heartbeated (same boot fail-closed rule as a missing `vauban.conf` ACE -- Privsep 1.3 §7.4 / §7.6) |
 
 ### 12.4 Audit Trail
 

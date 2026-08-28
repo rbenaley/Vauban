@@ -252,11 +252,11 @@ fn inv_pkg_creates_vb_mailer_909() {
         pre.contains("create_user_if_missing vb-mailer 909 909 vauban-mailer"),
         "pkg/+PRE_INSTALL must create vb-mailer 909/909"
     );
-    let post =
-        std::fs::read_to_string(repo_root().join("pkg/+POST_INSTALL")).expect("POST_INSTALL");
+    let list = std::fs::read_to_string(repo_root().join("pkg/privsep_fs_layout.list"))
+        .expect("privsep_fs_layout.list");
     assert!(
-        post.contains("vb-mailer"),
-        "pkg/+POST_INSTALL must ACL vb-mailer on etc/vauban"
+        list.contains("ALL") && list.contains("etc/vauban"),
+        "pkg/privsep_fs_layout.list must ACL ALL (incl. vb-mailer) on etc/vauban"
     );
     let build = std::fs::read_to_string(repo_root().join("pkg/build-pkg.sh")).expect("build-pkg");
     assert!(

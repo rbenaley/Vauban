@@ -161,6 +161,7 @@ fn every_pkg_shell_script_parses() {
         "+PRE_DEINSTALL",
         "+POST_DEINSTALL",
         "build-pkg.sh",
+        "privsep_fs_apply.sh",
     ] {
         let path = format!("{}/../pkg/{script}", env!("CARGO_MANIFEST_DIR"));
         let status = Command::new("sh")

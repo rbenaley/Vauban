@@ -23,6 +23,7 @@
 mod acme;
 mod admin;
 mod config;
+mod privsep_fs;
 mod recording_delete;
 mod tcp_resolve;
 
@@ -160,6 +161,9 @@ struct ChildState {
     is_draining: bool,
     /// When drain was initiated for this service.
     drain_started: Option<Instant>,
+    /// True after the first valid heartbeat Pong from this process.
+    /// A leaf that exits before any Pong is a boot failure (not linked-restart).
+    ever_ponged: bool,
     /// Unix socket for passing file descriptors via SCM_RIGHTS (proxies only).
     /// The supervisor uses this to send pre-established TCP connection FDs.
     fd_passing_socket: Option<OwnedFd>,
@@ -498,6 +502,11 @@ fn run_supervisor() -> Result<()> {
     // An unreachable database only warns: PostgreSQL may still be starting,
     // and the child services are themselves fail-closed on DB access.
     check_schema_up_to_date(&config)?;
+
+    // Boot invariant: refuse to spawn when production+privsep layout
+    // (chmod/chown/ACE) does not match pkg/privsep_fs_layout.list.
+    // Verify-only -- never auto-repair (issue #40).
+    privsep_fs::check_privsep_fs_layout(&config)?;
 
     // Setup signal handlers
     setup_signal_handlers()?;
@@ -845,6 +854,7 @@ fn run_supervisor() -> Result<()> {
                         last_stats: None,
                         is_draining: false,
                         drain_started: None,
+                        ever_ponged: false,
                         fd_passing_socket,
                     },
                 );
@@ -1585,30 +1595,18 @@ fn reap_children(
                 if let Some(service_key) = found_service
                     && let Some(state) = children.get_mut(&service_key)
                 {
-                    if should_respawn(state, max_respawns_per_hour) {
-                        // Check if this service is in a linked group
-                        if get_linked_services(&service_key).is_some() {
-                            // Queue for linked restart (will restart entire group)
-                            if !pending_linked_restarts.contains(&service_key) {
-                                pending_linked_restarts.push(service_key.clone());
-                            }
-                        } else {
-                            // Regular respawn for non-linked services
-                            info!("Respawning {}", service_key);
-                            let topology = service_key_to_service(&service_key)
-                                .and_then(|s| service_pipes.get(&s));
-                            respawn_service(
-                                state,
-                                config,
-                                topology,
-                                listener_fd,
-                                iacs_listener_fd,
-                                iacs_host_key_fd,
-                            );
-                        }
-                    } else {
-                        error!("{} has crashed too many times, not respawning", service_key);
-                    }
+                    apply_respawn_policy(
+                        &service_key,
+                        Some(exit_code),
+                        state,
+                        config,
+                        service_pipes,
+                        max_respawns_per_hour,
+                        pending_linked_restarts,
+                        listener_fd,
+                        iacs_listener_fd,
+                        iacs_host_key_fd,
+                    );
                 }
             }
             Ok(WaitStatus::Signaled(pid, signal, _core_dumped)) => {
@@ -1627,30 +1625,18 @@ fn reap_children(
                 if let Some(service_key) = found_service
                     && let Some(state) = children.get_mut(&service_key)
                 {
-                    if should_respawn(state, max_respawns_per_hour) {
-                        // Check if this service is in a linked group
-                        if get_linked_services(&service_key).is_some() {
-                            // Queue for linked restart (will restart entire group)
-                            if !pending_linked_restarts.contains(&service_key) {
-                                pending_linked_restarts.push(service_key.clone());
-                            }
-                        } else {
-                            // Regular respawn for non-linked services
-                            info!("Respawning {}", service_key);
-                            let topology = service_key_to_service(&service_key)
-                                .and_then(|s| service_pipes.get(&s));
-                            respawn_service(
-                                state,
-                                config,
-                                topology,
-                                listener_fd,
-                                iacs_listener_fd,
-                                iacs_host_key_fd,
-                            );
-                        }
-                    } else {
-                        error!("{} has crashed too many times, not respawning", service_key);
-                    }
+                    apply_respawn_policy(
+                        &service_key,
+                        None,
+                        state,
+                        config,
+                        service_pipes,
+                        max_respawns_per_hour,
+                        pending_linked_restarts,
+                        listener_fd,
+                        iacs_listener_fd,
+                        iacs_host_key_fd,
+                    );
                 }
             }
             Ok(WaitStatus::StillAlive) => {
@@ -1734,6 +1720,7 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
                     state.missed_heartbeats = 0;
                     state.last_pong = Instant::now();
                     state.last_stats = Some(stats.clone());
+                    state.ever_ponged = true;
 
                     debug!(
                         "{}: pong received (seq={}, expected={}), uptime={}s, active_connections={}, pending={}",
@@ -1755,6 +1742,7 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
                         state.missed_heartbeats = 0;
                         state.last_pong = Instant::now();
                         state.last_stats = Some(stats.clone());
+                        state.ever_ponged = true;
                         debug!(
                             "{}: pong received (seq={}, expected={}, lag={}), service is slightly behind",
                             service_key, seq, state.heartbeat_seq, lag
@@ -1768,6 +1756,7 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
                         state.missed_heartbeats += 1;
                         // Still update stats since we got some response
                         state.last_stats = Some(stats);
+                        state.ever_ponged = true;
                     }
                 }
                 None => {
@@ -1783,6 +1772,80 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
         Err(e) => {
             warn!("Poll error for {}: {}", service_key, e);
             state.missed_heartbeats += 1;
+        }
+    }
+}
+
+/// Watchdog decision after a child exit (Privsep 1.3 §6.2 / §7.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RespawnDecision {
+    /// Rate-limited respawn (and linked-group if the service is a member).
+    Respawn,
+    /// Exit before the first Pong and not exit 100: permanent boot failure.
+    RefuseBootFailure,
+    /// Hourly respawn ceiling reached.
+    RateLimited,
+}
+
+/// `exit_code` is `Some(n)` for `waitpid` Exited, `None` for Signaled.
+fn respawn_decision(exit_code: Option<i32>, ever_ponged: bool, rate_ok: bool) -> RespawnDecision {
+    let respawn_me = exit_code == Some(100);
+    if !ever_ponged && !respawn_me {
+        return RespawnDecision::RefuseBootFailure;
+    }
+    if !rate_ok {
+        return RespawnDecision::RateLimited;
+    }
+    RespawnDecision::Respawn
+}
+
+#[allow(clippy::too_many_arguments)] // same FD/pipe bundle as respawn_service
+fn apply_respawn_policy(
+    service_key: &str,
+    exit_code: Option<i32>,
+    state: &mut ChildState,
+    config: &SupervisorConfig,
+    service_pipes: &HashMap<Service, ServicePipes>,
+    max_respawns_per_hour: u32,
+    pending_linked_restarts: &mut Vec<String>,
+    listener_fd: RawFd,
+    iacs_listener_fd: Option<RawFd>,
+    iacs_host_key_fd: Option<RawFd>,
+) {
+    let ever_ponged = state.ever_ponged;
+    let rate_ok = should_respawn(state, max_respawns_per_hour);
+    match respawn_decision(exit_code, ever_ponged, rate_ok) {
+        RespawnDecision::RefuseBootFailure => {
+            error!(
+                "{} exited ({}) before the first heartbeat; \
+                 not respawning (boot fail-closed, no linked restart)",
+                service_key,
+                exit_code
+                    .map(|c| format!("code {c}"))
+                    .unwrap_or_else(|| "signal".to_string())
+            );
+        }
+        RespawnDecision::RateLimited => {
+            error!("{} has crashed too many times, not respawning", service_key);
+        }
+        RespawnDecision::Respawn => {
+            if get_linked_services(service_key).is_some() {
+                if !pending_linked_restarts.contains(&service_key.to_string()) {
+                    pending_linked_restarts.push(service_key.to_string());
+                }
+            } else {
+                info!("Respawning {}", service_key);
+                let topology =
+                    service_key_to_service(service_key).and_then(|s| service_pipes.get(&s));
+                respawn_service(
+                    state,
+                    config,
+                    topology,
+                    listener_fd,
+                    iacs_listener_fd,
+                    iacs_host_key_fd,
+                );
+            }
         }
     }
 }
@@ -1967,6 +2030,7 @@ fn respawn_service(
             state.last_stats = None;
             state.is_draining = false;
             state.drain_started = None;
+            state.ever_ponged = false;
             state.fd_passing_socket = fd_passing_socket;
 
             if state.service_key == "web" {
@@ -2247,6 +2311,7 @@ fn respawn_linked_group(
                     state.last_stats = None;
                     state.is_draining = false;
                     state.drain_started = None;
+                    state.ever_ponged = false;
                     state.fd_passing_socket = fd_passing_socket;
 
                     if service_key == "web" {
@@ -4239,6 +4304,98 @@ mod tests {
         }
     }
 
+    // ==================== respawn_decision Tests ====================
+
+    #[test]
+    fn respawn_decision_boot_exit_1_is_refused() {
+        assert_eq!(
+            respawn_decision(Some(1), false, true),
+            RespawnDecision::RefuseBootFailure
+        );
+    }
+
+    #[test]
+    fn respawn_decision_boot_signal_is_refused() {
+        assert_eq!(
+            respawn_decision(None, false, true),
+            RespawnDecision::RefuseBootFailure
+        );
+    }
+
+    #[test]
+    fn respawn_decision_exit_100_before_pong_respawns() {
+        assert_eq!(
+            respawn_decision(Some(100), false, true),
+            RespawnDecision::Respawn
+        );
+    }
+
+    #[test]
+    fn respawn_decision_runtime_exit_1_respawns() {
+        assert_eq!(
+            respawn_decision(Some(1), true, true),
+            RespawnDecision::Respawn
+        );
+    }
+
+    #[test]
+    fn respawn_decision_runtime_rate_limited() {
+        assert_eq!(
+            respawn_decision(Some(1), true, false),
+            RespawnDecision::RateLimited
+        );
+    }
+
+    #[test]
+    fn battle_respawn_decision_is_deterministic() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        let n = 8;
+        let barrier = Arc::new(Barrier::new(n));
+        let mut handles = Vec::new();
+        for _ in 0..n {
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                (
+                    respawn_decision(Some(1), false, true),
+                    respawn_decision(Some(100), false, true),
+                    respawn_decision(Some(1), true, true),
+                )
+            }));
+        }
+        let first = handles.pop().expect("one").join().expect("thread");
+        for h in handles {
+            assert_eq!(h.join().expect("thread"), first);
+        }
+        assert_eq!(first.0, RespawnDecision::RefuseBootFailure);
+        assert_eq!(first.1, RespawnDecision::Respawn);
+        assert_eq!(first.2, RespawnDecision::Respawn);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn boot_non_100_never_respawns(
+            code in 0i32..=99,
+            rate_ok in proptest::bool::ANY,
+        ) {
+            proptest::prop_assert_eq!(
+                respawn_decision(Some(code), false, rate_ok),
+                RespawnDecision::RefuseBootFailure
+            );
+        }
+
+        #[test]
+        fn signal_before_pong_never_respawns(rate_ok in proptest::bool::ANY) {
+            proptest::prop_assert_eq!(
+                respawn_decision(None, false, rate_ok),
+                RespawnDecision::RefuseBootFailure
+            );
+        }
+    }
+
     // ==================== should_respawn Tests ====================
 
     #[test]
@@ -4255,6 +4412,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4276,6 +4434,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4297,6 +4456,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4318,6 +4478,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4344,6 +4505,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4365,6 +4527,7 @@ mod tests {
             last_stats: None, // No stats available
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4396,6 +4559,7 @@ mod tests {
             }),
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4427,6 +4591,7 @@ mod tests {
             }),
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4464,6 +4629,7 @@ mod tests {
             }),
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4494,6 +4660,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4561,6 +4728,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4618,6 +4786,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4649,6 +4818,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4690,6 +4860,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4734,6 +4905,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4765,6 +4937,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -4960,6 +5133,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -5124,6 +5298,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: None,
         };
 
@@ -5876,6 +6051,7 @@ mod tests {
                 last_stats: None,
                 is_draining: false,
                 drain_started: None,
+                ever_ponged: false,
                 fd_passing_socket: Some(sup_sock),
             };
             (state, child_sock, child_channel)
@@ -6054,6 +6230,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            ever_ponged: false,
             fd_passing_socket: Some(sup_sock),
         };
         let mut children: HashMap<String, ChildState> = HashMap::new();
