@@ -87,6 +87,21 @@ fn single_door_no_raw_fsetfd_empty_outside_clear_cloexec() {
     );
 }
 
+/// Linked restart must not drop supervisor-owned topology pipes
+/// (the 0.1.0 `new_pipes` local that closed fds at function exit).
+#[test]
+fn linked_restart_does_not_own_a_local_pipe_hashmap() {
+    let prod = SUPERVISOR_MAIN
+        .split("#[cfg(test)]")
+        .next()
+        .expect("production source");
+    assert!(
+        !prod.contains("HashMap<(Service, Service), (IpcChannel, IpcChannel)>"),
+        "supervisor must not keep a local (Service,Service)->IpcChannel map; \
+         PipeStore is the single owner."
+    );
+}
+
 /// The fork+execv surface is funneled through `spawn_child`: exactly one
 /// `fork()` and one `execv(` in the whole supervisor, so the de-CLOEXEC
 /// allowlist in spawn_child is exhaustive (no other path spawns a service

@@ -35,6 +35,7 @@ use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, execv, fork};
 use shared::ipc::{IpcChannel, poll_readable, send_fd, socketpair_for_fd_passing};
 use shared::messages::{ControlMessage, Message, SensitiveString, Service, ServiceStats};
+use shared::pipe_store::{EXIT_CODE_RESPAWN, PipeStore, ServicePipes, linked_closure};
 use shared::session_token::replay_cache::ReplayCache;
 use shared::session_token::{SESSION_TOKEN_KEY_ENV, SessionToken, TokenKey, Verifier};
 use std::collections::HashMap;
@@ -175,15 +176,6 @@ struct PipeTopology {
     to: Service,
 }
 
-/// Extra IPC pipes to pass to a child service.
-#[derive(Default, Clone)]
-struct ServicePipes {
-    /// Pipes where this service is the "from" side (sender)
-    outgoing: Vec<(Service, i32, i32)>, // (target, read_fd, write_fd)
-    /// Pipes where this service is the "to" side (receiver)  
-    incoming: Vec<(Service, i32, i32)>, // (source, read_fd, write_fd)
-}
-
 /// Unix socket pairs for passing file descriptors via SCM_RIGHTS.
 /// Used by supervisor to pass TCP connection FDs to sandboxed proxy services.
 struct FdPassingSockets {
@@ -202,12 +194,11 @@ const LINKED_RESTART_GROUPS: &[&[&str]] = &[
     &["web", "proxy_rdp"],
 ];
 
-/// Check if a service belongs to a linked restart group.
-fn get_linked_services(service_key: &str) -> Option<&'static [&'static str]> {
-    LINKED_RESTART_GROUPS
-        .iter()
-        .find(|group| group.contains(&service_key))
-        .copied()
+/// Transitive linked-restart set for `service_key` (empty = not linked).
+fn linked_group_keys(service_key: &str) -> Vec<&'static str> {
+    linked_closure(LINKED_RESTART_GROUPS, service_key)
+        .into_iter()
+        .collect()
 }
 
 /// Convert service key string to Service enum.
@@ -528,27 +519,12 @@ fn run_supervisor() -> Result<()> {
     // Touch the replay cache so the first verification path is hot.
     let _ = session_token_replay_cache();
 
-    // Create all IPC pipe pairs for the mesh topology
-    let pipes = create_pipe_topology()?;
-    info!("Created {} pipe connections", pipes.len());
-
-    // Organize pipes by service for easy lookup
-    let mut service_pipes: HashMap<Service, ServicePipes> = HashMap::new();
-    for ((from, to), (from_channel, to_channel)) in &pipes {
-        // The "from" service gets the from_channel (it writes to the pipe)
-        service_pipes.entry(*from).or_default().outgoing.push((
-            *to,
-            from_channel.read_fd(),
-            from_channel.write_fd(),
-        ));
-
-        // The "to" service gets the to_channel (it reads from the pipe)
-        service_pipes.entry(*to).or_default().incoming.push((
-            *from,
-            to_channel.read_fd(),
-            to_channel.write_fd(),
-        ));
-    }
+    // Create all IPC pipe pairs for the mesh topology. PipeStore owns
+    // both ends for the supervisor's lifetime (including after linked
+    // restart); derive_service_pipes is the only fd-table construction.
+    let mut pipe_store = PipeStore::new(&topology_pairs())?;
+    info!("Created {} pipe connections", pipe_store.len());
+    let service_pipes = pipe_store.derive_service_pipes();
 
     // Create FD passing socket pairs for services that need file descriptors
     // from the supervisor. Proxies receive TCP connection FDs; audit receives
@@ -938,7 +914,7 @@ fn run_supervisor() -> Result<()> {
     watchdog_loop(
         &mut children,
         &config,
-        &mut service_pipes,
+        &mut pipe_store,
         Duration::from_secs(watchdog_config.heartbeat_interval_secs),
         watchdog_config.max_missed_heartbeats,
         watchdog_config.max_respawns_per_hour,
@@ -1164,16 +1140,8 @@ fn setup_signal_handlers() -> Result<()> {
     Ok(())
 }
 
-fn create_pipe_topology() -> Result<HashMap<(Service, Service), (IpcChannel, IpcChannel)>> {
-    let mut pipes = HashMap::new();
-
-    for conn in TOPOLOGY {
-        let (from_channel, to_channel) = IpcChannel::pair()
-            .with_context(|| format!("Failed to create pipe {:?} -> {:?}", conn.from, conn.to))?;
-        pipes.insert((conn.from, conn.to), (from_channel, to_channel));
-    }
-
-    Ok(pipes)
+fn topology_pairs() -> Vec<(Service, Service)> {
+    TOPOLOGY.iter().map(|c| (c.from, c.to)).collect()
 }
 
 // Post-fork child process: tracing is NOT available, eprintln! is the only output mechanism.
@@ -1359,7 +1327,7 @@ fn spawn_child(
 fn watchdog_loop(
     children: &mut HashMap<String, ChildState>,
     config: &SupervisorConfig,
-    service_pipes: &mut HashMap<Service, ServicePipes>,
+    pipe_store: &mut PipeStore,
     heartbeat_interval: Duration,
     max_missed_heartbeats: u32,
     max_respawns_per_hour: u32,
@@ -1370,6 +1338,7 @@ fn watchdog_loop(
     let mut last_heartbeat = Instant::now();
     // Track services that need linked restart (will be processed after reaping)
     let mut pending_linked_restarts: Vec<String> = Vec::new();
+    let mut service_pipes = pipe_store.derive_service_pipes();
 
     loop {
         // Check global shutdown flag before processing.
@@ -1383,7 +1352,7 @@ fn watchdog_loop(
         reap_children(
             children,
             config,
-            service_pipes,
+            &service_pipes,
             max_respawns_per_hour,
             &mut pending_linked_restarts,
             listener_fd,
@@ -1393,7 +1362,8 @@ fn watchdog_loop(
 
         // Process pending linked restarts (restart entire groups)
         while let Some(service_key) = pending_linked_restarts.pop() {
-            if let Some(linked_group) = get_linked_services(&service_key) {
+            let linked_group = linked_group_keys(&service_key);
+            if !linked_group.is_empty() {
                 info!(
                     "Restarting linked group for {}: {:?}",
                     service_key, linked_group
@@ -1401,12 +1371,13 @@ fn watchdog_loop(
                 respawn_linked_group(
                     children,
                     config,
-                    service_pipes,
-                    linked_group,
+                    pipe_store,
+                    &linked_group,
                     listener_fd,
                     iacs_listener_fd,
                     iacs_host_key_fd,
                 );
+                service_pipes = pipe_store.derive_service_pipes();
             }
         }
 
@@ -1441,7 +1412,7 @@ fn watchdog_loop(
                         service_key, active, pending
                     );
                     // Check if this service is in a linked group
-                    if get_linked_services(service_key).is_some() {
+                    if !linked_group_keys(service_key).is_empty() {
                         services_to_restart.push(service_key.clone());
                     } else {
                         let topology =
@@ -1459,7 +1430,7 @@ fn watchdog_loop(
                 RestartDecision::ForceNow => {
                     warn!("{} is unresponsive, forcing restart", service_key);
                     // Check if this service is in a linked group
-                    if get_linked_services(service_key).is_some() {
+                    if !linked_group_keys(service_key).is_empty() {
                         services_to_restart.push(service_key.clone());
                     } else {
                         let topology =
@@ -1479,7 +1450,8 @@ fn watchdog_loop(
 
         // Process linked restarts for unresponsive services
         for service_key in services_to_restart {
-            if let Some(linked_group) = get_linked_services(&service_key) {
+            let linked_group = linked_group_keys(&service_key);
+            if !linked_group.is_empty() {
                 info!(
                     "Restarting linked group due to unresponsive {}: {:?}",
                     service_key, linked_group
@@ -1487,12 +1459,13 @@ fn watchdog_loop(
                 respawn_linked_group(
                     children,
                     config,
-                    service_pipes,
-                    linked_group,
+                    pipe_store,
+                    &linked_group,
                     listener_fd,
                     iacs_listener_fd,
                     iacs_host_key_fd,
                 );
+                service_pipes = pipe_store.derive_service_pipes();
             }
         }
 
@@ -1789,7 +1762,7 @@ enum RespawnDecision {
 
 /// `exit_code` is `Some(n)` for `waitpid` Exited, `None` for Signaled.
 fn respawn_decision(exit_code: Option<i32>, ever_ponged: bool, rate_ok: bool) -> RespawnDecision {
-    let respawn_me = exit_code == Some(100);
+    let respawn_me = exit_code == Some(EXIT_CODE_RESPAWN);
     if !ever_ponged && !respawn_me {
         return RespawnDecision::RefuseBootFailure;
     }
@@ -1829,7 +1802,7 @@ fn apply_respawn_policy(
             error!("{} has crashed too many times, not respawning", service_key);
         }
         RespawnDecision::Respawn => {
-            if get_linked_services(service_key).is_some() {
+            if !linked_group_keys(service_key).is_empty() {
                 if !pending_linked_restarts.contains(&service_key.to_string()) {
                     pending_linked_restarts.push(service_key.to_string());
                 }
@@ -2099,7 +2072,7 @@ fn respawn_service(
 fn respawn_linked_group(
     children: &mut HashMap<String, ChildState>,
     config: &SupervisorConfig,
-    service_pipes: &mut HashMap<Service, ServicePipes>,
+    pipe_store: &mut PipeStore,
     group: &[&str],
     listener_fd: RawFd,
     iacs_listener_fd: Option<RawFd>,
@@ -2151,79 +2124,27 @@ fn respawn_linked_group(
         }
     }
 
-    // Step 4: Create new pipes for the linked services
-    // For Web <-> ProxySsh, we need fresh pipe pairs
-    let mut new_pipes: HashMap<(Service, Service), (IpcChannel, IpcChannel)> = HashMap::new();
-
-    // Find which pipe connections exist between services in this group
-    for topology_entry in TOPOLOGY.iter() {
-        let from_key = service_to_key(topology_entry.from);
-        let to_key = service_to_key(topology_entry.to);
-
+    // Step 4: Replace only intra-group edges. PipeStore keeps the new
+    // pairs; edges to living outsiders stay untouched.
+    for (from, to) in pipe_store.edges().collect::<Vec<_>>() {
+        let from_key = service_to_key(from);
+        let to_key = service_to_key(to);
         if group.contains(&from_key) && group.contains(&to_key) {
-            // Create fresh pipes for this connection
-            match IpcChannel::pair() {
-                Ok((from_channel, to_channel)) => {
-                    info!("Created new pipe: {} -> {}", from_key, to_key);
-                    new_pipes.insert(
-                        (topology_entry.from, topology_entry.to),
-                        (from_channel, to_channel),
-                    );
-                }
-                Err(e) => {
-                    error!("Failed to create pipe {} -> {}: {}", from_key, to_key, e);
-                }
+            match pipe_store.replace(from, to) {
+                Ok(()) => info!("Replaced pipe: {} -> {}", from_key, to_key),
+                Err(e) => error!("Failed to replace pipe {} -> {}: {}", from_key, to_key, e),
             }
         }
     }
 
-    // Step 5: Build new ServicePipes for each service in the group
-    let mut group_service_pipes: HashMap<Service, ServicePipes> = HashMap::new();
-
-    // Initialize with existing pipes to supervisor/other services (from original service_pipes)
-    for &service_key in group {
-        if let Some(service) = service_key_to_service(service_key) {
-            let mut pipes = ServicePipes::default();
-
-            // Copy existing pipes that are NOT between services in this group
-            if let Some(existing) = service_pipes.get(&service) {
-                for &(target, read_fd, write_fd) in &existing.outgoing {
-                    let target_key = service_to_key(target);
-                    if !group.contains(&target_key) {
-                        pipes.outgoing.push((target, read_fd, write_fd));
-                    }
-                }
-                for &(source, read_fd, write_fd) in &existing.incoming {
-                    let source_key = service_to_key(source);
-                    if !group.contains(&source_key) {
-                        pipes.incoming.push((source, read_fd, write_fd));
-                    }
-                }
-            }
-
-            group_service_pipes.insert(service, pipes);
-        }
-    }
-
-    // Add the new pipes between services in the group
-    for ((from, to), (from_channel, to_channel)) in &new_pipes {
-        if let Some(pipes) = group_service_pipes.get_mut(from) {
-            pipes
-                .outgoing
-                .push((*to, from_channel.read_fd(), from_channel.write_fd()));
-        }
-        if let Some(pipes) = group_service_pipes.get_mut(to) {
-            pipes
-                .incoming
-                .push((*from, to_channel.read_fd(), to_channel.write_fd()));
-        }
-    }
+    // Step 5: Rebuild fd tables from the store (single construction door).
+    let service_pipes = pipe_store.derive_service_pipes();
 
     // Step 6: Respawn each service in the group with their new pipes
     for &service_key in group {
         if let Some(state) = children.get_mut(service_key) {
             let service = service_key_to_service(service_key);
-            let topology = service.and_then(|s| group_service_pipes.get(&s));
+            let topology = service.and_then(|s| service_pipes.get(&s));
 
             let uid = config.effective_uid(&state.service_key);
             let gid = config.effective_gid(&state.service_key);
@@ -2386,13 +2307,6 @@ fn respawn_linked_group(
                 }
             }
         }
-    }
-
-    // Update service_pipes with the new pipe FDs for respawned services.
-    // Without this, service_pipes retains stale FDs from the killed processes,
-    // causing IPC failures if a service in the group is later restarted individually.
-    for (service, pipes) in group_service_pipes {
-        service_pipes.insert(service, pipes);
     }
 
     info!("Linked group restart completed for: {:?}", group);
@@ -4279,24 +4193,21 @@ mod tests {
         assert_eq!(service_key_to_enum("supervisor"), None);
     }
 
-    // ==================== create_pipe_topology Tests ====================
+    // ==================== PipeStore topology Tests ====================
 
     #[test]
-    fn test_create_pipe_topology() {
-        let result = create_pipe_topology();
-        assert!(result.is_ok());
-
-        let pipes = result.unwrap();
-        assert_eq!(pipes.len(), TOPOLOGY.len());
+    fn test_pipe_store_from_topology() {
+        let store = PipeStore::new(&topology_pairs()).expect("PipeStore::new");
+        assert_eq!(store.len(), TOPOLOGY.len());
     }
 
     #[test]
-    fn test_create_pipe_topology_all_connections_present() {
-        let pipes = create_pipe_topology().unwrap();
+    fn test_pipe_store_all_connections_present() {
+        let store = PipeStore::new(&topology_pairs()).expect("PipeStore::new");
 
         for conn in TOPOLOGY {
             assert!(
-                pipes.contains_key(&(conn.from, conn.to)),
+                store.get(conn.from, conn.to).is_some(),
                 "Pipe {:?} -> {:?} should exist",
                 conn.from,
                 conn.to
@@ -4325,9 +4236,24 @@ mod tests {
     #[test]
     fn respawn_decision_exit_100_before_pong_respawns() {
         assert_eq!(
-            respawn_decision(Some(100), false, true),
+            respawn_decision(Some(EXIT_CODE_RESPAWN), false, true),
             RespawnDecision::Respawn
         );
+    }
+
+    #[test]
+    fn proxy_exit_100_linked_closure_includes_web() {
+        assert_eq!(
+            respawn_decision(Some(EXIT_CODE_RESPAWN), true, true),
+            RespawnDecision::Respawn
+        );
+        for key in ["proxy_rdp", "proxy_ssh"] {
+            let group = linked_group_keys(key);
+            assert!(
+                group.contains(&"web"),
+                "{key} linked closure must include web, got {group:?}"
+            );
+        }
     }
 
     #[test]
@@ -4359,7 +4285,7 @@ mod tests {
                 barrier.wait();
                 (
                     respawn_decision(Some(1), false, true),
-                    respawn_decision(Some(100), false, true),
+                    respawn_decision(Some(EXIT_CODE_RESPAWN), false, true),
                     respawn_decision(Some(1), true, true),
                 )
             }));
@@ -5455,42 +5381,71 @@ mod tests {
     // ==================== Structural Regression Tests ====================
 
     #[test]
-    fn test_respawn_linked_group_takes_mutable_service_pipes() {
+    fn test_respawn_linked_group_takes_mut_pipe_store() {
         let source = supervisor_prod_source();
         let fn_start = source
             .find("fn respawn_linked_group")
             .expect("respawn_linked_group must exist");
-        let fn_sig = &source[fn_start..fn_start + 300];
+        let fn_sig = &source[fn_start..fn_start + 400];
         assert!(
-            fn_sig.contains("&mut HashMap<Service, ServicePipes>"),
-            "respawn_linked_group must take &mut HashMap<Service, ServicePipes> to update pipes"
+            fn_sig.contains("&mut PipeStore"),
+            "respawn_linked_group must take &mut PipeStore"
+        );
+        assert!(
+            !fn_sig.contains("HashMap<(Service, Service), (IpcChannel, IpcChannel)>"),
+            "respawn_linked_group must not own a local pipe HashMap"
         );
     }
 
     #[test]
-    fn test_respawn_linked_group_updates_service_pipes() {
+    fn test_respawn_linked_group_uses_derive_and_replace() {
         let source = supervisor_prod_source();
         let fn_start = source
             .find("fn respawn_linked_group")
             .expect("respawn_linked_group must exist");
         let fn_body = &source[fn_start..];
-        // Must insert updated pipes back into service_pipes
+        let next = fn_body[1..]
+            .find("\nfn ")
+            .map(|i| i + 1)
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..next];
         assert!(
-            fn_body.contains("service_pipes.insert("),
-            "respawn_linked_group must update service_pipes with new pipe FDs"
+            fn_body.contains("pipe_store.replace("),
+            "respawn_linked_group must replace intra-group edges via PipeStore"
+        );
+        assert!(
+            fn_body.contains("derive_service_pipes("),
+            "respawn_linked_group must rebuild fd tables via derive_service_pipes"
+        );
+        assert!(
+            !fn_body.contains("service_pipes.insert("),
+            "respawn_linked_group must not hand-assemble service_pipes"
         );
     }
 
     #[test]
-    fn test_watchdog_loop_takes_mutable_service_pipes() {
+    fn test_watchdog_loop_takes_mut_pipe_store() {
         let source = supervisor_prod_source();
         let fn_start = source
             .find("fn watchdog_loop")
             .expect("watchdog_loop must exist");
-        let fn_sig = &source[fn_start..fn_start + 300];
+        let fn_sig = &source[fn_start..fn_start + 400];
         assert!(
-            fn_sig.contains("&mut HashMap<Service, ServicePipes>"),
-            "watchdog_loop must take &mut HashMap<Service, ServicePipes>"
+            fn_sig.contains("&mut PipeStore"),
+            "watchdog_loop must take &mut PipeStore"
+        );
+    }
+
+    #[test]
+    fn test_respawn_decision_uses_exit_code_respawn_const() {
+        let source = supervisor_prod_source();
+        let fn_start = source
+            .find("fn respawn_decision")
+            .expect("respawn_decision must exist");
+        let fn_body = &source[fn_start..fn_start + 400];
+        assert!(
+            fn_body.contains("EXIT_CODE_RESPAWN"),
+            "respawn_decision must compare against EXIT_CODE_RESPAWN"
         );
     }
 

@@ -23,13 +23,18 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use rustls::server::ResolvesServerCert;
 use std::net::SocketAddr;
+use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tower::ServiceBuilder;
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // Import for supervisor, vault, and Access IPC clients
-use vauban_web::ipc::{AccessIpcClient, AuthIpcClient, SupervisorClient, VaultCryptoClient};
+use vauban_web::ipc::{
+    AccessIpcClient, AuthIpcClient, PumpCtx, SupervisorClient, VaultCryptoClient, spawn_ipc_pump,
+    web_exit_code,
+};
 
 /// Initialize the supervisor client if running under supervisor.
 ///
@@ -390,8 +395,19 @@ fn init_audit_client() -> Option<Arc<vauban_web::ipc::AuditClient>> {
 // Early startup uses eprintln! because tracing may not be initialized yet.
 // These are critical error paths that must be visible even without structured logging.
 #[allow(clippy::print_stderr)]
+fn main() -> ExitCode {
+    match async_main() {
+        Ok(respawn) => web_exit_code(respawn),
+        Err(e) => {
+            eprintln!("{e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[allow(clippy::print_stderr)]
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
     // Create server handle early for graceful shutdown.
     // The handle is shared with the supervisor IPC thread so it can trigger
     // graceful HTTP server shutdown instead of calling process::exit(0).
@@ -400,6 +416,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize supervisor client if running under supervisor
     // This must be done early, before any async runtime setup
     let (supervisor_client, boot_channels) = init_supervisor_client(server_handle.clone());
+    let respawn_requested = Arc::new(AtomicBool::new(false));
+    let shutdown_flag = supervisor_client
+        .as_ref()
+        .map(|s| s.shutdown_flag())
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let pump_ctx = PumpCtx {
+        server_handle: server_handle.clone(),
+        shutdown: shutdown_flag,
+        respawn_requested: Arc::clone(&respawn_requested),
+    };
     let (tls_cert_rx, ldap_mapping_rx) = match boot_channels {
         Some(c) => (Some(c.tls_cert_rx), Some(c.ldap_mapping_rx)),
         None => (None, None),
@@ -748,14 +774,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create SSH proxy client if running under supervisor
     let ssh_proxy = init_ssh_proxy_client();
 
-    // Spawn SSH proxy IPC processing task if client is available
     if let Some(ref client) = ssh_proxy {
         let client_clone = Arc::clone(client);
-        tokio::spawn(async move {
-            if let Err(e) = client_clone.process_incoming().await {
-                tracing::error!(error = %e, "SSH proxy IPC processing task failed");
-            }
-        });
+        spawn_ipc_pump(
+            "ssh_proxy",
+            async move { client_clone.process_incoming().await },
+            pump_ctx.clone(),
+        );
         tracing::info!("SSH proxy IPC processing task started");
     }
 
@@ -765,11 +790,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn RDP proxy IPC processing task if client is available
     if let Some(ref client) = rdp_proxy {
         let client_clone = Arc::clone(client);
-        tokio::spawn(async move {
-            if let Err(e) = client_clone.process_incoming().await {
-                tracing::error!(error = %e, "RDP proxy IPC processing task failed");
-            }
-        });
+        spawn_ipc_pump(
+            "rdp_proxy",
+            async move { client_clone.process_incoming().await },
+            pump_ctx.clone(),
+        );
         tracing::info!("RDP proxy IPC processing task started");
     }
 
@@ -785,11 +810,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn vault IPC processing task if client is available
     if let Some(ref client) = vault_client {
         let client_clone = Arc::clone(client);
-        tokio::spawn(async move {
-            if let Err(e) = client_clone.process_incoming().await {
-                tracing::error!(error = %e, "Vault IPC processing task failed");
-            }
-        });
+        spawn_ipc_pump(
+            "vault",
+            async move { client_clone.process_incoming().await },
+            pump_ctx.clone(),
+        );
         tracing::info!("Vault IPC processing task started");
     }
 
@@ -798,11 +823,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audit_client = init_audit_client();
     if let Some(ref client) = audit_client {
         let client_clone = Arc::clone(client);
-        tokio::spawn(async move {
-            if let Err(e) = client_clone.process_incoming().await {
-                tracing::error!(error = %e, "Audit IPC processing task failed");
-            }
-        });
+        spawn_ipc_pump(
+            "audit",
+            async move { client_clone.process_incoming().await },
+            pump_ctx.clone(),
+        );
         tracing::info!("Audit IPC processing task started");
     }
 
@@ -813,11 +838,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn Access IPC processing task (always present in production).
     {
         let client_clone = Arc::clone(&access_client);
-        tokio::spawn(async move {
-            if let Err(e) = client_clone.process_incoming().await {
-                tracing::error!(error = %e, "Access IPC processing task failed");
-            }
-        });
+        spawn_ipc_pump(
+            "access",
+            async move { client_clone.process_incoming().await },
+            pump_ctx.clone(),
+        );
         tracing::info!("Access IPC processing task started");
     }
 
@@ -826,11 +851,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(ref client) = auth_ipc_client {
         let client_clone = Arc::clone(client);
-        tokio::spawn(async move {
-            if let Err(e) = client_clone.process_incoming().await {
-                tracing::error!(error = %e, "Auth IPC processing task failed");
-            }
-        });
+        spawn_ipc_pump(
+            "auth",
+            async move { client_clone.process_incoming().await },
+            pump_ctx.clone(),
+        );
         tracing::info!("Auth IPC processing task started");
     }
 
@@ -931,18 +956,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref client) = app_state.proxy_iacs {
         let client_clone = Arc::clone(client);
         let state_for_iacs = app_state.clone();
-        tokio::spawn(async move {
-            if let Err(e) = client_clone
-                .process_incoming_with_state(
-                    state_for_iacs.broadcast.clone(),
-                    state_for_iacs.db_pool.clone(),
-                    state_for_iacs,
-                )
-                .await
-            {
-                tracing::error!(error = %e, "IACS proxy IPC processing task failed");
-            }
-        });
+        spawn_ipc_pump(
+            "iacs_proxy",
+            async move {
+                client_clone
+                    .process_incoming_with_state(
+                        state_for_iacs.broadcast.clone(),
+                        state_for_iacs.db_pool.clone(),
+                        state_for_iacs,
+                    )
+                    .await
+            },
+            pump_ctx.clone(),
+        );
         tracing::info!("IACS proxy IPC processing task started");
     }
 
@@ -1144,7 +1170,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await?;
 
-    Ok(())
+    Ok(respawn_requested.load(Ordering::SeqCst)
+        || vauban_web::ipc::pump::RESPAWN_REQUESTED.load(Ordering::SeqCst))
 }
 
 /// Enter the process sandbox (point of no return).

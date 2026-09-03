@@ -89,8 +89,9 @@ pub struct SupervisorClientInner {
     pub start_time: Instant,
     pub requests_processed: AtomicU64,
     pub requests_failed: AtomicU64,
-    /// Flag to stop the handler thread.
-    shutdown: AtomicBool,
+    /// Flag to stop the handler thread. Shared with IPC pumps so a
+    /// supervisor-initiated shutdown is Quiet (no exit 100).
+    shutdown: Arc<AtomicBool>,
     /// Server handle for triggering graceful shutdown.
     /// When the supervisor requests shutdown or IPC closes, we use this
     /// to stop the HTTP server instead of calling process::exit(0).
@@ -160,7 +161,7 @@ impl SupervisorClient {
             start_time: Instant::now(),
             requests_processed: AtomicU64::new(0),
             requests_failed: AtomicU64::new(0),
-            shutdown: AtomicBool::new(false),
+            shutdown: Arc::new(AtomicBool::new(false)),
             server_handle,
             acme_resolver: OnceLock::new(),
             cert_expiry: OnceLock::new(),
@@ -333,6 +334,11 @@ impl SupervisorClient {
     /// Get a reference to the shared inner state (for statistics).
     pub fn inner(&self) -> &Arc<SupervisorClientInner> {
         &self.inner
+    }
+
+    /// Clone the supervisor-shutdown latch (shared with IPC pumps).
+    pub fn shutdown_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.inner.shutdown)
     }
 
     /// Reference to the broker latency tracker shared with the

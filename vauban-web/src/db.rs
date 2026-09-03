@@ -16,7 +16,7 @@ use crate::error::{AppError, AppResult};
 
 /// Exit code used when database connection is lost in sandbox mode.
 /// The supervisor will respawn the service when it sees this exit code.
-pub const EXIT_CODE_CONNECTION_LOST: i32 = 100;
+pub const EXIT_CODE_CONNECTION_LOST: i32 = shared::pipe_store::EXIT_CODE_RESPAWN;
 
 /// Database connection pool type (async, no background threads).
 pub type DbPool = Pool<AsyncPgConnection>;
@@ -177,6 +177,7 @@ pub async fn get_connection_or_shutdown(
                 detail
             );
             // Trigger graceful shutdown instead of exit().
+            crate::ipc::pump::request_respawn();
             if let Some(handle) = server_handle {
                 handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
             }

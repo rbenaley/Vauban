@@ -200,7 +200,7 @@ fn supervisor_boot_checks_schema_before_spawning_services() {
         .find("check_schema_up_to_date(")
         .expect("run_supervisor MUST call check_schema_up_to_date (INV-BOOT)");
     let spawn = body
-        .find("create_pipe_topology(")
+        .find("PipeStore::new(")
         .expect("run_supervisor creates the IPC topology");
     assert!(
         check < spawn,

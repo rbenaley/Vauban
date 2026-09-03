@@ -33,7 +33,9 @@ mod vault;
 
 use anyhow::{Context, Result};
 use error::SessionError;
-use ipc::AsyncIpcChannel;
+use ipc::{
+    AsyncIpcChannel, ServiceExit, WebRecvAction, WebRecvClass, classify_web_recv, service_exit_code,
+};
 use session::{SessionConfig, SshCredential, fetch_host_key};
 use session_manager::{
     RecordingLeaseClient, RecordingLeaseReq, RecordingSetup, RecordingWriteErrorHook,
@@ -252,9 +254,9 @@ fn main() -> ExitCode {
         .expect("Failed to create Tokio runtime");
 
     match runtime.block_on(run_service()) {
-        Ok(()) => {
+        Ok(exit) => {
             info!("vauban-proxy-ssh exiting normally");
-            ExitCode::SUCCESS
+            service_exit_code(exit)
         }
         Err(e) => {
             error!("vauban-proxy-ssh error: {:#}", e);
@@ -263,7 +265,7 @@ fn main() -> ExitCode {
     }
 }
 
-async fn run_service() -> Result<()> {
+async fn run_service() -> Result<ServiceExit> {
     // Get IPC file descriptors from environment
     let supervisor_read_fd: RawFd = std::env::var("VAUBAN_IPC_READ")
         .unwrap_or_else(|_| "0".to_string())
@@ -546,7 +548,7 @@ async fn main_loop(
     ),
     access_guard: Arc<AccessGuard>,
     vault_client: Option<Arc<VaultDecryptClient>>,
-) -> Result<()> {
+) -> Result<ServiceExit> {
     let (web_tx, mut web_rx) = web_mpsc;
     let (recording_lease_tx, mut recording_lease_rx) = recording_lease_mpsc;
     info!("Main event loop started");
@@ -653,7 +655,7 @@ async fn main_loop(
                     }
                     Err(ipc::IpcError::ConnectionClosed) => {
                         info!("Supervisor connection closed, exiting");
-                        return Ok(());
+                        return Ok(ServiceExit::Normal);
                     }
                     Err(e) => {
                         error!(error = %e, "Error receiving from supervisor");
@@ -664,8 +666,14 @@ async fn main_loop(
 
             // Handle messages from vauban-web
             result = web_channel.recv() => {
-                match result {
-                    Ok(msg) => {
+                let class = match &result {
+                    Ok(_) => WebRecvClass::Ok,
+                    Err(ipc::IpcError::ConnectionClosed) => WebRecvClass::Closed,
+                    Err(_) => WebRecvClass::Other,
+                };
+                match classify_web_recv(class, state.shutdown_requested.load(Ordering::SeqCst)) {
+                    WebRecvAction::Handle => {
+                        let Ok(msg) = result else { continue };
                         if let Err(e) = handle_web_message(
                             &response_tx,
                             Arc::clone(&state),
@@ -684,12 +692,18 @@ async fn main_loop(
                             state.increment_failed();
                         }
                     }
-                    Err(ipc::IpcError::ConnectionClosed) => {
-                        info!("Web connection closed");
-                        // Don't exit - we can still serve existing sessions
+                    WebRecvAction::Respawn => {
+                        error!(channel = "web", "Web IPC pipe closed, exiting for linked respawn");
+                        return Ok(ServiceExit::RespawnRequested);
                     }
-                    Err(e) => {
-                        error!(error = %e, "Error receiving from web");
+                    WebRecvAction::QuietExit => {
+                        info!(channel = "web", "Web IPC closed during shutdown");
+                        return Ok(ServiceExit::Normal);
+                    }
+                    WebRecvAction::RecordFailure => {
+                        if let Err(e) = result {
+                            error!(error = %e, "Error receiving from web");
+                        }
                         state.increment_failed();
                     }
                 }
@@ -741,7 +755,7 @@ async fn main_loop(
         }
     }
 
-    Ok(())
+    Ok(ServiceExit::Normal)
 }
 
 async fn handle_control_message(
@@ -1408,6 +1422,40 @@ mod tests {
         assert!(
             !source.contains("process::exit"),
             "vauban-proxy-ssh must not call process::exit() in production code"
+        );
+    }
+
+    #[test]
+    fn web_eof_requests_linked_respawn() {
+        let source = prod_source();
+        assert!(
+            source.contains("return Ok(ServiceExit::RespawnRequested)"),
+            "web ConnectionClosed must return RespawnRequested"
+        );
+        assert!(
+            !source.contains("Web connection closed"),
+            "legacy Web connection closed literal must not exist"
+        );
+        assert!(
+            source.contains("Web IPC pipe closed, exiting for linked respawn"),
+            "web EOF must log the linked-respawn message"
+        );
+    }
+
+    #[test]
+    fn recv_eof_is_sticky() {
+        let ipc = include_str!("ipc.rs");
+        assert!(
+            ipc.contains("closed: AtomicBool"),
+            "AsyncIpcChannel must track sticky EOF"
+        );
+        assert!(
+            ipc.contains("clear_ready()"),
+            "recv must clear_ready on EOF"
+        );
+        assert!(
+            ipc.contains("std::future::pending"),
+            "recv after EOF must park"
         );
     }
 

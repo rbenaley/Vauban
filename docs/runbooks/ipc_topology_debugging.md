@@ -20,10 +20,10 @@ supervisor pings, which in turn triggered a restart loop.
 `vauban-supervisor/src/main.rs::TOPOLOGY`. Each entry is a directed
 edge `from: Service -> to: Service`. At boot, the supervisor:
 
-1. Creates a `pipe(2)` pair per edge,
-2. Keeps **both** sides open for the supervisor's lifetime (they
-   live in the original `pipes: HashMap<...>` allocation that is
-   never dropped),
+1. Creates a `pipe(2)` pair per edge via `shared::pipe_store::PipeStore`,
+2. Keeps **both** sides open for the supervisor's lifetime (the
+   store retains the `IpcChannel` pairs through linked restart;
+   `derive_service_pipes` is the only fd-table construction),
 3. Forks each child and passes the relevant raw FDs through env
    vars `VAUBAN_<PEER>_IPC_READ` / `VAUBAN_<PEER>_IPC_WRITE`.
 
@@ -49,6 +49,8 @@ This is the failure mode the runbook below addresses.
 | `rbac_recheck_timeouts` keeps climbing in proxy_ssh / proxy_rdp logs | Access tier is wedged or saturated (DB / runtime)             |
 | `vauban-access TOPOLOGY mismatch` panic at boot                      | A peer env var was not exported by the supervisor             |
 | `Access denied` for **every** user in the web UI, no DB writes       | Same as #1 above (look one layer up in the relevant proxy)    |
+| Burst of `Web connection closed` (pre-0.9.43)                        | Must not exist on 0.9.43+: EOF is sticky and the proxy exits 100 |
+| Isolated `Web IPC pipe closed, exiting for linked respawn` then restart | Expected: proxy/web asked for a linked respawn               |
 
 ---
 
@@ -199,7 +201,9 @@ bootstrap rule, or do it manually as above.
 ## 7. Related code
 
 - `vauban-supervisor/src/main.rs::TOPOLOGY`           - edge declarations
+- `shared/src/pipe_store.rs`                          - supervisor-owned live pipes
 - `vauban-supervisor/src/main.rs::respawn_linked_group` - linked-restart pipe handling
+- [linked_restart_smoke_test.md](linked_restart_smoke_test.md) - staging A/B/C after a double web kill
 - `vauban-access/src/main.rs::run_service`            - peer binding + boot check
 - `vauban-access/src/handlers.rs::handle_check_access_by_uuid` - server-side authoritative RBAC (no superuser bypass)
 - `vauban-web/src/handlers/web/ssh.rs::connect_ssh`   - web-side gate (no superuser bypass either)

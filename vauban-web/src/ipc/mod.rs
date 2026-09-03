@@ -12,6 +12,7 @@ pub mod correlated;
 pub mod proxy_iacs;
 pub mod proxy_rdp;
 pub mod proxy_ssh;
+pub mod pump;
 pub mod supervisor;
 pub mod vault;
 
@@ -28,6 +29,7 @@ pub use proxy_rdp::{CertFetchIdentity, ProxyRdpClient, RdpSessionOpenRequest, Rd
 pub use proxy_ssh::{
     HostKeyFetchIdentity, ProxySshClient, SshSessionOpenRequest, SshSessionOpened,
 };
+pub use pump::{PumpCtx, PumpExit, pump_exit_policy, spawn_ipc_pump, web_exit_code};
 pub use supervisor::{
     LdapMappingProvisionData, SupervisorBootChannels, SupervisorClient, TlsCertData,
 };

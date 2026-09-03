@@ -109,9 +109,7 @@ fn supervisor_boot_checks_layout_after_schema_before_spawn() {
     let layout = body
         .find("check_privsep_fs_layout(")
         .expect("run_supervisor MUST call check_privsep_fs_layout (INV-BOOT)");
-    let spawn = body
-        .find("create_pipe_topology(")
-        .expect("create_pipe_topology");
+    let spawn = body.find("PipeStore::new(").expect("PipeStore::new");
     assert!(
         schema < layout && layout < spawn,
         "layout check MUST run after the schema check and before any pipe spawn"

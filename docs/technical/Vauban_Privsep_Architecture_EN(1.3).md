@@ -18,6 +18,13 @@
 > (verify-only). Exit 100 remains the recover-and-respawn code; a leaf
 > that exits before its first heartbeat is fail-closed (no linked
 > restart). See §6.2, §7.4, §7.5, §7.6.
+>
+> **1.3 amended 4 September 2026 (no version bump, crates 0.9.43):**
+> overlapping linked groups are resolved by transitive closure
+> (`web` + `proxy-ssh` + `proxy-rdp`). `PipeStore` keeps both ends of
+> every live topology pipe for the supervisor's lifetime, including
+> after a linked restart. Proxies and `vauban-web` exit 100 on a dead
+> peer pipe instead of spinning or running degraded. See §7.5.
 
 ---
 
@@ -105,6 +112,7 @@ via pre-seal IPC.
 - [ADR 003 -- Local-first storage](../adr/003-local-first-recording-storage.md) -- local write path; remote async only
 - [ADR 004 -- Flat Message enum](../adr/004-flat-message-enum.md) -- retain shared flat IPC `Message`
 - [docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md) -- Operational runbook for the IPC topology / RBAC re-check failure mode
+- [docs/runbooks/linked_restart_smoke_test.md](../runbooks/linked_restart_smoke_test.md) -- Staging A/B/C after a double `web` kill (crates 0.9.43)
 - [docs/runbooks/privsep_fs_layout_smoke_test.md](../runbooks/privsep_fs_layout_smoke_test.md) -- Staging check for the production+privsep FS catalogue gate (issue #40)
 
 ### 2.2 Architecture Diagram
@@ -1056,14 +1064,17 @@ To prevent crash loops, the supervisor limits respawns:
 
 ### 7.5 Linked Restart Groups
 
-Services that share inter-process pipes (e.g., `vauban-web` and `vauban-proxy-ssh`) form **linked restart groups**. When a service that has **already heartbeated** crashes, the anonymous Unix pipe connecting them becomes broken. Since new file descriptors cannot be created after `cap_enter()`, all services in the group must be restarted together to re-establish communication. A process that never reached its main loop (config `EACCES`, missing binary, exit 1 before the first Pong) is a boot failure: the supervisor refuses respawn and **must not** SIGTERM the rest of the group.
+Services that share inter-process pipes form **linked restart groups**. Overlapping groups are resolved by **transitive closure**: a crash of `web`, `proxy-ssh`, or `proxy-rdp` restarts `{web, proxy-ssh, proxy-rdp}` together. When a service that has **already heartbeated** crashes, the anonymous Unix pipe connecting them becomes broken. Since new file descriptors cannot be created after `cap_enter()`, all services in the closure must be restarted together to re-establish communication. A process that never reached its main loop (config `EACCES`, missing binary, exit 1 before the first Pong) is a boot failure: the supervisor refuses respawn and **must not** SIGTERM the rest of the group.
+
+The supervisor **owns both ends** of every live topology pipe for its entire lifetime (`shared::pipe_store::PipeStore`). Linked restart calls `PipeStore::replace` on intra-group edges and rebuilds child fd tables only via `derive_service_pipes`. Dropping a local `(IpcChannel, IpcChannel)` map after copying raw fd numbers is forbidden: those numbers are recycled and the next spawn inherits stale or colliding descriptors.
+
+`EXIT_CODE_RESPAWN` (100) is the recover-and-respawn code for: a proxy whose web IPC pipe hits EOF; `vauban-web` when an IPC pump ends without a supervisor shutdown; sandboxed DB connection loss. The supervisor honors 100 even before the first Pong.
 
 #### 7.5.1 Linked Groups
 
 | Group | Services | Shared Pipes |
 |-------|----------|--------------|
-| SSH Group | `web`, `proxy-ssh` | Terminal data stream |
-| RDP Group | `web`, `proxy-rdp` | Session data stream |
+| Web / SSH / RDP (closure) | `web`, `proxy-ssh`, `proxy-rdp` | Terminal + session data streams |
 
 #### 7.5.2 Group Restart Sequence
 
@@ -1072,20 +1083,22 @@ sequenceDiagram
     participant S as Supervisor
     participant W as vauban-web
     participant P as vauban-proxy-ssh
+    participant R as vauban-proxy-rdp
 
     Note over P: proxy-ssh crashes
     P->>S: Exit (detected via waitpid)
-    
-    S->>S: Identify linked group [web, proxy-ssh]
-    S->>W: SIGTERM (graceful shutdown)
-    Note over S: Wait for drain
-    S->>W: SIGKILL (if not terminated)
-    
-    S->>S: Create new pipe pair
-    S->>S: Respawn proxy-ssh with new pipes
-    S->>S: Respawn web with new pipes
-    
-    Note over W,P: Both services now share fresh IPC pipes
+
+    S->>S: linked_closure = {web, proxy-ssh, proxy-rdp}
+    S->>W: SIGTERM / SIGKILL
+    S->>R: SIGTERM / SIGKILL
+
+    S->>S: PipeStore.replace(web<->ssh, web<->rdp)
+    S->>S: service_pipes = derive_service_pipes()
+    S->>P: Respawn with new pipes
+    S->>W: Respawn with new pipes
+    S->>R: Respawn with new pipes
+
+    Note over W,P,R: Supervisor still owns both ends of every live pair
 ```
 
 #### 7.5.3 Benefits
@@ -1110,6 +1123,7 @@ over the live file must re-run apply; they must not expect a
 crash-restart loop to "heal" `vb-web` (issue #40).
 
 Staging: [privsep_fs_layout_smoke_test.md](../runbooks/privsep_fs_layout_smoke_test.md).
+Linked restart: [linked_restart_smoke_test.md](../runbooks/linked_restart_smoke_test.md).
 
 ---
 

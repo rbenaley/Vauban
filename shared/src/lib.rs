@@ -23,6 +23,7 @@ pub mod ldap_dn;
 pub mod ldap_filter;
 pub mod ldap_mapping;
 pub mod messages;
+pub mod pipe_store;
 pub mod privdrop;
 pub mod recording_fd;
 pub mod recording_paths;

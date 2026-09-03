@@ -7,4 +7,8 @@ mod correlated_ipc_align_invariants_test;
 mod correlated_ipc_align_proptest;
 mod correlated_proptest;
 mod iacs_lifecycle_persistence_test;
+mod pump_exit_battle_test;
+mod pump_exit_e2e_test;
+mod pump_exit_invariants_test;
+mod pump_exit_proptest;
 mod virtual_asset_group_ipc_test;
