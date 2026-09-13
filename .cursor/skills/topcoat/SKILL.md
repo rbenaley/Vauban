@@ -3,10 +3,10 @@ name: topcoat
 description: >-
   Durable knowledge of the Topcoat framework for VCP. Use when scaffolding,
   implementing pages/components/shards/procedures, signals, @click/:bind,
-  sessions, cookies, routing, assets, Tailwind/UI, planning a 0.5→0.6
+  sessions, cookies, routing, assets, Tailwind/UI, planning a 0.6.2→0.8.0
   upgrade, or when unsure how Topcoat works. Read before inventing
-  Axum/Askama/HTMX or first-party UI JS. Companion playbook:
-  references/UPGRADE-0.6.md.
+  Axum/Askama/HTMX or first-party UI JS. Current-pin playbook:
+  references/UPGRADE-0.6.md. Next bump: references/UPGRADE-0.8.md.
 ---
 
 # Topcoat knowledge base (VCP)
@@ -27,6 +27,11 @@ Announcement / orientation (read when refreshing mental model):
 - [v0.6.1](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.1) /
   [v0.6.2](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.2)
   (2026-08-18) — discover rewrite, `await` in `$()` blocks, `TowerService`
+- [v0.7.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.7.0)
+  (2026-09-05) — streaming SSR, lazy `View`, `live!` / `error_boundary`
+- [v0.8.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.8.0)
+  (2026-09-09) — `signal(cx, init)`, tracked server reads, morph,
+  `.runtime()`
 - Sibling ORM: [Toasty 0.6.0 — what is new?](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0)
   (field select / deferred / `Vec` scalars; VCP pins **0.10** — see
   `Cargo.toml` / `toasty` skill)
@@ -36,18 +41,23 @@ VCP product constraints that override framework capabilities are marked
 **VCP**. Broader conventions live in the `web-stack` skill and the
 `.cursor/rules/*.mdc` set.
 
-**Last studied:** 2026-08-22 against upstream tag **v0.6.2** (commit
-`92a76709`; edition **2024**, MSRV **1.95**, workspace
-`unsafe_code = deny`). Local clone: `/Users/mnemonic/Code/topcoat`.
+**Last studied:** 2026-09-13 against upstream tag **v0.8.0** (commit
+`149f0de`; edition **2024**, MSRV **1.98**, workspace
+`unsafe_code = deny`). Temporary study clone:
+`/tmp/topcoat-0.8-study`. Durable clone: `/Users/mnemonic/Code/topcoat`.
 Source map:
-[tokio-rs/topcoat@v0.6.2](https://github.com/tokio-rs/topcoat/tree/v0.6.2).
+[tokio-rs/topcoat@v0.8.0](https://github.com/tokio-rs/topcoat/tree/v0.8.0).
 
 **VCP pin:** facade + `topcoat-cli` **0.6.2** (`Cargo.toml` /
-`Justfile`). Use `href!`, `path_param!`, `OriginPolicy`, `BodyLimit`,
-`Cx::with`, and `not_found!`. Keep 0.5 notes historical.
+`Justfile`; VCP `rust-version` **1.95**). Write **0.6.2** forms until
+the pin moves (`signal name =` inside `view!`, `slot: Result`,
+`-> Result` without `impl View`, no `.runtime()`). Use `href!`,
+`path_param!`, `OriginPolicy`, `BodyLimit`, `Cx::with`, and
+`not_found!`. Keep 0.5 notes historical.
 
 - Historical 0.4→0.5 (done): [`references/UPGRADE-0.5.md`](references/UPGRADE-0.5.md)
 - 0.5→**0.6.2** (done): [`references/UPGRADE-0.6.md`](references/UPGRADE-0.6.md)
+- 0.6.2→**0.8.0** (playbook, pin not bumped): [`references/UPGRADE-0.8.md`](references/UPGRADE-0.8.md)
 
 Re-check crates.io / GitHub if months have passed — early-stage.
 
@@ -300,7 +310,9 @@ or will **change production behavior** on VCP:
 | Memoize `Option` | Auto `Option<&T>` | Need `#[memoize(as_ref)]` |
 | Assets | `target/assets` search | Bundle **next to the binary** |
 
-Write these 0.6 forms (VCP is on 0.6.2).
+Write these 0.6 forms (VCP is on 0.6.2). 0.8 drops the `signal`
+statement and restores layout `Slot<'_>` — see `UPGRADE-0.8.md`; do
+not use those forms until the pin moves.
 
 **Concurrent `for` in `view!` (0.6):** each `#[component]` iteration
 starts together. Keep SQL paging in the page/shard (`limit`/`offset`)
@@ -324,9 +336,11 @@ Layouts can `downcast_ref` child errors (e.g. branded 404) before wrapping
 chrome — see upstream error guide. Trade-off: the page finishes rendering
 before any layout body runs (matters for a future streaming SSR design).
 
-**VCP (0.5):** every `#[layout]` uses `slot: Result` / `(slot?)`. Do not
-reintroduce `Slot` / `slot.await` (pinned by `check_portal_shell` +
-`portal_shell_invariants`).
+**VCP (0.5–0.6.2):** every `#[layout]` uses `slot: Result` / `(slot?)`.
+Do not reintroduce `Slot` on the current pin (pinned by
+`check_portal_shell` + `portal_shell_invariants`). **0.8 reverses
+this:** `slot: Slot<'_>` + `error_boundary` around `(slot)` — only
+after the pin bump (`UPGRADE-0.8.md`).
 
 ### Redirects (prefer Topcoat helpers)
 
@@ -467,6 +481,9 @@ instead of a cookie.
 Upstream warns: **highly experimental**, limited expression vocabulary,
 breaking changes expected. **VCP does not** adopt HTMX / Alpine as the
 default. Deep playbook: [`references/RUNTIME.md`](references/RUNTIME.md).
+On **0.6.2** keep `signal name = value;` inside `view!`. On **0.8**
+that statement is gone (`signal(cx, init)` + `.runtime()`) —
+`UPGRADE-0.8.md`.
 
 ### Layers
 
@@ -688,15 +705,17 @@ clippy `-D warnings` + asset bundle + tests (`dev-validation-cycle.mdc` /
 
 ## 15. Upstream doc index (refresh when needed)
 
-Prefer docs at tag **v0.6.2** when planning the bump; write 0.5 code
-against **v0.5.0** docs until the pin moves:
+Prefer docs at tag **v0.6.2** for current-pin work; use **v0.8.0**
+docs only when executing `UPGRADE-0.8.md`:
 
 | Source | Use for |
 |--------|---------|
 | [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat) | Motivation, locality, reactivity vs WASM, Axum split, roadmap |
 | [v0.5.0 release notes](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0) | Breaking changes, WS/SSE/Datastar/mail/WASM/UDS |
 | [v0.6.0–v0.6.2 notes](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.0) | Concurrent views, `href!`, `Cx::with`, origin/body/404/`path_param!` |
-| Project **`UPGRADE-0.6.md`** | VCP 0.5→0.6.2 checklist (do not apply until pin bump) |
+| [v0.7.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.7.0) / [v0.8.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.8.0) | Lazy `View`, `error_boundary`, `signal(cx)`, morph, `.runtime()` |
+| Project **`UPGRADE-0.6.md`** | VCP 0.5→0.6.2 checklist (done) |
+| Project **`UPGRADE-0.8.md`** | VCP 0.6.2→0.8.0 checklist (pin not bumped) |
 | [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0) | Deferred / select / `Vec` scalars / collection ops |
 | Project **`toasty` skill** | VCP ORM conventions + query anti-patterns |
 | `crates/topcoat/docs/` | Getting started, app context, mail, Datastar, UI, … |
@@ -717,6 +736,7 @@ than guessing from memory of older releases.
 | `references/RUNTIME.md` | Signals / `@click` pitfalls / test contracts |
 | `references/UPGRADE-0.5.md` | 0.4 → 0.5 migration checklist (done; historical) |
 | `references/UPGRADE-0.6.md` | 0.5 → **0.6.2** playbook (VCP on 0.6.2) |
+| `references/UPGRADE-0.8.md` | 0.6.2 → **0.8.0** playbook (not pinned yet) |
 | `web-stack` skill | VCP conventions (routing, `db(cx)`, page sizes) |
 | `toasty` skill | Toasty 0.10 query / migration playbook |
 | `casbin-permissions.mdc` | AuthZ gates |

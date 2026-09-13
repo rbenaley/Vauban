@@ -3,7 +3,9 @@
 Companion to `topcoat` skill §10. VCP pins Topcoat **0.6.2**; re-verify
 the browser bundle when bumping the facade. Historical 0.4→0.5 /
 0.5→0.6 notes: `UPGRADE-0.5.md`, `UPGRADE-0.6.md` (0.6.1 lets `await`
-appear inside `$()` `ExprBlock` / `ExprIf`).
+appear inside `$()` `ExprBlock` / `ExprIf`). Next bump (not pinned):
+`UPGRADE-0.8.md` — `signal(cx, init)`, `.runtime()`, layout
+`error_boundary`. Write 0.6.2 forms until then.
 
 ## Mental model
 
@@ -198,6 +200,17 @@ Validate `public_origins` non-empty + HTTPS-only at boot.
 
 There is **no** Playwright/WKWebView gate in CI. Do not invent one unless
 the project explicitly adds a browser runner.
+
+## Next pin (0.8.0 — do not write yet)
+
+When VCP bumps (`UPGRADE-0.8.md`):
+
+- Replace `signal name = value;` with `let name = signal(cx, || value);`
+  above `view!`.
+- Call `.runtime()` on the router builder or `runtime::script()` panics.
+- Layouts wrap `(slot)` in `error_boundary`; param is `Slot<'_>` again.
+- Re-renders **morph**; reorderable lists need a stable `id`.
+- Server `.get()` outside `$()` is a **tracked** read (user input).
 
 ## Tooling notes
 

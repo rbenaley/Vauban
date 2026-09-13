@@ -61,7 +61,9 @@ mod internal;  // Private module
 
 ### 2.3. Modern Rust Features (1.86–1.93)
 
-MSRV is **Rust 1.93** (`rust-version` in the workspace `Cargo.toml`).
+MSRV is **Rust 1.95** (`rust-version` in `Cargo.toml`). Topcoat **0.8.0**
+requires **1.98** — raise VCP's rust-version only when that pin lands
+(see `topcoat` skill `UPGRADE-0.8.md`).
 
 **Let Chains (Rust 1.88, Edition 2024):**
 Chain `let` patterns with `&&` for cleaner conditional logic:

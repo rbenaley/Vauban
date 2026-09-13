@@ -7,8 +7,9 @@ Upstream:
 - [v0.6.1](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.1) —
   rewrite through `discover`; `await` in `ExprBlock` / `ExprIf`
 - [v0.6.2](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.2)
-  (latest) — `TowerService` (Topcoat as Axum fallback); control-flow
-  futures own their pattern bindings
+  — `TowerService` (Topcoat as Axum fallback); control-flow
+  futures own their pattern bindings. Upstream later shipped 0.7 / 0.8
+  (next playbook: `UPGRADE-0.8.md`; VCP pin stays 0.6.2 until that bump).
 
 Studied tree: clone `tokio-rs/topcoat` at tag **v0.6.2**
 (`92a76709`). Facade docs: `crates/topcoat/CHANGELOG.md`,
