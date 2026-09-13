@@ -665,9 +665,24 @@ pub async fn login_cookie(router: &Router, email: &str) -> Option<String> {
     cookie_header(&login)
 }
 
-/// Extract the first `/_topcoat/shards/{id}` path from SSR HTML.
-pub fn shard_path_from_html(html: &str) -> Option<String> {
-    let key = "/_topcoat/shards/";
+/// 0.8 shard route prefix (0.6 used `/_topcoat/shards/`).
+pub const SHARD_ROUTE_PREFIX: &str = "/_topcoat/runtime/shards";
+/// 0.8 procedure route prefix (0.6 used `/_topcoat/procedures/`).
+pub const PROCEDURE_ROUTE_PREFIX: &str = "/_topcoat/runtime/procedures";
+
+/// True when `path` is a Topcoat shard endpoint (0.8 or legacy 0.6 prefix).
+pub fn is_topcoat_shard_path(path: &str) -> bool {
+    path.starts_with("/_topcoat/runtime/shards/") || path.starts_with("/_topcoat/shards/")
+}
+
+/// True when SSR HTML embeds a shard (0.8 comment marker or a literal route).
+pub fn html_embeds_topcoat_shard(html: &str) -> bool {
+    html.contains("::topcoat::shard::start")
+        || html.contains("/_topcoat/runtime/shards/")
+        || html.contains("/_topcoat/shards/")
+}
+
+fn path_after_prefix(html: &str, key: &str) -> Option<String> {
     let i = html.find(key)?;
     let rest = &html[i..];
     let end = rest
@@ -676,20 +691,36 @@ pub fn shard_path_from_html(html: &str) -> Option<String> {
     Some(rest[..end].replace("\\/", "/"))
 }
 
-/// Extract the first `/_topcoat/procedures/{id}` path from SSR HTML.
+/// Extract the first shard route from SSR HTML.
+///
+/// 0.8 embeds `<!-- ::topcoat::shard::start("id", "identity", …) -->` and the
+/// browser derives `/_topcoat/runtime/shards/{id}`. Literal paths still work.
+pub fn shard_path_from_html(html: &str) -> Option<String> {
+    if let Some(start) = html.find("::topcoat::shard::start(") {
+        let mut args = html[start..].split('"');
+        if let Some(id) = args.nth(1)
+            && !id.is_empty()
+            && looks_like_procedure_id(id)
+        {
+            return Some(format!("{SHARD_ROUTE_PREFIX}/{id}"));
+        }
+    }
+    path_after_prefix(html, "/_topcoat/runtime/shards/")
+        .or_else(|| path_after_prefix(html, "/_topcoat/shards/"))
+}
+
+/// Extract the first `/_topcoat/runtime/procedures/{id}` path from SSR HTML.
 ///
 /// Procedure IDs are compile-time UUIDs embedded as hydrated
 /// `{ t: "Procedure", id: "…" }` markers (or a literal path).
 pub fn procedure_path_from_html(html: &str) -> Option<String> {
-    let key = "/_topcoat/procedures/";
-    if let Some(i) = html.find(key) {
-        let rest = &html[i..];
-        let end = rest
-            .find(['"', '\'', ' ', ')', ',', '&'])
-            .unwrap_or(rest.len());
-        return Some(rest[..end].replace("\\/", "/"));
+    if let Some(path) = path_after_prefix(html, "/_topcoat/runtime/procedures/") {
+        return Some(path);
     }
-    procedure_id_from_html(html).map(|id| format!("/_topcoat/procedures/{id}"))
+    if let Some(path) = path_after_prefix(html, "/_topcoat/procedures/") {
+        return Some(path);
+    }
+    procedure_id_from_html(html).map(|id| format!("{PROCEDURE_ROUTE_PREFIX}/{id}"))
 }
 
 /// Pull a Topcoat procedure UUID out of SSR hydrate / attribute payloads.
@@ -813,6 +844,33 @@ pub async fn procedure_login_link_accepted(resp: Response) -> bool {
     status > 0.0
 }
 
+/// Wrap positional shard args in the 0.8 `{ args, signals }` request body.
+fn shard_request_body(args_json: String) -> String {
+    format!(r#"{{"args":{args_json},"signals":{{}}}}"#)
+}
+
+/// Positional args JSON array inside a 0.8 shard request body.
+pub fn shard_args_array(body: &str) -> &str {
+    let key = "\"args\":";
+    let i = body.find(key).expect("shard body has args");
+    let rest = &body[i + key.len()..];
+    let start = rest.find('[').expect("args array");
+    let mut depth = 0i32;
+    for (n, c) in rest[start..].char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &rest[start..=start + n];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unclosed args array in {body}")
+}
+
 /// JSON body for `docs_search_results(org_slug, q, cat, page)`.
 pub fn docs_search_shard_body(org_slug: &str, q: &str, cat: &str) -> String {
     docs_search_shard_body_page(org_slug, q, cat, "1")
@@ -820,13 +878,13 @@ pub fn docs_search_shard_body(org_slug: &str, q: &str, cat: &str) -> String {
 
 /// JSON body for `docs_search_results` with an explicit page.
 pub fn docs_search_shard_body_page(org_slug: &str, q: &str, cat: &str, page: &str) -> String {
-    format!(
+    shard_request_body(format!(
         "[{},{},{},{}]",
         json_string(org_slug),
         json_string(q),
         json_string(cat),
         json_string(page)
-    )
+    ))
 }
 
 fn json_string(value: &str) -> String {
@@ -883,13 +941,13 @@ pub fn org_issues_search_shard_body_page(
     status: &str,
     page: &str,
 ) -> String {
-    format!(
+    shard_request_body(format!(
         "[{},{},{},{}]",
         json_string(org_slug),
         json_string(q),
         json_string(status),
         json_string(page)
-    )
+    ))
 }
 
 /// JSON body for `admin_issues_search_results(q, org, status, page)`.
@@ -899,13 +957,13 @@ pub fn admin_issues_search_shard_body(q: &str, org: &str, status: &str) -> Strin
 
 /// JSON body for `admin_issues_search_results` with an explicit page.
 pub fn admin_issues_search_shard_body_page(q: &str, org: &str, status: &str, page: &str) -> String {
-    format!(
+    shard_request_body(format!(
         "[{},{},{},{}]",
         json_string(q),
         json_string(org),
         json_string(status),
         json_string(page)
-    )
+    ))
 }
 
 /// JSON body for `admin_companies_search_results(q, page)`.
@@ -915,7 +973,7 @@ pub fn admin_companies_search_shard_body(q: &str) -> String {
 
 /// JSON body for `admin_companies_search_results` with an explicit page.
 pub fn admin_companies_search_shard_body_page(q: &str, page: &str) -> String {
-    format!("[{},{}]", json_string(q), json_string(page))
+    shard_request_body(format!("[{},{}]", json_string(q), json_string(page)))
 }
 
 /// Create an open issue for search fixtures (cleaned via test org id).

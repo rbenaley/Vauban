@@ -10,7 +10,7 @@ use topcoat::{
     Result,
     context::Cx,
     router::{href, page, query_params},
-    view::view,
+    view::{View, view},
 };
 
 use crate::app::admin::releases::new::admin_releases_new_page;
@@ -68,7 +68,7 @@ fn normalize_channel_filter(raw: Option<&str>) -> &str {
 }
 
 #[page]
-pub(crate) async fn admin_releases_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_releases_page(cx: &Cx) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -156,7 +156,7 @@ pub(crate) async fn admin_releases_page(cx: &Cx) -> Result {
     for rel in &page_releases {
         blobs.push(release_blob_display(&mut database, rel.id).await);
     }
-    let rows: Vec<(&Release, &BlobDisplay)> = page_releases.iter().zip(blobs.iter()).collect();
+    let rows: Vec<(Release, BlobDisplay)> = page_releases.into_iter().zip(blobs).collect();
 
     // Pager keeps channel + page — never sticky `delete` / `err`.
     let channel_for_pager = channel_owned.clone();
@@ -186,7 +186,7 @@ pub(crate) async fn admin_releases_page(cx: &Cx) -> Result {
         "No releases on this channel."
     };
 
-    view! {
+    Ok(view! {
         cx =>
         <div
             style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;"
@@ -219,7 +219,8 @@ pub(crate) async fn admin_releases_page(cx: &Cx) -> Result {
                     let target = if rel.organization_id == RELEASE_GA_ORG_ID {
                         "GA".to_owned()
                     } else {
-                        orgs.iter()
+                        orgs
+                            .iter()
                             .find(|o| o.id == rel.organization_id)
                             .map(|o| o.slug.clone())
                             .unwrap_or_else(|| format!("org#{}", rel.organization_id))
@@ -228,19 +229,16 @@ pub(crate) async fn admin_releases_page(cx: &Cx) -> Result {
                     let status_badge = release_status_badge_class(&rel.status).to_owned();
                     let edit_href = href!(
                         release_id::admin_releases_edit_page,
-                        release_id::ReleaseId(rel.id.to_string())
-                    )
-                        .resolve(cx);
+                        release_id::ReleaseId(rel.id.to_string()),
+                    ).resolve(cx);
                     let publish_action = href!(
                         release_id::admin_releases_publish,
-                        release_id::ReleaseId(rel.id.to_string())
-                    )
-                        .resolve(cx);
+                        release_id::ReleaseId(rel.id.to_string()),
+                    ).resolve(cx);
                     let unpublish_action = href!(
                         release_id::admin_releases_unpublish,
-                        release_id::ReleaseId(rel.id.to_string())
-                    )
-                        .resolve(cx);
+                        release_id::ReleaseId(rel.id.to_string()),
+                    ).resolve(cx);
                     let delete_href = admin_releases_delete_href(
                         cx,
                         &channel_owned,
@@ -251,10 +249,9 @@ pub(crate) async fn admin_releases_page(cx: &Cx) -> Result {
                     let size_label = format!("{} MB", blob.size_mb);
                     <div class="vb-rel-row">
                         <div class="vb-rel-version">
-                            (crate::release_pkg::version_for_display(
-                                    &rel.version,
-                                )
-                                .to_owned())
+                            (crate::release_pkg::version_for_display(&rel.version).to_owned(
+
+                            ))
                         </div>
                         <div>
                             <span class=(channel_badge)>(rel.channel.clone())</span>
@@ -287,7 +284,7 @@ pub(crate) async fn admin_releases_page(cx: &Cx) -> Result {
                                     title="Delete release"
                                     aria-label="Delete release"
                                 >
-                                    (ico_trash(cx, 14).await?)
+                                    ico_trash(size: 14)
                                 </a>
                             </div>
                         </div>
@@ -299,9 +296,8 @@ pub(crate) async fn admin_releases_page(cx: &Cx) -> Result {
             let cancel = admin_releases_list_href(cx, &channel_owned, page);
             let action = href!(
                 release_id::admin_releases_delete,
-                release_id::ReleaseId(target.id.to_string())
-            )
-                .resolve(cx);
+                release_id::ReleaseId(target.id.to_string()),
+            ).resolve(cx);
             <div
                 class="vb-confirm-root"
                 role="dialog"
@@ -313,10 +309,9 @@ pub(crate) async fn admin_releases_page(cx: &Cx) -> Result {
                     <p>
                         "This permanently removes "
                         <strong>
-                            (crate::release_pkg::version_for_display(
-                                    &target.version,
-                                )
-                                .to_owned())
+                            (crate::release_pkg::version_for_display(&target.version).to_owned(
+
+                            ))
                         </strong>
                         ". Type "
                         <span class="vb-mono">"delete"</span>
@@ -357,7 +352,7 @@ pub(crate) async fn admin_releases_page(cx: &Cx) -> Result {
                 </div>
             </div>
         }
-    }
+    })
 }
 
 #[cfg(test)]

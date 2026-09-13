@@ -27,6 +27,8 @@ assets and pkg publish.
 | Admin click-through | Releases list → New release (or confirm) and Companies list → New company; PRG `Location` matches the list/edit page | 303 to a hand-written stale path |
 | List pager | Companies / docs / issues `?page=2` is `href!` + query struct (shareable) | Hand-built `href_with_query` strings drifting from routes |
 
+Successor on the current pin: [`topcoat_0_8_smoke_test.md`](topcoat_0_8_smoke_test.md).
+
 ## Related
 
 - `.cursor/skills/topcoat/references/UPGRADE-0.6.md`

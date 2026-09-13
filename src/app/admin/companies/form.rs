@@ -6,7 +6,8 @@ use topcoat::{
     Result,
     context::Cx,
     router::response::{IntoResponse, Response},
-    view::view,
+    runtime::signal,
+    view::{View, ViewExt, component, view},
 };
 
 use crate::companies_accounts::{ensure_email_rows, show_remove_account_row};
@@ -31,7 +32,8 @@ pub struct CompanyFormView {
 }
 
 /// Form body only (for `#[page]` GET handlers that already wrap layouts).
-pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
+#[component]
+pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result<impl View> {
     let max = state.max_accounts;
     let max_label = max.to_string();
     let max_lts_label = state.max_lts.to_string();
@@ -42,12 +44,12 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
     let ind_init = f64::from(state.industrial_lts_subscriptions);
     let lts_max = state.max_lts as f64;
 
-    view! {
-        cx =>
-        signal lts = lts_init;
-        signal industrial = ind_init;
-        signal lts_cap = lts_max;
+    let lts = signal(cx, || lts_init);
+    let industrial = signal(cx, || ind_init);
+    let lts_cap = signal(cx, || lts_max);
 
+    Ok(view! {
+        cx =>
         <div>
             <a
                 class="vb-back"
@@ -223,7 +225,10 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
                         for (idx, email) in emails.iter().enumerate() {
                             let field = format!("email_{idx}");
                             let remove_val = format!("remove:{idx}");
-                            let show_remove = show_remove_account_row(emails.len(), email);
+                            let show_remove = show_remove_account_row(
+                                emails.len(),
+                                email,
+                            );
                             <div style="display: flex; gap: 8px; align-items: center;">
                                 <input
                                     name=(field)
@@ -267,11 +272,13 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result {
                 </form>
             </div>
         </div>
-    }
+    })
 }
 
 /// POST compose / validation re-render with root + admin shell (CSS + rail).
 pub async fn company_form_response(cx: &Cx, state: CompanyFormView) -> Result<Response> {
-    let body = render_company_form(cx, state).await?;
-    render_admin_page(cx, Ok(body)).await?.into_response(cx)
+    view! { cx => render_admin_page(render_company_form(state: state)) }
+        .first()
+        .await?
+        .into_response(cx)
 }

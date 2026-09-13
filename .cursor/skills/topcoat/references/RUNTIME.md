@@ -81,9 +81,9 @@ click.
 
 ```rust
 view! { cx =>
-    signal open = true;
-    signal remaining = 300.0; // prefer f64 for numeric client math
-    signal use_curl = false;
+    let open = signal(cx, || true);
+    let remaining = signal(cx, || 300.0); // prefer f64 for numeric client math
+    let use_curl = signal(cx, || false);
 
     <div :style=$(if open.get() { "" } else { "display: none" })>
         …
@@ -123,7 +123,7 @@ ephemeral panel.
 
 ## Shards and path params
 
-Shard POSTs hit `/_topcoat/shards/{id}` — **not** the page URL. There is
+Shard POSTs hit `/_topcoat/runtime/shards/{id}` — **not** the page URL. There is
 no `{org}` (or other page path param) on that route. Calling
 `path_param::<Org>(cx)` inside a `#[shard]` **panics** at runtime.
 
@@ -201,16 +201,14 @@ Validate `public_origins` non-empty + HTTPS-only at boot.
 There is **no** Playwright/WKWebView gate in CI. Do not invent one unless
 the project explicitly adds a browser runner.
 
-## Next pin (0.8.0 — do not write yet)
+## Current pin (0.8.0)
 
-When VCP bumps (`UPGRADE-0.8.md`):
-
-- Replace `signal name = value;` with `let name = signal(cx, || value);`
-  above `view!`.
+- Declare signals above `view!`: `let name = signal(cx, || value);`.
 - Call `.runtime()` on the router builder or `runtime::script()` panics.
-- Layouts wrap `(slot)` in `error_boundary`; param is `Slot<'_>` again.
+- Layouts wrap `(slot)` in `error_boundary`; param is `Slot<'_>`.
 - Re-renders **morph**; reorderable lists need a stable `id`.
 - Server `.get()` outside `$()` is a **tracked** read (user input).
+  Never authZ / role / tenant from a tracked read.
 
 ## Tooling notes
 
@@ -226,6 +224,6 @@ When VCP bumps (`UPGRADE-0.8.md`):
 | Feature | Files |
 |---------|--------|
 | Modal dismiss (signal + typed Event) | `src/app/_components/modal.rs` |
-| Docs live query | `src/app/org/docs.rs` (`signal query`, `@input`) |
+| Docs live query | `src/app/org/docs.rs` (`let query = signal(cx, …)`, `@input`) |
 | Ephemeral panel (countdown, tabs, copy) | `src/app/org/builds.rs`, `ephemeral.rs`, `styles.css` (`.vb-eph-*`) |
 | Click contract tests | `tests/integration_tests/common/topcoat_click.rs` |

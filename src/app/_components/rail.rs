@@ -2,7 +2,7 @@ use topcoat::{
     Result,
     context::Cx,
     router::href,
-    view::{component, view},
+    view::{View, component, view},
 };
 
 use crate::{
@@ -29,7 +29,7 @@ use super::icons::{
 
 /// Org rail chrome. Resolves org/perms via memoized `require_org` (locality).
 #[component]
-pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
+pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result<impl View> {
     let ctx = require_org(cx, org_slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
     let org_name = ctx.org.name.clone();
@@ -40,24 +40,37 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
         ctx.org.industrial_lts_subscriptions,
     );
 
-    let home_href = href!(dashboard, Org(org_slug)).resolve(cx);
-    let docs_href = href!(docs_page, Org(org_slug)).resolve(cx);
-    let builds_href = href!(builds_page, Org(org_slug)).resolve(cx);
+    let home = href!(dashboard, Org(org_slug));
+    let home_href = home.resolve(cx);
+    let docs = href!(docs_page, Org(org_slug));
+    let docs_href = docs.resolve(cx);
+    let builds = href!(builds_page, Org(org_slug));
+    let builds_href = builds.resolve(cx);
     // Staff Issues live under `/admin/issues` (not `/{org}/issues`).
     let issues_href = if show_admin {
         href!(admin_issues_page).resolve(cx)
     } else {
         href!(issues_page, Org(org_slug)).resolve(cx)
     };
+    let issues_current = if show_admin {
+        href!(admin_issues_page).is_current(cx)
+    } else {
+        href!(issues_page, Org(org_slug)).is_current(cx)
+    };
     let account_href = href!(account_page, Org(org_slug)).resolve(cx);
     let admin_issues = href!(admin_issues_page);
+    let admin_issues_href = admin_issues.resolve(cx);
     let admin_docs = href!(admin_docs_page);
+    let admin_docs_href = admin_docs.resolve(cx);
     let admin_releases = href!(admin_releases_page);
+    let admin_releases_href = admin_releases.resolve(cx);
     let admin_companies = href!(admin_companies_page);
+    let admin_companies_href = admin_companies.resolve(cx);
     let admin_key = href!(admin_key_page);
+    let admin_key_href = admin_key.resolve(cx);
     let initials = ui::org_initials(&org_name);
 
-    view! {
+    Ok(view! {
         cx =>
         <nav class="vb-rail" aria-label="Primary">
             <svg
@@ -82,66 +95,92 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
                     stroke-width="4"
                 ></circle>
             </svg>
-            <a href=(home_href.clone()) class=(rail_class(section == NavSection::Home))>
-                (ico_home(cx, 17).await?)
+            <a
+                href=(home_href.clone())
+                class=(rail_class(section == NavSection::Home || home.is_current(cx)))
+            >
+                ico_home(size: 17)
                 <span class="lbl">"Home"</span>
             </a>
-            <a href=(docs_href) class=(rail_class(section == NavSection::Docs))>
-                (ico_docs(cx, 17).await?)
+            <a
+                href=(docs_href)
+                class=(rail_class(section == NavSection::Docs || docs.is_current(cx)))
+            >
+                ico_docs(size: 17)
                 <span class="lbl">"Docs"</span>
             </a>
             if show_builds {
-                <a href=(builds_href) class=(rail_class(section == NavSection::Builds))>
-                    (ico_builds(cx, 17).await?)
+                <a
+                    href=(builds_href)
+                    class=(rail_class(
+                        section == NavSection::Builds || builds.is_current(cx),
+                    ))
+                >
+                    ico_builds(size: 17)
                     <span class="lbl">"Builds"</span>
                 </a>
             }
             <a
                 href=(issues_href.clone())
                 class=(rail_class(
-                    section == NavSection::Issues || section == NavSection::AdminIssues,
+                    section == NavSection::Issues
+                        || section == NavSection::AdminIssues
+                        || issues_current,
                 ))
             >
-                (ico_issues(cx, 17).await?)
+                ico_issues(size: 17)
                 <span class="lbl">"Issues"</span>
             </a>
             if show_admin {
                 <div class="vb-rail-rule"></div>
                 <div class="vb-rail-admin">"ADMIN"</div>
                 <a
-                    href=(admin_issues)
-                    class=(rail_class(section == NavSection::AdminIssues))
+                    href=(admin_issues_href)
+                    class=(rail_class(
+                        section == NavSection::AdminIssues
+                            || admin_issues.is_current(cx),
+                    ))
                 >
-                    (ico_issues(cx, 17).await?)
+                    ico_issues(size: 17)
                     <span class="lbl">"Issues"</span>
                 </a>
                 <a
-                    href=(admin_docs)
-                    class=(rail_class(section == NavSection::AdminDocs))
+                    href=(admin_docs_href)
+                    class=(rail_class(
+                        section == NavSection::AdminDocs || admin_docs.is_current(cx),
+                    ))
                 >
-                    (ico_edit(cx, 17).await?)
+                    ico_edit(size: 17)
                     <span class="lbl">"Docs"</span>
                 </a>
                 <a
-                    href=(admin_releases)
-                    class=(rail_class(section == NavSection::AdminReleases))
+                    href=(admin_releases_href)
+                    class=(rail_class(
+                        section == NavSection::AdminReleases
+                            || admin_releases.is_current(cx),
+                    ))
                 >
-                    (ico_release(cx, 17).await?)
+                    ico_release(size: 17)
                     <span class="lbl">"Rel."</span>
                 </a>
                 <a
-                    href=(admin_companies)
-                    class=(rail_class(section == NavSection::AdminCompanies))
+                    href=(admin_companies_href)
+                    class=(rail_class(
+                        section == NavSection::AdminCompanies
+                            || admin_companies.is_current(cx),
+                    ))
                 >
-                    (ico_orgs(cx, 17).await?)
+                    ico_orgs(size: 17)
                     <span class="lbl">"Orgs"</span>
                 </a>
                 if perms.key_manage {
                     <a
-                        href=(admin_key)
-                        class=(rail_class(section == NavSection::AdminKey))
+                        href=(admin_key_href)
+                        class=(rail_class(
+                            section == NavSection::AdminKey || admin_key.is_current(cx),
+                        ))
                     >
-                        (ico_key(cx, 17).await?)
+                        ico_key(size: 17)
                         <span class="lbl">"Keys"</span>
                     </a>
                 }
@@ -150,7 +189,7 @@ pub async fn vb_rail(cx: &Cx, org_slug: &str, section: NavSection) -> Result {
                 (initials)
             </a>
         </nav>
-    }
+    })
 }
 
 fn rail_class(active: bool) -> &'static str {

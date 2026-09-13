@@ -11,8 +11,10 @@ pub use releases::admin_releases_list_href;
 use topcoat::{
     Result,
     context::Cx,
-    router::{error::NotFoundError, error::redirect, href, layout, not_found, route},
-    view::view,
+    router::{
+        Slot, StatusCode, error::NotFoundError, error::redirect, href, layout, not_found, route,
+    },
+    view::{Child, View, component, error_boundary, view},
 };
 
 not_found!("/admin");
@@ -28,41 +30,53 @@ use crate::{
 };
 
 #[layout]
-async fn admin_layout(cx: &Cx, slot: Result) -> Result {
+async fn admin_layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
     let _staff = require_staff(cx).await?;
     let (section, crumb) = nav_from_cx(cx);
     let org_slug = RESERVED_ORG_SLUG.to_owned();
-    let inner = match slot {
-        Err(error) if error.downcast_ref::<NotFoundError>().is_some() => view! {
-            (topcoat::router::StatusCode::NOT_FOUND)
-            branded_404_body()
-        },
-        content => content,
-    }?;
 
-    view! {
+    Ok(view! {
         cx =>
         <div class="vb-shell">
             vb_rail(org_slug: &org_slug, section: section)
             <div class="vb-main">
                 vb_topbar(org_slug: &org_slug, crumb: &crumb)
-                <div class="vb-scroll"><div class="vb-screen">(inner)</div></div>
+                <div class="vb-scroll">
+                    <div class="vb-screen">
+                        error_boundary(
+                            fallback: |error| {
+                                if error.downcast_ref::<NotFoundError>().is_none() {
+                                    return Err(error);
+                                }
+                                Ok(
+                                    view! {
+                                        (StatusCode::NOT_FOUND)
+                                        branded_404_body()
+                                    },
+                                )
+                            },
+                            (slot)
+                        )
+                    </div>
+                </div>
             </div>
         </div>
-    }
+    })
 }
 
 /// Full HTML document for admin POST re-renders (`#[route]` skips layouts).
-pub(crate) async fn render_admin_page(cx: &Cx, slot: Result) -> Result {
-    let body = slot?;
-    let shelled = view! { cx => admin_layout(slot: Ok(body)) }?;
-    view! { cx => root_layout(slot: Ok(shelled)) }
+#[component]
+pub(crate) async fn render_admin_page(cx: &Cx, #[default] child: Child<'_>) -> Result<impl View> {
+    Ok(view! {
+        cx =>
+        root_layout(slot: Child::new(view! { cx => admin_layout(slot: child) }))
+    })
 }
 
 /// Hub redirects to the first admin tool (Issues).
 /// Navigational GET -> `redirect` (307), not `see_other` (303 PRG).
 #[route(GET "/admin")]
-pub(crate) async fn admin_index(cx: &Cx) -> Result {
+pub(crate) async fn admin_index(cx: &Cx) -> Result<()> {
     let _staff = require_staff(cx).await?;
     Err(redirect(href!(issues::admin_issues_page).resolve(cx)).into())
 }

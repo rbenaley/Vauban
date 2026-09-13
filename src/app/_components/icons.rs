@@ -1,6 +1,10 @@
 //! Geometric SVG icons (currentColor). Prefer these over Unicode glyphs.
 
-use topcoat::{Result, context::Cx, view::view};
+use topcoat::{
+    Result,
+    context::Cx,
+    view::{View, component, view},
+};
 
 /// Stroke weight for rail / navigation icons (outline set).
 pub const RAIL_STROKE: &str = "1.6";
@@ -11,11 +15,12 @@ fn box_style(size: u32) -> String {
     format!("width:{size}px;height:{size}px")
 }
 
-pub async fn ico_home(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_home(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = RAIL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -32,14 +37,15 @@ pub async fn ico_home(cx: &Cx, size: u32) -> Result {
                 <rect x="9.5" y="9.5" width="5.5" height="5.5" rx="0.6"></rect>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_docs(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_docs(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = RAIL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -54,14 +60,15 @@ pub async fn ico_docs(cx: &Cx, size: u32) -> Result {
                 <path d="M10.2 2.8 V6.2 H13.8"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_builds(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_builds(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = RAIL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -76,14 +83,15 @@ pub async fn ico_builds(cx: &Cx, size: u32) -> Result {
                 <path d="M8.5 2.2 L14.2 5.5 L14.2 11.5 L8.5 14.8 L2.8 11.5 L2.8 5.5 Z"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_issues(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_issues(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = RAIL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -99,14 +107,15 @@ pub async fn ico_issues(cx: &Cx, size: u32) -> Result {
                 <path d="M4.9 2.6 H12.4 L10.8 5.6 L12.4 8.6 H4.9 Z"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_edit(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_edit(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = RAIL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -123,14 +132,15 @@ pub async fn ico_edit(cx: &Cx, size: u32) -> Result {
                 <path d="M8.2 4.8 L12.2 8.8"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_release(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_release(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = RAIL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -145,14 +155,15 @@ pub async fn ico_release(cx: &Cx, size: u32) -> Result {
                 <path d="M8.5 2.2 L13.8 8.2 H10.6 V14.8 H6.4 V8.2 H3.2 Z"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_orgs(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_orgs(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = RAIL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -168,15 +179,16 @@ pub async fn ico_orgs(cx: &Cx, size: u32) -> Result {
                 <path d="M7 14.4 V10.2 H10 V14.4"></path>
             </svg>
         </span>
-    }
+    })
 }
 
 /// Security key (KEY / WebAuthn) — round head, toothed shaft.
-pub async fn ico_key(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_key(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = RAIL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -195,14 +207,15 @@ pub async fn ico_key(cx: &Cx, size: u32) -> Result {
                 <path d="M13.3 13.3 L15.1 11.5"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_arrow_down(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_arrow_down(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = CONTROL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -219,14 +232,15 @@ pub async fn ico_arrow_down(cx: &Cx, size: u32) -> Result {
                 <path d="M4.5 9.5 L8.5 13.5 L12.5 9.5"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_chevron_right(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_chevron_right(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = CONTROL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -242,14 +256,15 @@ pub async fn ico_chevron_right(cx: &Cx, size: u32) -> Result {
                 <path d="M6.5 3.5 L11.5 8.5 L6.5 13.5"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_chevron_down(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_chevron_down(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = CONTROL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -265,14 +280,15 @@ pub async fn ico_chevron_down(cx: &Cx, size: u32) -> Result {
                 <path d="M3.5 6.5 L8.5 11.5 L13.5 6.5"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_close(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_close(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = CONTROL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -288,14 +304,15 @@ pub async fn ico_close(cx: &Cx, size: u32) -> Result {
                 <path d="M13 4 L4 13"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_plus(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_plus(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = CONTROL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -311,14 +328,15 @@ pub async fn ico_plus(cx: &Cx, size: u32) -> Result {
                 <path d="M3.5 8.5 H13.5"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_check(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_check(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = CONTROL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -334,15 +352,16 @@ pub async fn ico_check(cx: &Cx, size: u32) -> Result {
                 <path d="M3.5 9 L7 12.5 L13.5 4.5"></path>
             </svg>
         </span>
-    }
+    })
 }
 
 /// Overlapping rectangles — Concept “copy command” affordance.
-pub async fn ico_copy(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_copy(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = CONTROL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -358,14 +377,15 @@ pub async fn ico_copy(cx: &Cx, size: u32) -> Result {
                 <path d="M3.5 11.5 V4.2 A1.2 1.2 0 0 1 4.7 3 H11.5"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_hourglass(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_hourglass(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = CONTROL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -382,14 +402,15 @@ pub async fn ico_hourglass(cx: &Cx, size: u32) -> Result {
                 ></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_trash(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_trash(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = CONTROL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -409,14 +430,15 @@ pub async fn ico_trash(cx: &Cx, size: u32) -> Result {
                 <path d="M9.8 7 V11"></path>
             </svg>
         </span>
-    }
+    })
 }
 
-pub async fn ico_paperclip(cx: &Cx, size: u32) -> Result {
+#[component]
+pub async fn ico_paperclip(cx: &Cx, size: u32) -> Result<impl View> {
     let s = size.to_string();
     let style = box_style(size);
     let stroke = CONTROL_STROKE;
-    view! {
+    Ok(view! {
         cx =>
         <span class="vb-ico" aria-hidden="true" style=(style)>
             <svg
@@ -434,7 +456,7 @@ pub async fn ico_paperclip(cx: &Cx, size: u32) -> Result {
                 ></path>
             </svg>
         </span>
-    }
+    })
 }
 
 #[cfg(test)]

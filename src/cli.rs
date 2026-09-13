@@ -24,7 +24,7 @@ pub fn wants_version(args: &[String]) -> bool {
         .any(|a| matches!(a.as_str(), "-V" | "--version"))
 }
 
-/// `vcp 0.1.0`-style line (crate version).
+/// `vcp 0.1.1`-style line (crate version).
 pub fn version_line(bin: &str) -> String {
     format!("{bin} {}", env!("CARGO_PKG_VERSION"))
 }

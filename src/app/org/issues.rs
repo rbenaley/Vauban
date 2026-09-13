@@ -14,7 +14,8 @@ use topcoat::{
         error::{SeeOther, not_found, redirect, see_other},
         href, page, path_param, query_params, route,
     },
-    view::view,
+    runtime::signal,
+    view::{View, view},
 };
 
 use crate::app::admin::issues::admin_issues_page;
@@ -65,7 +66,7 @@ pub(super) fn issues_list_href(cx: &Cx, org: &str, q: &str, status: &str, page: 
 }
 
 #[route(GET "/vauban/issues")]
-pub(crate) async fn redirect_reserved_issues_list(cx: &Cx) -> Result {
+pub(crate) async fn redirect_reserved_issues_list(cx: &Cx) -> Result<()> {
     Err(redirect(href!(admin_issues_page).resolve(cx)).into())
 }
 
@@ -76,7 +77,7 @@ pub(crate) async fn redirect_reserved_issues_create(cx: &Cx) -> Result<SeeOther>
 }
 
 #[page]
-pub(crate) async fn issues_page(cx: &Cx) -> Result {
+pub(crate) async fn issues_page(cx: &Cx) -> Result<impl View> {
     let slug = path_param::<Org>(cx);
     if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
         return Err(redirect(href!(admin_issues_page).resolve(cx)).into());
@@ -125,12 +126,11 @@ pub(crate) async fn issues_page(cx: &Cx) -> Result {
     }
 
     let page_init = page.to_string();
+    let query = signal(cx, || q_value.clone());
+    let page = signal(cx, || page_init.clone());
 
-    view! {
+    Ok(view! {
         cx =>
-        signal query = q_value.clone();
-        signal page = page_init.clone();
-
         <div
             style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 6px;"
         >
@@ -140,7 +140,7 @@ pub(crate) async fn issues_page(cx: &Cx) -> Result {
                     class="vb-btn vb-btn-ico"
                     href=(href!(new::new_issue_page, Org(slug)))
                 >
-                    (ico_plus(cx, 14).await?)
+                    ico_plus(size: 14)
                     <span>"Report an issue"</span>
                 </a>
             }
@@ -184,7 +184,7 @@ pub(crate) async fn issues_page(cx: &Cx) -> Result {
             status: $(status_owned.clone()),
             page: $(page.get())
         )
-    }
+    })
 }
 
 /// Shared org-scoped issue query (tenant + optional status / search).

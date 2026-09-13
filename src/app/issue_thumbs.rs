@@ -13,7 +13,7 @@
 use topcoat::{
     Result,
     context::Cx,
-    view::{component, view},
+    view::{Child, View, component, view},
 };
 
 use crate::{
@@ -111,7 +111,7 @@ pub const SHOT_DROP_JS: &str = "(e) => { e.prevent_default(); e.stop_propagation
 /// Drag-and-drop uses the same accumulator: `@drop` assigns `input.files` and
 /// dispatches `change` so browse and drop stay on one code path.
 #[component]
-pub async fn shot_file_input(cx: &Cx, label: Result, max: usize) -> Result {
+pub async fn shot_file_input(cx: &Cx, #[into] label: Child<'_>, max: usize) -> Result<impl View> {
     let _pin = SHOT_PREVIEW_CHANGE;
     let _drop_pin = SHOT_DROPZONE;
     // Reachable so `-D dead_code` keeps the handler contracts next to the view.
@@ -120,7 +120,7 @@ pub async fn shot_file_input(cx: &Cx, label: Result, max: usize) -> Result {
     let max_attr = max.to_string();
     let hint = attachment_cap_hint(max);
     // Raw JS string attributes (Topcoat Expr); keep in sync with SHOT_*_JS.
-    view! {
+    Ok(view! {
         cx =>
         <div
             class="vb-shot-picker"
@@ -140,7 +140,7 @@ pub async fn shot_file_input(cx: &Cx, label: Result, max: usize) -> Result {
                         data-max=(max_attr)
                         @change="(e) => { const input = e.current_target.inner; const form = input.form; if (!form) return; const host = form.querySelector('[data-shot-preview]'); if (!host) return; const max = parseInt(input.getAttribute('data-max') || '5', 10) || 5; const keyOf = (f) => f.name + '|' + f.size + '|' + f.lastModified; const kept = input.vcpShots || []; const seen = {}; kept.forEach((f) => { seen[keyOf(f)] = true; }); let skipped = 0; Array.from(input.files || []).forEach((f) => { if (!f.type || f.type.indexOf('image/') !== 0) return; if (seen[keyOf(f)]) return; if (kept.length >= max) { skipped = skipped + 1; return; } seen[keyOf(f)] = true; kept.push(f); }); input.vcpShots = kept; const sync = () => { try { const dt = new DataTransfer(); (input.vcpShots || []).forEach((f) => dt.items.add(f)); input.files = dt.files; } catch (_e) {} }; sync(); host.querySelectorAll('img[data-preview-url]').forEach((img) => { try { URL.revokeObjectURL(img.getAttribute('data-preview-url')); } catch (_e) {} }); host.innerHTML = ''; host.hidden = kept.length === 0; kept.forEach((file, index) => { const url = URL.createObjectURL(file); const wrap = document.createElement('div'); wrap.className = 'vb-shot-preview-item'; wrap.title = file.name || 'Screenshot'; const img = document.createElement('img'); img.src = url; img.alt = file.name || 'Screenshot preview'; img.setAttribute('data-preview-url', url); const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'vb-shot-preview-remove'; btn.setAttribute('aria-label', 'Remove ' + (file.name || 'screenshot')); btn.textContent = '×'; btn.addEventListener('click', () => { const list = input.vcpShots || []; list.splice(index, 1); input.vcpShots = list; sync(); input.dispatchEvent(new Event('change', { bubbles: true })); }); wrap.appendChild(img); wrap.appendChild(btn); host.appendChild(wrap); }); const status = form.querySelector('[data-shot-status]'); if (status) { let msg = kept.length ? (kept.length + ' of ' + max + ' attached') : ''; if (skipped) { msg = (msg ? msg + ' · ' : '') + skipped + ' ignored (limit ' + max + ')'; } status.textContent = msg; } const add = form.querySelector('[data-shot-add]'); if (add) { const full = kept.length >= max; add.setAttribute('aria-disabled', full ? 'true' : 'false'); input.tabIndex = full ? -1 : 0; } }"
                     >
-                    (label?)
+                    (label)
                 </label>
                 <span class="vb-shot-hint">(hint)</span>
             </div>
@@ -154,7 +154,7 @@ pub async fn shot_file_input(cx: &Cx, label: Result, max: usize) -> Result {
             <span style="display:none" aria-hidden="true">(_pin)</span>
             <span style="display:none" aria-hidden="true">(_drop_pin)</span>
         </div>
-    }
+    })
 }
 
 #[cfg(test)]
@@ -209,7 +209,7 @@ pub struct DiscussionPane {
 
 /// DISCUSSION block: bubbles with thumbs + DOM lightbox in-pane.
 #[component]
-pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
+pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result<impl View> {
     let DiscussionPane {
         opener_name,
         opener_role,
@@ -220,7 +220,7 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
         has_lightbox,
     } = pane;
 
-    view! {
+    Ok(view! {
         cx =>
         <div
             id="issue-discussion"
@@ -373,9 +373,7 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
                                         class="vb-mono"
                                         style="font-size: 10px; color: #9aa0a6; margin-top: 6px;"
                                     >
-                                        (format!(
-                                            "Edited · {}", row.edited_label.clone()
-                                        ))
+                                        (format!("Edited · {}", row.edited_label.clone()))
                                     </div>
                                 }
                             }
@@ -466,7 +464,7 @@ pub async fn issue_discussion(cx: &Cx, pane: DiscussionPane) -> Result {
                 </form>
             </dialog>
         }
-    }
+    })
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use topcoat::{
     Result,
     context::Cx,
     router::{error::redirect, href, page, path_param, route},
-    view::view,
+    view::{View, view},
 };
 
 use crate::app::admin::issues::admin_issues_page;
@@ -18,12 +18,12 @@ use crate::{
 };
 
 #[route(GET "/vauban/issues/new")]
-pub(crate) async fn redirect_reserved_issues_new(cx: &Cx) -> Result {
+pub(crate) async fn redirect_reserved_issues_new(cx: &Cx) -> Result<()> {
     Err(redirect(href!(admin_issues_page).resolve(cx)).into())
 }
 
 #[page]
-pub(crate) async fn new_issue_page(cx: &Cx) -> Result {
+pub(crate) async fn new_issue_page(cx: &Cx) -> Result<impl View> {
     let slug = path_param::<Org>(cx);
     if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
         return Err(redirect(href!(admin_issues_page).resolve(cx)).into());
@@ -38,7 +38,7 @@ pub(crate) async fn new_issue_page(cx: &Cx) -> Result {
     let action = href!(crate::app::org::issues::report_issue, Org(slug)).resolve(cx);
     let max_att = config(cx).issues.max_attachments_per_comment.max(1);
 
-    view! {
+    Ok(view! {
         <div>
             <a
                 class="vb-back"
@@ -162,5 +162,5 @@ pub(crate) async fn new_issue_page(cx: &Cx) -> Result {
                 </form>
             </div>
         </div>
-    }
+    })
 }

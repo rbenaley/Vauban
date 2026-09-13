@@ -9,7 +9,7 @@ use topcoat::{
         error::{SeeOther, redirect, see_other},
         href, page, query_params, route,
     },
-    view::view,
+    view::{View, view},
 };
 
 use super::staging::rollback_staged_release;
@@ -30,7 +30,7 @@ struct ConfirmQuery {
 }
 
 #[page]
-pub(crate) async fn admin_releases_confirm_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_releases_confirm_page(cx: &Cx) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -57,7 +57,7 @@ pub(crate) async fn admin_releases_confirm_page(cx: &Cx) -> Result {
     let allow = serde_json::to_string(&pending.allow_credentials).unwrap_or_else(|_| "[]".into());
     let token_hidden = token;
 
-    view! {
+    Ok(view! {
         <div>
             <a
                 class="vb-back"
@@ -135,7 +135,7 @@ pub(crate) async fn admin_releases_confirm_page(cx: &Cx) -> Result {
             </div>
             <script src=(VCP_WEBAUTHN_JS) defer=""></script>
         </div>
-    }
+    })
 }
 
 #[derive(Debug, Deserialize)]

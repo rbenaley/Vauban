@@ -17,7 +17,7 @@ Upstream orientation (keep in sync with `topcoat` skill):
 - [Announcing Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat)
 - [Topcoat v0.5.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.5.0)
 - [Topcoat v0.6.2](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.2)
-  (VCP pin **0.6.2** — done playbook:
+  (historical; current pin is **0.8.0** — done playbook:
   `topcoat` skill `references/UPGRADE-0.6.md`)
 - [Topcoat v0.8.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.8.0)
   (next bump — playbook:
@@ -34,9 +34,8 @@ VCP is a **Topcoat** application ([tokio-rs/topcoat](https://github.com/tokio-rs
 Depend on the facade crate `topcoat` only (internal crates are
 implementation details).
 
-**Pin:** Topcoat facade + CLI **0.6.2** (`Cargo.toml` / `Justfile`;
-edition **2024**, VCP `rust-version` **1.95**, `unsafe_code = deny`).
-Next documented bump is **0.8.0** (MSRV **1.98**) — playbook only.
+**Pin:** Topcoat facade + CLI **0.8.0** (`Cargo.toml` / `Justfile`;
+edition **2024**, VCP `rust-version` **1.98**, `unsafe_code = deny`).
 Use `href!` for
 in-app URLs, `path_param!`, `OriginPolicy`, `BodyLimit`, and machine 503s
 via `service_unavailable` + `machine_plain_response` (see

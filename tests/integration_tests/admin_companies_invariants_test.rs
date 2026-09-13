@@ -39,8 +39,8 @@ fn inv_lts_subscription_cap_and_steppers() {
         env!("CARGO_MANIFEST_DIR"),
         "/src/app/admin/companies/form.rs"
     ));
-    assert!(form.contains("signal lts"));
-    assert!(form.contains("signal industrial"));
+    assert!(form.contains("let lts = signal(cx"));
+    assert!(form.contains("let industrial = signal(cx"));
     assert!(form.contains("data-lts-stepper-client"));
     assert!(form.contains("data-industrial-lts-stepper-client"));
     assert!(form.contains("@click=$("));

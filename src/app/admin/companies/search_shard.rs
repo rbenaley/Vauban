@@ -1,9 +1,15 @@
 //! Live admin companies search shard — re-checks staff + companies_manage.
 //!
-//! Shard POSTs hit `/_topcoat/shards/{id}` — admin layout does not run.
+//! Shard POSTs hit `/_topcoat/runtime/shards/{id}` — admin layout does not run.
 //! Always re-authorize with `require_staff` before loading data.
 
-use topcoat::{Result, context::Cx, router::href, runtime::shard, view::view};
+use topcoat::{
+    Result,
+    context::Cx,
+    router::href,
+    runtime::shard,
+    view::{View, view},
+};
 
 use super::load::company_cards_page;
 use crate::{
@@ -19,7 +25,7 @@ use crate::{
 
 /// Shard args are attacker-controlled — always re-authorize.
 #[shard]
-pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) -> Result {
+pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
@@ -36,7 +42,7 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
         "No matching companies."
     };
 
-    view! {
+    Ok(view! {
         cx =>
         <div
             class="vb-company-list"
@@ -49,14 +55,15 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
                 for card in page_cards {
                     let edit_href = href!(
                         admin_companies_edit_page,
-                        CompanyId(card.org.id.to_string())
-                    )
-                        .resolve(cx);
+                        CompanyId(card.org.id.to_string()),
+                    ).resolve(cx);
                     let delete_href = href!(admin_companies_page)
-                        .query(crate::app::hrefs::DeleteSearchQ {
-                            q: &q,
-                            delete: card.org.id,
-                        })
+                        .query(
+                            crate::app::hrefs::DeleteSearchQ {
+                                q: &q,
+                                delete: card.org.id,
+                            },
+                        )
                         .resolve(cx);
                     let count = card.emails.len();
                     let count_label = if count == 1 {
@@ -70,8 +77,9 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
                     );
                     let emails = card.emails.clone();
                     let subs_ratio = format!(
-                        "{}/{}", card.org.lts_subscriptions, card.org
-                        .industrial_lts_subscriptions
+                        "{}/{}",
+                        card.org.lts_subscriptions,
+                        card.org.industrial_lts_subscriptions,
                     );
                     <div class="vb-company-card">
                         <div class="vb-company-card-head">
@@ -95,7 +103,7 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
                                     href=(delete_href)
                                     aria-label="Delete company"
                                 >
-                                    (ico_trash(cx, 14).await?)
+                                    ico_trash(size: 14)
                                 </a>
                             </div>
                         </div>
@@ -144,5 +152,5 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
                 }
             }
         </div>
-    }
+    })
 }

@@ -33,7 +33,7 @@ grep -n 'pub async fn ico_home' src/app/_components/icons.rs >/dev/null \
   || fail "icons.rs must export ico_home"
 grep -n 'pub async fn ico_close' src/app/_components/icons.rs >/dev/null \
   || fail "icons.rs must export ico_close"
-grep -n 'ico_home(cx, 17)' src/app/_components/rail.rs >/dev/null \
+grep -n 'ico_home(size: 17)' src/app/_components/rail.rs >/dev/null \
   || fail "vb_rail must use shared ico_home SVG"
 grep -n 'ico_close' src/app/_components/modal.rs >/dev/null \
   || fail "modal close control must use ico_close SVG"

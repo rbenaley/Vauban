@@ -5,7 +5,7 @@ use vcp::issues_search::{
     issue_matches_query, issue_matches_status, normalize_query, normalize_status,
 };
 
-use crate::common::org_issues_search_shard_body;
+use crate::common::{org_issues_search_shard_body, shard_args_array};
 
 proptest! {
     #![proptest_config(crate::common::prop_config(48))]
@@ -42,10 +42,13 @@ proptest! {
         status in "[A-Za-z ]{0,16}"
     ) {
         let body = org_issues_search_shard_body(&org, &q, &status);
-        prop_assert!(body.starts_with('['));
-        prop_assert!(body.ends_with(']'));
-        prop_assert!(body.contains(&org));
-        prop_assert_eq!(body.matches(',').count(), 3);
-        prop_assert!(body.contains("\"1\""));
+        prop_assert!(body.contains("\"args\":"));
+        prop_assert!(body.contains("\"signals\":"));
+        let args = shard_args_array(&body);
+        prop_assert!(args.starts_with('['));
+        prop_assert!(args.ends_with(']'));
+        prop_assert!(args.contains(&org));
+        prop_assert_eq!(args.matches(',').count(), 3);
+        prop_assert!(args.contains("\"1\""));
     }
 }

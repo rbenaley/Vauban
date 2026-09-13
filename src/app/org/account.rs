@@ -2,7 +2,7 @@ use topcoat::{
     Result,
     context::Cx,
     router::{href, page, path_param},
-    view::view,
+    view::{View, view},
 };
 
 use crate::{
@@ -16,7 +16,7 @@ use crate::{
 };
 
 #[page]
-pub(crate) async fn account_page(cx: &Cx) -> Result {
+pub(crate) async fn account_page(cx: &Cx) -> Result<impl View> {
     let slug = path_param::<Org>(cx);
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -55,7 +55,7 @@ pub(crate) async fn account_page(cx: &Cx) -> Result {
         org.vat.clone()
     };
 
-    view! {
+    Ok(view! {
         <h1 class="vb-title">"Account & subscription"</h1>
         <p class="vb-lead">"Organization profile and plan entitlements."</p>
 
@@ -107,7 +107,9 @@ pub(crate) async fn account_page(cx: &Cx) -> Result {
                 <span class="vb-muted">"Vauban Industrial LTS subscriptions"</span>
                 <span
                     class="vb-mono"
-                    data-account-industrial-lts=(org.industrial_lts_subscriptions.to_string())
+                    data-account-industrial-lts=(org.industrial_lts_subscriptions.to_string(
+
+                    ))
                 >
                     (org.industrial_lts_subscriptions.to_string())
                 </span>
@@ -121,8 +123,10 @@ pub(crate) async fn account_page(cx: &Cx) -> Result {
                     <span style="font-size: 13px; color: #8a8f96;">"None"</span>
                 } else {
                     for email in member_emails {
-                        let pill_class = account_member_pill_class(&email, &signed_in_email)
-                            .to_owned();
+                        let pill_class = account_member_pill_class(
+                            &email,
+                            &signed_in_email,
+                        ).to_owned();
                         <span class=(pill_class)>(email)</span>
                     }
                 }
@@ -132,5 +136,5 @@ pub(crate) async fn account_page(cx: &Cx) -> Result {
         <form method="POST" action=(href!(crate::app::login::logout))>
             <button class="vb-btn ghost" type="submit">"Sign out"</button>
         </form>
-    }
+    })
 }

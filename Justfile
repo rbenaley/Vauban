@@ -26,7 +26,7 @@ cargo_home := env_var_or_default("CARGO_HOME", env_var("HOME") + "/.cargo")
 export PATH := cargo_home + "/bin:" + env_var("PATH")
 
 # Keep in sync with README / topcoat facade pin in Cargo.toml.
-topcoat_cli_version := "0.6.2"
+topcoat_cli_version := "0.8.0"
 
 # ensure-vcp-test probe (Unix socket). App tests use config/testing.toml (TCP).
 vcp_test_url := "postgresql://vcp_test:vcp_test@/vcp_test"
@@ -214,8 +214,8 @@ ensure-test-asset-bundle *ARGS: ensure-topcoat
     set -euo pipefail
     echo "ensure-test-asset-bundle: cargo test --no-run…" >&2
     cargo test --no-run {{ARGS}}
-    echo "ensure-test-asset-bundle: bundling assets (profile=test)…" >&2
-    topcoat asset bundle --bin vcp --profile test
+    echo "ensure-test-asset-bundle: bundling assets from the cfg(test) harness…" >&2
+    cargo test --lib --offline bundle_test_harness_assets -- --test-threads=1
     # 0.6 writes next to the scanned binary. Test bins live under deps/;
     # also stamp debug/test profile dirs so load_asset_bundle can walk up.
     for assets_dir in target/debug/assets target/test/assets; do

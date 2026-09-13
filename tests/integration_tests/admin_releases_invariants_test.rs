@@ -66,7 +66,7 @@ fn inv_admin_releases_create_is_post_and_gated() {
     assert!(
         src.contains("vb-confirm-root")
             && src.contains("aria-modal=\"true\"")
-            && src.contains("signal not_pkg_open")
+            && src.contains("let not_pkg_open = signal(cx")
             && src.contains("id=\"vcp-not-pkg-open\"")
             && src.contains("id=\"vcp-release-create\"")
             && src.contains("@submit=$(")
@@ -80,7 +80,7 @@ fn inv_admin_releases_create_is_post_and_gated() {
         "not_pkg must use signal modal + submit preflight (Builds confirm chrome)"
     );
     assert!(
-        src.contains("signal no_key_open")
+        src.contains("let no_key_open = signal(cx")
             && src.contains("fn require_active_key")
             && src.contains("#[procedure]")
             && !src.contains("GET \"/admin/releases/new/require-active-key\"")

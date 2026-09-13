@@ -13,8 +13,8 @@ use topcoat::{
         response::Response,
         route,
     },
-    runtime::{Event, procedure},
-    view::view,
+    runtime::{Event, procedure, signal},
+    view::{View, view},
 };
 
 use super::staging::{STAGING_TTL_SECS, rollback_staged_release, sweep_staged_releases};
@@ -99,7 +99,7 @@ fn missing_active_key_for_publish(store: &StorageClient) -> bool {
 }
 
 #[page]
-pub(crate) async fn admin_releases_new_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_releases_new_page(cx: &Cx) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -128,12 +128,12 @@ pub(crate) async fn admin_releases_new_page(cx: &Cx) -> Result {
     let no_key_init = show_no_key;
     let validate_href = href!(admin_releases_validate_pkg).resolve(cx);
 
-    view! {
-        cx =>
-        signal not_pkg_open = not_pkg_init;
-        signal no_key_open = no_key_init;
-        signal pkg_go = false;
+    let not_pkg_open = signal(cx, || not_pkg_init);
+    let no_key_open = signal(cx, || no_key_init);
+    let pkg_go = signal(cx, || false);
 
+    Ok(view! {
+        cx =>
         <div>
             <a
                 class="vb-back"
@@ -294,7 +294,7 @@ pub(crate) async fn admin_releases_new_page(cx: &Cx) -> Result {
                 </form>
             </div>
         </div>
-    }
+    })
 }
 
 struct CreateReleaseFields {

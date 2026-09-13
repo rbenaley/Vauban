@@ -13,6 +13,7 @@ use topcoat::{
         response::{IntoResponse, Response},
         route,
     },
+    view::{View, view},
 };
 
 use super::form::{CompanyFormView, company_form_response, render_company_form};
@@ -146,7 +147,7 @@ fn edit_view(
 }
 
 #[page]
-pub(crate) async fn admin_companies_edit_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_companies_edit_page(cx: &Cx) -> Result<impl View> {
     let raw = path_param::<CompanyId>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -163,26 +164,29 @@ pub(crate) async fn admin_companies_edit_page(cx: &Cx) -> Result {
     let max = cfg.org.max_accounts_per_org;
     let max_lts = cfg.org.max_lts_subscriptions;
     let emails = load_org_emails(cx, org.id).await;
-    render_company_form(
-        cx,
-        CompanyFormView {
-            action: href!(admin_companies_update, CompanyId(id.to_string())).resolve(cx),
-            title: "Edit client company".to_owned(),
-            submit_label: "Save changes".to_owned(),
-            name: org.name,
-            contact_name: org.technical_contact_name,
-            contact_email: org.technical_contact_email,
-            vat: org.vat,
-            address: org.address,
-            lts_subscriptions: org.lts_subscriptions,
-            industrial_lts_subscriptions: org.industrial_lts_subscriptions,
-            emails,
-            max_accounts: max,
-            max_lts,
-            error: None,
-        },
-    )
-    .await
+    Ok(view! {
+        cx =>
+        render_company_form(
+            state: CompanyFormView {
+                action: href!(admin_companies_update, CompanyId(id.to_string())).resolve(
+                    cx,
+                ),
+                title: "Edit client company".to_owned(),
+                submit_label: "Save changes".to_owned(),
+                name: org.name,
+                contact_name: org.technical_contact_name,
+                contact_email: org.technical_contact_email,
+                vat: org.vat,
+                address: org.address,
+                lts_subscriptions: org.lts_subscriptions,
+                industrial_lts_subscriptions: org.industrial_lts_subscriptions,
+                emails,
+                max_accounts: max,
+                max_lts,
+                error: None,
+            }
+        )
+    })
 }
 
 #[route(POST "/admin/companies/{company_id}")]

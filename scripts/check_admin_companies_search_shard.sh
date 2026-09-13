@@ -57,7 +57,7 @@ grep -n 'admin_companies_search_results' "$PAGE" >/dev/null \
   || fail "$PAGE must invoke admin_companies_search_results shard"
 grep -n 'method="GET"' "$PAGE" >/dev/null || fail "$PAGE search filter form must use method=GET"
 grep -n 'type="search"' "$PAGE" >/dev/null || fail "$PAGE must expose type=search"
-grep -n 'signal query' "$PAGE" >/dev/null || fail "$PAGE must wire query signal"
+grep -n 'let query = signal(cx' "$PAGE" >/dev/null || fail "$PAGE must wire query signal"
 grep -n 'page: Option<u32>' "$PAGE" >/dev/null || fail "$PAGE AdminCompaniesQuery must include page"
 grep -n 'COMPANIES_PAGE_SIZE' "$PAGE" >/dev/null || fail "$PAGE must use COMPANIES_PAGE_SIZE"
 grep -n 'list_toolbar' "$PAGE" >/dev/null || fail "$PAGE must use list_toolbar pager"

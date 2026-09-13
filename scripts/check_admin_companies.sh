@@ -68,9 +68,9 @@ grep -n 'Vauban LTS subscriptions' "$FORM" >/dev/null \
   || fail "$FORM must show Vauban LTS subscriptions stepper"
 grep -n 'Vauban Industrial LTS subscriptions' "$FORM" >/dev/null \
   || fail "$FORM must show Industrial LTS stepper"
-grep -n 'signal lts' "$FORM" >/dev/null \
+grep -n 'let lts = signal(cx' "$FORM" >/dev/null \
   || fail "$FORM must use client signal for Vauban LTS stepper"
-grep -n 'signal industrial' "$FORM" >/dev/null \
+grep -n 'let industrial = signal(cx' "$FORM" >/dev/null \
   || fail "$FORM must use client signal for Industrial LTS stepper"
 grep -n 'data-lts-stepper-client' "$FORM" >/dev/null \
   || fail "$FORM must mark LTS steppers as client-side"

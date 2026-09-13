@@ -146,7 +146,7 @@ pub fn format_company_address(address: &str) -> String {
 }
 
 /// Address row on `/{org}/account`. Reserved `vauban` shows the live build
-/// (`VCP — v0.1.0 [hash]`) instead of the seed placeholder.
+/// (`VCP — v0.1.1 [hash]`) instead of the seed placeholder.
 pub fn account_address_display(slug: &str, stored_address: &str) -> String {
     if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
         product_label()

@@ -39,7 +39,7 @@ just test -- admin_issues_search_shard
 
 1. Sign in as `support@vauban.sh` / `password`.
 2. Open `https://127.0.0.1:3000/admin/issues`.
-3. Open DevTools → Network; filter on `/_topcoat/shards`.
+3. Open DevTools → Network; filter on `/_topcoat/runtime/shards`.
 4. Type into **Search (ID, title)** — confirm POSTs return **200** and
    the list filters without a full reload.
 5. Type an org slug into **Org slug or id** — confirm the list narrows

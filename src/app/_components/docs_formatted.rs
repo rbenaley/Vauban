@@ -3,7 +3,7 @@
 use topcoat::{
     Result,
     context::Cx,
-    view::{component, view},
+    view::{View, component, view},
 };
 
 use crate::{
@@ -13,46 +13,41 @@ use crate::{
 
 /// Parse [`docs_body`] and render the same blocks as `/admin/docs` / `/{org}/docs`.
 #[component]
-pub async fn docs_formatted_body(cx: &Cx, body: &str) -> Result {
+pub async fn docs_formatted_body(cx: &Cx, body: &str) -> Result<impl View> {
     let blocks = docs_body::parse(body);
-    view! {
+    Ok(view! {
         cx =>
         <div class="vb-docs-body">
             for block in blocks {
-                (render_docs_block(cx, block).await?)
+                render_docs_block(block: block)
             }
         </div>
-    }
+    })
 }
 
-async fn render_docs_block(cx: &Cx, block: Block) -> Result {
-    match block {
-        Block::Heading(text) => {
-            view! { cx => <h3>note_inline_text(text: &text)</h3> }
-        }
-        Block::Paragraph(text) => {
-            view! {
-                cx =>
+#[component]
+async fn render_docs_block(cx: &Cx, block: Block) -> Result<impl View> {
+    Ok(view! {
+        cx =>
+        match block {
+            Block::Heading(text) => {
+                <h3>note_inline_text(text: &text)</h3>
+            }
+            Block::Paragraph(text) => {
                 <p style="white-space: pre-wrap;">note_inline_text(text: &text)</p>
             }
-        }
-        Block::Pre(text) => {
-            view! { cx => <pre class="vb-pre">(text)</pre> }
-        }
-        Block::Callout(text) => {
-            view! {
-                cx =>
+            Block::Pre(text) => {
+                <pre class="vb-pre">(text)</pre>
+            }
+            Block::Callout(text) => {
                 <div class="vb-callout">
-                    (ico_issues(cx, 16).await?)
+                    ico_issues(size: 16)
                     <span style="white-space: pre-wrap;">
                         note_inline_text(text: &text)
                     </span>
                 </div>
             }
-        }
-        Block::List(items) => {
-            view! {
-                cx =>
+            Block::List(items) => {
                 <ul>
                     for item in items {
                         <li>note_inline_text(text: &item)</li>
@@ -60,5 +55,5 @@ async fn render_docs_block(cx: &Cx, block: Block) -> Result {
                 </ul>
             }
         }
-    }
+    })
 }

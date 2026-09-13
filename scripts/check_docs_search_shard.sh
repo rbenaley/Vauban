@@ -25,7 +25,7 @@ grep -n 'docs_read' "$SHARD" >/dev/null || fail "$SHARD must re-check docs_read"
 grep -n 'load_filtered_docs_page' "$SHARD" >/dev/null || fail "$SHARD must use load_filtered_docs_page"
 grep -n 'DocsFilter::normalized' "$SHARD" >/dev/null || fail "$SHARD must use DocsFilter::normalized"
 grep -n 'ctx.org.slug' "$SHARD" >/dev/null || fail "$SHARD must link with authorized ctx.org.slug"
-# Shard POSTs are /_topcoat/shards/{id} — path_param::<Org> panics there.
+# Shard POSTs are /_topcoat/runtime/shards/{id} — path_param::<Org> panics there.
 if grep -nE 'path_param' "$SHARD" >/dev/null; then
   fail "$SHARD must not call path_param (no {{org}} on shard routes); use shard org_slug arg"
 fi

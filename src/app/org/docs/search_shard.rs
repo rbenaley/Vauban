@@ -1,6 +1,6 @@
 //! Live docs search shard — re-checks org + docs_read on every render.
 //!
-//! Shard POSTs hit `/_topcoat/shards/{id}` — there is no `{org}` path
+//! Shard POSTs hit `/_topcoat/runtime/shards/{id}` — there is no `{org}` path
 //! segment. Tenant must come from the shard argument (re-authorized below).
 
 use topcoat::{
@@ -8,7 +8,7 @@ use topcoat::{
     context::Cx,
     router::{error::not_found, href},
     runtime::shard,
-    view::view,
+    view::{View, view},
 };
 
 use super::{DocsFilter, load_filtered_docs_page};
@@ -30,7 +30,7 @@ pub async fn docs_search_results(
     q: String,
     cat: String,
     page: String,
-) -> Result {
+) -> Result<impl View> {
     let org = normalize_org_slug(&org_slug).ok_or_else(not_found)?;
     let ctx = require_org(cx, org).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -44,7 +44,7 @@ pub async fn docs_search_results(
     // Links use the authorized org slug, never the raw shard arg.
     let org = ctx.org.slug.clone();
 
-    view! {
+    Ok(view! {
         cx =>
         <div class="vb-list" data-docs-search-shard="1">
             if page_items.is_empty() {
@@ -53,7 +53,11 @@ pub async fn docs_search_results(
                 for article in page_items {
                     <a
                         class="vb-row"
-                        href=(href!(doc_article_page, Org(org.as_str()), Doc(article.slug.as_str())))
+                        href=(href!(
+                            doc_article_page,
+                            Org(org.as_str()),
+                            Doc(article.slug.as_str()),
+                        ))
                     >
                         <div style="flex: 1; min-width: 0;">
                             <div style="font-weight: 700;">(article.title.clone())</div>
@@ -79,11 +83,11 @@ pub async fn docs_search_results(
                             </div>
                         </div>
                         <span style="color: #c2c6cb; flex: none; display: inline-flex;">
-                            (ico_chevron_right(cx, 16).await?)
+                            ico_chevron_right(size: 16)
                         </span>
                     </a>
                 }
             }
         </div>
-    }
+    })
 }

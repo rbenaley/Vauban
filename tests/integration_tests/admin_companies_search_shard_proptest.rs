@@ -4,7 +4,7 @@ use proptest::prelude::*;
 use vcp::companies_search::{CompanyMatchFields, company_matches_query, normalize_query};
 use vcp::list_page::COMPANIES_PAGE_SIZE;
 
-use crate::common::admin_companies_search_shard_body_page;
+use crate::common::{admin_companies_search_shard_body_page, shard_args_array};
 
 #[test]
 fn prop_companies_page_size_is_three() {
@@ -35,8 +35,11 @@ proptest! {
             prop_assert!(matched);
         }
         let body = admin_companies_search_shard_body_page(&q, &page);
-        prop_assert!(body.starts_with('['));
+        prop_assert!(body.contains("\"args\":"));
+        prop_assert!(body.contains("\"signals\":"));
+        let args = shard_args_array(&body);
+        prop_assert!(args.starts_with('['));
         // q, page
-        prop_assert_eq!(body.matches(',').count(), 1);
+        prop_assert_eq!(args.matches(',').count(), 1);
     }
 }

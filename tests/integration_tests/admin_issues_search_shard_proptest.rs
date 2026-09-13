@@ -6,7 +6,7 @@ use vcp::issues_search::{
     resolve_org_filter,
 };
 
-use crate::common::admin_issues_search_shard_body_page;
+use crate::common::{admin_issues_search_shard_body_page, shard_args_array};
 
 proptest! {
     #![proptest_config(crate::common::prop_config(48))]
@@ -43,8 +43,11 @@ proptest! {
             prop_assert!(issue_matches_query(&nq, &nq.to_uppercase(), "x"));
         }
         let body = admin_issues_search_shard_body_page(&q, &org, &status, "1");
-        prop_assert!(body.starts_with('['));
+        prop_assert!(body.contains("\"args\":"));
+        prop_assert!(body.contains("\"signals\":"));
+        let args = shard_args_array(&body);
+        prop_assert!(args.starts_with('['));
         // q, org, status, page
-        prop_assert_eq!(body.matches(',').count(), 3);
+        prop_assert_eq!(args.matches(',').count(), 3);
     }
 }

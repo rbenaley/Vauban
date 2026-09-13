@@ -13,6 +13,7 @@ use topcoat::{
         response::{IntoResponse, Response},
         route,
     },
+    view::{View, view},
 };
 
 use super::form::{CompanyFormView, company_form_response, render_company_form};
@@ -101,7 +102,7 @@ fn form_view(
 }
 
 #[page]
-pub(crate) async fn admin_companies_new_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_companies_new_page(cx: &Cx) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
@@ -110,26 +111,27 @@ pub(crate) async fn admin_companies_new_page(cx: &Cx) -> Result {
     let cfg = config(cx);
     let max = cfg.org.max_accounts_per_org;
     let max_lts = cfg.org.max_lts_subscriptions;
-    render_company_form(
-        cx,
-        CompanyFormView {
-            action: href!(admin_companies_create).resolve(cx),
-            title: "New client company".to_owned(),
-            submit_label: "Create company".to_owned(),
-            name: String::new(),
-            contact_name: String::new(),
-            contact_email: String::new(),
-            vat: String::new(),
-            address: String::new(),
-            lts_subscriptions: 0,
-            industrial_lts_subscriptions: 0,
-            emails: vec![String::new()],
-            max_accounts: max,
-            max_lts,
-            error: None,
-        },
-    )
-    .await
+    Ok(view! {
+        cx =>
+        render_company_form(
+            state: CompanyFormView {
+                action: href!(admin_companies_create).resolve(cx),
+                title: "New client company".to_owned(),
+                submit_label: "Create company".to_owned(),
+                name: String::new(),
+                contact_name: String::new(),
+                contact_email: String::new(),
+                vat: String::new(),
+                address: String::new(),
+                lts_subscriptions: 0,
+                industrial_lts_subscriptions: 0,
+                emails: vec![String::new()],
+                max_accounts: max,
+                max_lts,
+                error: None,
+            }
+        )
+    })
 }
 
 #[route(POST "/admin/companies/new")]

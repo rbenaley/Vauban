@@ -91,12 +91,12 @@ fn inv_layouts_use_topcoat_05_slot_result() {
         ),
     ] {
         assert!(
-            src.contains("slot: Result"),
-            "{name} layout must take slot: Result (Topcoat 0.5+)"
+            src.contains("slot: Slot<'_>"),
+            "{name} layout must take slot: Slot<'_> (Topcoat 0.8)"
         );
         assert!(
-            !src.contains("Slot<") && !src.contains("slot.await"),
-            "{name} must not use Slot<'_> / slot.await"
+            !src.contains("slot: Result") && !src.contains("slot.await"),
+            "{name} must not use slot: Result / slot.await"
         );
     }
 }
@@ -110,6 +110,10 @@ fn inv_login_and_root_layout_pins() {
     let app = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
     assert!(app.contains("#[layout]"));
     assert!(app.contains("runtime::script"));
+    assert!(
+        app.contains(".runtime()") && app.contains("error_boundary"),
+        "root must register .runtime() and brand 404 via error_boundary"
+    );
     assert!(app.contains("stylesheet!"));
     assert!(
         app.contains("require_catalog_assets") && app.contains("just bundle"),

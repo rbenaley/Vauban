@@ -67,7 +67,7 @@ Pass: Casbin + tenant fail-closed.
    SQL-bounded set (intentional semver exception).
 5. List GET (docs / issues / admin companies) with DEBUG: **one** COUNT
    (or one companies hydrate) per filter key for page+embedded shard —
-   not two. Shard-only POSTs to `/_topcoat/shards/…` still re-auth and
+   not two. Shard-only POSTs to `/_topcoat/runtime/shards/…` still re-auth and
    query (separate request). Lint: `scripts/check_request_sql_dedup.sh`.
 6. Org dashboard (`/{org}`): **one** org-scoped issues SELECT (not four
    issue `COUNT(*)`); docs tile may still `COUNT` published articles.

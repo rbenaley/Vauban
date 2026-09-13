@@ -9,7 +9,7 @@ use topcoat::{
         error::{SeeOther, not_found, see_other},
         href, page, path_param, query_params, route,
     },
-    view::view,
+    view::{View, view},
 };
 
 use crate::app::admin::issues::admin_issues_page;
@@ -55,7 +55,7 @@ struct EditCommentForm {
 }
 
 #[page]
-pub(crate) async fn admin_issue_detail_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_issue_detail_page(cx: &Cx) -> Result<impl View> {
     let key = path_param::<IssueKey>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -157,7 +157,7 @@ pub(crate) async fn admin_issue_detail_page(cx: &Cx) -> Result {
         },
     );
 
-    view! {
+    Ok(view! {
         <div class="vb-issue-pane">
             <a
                 class="vb-back"
@@ -238,7 +238,7 @@ pub(crate) async fn admin_issue_detail_page(cx: &Cx) -> Result {
             </div>
 
             <div class="vb-callout">
-                (ico_hourglass(cx, 16).await?)
+                ico_hourglass(size: 16)
                 <span>
                     "SLA: initial analysis within 2–5 business days from the report timestamp."
                 </span>
@@ -266,7 +266,7 @@ pub(crate) async fn admin_issue_detail_page(cx: &Cx) -> Result {
                         <span
                             style="width: 26px; height: 26px; flex: none; border-radius: 50%; background: #e9eaec; color: #5a5f66; display: flex; align-items: center; justify-content: center;"
                         >
-                            (ico_check(cx, 13).await?)
+                            ico_check(size: 13)
                         </span>
                         <div
                             style="font-size: 13.5px; color: #5a5f66; line-height: 1.5;"
@@ -299,7 +299,7 @@ pub(crate) async fn admin_issue_detail_page(cx: &Cx) -> Result {
                         <span
                             style="width: 26px; height: 26px; flex: none; border-radius: 50%; background: #e9eaec; color: #5a5f66; display: flex; align-items: center; justify-content: center;"
                         >
-                            (ico_check(cx, 13).await?)
+                            ico_check(size: 13)
                         </span>
                         <div
                             style="font-size: 13.5px; color: #5a5f66; line-height: 1.5;"
@@ -350,7 +350,7 @@ pub(crate) async fn admin_issue_detail_page(cx: &Cx) -> Result {
                             shot_file_input(
                                 label: view! {
                                     cx =>
-                                    (ico_paperclip(cx, 13).await?)
+                                    ico_paperclip(size: 13)
                                     <span>"Attach screenshot"</span>
                                 },
                                 max: max_att
@@ -383,7 +383,7 @@ pub(crate) async fn admin_issue_detail_page(cx: &Cx) -> Result {
                 </div>
             }
         </div>
-    }
+    })
 }
 
 struct ReplyMultipart {

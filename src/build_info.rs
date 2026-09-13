@@ -6,7 +6,7 @@ pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Short git SHA baked by `build.rs` (`unknown` if git is unavailable).
 pub const GIT_HASH: &str = env!("VCP_GIT_HASH");
 
-/// Account / ops line: `VCP — v0.1.0 [2745693a]`.
+/// Account / ops line: `VCP — v0.1.1 [2745693a]`.
 pub fn product_label() -> String {
     format!("VCP — v{PKG_VERSION} [{GIT_HASH}]")
 }

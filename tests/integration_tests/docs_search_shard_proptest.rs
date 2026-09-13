@@ -5,7 +5,7 @@ use vcp::docs_search::{
     normalize_category, normalize_org_slug, normalize_query, text_matches_query,
 };
 
-use crate::common::docs_search_shard_body;
+use crate::common::{docs_search_shard_body, shard_args_array};
 
 proptest! {
     #![proptest_config(crate::common::prop_config(48))]
@@ -59,12 +59,15 @@ proptest! {
         cat in "[A-Za-z ]{0,16}"
     ) {
         let body = docs_search_shard_body(&org, &q, &cat);
-        prop_assert!(body.starts_with('['));
-        prop_assert!(body.ends_with(']'));
-        prop_assert!(body.contains(&org));
+        prop_assert!(body.contains("\"args\":"));
+        prop_assert!(body.contains("\"signals\":"));
+        let args = shard_args_array(&body);
+        prop_assert!(args.starts_with('['));
+        prop_assert!(args.ends_with(']'));
+        prop_assert!(args.contains(&org));
         // Empty q/cat still produce quoted empty strings.
-        prop_assert_eq!(body.matches('"').count() % 2, 0);
-        prop_assert_eq!(body.matches(',').count(), 3);
-        prop_assert!(body.contains("\"1\""));
+        prop_assert_eq!(args.matches('"').count() % 2, 0);
+        prop_assert_eq!(args.matches(',').count(), 3);
+        prop_assert!(args.contains("\"1\""));
     }
 }

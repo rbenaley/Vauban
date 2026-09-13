@@ -4,6 +4,7 @@ use topcoat::{
     Result,
     context::Cx,
     router::{error::not_found, page, path_param, query_params},
+    view::View,
 };
 
 use super::download::DlError;
@@ -23,7 +24,7 @@ use crate::{
 path_param!(pub(crate) release_ver);
 
 #[page]
-pub(crate) async fn build_detail_page(cx: &Cx) -> Result {
+pub(crate) async fn build_detail_page(cx: &Cx) -> Result<impl View> {
     let org_slug = path_param::<Org>(cx);
     let ver = path_param::<ReleaseVer>(cx);
     let ctx = require_org(cx, org_slug).await?;
@@ -42,7 +43,8 @@ pub(crate) async fn build_detail_page(cx: &Cx) -> Result {
         .as_ref()
         .and_then(|q| q.channel.clone())
         .unwrap_or_default();
-    let channel = normalize_builds_channel(channel_raw.trim(), org_slug, lts, industrial);
+    let channel =
+        normalize_builds_channel(channel_raw.trim(), org_slug, lts, industrial).to_owned();
 
     let mut database = crate::auth::db(cx);
     let ver_key = ver.to_string();
@@ -60,13 +62,13 @@ pub(crate) async fn build_detail_page(cx: &Cx) -> Result {
     };
 
     // Prefer page derived from SQL order so deep-links stay consistent.
-    let total = count_releases_for_org(cx, ctx.org.id, org_slug, channel, lts, industrial).await;
+    let total = count_releases_for_org(cx, ctx.org.id, org_slug, &channel, lts, industrial).await;
     let mut pages = page_count(total, BUILDS_PAGE_SIZE);
     let idx = release_index_in_sql_order(
         cx,
         ctx.org.id,
         org_slug,
-        channel,
+        &channel,
         &matched.version,
         lts,
         industrial,
@@ -74,7 +76,7 @@ pub(crate) async fn build_detail_page(cx: &Cx) -> Result {
     .await;
     let mut page = clamp_page(idx / BUILDS_PAGE_SIZE + 1, pages);
     let mut page_releases =
-        load_releases_page_for_org(cx, ctx.org.id, org_slug, channel, page, lts, industrial).await;
+        load_releases_page_for_org(cx, ctx.org.id, org_slug, &channel, page, lts, industrial).await;
 
     // Ensure the open version is visible even if channel filter would hide it.
     if !page_releases.iter().any(|r| r.version == *ver) {
@@ -89,10 +91,10 @@ pub(crate) async fn build_detail_page(cx: &Cx) -> Result {
     render_builds(
         cx,
         BuildsRender {
-            org_slug,
+            org_slug: org_slug.to_owned(),
             channel,
-            releases: &page_releases,
-            open_version: Some(ver),
+            releases: page_releases,
+            open_version: Some(ver.to_owned()),
             can_download: perms.builds_download,
             user_id: ctx.user.id,
             org_id: ctx.org.id,

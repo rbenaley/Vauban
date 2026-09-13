@@ -13,8 +13,8 @@ pub use builds::{DL_ERROR_PARAM, DownloadError, download_error_href};
 use topcoat::{
     Result,
     context::Cx,
-    router::{error::NotFoundError, href, layout, page, path_param},
-    view::view,
+    router::{Slot, StatusCode, error::NotFoundError, href, layout, page, path_param},
+    view::{View, error_boundary, view},
 };
 
 use crate::{
@@ -31,34 +31,44 @@ use dashboard_tiles::{
 path_param!(pub org);
 
 #[layout]
-async fn org_layout(cx: &Cx, slot: Result) -> Result {
+async fn org_layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
     let slug = path_param::<Org>(cx);
     // Membership gate (memoized; rail/topbar re-use the same lookup).
     let _ctx = require_org(cx, slug).await?;
     let (section, crumb) = nav_from_cx(cx);
     let org_slug = slug.to_owned();
-    let inner = match slot {
-        Err(error) if error.downcast_ref::<NotFoundError>().is_some() => view! {
-            (topcoat::router::StatusCode::NOT_FOUND)
-            branded_404_body()
-        },
-        content => content,
-    }?;
 
-    view! {
+    Ok(view! {
         cx =>
         <div class="vb-shell">
             vb_rail(org_slug: &org_slug, section: section)
             <div class="vb-main">
                 vb_topbar(org_slug: &org_slug, crumb: &crumb)
-                <div class="vb-scroll"><div class="vb-screen">(inner)</div></div>
+                <div class="vb-scroll">
+                    <div class="vb-screen">
+                        error_boundary(
+                            fallback: |error| {
+                                if error.downcast_ref::<NotFoundError>().is_none() {
+                                    return Err(error);
+                                }
+                                Ok(
+                                    view! {
+                                        (StatusCode::NOT_FOUND)
+                                        branded_404_body()
+                                    },
+                                )
+                            },
+                            (slot)
+                        )
+                    </div>
+                </div>
             </div>
         </div>
-    }
+    })
 }
 
 #[page]
-pub(crate) async fn dashboard(cx: &Cx) -> Result {
+pub(crate) async fn dashboard(cx: &Cx) -> Result<impl View> {
     let slug = path_param::<Org>(cx);
     let ctx = require_org(cx, slug).await?;
     let org_id = ctx.org.id;
@@ -82,7 +92,7 @@ pub(crate) async fn dashboard(cx: &Cx) -> Result {
     let docs_href = href!(docs::docs_page, Org(slug)).resolve(cx);
     let builds_href = href!(builds::builds_page, Org(slug)).resolve(cx);
 
-    view! {
+    Ok(view! {
         cx =>
         <h1 class="vb-title dash">"Dashboard"</h1>
 
@@ -102,5 +112,5 @@ pub(crate) async fn dashboard(cx: &Cx) -> Result {
             dash_activity(load: load)
             dash_notes(load: load, builds_href: &builds_href)
         </div>
-    }
+    })
 }

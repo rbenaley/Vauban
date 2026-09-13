@@ -9,7 +9,7 @@ use topcoat::{
         error::{SeeOther, not_found, see_other},
         href, page, path_param, route,
     },
-    view::view,
+    view::{View, view},
 };
 
 use crate::app::admin::docs::admin_docs_page;
@@ -55,7 +55,7 @@ fn parse_doc_id(raw: &str) -> Option<u64> {
 }
 
 #[page]
-pub(crate) async fn admin_docs_edit_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_docs_edit_page(cx: &Cx) -> Result<impl View> {
     let doc_raw = path_param::<Doc>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -82,7 +82,7 @@ pub(crate) async fn admin_docs_edit_page(cx: &Cx) -> Result {
     };
     let current_cat = article.category.clone();
 
-    view! {
+    Ok(view! {
         <div>
             <a
                 class="vb-back"
@@ -102,7 +102,7 @@ pub(crate) async fn admin_docs_edit_page(cx: &Cx) -> Result {
             </p>
             if is_published {
                 <div class="vb-callout" style="margin-bottom: 18px;">
-                    (ico_issues(cx, 16).await?)
+                    ico_issues(size: 16)
                     <span>
                         "Editing a published article publishes a new version and unpublishes the previous one — so both appear in the editor list."
                     </span>
@@ -168,7 +168,7 @@ pub(crate) async fn admin_docs_edit_page(cx: &Cx) -> Result {
                 </form>
             </div>
         </div>
-    }
+    })
 }
 
 #[route(POST "/admin/docs/{doc}")]

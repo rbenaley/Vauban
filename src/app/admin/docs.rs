@@ -7,7 +7,7 @@ use topcoat::{
     Result,
     context::Cx,
     router::{href, page, query_params},
-    view::view,
+    view::{View, view},
 };
 
 use crate::app::admin::docs::new::admin_docs_new_page;
@@ -29,7 +29,7 @@ struct AdminDocsQuery {
 }
 
 #[page]
-pub(crate) async fn admin_docs_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_docs_page(cx: &Cx) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
@@ -84,7 +84,7 @@ pub(crate) async fn admin_docs_page(cx: &Cx) -> Result {
             .resolve(cx)
     });
 
-    view! {
+    Ok(view! {
         cx =>
         <div
             style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;"
@@ -129,27 +129,23 @@ pub(crate) async fn admin_docs_page(cx: &Cx) -> Result {
                         for article in page_articles {
                             let edit_href = href!(
                                 doc::admin_docs_edit_page,
-                                doc::Doc(article.id.to_string())
-                            )
-                                .resolve(cx);
+                                doc::Doc(article.id.to_string()),
+                            ).resolve(cx);
                             let publish_action = href!(
                                 doc::admin_docs_publish,
-                                doc::Doc(article.id.to_string())
-                            )
-                                .resolve(cx);
+                                doc::Doc(article.id.to_string()),
+                            ).resolve(cx);
                             let unpublish_action = href!(
                                 doc::admin_docs_unpublish,
-                                doc::Doc(article.id.to_string())
-                            )
-                                .resolve(cx);
+                                doc::Doc(article.id.to_string()),
+                            ).resolve(cx);
                             let delete_href = href!(admin_docs_page)
-                                .query(crate::app::hrefs::DeleteQ {
-                                    delete: article.id,
-                                })
+                                .query(crate::app::hrefs::DeleteQ { delete: article.id })
                                 .resolve(cx);
                             let is_published = article.status == DOC_STATUS_PUBLISHED;
-                            let status_badge = doc_status_badge_class(&article.status)
-                                .to_owned();
+                            let status_badge = doc_status_badge_class(&article.status).to_owned(
+
+                            );
                             let summary = if article.summary.trim().is_empty() {
                                 "—".to_owned()
                             } else {
@@ -199,7 +195,7 @@ pub(crate) async fn admin_docs_page(cx: &Cx) -> Result {
                                             title="Delete article"
                                             aria-label="Delete article"
                                         >
-                                            (ico_trash(cx, 14).await?)
+                                            ico_trash(size: 14)
                                         </a>
                                     </div>
                                 </td>
@@ -212,11 +208,9 @@ pub(crate) async fn admin_docs_page(cx: &Cx) -> Result {
 
         if let Some(target) = delete_target {
             let cancel = href!(admin_docs_page).resolve(cx);
-            let action = href!(
-                doc::admin_docs_delete,
-                doc::Doc(target.id.to_string())
-            )
-                .resolve(cx);
+            let action = href!(doc::admin_docs_delete, doc::Doc(target.id.to_string())).resolve(
+                cx,
+            );
             <div
                 class="vb-confirm-root"
                 role="dialog"
@@ -262,5 +256,5 @@ pub(crate) async fn admin_docs_page(cx: &Cx) -> Result {
                 </div>
             </div>
         }
-    }
+    })
 }

@@ -5,8 +5,8 @@ use topcoat::router::StatusCode;
 
 use crate::common::{
     admin_companies_search_shard_body, cleanup, create_membership, create_org_with_membership,
-    create_test_org, create_test_user, db_lock, get, login_cookie, post_json, shard_path_from_html,
-    status, test_db, test_router, unique_email, unique_slug,
+    create_test_org, create_test_user, db_lock, get, is_topcoat_shard_path, login_cookie,
+    post_json, shard_path_from_html, status, test_db, test_router, unique_email, unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::response::Response) -> String {
@@ -32,7 +32,7 @@ async fn staff_admin_companies_shard() -> AdminCompaniesShardFixture {
     let page = get(&router, "/admin/companies", Some(&cookie)).await;
     assert_eq!(status(&page), StatusCode::OK);
     let shard_path = shard_path_from_html(&body_text(page).await).expect("shard path");
-    assert!(shard_path.starts_with("/_topcoat/shards/"));
+    assert!(is_topcoat_shard_path(&shard_path));
     AdminCompaniesShardFixture {
         db,
         router,

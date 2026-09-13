@@ -7,8 +7,8 @@ use tokio::sync::Barrier;
 use topcoat::router::StatusCode;
 
 use crate::common::{
-    cleanup, create_org_with_membership, db_lock, get, login_cookie, status, test_db, test_router,
-    unique_email, unique_slug,
+    cleanup, create_org_with_membership, db_lock, get, html_embeds_topcoat_shard, login_cookie,
+    status, test_db, test_router, unique_email, unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::response::Response) -> String {
@@ -42,7 +42,7 @@ async fn battle_parallel_docs_list_gets_with_embedded_shard() {
             assert_eq!(status(&resp), StatusCode::OK);
             let html = body_text(resp).await;
             assert!(
-                html.contains("data-docs-search-shard") || html.contains("/_topcoat/shards/"),
+                html.contains("data-docs-search-shard") || html_embeds_topcoat_shard(&html),
                 "docs list must embed search shard"
             );
         }));
@@ -78,7 +78,7 @@ async fn battle_parallel_admin_companies_list_gets() {
             let html = body_text(resp).await;
             assert!(
                 html.contains("data-admin-companies-search-shard")
-                    || html.contains("/_topcoat/shards/"),
+                    || html_embeds_topcoat_shard(&html),
                 "companies list must embed search shard"
             );
         }));

@@ -14,7 +14,7 @@ use topcoat::{
         error::{SeeOther, see_other},
         href, page, query_params, route,
     },
-    view::view,
+    view::{View, view},
 };
 
 use crate::app::hrefs::ErrQ;
@@ -121,7 +121,7 @@ struct AdminKeyQuery {
 }
 
 #[page]
-pub(crate) async fn admin_key_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_key_page(cx: &Cx) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.key_manage {
@@ -215,7 +215,7 @@ pub(crate) async fn admin_key_page(cx: &Cx) -> Result {
     let pending_page_for_links = pending_page;
     let active_page_for_links = active_page;
 
-    view! {
+    Ok(view! {
         cx =>
         <div style="margin-bottom: 18px;">
             <h1 class="vb-title">"Security keys"</h1>
@@ -231,7 +231,7 @@ pub(crate) async fn admin_key_page(cx: &Cx) -> Result {
         }
 
         <div class="vb-callout">
-            (ico_key(cx, 16).await?)
+            ico_key(size: 16)
             <div>
                 "Record its fingerprint out-of-band, then you will have to "
                 "activate it from the server with "
@@ -517,7 +517,7 @@ pub(crate) async fn admin_key_page(cx: &Cx) -> Result {
             </div>
         }
         <script src=(VCP_WEBAUTHN_JS) defer=""></script>
-    }
+    })
 }
 
 #[derive(Debug, Deserialize)]

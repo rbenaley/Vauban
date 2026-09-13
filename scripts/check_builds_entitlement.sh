@@ -94,7 +94,7 @@ grep -n 'chan-lts' styles.css >/dev/null \
   && grep -n 'chan-stable' styles.css >/dev/null \
   && grep -n 'chan-eol' styles.css >/dev/null \
   || fail "styles.css must define chan-lts / chan-stable / chan-eol"
-grep -n 'signal verify_open' "$BUILDS" >/dev/null \
+grep -n 'let verify_open = signal(cx' "$BUILDS" >/dev/null \
   || fail "$BUILDS must toggle Verify via Topcoat signal verify_open"
 grep -n 'data-verify-signature-panel\|vb-verify' "$BUILDS" >/dev/null \
   || fail "$BUILDS must render verify signature panel (vb-verify)"
@@ -191,7 +191,7 @@ grep -n 'EPHEMERAL DOWNLOAD LINK\|vb-ephemeral' "$BUILDS" >/dev/null \
   || fail "$BUILDS must render SSR ephemeral panel"
 grep -n 'Generate new link' "$BUILDS" >/dev/null \
   || fail "$BUILDS expired ephemeral state must offer Generate new link"
-grep -n 'signal use_curl' "$BUILDS" >/dev/null \
+grep -n 'let use_curl = signal(cx' "$BUILDS" >/dev/null \
   || fail "$BUILDS must switch fetch/cURL via Topcoat signal use_curl"
 if grep -nE 'tool=fetch|tool=curl|\?tool=' "$BUILDS" >/dev/null; then
   fail "$BUILDS must not navigate for fetch/cURL tabs"

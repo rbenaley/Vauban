@@ -5,8 +5,8 @@ use topcoat::router::StatusCode;
 
 use crate::common::{
     cleanup, create_membership, create_org_with_membership, create_published_doc, create_test_org,
-    create_test_user, db_lock, docs_search_shard_body, get, login_cookie, post_json,
-    shard_path_from_html, status, test_db, test_router, unique_email, unique_slug,
+    create_test_user, db_lock, docs_search_shard_body, get, is_topcoat_shard_path, login_cookie,
+    post_json, shard_path_from_html, status, test_db, test_router, unique_email, unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::response::Response) -> String {
@@ -35,7 +35,7 @@ async fn member_docs_shard(email_prefix: &str, org_prefix: &str) -> ShardFixture
     let html = body_text(page).await;
     let shard_path = shard_path_from_html(&html).expect("docs page embeds shard path");
     assert!(
-        shard_path.starts_with("/_topcoat/shards/"),
+        is_topcoat_shard_path(&shard_path),
         "unexpected shard path: {shard_path}"
     );
     ShardFixture {

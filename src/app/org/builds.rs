@@ -8,8 +8,8 @@ use topcoat::{
     Result,
     context::Cx,
     router::{href, page, path_param, query_params},
-    runtime::Event,
-    view::{component, view},
+    runtime::{Event, signal},
+    view::{View, component, view},
 };
 
 use crate::{
@@ -67,7 +67,7 @@ pub fn builds_list_href(cx: &Cx, org: &str, channel: &str, page: usize, open_non
 }
 
 #[page]
-pub(crate) async fn builds_page(cx: &Cx) -> Result {
+pub(crate) async fn builds_page(cx: &Cx) -> Result<impl View> {
     let slug = path_param::<Org>(cx);
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -85,29 +85,29 @@ pub(crate) async fn builds_page(cx: &Cx) -> Result {
         .as_ref()
         .and_then(|q| q.channel.clone())
         .unwrap_or_default();
-    let channel = normalize_builds_channel(channel_raw.trim(), slug, lts, industrial);
+    let channel = normalize_builds_channel(channel_raw.trim(), slug, lts, industrial).to_owned();
     let collapse = q
         .as_ref()
         .and_then(|q| q.open.as_deref())
         .is_some_and(|v| v.eq_ignore_ascii_case("none"));
     let mut page = parse_page(q.as_ref().and_then(|q| q.page));
-    let total = count_releases_for_org(cx, ctx.org.id, slug, channel, lts, industrial).await;
+    let total = count_releases_for_org(cx, ctx.org.id, slug, &channel, lts, industrial).await;
     let pages = page_count(total, BUILDS_PAGE_SIZE);
     page = clamp_page(page, pages);
     let page_releases =
-        load_releases_page_for_org(cx, ctx.org.id, slug, channel, page, lts, industrial).await;
+        load_releases_page_for_org(cx, ctx.org.id, slug, &channel, page, lts, industrial).await;
     let open_version = if collapse || page != 1 {
         None
     } else {
-        page_releases.first().map(|r| r.version.as_str())
+        page_releases.first().map(|r| r.version.clone())
     };
 
     render_builds(
         cx,
         BuildsRender {
-            org_slug: slug,
+            org_slug: slug.to_owned(),
             channel,
-            releases: &page_releases,
+            releases: page_releases,
             open_version,
             can_download: perms.builds_download,
             user_id: ctx.user.id,
@@ -146,11 +146,11 @@ pub(super) fn normalize_builds_channel<'a>(
 }
 
 /// Everything the Builds list body needs for one request.
-pub(super) struct BuildsRender<'a> {
-    pub org_slug: &'a str,
-    pub channel: &'a str,
-    pub releases: &'a [Release],
-    pub open_version: Option<&'a str>,
+pub(super) struct BuildsRender {
+    pub org_slug: String,
+    pub channel: String,
+    pub releases: Vec<Release>,
+    pub open_version: Option<String>,
     pub can_download: bool,
     pub user_id: u64,
     pub org_id: u64,
@@ -162,7 +162,7 @@ pub(super) struct BuildsRender<'a> {
     pub dl_error: Option<DlError>,
 }
 
-pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
+pub(super) async fn render_builds(cx: &Cx, args: BuildsRender) -> Result<impl View> {
     let BuildsRender {
         org_slug,
         channel,
@@ -187,7 +187,7 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
     });
     let pager_opt = if pager.show() { Some(pager) } else { None };
 
-    let filter_channels = builds_channel_filter_chips(org_slug, lts, industrial);
+    let filter_channels = builds_channel_filter_chips(&org_slug, lts, industrial);
     let mut chips: Vec<(String, String, bool)> = Vec::with_capacity(1 + filter_channels.len());
     chips.push((
         "All".to_owned(),
@@ -203,14 +203,14 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
     }
 
     let public_origin = config(cx).primary_public_origin().to_owned();
-    let eph_model: Option<EphPanel> = if let Some(ver) = open_version {
+    let eph_model: Option<EphPanel> = if let Some(ver) = open_version.as_deref() {
         if can_download {
             if let Some(row) = load_eph_for(cx, user_id, org_id, ver).await {
                 let rel_channel = releases
                     .iter()
                     .find(|r| r.version == ver)
                     .map(|r| r.channel.as_str())
-                    .unwrap_or(channel);
+                    .unwrap_or(channel.as_str());
                 Some(panel_from_row(
                     &public_origin,
                     &row,
@@ -236,13 +236,13 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
 
     let mut database = crate::auth::db(cx);
     let mut blobs: Vec<BlobDisplay> = Vec::with_capacity(releases.len());
-    for rel in releases {
+    for rel in &releases {
         blobs.push(release_blob_display(&mut database, rel.id).await);
     }
-    let rows: Vec<(&Release, &BlobDisplay)> = releases.iter().zip(blobs.iter()).collect();
+    let rows: Vec<(Release, BlobDisplay)> = releases.into_iter().zip(blobs).collect();
 
     // Dismissing the modal without JS lands on the same view, minus dl_error.
-    let dismiss_href = match open_version {
+    let dismiss_href = match open_version.as_deref() {
         Some(ver) => href!(
             release_ver::build_detail_page,
             Org(org.as_str()),
@@ -256,7 +256,7 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
         None => builds_list_href(cx, &org, &channel_owned, page, false),
     };
 
-    view! {
+    Ok(view! {
         cx =>
         <h1 class="vb-title">"Certified LTS builds"</h1>
         <p class="vb-lead">
@@ -278,18 +278,18 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
                 <div class="vb-empty">"No published builds."</div>
             } else {
                 for (rel, blob) in rows {
-                    let is_open = open_version.is_some_and(|v| v == rel.version);
+                    let is_open = open_version.as_deref() == Some(rel.version.as_str());
                     let row_href = if is_open {
                         collapse_href.clone()
                     } else {
                         href!(
                             release_ver::build_detail_page,
                             Org(org.as_str()),
-                            release_ver::ReleaseVer(rel.version.as_str())
+                            release_ver::ReleaseVer(rel.version.as_str()),
                         )
-                            .query(crate::app::hrefs::ChannelQ {
-                                channel: &channel_owned,
-                            })
+                            .query(
+                                crate::app::hrefs::ChannelQ { channel: &channel_owned },
+                            )
                             .resolve(cx)
                     };
                     let row_class = if is_open {
@@ -304,15 +304,13 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
                     let eph_action = href!(
                         ephemeral::builds_eph_generate,
                         Org(org.as_str()),
-                        release_ver::ReleaseVer(rel.version.as_str())
-                    )
-                        .resolve(cx);
+                        release_ver::ReleaseVer(rel.version.as_str()),
+                    ).resolve(cx);
                     let revoke_action = href!(
                         ephemeral::builds_eph_revoke,
                         Org(org.as_str()),
-                        release_ver::ReleaseVer(rel.version.as_str())
-                    )
-                        .resolve(cx);
+                        release_ver::ReleaseVer(rel.version.as_str()),
+                    ).resolve(cx);
                     let open_panel = if is_open { eph_model.clone() } else { None };
                     let sha256 = blob.sha256.clone();
                     let version_label = version_for_display(&rel.version).to_owned();
@@ -327,7 +325,7 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
                             </div>
                             <div style="color: #5a5f66;">(rel.released_on.clone())</div>
                             <div class="vb-build-sig">
-                                (ico_check(cx, 12).await?)
+                                ico_check(size: 12)
                                 <span class="vb-build-sig-hash">(sha256.clone())</span>
                             </div>
                             <div style="color: #5a5f66;">(size_label.clone())</div>
@@ -335,9 +333,9 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
                                 style="color: var(--accent); display: flex; justify-content: flex-end;"
                             >
                                 if is_open {
-                                    (ico_chevron_down(cx, 14).await?)
+                                    ico_chevron_down(size: 14)
                                 } else {
-                                    (ico_chevron_right(cx, 14).await?)
+                                    ico_chevron_right(size: 14)
                                 }
                             </div>
                         </a>
@@ -349,7 +347,7 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
                                 </div>
                                 for (tag, color, text) in notes {
                                     let tag_style = format!(
-                                        "font-size: 10px; font-weight: 600; flex: none; width: 76px; color: {color};"
+                                        "font-size: 10px; font-weight: 600; flex: none; width: 76px; color: {color};",
                                     );
                                     <div
                                         style="display: flex; gap: 10px; margin-bottom: 8px; font-size: 13.5px; color: #3a3f46;"
@@ -360,6 +358,7 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
                                 }
                                 if can_download {
                                     build_download_actions(
+                                        key: rel.version.clone(),
                                         actions: BuildDownloadActions {
                                             org: org.clone(),
                                             version: rel.version.clone(),
@@ -384,7 +383,7 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
         if let Some(err) = dl_error {
             download_error_modal(err: err, dismiss_href: dismiss_href.clone())
         }
-    }
+    })
 }
 
 /// Concept confirm dialog raised on the Builds page after a failed download.
@@ -392,15 +391,15 @@ pub(super) async fn render_builds(cx: &Cx, args: BuildsRender<'_>) -> Result {
 /// The POST redirects here (PRG) instead of navigating to a plain-text error,
 /// so the visitor keeps the list and the open release panel.
 #[component]
-async fn download_error_modal(cx: &Cx, err: DlError, dismiss_href: String) -> Result {
+async fn download_error_modal(cx: &Cx, err: DlError, dismiss_href: String) -> Result<impl View> {
     let title = err.title();
     let aria = title.to_owned();
     let [message, next_step] = err.message_lines();
 
-    view! {
-        cx =>
-        signal open = true;
+    let open = signal(cx, || true);
 
+    Ok(view! {
+        cx =>
         <div
             class="vb-confirm-root"
             role="dialog"
@@ -429,7 +428,7 @@ async fn download_error_modal(cx: &Cx, err: DlError, dismiss_href: String) -> Re
                 </div>
             </div>
         </div>
-    }
+    })
 }
 
 struct EphPanelChrome {
@@ -454,7 +453,7 @@ struct BuildDownloadActions {
 /// Download / regenerate / verify controls + optional ephemeral panel.
 /// Verify uses a client-only Topcoat signal (no POST).
 #[component]
-async fn build_download_actions(cx: &Cx, actions: BuildDownloadActions) -> Result {
+async fn build_download_actions(cx: &Cx, actions: BuildDownloadActions) -> Result<impl View> {
     let BuildDownloadActions {
         org,
         version,
@@ -478,10 +477,10 @@ async fn build_download_actions(cx: &Cx, actions: BuildDownloadActions) -> Resul
     let sha_copy = sha256.clone();
     let cmd_copy = verify_cmd.clone();
 
-    view! {
-        cx =>
-        signal verify_open = false;
+    let verify_open = signal(cx, || false);
 
+    Ok(view! {
+        cx =>
         <div class="vb-btn-row">
             // Carries the channel so a failed download redirects back to this view.
             <form method="POST" action=(dl_action)>
@@ -489,7 +488,7 @@ async fn build_download_actions(cx: &Cx, actions: BuildDownloadActions) -> Resul
                     <input type="hidden" name="channel" value=(list_channel.clone()) />
                 }
                 <button class="vb-btn vb-btn-ico vb-btn-build" type="submit">
-                    (ico_arrow_down(cx, 14).await?)
+                    ico_arrow_down(size: 14)
                     <span>(dl_label)</span>
                 </button>
             </form>
@@ -498,7 +497,7 @@ async fn build_download_actions(cx: &Cx, actions: BuildDownloadActions) -> Resul
                     <input type="hidden" name="channel" value=(list_channel.clone()) />
                 }
                 <button type="submit" class="vb-btn outline vb-btn-ico vb-btn-build">
-                    (ico_hourglass(cx, 14).await?)
+                    ico_hourglass(size: 14)
                     <span>(gen_label)</span>
                 </button>
             </form>
@@ -550,7 +549,7 @@ async fn build_download_actions(cx: &Cx, actions: BuildDownloadActions) -> Resul
                         data-copy=(cmd_copy.clone())
                         @click="(e) => { const el = e.current_target.inner; navigator.clipboard.writeText(el.getAttribute('data-copy')); el.classList.add('copied'); }"
                     >
-                        (ico_copy(cx, 14).await?)
+                        ico_copy(size: 14)
                     </button>
                 </div>
             </div>
@@ -574,11 +573,15 @@ async fn build_download_actions(cx: &Cx, actions: BuildDownloadActions) -> Resul
                 )
             </div>
         }
-    }
+    })
 }
 
 #[component]
-async fn ephemeral_link_panel(cx: &Cx, panel: EphPanel, chrome: EphPanelChrome) -> Result {
+async fn ephemeral_link_panel(
+    cx: &Cx,
+    panel: EphPanel,
+    chrome: EphPanelChrome,
+) -> Result<impl View> {
     let url = panel.url;
     let expires_at = panel.expires_at;
     let EphPanelChrome {
@@ -602,10 +605,10 @@ async fn ephemeral_link_panel(cx: &Cx, panel: EphPanel, chrome: EphPanelChrome) 
     let fetch_cmd = format!("fetch {url}");
     let curl_cmd = format!("curl -fLO {url}");
 
-    view! {
-        cx =>
-        signal use_curl = false;
+    let use_curl = signal(cx, || false);
 
+    Ok(view! {
+        cx =>
         <div class="vb-ephemeral" data-expires-at=(expires_at_attr.clone())>
             <div class="vb-ephemeral-bar">
                 <div class="vb-ephemeral-title">"EPHEMERAL DOWNLOAD LINK"</div>
@@ -701,7 +704,7 @@ async fn ephemeral_link_panel(cx: &Cx, panel: EphPanel, chrome: EphPanelChrome) 
                         })
                         @click="(e) => { const el = e.current_target.inner; navigator.clipboard.writeText(el.getAttribute('data-copy')); el.classList.add('copied'); }"
                     >
-                        (ico_copy(cx, 14).await?)
+                        ico_copy(size: 14)
                     </button>
                 </div>
             </div>
@@ -720,7 +723,7 @@ async fn ephemeral_link_panel(cx: &Cx, panel: EphPanel, chrome: EphPanelChrome) 
                 </form>
             </div>
         </div>
-    }
+    })
 }
 
 pub(super) fn parse_notes(notes: &str) -> Vec<(String, &'static str, String)> {

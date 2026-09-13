@@ -9,7 +9,7 @@ use topcoat::{
         error::{SeeOther, see_other},
         href, page, route,
     },
-    view::view,
+    view::{View, view},
 };
 
 use crate::app::admin::docs::admin_docs_page;
@@ -33,14 +33,14 @@ struct CreateDocForm {
 }
 
 #[page]
-pub(crate) async fn admin_docs_new_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_docs_new_page(cx: &Cx) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.docs_write {
         return Err(capability_denied().into());
     }
 
-    view! {
+    Ok(view! {
         <div>
             <a
                 class="vb-back"
@@ -106,7 +106,7 @@ pub(crate) async fn admin_docs_new_page(cx: &Cx) -> Result {
                 </form>
             </div>
         </div>
-    }
+    })
 }
 
 #[route(POST "/admin/docs/new")]

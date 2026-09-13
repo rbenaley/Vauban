@@ -3,7 +3,7 @@
 > Manual validation after shipping **live docs search** (Topcoat shard
 > re-auth on every keystroke). CI covers unit / invariants / proptest /
 > battle / in-process E2E against `vcp_test`; staging proves browser
-> HTTPS, Network POSTs to `/_topcoat/shards/…`, and denial paths.
+> HTTPS, Network POSTs to `/_topcoat/runtime/shards/…`, and denial paths.
 >
 > Audience: release / staging operators.
 > Severity: **BLOCKING** for this surface. Do not ship without A–B.
@@ -30,7 +30,7 @@ just test -- docs_search_shard
 ## Lab prerequisites
 
 - `VCP_ENVIRONMENT=development` + `just run` (HTTPS `https://127.0.0.1:3000`).
-- Browser DevTools Network panel (filter `shards`) or `curl -k`.
+- Browser DevTools Network panel (filter `runtime/shards`) or `curl -k`.
 - Seed users: `support@vauban.sh` / `password` (staff),
   `l.martin@acme.example` / `password` (member); org `acme-infrastructure`.
 - Confirm server logs are visible (`just run` terminal) so panics are obvious.
@@ -39,9 +39,9 @@ just test -- docs_search_shard
 
 1. Sign in as `l.martin@acme.example` / `password`.
 2. Open `/acme-infrastructure/docs`.
-3. Open DevTools → Network; filter on `/_topcoat/shards`.
+3. Open DevTools → Network; filter on `/_topcoat/runtime/shards`.
 4. Type `ssh` gradually into the search field (do not submit the form).
-5. Confirm POSTs to `/_topcoat/shards/{id}` return **200** (not 500).
+5. Confirm POSTs to `/_topcoat/runtime/shards/{id}` return **200** (not 500).
 6. Confirm the article list updates without a full page reload.
 7. Confirm the `just run` terminal shows **no**
    `path parameter "org" was not found` panic.

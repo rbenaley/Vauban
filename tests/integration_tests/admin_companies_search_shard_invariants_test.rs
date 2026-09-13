@@ -50,7 +50,7 @@ fn inv_page_wires_query_signal_and_shard() {
         "/src/app/admin/companies.rs"
     ));
     assert!(page.contains("admin_companies_search_results"));
-    assert!(page.contains("signal query"));
+    assert!(page.contains("let query = signal(cx"));
     assert!(page.contains("normalize_query"));
     assert!(
         page.contains("page: Option<u32>"),

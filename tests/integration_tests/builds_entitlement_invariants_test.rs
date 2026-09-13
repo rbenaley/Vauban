@@ -201,7 +201,7 @@ fn inv_builds_concept_ephemeral_server_side() {
     assert!(builds.contains("vb-ephemeral"));
     assert!(builds.contains("EPHEMERAL DOWNLOAD LINK"));
     assert!(builds.contains("Generate new link"));
-    assert!(builds.contains("signal use_curl"));
+    assert!(builds.contains("let use_curl = signal(cx"));
     assert!(builds.contains("use_curl.set(true)"));
     assert!(builds.contains("use_curl.set(false)"));
     assert!(
@@ -231,7 +231,7 @@ fn inv_builds_concept_ephemeral_server_side() {
         builds.contains("primary_public_origin"),
         "builds UI must take download host from Config::primary_public_origin"
     );
-    assert!(builds.contains("signal verify_open"));
+    assert!(builds.contains("let verify_open = signal(cx"));
     assert!(builds.contains("vb-verify") || builds.contains("data-verify-signature-panel"));
     assert!(builds.contains("PACKAGE SIGNATURE"));
     assert!(

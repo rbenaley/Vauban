@@ -496,7 +496,7 @@ fn inv_key_dashboard_ui_pinned() {
         "/src/app/_components/rail.rs"
     ));
     assert!(
-        rail.contains("ico_key(cx"),
+        rail.contains("ico_key(size:"),
         "rail must use the dedicated key icon for /admin/key"
     );
 

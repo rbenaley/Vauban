@@ -3,30 +3,34 @@
 use topcoat::{
     Result,
     context::Cx,
-    view::{component, view},
+    view::{View, component, view},
 };
 
 use crate::release_notes::{InlineSegment, parse_inline_code};
 
 /// Changelog body fragment: plain text + light gray monospace chips.
 #[component]
-pub async fn note_inline_text(cx: &Cx, text: &str) -> Result {
+pub async fn note_inline_text(cx: &Cx, text: &str) -> Result<impl View> {
     let segs = parse_inline_code(text);
-    view! {
+    Ok(view! {
         cx =>
         for seg in segs {
-            (render_seg(cx, seg).await?)
+            render_seg(seg: seg)
         }
-    }
+    })
 }
 
-async fn render_seg(cx: &Cx, seg: InlineSegment) -> Result {
-    match seg {
-        InlineSegment::Text(t) => {
-            view! { cx => (t) }
+#[component]
+async fn render_seg(cx: &Cx, seg: InlineSegment) -> Result<impl View> {
+    Ok(view! {
+        cx =>
+        match seg {
+            InlineSegment::Text(t) => {
+                (t)
+            }
+            InlineSegment::Code(c) => {
+                <code class="vb-inline-code">(c)</code>
+            }
         }
-        InlineSegment::Code(c) => {
-            view! { cx => <code class="vb-inline-code">(c)</code> }
-        }
-    }
+    })
 }

@@ -4,7 +4,7 @@ use topcoat::{
     Result,
     context::Cx,
     router::{error::not_found, href, page, path_param},
-    view::view,
+    view::{View, view},
 };
 
 use super::{DocsFilter, docs_list_view};
@@ -20,7 +20,7 @@ use crate::{
 path_param!(pub(crate) doc);
 
 #[page]
-pub(crate) async fn doc_article_page(cx: &Cx) -> Result {
+pub(crate) async fn doc_article_page(cx: &Cx) -> Result<impl View> {
     let org_slug = path_param::<Org>(cx);
     let doc_slug = path_param::<Doc>(cx);
     let ctx = require_org(cx, org_slug).await?;
@@ -46,7 +46,7 @@ pub(crate) async fn doc_article_page(cx: &Cx) -> Result {
 
     let filter = DocsFilter::from_cx(cx);
     let page = DocsFilter::page_from_cx(cx);
-    let list = docs_list_view(cx, org_slug, &filter.q, &filter.cat, page).await;
+    let org_owned = org_slug.to_owned();
     let close_href = href!(super::docs_page, Org(org_slug)).resolve(cx);
     let title = article.title.clone();
     let category = article.category.clone();
@@ -55,9 +55,9 @@ pub(crate) async fn doc_article_page(cx: &Cx) -> Result {
     let tz = browser_tz(cx);
     let updated = format_unix_local(article.updated_at, tz);
     let updated_rfc = unix_rfc3339(article.updated_at);
-    view! {
+    Ok(view! {
         cx =>
-        (list?)
+        docs_list_view(org_slug: org_owned, q: filter.q, cat: filter.cat, page: page)
         article_modal_shell(
             title: &title,
             category: &category,
@@ -72,5 +72,5 @@ pub(crate) async fn doc_article_page(cx: &Cx) -> Result {
                 docs_formatted_body(body: &body_text)
             }
         )
-    }
+    })
 }

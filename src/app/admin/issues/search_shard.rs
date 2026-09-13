@@ -1,13 +1,13 @@
 //! Live admin issues search shard — re-checks staff + issues_read on every render.
 //!
-//! Shard POSTs hit `/_topcoat/shards/{id}` — admin layout does not run.
+//! Shard POSTs hit `/_topcoat/runtime/shards/{id}` — admin layout does not run.
 //! Always re-authorize with `require_staff` before loading data.
 
 use topcoat::{
     Result,
     context::{Cx, memoize},
     runtime::shard,
-    view::view,
+    view::{View, view},
 };
 
 use crate::{
@@ -90,7 +90,7 @@ pub async fn admin_issues_search_results(
     org: String,
     status: String,
     page: String,
-) -> Result {
+) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.issues_read {
@@ -104,32 +104,33 @@ pub async fn admin_issues_search_results(
 
     let org_id = resolve_org_id(cx, &org_filter).await;
     // Unknown slug filter -> empty result (same as no match).
-    if !org_filter.is_empty() && org_id.is_none() {
-        return view! {
-            cx =>
-            <div class="vb-list" data-admin-issues-search-shard="1">
-                <div class="vb-empty">"No matching issues."</div>
-            </div>
-        };
-    }
+    let unknown_org = !org_filter.is_empty() && org_id.is_none();
 
-    let total = *count_admin_filtered_issues_memo(
-        cx,
-        crate::request_intern::intern(cx, &q),
-        crate::request_intern::intern(cx, &org_filter),
-        crate::request_intern::intern(cx, &status),
-    )
-    .await;
+    let total = if unknown_org {
+        0
+    } else {
+        *count_admin_filtered_issues_memo(
+            cx,
+            crate::request_intern::intern(cx, &q),
+            crate::request_intern::intern(cx, &org_filter),
+            crate::request_intern::intern(cx, &status),
+        )
+        .await
+    };
     let pages = page_count(total, LIST_PAGE_SIZE);
     let page = clamp_page(page, pages);
     let mut database = crate::auth::db(cx);
-    let page_issues = admin_issues_filtered_query!(org_id, &q, &status)
-        .order_by(Issue::fields().updated_at().desc())
-        .limit(LIST_PAGE_SIZE)
-        .offset(page_offset(page, LIST_PAGE_SIZE))
-        .exec(&mut database)
-        .await
-        .unwrap_or_default();
+    let page_issues = if unknown_org {
+        Vec::new()
+    } else {
+        admin_issues_filtered_query!(org_id, &q, &status)
+            .order_by(Issue::fields().updated_at().desc())
+            .limit(LIST_PAGE_SIZE)
+            .offset(page_offset(page, LIST_PAGE_SIZE))
+            .exec(&mut database)
+            .await
+            .unwrap_or_default()
+    };
 
     let user_ids: Vec<u64> = page_issues.iter().map(|i| i.opened_by_user_id).collect();
     let org_ids: Vec<u64> = page_issues.iter().map(|i| i.organization_id).collect();
@@ -143,7 +144,7 @@ pub async fn admin_issues_search_results(
     let tz = browser_tz(cx);
     let now = now_unix();
 
-    view! {
+    Ok(view! {
         cx =>
         <div class="vb-list" data-admin-issues-search-shard="1">
             if page_issues.is_empty() {
@@ -173,8 +174,11 @@ pub async fn admin_issues_search_results(
                     );
                     let updated = format_relative(issue.updated_at, now, tz);
                     let meta = format!(
-                        "{} · {} · opened by {} · updated {}", org_label, issue
-                        .component, opener, updated
+                        "{} · {} · opened by {} · updated {}",
+                        org_label,
+                        issue.component,
+                        opener,
+                        updated,
                     );
                     <a class="vb-row" href=(href)>
                         <div
@@ -202,7 +206,7 @@ pub async fn admin_issues_search_results(
                 }
             }
         </div>
-    }
+    })
 }
 
 /// Request-scoped COUNT so list page + embedded shard share one SQL round-trip.

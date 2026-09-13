@@ -1,6 +1,6 @@
 //! Live org issues search shard — re-checks org + issues_read on every render.
 //!
-//! Shard POSTs hit `/_topcoat/shards/{id}` — there is no `{org}` path
+//! Shard POSTs hit `/_topcoat/runtime/shards/{id}` — there is no `{org}` path
 //! segment. Tenant must come from the shard argument (re-authorized below).
 
 use topcoat::{
@@ -8,7 +8,7 @@ use topcoat::{
     context::Cx,
     router::{error::not_found, href},
     runtime::shard,
-    view::view,
+    view::{View, view},
 };
 
 use super::load_filtered_issues_page;
@@ -34,7 +34,7 @@ pub async fn issues_search_results(
     q: String,
     status: String,
     page: String,
-) -> Result {
+) -> Result<impl View> {
     let org = normalize_org_slug(&org_slug).ok_or_else(not_found)?;
     let ctx = require_org(cx, org).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -58,7 +58,7 @@ pub async fn issues_search_results(
     // Links use the authorized org slug, never the raw shard arg.
     let org = ctx.org.slug.clone();
 
-    view! {
+    Ok(view! {
         cx =>
         <div class="vb-list" data-issues-search-shard="1">
             if page_items.is_empty() {
@@ -72,12 +72,18 @@ pub async fn issues_search_results(
                         .unwrap_or_else(|| "Unknown".to_owned());
                     let updated = format_relative(issue.updated_at, now, tz);
                     let meta = format!(
-                        "{} · opened by {} · updated {}", issue.component, opener,
-                        updated
+                        "{} · opened by {} · updated {}",
+                        issue.component,
+                        opener,
+                        updated,
                     );
                     <a
                         class="vb-row"
-                        href=(href!(issue_detail_page, Org(org.as_str()), IssueKey(issue.key.as_str())))
+                        href=(href!(
+                            issue_detail_page,
+                            Org(org.as_str()),
+                            IssueKey(issue.key.as_str()),
+                        ))
                     >
                         <div
                             class="vb-mono"
@@ -104,5 +110,5 @@ pub async fn issues_search_results(
                 }
             }
         </div>
-    }
+    })
 }

@@ -3,7 +3,7 @@
 use topcoat::{
     Result,
     context::{Cx, memoize},
-    view::{component, view},
+    view::{View, component, view},
 };
 
 use crate::{
@@ -98,7 +98,7 @@ fn display_build_version(releases: &[Release]) -> String {
 }
 
 #[component]
-pub(super) async fn dash_stat_build(cx: &Cx, load: DashLoad) -> Result {
+pub(super) async fn dash_stat_build(cx: &Cx, load: DashLoad) -> Result<impl View> {
     let releases = dashboard_releases(
         cx,
         load.org_id,
@@ -109,58 +109,51 @@ pub(super) async fn dash_stat_build(cx: &Cx, load: DashLoad) -> Result {
     )
     .await;
     let build_version = display_build_version(releases);
-    view! {
+    Ok(view! {
         <div class="vb-stat">
             <div class="vb-stat-label">"CURRENT BUILD"</div>
             <div class="vb-stat-value">(build_version)</div>
         </div>
-    }
+    })
 }
 
 #[component]
-pub(super) async fn dash_stat_open(cx: &Cx, org_id: u64) -> Result {
+pub(super) async fn dash_stat_open(cx: &Cx, org_id: u64) -> Result<impl View> {
     let rows = dashboard_issue_rows(cx, org_id).await;
     let open_count = summarize_issue_stats(rows).open_count.to_string();
-    view! {
+    Ok(view! {
         <div class="vb-stat">
             <div class="vb-stat-label">"OPEN ISSUES"</div>
             <div class="vb-stat-value">(open_count)</div>
         </div>
-    }
+    })
 }
 
 #[component]
-pub(super) async fn dash_stat_analysis(cx: &Cx, org_id: u64) -> Result {
+pub(super) async fn dash_stat_analysis(cx: &Cx, org_id: u64) -> Result<impl View> {
     let rows = dashboard_issue_rows(cx, org_id).await;
     let in_analysis = summarize_issue_stats(rows).in_analysis_count.to_string();
-    view! {
+    Ok(view! {
         <div class="vb-stat">
             <div class="vb-stat-label">"IN ANALYSIS"</div>
             <div class="vb-stat-value warn">(in_analysis)</div>
         </div>
-    }
+    })
 }
 
 #[component]
-pub(super) async fn dash_card_docs(cx: &Cx, docs_href: &str) -> Result {
+pub(super) async fn dash_card_docs(cx: &Cx, docs_href: &str) -> Result<impl View> {
     let docs = dashboard_docs(cx).await;
     let article_count = docs.article_count.to_string();
     let href = docs_href.to_owned();
-    view! {
+    Ok(view! {
         cx =>
-        <a
-            class="vb-card"
-            href=(href)
-            style="padding: 20px; min-height: 168px;"
-        >
+        <a class="vb-card" href=(href) style="padding: 20px; min-height: 168px;">
             <div
                 style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
             >
-                (ico_docs(cx, 20).await?)
-                <span
-                    class="vb-mono"
-                    style="font-size: 10px; color: var(--muted-2);"
-                >
+                ico_docs(size: 20)
+                <span class="vb-mono" style="font-size: 10px; color: var(--muted-2);">
                     (article_count)
                     " articles"
                 </span>
@@ -175,73 +168,73 @@ pub(super) async fn dash_card_docs(cx: &Cx, docs_href: &str) -> Result {
             </div>
             <div class="vb-link">"Open"</div>
         </a>
-    }
+    })
 }
 
 #[component]
-pub(super) async fn dash_card_builds(cx: &Cx, load: DashLoad, builds_href: &str) -> Result {
-    if !load.show_builds {
-        return view! {};
-    }
-    let releases = dashboard_releases(
-        cx,
-        load.org_id,
-        load.slug_id,
-        load.lts,
-        load.industrial,
-        load.show_builds,
-    )
-    .await;
-    let build_version = display_build_version(releases);
+pub(super) async fn dash_card_builds(
+    cx: &Cx,
+    load: DashLoad,
+    builds_href: &str,
+) -> Result<impl View> {
+    let show = load.show_builds;
+    let build_version = if show {
+        let releases = dashboard_releases(
+            cx,
+            load.org_id,
+            load.slug_id,
+            load.lts,
+            load.industrial,
+            load.show_builds,
+        )
+        .await;
+        display_build_version(releases)
+    } else {
+        String::new()
+    };
     let href = builds_href.to_owned();
-    view! {
+    Ok(view! {
         cx =>
-        <a
-            class="vb-card"
-            href=(href)
-            style="padding: 20px; min-height: 168px;"
-        >
-            <div
-                style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
-            >
-                (ico_builds(cx, 20).await?)
-                <span
-                    class="vb-mono vb-signed"
-                    style="font-size: 10px; color: var(--ok);"
+        if show {
+            <a class="vb-card" href=(href) style="padding: 20px; min-height: 168px;">
+                <div
+                    style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
                 >
-                    (build_version)
-                    " · signed"
-                </span>
-            </div>
-            <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">
-                "LTS builds & changelogs"
-            </div>
-            <div
-                style="font-size: 13px; color: var(--muted); line-height: 1.45; flex: 1;"
-            >
-                "Signed, verified binaries with long-term support."
-            </div>
-            <div class="vb-link">"Open"</div>
-        </a>
-    }
+                    ico_builds(size: 20)
+                    <span
+                        class="vb-mono vb-signed"
+                        style="font-size: 10px; color: var(--ok);"
+                    >
+                        (build_version)
+                        " · signed"
+                    </span>
+                </div>
+                <div style="font-size: 16px; font-weight: 700; margin-bottom: 5px;">
+                    "LTS builds & changelogs"
+                </div>
+                <div
+                    style="font-size: 13px; color: var(--muted); line-height: 1.45; flex: 1;"
+                >
+                    "Signed, verified binaries with long-term support."
+                </div>
+                <div class="vb-link">"Open"</div>
+            </a>
+        }
+    })
 }
 
 #[component]
-pub(super) async fn dash_card_issues(cx: &Cx, org_id: u64, issues_href: &str) -> Result {
+pub(super) async fn dash_card_issues(cx: &Cx, org_id: u64, issues_href: &str) -> Result<impl View> {
     let rows = dashboard_issue_rows(cx, org_id).await;
     let open_count = summarize_issue_stats(rows).open_count.to_string();
     let href = issues_href.to_owned();
-    view! {
+    Ok(view! {
         cx =>
-        <a
-            class="vb-card"
-            href=(href)
-            style="padding: 20px; min-height: 168px;"
-        >
+        <a class="vb-card" href=(href) style="padding: 20px; min-height: 168px;">
             <div
                 style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;"
             >
-                (ico_issues(cx, 20).await?)
+                ico_issues(size: 20)
                 <span class="vb-mono" style="font-size: 10px; color: var(--warn);">
                     (open_count)
                     " open"
@@ -257,11 +250,11 @@ pub(super) async fn dash_card_issues(cx: &Cx, org_id: u64, issues_href: &str) ->
             </div>
             <div class="vb-link">"Open"</div>
         </a>
-    }
+    })
 }
 
 #[component]
-pub(super) async fn dash_activity(cx: &Cx, load: DashLoad) -> Result {
+pub(super) async fn dash_activity(cx: &Cx, load: DashLoad) -> Result<impl View> {
     let releases = dashboard_releases(
         cx,
         load.org_id,
@@ -282,7 +275,7 @@ pub(super) async fn dash_activity(cx: &Cx, load: DashLoad) -> Result {
     let issue_activity = latest_issue_by_updated_at(rows)
         .map(|issue| (issue.key.clone(), issue_activity_copy(&issue.status)));
     let latest_doc = docs.latest_title.clone();
-    view! {
+    Ok(view! {
         <div class="vb-panel">
             <div class="vb-section-label">"RECENT ACTIVITY"</div>
             if show_build_line {
@@ -325,11 +318,11 @@ pub(super) async fn dash_activity(cx: &Cx, load: DashLoad) -> Result {
                 </div>
             }
         </div>
-    }
+    })
 }
 
 #[component]
-pub(super) async fn dash_notes(cx: &Cx, load: DashLoad, builds_href: &str) -> Result {
+pub(super) async fn dash_notes(cx: &Cx, load: DashLoad, builds_href: &str) -> Result<impl View> {
     let releases = dashboard_releases(
         cx,
         load.org_id,
@@ -367,7 +360,7 @@ pub(super) async fn dash_notes(cx: &Cx, load: DashLoad, builds_href: &str) -> Re
         .collect();
     let channel_badge = channel_badge_class(&build_channel).to_owned();
     let href = builds_href.to_owned();
-    view! {
+    Ok(view! {
         cx =>
         <div class="vb-panel">
             <div class="vb-section-label">"LATEST CERTIFIED BUILD"</div>
@@ -392,14 +385,12 @@ pub(super) async fn dash_notes(cx: &Cx, load: DashLoad, builds_href: &str) -> Re
                     <span
                         class="vb-mono"
                         style=(format!(
-                            "font-size: 9px; font-weight: 600; letter-spacing: 0.04em; color: {color}; flex: none;"
+                            "font-size: 9px; font-weight: 600; letter-spacing: 0.04em; color: {color}; flex: none;",
                         ))
                     >
                         (tag)
                     </span>
-                    <span
-                        style="font-size: 13px; color: #5a5f66; line-height: 1.5;"
-                    >
+                    <span style="font-size: 13px; color: #5a5f66; line-height: 1.5;">
                         note_inline_text(text: &text)
                     </span>
                 </div>
@@ -414,5 +405,5 @@ pub(super) async fn dash_notes(cx: &Cx, load: DashLoad, builds_href: &str) -> Re
                 </a>
             }
         </div>
-    }
+    })
 }

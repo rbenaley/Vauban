@@ -12,7 +12,8 @@ use topcoat::{
     Result,
     context::Cx,
     router::{href, page, query_params},
-    view::view,
+    runtime::signal,
+    view::{View, view},
 };
 
 use crate::app::admin::companies::new::admin_companies_new_page;
@@ -36,7 +37,7 @@ struct AdminCompaniesQuery {
 }
 
 #[page]
-pub(crate) async fn admin_companies_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_companies_page(cx: &Cx) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
@@ -80,11 +81,11 @@ pub(crate) async fn admin_companies_page(cx: &Cx) -> Result {
 
     let cancel = list_href(cx, &q, 1);
 
-    view! {
-        cx =>
-        signal query = q_value.clone();
-        signal page = page_init.clone();
+    let query = signal(cx, || q_value.clone());
+    let page = signal(cx, || page_init.clone());
 
+    Ok(view! {
+        cx =>
         <div
             style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;"
         >
@@ -125,9 +126,8 @@ pub(crate) async fn admin_companies_page(cx: &Cx) -> Result {
         if let Some(target) = delete_target {
             let action = href!(
                 company_id::admin_companies_delete,
-                company_id::CompanyId(target.org.id.to_string())
-            )
-                .resolve(cx);
+                company_id::CompanyId(target.org.id.to_string()),
+            ).resolve(cx);
             <div
                 class="vb-confirm-root"
                 role="dialog"
@@ -175,7 +175,7 @@ pub(crate) async fn admin_companies_page(cx: &Cx) -> Result {
                 </div>
             </div>
         }
-    }
+    })
 }
 
 fn list_href(cx: &Cx, q: &str, page: usize) -> String {

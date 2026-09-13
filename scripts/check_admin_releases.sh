@@ -89,7 +89,7 @@ if grep -nE '#\[route\(GET "/admin/releases/new/require-active-key"\)\]' "$NEW" 
 fi
 grep -n 'no_key_open.set(true)' "$NEW" >/dev/null \
   || fail "$NEW must open the no-key modal from the procedure result"
-grep -n 'signal no_key_open' "$NEW" >/dev/null \
+grep -n 'let no_key_open = signal(cx' "$NEW" >/dev/null \
   || fail "$NEW must drive the no-key modal from signal no_key_open"
 grep -n 'data-validate-pkg' "$NEW" >/dev/null \
   || fail "$NEW must interpolate validate-pkg via data-validate-pkg"
@@ -126,7 +126,7 @@ fi
 if awk '/^#\[cfg\(test\)\]/{exit} {print}' "$NEW" | grep -n '0.01s' >/dev/null; then
   fail "$NEW must not use a 0.01s tick (browsers skip it; animationend never fires)"
 fi
-grep -n 'signal not_pkg_open' "$NEW" >/dev/null \
+grep -n 'let not_pkg_open = signal(cx' "$NEW" >/dev/null \
   || fail "$NEW must drive the modal from signal not_pkg_open"
 grep -n 'StatusCode::NO_CONTENT' "$NEW" >/dev/null \
   || fail "$NEW validate-pkg must return 204 NO_CONTENT on success"

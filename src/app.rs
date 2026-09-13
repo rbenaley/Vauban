@@ -33,16 +33,17 @@ use topcoat::{
     mail::{MailConfig as TopcoatMailConfig, MemoryTransport, RouterBuilderMailExt},
     router::{
         Body, BodyLimit, HeaderValue, Layer, LayerFuture, Next, OriginPolicy, Path, Router,
-        RouterBuilderDiscoverExt, StatusCode,
+        RouterBuilderDiscoverExt, Slot, StatusCode,
         error::{NotFoundError, redirect, redirect_permanent},
         header, href, layout,
         request::{method, uri},
         response::{IntoResponse, Response},
         route,
     },
+    runtime::RouterBuilderRuntimeExt,
     session::{RouterBuilderSessionExt, SessionConfig},
     tailwind,
-    view::view,
+    view::{View, error_boundary, view},
 };
 
 /// Brand mark for `<link rel="icon" type="image/svg+xml">`.
@@ -171,6 +172,7 @@ fn router_with_mail(
         .app_context(storage)
         .base_url(cfg.primary_public_origin())
         .discover()
+        .runtime()
         .build()
 }
 
@@ -269,15 +271,9 @@ fn require_catalog_assets(config: &AssetConfig, env: Environment, assets: &[(&st
 use _components::branded_404_body;
 
 #[layout]
-pub(crate) async fn root_layout(slot: Result) -> Result {
-    let content = match slot {
-        Err(error) if error.downcast_ref::<NotFoundError>().is_some() => view! {
-            (topcoat::router::StatusCode::NOT_FOUND)
-            branded_404_body()
-        },
-        content => content,
-    }?;
-    view! {
+pub(crate) async fn root_layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
+    Ok(view! {
+        cx =>
         <!DOCTYPE html>
         <html lang="en">
             <head>
@@ -295,9 +291,24 @@ pub(crate) async fn root_layout(slot: Result) -> Result {
                 topcoat::runtime::script()
                 topcoat::dev::script()
             </head>
-            <body>(content)</body>
+            <body>
+                error_boundary(
+                    fallback: |error| {
+                        if error.downcast_ref::<NotFoundError>().is_none() {
+                            return Err(error);
+                        }
+                        Ok(
+                            view! {
+                                (StatusCode::NOT_FOUND)
+                                branded_404_body()
+                            },
+                        )
+                    },
+                    (slot)
+                )
+            </body>
         </html>
-    }
+    })
 }
 
 /// Site-wide security headers + trailing-slash 308. `path()` is `None` so
@@ -372,7 +383,7 @@ fn apply_security_headers(headers: &mut http::HeaderMap, enable_hsts: bool) {
 /// Entry: authenticated users land on their portal home or org picker; others go to login.
 /// Navigational GET -> `redirect` (307), not `see_other` (303 PRG).
 #[route(GET "/")]
-pub(crate) async fn root(cx: &Cx) -> Result {
+pub(crate) async fn root(cx: &Cx) -> Result<()> {
     if let Some(user) = current_user(cx).await {
         match post_auth_landing(cx, user).await? {
             PostAuthLanding::Org(slug) => {
@@ -413,4 +424,35 @@ async fn apple_touch_icon() -> Result<Response> {
 #[route(GET "/apple-touch-icon-precomposed.png")]
 async fn apple_touch_icon_precomposed() -> Result<Response> {
     static_icon_response("image/png", APPLE_TOUCH_ICON_PRECOMPOSED_BYTES)
+}
+
+/// Scan this cfg(test) harness so integration tests (same lib OUT_DIR) resolve
+/// Tailwind / runtime AssetIds. `topcoat asset bundle --profile test` rebuilds
+/// the non-test bin and hashes a different OUT_DIR.
+#[cfg(test)]
+mod asset_bundle_tests {
+    use std::path::PathBuf;
+
+    use topcoat_asset::{Bundler, BundlerConfig};
+
+    #[test]
+    fn bundle_test_harness_assets_into_debug_assets() {
+        let exe = std::env::current_exe().expect("current_exe");
+        let bytes = std::fs::read(&exe).expect("read test harness");
+        let config = BundlerConfig::new();
+        let bundler = Bundler::new(&config);
+        let debug_out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/assets");
+        bundler
+            .bundle(&bytes, &debug_out)
+            .expect("bundle target/debug/assets");
+        if let Some(parent) = exe.parent() {
+            bundler
+                .bundle(&bytes, parent.join("assets"))
+                .expect("bundle next to test harness");
+        }
+        assert!(
+            debug_out.join("manifest.toml").is_file(),
+            "test harness bundle must write manifest.toml"
+        );
+    }
 }

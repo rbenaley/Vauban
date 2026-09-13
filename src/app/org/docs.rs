@@ -9,7 +9,8 @@ use topcoat::{
     Result,
     context::{Cx, memoize},
     router::{href, page, path_param, query_params},
-    view::view,
+    runtime::signal,
+    view::{View, component, view},
 };
 
 use crate::{
@@ -53,7 +54,7 @@ pub(super) fn docs_list_href(cx: &Cx, org: &str, q: &str, cat: &str, page: usize
 }
 
 #[page]
-pub(crate) async fn docs_page(cx: &Cx) -> Result {
+pub(crate) async fn docs_page(cx: &Cx) -> Result<impl View> {
     let slug = path_param::<Org>(cx);
     let ctx = require_org(cx, slug).await?;
     let perms = perms_for_user(cx, &ctx.user).await;
@@ -63,7 +64,15 @@ pub(crate) async fn docs_page(cx: &Cx) -> Result {
 
     let filter = DocsFilter::from_cx(cx);
     let page = DocsFilter::page_from_cx(cx);
-    docs_list_view(cx, slug, &filter.q, &filter.cat, page).await
+    Ok(view! {
+        cx =>
+        docs_list_view(
+            org_slug: slug.to_owned(),
+            q: filter.q,
+            cat: filter.cat,
+            page: page
+        )
+    })
 }
 
 pub(super) struct DocsFilter {
@@ -157,14 +166,15 @@ pub(super) async fn load_filtered_docs_page(
         .unwrap_or_default()
 }
 
+#[component]
 pub(super) async fn docs_list_view(
     cx: &Cx,
-    org_slug: &str,
-    q: &str,
-    cat: &str,
+    org_slug: String,
+    q: String,
+    cat: String,
     page: usize,
-) -> Result {
-    let filter = DocsFilter::normalized(q, cat);
+) -> Result<impl View> {
+    let filter = DocsFilter::normalized(&q, &cat);
     let total = count_filtered_docs(cx, &filter).await;
     let pages = page_count(total, LIST_PAGE_SIZE);
     let page = clamp_page(page, pages);
@@ -180,25 +190,25 @@ pub(super) async fn docs_list_view(
     });
     let pager_opt = if pager.show() { Some(pager) } else { None };
 
-    let base = href!(docs_page, Org(org_slug)).resolve(cx);
+    let base = href!(docs_page, Org(org_slug.as_str())).resolve(cx);
     // Chip hrefs omit `page` (reset). All clears filters; category chips keep q.
     let mut chips: Vec<(String, String, bool)> =
         vec![("All".to_owned(), base.clone(), cat.is_empty())];
     for c in CATEGORIES {
         chips.push((
             (*c).to_owned(),
-            docs_list_href(cx, &org, q, c, 1),
+            docs_list_href(cx, &org, &q, c, 1),
             cat.eq_ignore_ascii_case(c),
         ));
     }
 
     let page_init = page.to_string();
 
-    view! {
-        cx =>
-        signal query = q_value.clone();
-        signal page = page_init.clone();
+    let query = signal(cx, || q_value.clone());
+    let page = signal(cx, || page_init.clone());
 
+    Ok(view! {
+        cx =>
         <h1 class="vb-title">"Documentation & knowledge base"</h1>
         <p class="vb-lead">"Operations, security, API, and deployment runbooks."</p>
 
@@ -228,7 +238,7 @@ pub(super) async fn docs_list_view(
             cat: $(cat_owned.clone()),
             page: $(page.get())
         )
-    }
+    })
 }
 
 #[cfg(test)]

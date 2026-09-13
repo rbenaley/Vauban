@@ -48,16 +48,17 @@ VCP product constraints that override framework capabilities are marked
 Source map:
 [tokio-rs/topcoat@v0.8.0](https://github.com/tokio-rs/topcoat/tree/v0.8.0).
 
-**VCP pin:** facade + `topcoat-cli` **0.6.2** (`Cargo.toml` /
-`Justfile`; VCP `rust-version` **1.95**). Write **0.6.2** forms until
-the pin moves (`signal name =` inside `view!`, `slot: Result`,
-`-> Result` without `impl View`, no `.runtime()`). Use `href!`,
-`path_param!`, `OriginPolicy`, `BodyLimit`, `Cx::with`, and
-`not_found!`. Keep 0.5 notes historical.
+**VCP pin:** facade + `topcoat-cli` **0.8.0** (`Cargo.toml` /
+`Justfile`; VCP `rust-version` **1.98**). Write **0.8** forms:
+`let name = signal(cx, || …)` above `view!`, `-> Result<impl View>` +
+`Ok(view!)`, `slot: Slot<'_>` + `error_boundary`, `.runtime()` before
+`runtime::script`. Use `href!`, `path_param!`, `OriginPolicy`,
+`BodyLimit`, `Cx::with`, and `not_found!`. Keep 0.5 / 0.6 notes
+historical.
 
 - Historical 0.4→0.5 (done): [`references/UPGRADE-0.5.md`](references/UPGRADE-0.5.md)
 - 0.5→**0.6.2** (done): [`references/UPGRADE-0.6.md`](references/UPGRADE-0.6.md)
-- 0.6.2→**0.8.0** (playbook, pin not bumped): [`references/UPGRADE-0.8.md`](references/UPGRADE-0.8.md)
+- 0.6.2→**0.8.0** (done): [`references/UPGRADE-0.8.md`](references/UPGRADE-0.8.md)
 
 Re-check crates.io / GitHub if months have passed — early-stage.
 
@@ -336,7 +337,7 @@ Layouts can `downcast_ref` child errors (e.g. branded 404) before wrapping
 chrome — see upstream error guide. Trade-off: the page finishes rendering
 before any layout body runs (matters for a future streaming SSR design).
 
-**VCP (0.5–0.6.2):** every `#[layout]` uses `slot: Result` / `(slot?)`.
+**VCP (0.8):** every `#[layout]` uses `slot: Slot<'_>` + `error_boundary`.
 Do not reintroduce `Slot` on the current pin (pinned by
 `check_portal_shell` + `portal_shell_invariants`). **0.8 reverses
 this:** `slot: Slot<'_>` + `error_boundary` around `(slot)` — only
@@ -605,7 +606,7 @@ do **not** redirect probes to hashed URLs.
 
 | Idiom | Where |
 |-------|--------|
-| `#[layout]` + `slot: Result` | Root (`app.rs`), login splash, org chrome |
+| `#[layout]` + `Slot<'_>` + `error_boundary` | Root (`app.rs`), login splash, org chrome |
 | `#[component]` | `app/_components/*` (rail, topbar, modal, chips, badges) |
 | `stylesheet!()` + `runtime::script()` + `dev::script()` | Root layout `<head>` |
 | `AssetBundle::load()` → `AssetConfig` | Fail closed if missing/stale; boot checks favicons, Tailwind, runtime script resolve (0.5 Tailwind IDs embed `OUT_DIR` — always `just bundle` / `just run`, never bare `cargo run` after rebuild) |
@@ -705,8 +706,7 @@ clippy `-D warnings` + asset bundle + tests (`dev-validation-cycle.mdc` /
 
 ## 15. Upstream doc index (refresh when needed)
 
-Prefer docs at tag **v0.6.2** for current-pin work; use **v0.8.0**
-docs only when executing `UPGRADE-0.8.md`:
+Prefer docs at tag **v0.8.0** for current-pin work:
 
 | Source | Use for |
 |--------|---------|
@@ -715,7 +715,7 @@ docs only when executing `UPGRADE-0.8.md`:
 | [v0.6.0–v0.6.2 notes](https://github.com/tokio-rs/topcoat/releases/tag/v0.6.0) | Concurrent views, `href!`, `Cx::with`, origin/body/404/`path_param!` |
 | [v0.7.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.7.0) / [v0.8.0](https://github.com/tokio-rs/topcoat/releases/tag/v0.8.0) | Lazy `View`, `error_boundary`, `signal(cx)`, morph, `.runtime()` |
 | Project **`UPGRADE-0.6.md`** | VCP 0.5→0.6.2 checklist (done) |
-| Project **`UPGRADE-0.8.md`** | VCP 0.6.2→0.8.0 checklist (pin not bumped) |
+| Project **`UPGRADE-0.8.md`** | VCP 0.6.2→0.8.0 checklist (done) |
 | [Toasty 0.6 announcement](https://tokio.rs/blog/2026-05-15-announcing-toasty-0-6-0) | Deferred / select / `Vec` scalars / collection ops |
 | Project **`toasty` skill** | VCP ORM conventions + query anti-patterns |
 | `crates/topcoat/docs/` | Getting started, app context, mail, Datastar, UI, … |
@@ -735,8 +735,8 @@ than guessing from memory of older releases.
 |----------|------|
 | `references/RUNTIME.md` | Signals / `@click` pitfalls / test contracts |
 | `references/UPGRADE-0.5.md` | 0.4 → 0.5 migration checklist (done; historical) |
-| `references/UPGRADE-0.6.md` | 0.5 → **0.6.2** playbook (VCP on 0.6.2) |
-| `references/UPGRADE-0.8.md` | 0.6.2 → **0.8.0** playbook (not pinned yet) |
+| `references/UPGRADE-0.6.md` | 0.5 → **0.6.2** playbook (historical) |
+| `references/UPGRADE-0.8.md` | 0.6.2 → **0.8.0** playbook (done; current pin) |
 | `web-stack` skill | VCP conventions (routing, `db(cx)`, page sizes) |
 | `toasty` skill | Toasty 0.10 query / migration playbook |
 | `casbin-permissions.mdc` | AuthZ gates |

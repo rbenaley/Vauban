@@ -13,9 +13,9 @@ fn inv_login_is_email_only_signal_procedure_no_check_email_page() {
     assert!(login.contains("LOGIN_LINK_ACCEPTED"));
     assert!(login.contains("MailCircuitBreaker"));
     assert!(login.contains("mail_circuit.is_open()"));
-    assert!(login.contains("signal sent"));
-    assert!(login.contains("signal sending"));
-    assert!(login.contains("signal unavailable"));
+    assert!(login.contains("let sent = signal(cx"));
+    assert!(login.contains("let sending = signal(cx"));
+    assert!(login.contains("let unavailable = signal(cx"));
     assert!(login.contains("status > 0.0"));
     assert!(login.contains("vb-eph-tick"));
     assert!(login.contains("Resend in "));

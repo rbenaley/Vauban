@@ -9,7 +9,7 @@ use topcoat::{
         error::{SeeOther, not_found, see_other},
         href, page, path_param, route,
     },
-    view::view,
+    view::{View, view},
 };
 
 use crate::app::admin::releases::admin_releases_page;
@@ -72,7 +72,7 @@ async fn require_releases_manage(cx: &Cx) -> Result<()> {
 }
 
 #[page]
-pub(crate) async fn admin_releases_edit_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_releases_edit_page(cx: &Cx) -> Result<impl View> {
     let raw = path_param::<ReleaseId>(cx);
     require_releases_manage(cx).await?;
 
@@ -107,7 +107,7 @@ pub(crate) async fn admin_releases_edit_page(cx: &Cx) -> Result {
     let channel_eol = rel.channel == "EOL";
     let version_label = version_for_display(&rel.version).to_owned();
 
-    view! {
+    Ok(view! {
         <div>
             <a
                 class="vb-back"
@@ -176,7 +176,7 @@ pub(crate) async fn admin_releases_edit_page(cx: &Cx) -> Result {
                 </form>
             </div>
         </div>
-    }
+    })
 }
 
 #[route(POST "/admin/releases/{release_id}")]

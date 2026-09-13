@@ -1,7 +1,7 @@
 use topcoat::{
     Result,
     context::Cx,
-    view::{component, view},
+    view::{View, component, view},
 };
 
 use crate::list_page::PagerLinks;
@@ -11,8 +11,8 @@ use super::pager::vb_pager;
 /// Chip filter row: `(label, href, active)` triples (no pager).
 #[allow(dead_code)] // available for chip-only rows; lists with pager use `filter_row`.
 #[component]
-pub async fn chip_row(cx: &Cx, chips: &[(String, String, bool)]) -> Result {
-    view! {
+pub async fn chip_row(cx: &Cx, chips: &[(String, String, bool)]) -> Result<impl View> {
+    Ok(view! {
         cx =>
         <div class="vb-chip-row">
             <div class="vb-chip-group">
@@ -22,7 +22,7 @@ pub async fn chip_row(cx: &Cx, chips: &[(String, String, bool)]) -> Result {
                 }
             </div>
         </div>
-    }
+    })
 }
 
 /// Filter chips (left) + optional SSR pager (right) on one row.
@@ -31,9 +31,9 @@ pub async fn filter_row(
     cx: &Cx,
     chips: &[(String, String, bool)],
     pager: &Option<PagerLinks>,
-) -> Result {
+) -> Result<impl View> {
     let show_pager = pager.as_ref().is_some_and(|p| p.show());
-    view! {
+    Ok(view! {
         cx =>
         <div class="vb-chip-row">
             <div class="vb-chip-group">
@@ -48,5 +48,5 @@ pub async fn filter_row(
                 }
             }
         </div>
-    }
+    })
 }

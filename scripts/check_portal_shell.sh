@@ -28,14 +28,23 @@ grep -n '#\[layout\]' src/app/org.rs >/dev/null \
 grep -n '#\[layout\]' src/app/admin.rs >/dev/null \
   || fail "src/app/admin.rs must define admin #[layout]"
 
-# Topcoat 0.5+: layouts take rendered `slot: Result`, not `Slot<'_>`.
+# Topcoat 0.8: layouts take slot Slot plus error_boundary.
 for f in src/app.rs src/app/login.rs src/app/org.rs src/app/admin.rs; do
-  grep -E -n 'slot:[[:space:]]*Result' "$f" >/dev/null \
-    || fail "$f layout must take slot: Result (Topcoat 0.5+)"
-  if grep -n 'Slot<' "$f" >/dev/null || grep -n 'slot.await' "$f" >/dev/null; then
-    fail "$f must not use Slot<'_> / slot.await (Topcoat 0.4 API)"
+  grep -E -n 'slot:[[:space:]]*Slot<' "$f" >/dev/null \
+    || fail "$f layout must take slot Slot (Topcoat 0.8)"
+  if grep -E -n 'slot:[[:space:]]*Result' "$f" >/dev/null; then
+    fail "$f must not use slot: Result (Topcoat 0.5–0.6 API)"
+  fi
+  if grep -n 'slot.await' "$f" >/dev/null; then
+    fail "$f must not use slot.await"
   fi
 done
+grep -n 'error_boundary' src/app.rs >/dev/null \
+  || fail "root_layout must wrap (slot) in error_boundary"
+grep -n 'error_boundary' src/app/admin.rs >/dev/null \
+  || fail "admin_layout must wrap (slot) in error_boundary"
+grep -n 'error_boundary' src/app/org.rs >/dev/null \
+  || fail "org_layout must wrap (slot) in error_boundary"
 
 grep -n 'vb_rail' src/app/org.rs >/dev/null \
   || fail "org_layout must render vb_rail"
@@ -107,7 +116,7 @@ grep -n 'a.vb-rail-item .lbl' "$STYLES" >/dev/null \
   || fail "$STYLES must style rail labels (.lbl) in mono separately from icons"
 grep -n 'a.vb-rail-item .vb-ico svg' "$STYLES" >/dev/null \
   || fail "$STYLES must size rail icon SVGs (.vb-ico)"
-grep -n 'ico_home(cx, 17)' src/app/_components/rail.rs >/dev/null \
+grep -n 'ico_home(size: 17)' src/app/_components/rail.rs >/dev/null \
   || fail "vb_rail must use shared SVG rail icons (ico_home)"
 bash scripts/check_no_unicode_icons.sh
 

@@ -10,7 +10,8 @@ use topcoat::{
     Result,
     context::Cx,
     router::{href, page, query_params},
-    view::view,
+    runtime::signal,
+    view::{View, view},
 };
 
 use crate::{
@@ -33,7 +34,7 @@ struct AdminIssuesQuery {
 }
 
 #[page]
-pub(crate) async fn admin_issues_page(cx: &Cx) -> Result {
+pub(crate) async fn admin_issues_page(cx: &Cx) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.issues_read {
@@ -84,12 +85,12 @@ pub(crate) async fn admin_issues_page(cx: &Cx) -> Result {
     });
     let pager_opt = if pager.show() { Some(pager) } else { None };
 
-    view! {
-        cx =>
-        signal query = q_value.clone();
-        signal org_query = org_value.clone();
-        signal page = page_init.clone();
+    let query = signal(cx, || q_value.clone());
+    let org_query = signal(cx, || org_value.clone());
+    let page = signal(cx, || page_init.clone());
 
+    Ok(view! {
+        cx =>
         <div style="margin-bottom: 6px;">
             <h1 class="vb-title" style="margin: 0;">"Issues"</h1>
         </div>
@@ -144,7 +145,7 @@ pub(crate) async fn admin_issues_page(cx: &Cx) -> Result {
             status: $(status_owned.clone()),
             page: $(page.get())
         )
-    }
+    })
 }
 
 /// Chip / filter href — omits `page` so filters reset to page 1.

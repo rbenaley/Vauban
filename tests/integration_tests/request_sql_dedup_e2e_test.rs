@@ -4,8 +4,9 @@ use http_body_util::BodyExt;
 use topcoat::router::StatusCode;
 
 use crate::common::{
-    cleanup, create_org_with_membership, create_published_doc, db_lock, get, login_cookie, status,
-    test_db, test_router, unique_email, unique_slug,
+    cleanup, create_org_with_membership, create_published_doc, db_lock, get,
+    html_embeds_topcoat_shard, login_cookie, status, test_db, test_router, unique_email,
+    unique_slug,
 };
 
 async fn body_text(resp: topcoat::router::response::Response) -> String {
@@ -34,7 +35,7 @@ async fn e2e_docs_list_get_embeds_shard_and_pages() {
         "{html}"
     );
     assert!(
-        html.contains("/_topcoat/shards/"),
+        html_embeds_topcoat_shard(&html),
         "docs list GET must embed live search shard"
     );
 
@@ -59,7 +60,7 @@ async fn e2e_admin_companies_list_get_embeds_shard() {
     assert_eq!(status(&page), StatusCode::OK);
     let html = body_text(page).await;
     assert!(
-        html.contains("/_topcoat/shards/") || html.contains("data-admin-companies-search-shard"),
+        html_embeds_topcoat_shard(&html) || html.contains("data-admin-companies-search-shard"),
         "companies list GET must embed search shard: {html}"
     );
 
@@ -81,7 +82,7 @@ async fn e2e_admin_issues_list_get_embeds_shard() {
     assert_eq!(status(&page), StatusCode::OK);
     let html = body_text(page).await;
     assert!(
-        html.contains("/_topcoat/shards/") || html.contains("data-admin-issues-search-shard"),
+        html_embeds_topcoat_shard(&html) || html.contains("data-admin-issues-search-shard"),
         "admin issues list GET must embed search shard"
     );
 

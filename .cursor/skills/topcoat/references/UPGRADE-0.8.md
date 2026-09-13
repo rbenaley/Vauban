@@ -1,8 +1,7 @@
 # Upgrade Topcoat 0.6.2 → 0.8.0 (VCP playbook)
 
-**Status:** playbook only. VCP still pins **0.6.2** (`Cargo.toml` /
-`Justfile` `topcoat_cli_version`). Do **not** write 0.8 syntax on the
-current pin — it will not compile.
+**Status:** done. VCP pins **0.8.0** (`Cargo.toml` /
+`Justfile` `topcoat_cli_version`) on rustc **1.98**.
 
 Upstream (no 0.6.3; jump is 0.6.2 → 0.7.0 → 0.8.0):
 
@@ -31,7 +30,7 @@ Historical: 0.4→0.5 (`UPGRADE-0.5.md`), 0.5→0.6.2 (`UPGRADE-0.6.md`,
 
 | Location | Change |
 |----------|--------|
-| Host rustc | **MSRV 1.98** (Topcoat 0.7+). VCP `Cargo.toml` is `1.95` today. |
+| Host rustc | **MSRV 1.98** (Topcoat 0.7+). VCP `Cargo.toml` is `1.98`. |
 | `Cargo.toml` facade | `topcoat = "0.8.0"` (keep `tailwind`, `font-fontsource`, `mail`, `mail-smtp`, `multipart`) |
 | `Justfile` | `topcoat_cli_version := "0.8.0"` |
 | Host CLI | `cargo install topcoat-cli --version 0.8.0` (or `ensure-topcoat`) |

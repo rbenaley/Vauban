@@ -105,7 +105,7 @@ Pass: 3 max per page; toolbar pager; overlay query not sticky.
 
 ## D -- Live search shard
 
-1. Open DevTools → Network; filter on `/_topcoat/shards`.
+1. Open DevTools → Network; filter on `/_topcoat/runtime/shards`.
 2. Type into **Search companies…** — confirm POSTs return **200** and
    the card list filters without a full reload (name, slug, contact, VAT,
    address, or account email).

@@ -3,8 +3,8 @@
 use topcoat::{
     Result,
     context::Cx,
-    runtime::Event,
-    view::{component, view},
+    runtime::{Event, signal},
+    view::{Child, View, component, view},
 };
 
 use super::icons::ico_close;
@@ -16,19 +16,18 @@ pub async fn article_modal_shell(
     category: &str,
     version: &str,
     close_href: &str,
-    body: Result,
-) -> Result {
+    #[into] body: Child<'_>,
+) -> Result<impl View> {
     let title = title.to_owned();
     let title_aria = title.clone();
     let category = category.to_owned();
     let version = version.to_owned();
     let close = close_href.to_owned();
     let close2 = close.clone();
+    let open = signal(cx, || true);
 
-    view! {
+    Ok(view! {
         cx =>
-        signal open = true;
-
         <div
             class="vb-modal-root"
             role="dialog"
@@ -71,11 +70,11 @@ pub async fn article_modal_shell(
                             open.set(false);
                         })
                     >
-                        (ico_close(cx, 14).await?)
+                        ico_close(size: 14)
                     </a>
                 </div>
-                <div class="vb-modal-body">(body?)</div>
+                <div class="vb-modal-body">(body)</div>
             </div>
         </div>
-    }
+    })
 }

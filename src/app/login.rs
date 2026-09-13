@@ -5,12 +5,15 @@ use topcoat::{
     context::{Cx, app_context},
     mail::Mailbox,
     router::{
+        Slot,
         error::{SeeOther, redirect, see_other},
-        href, layout, page, query_params, route,
+        href, layout, page, query_params,
+        response::{IntoResponse, Response},
+        route,
     },
-    runtime::{Event, procedure},
+    runtime::{Event, procedure, signal},
     session,
-    view::{component, view},
+    view::{Child, View, ViewExt, component, view},
 };
 
 use crate::{
@@ -64,8 +67,8 @@ struct LoginQuery {
 
 /// Shared splash chrome for `/login/*` layout and absolute routes like `/choose-org`.
 #[component]
-async fn login_splash(cx: &Cx, body: Result) -> Result {
-    view! {
+async fn login_splash(cx: &Cx, #[default] child: Child<'_>) -> Result<impl View> {
+    Ok(view! {
         cx =>
         <div class="vb-login-body">
             <div class="vb-login-wrap">
@@ -88,15 +91,15 @@ async fn login_splash(cx: &Cx, body: Result) -> Result {
                     <h1>"VAUBAN"</h1>
                     <p>"CUSTOMER PORTAL"</p>
                 </div>
-                <div class="vb-login-panel">(body?)</div>
+                <div class="vb-login-panel">(child)</div>
             </div>
         </div>
-    }
+    })
 }
 
 #[layout]
-async fn login_layout(cx: &Cx, slot: Result) -> Result {
-    view! { cx => login_splash(body: slot) }
+async fn login_layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
+    Ok(view! { cx => login_splash((slot)) })
 }
 
 /// Wire codes for [`request_login_link`] (f64 for reliable Topcoat client `if`).
@@ -175,7 +178,7 @@ async fn request_login_link(cx: &Cx, email: String) -> Result<f64> {
 }
 
 #[page]
-pub(crate) async fn login_page(cx: &Cx) -> Result {
+pub(crate) async fn login_page(cx: &Cx) -> Result<impl View> {
     // Valid session: skip the login form and land on the portal home / picker.
     if let Some(user) = current_user(cx).await {
         match post_auth_landing(cx, user).await? {
@@ -201,20 +204,20 @@ pub(crate) async fn login_page(cx: &Cx) -> Result {
         .and_then(|q| q.error.as_deref())
         .is_some_and(|e| e == LOGIN_LINK_ERROR);
 
-    view! {
-        cx =>
-        signal sent = false;
-        signal email = String::new();
-        signal remaining = ttl_remaining;
-        signal mins = ttl_mins;
-        signal secs = ttl_secs_part;
-        signal cooling = false;
-        signal sending = false;
-        signal unavailable = false;
-        signal ttl_remaining_seed = ttl_remaining;
-        signal ttl_mins_seed = ttl_mins;
-        signal ttl_secs_seed = ttl_secs_part;
+    let sent = signal(cx, || false);
+    let email = signal(cx, String::new);
+    let remaining = signal(cx, || ttl_remaining);
+    let mins = signal(cx, || ttl_mins);
+    let secs = signal(cx, || ttl_secs_part);
+    let cooling = signal(cx, || false);
+    let sending = signal(cx, || false);
+    let unavailable = signal(cx, || false);
+    let ttl_remaining_seed = signal(cx, || ttl_remaining);
+    let ttl_mins_seed = signal(cx, || ttl_mins);
+    let ttl_secs_seed = signal(cx, || ttl_secs_part);
 
+    Ok(view! {
+        cx =>
         <div :style=$(if sent.get() { "display:none" } else { "" })>
             <h2>"Sign in"</h2>
             <p class="vb-muted">"Access your customer organization."</p>
@@ -382,7 +385,7 @@ pub(crate) async fn login_page(cx: &Cx) -> Result {
                 </button>
             </p>
         </div>
-    }
+    })
 }
 
 #[query_params]
@@ -422,7 +425,7 @@ pub(crate) async fn login_magic(cx: &Cx) -> Result<SeeOther> {
 
 /// Multi-org picker after magic-link / session entry when N>1 client memberships.
 #[route(GET "/choose-org")]
-pub(crate) async fn choose_org_page(cx: &Cx) -> Result {
+pub(crate) async fn choose_org_page(cx: &Cx) -> Result<Response> {
     let Some(user) = current_user(cx).await else {
         return Err(redirect(href!(login_page).resolve(cx)).into());
     };
@@ -449,28 +452,38 @@ pub(crate) async fn choose_org_page(cx: &Cx) -> Result {
 
     // `#[route]` skips layouts (same as admin POST re-renders) — wrap root +
     // splash chrome so fonts / Tailwind / styles.css apply.
-    let panel = view! {
+    view! {
         cx =>
-        <h2>"Choose an organization"</h2>
-        <p class="vb-muted">"Select which organization to open."</p>
-        <ul class="vb-login-org-list">
-            for org in &clients {
-                <li>
-                    <a
-                        class="vb-login-org-link"
-                        href=(href!(dashboard, Org(org.slug.as_str())))
-                    >
-                        <span class="vb-login-org-name">(org.name.clone())</span>
-                        <span class="vb-login-org-slug vb-mono">
-                            (org.slug.clone())
-                        </span>
-                    </a>
-                </li>
-            }
-        </ul>
-    }?;
-    let splash = view! { cx => login_splash(body: Ok(panel)) }?;
-    view! { cx => root_layout(slot: Ok(splash)) }
+        root_layout(
+            slot: Child::new(
+                view! {
+                    cx =>
+                    login_splash(
+                        <h2>"Choose an organization"</h2>
+                        <p class="vb-muted">"Select which organization to open."</p>
+                        <ul class="vb-login-org-list">
+                            for org in &clients {
+                                <li>
+                                    <a
+                                        class="vb-login-org-link"
+                                        href=(href!(dashboard, Org(org.slug.as_str())))
+                                    >
+                                        <span class="vb-login-org-name">(org.name.clone())</span>
+                                        <span class="vb-login-org-slug vb-mono">
+                                            (org.slug.clone())
+                                        </span>
+                                    </a>
+                                </li>
+                            }
+                        </ul>
+                    )
+                },
+            )
+        )
+    }
+    .first()
+    .await?
+    .into_response(cx)
 }
 
 #[route(POST "/logout")]

@@ -8,7 +8,7 @@ use topcoat::{
         error::{SeeOther, not_found, redirect, see_other},
         href, page, path_param, query_params, route,
     },
-    view::view,
+    view::{View, view},
 };
 
 use crate::{
@@ -43,7 +43,7 @@ struct OrgIssueDetailQuery {
 }
 
 #[page]
-pub(crate) async fn issue_detail_page(cx: &Cx) -> Result {
+pub(crate) async fn issue_detail_page(cx: &Cx) -> Result<impl View> {
     let org_slug = path_param::<Org>(cx);
     let key = path_param::<IssueKey>(cx);
     if org_slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {
@@ -129,7 +129,7 @@ pub(crate) async fn issue_detail_page(cx: &Cx) -> Result {
     let can_write = perms.issues_write;
 
     let timeline = build_discussion_rows(&comments, &users, &attachments, org_slug, now, tz);
-    view! {
+    Ok(view! {
         <div class="vb-issue-pane">
             <a
                 class="vb-back"
@@ -202,7 +202,7 @@ pub(crate) async fn issue_detail_page(cx: &Cx) -> Result {
             </div>
 
             <div class="vb-callout">
-                (ico_hourglass(cx, 16).await?)
+                ico_hourglass(size: 16)
                 <span>
                     "SLA: initial analysis within 2–5 business days from the report timestamp."
                 </span>
@@ -230,7 +230,7 @@ pub(crate) async fn issue_detail_page(cx: &Cx) -> Result {
                         <span
                             style="width: 26px; height: 26px; flex: none; border-radius: 50%; background: #e9eaec; color: #5a5f66; display: flex; align-items: center; justify-content: center;"
                         >
-                            (ico_check(cx, 13).await?)
+                            ico_check(size: 13)
                         </span>
                         <div
                             style="font-size: 13.5px; color: #5a5f66; line-height: 1.5;"
@@ -263,7 +263,7 @@ pub(crate) async fn issue_detail_page(cx: &Cx) -> Result {
                         <span
                             style="width: 26px; height: 26px; flex: none; border-radius: 50%; background: #e9eaec; color: #5a5f66; display: flex; align-items: center; justify-content: center;"
                         >
-                            (ico_check(cx, 13).await?)
+                            ico_check(size: 13)
                         </span>
                         <div
                             style="font-size: 13.5px; color: #5a5f66; line-height: 1.5;"
@@ -298,7 +298,7 @@ pub(crate) async fn issue_detail_page(cx: &Cx) -> Result {
                             shot_file_input(
                                 label: view! {
                                     cx =>
-                                    (ico_paperclip(cx, 13).await?)
+                                    ico_paperclip(size: 13)
                                     <span>"Attach screenshot"</span>
                                 },
                                 max: max_att
@@ -313,7 +313,7 @@ pub(crate) async fn issue_detail_page(cx: &Cx) -> Result {
                 </div>
             }
         </div>
-    }
+    })
 }
 
 struct ReplyMultipart {
@@ -344,7 +344,7 @@ async fn parse_reply_multipart(mut multipart: Multipart) -> Result<ReplyMultipar
 }
 
 #[route(GET "/vauban/issues/{issue_key}")]
-pub(crate) async fn redirect_reserved_issue_detail(cx: &Cx) -> Result {
+pub(crate) async fn redirect_reserved_issue_detail(cx: &Cx) -> Result<()> {
     let key = path_param::<IssueKey>(cx);
     Err(redirect(
         href!(
