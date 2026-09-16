@@ -10,9 +10,58 @@ suitable for the admin **Release notes** field (`FIX` / `FEAT` / `NEW` /
 
 Packages covered:
 
-`vauban-0.9.37.pkg` … `vauban-0.2.0.pkg` (list supplied by operator).
+`vauban-0.9.43.pkg` … `vauban-0.2.0.pkg` (list supplied by operator).
 
 ---
+
+### v0.9.43 (04-09-2026)
+
+FIX: Keep supervisor pipe ownership in `PipeStore` across linked restart so recycled fds no longer break SSH/RDP.
+FIX: Close the full web/ssh/rdp linked set instead of a first-match group after web dies.
+FIX: Exit 100 on a dead peer pipe so proxies stop spinning on EOF.
+SECURITY: Treat a dead IPC peer as fail-closed rather than running degraded.
+FEAT: Resolve overlapping linked groups by transitive closure (`web` + `proxy-ssh` + `proxy-rdp`).
+
+### v0.9.42 (29-08-2026)
+
+SECURITY: Verify the privsep filesystem catalog fail-closed before any leaf spawn (issue #40).
+FIX: Stop linked-restarting boot-dead leaves so a missing NFSv4 ACE on `vauban.conf` no longer crash-loops web and `proxy-ssh`.
+FEAT: Drive pkg apply and supervisor verify from one `privsep_fs_layout.list` catalog.
+FIX: Re-apply NFSv4 ACEs after a replaced `vauban.conf` so `vb-web` can still read config.
+RBAC: Keep layout verify-only on production + privsep boots; do not spawn until ACEs match.
+
+### v0.9.41 (24-08-2026)
+
+FEAT: Put User Group names (`added` / `removed` / `unmapped`) on LDAPS aggregation audit events.
+FIX: Stop emitting emptied/replaced WORM events with only desired/previous counts.
+FEAT: Cap audit name lists at 64 and mark truncated payloads so operators can see mapping misses.
+SECURITY: Keep aggregation replace-set and purge events on the signed WORM path.
+RBAC: Leave Access Rule evaluation unchanged; names are operator-visible audit only.
+
+### v0.9.40 (23-08-2026)
+
+FEAT: Add Phase 1 login-time LDAPS group aggregation (bind-and-search on the same FD).
+FEAT: Map directory groups through `ldaps_mapping.conf` (`resolve` / `static` / `match`) onto existing User Groups.
+FIX: Hold then purge memberships on incomplete search (cases B/C) without deactivating the account.
+SECURITY: Keep bind identity in `vauban.conf` and refuse boot on a comments-only mapping catalog.
+RBAC: Replace-set User Groups on LDAP shadow accounts only; local accounts stay untouched.
+FEAT: Take `aggregation_enabled` from supervisor provision so web never reads the mapping file itself.
+
+### v0.9.39 (22-08-2026)
+
+SECURITY: Replace the PQClean hybrid stack with RustCrypto `ml-kem` 0.3 and `ml-dsa` 0.1.
+SECURITY: Drop `pqcrypto` crates and their cargo-deny ignores from the lockfile.
+FEAT: Run real encapsulate/decapsulate under the existing HKDF label with `ZeroizeOnDrop`.
+FIX: Keep Vault AES-256-GCM, hydrator BLAKE3, and WORM Ed25519 on their previous paths.
+SECURITY: Align hybrid KEM major with russh so SSH and web share one ML-KEM generation.
+
+### v0.9.38 (22-08-2026)
+
+FIX: Honor supervisor Shutdown during mailer idle poll and SMTP broker wait (no more 5s SIGKILL).
+FIX: Try every `getaddrinfo` address so IPv4 localhost SMTP works when `::1` is first.
+FEAT: Add `smtp_accept_invalid_certs` (default false) for lab STARTTLS against a self-signed MTA.
+FEAT: Widen branded HTML mail to a fluid 720px card.
+FIX: Split default vs `development.toml` mailer-enabled pins so ship-disabled stays explicit.
 
 ### v0.9.37 (17-08-2026)
 
