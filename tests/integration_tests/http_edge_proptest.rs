@@ -6,8 +6,11 @@ use std::time::Duration;
 
 use http::{Method, Version};
 use proptest::prelude::*;
+use topcoat::router::StatusCode;
 use vcp::http_canonical::{should_redirect_trailing_slash, trailing_slash_redirect_location};
 use vcp::tls::{HandshakeFailureLog, format_common_log};
+
+use crate::common::{db_lock, post_form, status, test_router};
 
 fn peer(octets: (u8, u8, u8, u8)) -> SocketAddr {
     SocketAddr::new(
@@ -90,6 +93,42 @@ proptest! {
         }
         prop_assert!(should_redirect_trailing_slash(&Method::GET));
         prop_assert!(!should_redirect_trailing_slash(&Method::POST));
+    }
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(8))]
+
+    #[test]
+    fn prop_post_trailing_slash_is_not_308(
+        kind in prop::sample::select(vec!["login", "shard", "org-docs"])
+    ) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+        rt.block_on(async {
+            let _guard = db_lock().lock().await;
+            let router = test_router().await;
+            let path = match kind {
+                "login" => "/login/".to_owned(),
+                "shard" => "/_topcoat/runtime/shards/prop-slash/".to_owned(),
+                "org-docs" => "/acme/docs/".to_owned(),
+                other => panic!("unexpected kind {other}"),
+            };
+            let resp = post_form(&router, &path, None, "email=x@example.com").await;
+            let code = status(&resp);
+            assert_ne!(
+                code,
+                StatusCode::PERMANENT_REDIRECT,
+                "{path} POST must not 308, got {code}"
+            );
+            assert_ne!(
+                code,
+                StatusCode::OK,
+                "{path} POST must not resubmit as 200, got {code}"
+            );
+        });
     }
 }
 

@@ -9,7 +9,7 @@ use tokio::sync::Barrier;
 use topcoat::router::StatusCode;
 use vcp::tls::{AccessLog, HandshakeFailureLog, format_common_log};
 
-use crate::common::{db_lock, get, status, test_router};
+use crate::common::{db_lock, get, post_form, status, test_router};
 
 #[test]
 fn battle_parallel_clf_format() {
@@ -151,6 +151,42 @@ async fn battle_parallel_trailing_slash_308() {
             } else {
                 assert_eq!(loc, "/login?x=1");
             }
+        }));
+    }
+
+    for h in handles {
+        h.await.expect("join");
+    }
+}
+
+#[tokio::test]
+async fn battle_parallel_trailing_slash_post_is_not_308() {
+    let _guard = db_lock().lock().await;
+    let n = 12usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let barrier = barrier.clone();
+        let router = test_router().await;
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let path = if i % 2 == 0 {
+                "/login/"
+            } else {
+                "/_topcoat/runtime/shards/battle-slash/"
+            };
+            let resp = post_form(&router, path, None, "email=x@example.com").await;
+            let code = status(&resp);
+            assert_ne!(
+                code,
+                StatusCode::PERMANENT_REDIRECT,
+                "{path} POST must not 308"
+            );
+            assert!(
+                !code.is_server_error(),
+                "{path} POST must not 5xx (missing runtime / twin), got {code}"
+            );
         }));
     }
 

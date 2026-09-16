@@ -1,10 +1,13 @@
 # Topcoat 0.8 smoke test
 
-**Audience:** operators staging a VCP build on Topcoat **0.8.0**.
+**Audience:** operators staging a VCP build on Topcoat **0.8.x**.
 **Severity:** high — omitting `.runtime()` panics HTML, and a stale CLI
 breaks `view!` / asset ids.
 
 Successor of [`topcoat_0_6_smoke_test.md`](topcoat_0_6_smoke_test.md).
+Current pin is **0.8.1** — also run
+[`topcoat_0_8_1_smoke_test.md`](topcoat_0_8_1_smoke_test.md) (GET `/login/`
+308, POST `/login/` 404, CLI `0.8.1`).
 Keep the 0.6 checks (body cap, `href!`, OriginPolicy) and add the 0.8
 runtime / morph / layout pins.
 
@@ -14,7 +17,7 @@ runtime / morph / layout pins.
   `cargo test --test integration_tests -- topcoat_0_8 -- --test-threads=1`
   plus `topcoat_0_6` / `magic_link` / `auth_tenant` / `portal_shell` /
   `admin_releases` / search shards / `builds_entitlement`).
-- `topcoat fmt -V` prints `0.8.0` (`just` `ensure-topcoat`).
+- `topcoat fmt -V` prints `0.8.1` (`just` `ensure-topcoat`).
 - Host rustc **1.98** (`Cargo.toml` `rust-version`, tahoe `pkg lock rust`).
 - Config has `[server] max_request_body_mib` (default **2048**).
 
@@ -33,5 +36,7 @@ runtime / morph / layout pins.
 ## Related
 
 - `.cursor/skills/topcoat/references/UPGRADE-0.8.md`
+- `.cursor/skills/topcoat/references/UPGRADE-0.8.1.md`
+- [`topcoat_0_8_1_smoke_test.md`](topcoat_0_8_1_smoke_test.md)
 - [`topcoat_0_6_smoke_test.md`](topcoat_0_6_smoke_test.md)
 - `docs/runbooks/http_edge_smoke_test.md`

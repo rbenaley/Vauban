@@ -1,4 +1,4 @@
-//! Source-shape invariants for the Topcoat 0.8.0 pin.
+//! Source-shape invariants for the Topcoat 0.8 pin (0.8.1 + Strict).
 
 use std::process::Command;
 
@@ -32,6 +32,10 @@ fn inv_runtime_and_error_boundary_pins() {
         app.contains("runtime::script"),
         "root_layout must emit the 0.8 runtime script"
     );
+    assert!(
+        app.contains(".trailing_slash") && app.contains("TrailingSlash::Strict"),
+        "router must set TrailingSlash::Strict so POST slash stays 404"
+    );
 
     let admin = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/admin.rs"));
     assert!(admin.contains("error_boundary"));
@@ -53,6 +57,31 @@ fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             out.push(path);
         }
     }
+}
+
+#[test]
+fn inv_trailing_slash_enum_only_in_app() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    collect_rs(&root, &mut files);
+    let mut hits = Vec::new();
+    for path in files {
+        let src = std::fs::read_to_string(&path).expect("read");
+        if src.contains("TrailingSlash") {
+            hits.push(path.display().to_string());
+        }
+    }
+    assert_eq!(
+        hits.len(),
+        1,
+        "TrailingSlash must appear only in app.rs, found: {}",
+        hits.join(", ")
+    );
+    assert!(
+        hits[0].ends_with("src/app.rs"),
+        "TrailingSlash must be imported only in app.rs, found: {}",
+        hits.join(", ")
+    );
 }
 
 #[test]

@@ -67,6 +67,13 @@ async fn e2e_docs_page_renders_with_search() {
         StatusCode::OK,
         "shard POST must succeed without org path param"
     );
+    let slashed = format!("{}/", fx.shard_path.trim_end_matches('/'));
+    let forged = post_json(&fx.router, &slashed, Some(&fx.cookie), &body).await;
+    assert_eq!(
+        status(&forged),
+        StatusCode::NOT_FOUND,
+        "POST shard_path + '/' must miss (TrailingSlash::Strict)"
+    );
     let shard_html = body_text(shard).await;
     assert!(
         shard_html.contains("data-docs-search-shard") || shard_html.contains("vb-list"),

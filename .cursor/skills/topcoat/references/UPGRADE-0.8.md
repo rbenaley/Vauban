@@ -2,6 +2,7 @@
 
 **Status:** done. VCP pins **0.8.0** (`Cargo.toml` /
 `Justfile` `topcoat_cli_version`) on rustc **1.98**.
+Next patch: **0.8.1** (done) — [`UPGRADE-0.8.1.md`](UPGRADE-0.8.1.md).
 
 Upstream (no 0.6.3; jump is 0.6.2 → 0.7.0 → 0.8.0):
 

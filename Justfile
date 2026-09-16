@@ -26,7 +26,7 @@ cargo_home := env_var_or_default("CARGO_HOME", env_var("HOME") + "/.cargo")
 export PATH := cargo_home + "/bin:" + env_var("PATH")
 
 # Keep in sync with README / topcoat facade pin in Cargo.toml.
-topcoat_cli_version := "0.8.0"
+topcoat_cli_version := "0.8.1"
 
 # ensure-vcp-test probe (Unix socket). App tests use config/testing.toml (TCP).
 vcp_test_url := "postgresql://vcp_test:vcp_test@/vcp_test"

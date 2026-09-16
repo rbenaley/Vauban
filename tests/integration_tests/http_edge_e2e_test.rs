@@ -88,10 +88,21 @@ async fn e2e_trailing_slash_post_is_not_308() {
     let _guard = db_lock().lock().await;
     let router = test_router().await;
     let resp = post_form(&router, "/login/", None, "email=x@example.com").await;
+    let code = status(&resp);
     assert_ne!(
-        status(&resp),
+        code,
         StatusCode::PERMANENT_REDIRECT,
         "POST must not receive trailing-slash redirect_permanent"
+    );
+    assert_ne!(
+        code,
+        StatusCode::OK,
+        "POST /login/ must miss (Strict), not resubmit the form"
+    );
+    assert_eq!(
+        code,
+        StatusCode::NOT_FOUND,
+        "POST /login/ must stay 404 under TrailingSlash::Strict, got {code}"
     );
 }
 

@@ -33,7 +33,7 @@ use topcoat::{
     mail::{MailConfig as TopcoatMailConfig, MemoryTransport, RouterBuilderMailExt},
     router::{
         Body, BodyLimit, HeaderValue, Layer, LayerFuture, Next, OriginPolicy, Path, Router,
-        RouterBuilderDiscoverExt, Slot, StatusCode,
+        RouterBuilderDiscoverExt, Slot, StatusCode, TrailingSlash,
         error::{NotFoundError, redirect, redirect_permanent},
         header, href, layout,
         request::{method, uri},
@@ -155,6 +155,10 @@ fn router_with_mail(
 
     topcoat::router::module_router!()
         .origin_policy(origin_policy)
+        // 0.8.1 default Redirect 308-resubmits POST `/login/` and shard `/`.
+        // Strict restores the 0.8.0 miss (404). GET/HEAD 308 stays on
+        // SecurityHeaders + http_canonical (including `/login///`).
+        .trailing_slash(TrailingSlash::Strict)
         .layer(BodyLimit::max(cfg.server.max_request_body_bytes()))
         // Pathless: 0.6 `#[layer]` in this module is scoped to `/` and does
         // not run on unmatched URLs (trailing-slash `/login/` is a miss).

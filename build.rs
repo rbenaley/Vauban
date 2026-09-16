@@ -23,7 +23,7 @@ fn main() {
     config.render().unwrap();
 }
 
-/// Short SHA for account / ops identity (`VCP — v0.1.1 [2745693a]`).
+/// Short SHA for account / ops identity (`VCP — v0.1.2 [2745693a]`).
 fn emit_git_hash() {
     let git_hash = Command::new("git")
         .args(["rev-parse", "--short=8", "HEAD"])

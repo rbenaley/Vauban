@@ -119,6 +119,11 @@ fn inv_trailing_slash_canonical_redirect_permanent() {
 
     let lib = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
     assert!(lib.contains("pub mod http_canonical"));
+
+    assert!(
+        app.contains("TrailingSlash::Strict"),
+        "0.8.1 must opt out of Redirect so POST slash is not 308-resubmitted"
+    );
 }
 
 #[test]

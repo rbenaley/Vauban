@@ -201,7 +201,7 @@ Validate `public_origins` non-empty + HTTPS-only at boot.
 There is **no** Playwright/WKWebView gate in CI. Do not invent one unless
 the project explicitly adds a browser runner.
 
-## Current pin (0.8.0)
+## Current pin (0.8.1)
 
 - Declare signals above `view!`: `let name = signal(cx, || value);`.
 - Call `.runtime()` on the router builder or `runtime::script()` panics.
