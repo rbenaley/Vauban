@@ -21,6 +21,7 @@ use crate::{
     companies_search::normalize_query,
     list_page::parse_page,
     perms::perms_for_user,
+    ui::row_dom_id,
 };
 
 /// Shard args are attacker-controlled — always re-authorize.
@@ -55,7 +56,7 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
                 for card in page_cards {
                     let edit_href = href!(
                         admin_companies_edit_page,
-                        CompanyId(card.org.id.to_string()),
+                        CompanyId(card.org.id),
                     ).resolve(cx);
                     let delete_href = href!(admin_companies_page)
                         .query(
@@ -81,7 +82,10 @@ pub async fn admin_companies_search_results(cx: &Cx, q: String, page: String) ->
                         card.org.lts_subscriptions,
                         card.org.industrial_lts_subscriptions,
                     );
-                    <div class="vb-company-card">
+                    <div
+                        id=(row_dom_id("company", &card.org.id.to_string()))
+                        class="vb-company-card"
+                    >
                         <div class="vb-company-card-head">
                             <div style="min-width: 0;">
                                 <div style="font-weight: 700; font-size: 16px;">

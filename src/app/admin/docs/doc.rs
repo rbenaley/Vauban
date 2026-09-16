@@ -171,7 +171,7 @@ pub(crate) async fn admin_docs_edit_page(cx: &Cx) -> Result<impl View> {
     })
 }
 
-#[route(POST "/admin/docs/{doc}")]
+#[route(POST)]
 pub(crate) async fn admin_docs_update(
     cx: &Cx,
     Form(form): Form<UpdateDocForm>,
@@ -238,17 +238,17 @@ pub(crate) async fn admin_docs_update(
     Ok(see_other(href!(admin_docs_page).resolve(cx)))
 }
 
-#[route(POST "/admin/docs/{doc}/publish")]
+#[route(POST "./publish")]
 pub(crate) async fn admin_docs_publish(cx: &Cx) -> Result<SeeOther> {
     set_status(cx, DOC_STATUS_PUBLISHED).await
 }
 
-#[route(POST "/admin/docs/{doc}/unpublish")]
+#[route(POST "./unpublish")]
 pub(crate) async fn admin_docs_unpublish(cx: &Cx) -> Result<SeeOther> {
     set_status(cx, DOC_STATUS_DRAFT).await
 }
 
-#[route(POST "/admin/docs/{doc}/delete")]
+#[route(POST "./delete")]
 pub(crate) async fn admin_docs_delete(
     cx: &Cx,
     Form(form): Form<DeleteDocForm>,

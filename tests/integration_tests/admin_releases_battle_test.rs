@@ -154,6 +154,81 @@ async fn battle_parallel_admin_releases_page_pagination() {
     cleanup(&db).await;
 }
 
+/// Typed `release_id: u64` path param under contention: existing ids render,
+/// garbage / unknown ids are 404, and nothing is ever 5xx.
+#[tokio::test]
+async fn battle_parallel_release_ids_valid_and_garbage() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-rel-ids");
+    let slug = unique_slug("battle-rel-ids");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let release = {
+        let mut conn = db.clone();
+        let version = "v98.ids.1".to_owned();
+        toasty::create!(Release {
+            version: version.clone(),
+            channel: "LTS".to_owned(),
+            released_on: "2026-07-01".to_owned(),
+            status: RELEASE_STATUS_PUBLISHED.to_owned(),
+            notes: "FIX: battle ids".to_owned(),
+            organization_id: RELEASE_GA_ORG_ID,
+            v_major: vcp::release_pkg::version_sort_fields(&version).v_major,
+            v_minor: vcp::release_pkg::version_sort_fields(&version).v_minor,
+            v_patch: vcp::release_pkg::version_sort_fields(&version).v_patch,
+            is_industrial: 0,
+            has_client_suffix: vcp::release_pkg::version_sort_fields(&version).has_client_suffix,
+            client_suffix: vcp::release_pkg::version_sort_fields(&version).client_suffix,
+            product_track: "LTS".to_owned(),
+        })
+        .exec(&mut conn)
+        .await
+        .expect("release")
+    };
+
+    let router = Arc::new(test_router().await);
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
+    let paths: Vec<(String, StatusCode)> = vec![
+        (format!("/admin/releases/{}", release.id), StatusCode::OK),
+        (
+            "/admin/releases/not-a-number".to_owned(),
+            StatusCode::NOT_FOUND,
+        ),
+        ("/admin/releases/-1".to_owned(), StatusCode::NOT_FOUND),
+        (
+            "/admin/releases/999999999".to_owned(),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "/admin/releases/18446744073709551616".to_owned(),
+            StatusCode::NOT_FOUND,
+        ),
+        (format!("/admin/releases/{}", release.id), StatusCode::OK),
+    ];
+    let n = paths.len();
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for (path, expected) in paths {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        let barrier = barrier.clone();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let resp = get(router.as_ref(), &path, Some(&cookie)).await;
+            let code = status(&resp);
+            assert!(!code.is_server_error(), "{path} 5xx under contention");
+            assert_eq!(code, expected, "{path}");
+        }));
+    }
+    for h in handles {
+        h.await.expect("join");
+    }
+
+    cleanup(&db).await;
+}
+
 /// Same semver twins under concurrent list reads: PUBLISHED must stay above HIDDEN.
 #[tokio::test]
 async fn battle_parallel_same_version_published_before_hidden() {
@@ -785,12 +860,7 @@ async fn battle_parallel_invalid_packages_never_stage() {
                 }],
             )
             .await;
-            assert!(status(&resp).is_redirection());
-            resp.headers()
-                .get("location")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_owned()
+            crate::common::assert_rewritten_page(resp, "vb-confirm-root").await
         }));
 
         let upload_router = router.clone();
@@ -823,8 +893,8 @@ async fn battle_parallel_invalid_packages_never_stage() {
     }
 
     for h in bad {
-        let loc = h.await.expect("join bad");
-        assert_eq!(loc, "/admin/releases/new?err=not_pkg");
+        let html = h.await.expect("join bad");
+        assert!(html.contains("vb-rail"), "rewritten page keeps chrome");
     }
     let mut tokens = Vec::with_capacity(n);
     for h in ok {
@@ -913,18 +983,15 @@ async fn battle_parallel_missing_active_key_never_stages() {
                 }],
             )
             .await;
-            assert!(status(&resp).is_redirection());
-            resp.headers()
-                .get("location")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_owned()
+            // Lot D: refused create re-runs the compose page (rewrite, 200).
+            crate::common::assert_rewritten_page(resp, "aria-label=\"No active security key\"")
+                .await
         }));
     }
 
     for h in handles {
-        let loc = h.await.expect("join");
-        assert_eq!(loc, "/admin/releases/new?err=no_active_key");
+        let html = h.await.expect("join");
+        assert!(html.contains("vb-rail"), "rewritten page keeps chrome");
     }
 
     {
@@ -979,18 +1046,13 @@ async fn battle_parallel_missing_date_never_stages() {
                 }],
             )
             .await;
-            assert!(status(&resp).is_redirection());
-            resp.headers()
-                .get("location")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_owned()
+            crate::common::assert_rewritten_page(resp, "A release date is required").await
         }));
     }
 
     for h in handles {
-        let loc = h.await.expect("join");
-        assert_eq!(loc, "/admin/releases/new?err=date");
+        let html = h.await.expect("join");
+        assert!(html.contains("vb-rail"), "rewritten page keeps chrome");
     }
 
     {

@@ -413,7 +413,7 @@ async fn parse_admin_reply_multipart(mut multipart: Multipart) -> Result<ReplyMu
     Ok(ReplyMultipart { body, screenshots })
 }
 
-#[route(POST "/admin/issues/{issue_key}/reply")]
+#[route(POST "./reply")]
 pub(crate) async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let key = path_param::<IssueKey>(cx);
     let staff = require_staff(cx).await?;
@@ -537,7 +537,7 @@ pub(crate) async fn admin_reply_issue(cx: &Cx, multipart: Multipart) -> Result<S
     Ok(see_other(detail))
 }
 
-#[route(POST "/admin/issues/{issue_key}/edit-comment")]
+#[route(POST "./edit-comment")]
 pub(crate) async fn admin_edit_comment(
     cx: &Cx,
     Form(form): Form<EditCommentForm>,
@@ -595,22 +595,22 @@ pub(crate) async fn admin_edit_comment(
     Ok(see_other(detail))
 }
 
-#[route(POST "/admin/issues/{issue_key}/close")]
+#[route(POST "./close")]
 pub(crate) async fn admin_close_issue(cx: &Cx) -> Result<SeeOther> {
     admin_advance_issue(cx, IssueEvent::Close).await
 }
 
-#[route(POST "/admin/issues/{issue_key}/reopen")]
+#[route(POST "./reopen")]
 pub(crate) async fn admin_reopen_issue(cx: &Cx) -> Result<SeeOther> {
     admin_advance_issue(cx, IssueEvent::Reopen).await
 }
 
-#[route(POST "/admin/issues/{issue_key}/start-analysis")]
+#[route(POST "./start-analysis")]
 pub(crate) async fn admin_start_analysis_issue(cx: &Cx) -> Result<SeeOther> {
     admin_advance_issue(cx, IssueEvent::StartAnalysis).await
 }
 
-#[route(POST "/admin/issues/{issue_key}/resolve")]
+#[route(POST "./resolve")]
 pub(crate) async fn admin_resolve_issue(cx: &Cx) -> Result<SeeOther> {
     admin_advance_issue(cx, IssueEvent::Resolve).await
 }

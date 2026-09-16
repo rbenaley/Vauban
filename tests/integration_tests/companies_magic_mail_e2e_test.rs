@@ -1,13 +1,12 @@
 //! E2E: company invite / revoke / revive mails and soft-delete preserves opener.
 
-use topcoat::context::Cx;
-use topcoat::mail::{MemoryTransport, TextBody};
+use topcoat::mail::TextBody;
 use vcp::models::{MEMBERSHIP_ROLE_ORG, USER_NOT_DELETED, User};
 
 use crate::common::{
-    cleanup, create_membership, create_org_with_membership, create_test_issue, create_test_org,
-    db_lock, login_cookie, post_form, status, test_db, test_router_with_memory_mail, unique_email,
-    unique_slug, unique_suffix, urlencoding_encode,
+    RenderedMemoryTransport, cleanup, create_membership, create_org_with_membership,
+    create_test_issue, create_test_org, db_lock, login_cookie, post_form, status, test_db,
+    test_router_with_rendered_mail, unique_email, unique_slug, unique_suffix, urlencoding_encode,
 };
 
 fn company_compose_form(name: &str, emails: &[&str]) -> String {
@@ -44,21 +43,14 @@ fn mail_text(mail: &topcoat::mail::Mail) -> String {
     }
 }
 
-fn mail_html(mail: &topcoat::mail::Mail) -> String {
-    let cx = Cx::default();
-    mail.html()
-        .map(|v| v.clone().render(&cx))
-        .unwrap_or_default()
-}
-
 #[tokio::test]
 async fn e2e_company_invite_revoke_revive_preserves_user_id() {
     let _guard = db_lock().lock().await;
     let db = test_db().await;
     cleanup(&db).await;
 
-    let memory = MemoryTransport::new();
-    let router = test_router_with_memory_mail(memory.clone()).await;
+    let memory = RenderedMemoryTransport::new();
+    let router = test_router_with_rendered_mail(memory.clone()).await;
 
     let admin_email = unique_email("cmm-admin");
     let admin_slug = unique_slug("cmm-admin");
@@ -88,7 +80,7 @@ async fn e2e_company_invite_revoke_revive_preserves_user_id() {
         sent.iter().any(|m| {
             mail_to_contains(m, &member_email)
                 && (mail_text(m).contains("invited") || mail_text(m).contains("Sign in"))
-                && mail_html(m).contains(r#"src="cid:vauban-logo""#)
+                && m.html.clone().contains(r#"src="cid:vauban-logo""#)
                 && m.attachments()
                     .iter()
                     .any(|a| a.content_id() == Some("vauban-logo"))
@@ -202,8 +194,8 @@ async fn e2e_multi_org_remove_sends_revocation_without_soft_delete() {
     let db = test_db().await;
     cleanup(&db).await;
 
-    let memory = MemoryTransport::new();
-    let router = test_router_with_memory_mail(memory.clone()).await;
+    let memory = RenderedMemoryTransport::new();
+    let router = test_router_with_rendered_mail(memory.clone()).await;
 
     let admin_email = unique_email("cmm-mo-admin");
     let admin_slug = unique_slug("cmm-mo-admin");

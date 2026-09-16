@@ -69,6 +69,11 @@ fn inv_shard_links_use_authorized_context_slug() {
         src.contains("load_filtered_docs_page"),
         "shard must page via load_filtered_docs_page"
     );
+    // Lot F: stable row id for the 0.8 morph (reorders follow the row).
+    assert!(
+        src.contains("id=(row_dom_id(\"doc\", &article.slug))"),
+        "shard rows must carry id=(row_dom_id(..))"
+    );
     let docs = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org/docs.rs"));
     assert!(
         docs.contains("LIST_PAGE_SIZE") && docs.contains(".limit(") && docs.contains(".offset("),

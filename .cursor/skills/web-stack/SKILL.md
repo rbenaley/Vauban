@@ -201,12 +201,14 @@ src/
 |-- models/                -> toasty::Model types
 |-- auth.rs                -> current_user / require_* helpers
 |-- perms.rs               -> PermissionContext + PolicyStore (Casbin-format CSV)
-|-- nav.rs                 -> NavSection + crumb from URI
+|-- nav.rs                 -> NavSection + crumb from matched endpoint pattern
+|-- http_canonical.rs      -> GET/HEAD 308 + rewrite_get_with_flash (POST errors)
 |-- fonts.rs               -> Fontsource Hanken / JetBrains
 |-- app.rs                 -> root #[layout], module_router!, assets
 `-- app/
     |-- _components/       -> #[component] vb_* (group, no URL)
     |-- login.rs           -> login #[layout] + /login
+    |-- choose_org.rs      -> /choose-org picker (module page, splash chrome)
     |-- org.rs             -> org #[layout] (rail/topbar) + /{org}
     |-- org/
     |   |-- docs.rs
@@ -267,6 +269,21 @@ Pin via surface `scripts/check_*.sh` when touching those pages (see
   (307 temporary), `redirect_permanent` (308 canonical / permanent). Do
   not hand-roll `301`/`302` + `Location` when those helpers fit (see
   `topcoat` skill §6 + `references/RUNTIME.md`).
+
+### Form handlers (0.8.1 pattern)
+
+| Case | Shape |
+|------|-------|
+| Form whose POST target is the page itself (compose / edit) | `#[page]` GET + `#[page(POST)]` in the **same module** (same derived path, different methods). Validation error → `Ok(view! { form_with_error })` (layouts + gates run); success → `Err(see_other(href!(list)).into())` (303 PRG). Never re-compose `root_layout(...)` by hand from a `#[route]`. |
+| POST at a sub-path returning to the hosting page on **error** (`./enrol`, `./validate-pkg`, release create) | `#[route(POST "./x")] -> Result<SeeOther>`; error → `Err(rewrite_get_with_flash(&href!(page).query(ErrQ{..}).resolve(cx)).into())` (Topcoat `rewrite`: internal GET re-dispatch, no `?err=` in the address bar); success → `Ok(see_other(..))`. |
+| Redirect to a **different** page (create → list, ceremonies `token=`, deep-link state `delete=` / `revoke=` / `edit=` / `enrolled=`) | 303 PRG with the query as today — `rewrite` is not for cross-page navigation or shareable state. |
+
+Route paths: `#[route(POST)]` / `#[route(POST "./x")]` (module-derived);
+absolute strings only when the module tree cannot express the URL
+(`/vauban/*` overrides, `builds/{release_ver}/download`, `images`,
+`/`, favicons, `/logout`). Typed params: `path_param!(pub(crate) id: u64,
+error = not_found)` then `*path_param::<Id>(cx)?` — no hand parsing.
+Lint: `topcoat_0_8_invariants::inv_route_paths_are_module_relative_outside_whitelist`.
 - **`<select>` preselection (edit forms):** use Topcoat **boolean**
   attrs only — `selected=(value == stored)` or
   `if match { <option selected=(true)> } else { <option> }`. Never
@@ -331,7 +348,11 @@ auth, and rendering close
 - Prefer `async fn foo(cx: &Cx)` helpers over middleware that stuffs
   `User` into extensions, and over extractors that force prop-drilling.
 - Components may load their own data; use `#[memoize]` (request-scoped)
-  so repeated lookups for the same key dedupe within one request.
+  so repeated lookups for the same key dedupe within one request. Key on
+  `&str` / owned values directly (0.7+ hashes borrowed args); never
+  re-introduce the 0.6 `request_intern` id indirection.
+- Chrome (rail / crumb) follows the **matched endpoint pattern**
+  (`nav::nav_from_cx` → `try_endpoint`), never a slug value.
 - Protect data **inside** the page/component via `require_*` — do not
   rely on a distant middleware “having run”.
 

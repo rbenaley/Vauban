@@ -82,6 +82,11 @@ async fn e2e_admin_companies_search_shard_matches_name_and_email() {
     let name_html = body_text(by_name).await;
     assert!(name_html.contains(&marker), "{name_html}");
     assert!(!name_html.contains(&miss_slug), "{name_html}");
+    // Lot F: stable per-card id so the 0.8 morph follows a reordered card.
+    assert!(
+        name_html.contains(&format!("id=\"company-{}\"", hit.id)),
+        "company cards must carry a stable id: {name_html}"
+    );
 
     let by_email = post_json(
         &fx.router,

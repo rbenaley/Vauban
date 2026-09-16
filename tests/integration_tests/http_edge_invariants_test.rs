@@ -95,6 +95,28 @@ fn inv_security_headers_layer_pins() {
     );
 }
 
+/// Lot D: failed-POST rewrites. The pathless security layer must let a
+/// `RewriteError` through to the router loop (otherwise `into_response` turns
+/// it into a 500), and the helper must force GET on a query-bearing target.
+#[test]
+fn inv_rewrite_error_passes_through_security_layer() {
+    let app = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
+    assert!(
+        app.contains("downcast_ref::<RewriteError>().is_some() => return Err(error)"),
+        "security layer must propagate RewriteError for router re-dispatch"
+    );
+    let helpers = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/http_canonical.rs"
+    ));
+    assert!(helpers.contains("pub fn rewrite_get_with_flash"));
+    assert!(helpers.contains(".method(Method::GET)"));
+    assert!(
+        helpers.contains("debug_assert!(") && helpers.contains("target.contains('?')"),
+        "helper must guard the same-path rewrite cycle (target needs a query)"
+    );
+}
+
 #[test]
 fn inv_trailing_slash_canonical_redirect_permanent() {
     let app = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));

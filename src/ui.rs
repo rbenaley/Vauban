@@ -2,6 +2,32 @@
 
 pub const ACCENT: &str = "#117a6b";
 
+/// Stable DOM id for a list row re-rendered by a shard (`doc-ssh-guide`,
+/// `issue-ISS-12`, `company-7`).
+///
+/// Topcoat 0.8 morphs shard output in place; an `id` per row lets the morph
+/// follow a row to its new position instead of rewriting the rows in
+/// between. Only `[A-Za-z0-9_-]` survives (other bytes become `_`) and the
+/// result is never empty, so the id stays a valid HTML id / CSS selector.
+pub fn row_dom_id(prefix: &str, key: &str) -> String {
+    let mut id = String::with_capacity(prefix.len() + key.len() + 1);
+    id.push_str(prefix);
+    id.push('-');
+    let mut pushed = false;
+    for c in key.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            id.push(c);
+        } else {
+            id.push('_');
+        }
+        pushed = true;
+    }
+    if !pushed {
+        id.push('_');
+    }
+    id
+}
+
 pub fn org_initials(name: &str) -> String {
     let mut initials = String::new();
     for part in name.split_whitespace().take(2) {
@@ -13,6 +39,25 @@ pub fn org_initials(name: &str) -> String {
         initials.push('V');
     }
     initials
+}
+
+#[cfg(test)]
+mod row_dom_id_tests {
+    use super::row_dom_id;
+
+    #[test]
+    fn row_dom_id_keeps_safe_chars_and_prefix() {
+        assert_eq!(row_dom_id("doc", "ssh-guide"), "doc-ssh-guide");
+        assert_eq!(row_dom_id("issue", "ISS-12"), "issue-ISS-12");
+        assert_eq!(row_dom_id("company", "7"), "company-7");
+    }
+
+    #[test]
+    fn row_dom_id_sanitizes_and_never_ends_empty() {
+        assert_eq!(row_dom_id("doc", "a b/c\"d"), "doc-a_b_c_d");
+        assert_eq!(row_dom_id("doc", ""), "doc-_");
+        assert_eq!(row_dom_id("doc", "é"), "doc-_");
+    }
 }
 
 /// Channel badge class (Concept: LTS green, industrial teal, Stable blue, EOL muted).

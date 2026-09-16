@@ -25,6 +25,38 @@ proptest! {
     }
 }
 
+/// Memo probe for the `&str` key contract Lot A relies on (`org_context`,
+/// `require_perms`, list COUNT memos): same text hits, different text misses.
+#[topcoat::context::memoize]
+fn memo_probe(cx: &topcoat::context::Cx, key: &str) -> String {
+    let _ = cx;
+    MEMO_PROBE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("v:{key}")
+}
+
+static MEMO_PROBE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(32))]
+
+    #[test]
+    fn prop_memoize_str_keys_hit_same_and_miss_different(
+        a in "[a-z0-9-]{1,16}",
+        b in "[a-z0-9-]{1,16}",
+    ) {
+        prop_assume!(a != b);
+        let cx = topcoat::context::Cx::default();
+        let before = MEMO_PROBE_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+        prop_assert_eq!(memo_probe(&cx, &a), &format!("v:{a}"));
+        prop_assert_eq!(memo_probe(&cx, &a), &format!("v:{a}"));
+        let after_a = MEMO_PROBE_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+        prop_assert_eq!(after_a - before, 1, "repeat key must be a cache hit");
+        prop_assert_eq!(memo_probe(&cx, &b), &format!("v:{b}"));
+        let after_b = MEMO_PROBE_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+        prop_assert_eq!(after_b - after_a, 1, "different key must recompute");
+    }
+}
+
 proptest! {
     #![proptest_config(crate::common::prop_config(24))]
 

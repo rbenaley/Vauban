@@ -25,7 +25,7 @@ use crate::{
     storage::{delete_release_object, find_release_object},
 };
 
-path_param!(pub(crate) release_id);
+path_param!(pub(crate) release_id: u64, error = not_found);
 
 #[derive(Deserialize)]
 struct UpdateReleaseForm {
@@ -58,10 +58,6 @@ async fn load_release_by_id(cx: &Cx, id: u64) -> Option<Release> {
         .and_then(|mut rows| rows.pop())
 }
 
-fn parse_release_id(raw: &str) -> Option<u64> {
-    raw.parse::<u64>().ok()
-}
-
 async fn require_releases_manage(cx: &Cx) -> Result<()> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -73,12 +69,8 @@ async fn require_releases_manage(cx: &Cx) -> Result<()> {
 
 #[page]
 pub(crate) async fn admin_releases_edit_page(cx: &Cx) -> Result<impl View> {
-    let raw = path_param::<ReleaseId>(cx);
     require_releases_manage(cx).await?;
-
-    let Some(id) = parse_release_id(raw) else {
-        return Err(not_found().into());
-    };
+    let id = *path_param::<ReleaseId>(cx)?;
     let Some(rel) = load_release_by_id(cx, id).await else {
         return Err(not_found().into());
     };
@@ -95,7 +87,7 @@ pub(crate) async fn admin_releases_edit_page(cx: &Cx) -> Result<impl View> {
         .await
         .unwrap_or_default();
 
-    let action = href!(admin_releases_update, ReleaseId(id.to_string())).resolve(cx);
+    let action = href!(admin_releases_update, ReleaseId(id)).resolve(cx);
     let org_id = rel.organization_id;
     let ga_selected = org_id == RELEASE_GA_ORG_ID;
     // Track-scoped channel select: LTS↔EOL or Stable↔EOL (never LTS↔Stable).
@@ -179,17 +171,13 @@ pub(crate) async fn admin_releases_edit_page(cx: &Cx) -> Result<impl View> {
     })
 }
 
-#[route(POST "/admin/releases/{release_id}")]
+#[route(POST)]
 pub(crate) async fn admin_releases_update(
     cx: &Cx,
     Form(form): Form<UpdateReleaseForm>,
 ) -> Result<SeeOther> {
-    let raw = path_param::<ReleaseId>(cx);
     require_releases_manage(cx).await?;
-
-    let Some(id) = parse_release_id(raw) else {
-        return Err(not_found().into());
-    };
+    let id = *path_param::<ReleaseId>(cx)?;
     let Some(mut rel) = load_release_by_id(cx, id).await else {
         return Err(not_found().into());
     };
@@ -199,7 +187,7 @@ pub(crate) async fn admin_releases_update(
     else {
         // Illegal LTS↔Stable (or unknown channel): keep the edit form.
         return Ok(see_other(
-            href!(admin_releases_edit_page, ReleaseId(id.to_string())).resolve(cx),
+            href!(admin_releases_edit_page, ReleaseId(id)).resolve(cx),
         ));
     };
     let notes = form.notes.trim().to_owned();
@@ -235,14 +223,10 @@ pub(crate) async fn admin_releases_update(
     Ok(see_other(href!(admin_releases_page).resolve(cx)))
 }
 
-#[route(POST "/admin/releases/{release_id}/publish")]
+#[route(POST "./publish")]
 pub(crate) async fn admin_releases_publish(cx: &Cx) -> Result<SeeOther> {
-    let raw = path_param::<ReleaseId>(cx);
     require_releases_manage(cx).await?;
-
-    let Some(id) = parse_release_id(raw) else {
-        return Err(not_found().into());
-    };
+    let id = *path_param::<ReleaseId>(cx)?;
     let Some(mut rel) = load_release_by_id(cx, id).await else {
         return Err(not_found().into());
     };
@@ -262,22 +246,18 @@ pub(crate) async fn admin_releases_publish(cx: &Cx) -> Result<SeeOther> {
     Ok(see_other(href!(admin_releases_page).resolve(cx)))
 }
 
-#[route(POST "/admin/releases/{release_id}/unpublish")]
+#[route(POST "./unpublish")]
 pub(crate) async fn admin_releases_unpublish(cx: &Cx) -> Result<SeeOther> {
     set_release_status(cx, RELEASE_STATUS_HIDDEN).await
 }
 
-#[route(POST "/admin/releases/{release_id}/delete")]
+#[route(POST "./delete")]
 pub(crate) async fn admin_releases_delete(
     cx: &Cx,
     Form(form): Form<DeleteReleaseForm>,
 ) -> Result<SeeOther> {
-    let raw = path_param::<ReleaseId>(cx);
     require_releases_manage(cx).await?;
-
-    let Some(id) = parse_release_id(raw) else {
-        return Err(not_found().into());
-    };
+    let id = *path_param::<ReleaseId>(cx)?;
     let Some(rel) = load_release_by_id(cx, id).await else {
         return Err(not_found().into());
     };
@@ -335,12 +315,8 @@ pub(crate) async fn admin_releases_delete(
 }
 
 async fn set_release_status(cx: &Cx, status: &str) -> Result<SeeOther> {
-    let raw = path_param::<ReleaseId>(cx);
     require_releases_manage(cx).await?;
-
-    let Some(id) = parse_release_id(raw) else {
-        return Err(not_found().into());
-    };
+    let id = *path_param::<ReleaseId>(cx)?;
     let Some(mut rel) = load_release_by_id(cx, id).await else {
         return Err(not_found().into());
     };

@@ -202,10 +202,10 @@ grep -n 'IssueComment' "$DETAIL" >/dev/null \
   || fail "$DETAIL must load IssueComment timeline from DB"
 grep -nE '#\[route\(POST|/reply' "$DETAIL" >/dev/null \
   || fail "$DETAIL must expose POST reply route"
-grep -nE '#\[route\(POST "/\{org\}/issues/\{issue_key\}/close"\)' "$DETAIL" >/dev/null \
-  || fail "$DETAIL must expose POST close route"
-grep -nE '#\[route\(POST "/\{org\}/issues/\{issue_key\}/reopen"\)' "$DETAIL" >/dev/null \
-  || fail "$DETAIL must expose POST reopen route"
+grep -nE '#\[route\(POST "\./close"\)' "$DETAIL" >/dev/null \
+  || fail "$DETAIL must expose POST close route (module-relative ./close)"
+grep -nE '#\[route\(POST "\./reopen"\)' "$DETAIL" >/dev/null \
+  || fail "$DETAIL must expose POST reopen route (module-relative ./reopen)"
 grep -n 'issue_is_closed' "$DETAIL" >/dev/null \
   || fail "$DETAIL must use issue_is_closed"
 grep -n 'advance_issue_with_retry' "$DETAIL" >/dev/null \
@@ -256,13 +256,13 @@ grep -n 'vb-drop-inline' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL reply must wrap the picker in vb-drop-inline"
 grep -n 'vb-drop-inline' styles.css >/dev/null \
   || fail "styles.css must define vb-drop-inline for the reply dropzone"
-grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/close"\)' "$ADMIN_DETAIL" >/dev/null \
+grep -nE '#\[route\(POST "\./close"\)' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL must expose POST close route"
-grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/reopen"\)' "$ADMIN_DETAIL" >/dev/null \
+grep -nE '#\[route\(POST "\./reopen"\)' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL must expose POST reopen route"
-grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/start-analysis"\)' "$ADMIN_DETAIL" >/dev/null \
+grep -nE '#\[route\(POST "\./start-analysis"\)' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL must expose POST start-analysis route"
-grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/resolve"\)' "$ADMIN_DETAIL" >/dev/null \
+grep -nE '#\[route\(POST "\./resolve"\)' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL must expose POST resolve route"
 grep -n 'advance_issue_with_retry' "$ADMIN_DETAIL" >/dev/null \
   || fail "$ADMIN_DETAIL must advance status via advance_issue_with_retry"

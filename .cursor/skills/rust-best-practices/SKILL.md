@@ -453,6 +453,11 @@ Normative rule: `.cursor/rules/tls-post-quantum.mdc`.
 - Error messages must not leak internals / cross-tenant existence
 - No WebSocket product endpoints
 
+**Request-scoped memoization (Topcoat `#[memoize]`):** key on the real
+argument types (`slug: &str`, `org_id: u64`). Topcoat 0.7+ hashes
+borrowed args; the 0.6 `StringIntern` / `usize` id workaround is gone
+and pinned out by `scripts/check_request_sql_dedup.sh`.
+
 **Post-quantum TLS preparation:**
 - Prefer hybrid groups (X25519 + ML-KEM-768 class) as soon as the pinned
   rustls / aws-lc stack exposes them stably

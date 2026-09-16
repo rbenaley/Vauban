@@ -92,6 +92,14 @@ grep -nE 'error\.into_response\(&?cx\)' "$APP" >/dev/null \
 if grep -nE 'next\.run\(cx, body\)\.await\?' "$APP" >/dev/null; then
   fail "$APP must not ?-propagate next.run Err (skips headers on redirects)"
 fi
+# Lot D: a rewrite must reach the router loop (re-dispatch); the pathless layer
+# runs again on the rewritten request and stamps the final response.
+grep -nE 'downcast_ref::<RewriteError>\(\)\.is_some\(\) => return Err\(error\)' "$APP" >/dev/null \
+  || fail "$APP security layer must propagate RewriteError instead of into_response"
+grep -n 'pub fn rewrite_get_with_flash' src/http_canonical.rs >/dev/null \
+  || fail "src/http_canonical.rs must define rewrite_get_with_flash"
+grep -n '\.method(Method::GET)' src/http_canonical.rs >/dev/null \
+  || fail "rewrite_get_with_flash must force GET on the rewritten dispatch"
 
 # TLS handshake failure coalescing (ops TRACE, not request CLF).
 SERVE="src/tls/serve.rs"

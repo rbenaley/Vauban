@@ -56,8 +56,8 @@ if ! grep -n 'TrailingSlash::Strict' src/app.rs >/dev/null; then
   fail "router must set TrailingSlash::Strict (POST slash stays 404)"
 fi
 
-if ! grep -n 'version = "0.1.2"' Cargo.toml >/dev/null; then
-  fail "Cargo.toml [package] version must be 0.1.2 after the 0.8.1 pin"
+if ! grep -n 'version = "0.1.3"' Cargo.toml >/dev/null; then
+  fail "Cargo.toml [package] version must be 0.1.3 after the 0.8.1 exploit lots"
 fi
 
 if ! grep -n 'is_current' src/app/_components/rail.rs >/dev/null; then

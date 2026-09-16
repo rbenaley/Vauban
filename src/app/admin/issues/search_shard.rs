@@ -21,6 +21,7 @@ use crate::{
     perms::perms_for_user,
     sql_search::{escape_ilike_literal, ilike_contains},
     tz::{browser_tz, format_relative},
+    ui::row_dom_id,
 };
 
 /// Resolve admin org chip/filter to an organization id (SQL; case-insensitive slug).
@@ -46,16 +47,13 @@ async fn resolve_org_id_sql(db: &mut toasty::Db, raw: &str) -> Option<u64> {
 
 /// Request-scoped org hint resolve (page pager + shard share one lookup).
 #[memoize(as_ref)]
-async fn resolve_org_id_memo(cx: &Cx, raw: usize) -> Option<u64> {
-    let raw = crate::request_intern::interned(cx, raw);
+async fn resolve_org_id_memo(cx: &Cx, raw: &str) -> Option<u64> {
     let mut database = crate::auth::db(cx);
-    resolve_org_id_sql(&mut database, &raw).await
+    resolve_org_id_sql(&mut database, raw).await
 }
 
 async fn resolve_org_id(cx: &Cx, raw: &str) -> Option<u64> {
-    resolve_org_id_memo(cx, crate::request_intern::intern(cx, raw))
-        .await
-        .copied()
+    resolve_org_id_memo(cx, raw).await.copied()
 }
 
 macro_rules! admin_issues_filtered_query {
@@ -109,13 +107,7 @@ pub async fn admin_issues_search_results(
     let total = if unknown_org {
         0
     } else {
-        *count_admin_filtered_issues_memo(
-            cx,
-            crate::request_intern::intern(cx, &q),
-            crate::request_intern::intern(cx, &org_filter),
-            crate::request_intern::intern(cx, &status),
-        )
-        .await
+        count_admin_filtered_issues(cx, &q, &org_filter, &status).await
     };
     let pages = page_count(total, LIST_PAGE_SIZE);
     let page = clamp_page(page, pages);
@@ -180,7 +172,7 @@ pub async fn admin_issues_search_results(
                         opener,
                         updated,
                     );
-                    <a class="vb-row" href=(href)>
+                    <a id=(row_dom_id("issue", &issue.key)) class="vb-row" href=(href)>
                         <div
                             class="vb-mono"
                             style="color: var(--accent); font-size: 12px; font-weight: 700; width: 76px; flex: none;"
@@ -213,19 +205,16 @@ pub async fn admin_issues_search_results(
 #[memoize]
 async fn count_admin_filtered_issues_memo(
     cx: &Cx,
-    q: usize,
-    org_filter: usize,
-    status: usize,
+    q: &str,
+    org_filter: &str,
+    status: &str,
 ) -> usize {
-    let q = crate::request_intern::interned(cx, q);
-    let org_filter = crate::request_intern::interned(cx, org_filter);
-    let status = crate::request_intern::interned(cx, status);
-    let org_id = resolve_org_id(cx, org_filter.as_str()).await;
+    let org_id = resolve_org_id(cx, org_filter).await;
     if !org_filter.is_empty() && org_id.is_none() {
         return 0;
     }
     let mut database = crate::auth::db(cx);
-    admin_issues_filtered_query!(org_id, q.as_str(), status.as_str())
+    admin_issues_filtered_query!(org_id, q, status)
         .count()
         .exec(&mut database)
         .await
@@ -239,11 +228,5 @@ pub(super) async fn count_admin_filtered_issues(
     org_filter: &str,
     status: &str,
 ) -> usize {
-    *count_admin_filtered_issues_memo(
-        cx,
-        crate::request_intern::intern(cx, q),
-        crate::request_intern::intern(cx, org_filter),
-        crate::request_intern::intern(cx, status),
-    )
-    .await
+    *count_admin_filtered_issues_memo(cx, q, org_filter, status).await
 }

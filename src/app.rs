@@ -2,6 +2,7 @@
 
 mod _components;
 pub(crate) mod admin;
+pub(crate) mod choose_org;
 pub mod hrefs;
 mod issue_thumbs;
 pub(crate) mod login;
@@ -30,11 +31,11 @@ use topcoat::{
     context::{Cx, try_app_context},
     cookie::RouterBuilderCookieExt,
     font,
-    mail::{MailConfig as TopcoatMailConfig, MemoryTransport, RouterBuilderMailExt},
+    mail::{MailConfig as TopcoatMailConfig, MemoryTransport, RouterBuilderMailExt, Transport},
     router::{
         Body, BodyLimit, HeaderValue, Layer, LayerFuture, Next, OriginPolicy, Path, Router,
         RouterBuilderDiscoverExt, Slot, StatusCode, TrailingSlash,
-        error::{NotFoundError, redirect, redirect_permanent},
+        error::{NotFoundError, RewriteError, redirect, redirect_permanent},
         header, href, layout,
         request::{method, uri},
         response::{IntoResponse, Response},
@@ -78,7 +79,6 @@ use crate::{
     mail_circuit::MailCircuitBreaker,
     mailer::build_smtp_transport,
     perms::PolicyStore,
-    request_intern::StringIntern,
     storage::StorageClient,
 };
 
@@ -106,11 +106,23 @@ pub fn router_with_memory_mail(
     cfg: &Config,
     memory: MemoryTransport,
 ) -> Router {
+    router_with_mail_transport(db, policy, cfg, memory)
+}
+
+/// Test helper: same router with any [`Transport`] (e.g. a capture that
+/// renders mail HTML at delivery time — a view built inside a page render
+/// cannot be rendered after the request).
+pub fn router_with_mail_transport(
+    db: Db,
+    policy: Arc<PolicyStore>,
+    cfg: &Config,
+    transport: impl Transport + 'static,
+) -> Router {
     router_with_mail(
         db,
         policy,
         cfg,
-        TopcoatMailConfig::builder().transport(memory).build(),
+        TopcoatMailConfig::builder().transport(transport).build(),
         Arc::new(MailCircuitBreaker::new(&cfg.mail)),
     )
 }
@@ -342,13 +354,16 @@ async fn security_headers(cx: &Cx, body: Body, next: Next<'_>) -> Result<Respons
     } else {
         None
     };
-    let cx = cx.with(StringIntern::default());
     let mut response = match redirect_to {
-        Some(location) => redirect_permanent(&location).into_response(&cx)?,
-        None => match next.run(&cx, body).await {
+        Some(location) => redirect_permanent(&location).into_response(cx)?,
+        None => match next.run(cx, body).await {
             Ok(response) => response,
+            // A `rewrite` must reach the router loop to be re-dispatched; this
+            // pathless layer runs again on the rewritten dispatch and stamps
+            // the final response.
+            Err(error) if error.downcast_ref::<RewriteError>().is_some() => return Err(error),
             // Handler `Err(redirect/…)` must still get security headers — do not `?` out.
-            Err(error) => error.into_response(&cx)?,
+            Err(error) => error.into_response(cx)?,
         },
     };
 
@@ -397,7 +412,9 @@ pub(crate) async fn root(cx: &Cx) -> Result<()> {
                 .into());
             }
             PostAuthLanding::ChooseOrg => {
-                return Err(redirect(href!(crate::app::login::choose_org_page).resolve(cx)).into());
+                return Err(
+                    redirect(href!(crate::app::choose_org::choose_org_page).resolve(cx)).into(),
+                );
             }
             PostAuthLanding::None => {}
         }

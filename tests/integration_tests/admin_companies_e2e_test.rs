@@ -340,6 +340,16 @@ async fn e2e_create_rejects_invalid_contact_email() {
         html.contains("Ada Lovelace") && html.contains("name=\"contact_name\""),
         "form must re-render dual contact fields: {html}"
     );
+    // 0.8.1 `#[page(POST)]`: the validation re-render runs under root + admin
+    // layouts (rail, topbar, stylesheet), not a hand-wrapped shell.
+    assert!(
+        html.contains("vb-rail") && html.contains("vb-topbar") && html.contains("<!DOCTYPE html>"),
+        "POST re-render must carry the admin chrome: {html}"
+    );
+    assert!(
+        html.contains("rel=\"stylesheet\""),
+        "POST re-render must include the root stylesheet link: {html}"
+    );
 
     let after = {
         let mut conn = db.clone();

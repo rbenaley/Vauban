@@ -99,6 +99,16 @@ async fn e2e_docs_search_shard_returns_matching_published_articles() {
     let html = body_text(shard).await;
     assert!(html.contains("Unique SSH Guide"), "{html}");
     assert!(html.contains(&format!("/{}/docs/{hit}", fx.slug)), "{html}");
+    // Lot F: stable per-row id so the 0.8 morph follows a reordered row.
+    assert!(
+        html.contains(&format!("id=\"doc-{hit}\"")),
+        "shard rows must carry a stable id: {html}"
+    );
+    assert_eq!(
+        html.matches(&format!("id=\"doc-{hit}\"")).count(),
+        1,
+        "row ids must be unique"
+    );
     assert!(!html.contains("Billing FAQ"), "{html}");
     assert!(!html.contains(&miss), "{html}");
 

@@ -144,7 +144,7 @@ struct ConfirmForm {
     assertion: String,
 }
 
-#[route(POST "/admin/releases/confirm")]
+#[route(POST)]
 pub(crate) async fn admin_releases_confirm_post(
     cx: &Cx,
     Form(form): Form<ConfirmForm>,
@@ -239,7 +239,7 @@ struct CancelForm {
 
 /// Explicit abort of an in-flight publish: discard the upload and the staged
 /// release so the admin lands back on a Release manager that never saw it.
-#[route(POST "/admin/releases/confirm/cancel")]
+#[route(POST "./cancel")]
 pub(crate) async fn admin_releases_confirm_cancel(
     cx: &Cx,
     Form(form): Form<CancelForm>,

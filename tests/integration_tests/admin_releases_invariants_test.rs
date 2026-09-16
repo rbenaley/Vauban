@@ -49,16 +49,26 @@ fn inv_admin_releases_create_is_post_and_gated() {
         !src.contains("\"1970-01-01\".to_owned()") && !src.contains("\"1970-01-01\".into()"),
         "create must not invent a Unix-epoch default for released_on"
     );
-    assert!(src.contains("err=date") || src.contains("err: Some(\"date\")"));
+    // Lot D: refused creates re-run the compose page through `create_error`
+    // (Topcoat rewrite) instead of a 303 to `?err=`.
+    assert!(src.contains("create_error(cx, \"date\")"));
     assert!(src.contains("parse_released_on"));
-    assert!(src.contains("err=package") || src.contains("err: Some(\"package\")"));
+    assert!(src.contains("create_error(cx, \"package\")"));
     assert!(src.contains("freebsd_pkg::inspect"));
-    assert!(src.contains("err=not_pkg") || src.contains("err: Some(\"not_pkg\")"));
+    assert!(src.contains("create_error(cx, \"not_pkg\")"));
     assert!(
         src.contains("derive_release_identity"),
         "create must derive version/channel from the package manifeste"
     );
-    assert!(src.contains("err=identity") || src.contains("err: Some(\"identity\")"));
+    assert!(src.contains("create_error(cx, \"identity\")"));
+    assert!(
+        src.contains("rewrite_get_with_flash") && src.contains("fn create_error"),
+        "create errors must funnel through the rewrite helper"
+    );
+    assert!(
+        src.contains("Ok(see_other(href!(admin_releases_page).resolve(cx)))"),
+        "successful create stays 303 PRG to the list"
+    );
     assert!(
         !src.contains("name=\"version\"") && !src.contains("name=\"channel\""),
         "compose form must not collect version or channel"
@@ -84,7 +94,10 @@ fn inv_admin_releases_create_is_post_and_gated() {
             && src.contains("fn require_active_key")
             && src.contains("#[procedure]")
             && !src.contains("GET \"/admin/releases/new/require-active-key\"")
-            && (src.contains("err=no_active_key") || src.contains("err: Some(\"no_active_key\")"))
+            && !src.contains("GET \"./require-active-key\"")
+            && (src.contains("err=no_active_key")
+                || src.contains("err: Some(\"no_active_key\")")
+                || src.contains("create_error(cx, \"no_active_key\")"))
             && src.contains("has_active_key")
             && src.contains("No active security key"),
         "publish must modal-gate on zero ACTIVE keys before WebAuthn"
@@ -96,7 +109,7 @@ fn inv_admin_releases_create_is_post_and_gated() {
     );
     assert!(
         src.contains("fn admin_releases_validate_pkg")
-            && src.contains("/admin/releases/new/validate-pkg")
+            && src.contains("#[route(POST \"./validate-pkg\")]")
             && src.contains("StatusCode::NO_CONTENT")
             && src.contains("UNPROCESSABLE_ENTITY"),
         "validate-pkg preflight must exist (204/422)"
@@ -104,8 +117,9 @@ fn inv_admin_releases_create_is_post_and_gated() {
     let validate_at = src
         .find("fn admin_releases_validate_pkg")
         .expect("validate fn");
+    // Module-relative (0.8.1): create is `#[route(POST)]` at the module path.
     let validate_end = src[validate_at..]
-        .find("\n#[route(POST \"/admin/releases/new\")]")
+        .find("\n#[route(POST)]")
         .map(|i| validate_at + i)
         .expect("create route after validate");
     let validate_body = &src[validate_at..validate_end];
@@ -188,7 +202,7 @@ fn inv_admin_releases_staged_rows_are_transactional() {
         env!("CARGO_MANIFEST_DIR"),
         "/src/app/admin/releases/confirm.rs"
     ));
-    assert!(confirm.contains("#[route(POST \"/admin/releases/confirm/cancel\")]"));
+    assert!(confirm.contains("#[route(POST \"./cancel\")]"));
     assert!(confirm.contains("rollback_staged_release"));
     assert!(confirm.contains("Cancel publish"));
 
@@ -262,8 +276,8 @@ fn inv_admin_releases_list_actions_and_badges() {
     assert!(src.contains("Unpublish"));
     assert!(src.contains("Publish"));
     assert!(
-        src.contains("admin_releases_edit_page") && src.contains("ReleaseId(rel.id.to_string())"),
-        "Edit must link by release id"
+        src.contains("admin_releases_edit_page") && src.contains("ReleaseId(rel.id)"),
+        "Edit must link by typed release id"
     );
     assert!(
         src.contains("version_for_display"),

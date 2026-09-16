@@ -526,19 +526,21 @@ async fn e2e_key_dashboard_staff_ok_member_404_and_revoke_guard() {
         "credential_id_hex=0a0b&confirm=nope",
     )
     .await;
-    assert!(status(&bad_confirm).is_redirection());
-    let loc = bad_confirm
-        .headers()
-        .get("location")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    assert!(loc.contains("err=confirm"), "got location {loc}");
+    // Lot D: a refused revoke re-runs `/admin/key` (rewrite, 200, no `?err=`
+    // redirect). With no matching ACTIVE row the modal has nothing to reopen,
+    // so the dashboard itself is the response.
+    let html = crate::common::assert_rewritten_page(bad_confirm, "Security keys").await;
+    assert!(
+        html.contains("vb-rail"),
+        "rewritten page keeps admin chrome"
+    );
 
     cleanup(&db).await;
 }
 
-/// Empty / whitespace `admin_label` on enrol must PRG to `err=label` before
-/// attestation parsing (denial path without a real WebAuthn payload).
+/// Empty / whitespace `admin_label` on enrol must re-render `/admin/key` with
+/// the label callout (Lot D rewrite) before attestation parsing (denial path
+/// without a real WebAuthn payload).
 #[tokio::test]
 async fn e2e_key_enrol_rejects_empty_admin_label() {
     let _guard = db_lock().lock().await;
@@ -559,22 +561,9 @@ async fn e2e_key_enrol_rejects_empty_admin_label() {
         ("tabs", "admin_label=%09%09&attestation=garbage"),
     ] {
         let resp = post_form(&router, "/admin/key/enrol", admin_cookie.as_deref(), form).await;
+        let html = crate::common::assert_rewritten_page(resp, "Key label is required").await;
         assert!(
-            status(&resp).is_redirection(),
-            "{name}: expected redirect, got {:?}",
-            status(&resp)
-        );
-        let loc = resp
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        assert!(
-            loc.contains("err=label"),
-            "{name}: expected err=label, got {loc}"
-        );
-        assert!(
-            !loc.contains("err=attestation"),
+            !html.contains("did not return a usable attestation"),
             "{name}: label must be checked before attestation"
         );
     }

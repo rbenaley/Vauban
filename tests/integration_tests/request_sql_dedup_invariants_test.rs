@@ -17,6 +17,58 @@ fn inv_check_request_sql_dedup_script() {
     );
 }
 
+/// Topcoat 0.7 fixed `#[memoize]` on borrowed args (#371); the 0.6
+/// `request_intern` usize indirection must stay deleted.
+#[test]
+fn inv_memo_keys_are_borrowed_str_not_interned() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(
+        !root.join("src/request_intern.rs").exists(),
+        "src/request_intern.rs is a 0.6 workaround"
+    );
+    let lib = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
+    assert!(!lib.contains("request_intern"));
+    let app = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app.rs"));
+    assert!(
+        !app.contains("StringIntern"),
+        "security layer must not inject a per-request intern table"
+    );
+
+    let auth = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/auth.rs"));
+    assert!(auth.contains("fn org_context(cx: &Cx, slug: &str)"));
+    let perms = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/perms.rs"));
+    assert!(perms.contains("fn require_perms(cx: &Cx, role: &str)"));
+    let docs = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org/docs.rs"));
+    assert!(docs.contains("fn count_filtered_docs_memo(cx: &Cx, q: &str, cat: &str)"));
+    let issues = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/issues.rs"
+    ));
+    assert!(
+        issues
+            .contains("fn count_filtered_issues_memo(cx: &Cx, org_id: u64, q: &str, status: &str)")
+    );
+    let load = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/load.rs"
+    ));
+    assert!(load.contains("fn company_cards_page_memo(cx: &Cx, q: &str, page: usize)"));
+    let admin_issues = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/issues/search_shard.rs"
+    ));
+    assert!(admin_issues.contains("fn resolve_org_id_memo(cx: &Cx, raw: &str)"));
+    assert!(
+        !admin_issues.contains("q: usize") && !admin_issues.contains("status: usize"),
+        "admin issues memo keys must be &str"
+    );
+    let tiles = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/dashboard_tiles.rs"
+    ));
+    assert!(tiles.contains("slug: &str,") && !tiles.contains("slug_id"));
+}
+
 #[test]
 fn inv_docs_count_is_memoized_and_shared() {
     let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org/docs.rs"));

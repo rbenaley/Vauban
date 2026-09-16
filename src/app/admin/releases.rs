@@ -229,15 +229,15 @@ pub(crate) async fn admin_releases_page(cx: &Cx) -> Result<impl View> {
                     let status_badge = release_status_badge_class(&rel.status).to_owned();
                     let edit_href = href!(
                         release_id::admin_releases_edit_page,
-                        release_id::ReleaseId(rel.id.to_string()),
+                        release_id::ReleaseId(rel.id),
                     ).resolve(cx);
                     let publish_action = href!(
                         release_id::admin_releases_publish,
-                        release_id::ReleaseId(rel.id.to_string()),
+                        release_id::ReleaseId(rel.id),
                     ).resolve(cx);
                     let unpublish_action = href!(
                         release_id::admin_releases_unpublish,
-                        release_id::ReleaseId(rel.id.to_string()),
+                        release_id::ReleaseId(rel.id),
                     ).resolve(cx);
                     let delete_href = admin_releases_delete_href(
                         cx,
@@ -296,7 +296,7 @@ pub(crate) async fn admin_releases_page(cx: &Cx) -> Result<impl View> {
             let cancel = admin_releases_list_href(cx, &channel_owned, page);
             let action = href!(
                 release_id::admin_releases_delete,
-                release_id::ReleaseId(target.id.to_string()),
+                release_id::ReleaseId(target.id),
             ).resolve(cx);
             <div
                 class="vb-confirm-root"

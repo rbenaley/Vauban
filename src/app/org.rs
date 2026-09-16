@@ -19,7 +19,7 @@ use topcoat::{
 
 use crate::{
     auth::require_org, models::RESERVED_ORG_SLUG, nav::nav_from_cx,
-    release_pkg::org_builds_entitled, request_intern::intern,
+    release_pkg::org_builds_entitled,
 };
 
 use super::_components::{branded_404_body, vb_rail, vb_topbar};
@@ -75,10 +75,9 @@ pub(crate) async fn dashboard(cx: &Cx) -> Result<impl View> {
     let lts = ctx.org.lts_subscriptions;
     let industrial = ctx.org.industrial_lts_subscriptions;
     let show_builds = org_builds_entitled(slug, lts, industrial);
-    let slug_id = intern(cx, slug);
     let load = DashLoad {
         org_id,
-        slug_id,
+        slug,
         lts,
         industrial,
         show_builds,

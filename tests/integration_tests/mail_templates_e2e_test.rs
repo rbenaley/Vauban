@@ -1,12 +1,12 @@
 //! E2E: invite / login / revoke mails carry branded HTML + CID logo.
 
-use topcoat::context::Cx;
-use topcoat::mail::{MemoryTransport, TextBody};
+use topcoat::mail::TextBody;
 use topcoat::router::StatusCode;
 
 use crate::common::{
-    call_request_login_link, cleanup, create_org_with_membership, db_lock, login_cookie, post_form,
-    status, test_db, test_router_with_memory_mail, unique_email, unique_slug, urlencoding_encode,
+    RenderedMemoryTransport, SentMail, call_request_login_link, cleanup,
+    create_org_with_membership, db_lock, login_cookie, post_form, status, test_db,
+    test_router_with_rendered_mail, unique_email, unique_slug, urlencoding_encode,
 };
 
 fn company_compose_form(name: &str, emails: &[&str]) -> String {
@@ -43,15 +43,8 @@ fn mail_text(mail: &topcoat::mail::Mail) -> String {
     }
 }
 
-fn mail_html(mail: &topcoat::mail::Mail) -> String {
-    let cx = Cx::default();
-    mail.html()
-        .map(|v| v.clone().render(&cx))
-        .unwrap_or_default()
-}
-
-fn assert_branded(mail: &topcoat::mail::Mail) {
-    let html = mail_html(mail);
+fn assert_branded(mail: &SentMail) {
+    let html = mail.html.clone();
     assert!(
         !html.is_empty(),
         "mail must include HTML body: subject={}",
@@ -79,8 +72,8 @@ async fn e2e_invite_login_revoke_mails_are_branded_html() {
     let db = test_db().await;
     cleanup(&db).await;
 
-    let memory = MemoryTransport::new();
-    let router = test_router_with_memory_mail(memory.clone()).await;
+    let memory = RenderedMemoryTransport::new();
+    let router = test_router_with_rendered_mail(memory.clone()).await;
 
     let admin_email = unique_email("mt-admin");
     let admin_slug = unique_slug("mt-admin");
@@ -108,7 +101,7 @@ async fn e2e_invite_login_revoke_mails_are_branded_html() {
         .find(|m| mail_to_contains(m, &member_email))
         .expect("invitation mail");
     assert_branded(&invite);
-    let invite_html = mail_html(&invite);
+    let invite_html = invite.html.clone();
     assert!(
         invite_html.contains(&org_name),
         "invite HTML must show org name: {invite_html}"
@@ -136,7 +129,7 @@ async fn e2e_invite_login_revoke_mails_are_branded_html() {
         "login subject: {}",
         login_mail.subject()
     );
-    let login_html = mail_html(&login_mail);
+    let login_html = login_mail.html.clone();
     assert!(login_html.contains("/login/magic?token="));
     assert!(login_html.contains("minutes"));
 
@@ -165,7 +158,7 @@ async fn e2e_invite_login_revoke_mails_are_branded_html() {
         .find(|m| mail_to_contains(m, &member_email) && m.subject().contains("Access removed"))
         .expect("revocation mail");
     assert_branded(&revoke);
-    let revoke_html = mail_html(&revoke);
+    let revoke_html = revoke.html.clone();
     assert!(
         revoke_html.contains(&org_name),
         "revoke HTML must show org: {revoke_html}"

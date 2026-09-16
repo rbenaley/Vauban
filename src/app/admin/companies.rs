@@ -126,7 +126,7 @@ pub(crate) async fn admin_companies_page(cx: &Cx) -> Result<impl View> {
         if let Some(target) = delete_target {
             let action = href!(
                 company_id::admin_companies_delete,
-                company_id::CompanyId(target.org.id.to_string()),
+                company_id::CompanyId(target.org.id),
             ).resolve(cx);
             <div
                 class="vb-confirm-root"

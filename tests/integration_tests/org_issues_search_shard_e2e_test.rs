@@ -83,6 +83,10 @@ async fn e2e_org_issues_search_shard_returns_matching_issues() {
         html.contains(&format!("/{}/issues/{hit}", fx.slug)),
         "{html}"
     );
+    assert!(
+        html.contains(&format!("id=\"issue-{hit}\"")),
+        "shard rows must carry a stable id: {html}"
+    );
     assert!(!html.contains("Billing FAQ Issue"), "{html}");
     assert!(!html.contains(&miss), "{html}");
 

@@ -23,8 +23,8 @@ grep -n 'issues_write' src/issue_comment_edit.rs >/dev/null \
 
 ADMIN="src/app/admin/issues/issue_key.rs"
 ORG="src/app/org/issues/issue_key.rs"
-grep -nE '#\[route\(POST "/admin/issues/\{issue_key\}/edit-comment"\)' "$ADMIN" >/dev/null \
-  || fail "$ADMIN must expose POST edit-comment"
+grep -nE '#\[route\(POST "\./edit-comment"\)' "$ADMIN" >/dev/null \
+  || fail "$ADMIN must expose POST edit-comment (module-relative ./edit-comment)"
 grep -n 'decorate_support_edit\|can_edit_support_comment' "$ADMIN" >/dev/null \
   || fail "$ADMIN must decorate Support edit chrome"
 if grep -nE 'edit-comment' "$ORG" >/dev/null 2>&1; then

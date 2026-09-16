@@ -124,10 +124,10 @@ macro_rules! docs_filtered_query {
 
 /// Request-scoped COUNT so list page + embedded shard share one SQL round-trip.
 #[memoize]
-async fn count_filtered_docs_memo(cx: &Cx, q: usize, cat: usize) -> usize {
+async fn count_filtered_docs_memo(cx: &Cx, q: &str, cat: &str) -> usize {
     let filter = DocsFilter {
-        q: crate::request_intern::interned(cx, q),
-        cat: crate::request_intern::interned(cx, cat),
+        q: q.to_owned(),
+        cat: cat.to_owned(),
     };
     let mut database = crate::auth::db(cx);
     docs_filtered_query!(&filter)
@@ -139,12 +139,7 @@ async fn count_filtered_docs_memo(cx: &Cx, q: usize, cat: usize) -> usize {
 
 /// Count matching published docs (SQL; memoized per request).
 pub(super) async fn count_filtered_docs(cx: &Cx, filter: &DocsFilter) -> usize {
-    *count_filtered_docs_memo(
-        cx,
-        crate::request_intern::intern(cx, &filter.q),
-        crate::request_intern::intern(cx, &filter.cat),
-    )
-    .await
+    *count_filtered_docs_memo(cx, &filter.q, &filter.cat).await
 }
 
 /// One page of matching docs (SQL `ORDER BY updated_at DESC` + limit/offset).

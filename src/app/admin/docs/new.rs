@@ -109,7 +109,7 @@ pub(crate) async fn admin_docs_new_page(cx: &Cx) -> Result<impl View> {
     })
 }
 
-#[route(POST "/admin/docs/new")]
+#[route(POST)]
 pub(crate) async fn admin_docs_create(
     cx: &Cx,
     Form(form): Form<CreateDocForm>,

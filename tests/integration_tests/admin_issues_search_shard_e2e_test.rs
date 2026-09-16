@@ -103,6 +103,10 @@ async fn e2e_admin_issues_search_shard_matches_and_filters_org() {
         html.contains(&format!("/admin/issues/{home_key}?org={}", fx.home_slug)),
         "list row must disambiguate with ?org=; html={html}"
     );
+    assert!(
+        html.contains(&format!("id=\"issue-{home_key}\"")),
+        "shard rows must carry a stable id: {html}"
+    );
 
     cleanup(&fx.db).await;
 }

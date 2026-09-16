@@ -29,7 +29,7 @@ CONFIG="src/config.rs"
 [[ -f "$ACCOUNTS" ]] || fail "missing $ACCOUNTS"
 
 grep -n 'method="POST"' "$FORM" >/dev/null || fail "$FORM must POST compose form"
-grep -nE '#\[route\(POST' "$NEW" >/dev/null || fail "$NEW must define POST create route"
+grep -nE '#\[(route|page)\(POST' "$NEW" >/dev/null || fail "$NEW must define POST create handler"
 grep -n 'companies_manage' "$NEW" >/dev/null || fail "$NEW must gate on companies_manage"
 grep -n 'toasty::create!(Organization' "$NEW" >/dev/null || fail "$NEW must create Organization"
 grep -n 'max_accounts_per_org\|sync_org_accounts' "$NEW" >/dev/null \
@@ -55,10 +55,15 @@ if grep -nE 'type="password"' "$NEW" "$EDIT" "$FORM" >/dev/null 2>&1; then
   fail "company forms must be email-only (no password fields)"
 fi
 
-grep -nE '#\[route\(POST "/admin/companies/\{company_id\}"\)' "$EDIT" >/dev/null \
-  || fail "$EDIT must expose POST update route"
-grep -nE '#\[route\(POST "/admin/companies/\{company_id\}/delete"\)' "$EDIT" >/dev/null \
-  || fail "$EDIT must expose POST delete route"
+grep -nE '#\[(route|page)\(POST\)\]' "$EDIT" >/dev/null \
+  || fail "$EDIT must expose a module-relative POST update handler"
+grep -nE '#\[route\(POST "\./delete"\)' "$EDIT" >/dev/null \
+  || fail "$EDIT must expose POST delete route (module-relative ./delete)"
+grep -n 'path_param!(pub(crate) company_id: u64, error = not_found);' "$EDIT" >/dev/null \
+  || fail "$EDIT must declare a typed company_id path param (404 on garbage)"
+if grep -n 'fn parse_company_id' "$EDIT" >/dev/null; then
+  fail "$EDIT must not hand-parse company_id (typed path_param!)"
+fi
 grep -n 'sync_org_accounts' "$EDIT" >/dev/null || fail "$EDIT must sync accounts"
 grep -n 'see_other' "$EDIT" >/dev/null || fail "$EDIT save/delete must use see_other (303 PRG)"
 grep -nE 'Err\(redirect\(' "$EDIT" >/dev/null \
@@ -88,10 +93,25 @@ grep -n ':value=\$(lts.get())' "$FORM" >/dev/null \
   || fail "$FORM must sync lts_subscriptions hidden field from signal"
 grep -n 'fn apply_lts_compose_action' "$ACCOUNTS" >/dev/null \
   || fail "$ACCOUNTS must keep pure LTS stepper math for tests"
-grep -n 'fn company_form_response' "$FORM" >/dev/null \
-  || fail "$FORM must wrap POST re-renders via company_form_response"
-grep -n 'fn render_admin_page' src/app/admin.rs >/dev/null \
-  || fail "admin.rs must expose render_admin_page for POST shell wrap"
+# 0.8.1: POST handlers are pages, so layouts wrap validation re-renders and a
+# successful save leaves through `Err(see_other)`. No hand-rolled shell wrap.
+if grep -n 'fn company_form_response' "$FORM" >/dev/null; then
+  fail "$FORM must not wrap POST re-renders by hand (use #[page(POST)])"
+fi
+if grep -n 'fn render_admin_page' src/app/admin.rs >/dev/null; then
+  fail "admin.rs must not re-compose root_layout + admin_layout for POST (use #[page(POST)])"
+fi
+grep -nE '#\[page\(POST\)\]' "$NEW" >/dev/null \
+  || fail "$NEW create must be a #[page(POST)] (layouts + staff gate)"
+grep -nE '#\[page\(POST\)\]' "$EDIT" >/dev/null \
+  || fail "$EDIT update must be a #[page(POST)] (layouts + staff gate)"
+grep -n 'Err(see_other(' "$NEW" >/dev/null \
+  || fail "$NEW success must leave the POST page via Err(see_other) (303)"
+grep -n 'Err(see_other(' "$EDIT" >/dev/null \
+  || fail "$EDIT success must leave the POST page via Err(see_other) (303)"
+if grep -nE 'Result<Response>|into_response\(cx\)' "$NEW" "$EDIT" "$FORM" >/dev/null; then
+  fail "company compose must not hand-build Response (pages return views)"
+fi
 grep -nE 'name=\(field\)|email_' "$FORM" >/dev/null || fail "$FORM must collect indexed email_N fields"
 grep -n 'account_rows' "$FORM" >/dev/null || fail "$FORM must send account_rows"
 grep -n 'compose_action' "$FORM" >/dev/null || fail "$FORM must use compose_action"

@@ -17,6 +17,47 @@ fn inv_check_dashboard_stats_script() {
     );
 }
 
+/// Lot G decision (2026-09-16): `suspense` streaming on the dashboard is a
+/// documented **no-go** — the measured tile cost is ~2 ms in-process (p50
+/// 3.0 ms dashboard vs 1.05 ms light page), not worth streaming complexity.
+/// Keep the preconditions pinned so a future go stays safe: no cookie /
+/// session writes on the dashboard render path (a jar write after the first
+/// streamed byte panics), and no `suspense` / `live!` sneaking in without
+/// revisiting `dashboard_stats_e2e` ordering assumptions.
+#[test]
+fn inv_dashboard_render_path_has_no_cookie_writes_and_no_streaming() {
+    let dash = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/org/dashboard_tiles.rs"
+    ));
+    let page = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/org.rs"));
+    let rail = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/_components/rail.rs"
+    ));
+    let topbar = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/_components/topbar.rs"
+    ));
+    for (name, src) in [
+        ("dashboard_tiles.rs", dash),
+        ("org.rs", page),
+        ("rail.rs", rail),
+        ("topbar.rs", topbar),
+    ] {
+        assert!(
+            !src.contains("cookies(")
+                && !src.contains("jar.add(")
+                && !src.contains("session::start"),
+            "{name} must not write cookies / sessions on the dashboard render path"
+        );
+        assert!(
+            !src.contains("suspense(") && !src.contains("live!"),
+            "{name}: streaming is a documented no-go (Lot G); revisit e2e ordering first"
+        );
+    }
+}
+
 #[test]
 fn inv_dashboard_uses_single_issue_load_and_summarize() {
     let dash = include_str!(concat!(

@@ -29,5 +29,7 @@ This sheet is the slash / CLI delta only.
 ## Related
 
 - `.cursor/skills/topcoat/references/UPGRADE-0.8.1.md`
+- [`post_forms_smoke_test.md`](post_forms_smoke_test.md) — POST pages,
+  rewrite on error, 303 on success (exploit lots)
 - [`topcoat_0_8_smoke_test.md`](topcoat_0_8_smoke_test.md)
 - `docs/runbooks/http_edge_smoke_test.md`

@@ -104,7 +104,7 @@ struct DeleteConfirmForm {
     assertion: String,
 }
 
-#[route(POST "/admin/releases/delete-confirm")]
+#[route(POST)]
 pub(crate) async fn admin_releases_delete_confirm_post(
     cx: &Cx,
     Form(form): Form<DeleteConfirmForm>,

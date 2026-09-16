@@ -28,6 +28,11 @@ fn inv_shard_rechecks_staff_before_loading() {
     assert!(src.contains("require_staff"));
     assert!(src.contains("issues_read"));
     assert!(src.contains("data-admin-issues-search-shard"));
+    // Lot F: stable row id for the 0.8 morph (reorders follow the row).
+    assert!(
+        src.contains("id=(row_dom_id(\"issue\", "),
+        "shard rows must carry id=(row_dom_id(..))"
+    );
     assert!(!src.contains("path_param"));
 
     let staff = src.find("require_staff(cx)").expect("require_staff(cx)");

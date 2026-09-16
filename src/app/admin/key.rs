@@ -17,15 +17,42 @@ use topcoat::{
     view::{View, view},
 };
 
-use crate::app::hrefs::ErrQ;
+use crate::app::hrefs::{ErrQ, KeyRevokeQ};
 use crate::{
     app::_components::{ico_key, list_toolbar},
     app::VCP_WEBAUTHN_JS,
     auth::{capability_denied, config, require_staff, storage},
+    http_canonical::rewrite_get_with_flash,
     list_page::{KEY_PAGE_SIZE, PagerLinks, clamp_page, page_count, parse_page},
     perms::perms_for_user,
     storage::webauthn::extract_attested_credential,
 };
+
+/// Failed enrol / revoke: re-run `/admin/key` as GET with the error callout
+/// (Topcoat `rewrite`, no `?err=` in the address bar). Success keeps 303 PRG
+/// (`enrolled=<fp>` is deep-linkable state, not a flash).
+fn key_error(cx: &Cx, err: &'static str) -> topcoat::Error {
+    rewrite_get_with_flash(
+        &href!(admin_key_page)
+            .query(ErrQ { err: Some(err) })
+            .resolve(cx),
+    )
+    .into()
+}
+
+/// Revoke submitted without the confirmation word: reopen the modal for that
+/// credential with the confirm error.
+fn key_revoke_confirm_error(cx: &Cx, hexid: &str) -> topcoat::Error {
+    rewrite_get_with_flash(
+        &href!(admin_key_page)
+            .query(KeyRevokeQ {
+                revoke: hexid,
+                err: "confirm",
+            })
+            .resolve(cx),
+    )
+    .into()
+}
 
 #[derive(Debug, Clone)]
 struct CredRow {
@@ -526,7 +553,7 @@ struct EnrolForm {
     attestation: String,
 }
 
-#[route(POST "/admin/key/enrol")]
+#[route(POST "./enrol")]
 pub(crate) async fn admin_key_enrol(cx: &Cx, Form(form): Form<EnrolForm>) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -536,33 +563,17 @@ pub(crate) async fn admin_key_enrol(cx: &Cx, Form(form): Form<EnrolForm>) -> Res
     // Label before attestation: same order as the ceremony JS, and keeps the
     // empty-label denial path testable without a real WebAuthn payload.
     let Some(label) = crate::storage::normalize_admin_label(&form.admin_label) else {
-        return Ok(see_other(
-            href!(admin_key_page)
-                .query(ErrQ { err: Some("label") })
-                .resolve(cx),
-        ));
+        return Err(key_error(cx, "label"));
     };
     let Ok(att) = serde_json::from_str::<Value>(form.attestation.trim()) else {
-        return Ok(see_other(
-            href!(admin_key_page)
-                .query(ErrQ {
-                    err: Some("attestation"),
-                })
-                .resolve(cx),
-        ));
+        return Err(key_error(cx, "attestation"));
     };
     let att_obj = att
         .pointer("/response/attestationObject")
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let Ok((cred_id, cose)) = extract_attested_credential(att_obj) else {
-        return Ok(see_other(
-            href!(admin_key_page)
-                .query(ErrQ {
-                    err: Some("attestation"),
-                })
-                .resolve(cx),
-        ));
+        return Err(key_error(cx, "attestation"));
     };
     let store = storage(cx);
     match store.key_enrol_stage(&cred_id, &cose, &staff.user.id.to_string(), label, false) {
@@ -573,11 +584,7 @@ pub(crate) async fn admin_key_enrol(cx: &Cx, Form(form): Form<EnrolForm>) -> Res
         )),
         Err(err) => {
             crate::storage::log::portal_storage_failed("admin_key_enrol", &err);
-            Ok(see_other(
-                href!(admin_key_page)
-                    .query(ErrQ { err: Some("enrol") })
-                    .resolve(cx),
-            ))
+            Err(key_error(cx, "enrol"))
         }
     }
 }
@@ -588,7 +595,7 @@ struct RevokeForm {
     confirm: String,
 }
 
-#[route(POST "/admin/key/revoke")]
+#[route(POST "./revoke")]
 pub(crate) async fn admin_key_revoke(cx: &Cx, Form(form): Form<RevokeForm>) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -599,42 +606,17 @@ pub(crate) async fn admin_key_revoke(cx: &Cx, Form(form): Form<RevokeForm>) -> R
     if form.confirm.trim() != "revoke" {
         // Only hex reaches the redirect (decode gate below re-validates on POST).
         if hexid.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Ok(see_other(
-                href!(admin_key_page)
-                    .query(crate::app::hrefs::KeyRevokeQ {
-                        revoke: hexid,
-                        err: "confirm",
-                    })
-                    .resolve(cx),
-            ));
+            return Err(key_revoke_confirm_error(cx, hexid));
         }
-        return Ok(see_other(
-            href!(admin_key_page)
-                .query(ErrQ {
-                    err: Some("revoke"),
-                })
-                .resolve(cx),
-        ));
+        return Err(key_error(cx, "revoke"));
     }
     let Ok(cred) = hex::decode(hexid) else {
-        return Ok(see_other(
-            href!(admin_key_page)
-                .query(ErrQ {
-                    err: Some("revoke"),
-                })
-                .resolve(cx),
-        ));
+        return Err(key_error(cx, "revoke"));
     };
     let store = storage(cx);
     match store.key_revoke(&cred) {
         Ok(()) => Ok(see_other(href!(admin_key_page).resolve(cx))),
-        Err(_) => Ok(see_other(
-            href!(admin_key_page)
-                .query(ErrQ {
-                    err: Some("revoke"),
-                })
-                .resolve(cx),
-        )),
+        Err(_) => Err(key_error(cx, "revoke")),
     }
 }
 

@@ -71,6 +71,11 @@ fn inv_shard_links_use_authorized_context_slug() {
     ));
     assert!(src.contains("ctx.org.slug"));
     assert!(src.contains("data-issues-search-shard"));
+    // Lot F: stable row id for the 0.8 morph (reorders follow the row).
+    assert!(
+        src.contains("id=(row_dom_id(\"issue\", "),
+        "shard rows must carry id=(row_dom_id(..))"
+    );
 }
 
 #[test]

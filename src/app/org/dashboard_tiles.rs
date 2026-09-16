@@ -14,7 +14,6 @@ use crate::{
     },
     models::{DOC_STATUS_PUBLISHED, DocArticle, Issue, Release},
     release_pkg::version_for_display,
-    request_intern::interned,
     ui::{channel_badge_class, note_tag_color},
 };
 
@@ -38,7 +37,7 @@ async fn dashboard_issue_rows(cx: &Cx, org_id: u64) -> Vec<Issue> {
 async fn dashboard_releases(
     cx: &Cx,
     org_id: u64,
-    slug_id: usize,
+    slug: &str,
     lts: i32,
     industrial: i32,
     show_builds: bool,
@@ -46,8 +45,7 @@ async fn dashboard_releases(
     if !show_builds {
         return Vec::new();
     }
-    let slug = interned(cx, slug_id);
-    builds::load_releases_for_org(cx, org_id, &slug, "", lts, industrial).await
+    builds::load_releases_for_org(cx, org_id, slug, "", lts, industrial).await
 }
 
 struct DashboardDocs {
@@ -82,9 +80,9 @@ async fn dashboard_docs(cx: &Cx) -> DashboardDocs {
 
 /// Shared loader key for build-backed tiles (avoids `too_many_arguments`).
 #[derive(Clone, Copy)]
-pub(super) struct DashLoad {
+pub(super) struct DashLoad<'a> {
     pub org_id: u64,
-    pub slug_id: usize,
+    pub slug: &'a str,
     pub lts: i32,
     pub industrial: i32,
     pub show_builds: bool,
@@ -98,11 +96,11 @@ fn display_build_version(releases: &[Release]) -> String {
 }
 
 #[component]
-pub(super) async fn dash_stat_build(cx: &Cx, load: DashLoad) -> Result<impl View> {
+pub(super) async fn dash_stat_build(cx: &Cx, load: DashLoad<'_>) -> Result<impl View> {
     let releases = dashboard_releases(
         cx,
         load.org_id,
-        load.slug_id,
+        load.slug,
         load.lts,
         load.industrial,
         load.show_builds,
@@ -174,7 +172,7 @@ pub(super) async fn dash_card_docs(cx: &Cx, docs_href: &str) -> Result<impl View
 #[component]
 pub(super) async fn dash_card_builds(
     cx: &Cx,
-    load: DashLoad,
+    load: DashLoad<'_>,
     builds_href: &str,
 ) -> Result<impl View> {
     let show = load.show_builds;
@@ -182,7 +180,7 @@ pub(super) async fn dash_card_builds(
         let releases = dashboard_releases(
             cx,
             load.org_id,
-            load.slug_id,
+            load.slug,
             load.lts,
             load.industrial,
             load.show_builds,
@@ -254,11 +252,11 @@ pub(super) async fn dash_card_issues(cx: &Cx, org_id: u64, issues_href: &str) ->
 }
 
 #[component]
-pub(super) async fn dash_activity(cx: &Cx, load: DashLoad) -> Result<impl View> {
+pub(super) async fn dash_activity(cx: &Cx, load: DashLoad<'_>) -> Result<impl View> {
     let releases = dashboard_releases(
         cx,
         load.org_id,
-        load.slug_id,
+        load.slug,
         load.lts,
         load.industrial,
         load.show_builds,
@@ -322,11 +320,15 @@ pub(super) async fn dash_activity(cx: &Cx, load: DashLoad) -> Result<impl View> 
 }
 
 #[component]
-pub(super) async fn dash_notes(cx: &Cx, load: DashLoad, builds_href: &str) -> Result<impl View> {
+pub(super) async fn dash_notes(
+    cx: &Cx,
+    load: DashLoad<'_>,
+    builds_href: &str,
+) -> Result<impl View> {
     let releases = dashboard_releases(
         cx,
         load.org_id,
-        load.slug_id,
+        load.slug,
         load.lts,
         load.industrial,
         load.show_builds,

@@ -1,6 +1,26 @@
-//! Canonical URL helpers for the HTTP edge (trailing-slash normalization).
+//! Canonical URL helpers for the HTTP edge (trailing-slash normalization) and
+//! the POST-error rewrite used instead of `?err=` redirects.
 
 use http::Method;
+use topcoat::router::{Body, error::RewriteError, error::rewrite};
+
+/// Re-run the page hosting a form as `GET` after a failed POST.
+///
+/// Topcoat `rewrite` dispatches internally: no client redirect, the address
+/// bar keeps the page URL and no error flag ever appears in it. Success paths
+/// keep 303 PRG (`see_other`), so a refresh after success never re-POSTs.
+///
+/// Topcoat refuses a rewrite to a `path?query` the request was already
+/// dispatched under (cycle guard, 500). A same-URL form must therefore target
+/// the page href **with** its error query, which is also how the GET page
+/// reads the code. Debug builds assert the query is present.
+pub fn rewrite_get_with_flash(target: &str) -> RewriteError {
+    debug_assert!(
+        target.contains('?'),
+        "rewrite target must carry a query so it differs from the POST dispatch: {target}"
+    );
+    rewrite(target, Body::empty()).method(Method::GET)
+}
 
 /// Whether this method should receive a permanent trailing-slash redirect
 /// (`redirect_permanent` / HTTP 308).
@@ -73,6 +93,20 @@ mod tests {
         assert!(should_redirect_trailing_slash(&Method::HEAD));
         assert!(!should_redirect_trailing_slash(&Method::POST));
         assert!(!should_redirect_trailing_slash(&Method::PUT));
+    }
+
+    #[test]
+    fn http_edge_rewrite_flash_builds_get_rewrite_with_query() {
+        let err = rewrite_get_with_flash("/admin/releases/new?err=date");
+        let text = format!("{err:?}");
+        assert!(text.contains("/admin/releases/new?err=date"), "{text}");
+        assert!(text.contains("GET"), "rewrite must force GET: {text}");
+    }
+
+    #[test]
+    #[should_panic(expected = "rewrite target must carry a query")]
+    fn http_edge_rewrite_flash_refuses_bare_page_path() {
+        let _ = rewrite_get_with_flash("/admin/releases/new");
     }
 
     proptest! {

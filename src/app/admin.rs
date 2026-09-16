@@ -14,16 +14,13 @@ use topcoat::{
     router::{
         Slot, StatusCode, error::NotFoundError, error::redirect, href, layout, not_found, route,
     },
-    view::{Child, View, component, error_boundary, view},
+    view::{View, error_boundary, view},
 };
 
 not_found!("/admin");
 
 use crate::{
-    app::{
-        _components::{branded_404_body, vb_rail, vb_topbar},
-        root_layout,
-    },
+    app::_components::{branded_404_body, vb_rail, vb_topbar},
     auth::require_staff,
     models::RESERVED_ORG_SLUG,
     nav::nav_from_cx,
@@ -64,18 +61,9 @@ async fn admin_layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
     })
 }
 
-/// Full HTML document for admin POST re-renders (`#[route]` skips layouts).
-#[component]
-pub(crate) async fn render_admin_page(cx: &Cx, #[default] child: Child<'_>) -> Result<impl View> {
-    Ok(view! {
-        cx =>
-        root_layout(slot: Child::new(view! { cx => admin_layout(slot: child) }))
-    })
-}
-
 /// Hub redirects to the first admin tool (Issues).
 /// Navigational GET -> `redirect` (307), not `see_other` (303 PRG).
-#[route(GET "/admin")]
+#[route(GET)]
 pub(crate) async fn admin_index(cx: &Cx) -> Result<()> {
     let _staff = require_staff(cx).await?;
     Err(redirect(href!(issues::admin_issues_page).resolve(cx)).into())

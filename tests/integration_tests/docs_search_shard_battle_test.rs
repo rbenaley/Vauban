@@ -109,6 +109,12 @@ async fn battle_parallel_docs_search_shard_posts_return_200() {
                     html.contains(&pub_slug) || html.contains("SSH Bastion"),
                     "expected match under contention: {html}"
                 );
+                // Lot F: every row keeps its stable morph id under contention.
+                assert_eq!(
+                    html.matches("class=\"vb-row\"").count(),
+                    html.matches("id=\"doc-").count(),
+                    "one stable id per row: {html}"
+                );
             }
         }));
     }

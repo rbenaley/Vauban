@@ -8,7 +8,7 @@ use vcp::models::{
 };
 
 use crate::common::{
-    MultipartFile, assert_topcoat_click_handlers_are_functions,
+    MultipartFile, assert_rewritten_page, assert_topcoat_click_handlers_are_functions,
     assert_topcoat_submit_handlers_are_functions, call_require_active_key, cleanup,
     create_org_with_membership, db_lock, get, login_cookie, post_form, post_multipart,
     post_multipart_with_files, procedure_require_key_ok, require_active_key_procedure_path, status,
@@ -119,13 +119,12 @@ async fn e2e_admin_create_rejects_non_freebsd_package() {
         &[package_part(b"this-is-not-a-freebsd-package")],
     )
     .await;
-    assert!(status(&create).is_redirection());
-    assert_eq!(
-        create
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok()),
-        Some("/admin/releases/new?err=not_pkg")
+    // Lot D: a refused create re-runs the compose page (rewrite): the not_pkg
+    // modal is in the POST response itself, no `?err=` redirect.
+    let rewritten = assert_rewritten_page(create, "vb-confirm-root").await;
+    assert!(
+        rewritten.contains("vb-rail"),
+        "rewritten compose page keeps the admin chrome"
     );
 
     {
@@ -276,14 +275,8 @@ async fn e2e_admin_create_without_date_creates_nothing() {
         &[package_part(&bytes)],
     )
     .await;
-    assert!(status(&create).is_redirection());
-    assert_eq!(
-        create
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok()),
-        Some("/admin/releases/new?err=date")
-    );
+    let rewritten = assert_rewritten_page(create, "A release date is required").await;
+    assert!(rewritten.contains("vb-rail"));
 
     let page = get(&router, "/admin/releases/new?err=date", cookie.as_deref()).await;
     assert!(status(&page).is_success());
@@ -331,14 +324,7 @@ async fn e2e_admin_create_without_package_creates_nothing() {
         &[("date", "2026-07-01"), ("notes", "FIX: no package")],
     )
     .await;
-    assert!(status(&create).is_redirection());
-    assert_eq!(
-        create
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok()),
-        Some("/admin/releases/new?err=package")
-    );
+    assert_rewritten_page(create, "A package is required").await;
 
     {
         let mut conn = db.clone();
@@ -1512,14 +1498,7 @@ async fn e2e_admin_create_rejects_unusable_manifeste_version() {
         &[package_part(&pkg)],
     )
     .await;
-    assert!(status(&create).is_redirection());
-    assert_eq!(
-        create
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok()),
-        Some("/admin/releases/new?err=identity")
-    );
+    assert_rewritten_page(create, "no usable Version").await;
     {
         let mut conn = db.clone();
         let rows = Release::all().exec(&mut conn).await.expect("releases");
@@ -1713,14 +1692,9 @@ async fn e2e_publish_without_active_key_refuses_before_webauthn() {
         &[package_part(&pkg)],
     )
     .await;
-    assert!(status(&create).is_redirection());
-    assert_eq!(
-        create
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok()),
-        Some("/admin/releases/new?err=no_active_key")
-    );
+    // Lot D: the no-key modal is in the POST response (rewrite of the compose
+    // page); the direct `?err=` GET below still renders it.
+    assert_rewritten_page(create, "aria-label=\"No active security key\"").await;
 
     let page = get(
         &router,

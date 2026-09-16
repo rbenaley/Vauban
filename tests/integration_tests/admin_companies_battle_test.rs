@@ -262,6 +262,72 @@ async fn battle_parallel_company_create_with_lts_counters() {
     cleanup(&db).await;
 }
 
+/// `#[page(POST)]` under contention: invalid compose forms re-render (200 with
+/// the admin chrome), never 303 and never 5xx, and no company row is created.
+#[tokio::test]
+async fn battle_parallel_invalid_company_posts_rerender_not_redirect() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+
+    let email = unique_email("battle-co-invalid");
+    let slug = unique_slug("battle-co-invalid");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let router = Arc::new(test_router().await);
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
+    let before = {
+        let mut conn = db.clone();
+        vcp::models::Organization::all()
+            .exec(&mut conn)
+            .await
+            .expect("orgs")
+            .len()
+    };
+
+    let n = 8usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let cookie = cookie.clone();
+        let barrier = barrier.clone();
+        let router = router.clone();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            // Odd: empty name; even: invalid account email.
+            let body = if i % 2 == 1 {
+                "name=&contact_name=Ops&contact_email=ops%40example.com&account_rows=1&compose_action=save&email_0=ok%40example.com".to_owned()
+            } else {
+                format!(
+                    "name={}&contact_name=Ops&contact_email=ops%40example.com&account_rows=1&compose_action=save&email_0=not-an-email",
+                    urlencoding_encode(&format!("Battle Invalid {i}"))
+                )
+            };
+            let resp = post_form(router.as_ref(), "/admin/companies/new", Some(&cookie), &body).await;
+            let code = status(&resp);
+            assert!(!code.is_server_error(), "invalid POST must not 5xx");
+            assert_eq!(code, StatusCode::OK, "invalid POST re-renders the form");
+            let html = resp.into_body().collect().await.expect("body").to_bytes();
+            let html = String::from_utf8_lossy(&html);
+            assert!(html.contains("vb-rail"), "re-render must carry admin chrome");
+        }));
+    }
+    for h in handles {
+        h.await.expect("join");
+    }
+
+    let after = {
+        let mut conn = db.clone();
+        vcp::models::Organization::all()
+            .exec(&mut conn)
+            .await
+            .expect("orgs")
+            .len()
+    };
+    assert_eq!(before, after, "invalid POSTs must not create companies");
+
+    cleanup(&db).await;
+}
+
 #[test]
 fn battle_parallel_show_remove_account_row() {
     let n = 8usize;

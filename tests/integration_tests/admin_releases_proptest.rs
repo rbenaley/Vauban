@@ -46,6 +46,133 @@ proptest! {
 }
 
 proptest! {
+    #![proptest_config(crate::common::prop_config(6))]
+
+    /// Typed `path_param!(release_id: u64, error = not_found)`: any segment that
+    /// is not a u64 (or is a u64 with no row) is a plain 404 for staff — never
+    /// 400 / 500, and never a different status that would leak parse details.
+    #[test]
+    fn prop_admin_release_garbage_id_is_404(
+        garbage in prop_oneof![
+            "[a-z][a-z0-9-]{0,12}",
+            "-[0-9]{1,6}",
+            "[0-9]{1,6}\\.[0-9]{1,3}",
+            Just("18446744073709551616".to_owned()),
+            Just("999999999".to_owned()),
+        ]
+    ) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+        rt.block_on(async {
+            let _guard = crate::common::db_lock().lock().await;
+            let db = crate::common::test_db().await;
+            crate::common::cleanup(&db).await;
+            let email = crate::common::unique_email("rel-garbage-id");
+            let slug = crate::common::unique_slug("rel-garbage-id");
+            let (_user, _org) = crate::common::create_org_with_membership(
+                &db, &email, "password", &slug, "admin",
+            )
+            .await;
+            let router = crate::common::test_router().await;
+            let cookie = crate::common::login_cookie(&router, &email).await;
+            for path in [
+                format!("/admin/releases/{garbage}"),
+                format!("/admin/companies/{garbage}"),
+            ] {
+                let resp = crate::common::get(&router, &path, cookie.as_deref()).await;
+                let code = crate::common::status(&resp);
+                assert_eq!(
+                    code,
+                    topcoat::router::StatusCode::NOT_FOUND,
+                    "{path} must be 404, got {code}"
+                );
+            }
+            crate::common::cleanup(&db).await;
+        });
+    }
+}
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(6))]
+
+    /// Lot D: every refused create re-runs the compose page (rewrite): 200,
+    /// no `Location`, the matching banner / modal in the body; never 303 or 5xx.
+    #[test]
+    fn prop_failed_create_rewrites_compose_page(
+        kind in prop::sample::select(vec!["no_date", "no_package", "not_pkg"]),
+        junk in "[a-z0-9]{4,24}",
+    ) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+        rt.block_on(async {
+            let _guard = crate::common::db_lock().lock().await;
+            let db = crate::common::test_db().await;
+            crate::common::cleanup(&db).await;
+            let email = crate::common::unique_email("prop-create-fail");
+            let slug = crate::common::unique_slug("prop-create-fail");
+            let (_user, _org) = crate::common::create_org_with_membership(
+                &db, &email, "password", &slug, "admin",
+            )
+            .await;
+            let router = crate::common::test_router().await;
+            let cookie = crate::common::login_cookie(&router, &email).await;
+            let pkg = vcp::freebsd_pkg::craft_test_vauban_pkg(&format!("v9.{}", junk.len()));
+            let (resp, marker) = match kind {
+                "no_date" => (
+                    crate::common::post_multipart_with_files(
+                        &router,
+                        "/admin/releases/new",
+                        cookie.as_deref(),
+                        &[("date", ""), ("notes", &junk)],
+                        &[crate::common::MultipartFile {
+                            field: "package",
+                            filename: "vauban.pkg",
+                            content_type: "application/octet-stream",
+                            bytes: &pkg,
+                        }],
+                    )
+                    .await,
+                    "A release date is required",
+                ),
+                "no_package" => (
+                    crate::common::post_multipart(
+                        &router,
+                        "/admin/releases/new",
+                        cookie.as_deref(),
+                        &[("date", "2026-07-01"), ("notes", &junk)],
+                    )
+                    .await,
+                    "A package is required",
+                ),
+                _ => (
+                    crate::common::post_multipart_with_files(
+                        &router,
+                        "/admin/releases/new",
+                        cookie.as_deref(),
+                        &[("date", "2026-07-01"), ("notes", &junk)],
+                        &[crate::common::MultipartFile {
+                            field: "package",
+                            filename: "vauban.pkg",
+                            content_type: "application/octet-stream",
+                            bytes: junk.as_bytes(),
+                        }],
+                    )
+                    .await,
+                    "vb-confirm-root",
+                ),
+            };
+            let html = crate::common::assert_rewritten_page(resp, marker).await;
+            assert!(html.contains("vb-rail"), "{kind}: rewritten page keeps chrome");
+            crate::common::cleanup(&db).await;
+        });
+    }
+}
+
+proptest! {
     #![proptest_config(crate::common::prop_config(32))]
 
     #[test]

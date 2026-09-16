@@ -7,31 +7,26 @@ use topcoat::{
     router::{
         Slot,
         error::{SeeOther, redirect, see_other},
-        href, layout, page, query_params,
-        response::{IntoResponse, Response},
-        route,
+        href, layout, page, query_params, route,
     },
     runtime::{Event, procedure, signal},
     session,
-    view::{Child, View, ViewExt, component, view},
+    view::{Child, View, component, view},
 };
 
 use crate::{
     app::{
         hrefs::LoginErrorQ,
         org::{Org, dashboard},
-        root_layout,
     },
     auth::{
-        PostAuthLanding, client_orgs_for_user, current_user, db, delete_session_hash,
-        persist_session, post_auth_landing,
+        PostAuthLanding, current_user, db, delete_session_hash, persist_session, post_auth_landing,
     },
     config::Config,
     login_limit::LoginRateLimiter,
     magic_link::{active_user_by_email, consume_token, ensure_vcp_admin_user, issue_token},
     mail_circuit::MailCircuitBreaker,
     mailer::send_login_magic_link,
-    models::{PORTAL_ROLE_ADMIN, RESERVED_ORG_SLUG},
 };
 
 /// Split a TTL into `(minutes, seconds)` for MM:SS display seeds.
@@ -67,7 +62,7 @@ struct LoginQuery {
 
 /// Shared splash chrome for `/login/*` layout and absolute routes like `/choose-org`.
 #[component]
-async fn login_splash(cx: &Cx, #[default] child: Child<'_>) -> Result<impl View> {
+pub(crate) async fn login_splash(cx: &Cx, #[default] child: Child<'_>) -> Result<impl View> {
     Ok(view! {
         cx =>
         <div class="vb-login-body">
@@ -102,9 +97,10 @@ async fn login_layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
     Ok(view! { cx => login_splash((slot)) })
 }
 
-/// Wire codes for [`request_login_link`] (f64 for reliable Topcoat client `if`).
-pub(crate) const LOGIN_LINK_ACCEPTED: f64 = 1.0;
-pub(crate) const LOGIN_LINK_UNAVAILABLE: f64 = 0.0;
+/// Wire values for [`request_login_link`] (Topcoat 0.7+ preserves `bool`
+/// procedure results on the client, so no f64 shim is needed).
+pub(crate) const LOGIN_LINK_ACCEPTED: bool = true;
+pub(crate) const LOGIN_LINK_UNAVAILABLE: bool = false;
 
 /// Request (or re-request) a sign-in magic link.
 ///
@@ -114,7 +110,7 @@ pub(crate) const LOGIN_LINK_UNAVAILABLE: f64 = 0.0;
 /// mail circuit is open — including on the request that just opened it — so
 /// every address shares the same unavailable UX.
 #[procedure]
-async fn request_login_link(cx: &Cx, email: String) -> Result<f64> {
+async fn request_login_link(cx: &Cx, email: String) -> Result<bool> {
     let cfg = app_context::<Arc<Config>>(cx);
     let limiter = app_context::<Arc<LoginRateLimiter>>(cx);
     let mail_circuit = app_context::<Arc<MailCircuitBreaker>>(cx);
@@ -186,7 +182,9 @@ pub(crate) async fn login_page(cx: &Cx) -> Result<impl View> {
                 return Err(redirect(href!(dashboard, Org(slug)).resolve(cx)).into());
             }
             PostAuthLanding::ChooseOrg => {
-                return Err(redirect(href!(choose_org_page).resolve(cx)).into());
+                return Err(
+                    redirect(href!(crate::app::choose_org::choose_org_page).resolve(cx)).into(),
+                );
             }
             PostAuthLanding::None => {}
         }
@@ -241,7 +239,7 @@ pub(crate) async fn login_page(cx: &Cx) -> Result<impl View> {
                     unavailable.set(false);
                     let status = request_login_link(email.get()).await;
                     sending.set(false);
-                    if status > 0.0 {
+                    if status {
                         remaining.set(ttl_remaining_seed.get());
                         mins.set(ttl_mins_seed.get());
                         secs.set(ttl_secs_seed.get());
@@ -347,7 +345,7 @@ pub(crate) async fn login_page(cx: &Cx) -> Result<impl View> {
                         unavailable.set(false);
                         let status = request_login_link(email.get()).await;
                         sending.set(false);
-                        if status > 0.0 {
+                        if status {
                             remaining.set(ttl_remaining_seed.get());
                             mins.set(ttl_mins_seed.get());
                             secs.set(ttl_secs_seed.get());
@@ -393,7 +391,7 @@ struct MagicQuery {
     token: Option<String>,
 }
 
-#[route(GET "/login/magic")]
+#[route(GET "./magic")]
 pub(crate) async fn login_magic(cx: &Cx) -> Result<SeeOther> {
     let raw = topcoat::router::query_params::<MagicQuery>(cx)
         .ok()
@@ -413,7 +411,9 @@ pub(crate) async fn login_magic(cx: &Cx) -> Result<SeeOther> {
 
     match post_auth_landing(cx, &user).await? {
         PostAuthLanding::Org(slug) => Ok(see_other(href!(dashboard, Org(slug)).resolve(cx))),
-        PostAuthLanding::ChooseOrg => Ok(see_other(href!(choose_org_page).resolve(cx))),
+        PostAuthLanding::ChooseOrg => Ok(see_other(
+            href!(crate::app::choose_org::choose_org_page).resolve(cx),
+        )),
         PostAuthLanding::None => {
             if let Some(hash) = session::stop(cx).await? {
                 delete_session_hash(cx, &hash).await?;
@@ -421,69 +421,6 @@ pub(crate) async fn login_magic(cx: &Cx) -> Result<SeeOther> {
             Ok(see_other(href!(login_page).resolve(cx)))
         }
     }
-}
-
-/// Multi-org picker after magic-link / session entry when N>1 client memberships.
-#[route(GET "/choose-org")]
-pub(crate) async fn choose_org_page(cx: &Cx) -> Result<Response> {
-    let Some(user) = current_user(cx).await else {
-        return Err(redirect(href!(login_page).resolve(cx)).into());
-    };
-
-    if user.portal_role == PORTAL_ROLE_ADMIN {
-        return Err(redirect(href!(dashboard, Org(RESERVED_ORG_SLUG)).resolve(cx)).into());
-    }
-
-    let clients = client_orgs_for_user(cx, user.id).await?;
-    match clients.len() {
-        0 => {
-            if let Some(hash) = session::stop(cx).await? {
-                delete_session_hash(cx, &hash).await?;
-            }
-            return Err(redirect(href!(login_page).resolve(cx)).into());
-        }
-        1 => {
-            return Err(
-                redirect(href!(dashboard, Org(clients[0].slug.as_str())).resolve(cx)).into(),
-            );
-        }
-        _ => {}
-    }
-
-    // `#[route]` skips layouts (same as admin POST re-renders) — wrap root +
-    // splash chrome so fonts / Tailwind / styles.css apply.
-    view! {
-        cx =>
-        root_layout(
-            slot: Child::new(
-                view! {
-                    cx =>
-                    login_splash(
-                        <h2>"Choose an organization"</h2>
-                        <p class="vb-muted">"Select which organization to open."</p>
-                        <ul class="vb-login-org-list">
-                            for org in &clients {
-                                <li>
-                                    <a
-                                        class="vb-login-org-link"
-                                        href=(href!(dashboard, Org(org.slug.as_str())))
-                                    >
-                                        <span class="vb-login-org-name">(org.name.clone())</span>
-                                        <span class="vb-login-org-slug vb-mono">
-                                            (org.slug.clone())
-                                        </span>
-                                    </a>
-                                </li>
-                            }
-                        </ul>
-                    )
-                },
-            )
-        )
-    }
-    .first()
-    .await?
-    .into_response(cx)
 }
 
 #[route(POST "/logout")]

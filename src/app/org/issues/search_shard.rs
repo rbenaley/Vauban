@@ -24,6 +24,7 @@ use crate::{
     list_page::parse_page,
     perms::perms_for_user,
     tz::{browser_tz, format_relative},
+    ui::row_dom_id,
 };
 
 /// Shard args are attacker-controlled — always re-authorize.
@@ -78,6 +79,7 @@ pub async fn issues_search_results(
                         updated,
                     );
                     <a
+                        id=(row_dom_id("issue", &issue.key))
                         class="vb-row"
                         href=(href!(
                             issue_detail_page,

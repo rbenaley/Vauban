@@ -114,6 +114,110 @@ pub async fn test_router_with_memory_mail(memory: MemoryTransport) -> Router {
     test_router_with_memory_mail_config(memory, cfg).await
 }
 
+/// Assert a failed POST was answered by a Topcoat `rewrite` of the hosting
+/// page (Lot D): `200`, no `Location`, HTML body containing `marker`.
+/// Returns the body for further assertions.
+pub async fn assert_rewritten_page(resp: Response, marker: &str) -> String {
+    let code = status(&resp);
+    assert_eq!(
+        code,
+        StatusCode::OK,
+        "failed POST must re-run the hosting page as GET (rewrite), got {code}"
+    );
+    assert!(
+        resp.headers().get("location").is_none(),
+        "rewrite must not send a Location header"
+    );
+    let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+    let html = String::from_utf8_lossy(&bytes).into_owned();
+    assert!(
+        html.contains(marker),
+        "rewritten page must contain {marker:?}: {html}"
+    );
+    html
+}
+
+/// A delivered mail with its HTML body rendered at send time.
+#[derive(Clone)]
+pub struct SentMail {
+    pub mail: topcoat::mail::Mail,
+    pub html: String,
+}
+
+impl std::ops::Deref for SentMail {
+    type Target = topcoat::mail::Mail;
+
+    fn deref(&self) -> &topcoat::mail::Mail {
+        &self.mail
+    }
+}
+
+/// Memory capture that renders mail HTML inside the request.
+///
+/// Topcoat 0.7+ views built during a page render are scoped to that build:
+/// a `Mail` html handle produced by a `#[page(POST)]` handler panics when
+/// rendered after the response ("nested handle rendered outside the build").
+/// Production transports render at delivery; this capture does the same.
+#[derive(Clone, Default)]
+pub struct RenderedMemoryTransport {
+    inner: MemoryTransport,
+    sent: std::sync::Arc<std::sync::Mutex<Vec<SentMail>>>,
+}
+
+impl RenderedMemoryTransport {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Delivered mails in send order, each with its rendered HTML.
+    pub fn sent(&self) -> Vec<SentMail> {
+        self.sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Drop everything captured so far.
+    pub fn clear(&self) {
+        self.inner.clear();
+        self.sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+}
+
+impl topcoat::mail::Transport for RenderedMemoryTransport {
+    fn send<'a>(
+        &'a self,
+        cx: &'a topcoat::context::Cx,
+        mail: topcoat::mail::Mail,
+    ) -> topcoat::mail::TransportFuture<'a> {
+        Box::pin(async move {
+            let html = mail
+                .html()
+                .map(|h| h.clone().render(cx))
+                .unwrap_or_default();
+            let receipt = self.inner.send(cx, mail.clone()).await?;
+            self.sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(SentMail { mail, html });
+            Ok(receipt)
+        })
+    }
+}
+
+/// Router with a [`RenderedMemoryTransport`] (mail HTML asserted post-request).
+pub async fn test_router_with_rendered_mail(transport: RenderedMemoryTransport) -> Router {
+    let cfg = test_config().await;
+    let database = test_db().await;
+    let policy = std::sync::Arc::new(
+        PolicyStore::load_from_csv(&cfg.access.policy_path).expect("load policy"),
+    );
+    app::router_with_mail_transport(database, policy, &cfg, transport)
+}
+
 /// Memory-mail router with a caller-supplied [`Config`] (e.g. notify disabled).
 pub async fn test_router_with_memory_mail_config(memory: MemoryTransport, cfg: Config) -> Router {
     let database = test_db().await;
@@ -812,7 +916,17 @@ pub async fn call_require_active_key(
     post_json(router, path, cookie, "null").await
 }
 
-/// Parse `require_active_key` JSON body (`1.0` ok / `0.0` missing ACTIVE key).
+/// Procedures return `Result<bool>` (Topcoat 0.7+ preserves booleans on the
+/// wire and in the client `if`): the JSON body is exactly `true` / `false`.
+fn parse_procedure_bool(text: &str, procedure: &str) -> bool {
+    match text.trim() {
+        "true" => true,
+        "false" => false,
+        other => panic!("expected {procedure} bool body (true/false), got {other:?}"),
+    }
+}
+
+/// Parse `require_active_key` JSON body (`true` ok / `false` missing ACTIVE key).
 pub async fn procedure_require_key_ok(resp: Response) -> bool {
     let bytes = resp
         .into_body()
@@ -821,14 +935,10 @@ pub async fn procedure_require_key_ok(resp: Response) -> bool {
         .expect("procedure body")
         .to_bytes();
     let text = String::from_utf8_lossy(&bytes);
-    let status: f64 = text
-        .trim()
-        .parse()
-        .unwrap_or_else(|_| panic!("expected require_active_key f64 body, got {text:?}"));
-    status > 0.0
+    parse_procedure_bool(&text, "require_active_key")
 }
 
-/// Parse `request_login_link` JSON body (`1.0` accepted / `0.0` unavailable).
+/// Parse `request_login_link` JSON body (`true` accepted / `false` unavailable).
 pub async fn procedure_login_link_accepted(resp: Response) -> bool {
     let bytes = resp
         .into_body()
@@ -837,11 +947,7 @@ pub async fn procedure_login_link_accepted(resp: Response) -> bool {
         .expect("procedure body")
         .to_bytes();
     let text = String::from_utf8_lossy(&bytes);
-    let status: f64 = text
-        .trim()
-        .parse()
-        .unwrap_or_else(|_| panic!("expected procedure f64 body, got {text:?}"));
-    status > 0.0
+    parse_procedure_bool(&text, "request_login_link")
 }
 
 /// Wrap positional shard args in the 0.8 `{ args, signals }` request body.

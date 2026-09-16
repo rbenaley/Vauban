@@ -23,6 +23,7 @@ use crate::app::hrefs::ErrQ;
 use crate::{
     auth::{capability_denied, db, require_staff, storage},
     freebsd_pkg,
+    http_canonical::rewrite_get_with_flash,
     models::{
         Organization, RELEASE_GA_ORG_ID, RELEASE_STATUS_PUBLISHED, RELEASE_STATUS_STAGING, Release,
     },
@@ -30,13 +31,25 @@ use crate::{
     storage::{StorageClient, upsert_release_object, write_and_hash},
 };
 
+/// Failed create: re-run the compose page as GET with the error code
+/// (Topcoat `rewrite`, no client redirect — the address bar stays on
+/// `/admin/releases/new`). Success keeps 303 PRG to the list.
+fn create_error(cx: &Cx, err: &'static str) -> topcoat::Error {
+    rewrite_get_with_flash(
+        &href!(admin_releases_new_page)
+            .query(ErrQ { err: Some(err) })
+            .resolve(cx),
+    )
+    .into()
+}
+
 /// Stable JSON body when validate-pkg rejects a non-FreeBSD upload.
 const NOT_PKG_JSON: &str = r#"{"ok":false,"code":"not_pkg"}"#;
 
 /// `require_active_key` procedure: ACTIVE key present / WebAuthn not required.
-const REQUIRE_KEY_OK: f64 = 1.0;
+const REQUIRE_KEY_OK: bool = true;
 /// `require_active_key` procedure: WebAuthn required and vcp-store has no ACTIVE key.
-const REQUIRE_KEY_MISSING: f64 = 0.0;
+const REQUIRE_KEY_MISSING: bool = false;
 
 #[query_params]
 struct NewReleaseQuery {
@@ -234,7 +247,7 @@ pub(crate) async fn admin_releases_new_page(cx: &Cx) -> Result<impl View> {
                     @submit=$(async |e: Event| {
                         e.prevent_default();
                         pkg_go.set(false);
-                        if require_active_key().await < 1.0 {
+                        if !require_active_key().await {
                             no_key_open.set(true);
                         } else {
                             pkg_go.set(true);
@@ -355,7 +368,7 @@ async fn parse_create_multipart(mut multipart: Multipart) -> Result<CreateReleas
 }
 
 /// Preflight: is this upload a FreeBSD package? Never stages or opens helper I/O.
-#[route(POST "/admin/releases/new/validate-pkg")]
+#[route(POST "./validate-pkg")]
 pub(crate) async fn admin_releases_validate_pkg(cx: &Cx, multipart: Multipart) -> Result<Response> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -380,7 +393,7 @@ pub(crate) async fn admin_releases_validate_pkg(cx: &Cx, multipart: Multipart) -
 /// Runs on Publish click before validate-pkg / WebAuthn so the browser never
 /// opens a passkey prompt against an empty allowCredentials list.
 #[procedure]
-async fn require_active_key(cx: &Cx) -> Result<f64> {
+async fn require_active_key(cx: &Cx) -> Result<bool> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.releases_manage {
@@ -394,7 +407,7 @@ async fn require_active_key(cx: &Cx) -> Result<f64> {
     Ok(REQUIRE_KEY_OK)
 }
 
-#[route(POST "/admin/releases/new")]
+#[route(POST)]
 pub(crate) async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
@@ -404,59 +417,31 @@ pub(crate) async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Resu
 
     let store = storage(cx);
     if missing_active_key_for_publish(store.as_ref()) {
-        return Ok(see_other(
-            href!(admin_releases_new_page)
-                .query(ErrQ {
-                    err: Some("no_active_key"),
-                })
-                .resolve(cx),
-        ));
+        return Err(create_error(cx, "no_active_key"));
     }
 
     let form = parse_create_multipart(multipart).await?;
 
     // Date is mandatory — never invent a default (no Unix-epoch placeholder).
     let Some(released_on) = parse_released_on(&form.date) else {
-        return Ok(see_other(
-            href!(admin_releases_new_page)
-                .query(ErrQ { err: Some("date") })
-                .resolve(cx),
-        ));
+        return Err(create_error(cx, "date"));
     };
     // A release without its binary is never worth a row: refuse before any
     // write so the compose form stays the only place to retry.
     let Some(package) = form.package else {
-        return Ok(see_other(
-            href!(admin_releases_new_page)
-                .query(ErrQ {
-                    err: Some("package"),
-                })
-                .resolve(cx),
-        ));
+        return Err(create_error(cx, "package"));
     };
     // Fail closed before STAGING / put_begin: only a real FreeBSD package may
     // open an upload ceremony.
     let pkg_info = match freebsd_pkg::inspect(&package) {
         Ok(info) => info,
         Err(_) => {
-            return Ok(see_other(
-                href!(admin_releases_new_page)
-                    .query(ErrQ {
-                        err: Some("not_pkg"),
-                    })
-                    .resolve(cx),
-            ));
+            return Err(create_error(cx, "not_pkg"));
         }
     };
     // Version + LTS/Stable come from the manifeste — never from form fields.
     let Some(identity) = crate::release_pkg::derive_release_identity(&pkg_info.version) else {
-        return Ok(see_other(
-            href!(admin_releases_new_page)
-                .query(ErrQ {
-                    err: Some("identity"),
-                })
-                .resolve(cx),
-        ));
+        return Err(create_error(cx, "identity"));
     };
     let version = identity.version;
     let channel = identity.channel.to_owned();
@@ -494,13 +479,7 @@ pub(crate) async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Resu
     .exec(&mut database)
     .await
     else {
-        return Ok(see_other(
-            href!(admin_releases_new_page)
-                .query(ErrQ {
-                    err: Some("upload"),
-                })
-                .resolve(cx),
-        ));
+        return Err(create_error(cx, "upload"));
     };
 
     // From here the row is staged: every failure path below must roll it back.
@@ -513,35 +492,17 @@ pub(crate) async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Resu
     let Ok((upload_id, mut file)) = store.put_begin_release(created.id, package.len() as u64)
     else {
         rollback_staged_release(cx, created.id, None, false).await;
-        return Ok(see_other(
-            href!(admin_releases_new_page)
-                .query(ErrQ {
-                    err: Some("upload"),
-                })
-                .resolve(cx),
-        ));
+        return Err(create_error(cx, "upload"));
     };
     let Ok((_written, sha)) = write_and_hash(&mut file, Cursor::new(package.as_slice())) else {
         rollback_staged_release(cx, created.id, Some(&upload_id), false).await;
-        return Ok(see_other(
-            href!(admin_releases_new_page)
-                .query(ErrQ {
-                    err: Some("upload"),
-                })
-                .resolve(cx),
-        ));
+        return Err(create_error(cx, "upload"));
     };
 
     if store.webauthn_required() {
         let Ok(prep) = store.put_prepare_release(&upload_id, created.id, &sha) else {
             rollback_staged_release(cx, created.id, Some(&upload_id), false).await;
-            return Ok(see_other(
-                href!(admin_releases_new_page)
-                    .query(ErrQ {
-                        err: Some("upload"),
-                    })
-                    .resolve(cx),
-            ));
+            return Err(create_error(cx, "upload"));
         };
         let token = store.stash_pending_release(crate::storage::PendingReleaseCeremony {
             upload_id,
@@ -564,26 +525,14 @@ pub(crate) async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Resu
 
     let Ok((size_bytes, sha256)) = store.put_commit_release(&upload_id, created.id, &sha) else {
         rollback_staged_release(cx, created.id, Some(&upload_id), false).await;
-        return Ok(see_other(
-            href!(admin_releases_new_page)
-                .query(ErrQ {
-                    err: Some("upload"),
-                })
-                .resolve(cx),
-        ));
+        return Err(create_error(cx, "upload"));
     };
     if upsert_release_object(&mut database, created.id, &sha256, size_bytes)
         .await
         .is_err()
     {
         rollback_staged_release(cx, created.id, None, true).await;
-        return Ok(see_other(
-            href!(admin_releases_new_page)
-                .query(ErrQ {
-                    err: Some("upload"),
-                })
-                .resolve(cx),
-        ));
+        return Err(create_error(cx, "upload"));
     }
     if created
         .update()
@@ -593,13 +542,7 @@ pub(crate) async fn admin_releases_create(cx: &Cx, multipart: Multipart) -> Resu
         .is_err()
     {
         rollback_staged_release(cx, created.id, None, true).await;
-        return Ok(see_other(
-            href!(admin_releases_new_page)
-                .query(ErrQ {
-                    err: Some("upload"),
-                })
-                .resolve(cx),
-        ));
+        return Err(create_error(cx, "upload"));
     }
     store.unmark_staged_release(created.id);
 

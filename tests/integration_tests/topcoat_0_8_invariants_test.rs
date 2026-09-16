@@ -84,6 +84,55 @@ fn inv_trailing_slash_enum_only_in_app() {
     );
 }
 
+/// 0.8.1 module-relative routes: an absolute route string that merely repeats
+/// the module path is drift waiting to happen. Only paths that cannot be
+/// derived from the module tree stay absolute.
+#[test]
+fn inv_route_paths_are_module_relative_outside_whitelist() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+    let re = regex::Regex::new(r#"#\[route\((?:GET|POST|\[[A-Z, ]+\]|\*) "(/[^"]*)"\)\]"#)
+        .expect("regex");
+    let mut files = Vec::new();
+    collect_rs(&root, &mut files);
+    files.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs"));
+    let mut offenders = Vec::new();
+    for path in files {
+        let src = std::fs::read_to_string(&path).expect("read");
+        for caps in re.captures_iter(&src) {
+            let route = &caps[1];
+            let allowed = route.starts_with("/vauban/")
+                || route.starts_with("/{org}/builds/{release_ver}/")
+                || route.starts_with("/{org}/images")
+                || route == "/"
+                || route == "/favicon.ico"
+                || route.starts_with("/apple-touch-icon")
+                || route == "/logout"
+                || route == "/choose-org";
+            if !allowed {
+                offenders.push(format!("{}: {route}", path.display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "absolute route paths outside the whitelist (use #[route(POST)] / \"./x\"): {}",
+        offenders.join(", ")
+    );
+
+    let release = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/releases/release_id.rs"
+    ));
+    assert!(release.contains("path_param!(pub(crate) release_id: u64, error = not_found);"));
+    assert!(!release.contains("fn parse_release_id"));
+    let company = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/company_id.rs"
+    ));
+    assert!(company.contains("path_param!(pub(crate) company_id: u64, error = not_found);"));
+    assert!(!company.contains("fn parse_company_id"));
+}
+
 #[test]
 fn inv_no_statement_form_signals_in_src() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

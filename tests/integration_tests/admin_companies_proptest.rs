@@ -62,6 +62,57 @@ proptest! {
 }
 
 proptest! {
+    #![proptest_config(crate::common::prop_config(6))]
+
+    /// `#[page(POST)]` contract: an invalid compose form always re-renders
+    /// (200, form + error copy, admin chrome) and never 303s or 5xxs.
+    #[test]
+    fn prop_invalid_company_form_rerenders_never_redirects(
+        name in prop_oneof![Just(String::new()), Just("   ".to_owned()), "Prop Co [a-z]{3,8}"],
+        account in prop_oneof![Just("not-an-email".to_owned()), "[a-z]{3,8}", "[a-z]{3,6}@[a-z]{3,6}\\.test"],
+    ) {
+        // Keep at least one invalid dimension so the save always fails.
+        prop_assume!(name.trim().is_empty() || !account.contains('@'));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+        rt.block_on(async {
+            let _guard = crate::common::db_lock().lock().await;
+            let db = crate::common::test_db().await;
+            crate::common::cleanup(&db).await;
+            let email = crate::common::unique_email("prop-co-invalid");
+            let slug = crate::common::unique_slug("prop-co-invalid");
+            let (_user, _org) = crate::common::create_org_with_membership(
+                &db, &email, "password", &slug, "admin",
+            )
+            .await;
+            let router = crate::common::test_router().await;
+            let cookie = crate::common::login_cookie(&router, &email).await;
+            let body = format!(
+                "name={}&contact_name=Ops&contact_email=ops%40example.com&account_rows=1&compose_action=save&email_0={}",
+                crate::common::urlencoding_encode(&name),
+                crate::common::urlencoding_encode(&account)
+            );
+            let resp = crate::common::post_form(
+                &router, "/admin/companies/new", cookie.as_deref(), &body,
+            )
+            .await;
+            let code = crate::common::status(&resp);
+            assert_eq!(code, topcoat::router::StatusCode::OK, "invalid form must re-render, got {code}");
+            let bytes = http_body_util::BodyExt::collect(resp.into_body()).await.expect("body").to_bytes();
+            let html = String::from_utf8_lossy(&bytes);
+            assert!(html.contains("vb-rail"), "re-render keeps admin chrome");
+            assert!(
+                html.contains("Company name is required") || html.contains("Invalid email address"),
+                "re-render shows the validation error: {html}"
+            );
+            crate::common::cleanup(&db).await;
+        });
+    }
+}
+
+proptest! {
     #![proptest_config(crate::common::prop_config(32))]
 
     #[test]

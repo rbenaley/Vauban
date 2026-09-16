@@ -45,7 +45,6 @@ pub mod perms;
 pub mod process_guard;
 pub mod release_notes;
 pub mod release_pkg;
-pub mod request_intern;
 pub mod seats;
 pub mod slug;
 pub mod sql_search;

@@ -298,7 +298,18 @@ grep -n 'op_failed\|reply_engine_err' "$SERVER" >/dev/null \
 grep -n 'ipc_denied\|portal_storage_failed' "$CLIENT" >/dev/null \
   || fail "$CLIENT must WARN on denied IPC responses"
 grep -n 'portal_storage_failed\|admin_key_enrol' src/app/admin/key.rs >/dev/null \
-  || fail "admin KEY enrol must WARN before err=enrol redirect"
+  || fail "admin KEY enrol must WARN before the enrol error re-render"
+# Lot D: enrol / revoke errors re-run /admin/key via rewrite (no ?err= redirect);
+# successful enrol keeps 303 with the deep-linkable enrolled=<fp> state.
+grep -n 'rewrite_get_with_flash' src/app/admin/key.rs >/dev/null \
+  || fail "admin KEY errors must go through rewrite_get_with_flash"
+grep -n 'fn key_error\|fn key_revoke_confirm_error' src/app/admin/key.rs >/dev/null \
+  || fail "admin KEY must funnel errors through key_error / key_revoke_confirm_error"
+if grep -nE 'see_other\([^)]*ErrQ|see_other\([^)]*KeyRevokeQ' src/app/admin/key.rs >/dev/null; then
+  fail "admin KEY must not 303 to ?err= flags any more"
+fi
+grep -n 'EnrolledQ { enrolled: &fp }' src/app/admin/key.rs >/dev/null \
+  || fail "admin KEY successful enrol must stay 303 with enrolled=<fp>"
 grep -n 'portal_attach_failed' \
   src/app/admin/issues/issue_key.rs \
   src/app/org/issues/issue_key.rs \

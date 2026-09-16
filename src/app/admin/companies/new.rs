@@ -6,17 +6,11 @@ use serde::Deserialize;
 use topcoat::{
     Result,
     context::Cx,
-    router::{
-        content::Form,
-        error::see_other,
-        href, page,
-        response::{IntoResponse, Response},
-        route,
-    },
+    router::{content::Form, error::see_other, href, page},
     view::{View, view},
 };
 
-use super::form::{CompanyFormView, company_form_response, render_company_form};
+use super::form::{CompanyFormView, render_company_form};
 use crate::app::admin::companies::admin_companies_page;
 use crate::{
     auth::{capability_denied, config, db, require_staff},
@@ -30,7 +24,7 @@ use crate::{
 };
 
 #[derive(Deserialize)]
-struct CompanyComposeForm {
+pub(crate) struct CompanyComposeForm {
     name: String,
     #[serde(default)]
     contact_name: String,
@@ -134,11 +128,14 @@ pub(crate) async fn admin_companies_new_page(cx: &Cx) -> Result<impl View> {
     })
 }
 
-#[route(POST "/admin/companies/new")]
+/// POST page (0.8.1): compose actions and validation errors re-render the form
+/// under `root_layout` + `admin_layout` (chrome + staff gate); a successful
+/// save leaves through `Err(see_other)`.
+#[page(POST)]
 pub(crate) async fn admin_companies_create(
     cx: &Cx,
     Form(form): Form<CompanyComposeForm>,
-) -> Result<Response> {
+) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
@@ -158,72 +155,36 @@ pub(crate) async fn admin_companies_create(
     {
         emails.remove(i);
     }
-    if action.starts_with("remove:") {
-        return company_form_response(
-            cx,
-            form_view(
-                cx,
-                &form,
-                emails,
-                NewFormState {
-                    lts,
-                    industrial,
-                    max,
-                    max_lts,
-                    error: None,
-                },
-            ),
-        )
-        .await;
-    }
 
-    if action == "add_row" {
+    let error = if action.starts_with("remove:") {
+        None
+    } else if action == "add_row" {
         if emails.len() < max {
             emails.push(String::new());
         }
-        return company_form_response(
-            cx,
-            form_view(
-                cx,
-                &form,
-                emails,
-                NewFormState {
-                    lts,
-                    industrial,
-                    max,
-                    max_lts,
-                    error: None,
-                },
-            ),
-        )
-        .await;
-    }
-
-    match save_new_company(cx, &form, &emails, max, max_lts).await {
-        // 303 See Other (PRG). Do not use redirect()/307 — it re-POSTs to the
-        // list URL and browsers download an empty "companies" file.
-        Ok(()) => see_other(href!(admin_companies_page).resolve(cx)).into_response(cx),
-        Err(msg) => {
-            // Re-read counts after failed save attempt (may be invalid).
-            let (lts, industrial) = form.lts_counts(max_lts);
-            company_form_response(
-                cx,
-                form_view(
-                    cx,
-                    &form,
-                    emails,
-                    NewFormState {
-                        lts,
-                        industrial,
-                        max,
-                        max_lts,
-                        error: Some(msg),
-                    },
-                ),
-            )
-            .await
+        None
+    } else {
+        match save_new_company(cx, &form, &emails, max, max_lts).await {
+            // 303 See Other (PRG). Do not use redirect()/307 — it re-POSTs to the
+            // list URL and browsers download an empty "companies" file.
+            Ok(()) => return Err(see_other(href!(admin_companies_page).resolve(cx)).into()),
+            Err(msg) => Some(msg),
         }
-    }
+    };
+
+    let state = form_view(
+        cx,
+        &form,
+        emails,
+        NewFormState {
+            lts,
+            industrial,
+            max,
+            max_lts,
+            error,
+        },
+    );
+    Ok(view! { cx => render_company_form(state: state) })
 }
 
 async fn save_new_company(

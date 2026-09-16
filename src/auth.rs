@@ -162,14 +162,11 @@ fn auth_user_from(user: &User, casbin_role: String) -> AuthUser {
 /// Staff Casbin context uses `portal_role` (`admin`) even on `/vauban` preview.
 /// Reserved org `vauban` is staff-only.
 #[memoize(as_ref)]
-async fn org_context(cx: &Cx, slug: usize) -> Option<OrgContext> {
-    let slug = crate::request_intern::interned(cx, slug);
+async fn org_context(cx: &Cx, slug: &str) -> Option<OrgContext> {
     let user = require_auth(cx).await.ok()?;
     let mut db = db(cx);
 
-    let org = Organization::get_by_slug(&mut db, slug.as_str())
-        .await
-        .ok()?;
+    let org = Organization::get_by_slug(&mut db, slug).await.ok()?;
 
     let is_reserved = org.slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG);
     if is_reserved && user.portal_role != PORTAL_ROLE_ADMIN {
@@ -205,10 +202,7 @@ async fn org_context(cx: &Cx, slug: usize) -> Option<OrgContext> {
 ///
 /// Backed by memoized [`org_context`] so layout + page share one lookup.
 pub async fn require_org(cx: &Cx, slug: &str) -> Result<OrgContext, NotFoundError> {
-    org_context(cx, crate::request_intern::intern(cx, slug))
-        .await
-        .cloned()
-        .ok_or_else(not_found)
+    org_context(cx, slug).await.cloned().ok_or_else(not_found)
 }
 
 /// Vauban Support gate for `/admin/*`. Missing session, client, or missing
@@ -380,6 +374,35 @@ mod tests {
         let encoded = token_hash_hex(&hash);
         assert_eq!(encoded, hex::encode(raw));
         assert_eq!(encoded.len(), 64);
+    }
+
+    /// Lot A contract: `#[memoize]` keys on the `&str` hash (Topcoat 0.7+),
+    /// so `org_context(cx, "a")` / `org_context(cx, "A")` never alias and the
+    /// 0.6 `request_intern` id indirection is gone.
+    #[tokio::test]
+    async fn auth_tenant_memoize_str_keys_do_not_alias() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use topcoat::context::memoize;
+
+        static CALLS: AtomicU64 = AtomicU64::new(0);
+
+        #[memoize]
+        async fn probe(cx: &Cx, slug: &str) -> String {
+            let _ = cx;
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            slug.to_uppercase()
+        }
+
+        let cx = Cx::default();
+        assert_eq!(probe(&cx, "acme").await, "ACME");
+        assert_eq!(probe(&cx, "acme").await, "ACME");
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1, "same &str key must hit");
+        assert_eq!(probe(&cx, "ACME").await, "ACME");
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            2,
+            "case-different slugs are distinct keys"
+        );
     }
 
     #[test]

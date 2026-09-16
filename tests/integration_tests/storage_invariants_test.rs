@@ -441,8 +441,15 @@ fn inv_key_dashboard_ui_pinned() {
     );
     assert!(page.contains("data-mode=\"create\""), "E1 ceremony root");
     assert!(
-        page.contains("err=label") || page.contains("err: Some(\"label\")"),
-        "empty admin_label must redirect with err=label"
+        page.contains("key_error(cx, \"label\")"),
+        "empty admin_label must re-render /admin/key with the label error (rewrite)"
+    );
+    assert!(
+        page.contains("rewrite_get_with_flash")
+            && !page.contains(
+                "see_other(\n            href!(admin_key_page)\n                .query(ErrQ"
+            ),
+        "key errors go through the rewrite helper, not ?err= redirects"
     );
     assert!(
         page.contains("normalize_admin_label"),

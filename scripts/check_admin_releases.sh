@@ -46,19 +46,19 @@ grep -n 'sweep_staged_releases' "$NEW" >/dev/null \
   || fail "$NEW must sweep abandoned ceremonies before staging a new one"
 grep -nE 'name="package" type="file" required=""' "$NEW" >/dev/null \
   || fail "$NEW package input must be required (no release without a binary)"
-grep -nE 'err=package|err: Some\("package"\)' "$NEW" >/dev/null \
+grep -nE 'err=package|err: Some\("package"\)|create_error\(cx, "package"\)' "$NEW" >/dev/null \
   || fail "$NEW must refuse a create without a package"
 grep -n 'freebsd_pkg::inspect' "$NEW" >/dev/null \
   || fail "$NEW must inspect FreeBSD packages before staging"
-grep -nE 'err=not_pkg|err: Some\("not_pkg"\)' "$NEW" >/dev/null \
+grep -nE 'err=not_pkg|err: Some\("not_pkg"\)|create_error\(cx, "not_pkg"\)' "$NEW" >/dev/null \
   || fail "$NEW must refuse non-FreeBSD packages with err=not_pkg"
 grep -n 'derive_release_identity' "$NEW" >/dev/null \
   || fail "$NEW must derive version/channel from the package manifeste"
-grep -nE 'err=identity|err: Some\("identity"\)' "$NEW" >/dev/null \
+grep -nE 'err=identity|err: Some\("identity"\)|create_error\(cx, "identity"\)' "$NEW" >/dev/null \
   || fail "$NEW must refuse empty manifeste Version with err=identity"
 grep -n 'parse_released_on' "$NEW" >/dev/null \
   || fail "$NEW must parse a required release date"
-grep -nE 'err=date|err: Some\("date"\)' "$NEW" >/dev/null \
+grep -nE 'err=date|err: Some\("date"\)|create_error\(cx, "date"\)' "$NEW" >/dev/null \
   || fail "$NEW must refuse a missing/invalid date with err=date"
 grep -nE 'name="date"' "$NEW" >/dev/null \
   || fail "$NEW compose form must include a date field"
@@ -78,13 +78,19 @@ grep -n 'vb-confirm-root' "$NEW" >/dev/null \
   || fail "$NEW not_pkg modal must reuse vb-confirm-root"
 grep -nE '\"not_pkg\"(\s*\|\s*\"no_active_key\")?\s*=>' "$NEW" >/dev/null \
   || fail "$NEW must keep not_pkg (and no_active_key) off the inline red banner"
-grep -nE '#\[route\(POST "/admin/releases/new/validate-pkg"\)\]' "$NEW" >/dev/null \
-  || fail "$NEW must expose POST validate-pkg preflight"
+grep -nE '#\[route\(POST "\./validate-pkg"\)\]' "$NEW" >/dev/null \
+  || fail "$NEW must expose POST validate-pkg preflight (module-relative ./validate-pkg)"
 grep -nE '#\[procedure\]' "$NEW" >/dev/null \
   || fail "$NEW must expose require_active_key as a procedure"
 grep -n 'fn require_active_key' "$NEW" >/dev/null \
   || fail "$NEW must define require_active_key"
-if grep -nE '#\[route\(GET "/admin/releases/new/require-active-key"\)\]' "$NEW" >/dev/null; then
+# Lot F: 0.7+ preserves boolean procedure results — no f64 shim.
+grep -n 'async fn require_active_key(cx: &Cx) -> Result<bool>' "$NEW" >/dev/null \
+  || fail "$NEW require_active_key must return Result<bool>"
+if grep -nE 'Result<f64>|await < 1\.0|REQUIRE_KEY_OK: f64' "$NEW" >/dev/null; then
+  fail "$NEW must not encode the procedure result as f64"
+fi
+if grep -nE '#\[route\(GET "(/admin/releases/new/|\./)require-active-key"\)\]' "$NEW" >/dev/null; then
   fail "$NEW must not keep the GET require-active-key route"
 fi
 grep -n 'no_key_open.set(true)' "$NEW" >/dev/null \
@@ -93,10 +99,21 @@ grep -n 'let no_key_open = signal(cx' "$NEW" >/dev/null \
   || fail "$NEW must drive the no-key modal from signal no_key_open"
 grep -n 'data-validate-pkg' "$NEW" >/dev/null \
   || fail "$NEW must interpolate validate-pkg via data-validate-pkg"
-grep -nE 'err=no_active_key|err: Some\("no_active_key"\)' "$NEW" >/dev/null \
+grep -nE 'err=no_active_key|err: Some\("no_active_key"\)|create_error\(cx, "no_active_key"\)' "$NEW" >/dev/null \
   || fail "$NEW must refuse create with err=no_active_key when no ACTIVE key"
 grep -n 'has_active_key' "$NEW" >/dev/null \
   || fail "$NEW must call StorageClient::has_active_key"
+# Lot D: failed creates re-run the compose page via rewrite (no ?err= redirect);
+# success keeps 303 PRG to the list.
+grep -n 'rewrite_get_with_flash' "$NEW" >/dev/null \
+  || fail "$NEW must route create errors through rewrite_get_with_flash"
+grep -n 'fn create_error' "$NEW" >/dev/null \
+  || fail "$NEW must funnel create errors through create_error()"
+if grep -nE 'see_other\([^)]*ErrQ' "$NEW" >/dev/null || grep -nE 'ErrQ \{ err: Some\("(date|package|not_pkg|identity|no_active_key|upload)"\)' "$NEW" >/dev/null; then
+  fail "$NEW must not 303 to ?err= flags any more (use create_error / rewrite)"
+fi
+grep -n 'Ok(see_other(href!(admin_releases_page).resolve(cx)))' "$NEW" >/dev/null \
+  || fail "$NEW successful create must stay 303 PRG to the list"
 grep -n 'fn admin_releases_validate_pkg' "$NEW" >/dev/null \
   || fail "$NEW must define admin_releases_validate_pkg"
 # validate-pkg must never stage or open helper I/O.
@@ -170,8 +187,8 @@ grep -n 'rollback_staged_release' "$STAGING" >/dev/null \
   || fail "$STAGING must define rollback_staged_release"
 grep -n 'orphan_staged_ids' "$STAGING" >/dev/null \
   || fail "$STAGING must derive orphans from live reservations"
-grep -nE '#\[route\(POST "/admin/releases/confirm/cancel"\)' "$CONFIRM" >/dev/null \
-  || fail "$CONFIRM must offer an explicit cancel route"
+grep -nE '#\[route\(POST "\./cancel"\)' "$CONFIRM" >/dev/null \
+  || fail "$CONFIRM must offer an explicit cancel route (module-relative ./cancel)"
 grep -n 'rollback_staged_release' "$CONFIRM" >/dev/null \
   || fail "$CONFIRM must roll back when the signature does not commit"
 grep -n 'find_release_object' "$EDIT" >/dev/null \
@@ -183,12 +200,17 @@ if grep -nE 'max-width:\s*(720|820)px' "$NEW" >/dev/null 2>&1; then
   fail "$NEW must not constrain content width (Concept full width)"
 fi
 
-grep -nE '#\[route\(POST "/admin/releases/\{release_id\}/publish"\)' "$EDIT" >/dev/null \
-  || fail "$EDIT must define publish route"
-grep -nE '#\[route\(POST "/admin/releases/\{release_id\}/unpublish"\)' "$EDIT" >/dev/null \
-  || fail "$EDIT must define unpublish route"
-grep -nE '#\[route\(POST "/admin/releases/\{release_id\}/delete"\)' "$EDIT" >/dev/null \
-  || fail "$EDIT must define delete route"
+grep -nE '#\[route\(POST "\./publish"\)' "$EDIT" >/dev/null \
+  || fail "$EDIT must define publish route (module-relative ./publish)"
+grep -nE '#\[route\(POST "\./unpublish"\)' "$EDIT" >/dev/null \
+  || fail "$EDIT must define unpublish route (module-relative ./unpublish)"
+grep -nE '#\[route\(POST "\./delete"\)' "$EDIT" >/dev/null \
+  || fail "$EDIT must define delete route (module-relative ./delete)"
+grep -n 'path_param!(pub(crate) release_id: u64, error = not_found);' "$EDIT" >/dev/null \
+  || fail "$EDIT must declare a typed release_id path param (404 on garbage)"
+if grep -n 'fn parse_release_id' "$EDIT" >/dev/null; then
+  fail "$EDIT must not hand-parse release_id (typed path_param!)"
+fi
 grep -n 'is_delete_confirm' "$EDIT" >/dev/null || fail "$EDIT must confirm delete"
 grep -n 'releases_manage' "$EDIT" >/dev/null || fail "$EDIT must gate on releases_manage"
 grep -n 'RELEASE_STATUS_PUBLISHED' "$EDIT" >/dev/null \

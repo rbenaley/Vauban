@@ -211,11 +211,9 @@ macro_rules! org_issues_filtered_query {
 
 /// Request-scoped COUNT so list page + embedded shard share one SQL round-trip.
 #[memoize]
-async fn count_filtered_issues_memo(cx: &Cx, org_id: u64, q: usize, status: usize) -> usize {
-    let q = crate::request_intern::interned(cx, q);
-    let status = crate::request_intern::interned(cx, status);
+async fn count_filtered_issues_memo(cx: &Cx, org_id: u64, q: &str, status: &str) -> usize {
     let mut database = db(cx);
-    org_issues_filtered_query!(org_id, q.as_str(), status.as_str())
+    org_issues_filtered_query!(org_id, q, status)
         .count()
         .exec(&mut database)
         .await
@@ -224,13 +222,7 @@ async fn count_filtered_issues_memo(cx: &Cx, org_id: u64, q: usize, status: usiz
 
 /// Count org issues matching `q` / `status` (SQL; memoized per request).
 pub(super) async fn count_filtered_issues(cx: &Cx, org_id: u64, q: &str, status: &str) -> usize {
-    *count_filtered_issues_memo(
-        cx,
-        org_id,
-        crate::request_intern::intern(cx, q),
-        crate::request_intern::intern(cx, status),
-    )
-    .await
+    *count_filtered_issues_memo(cx, org_id, q, status).await
 }
 
 /// One page of org issues matching `q` / `status` (SQL order + limit/offset).
@@ -298,7 +290,7 @@ async fn parse_report_multipart(mut multipart: Multipart) -> Result<ReportMultip
     })
 }
 
-#[route(POST "/{org}/issues")]
+#[route(POST)]
 pub(crate) async fn report_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let slug = path_param::<Org>(cx);
     if slug.eq_ignore_ascii_case(RESERVED_ORG_SLUG) {

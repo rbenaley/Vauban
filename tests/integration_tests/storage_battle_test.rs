@@ -11,9 +11,53 @@ use vcp::list_page::KEY_PAGE_SIZE;
 use vcp::storage::{MetaDb, MetaObject, StorageEngine, StorageScope, sha256_hex, write_abs_file};
 
 use crate::common::{
-    MultipartFile, TINY_PNG, cleanup, create_org_with_membership, db_lock, get, login_cookie,
-    post_multipart_with_files, status, test_db, test_router, unique_email, unique_slug,
+    MultipartFile, TINY_PNG, assert_rewritten_page, cleanup, create_org_with_membership, db_lock,
+    get, login_cookie, post_form, post_multipart_with_files, status, test_db, test_router,
+    unique_email, unique_slug,
 };
+
+/// Lot D: a flood of invalid enrol POSTs (empty label / garbage attestation)
+/// re-runs `/admin/key` (200 + callout) for every request — no 303, no 5xx.
+#[tokio::test]
+async fn battle_parallel_invalid_key_enrol_rerenders() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let router = Arc::new(test_router().await);
+
+    let email = unique_email("battle-key-enrol");
+    let slug = unique_slug("battle-key-enrol");
+    let (_user, _org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let cookie = login_cookie(router.as_ref(), &email).await.expect("cookie");
+
+    let n = 8usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        let barrier = barrier.clone();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let (form, marker) = if i % 2 == 0 {
+                ("admin_label=&attestation=%7B%7D", "Key label is required")
+            } else {
+                (
+                    "admin_label=battle&attestation=not-json",
+                    "did not return a usable attestation",
+                )
+            };
+            let resp = post_form(router.as_ref(), "/admin/key/enrol", Some(&cookie), form).await;
+            let html = assert_rewritten_page(resp, marker).await;
+            assert!(html.contains("vb-rail"), "rewritten key page keeps chrome");
+        }));
+    }
+    for h in handles {
+        h.await.expect("join");
+    }
+
+    cleanup(&db).await;
+}
 
 fn engine_cfg() -> StorageConfig {
     StorageConfig {

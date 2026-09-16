@@ -20,6 +20,7 @@ use crate::{
     docs_search::normalize_org_slug,
     list_page::parse_page,
     perms::perms_for_user,
+    ui::row_dom_id,
 };
 
 /// Shard args are attacker-controlled — always re-authorize.
@@ -52,6 +53,7 @@ pub async fn docs_search_results(
             } else {
                 for article in page_items {
                     <a
+                        id=(row_dom_id("doc", &article.slug))
                         class="vb-row"
                         href=(href!(
                             doc_article_page,

@@ -154,6 +154,17 @@ fn inv_nav_from_path_exists() {
     let nav = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/nav.rs"));
     assert!(nav.contains("pub fn nav_from_path"));
     assert!(nav.contains("pub fn nav_from_cx"));
+    // Lot E: chrome follows the matched route pattern (0.6 `try_endpoint`),
+    // concrete path only as the 404 fallback.
+    assert!(nav.contains("pub fn nav_from_pattern"));
+    assert!(
+        nav.contains("try_endpoint(cx)") && nav.contains("endpoint.path().as_str()"),
+        "nav_from_cx must read the matched endpoint pattern first"
+    );
+    assert!(
+        nav.contains("None => nav_from_path(uri(cx).path())"),
+        "unmatched URLs (404) must fall back to the request path"
+    );
 }
 
 #[test]

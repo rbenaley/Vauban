@@ -5,14 +5,11 @@ use topcoat::router::href;
 use topcoat::{
     Result,
     context::Cx,
-    router::response::{IntoResponse, Response},
     runtime::signal,
-    view::{View, ViewExt, component, view},
+    view::{View, component, view},
 };
 
 use crate::companies_accounts::{ensure_email_rows, show_remove_account_row};
-
-use super::super::render_admin_page;
 
 pub struct CompanyFormView {
     pub action: String,
@@ -31,7 +28,8 @@ pub struct CompanyFormView {
     pub error: Option<String>,
 }
 
-/// Form body only (for `#[page]` GET handlers that already wrap layouts).
+/// Form body only: GET and `#[page(POST)]` handlers both run under the
+/// admin layouts, so the chrome is never re-wrapped by hand.
 #[component]
 pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result<impl View> {
     let max = state.max_accounts;
@@ -273,12 +271,4 @@ pub async fn render_company_form(cx: &Cx, state: CompanyFormView) -> Result<impl
             </div>
         </div>
     })
-}
-
-/// POST compose / validation re-render with root + admin shell (CSS + rail).
-pub async fn company_form_response(cx: &Cx, state: CompanyFormView) -> Result<Response> {
-    view! { cx => render_admin_page(render_company_form(state: state)) }
-        .first()
-        .await?
-        .into_response(cx)
 }

@@ -1,6 +1,10 @@
-//! Org chrome navigation: active section + crumb derived from the request path.
+//! Org chrome navigation: active section + crumb derived from the matched
+//! route pattern (`/{org}/docs/{doc}`), falling back to the request path.
 
-use topcoat::{context::Cx, router::request::uri};
+use topcoat::{
+    context::Cx,
+    router::{request::uri, try_endpoint},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavSection {
@@ -17,13 +21,36 @@ pub enum NavSection {
     AdminKey,
 }
 
-/// Derive rail highlight and topbar crumb from the request path.
+/// Derive rail highlight and topbar crumb for the current request.
+///
+/// Prefers the matched endpoint pattern (Topcoat 0.6+ `try_endpoint`):
+/// parameters keep their `{name}` form, so a slug or key value can never be
+/// mistaken for a static segment (`/acme/docs/new` is still the Docs section
+/// even though its last segment reads "new"). Unmatched URLs (404) carry no
+/// endpoint and fall back to the request path.
 pub fn nav_from_cx(cx: &Cx) -> (NavSection, String) {
-    nav_from_path(uri(cx).path())
+    match try_endpoint(cx) {
+        Some(endpoint) => nav_from_pattern(endpoint.path().as_str()),
+        None => nav_from_path(uri(cx).path()),
+    }
 }
 
-/// Pure path → (section, crumb) mapping used by org / admin chrome.
+/// Route pattern → (section, crumb): `/{org}/docs/{doc}` is Docs,
+/// `/admin/companies/{company_id}` is the companies edit crumb, a catch-all
+/// (`/admin/{*rest}`) lands on the section home.
+pub fn nav_from_pattern(pattern: &str) -> (NavSection, String) {
+    nav_from_segments(pattern)
+}
+
+/// Concrete request path → (section, crumb). Used when no endpoint matched
+/// (404 chrome) and by tests; shares the segment table with the pattern form.
 pub fn nav_from_path(path: &str) -> (NavSection, String) {
+    nav_from_segments(path)
+}
+
+/// Segment table shared by patterns and concrete paths. A `{param}` or
+/// `{*catch_all}` placeholder is an opaque segment, like a real slug.
+fn nav_from_segments(path: &str) -> (NavSection, String) {
     let mut parts = path
         .trim_start_matches('/')
         .split('/')
@@ -139,6 +166,80 @@ mod tests {
             nav_from_path("/acme/account"),
             (NavSection::Account, "account".to_owned())
         );
+    }
+
+    /// Every registered route pattern maps to the section its layout expects.
+    #[test]
+    fn nav_from_pattern_table() {
+        let table: &[(&str, NavSection, &str)] = &[
+            ("/{org}", NavSection::Home, "dashboard"),
+            ("/{org}/docs", NavSection::Docs, "documentation"),
+            ("/{org}/docs/{doc}", NavSection::Docs, "documentation"),
+            ("/{org}/builds", NavSection::Builds, "builds"),
+            ("/{org}/builds/{release_ver}", NavSection::Builds, "builds"),
+            ("/{org}/issues", NavSection::Issues, "issues"),
+            ("/{org}/issues/new", NavSection::Issues, "issues / new"),
+            ("/{org}/issues/{issue_key}", NavSection::Issues, "issues"),
+            ("/vauban/issues/{issue_key}", NavSection::Issues, "issues"),
+            ("/{org}/account", NavSection::Account, "account"),
+            ("/admin", NavSection::AdminHome, "admin"),
+            (
+                "/admin/issues/{issue_key}",
+                NavSection::AdminIssues,
+                "admin / issues",
+            ),
+            (
+                "/admin/docs/new",
+                NavSection::AdminDocs,
+                "admin / docs / edit",
+            ),
+            ("/admin/docs/{doc}", NavSection::AdminDocs, "admin / docs"),
+            (
+                "/admin/releases/new",
+                NavSection::AdminReleases,
+                "admin / releases / new",
+            ),
+            (
+                "/admin/releases/confirm",
+                NavSection::AdminReleases,
+                "admin / releases",
+            ),
+            (
+                "/admin/releases/{release_id}",
+                NavSection::AdminReleases,
+                "admin / releases",
+            ),
+            (
+                "/admin/companies/new",
+                NavSection::AdminCompanies,
+                "admin / companies / new",
+            ),
+            (
+                "/admin/companies/{company_id}",
+                NavSection::AdminCompanies,
+                "admin / companies / edit",
+            ),
+            ("/admin/key", NavSection::AdminKey, "admin / key"),
+            ("/admin/{*rest}", NavSection::AdminHome, "admin"),
+        ];
+        for (pattern, section, crumb) in table {
+            assert_eq!(
+                nav_from_pattern(pattern),
+                (*section, (*crumb).to_owned()),
+                "pattern {pattern}"
+            );
+        }
+    }
+
+    /// A doc slug that reads like a static segment does not change the
+    /// section when the pattern is used (`{doc}` stays opaque).
+    #[test]
+    fn nav_pattern_keeps_params_opaque() {
+        assert_eq!(
+            nav_from_pattern("/{org}/docs/{doc}"),
+            nav_from_path("/acme/docs/new")
+        );
+        assert_eq!(nav_from_pattern("/admin/docs/{doc}").1, "admin / docs");
     }
 
     #[test]

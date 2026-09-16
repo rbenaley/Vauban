@@ -5,10 +5,14 @@ fn inv_login_is_email_only_signal_procedure_no_check_email_page() {
     let login = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/login.rs"));
     assert!(login.contains("Email me a sign-in link"));
     assert!(login.contains("Sending..."));
-    assert!(login.contains("/login/magic"));
+    // Module-relative (0.8.1): `#[route(GET "./magic")]` in `app::login` serves /login/magic.
+    assert!(login.contains("#[route(GET \"./magic\")]"));
+    assert!(login.contains("fn login_magic"));
     assert!(login.contains("#[procedure]"));
     assert!(login.contains("request_login_link"));
-    assert!(login.contains("Result<f64>"));
+    // Topcoat 0.7+ preserves boolean procedure results: no f64 shim.
+    assert!(login.contains("Result<bool>"));
+    assert!(!login.contains("Result<f64>"));
     assert!(login.contains("LOGIN_LINK_UNAVAILABLE"));
     assert!(login.contains("LOGIN_LINK_ACCEPTED"));
     assert!(login.contains("MailCircuitBreaker"));
@@ -16,7 +20,11 @@ fn inv_login_is_email_only_signal_procedure_no_check_email_page() {
     assert!(login.contains("let sent = signal(cx"));
     assert!(login.contains("let sending = signal(cx"));
     assert!(login.contains("let unavailable = signal(cx"));
-    assert!(login.contains("status > 0.0"));
+    assert!(
+        login.contains("if status {"),
+        "client branches on the bool result"
+    );
+    assert!(!login.contains("status > 0.0"));
     assert!(login.contains("vb-eph-tick"));
     assert!(login.contains("Resend in "));
     assert!(login.contains("Use a different email"));
@@ -38,6 +46,11 @@ fn inv_login_is_email_only_signal_procedure_no_check_email_page() {
     assert!(!login.contains("Seed:"));
     assert!(!login.contains("password_hash"));
     assert!(!login.contains("#[route(POST \"/login\")]"));
+    // Module-relative forms (0.8.1) would also serve POST /login — login stays
+    // procedure-only.
+    assert!(!login.contains("#[route(POST)]"));
+    assert!(!login.contains("#[page(POST)]"));
+    assert!(!login.contains("#[route(POST \"./\")]"));
 }
 
 #[test]

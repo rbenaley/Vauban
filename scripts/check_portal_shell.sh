@@ -108,6 +108,11 @@ grep -n 'fn nav_from_path' src/nav.rs >/dev/null \
   || fail "src/nav.rs must expose nav_from_path for unit/proptest"
 grep -n 'fn nav_from_cx' src/nav.rs >/dev/null \
   || fail "src/nav.rs must expose nav_from_cx"
+# Lot E: nav follows the matched endpoint pattern, request path only on 404.
+grep -n 'fn nav_from_pattern' src/nav.rs >/dev/null \
+  || fail "src/nav.rs must expose nav_from_pattern (endpoint pattern -> section)"
+grep -n 'try_endpoint(cx)' src/nav.rs >/dev/null \
+  || fail "src/nav.rs nav_from_cx must use topcoat::router::try_endpoint"
 
 STYLES="styles.css"
 grep -n 'a.vb-rail-item.active' "$STYLES" >/dev/null \

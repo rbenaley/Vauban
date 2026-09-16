@@ -57,4 +57,29 @@ if grep -nE 'load_company_cards_page\(' "$COMPANIES_SHARD" >/dev/null; then
   fail "$COMPANIES_SHARD must not call load_company_cards_page directly (use company_cards_page)"
 fi
 
+# Topcoat 0.7+ hashes borrowed memo args: the 0.6 string-intern indirection
+# (usize keys resolved via request context) must not come back.
+if [[ -e src/request_intern.rs ]]; then
+  fail "src/request_intern.rs is a Topcoat 0.6 workaround; memoize on &str instead"
+fi
+if grep -rnE 'request_intern::|mod request_intern|StringIntern' src >/dev/null; then
+  grep -rnE 'request_intern::|mod request_intern|StringIntern' src >&2 || true
+  fail "no string interning for #[memoize] keys (0.7+ hashes &str)"
+fi
+grep -n 'fn org_context(cx: &Cx, slug: &str)' src/auth.rs >/dev/null \
+  || fail "src/auth.rs org_context must key on slug: &str"
+grep -n 'fn require_perms(cx: &Cx, role: &str)' src/perms.rs >/dev/null \
+  || fail "src/perms.rs require_perms must key on role: &str"
+grep -n 'fn count_filtered_docs_memo(cx: &Cx, q: &str, cat: &str)' "$DOCS" >/dev/null \
+  || fail "$DOCS count_filtered_docs_memo must key on &str"
+grep -n 'fn count_filtered_issues_memo(cx: &Cx, org_id: u64, q: &str, status: &str)' "$ISSUES" >/dev/null \
+  || fail "$ISSUES count_filtered_issues_memo must key on &str"
+grep -n 'fn company_cards_page_memo(cx: &Cx, q: &str, page: usize)' "$COMPANIES_LOAD" >/dev/null \
+  || fail "$COMPANIES_LOAD company_cards_page_memo must key on q: &str"
+grep -n 'fn resolve_org_id_memo(cx: &Cx, raw: &str)' "$ADMIN_ISSUES" >/dev/null \
+  || fail "$ADMIN_ISSUES resolve_org_id_memo must key on raw: &str"
+if grep -nE 'fn [a-z_]+_memo\(.*: usize' "$DOCS" "$ISSUES" "$ADMIN_ISSUES" src/auth.rs src/perms.rs >/dev/null; then
+  fail "memoized text keys must be &str, not interned usize ids"
+fi
+
 echo "check_request_sql_dedup: OK"

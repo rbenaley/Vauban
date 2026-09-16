@@ -97,6 +97,61 @@ fn inv_lts_subscription_cap_and_steppers() {
     );
 }
 
+/// 0.8.1: company compose POSTs are pages (`#[page(POST)]`), so the admin
+/// layouts wrap validation re-renders and success leaves via `Err(see_other)`.
+/// No hand-built `Response` and no re-composed shell remain.
+#[test]
+fn inv_company_post_handlers_are_pages_not_response_routes() {
+    let new = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/new.rs"
+    ));
+    let edit = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/company_id.rs"
+    ));
+    let form = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/admin/companies/form.rs"
+    ));
+    let admin = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/admin.rs"));
+    let login = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/login.rs"));
+    let choose = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/app/choose_org.rs"
+    ));
+
+    for (name, src) in [("new.rs", new), ("company_id.rs", edit)] {
+        assert!(
+            src.contains("#[page(POST)]"),
+            "{name} must use #[page(POST)]"
+        );
+        assert!(
+            src.contains("Err(see_other("),
+            "{name} success must leave the POST page via Err(see_other)"
+        );
+        assert!(
+            !src.contains("Result<Response>") && !src.contains("into_response(cx)"),
+            "{name} must not hand-build a Response"
+        );
+    }
+    assert!(!form.contains("fn company_form_response"));
+    assert!(!admin.contains("fn render_admin_page"));
+    assert!(
+        !login.contains("choose_org_page") || !login.contains("fn choose_org_page"),
+        "choose-org moved out of login.rs"
+    );
+    assert!(choose.contains("#[page]") && choose.contains("fn choose_org_page"));
+    assert!(
+        !choose.contains("root_layout(") && !choose.contains("into_response("),
+        "choose-org is a module page: root_layout applies automatically"
+    );
+    assert!(
+        choose.contains("Err(redirect(") && !choose.contains("see_other("),
+        "choose-org navigational redirects stay 307"
+    );
+}
+
 #[test]
 fn inv_admin_companies_create_is_post_and_gated() {
     let src = include_str!(concat!(

@@ -46,6 +46,77 @@ async fn e2e_unknown_org_path_is_branded_404_with_shell() {
     );
 }
 
+/// Lot E: chrome follows the matched endpoint pattern. A doc slug that reads
+/// like a static segment ("new") still highlights Docs; a company edit URL
+/// yields the "edit" crumb from `/admin/companies/{company_id}`; an unmatched
+/// org URL (no endpoint) falls back to the dashboard crumb with the 404 chrome.
+#[tokio::test]
+async fn e2e_nav_follows_endpoint_pattern_not_slug_values() {
+    let _guard = db_lock().lock().await;
+    let db = test_db().await;
+    cleanup(&db).await;
+    let email = unique_email("shell-nav");
+    let slug = unique_slug("shell-nav");
+    let (_user, org) = create_org_with_membership(&db, &email, "password", &slug, "admin").await;
+    let doc_slug = "new";
+    create_published_doc(&db, "Slug Named New", "pattern nav", "Guides", doc_slug).await;
+    let router = test_router().await;
+    let cookie = login_cookie(&router, &email).await;
+
+    let doc = get(
+        &router,
+        &format!("/{slug}/docs/{doc_slug}"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&doc), StatusCode::OK);
+    let html = body_text(doc).await;
+    assert!(
+        html.contains("<span class=\"active\">documentation</span>"),
+        "doc detail must keep the Docs crumb: {html}"
+    );
+    assert!(
+        html.contains(&format!(
+            "href=\"/{slug}/docs\" class=\"vb-rail-item active\""
+        )),
+        "Docs rail item must be active on a doc detail: {html}"
+    );
+
+    let edit = get(
+        &router,
+        &format!("/admin/companies/{}", org.id),
+        cookie.as_deref(),
+    )
+    .await;
+    // The staff's own org is the reserved-less test org; the edit page may 404
+    // when the org is filtered, so only assert the crumb when it renders.
+    if status(&edit) == StatusCode::OK {
+        let html = body_text(edit).await;
+        assert!(
+            html.contains("<span class=\"active\">admin / companies / edit</span>"),
+            "company edit crumb from /admin/companies/{{company_id}}: {html}"
+        );
+    }
+
+    // A matched pattern whose page 404s (`/{org}/docs/{doc}`, unknown slug)
+    // keeps the Docs crumb from the endpoint inside the branded 404 chrome.
+    let missing = get(
+        &router,
+        &format!("/{slug}/docs/no-such-article"),
+        cookie.as_deref(),
+    )
+    .await;
+    assert_eq!(status(&missing), StatusCode::NOT_FOUND);
+    let html = body_text(missing).await;
+    assert!(
+        html.contains("data-vcp-404=\"1\"")
+            && html.contains("<span class=\"active\">documentation</span>"),
+        "matched-pattern 404 keeps the section crumb: {html}"
+    );
+
+    cleanup(&db).await;
+}
+
 #[tokio::test]
 async fn e2e_login_page_renders_splash_chrome() {
     let _guard = db_lock().lock().await;

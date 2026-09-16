@@ -9,14 +9,12 @@ use topcoat::{
     router::{
         content::Form,
         error::{SeeOther, not_found, see_other},
-        href, page, path_param,
-        response::{IntoResponse, Response},
-        route,
+        href, page, path_param, route,
     },
     view::{View, view},
 };
 
-use super::form::{CompanyFormView, company_form_response, render_company_form};
+use super::form::{CompanyFormView, render_company_form};
 use crate::app::admin::companies::admin_companies_page;
 use crate::{
     auth::{capability_denied, config, db, require_staff},
@@ -30,10 +28,10 @@ use crate::{
     perms::perms_for_user,
 };
 
-path_param!(pub(crate) company_id);
+path_param!(pub(crate) company_id: u64, error = not_found);
 
 #[derive(Deserialize)]
-struct CompanyComposeForm {
+pub(crate) struct CompanyComposeForm {
     name: String,
     #[serde(default)]
     contact_name: String,
@@ -75,10 +73,6 @@ impl CompanyComposeForm {
 #[derive(Deserialize)]
 struct DeleteCompanyForm {
     confirm: String,
-}
-
-fn parse_company_id(raw: &str) -> Option<u64> {
-    raw.parse().ok()
 }
 
 async fn load_company(cx: &Cx, id: u64) -> Option<Organization> {
@@ -129,7 +123,7 @@ fn edit_view(
     state: EditFormState,
 ) -> CompanyFormView {
     CompanyFormView {
-        action: href!(admin_companies_update, CompanyId(id.to_string())).resolve(cx),
+        action: href!(admin_companies_update, CompanyId(id)).resolve(cx),
         title: "Edit client company".to_owned(),
         submit_label: "Save changes".to_owned(),
         name: form.name.clone(),
@@ -148,15 +142,12 @@ fn edit_view(
 
 #[page]
 pub(crate) async fn admin_companies_edit_page(cx: &Cx) -> Result<impl View> {
-    let raw = path_param::<CompanyId>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
         return Err(capability_denied().into());
     }
-    let Some(id) = parse_company_id(raw) else {
-        return Err(not_found().into());
-    };
+    let id = *path_param::<CompanyId>(cx)?;
     let Some(org) = load_company(cx, id).await else {
         return Err(not_found().into());
     };
@@ -168,9 +159,7 @@ pub(crate) async fn admin_companies_edit_page(cx: &Cx) -> Result<impl View> {
         cx =>
         render_company_form(
             state: CompanyFormView {
-                action: href!(admin_companies_update, CompanyId(id.to_string())).resolve(
-                    cx,
-                ),
+                action: href!(admin_companies_update, CompanyId(id)).resolve(cx),
                 title: "Edit client company".to_owned(),
                 submit_label: "Save changes".to_owned(),
                 name: org.name,
@@ -189,20 +178,20 @@ pub(crate) async fn admin_companies_edit_page(cx: &Cx) -> Result<impl View> {
     })
 }
 
-#[route(POST "/admin/companies/{company_id}")]
+/// POST page (0.8.1): compose actions and validation errors re-render the form
+/// under `root_layout` + `admin_layout`; a successful save leaves through
+/// `Err(see_other)`.
+#[page(POST)]
 pub(crate) async fn admin_companies_update(
     cx: &Cx,
     Form(form): Form<CompanyComposeForm>,
-) -> Result<Response> {
-    let raw = path_param::<CompanyId>(cx);
+) -> Result<impl View> {
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
         return Err(capability_denied().into());
     }
-    let Some(id) = parse_company_id(raw) else {
-        return Err(not_found().into());
-    };
+    let id = *path_param::<CompanyId>(cx)?;
     let Some(org) = load_company(cx, id).await else {
         return Err(not_found().into());
     };
@@ -220,83 +209,46 @@ pub(crate) async fn admin_companies_update(
     {
         emails.remove(i);
     }
-    if action.starts_with("remove:") {
-        return company_form_response(
-            cx,
-            edit_view(
-                cx,
-                id,
-                &form,
-                emails,
-                EditFormState {
-                    lts,
-                    industrial,
-                    max_accounts: max,
-                    max_lts,
-                    error: None,
-                },
-            ),
-        )
-        .await;
-    }
 
-    if action == "add_row" {
+    let error = if action.starts_with("remove:") {
+        None
+    } else if action == "add_row" {
         if emails.len() < max {
             emails.push(String::new());
         }
-        return company_form_response(
-            cx,
-            edit_view(
-                cx,
-                id,
-                &form,
-                emails,
-                EditFormState {
-                    lts,
-                    industrial,
-                    max_accounts: max,
-                    max_lts,
-                    error: None,
-                },
-            ),
-        )
-        .await;
-    }
-
-    let fields = CompanyFields {
-        name: form.name.clone(),
-        contact_name: form.contact_name.clone(),
-        contact_email: form.contact_email.clone(),
-        vat: form.vat.clone(),
-        address: form.address.clone(),
-        lts_subscriptions: form.lts_subscriptions.clone(),
-        industrial_lts_subscriptions: form.industrial_lts_subscriptions.clone(),
-    };
-    match save_edit(cx, org, &fields, &emails, max, max_lts).await {
-        // 303 See Other (PRG). Do not use redirect()/307 — it re-POSTs to the
-        // list URL and browsers download an empty "companies" file.
-        Ok(()) => see_other(href!(admin_companies_page).resolve(cx)).into_response(cx),
-        Err(msg) => {
-            let (lts, industrial) = form.lts_counts(max_lts);
-            company_form_response(
-                cx,
-                edit_view(
-                    cx,
-                    id,
-                    &form,
-                    emails,
-                    EditFormState {
-                        lts,
-                        industrial,
-                        max_accounts: max,
-                        max_lts,
-                        error: Some(msg),
-                    },
-                ),
-            )
-            .await
+        None
+    } else {
+        let fields = CompanyFields {
+            name: form.name.clone(),
+            contact_name: form.contact_name.clone(),
+            contact_email: form.contact_email.clone(),
+            vat: form.vat.clone(),
+            address: form.address.clone(),
+            lts_subscriptions: form.lts_subscriptions.clone(),
+            industrial_lts_subscriptions: form.industrial_lts_subscriptions.clone(),
+        };
+        match save_edit(cx, org, &fields, &emails, max, max_lts).await {
+            // 303 See Other (PRG). Do not use redirect()/307 — it re-POSTs to the
+            // list URL and browsers download an empty "companies" file.
+            Ok(()) => return Err(see_other(href!(admin_companies_page).resolve(cx)).into()),
+            Err(msg) => Some(msg),
         }
-    }
+    };
+
+    let state = edit_view(
+        cx,
+        id,
+        &form,
+        emails,
+        EditFormState {
+            lts,
+            industrial,
+            max_accounts: max,
+            max_lts,
+            error,
+        },
+    );
+    Ok(view! { cx => render_company_form(state: state) })
 }
 
 struct CompanyFields {
@@ -356,20 +308,17 @@ async fn save_edit(
     Ok(())
 }
 
-#[route(POST "/admin/companies/{company_id}/delete")]
+#[route(POST "./delete")]
 pub(crate) async fn admin_companies_delete(
     cx: &Cx,
     Form(form): Form<DeleteCompanyForm>,
 ) -> Result<SeeOther> {
-    let raw = path_param::<CompanyId>(cx);
     let staff = require_staff(cx).await?;
     let perms = perms_for_user(cx, &staff.user).await;
     if !perms.companies_manage {
         return Err(capability_denied().into());
     }
-    let Some(id) = parse_company_id(raw) else {
-        return Err(not_found().into());
-    };
+    let id = *path_param::<CompanyId>(cx)?;
     let Some(org) = load_company(cx, id).await else {
         return Err(not_found().into());
     };

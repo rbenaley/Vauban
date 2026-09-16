@@ -4,8 +4,40 @@ use proptest::prelude::*;
 use vcp::docs_search::{
     normalize_category, normalize_org_slug, normalize_query, text_matches_query,
 };
+use vcp::ui::row_dom_id;
 
 use crate::common::{docs_search_shard_body, shard_args_array};
+
+proptest! {
+    #![proptest_config(crate::common::prop_config(64))]
+
+    /// Lot F: shard row ids are always valid HTML ids (prefix + `-` + safe
+    /// chars, never empty) and distinct safe keys never collide.
+    #[test]
+    fn prop_row_dom_id_is_valid_and_prefixed(
+        prefix in prop::sample::select(vec!["doc", "issue", "company"]),
+        key in ".{0,24}",
+    ) {
+        let id = row_dom_id(prefix, &key);
+        let expected_prefix = format!("{prefix}-");
+        prop_assert!(id.starts_with(&expected_prefix));
+        prop_assert!(id.len() > prefix.len() + 1, "id body must not be empty: {id}");
+        prop_assert!(
+            id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "unsafe char in {id}"
+        );
+    }
+
+    #[test]
+    fn prop_row_dom_id_injective_on_safe_keys(
+        a in "[a-z0-9-]{1,16}",
+        b in "[a-z0-9-]{1,16}",
+    ) {
+        prop_assume!(a != b);
+        prop_assert_ne!(row_dom_id("doc", &a), row_dom_id("doc", &b));
+        prop_assert_eq!(row_dom_id("doc", &a), format!("doc-{a}"));
+    }
+}
 
 proptest! {
     #![proptest_config(crate::common::prop_config(48))]

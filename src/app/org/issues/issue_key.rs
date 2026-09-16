@@ -406,7 +406,7 @@ pub(crate) async fn redirect_reserved_issue_reopen(cx: &Cx) -> Result<SeeOther> 
     Ok(see_other(reserved_admin_reply_target(cx, key)))
 }
 
-#[route(POST "/{org}/issues/{issue_key}/reply")]
+#[route(POST "./reply")]
 pub(crate) async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOther> {
     let org_slug = path_param::<Org>(cx);
     let key = path_param::<IssueKey>(cx);
@@ -556,12 +556,12 @@ pub(crate) async fn reply_issue(cx: &Cx, multipart: Multipart) -> Result<SeeOthe
     Ok(see_other(org_reply_target(cx, org_slug, key, None)))
 }
 
-#[route(POST "/{org}/issues/{issue_key}/close")]
+#[route(POST "./close")]
 pub(crate) async fn close_issue(cx: &Cx) -> Result<SeeOther> {
     org_advance_issue(cx, IssueEvent::Close).await
 }
 
-#[route(POST "/{org}/issues/{issue_key}/reopen")]
+#[route(POST "./reopen")]
 pub(crate) async fn reopen_issue(cx: &Cx) -> Result<SeeOther> {
     org_advance_issue(cx, IssueEvent::Reopen).await
 }
