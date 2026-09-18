@@ -4,8 +4,9 @@ Authenticated customer portal for Vauban.
 
 ## Stack
 
-- [Topcoat](https://github.com/tokio-rs/topcoat) 0.5 (SSR, module router, sessions, Tailwind, `mail` + `mail-smtp`)
-- [Toasty](https://github.com/tokio-rs/toasty) 0.9 + PostgreSQL
+- [Topcoat](https://github.com/tokio-rs/topcoat) 0.8.1 (SSR, module router, sessions, Tailwind, `mail` + `mail-smtp` + `multipart`)
+- [Toasty](https://github.com/tokio-rs/toasty) 0.10 + PostgreSQL
+- Storage helper binary `vcp-store` (WebAuthn verify, release blobs; IPC from the portal)
 - Casbin-format policy file under `config/access/` (custom loader; tenant gate on `{org}`)
 - TOML configuration under `config/` (same layering model as Vauban)
 - **HTTPS only** — TLS 1.3 via rustls; optional ACME TLS-ALPN-01 (no HTTP listener)
@@ -13,7 +14,7 @@ Authenticated customer portal for Vauban.
 
 ## Prerequisites
 
-- Rust 1.95+ (see `rust-toolchain.toml`)
+- Rust 1.98 (see `rust-toolchain.toml`)
 - [just](https://github.com/casey/just)
 - PostgreSQL listening locally
 - **FreeBSD staging / build hosts:** `pkg install tailwindcss4` (CLI at
@@ -125,7 +126,7 @@ just docs-import DIR=./docs-bundle   # import Markdown bundle (upsert)
 
 Recipes that need the Topcoat CLI (`run`, `bundle`, `release`, `fmt`,
 `validate`, `dev`, …) call `ensure-topcoat`, which installs or upgrades the
-pinned `topcoat-cli` 0.6.2 when `topcoat` is missing or the wrong version on
+pinned `topcoat-cli` 0.8.1 when `topcoat` is missing or the wrong version on
 `PATH` / `$CARGO_HOME/bin` (a stale CLI panics on `signal` pretty-print).
 No manual `cargo install` and no prior `just validate` are required before
 `just run`.
@@ -138,9 +139,9 @@ was for another Cargo profile (stamp next to that manifest).
 profile so integration-test AssetIds match; a later `just run` detects
 the profile change and rebundles debug/release. Use `just bundle` to
 force a refresh. Prefer these over bare `cargo run` / `cargo build`:
-Topcoat 0.5 Tailwind AssetIds embed `OUT_DIR`, so a rebuild without a
-matching manifest panics when resolving CSS / icons / the runtime
-script. Boot also fails closed if the catalog is stale. Pass `--release`
+Topcoat 0.8.1 Tailwind AssetIds must match the binary's bundle, so a
+rebuild without a matching manifest panics when resolving CSS / icons /
+the runtime script. Boot also fails closed if the catalog is stale. Pass `--release`
 through `just run` / `just build` / `just bundle` so binary and asset IDs
 stay matched. `just run` keeps VCP’s custom TLS 1.3 serve path;
 `topcoat dev` / `just dev` is UI HMR only.
@@ -197,7 +198,7 @@ Ops smoke: [`docs/runbooks/magic_links_smoke_test.md`](docs/runbooks/magic_links
 | `/login` | Sign in |
 | `/choose-org` | Multi-org picker (session required) |
 | `/{org}` | Dashboard (clients + staff preview on `vauban`) |
-| `/{org}/docs` | Documentation KB (shared catalogue) |
+| `/{org}/docs` | Documentation KB (shared catalog) |
 | `/{org}/builds` | Builds (GA + that org's private releases) |
 | `/{org}/issues` | Client issue tracker (**not** for slug `vauban`) |
 | `/{org}/account` | Account & subscription |
@@ -208,6 +209,7 @@ Ops smoke: [`docs/runbooks/magic_links_smoke_test.md`](docs/runbooks/magic_links
 | `/admin/companies` | Client companies: list / new / edit / delete (excludes reserved `vauban`) |
 | `/admin/companies/new` | Onboard org + provision email-only accounts (Mailbox syntax check; invitation magic link on create) |
 | `/admin/companies/{id}` | Edit company + sync accounts under `org.max_accounts_per_org` |
+| `/admin/key` | Security keys (WebAuthn / KEY; `key:manage`) |
 
 Wrong org slug → **404** (no cross-tenant leak). `/admin/*` requires Vauban Support (`portal_role=admin` + Casbin `admin:view`). Direct `/vauban/issues*` redirects to `/admin/issues`.
 
