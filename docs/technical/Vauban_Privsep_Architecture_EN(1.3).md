@@ -25,6 +25,12 @@
 > every live topology pipe for the supervisor's lifetime, including
 > after a linked restart. Proxies and `vauban-web` exit 100 on a dead
 > peer pipe instead of spinning or running degraded. See §7.5.
+>
+> **1.3 amended 23 September 2026 (no version bump):** the process
+> sandbox is `shared::sandbox`, not a FreeBSD-only Capsicum call.
+> Linux enters Landlock + seccomp-bpf; OpenBSD enters pledge + unveil.
+> The no-op backend is macOS and other unsupported OS, and only when
+> the profile is `BestEffort`. See §5.4.
 
 ---
 
@@ -34,7 +40,7 @@
 2. [Architecture Overview](#2-architecture-overview)
 3. [Pipe Topology](#3-pipe-topology)
 4. [IPC Protocol](#4-ipc-protocol)
-5. [Capsicum Sandboxing](#5-capsicum-sandboxing)
+5. [Process Sandboxing](#5-process-sandboxing)
 6. [Database Connections](#6-database-connections)
 7. [Supervisor and Watchdog](#7-supervisor-and-watchdog)
 8. [Supervisor Configuration](#8-supervisor-configuration)
@@ -510,11 +516,24 @@ pub fn recv_fd(socket_fd: RawFd) -> Result<OwnedFd>;
 
 ---
 
-## 5. Capsicum Sandboxing
+## 5. Process Sandboxing
 
 ### 5.1 Overview
 
-**Capsicum** is FreeBSD's capability-based security framework. After entering capability mode, a process can only access pre-opened file descriptors.
+Every de-privileged service enters an OS sandbox through
+[`shared::sandbox::enter_sandbox`](../../shared/src/sandbox/mod.rs).
+Callers build a [`SandboxProfile`](../../shared/src/sandbox/mod.rs)
+of intent-level resources (IPC pipe, SCM_RIGHTS socket, connected
+socket, listener, writable directory, read-only path) and commit it
+once. The backend is selected at compile time. FreeBSD is the
+production target; the rest of §5.2–§5.6 describes that Capsicum
+backend. The other backends are §5.4.
+
+**Capsicum** is FreeBSD's capability-based security framework. After
+`cap_enter`, a process can only access pre-opened file descriptors,
+further narrowed with `cap_rights_limit` unless the profile opts out
+(vauban-web does, because tokio/axum need a right set that is not
+worth enumerating; `cap_enter` remains the wall).
 
 ### 5.2 Sandbox Entry Sequence
 
@@ -563,22 +582,44 @@ fn run_service() -> Result<()> {
 > socket -- otherwise the very first `read()` / `write()` on the
 > accepted fd fails with errno 93 ("Capabilities insufficient") and
 > the application protocol stalls *before* the first byte is sent.
-> macOS and Linux do not enforce these caps and therefore mask the
-> regression in dev (production-bug repro on FreeBSD 14, May 2026,
-> see runbook `iacs_ews_onboarding.md` v0.7.16). Pinned by
-> `shared::capsicum::tests::test_cap_rights_listening_socket`.
+> These cap-rights exist only on FreeBSD. macOS runs the no-op backend
+> (§5.4) and Linux confines with Landlock + seccomp, which has no
+> `cap_rights_inherit`. Neither reproduces errno 93, so this class of
+> bug shows up on FreeBSD only (production repro on FreeBSD 14, May
+> 2026, see runbook `iacs_ews_onboarding.md` v0.7.16). Pinned by
+> `shared::sandbox::capsicum::tests::test_cap_rights_listening_socket`.
 
-### 5.4 Development Mode
+### 5.4 Sandbox backends
 
-On non-FreeBSD platforms (macOS, Linux), sandbox functions are no-ops with warnings:
+`enter_sandbox` dispatches on `target_os`. `SandboxRequirement::Required`
+fails closed when the mechanism is missing. `BestEffort` (the default)
+is the development downgrade.
 
-```rust
-#[cfg(not(target_os = "freebsd"))]
-pub fn enter_capability_mode() -> Result<()> {
-    tracing::warn!("Capsicum not available: running without sandbox");
-    Ok(())
-}
-```
+| OS | Module | What `enter_sandbox` commits | If the mechanism is missing |
+|----|--------|------------------------------|-----------------------------|
+| FreeBSD | `sandbox::capsicum` | `cap_rights_limit` on declared fds, then `cap_enter` | Production target |
+| Linux | `sandbox::linux` | `PR_SET_NO_NEW_PRIVS`, then Landlock (deny-all filesystem, then the declared paths), then a seccomp-bpf allowlist installed with `TSYNC` | `PR_SET_NO_NEW_PRIVS` and seccomp always fail closed. A Landlock gap fails closed under `Required` and warns under `BestEffort` |
+| OpenBSD | `sandbox::openbsd` | `unveil` the declared paths, lock the unveil list, then `pledge` | Same `Required` / `BestEffort` split |
+| Other (macOS) | `sandbox::noop` | No confinement | `BestEffort` logs `Running without sandbox` and continues. `Required` refuses to boot |
+
+Linux and OpenBSD are best-effort confinements for operators who are
+not on the FreeBSD appliance. They are not a second supported
+production target. The Linux seccomp base list is an approximation of
+the tokio / std syscalls and has to be validated on real x86_64 and
+aarch64 hardware: a missing syscall returns `EPERM` at runtime.
+
+The Linux base allowlist does not include `socket`, `connect`, or
+`bind`. Once the sandbox is entered, a leaf cannot open a new TCP
+connection; it uses fds it already holds or fds the supervisor passes
+with `SCM_RIGHTS`, the same constraint Capsicum imposes. Seccomp is
+the syscall wall cited for `vauban-access` in §5.5.4. Landlock is the
+path wall for `WritableDir` and `ReadablePath`.
+
+`enter_capability_mode` lives in the FreeBSD backend and only calls
+`capsicum::enter()`. There is no non-FreeBSD branch that logs
+`Capsicum not available: running without sandbox` and returns success.
+That warning belonged to the pre-`shared::sandbox` code, which treated
+Linux as unconfined.
 
 ### 5.5 vauban-web Sandboxing
 
@@ -909,9 +950,14 @@ The Unix socket used to receive file descriptors has minimal capabilities:
 
 The socket does **not** have `CAP_WRITE`, `CAP_CONNECT`, or `CAP_ACCEPT` since it only receives.
 
-#### 5.6.8 Development Mode (macOS/Linux)
+#### 5.6.8 Direct connect before the sandbox
 
-On platforms without Capsicum, proxies can still open connections directly. Both SSH and RDP proxies implement the same dual-path pattern:
+SSH and RDP proxies accept a supervisor-passed TCP fd when one is
+present, and open the socket themselves only when it is not. The
+direct path is the pre-sandbox / no-op-backend path (macOS
+`BestEffort`). After `enter_sandbox` on FreeBSD, Linux, or OpenBSD,
+`connect` is not available (§5.4), so a sandboxed proxy must use the
+brokered fd:
 
 ```rust
 // SSH proxy: fallback to direct connect
@@ -1414,7 +1460,7 @@ run_rc_command "$1"
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | IPC Mechanism | Unix Pipes | Maximum performance, no network exposure |
-| Sandboxing | Capsicum | FreeBSD native, proven security model |
+| Sandboxing | `shared::sandbox`: Capsicum (FreeBSD, production); Landlock + seccomp (Linux); pledge + unveil (OpenBSD); no-op only on other OS when `BestEffort` | One profile, OS-specific commit. See §5.4 |
 | Async Runtime | Tokio (web + proxies) | Required for bidirectional streams |
 | Configuration Reload | Graceful restart | Simpler, more auditable |
 | Database Connections | Separate per service | Principle of least privilege |
@@ -1425,7 +1471,7 @@ run_rc_command "$1"
 ### 11.2 Security Benefits
 
 1. **Privilege Separation**: Each service runs as a different unprivileged user
-2. **Capability-Based Sandboxing**: Capsicum limits what each process can do
+2. **OS sandbox**: FreeBSD Capsicum is the production wall. Linux (Landlock + seccomp) and OpenBSD (pledge + unveil) commit the same `SandboxProfile`. A no-op boot is refused when the profile is `Required`
 3. **No Network Between Services**: Pipes cannot be accessed remotely
 4. **Minimal Dependencies**: Reduced attack surface
 5. **Separate Database Users**: Compromised service has limited database access
@@ -1457,7 +1503,7 @@ run_rc_command "$1"
 │       ├── lib.rs
 │       ├── messages.rs           # IPC message types
 │       ├── ipc.rs                # Pipe utilities, SCM_RIGHTS
-│       └── capsicum.rs           # Capsicum wrappers
+│       └── sandbox/              # enter_sandbox: Capsicum, Landlock+seccomp, pledge+unveil, no-op
 ├── vauban-db/                    # Shared Diesel schema, migrations
 │   ├── Cargo.toml
 │   ├── diesel.toml
