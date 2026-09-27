@@ -121,11 +121,19 @@ struct GatewayConfig {
 
 impl GatewayConfig {
     fn from_env() -> Result<Self> {
-        let listen = std::env::var("LISTEN_ADDR")
+        // Supervisor sets VAUBAN_MCP_BIND_ADDR from `[mcp].bind_addr`.
+        // MCP_LISTEN_ADDR / LISTEN_ADDR remain for a standalone leaf.
+        let listen = std::env::var("VAUBAN_MCP_BIND_ADDR")
             .or_else(|_| std::env::var("MCP_LISTEN_ADDR"))
+            .or_else(|_| std::env::var("LISTEN_ADDR"))
             .unwrap_or_else(|_| "127.0.0.1:19443".to_string());
+        unsafe {
+            std::env::remove_var("VAUBAN_MCP_BIND_ADDR");
+            std::env::remove_var("MCP_LISTEN_ADDR");
+            std::env::remove_var("LISTEN_ADDR");
+        }
         Ok(Self {
-            listen_addr: listen.parse().context("invalid LISTEN_ADDR")?,
+            listen_addr: listen.parse().context("invalid VAUBAN_MCP_BIND_ADDR")?,
         })
     }
 }
@@ -3329,6 +3337,22 @@ mod gwt_tests {
         assert_eq!(appliance_session_ttl_secs_from(Some("10")), 30.0);
         assert_eq!(appliance_session_ttl_secs_from(Some("999999")), 28_800.0);
         assert_eq!(appliance_session_ttl_secs_from(Some("nope")), 3600.0);
+    }
+
+    #[test]
+    fn gateway_bind_addr_comes_from_supervisor_env() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("VAUBAN_MCP_BIND_ADDR", "51.159.12.96:19443");
+            std::env::set_var("LISTEN_ADDR", "127.0.0.1:9");
+        }
+        let cfg = GatewayConfig::from_env().unwrap();
+        assert_eq!(cfg.listen_addr.to_string(), "51.159.12.96:19443");
+        assert!(std::env::var("VAUBAN_MCP_BIND_ADDR").is_err());
+        assert!(std::env::var("LISTEN_ADDR").is_err());
+        let fallback = GatewayConfig::from_env().unwrap();
+        assert_eq!(fallback.listen_addr.to_string(), "127.0.0.1:19443");
     }
 
     #[test]

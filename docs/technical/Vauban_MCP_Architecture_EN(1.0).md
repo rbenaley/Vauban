@@ -316,7 +316,7 @@ Product gaps (do not treat as bugs in the shipped allow-list / HITL / Seal path)
 - **Contract modes:** `literal` only. `constrained` / `derived` → `mode_not_supported` (perimeter drift). `approval=step` rejected.
 - **ExecutionSeal / MatchSeal:** recording E + WORM exist; audit does not yet recompute a MatchSeal job.
 - **Upstream identity:** static vaulted secret only (no MCP OAuth). `clientInfo` is a declarative pin, not attestation.
-- **Transport:** network MCP only (no local stdio servers). `mcp.bind_addr` defaults to `127.0.0.1:19443`.
+- **Transport:** network MCP only (no local stdio servers). `mcp.bind_addr` defaults to `127.0.0.1:19443`. The supervisor passes that value to the leaf as `VAUBAN_MCP_BIND_ADDR`; the leaf binds it before entering the sandbox.
 - **UX:** sidebar bell dropdown is still a stub; contestations are MCP-only; no live MCP “watch” like an SSH terminal; Connect returns URL + ticket (the human still needs an MCP client).
 - **Catalogue:** TOFU lives in `assets.connection_config` JSON (not a first-class tools table). Discover cap: 500 tools.
 - **Mission TTL:** post-Approve clock is compiled **900 s** (`MISSION_TTL_DEFAULT_SECS`); HITL pending TTL is configurable (`[mcp].hitl_pending_ttl_seconds`).

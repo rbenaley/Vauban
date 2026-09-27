@@ -1402,6 +1402,15 @@ impl SupervisorConfig {
                     self.database.url.to_string(),
                 ));
             }
+            "proxy_mcp" => {
+                // The leaf binds this address itself, before the sandbox.
+                // Without it, GatewayConfig falls back to 127.0.0.1:19443
+                // and ignores `[mcp].bind_addr`.
+                vars.push((
+                    "VAUBAN_MCP_BIND_ADDR".to_string(),
+                    self.mcp.bind_addr.clone(),
+                ));
+            }
             _ => {}
         }
         vars
@@ -1854,6 +1863,18 @@ mod tests {
         assert_eq!(vars[3].0, "VAUBAN_LDAP_ENABLED");
         // Disabled by default in dev config.
         assert_eq!(vars[3].1, "false");
+    }
+
+    #[test]
+    fn test_service_env_vars_proxy_mcp_carries_bind_addr() {
+        let mut config = test_config();
+        config.mcp.bind_addr = "51.159.12.96:19443".to_string();
+        let vars = config.service_env_vars("proxy_mcp");
+        let bind = vars
+            .iter()
+            .find(|(k, _)| k == "VAUBAN_MCP_BIND_ADDR")
+            .expect("proxy_mcp must receive VAUBAN_MCP_BIND_ADDR");
+        assert_eq!(bind.1, "51.159.12.96:19443");
     }
 
     #[test]
