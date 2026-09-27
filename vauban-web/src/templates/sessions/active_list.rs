@@ -45,6 +45,7 @@ impl ActiveSessionItem {
             "ssh" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
             "rdp" => "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300",
             "iacs_tunnel" => "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+            "mcp" => "bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-300",
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
         }
     }
@@ -59,6 +60,7 @@ impl ActiveSessionItem {
             "ssh" => "SSH",
             "rdp" => "RDP",
             "iacs_tunnel" => "IACS",
+            "mcp" => "MCP",
             _ => "OTHER",
         }
     }
@@ -206,6 +208,16 @@ mod tests {
     fn test_session_type_class_unknown() {
         let item = create_test_active_session_item("telnet");
         assert!(item.session_type_class().contains("gray"));
+    }
+
+    #[test]
+    fn test_session_type_class_mcp_is_orange() {
+        let item = create_test_active_session_item("mcp");
+        assert!(
+            item.session_type_class().contains("orange"),
+            "MCP sessions use orange so they are not the IACS amber badge"
+        );
+        assert_eq!(item.session_type_label(), "MCP");
     }
 
     // Tests for ActiveSessionItem struct

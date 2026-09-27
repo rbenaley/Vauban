@@ -116,8 +116,9 @@
                             <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
                                 {% if approval.session_type == "ssh" %}bg-green-100 dark:bg-green-900/50
                                 {% else if approval.session_type == "rdp" %}bg-blue-100 dark:bg-blue-900/50
+                                {% else if approval.session_type == "mcp" %}bg-orange-100 dark:bg-orange-900/50
                                 {% else %}bg-purple-100 dark:bg-purple-900/50{% endif %}">
-                                <svg class="h-5 w-5 {% if approval.session_type == "ssh" %}text-green-600 dark:text-green-400{% else if approval.session_type == "rdp" %}text-blue-600 dark:text-blue-400{% else %}text-purple-600 dark:text-purple-400{% endif %}" fill="currentColor" viewBox="0 0 20 20">
+                                <svg class="h-5 w-5 {% if approval.session_type == "ssh" %}text-green-600 dark:text-green-400{% else if approval.session_type == "rdp" %}text-blue-600 dark:text-blue-400{% else if approval.session_type == "mcp" %}text-orange-600 dark:text-orange-400{% else %}text-purple-600 dark:text-purple-400{% endif %}" fill="currentColor" viewBox="0 0 20 20">
                                     <path fill-rule="evenodd" d="{{ approval.session_icon() }}" clip-rule="evenodd"/>
                                 </svg>
                             </span>

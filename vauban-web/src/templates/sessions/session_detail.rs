@@ -117,6 +117,7 @@ impl SessionDetail {
             "ssh" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
             "rdp" => "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300",
             "iacs_tunnel" => "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+            "mcp" => "bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-300",
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
         }
     }
@@ -133,6 +134,7 @@ impl SessionDetail {
             "ssh" => "SSH",
             "rdp" => "RDP",
             "iacs_tunnel" => "IACS",
+            "mcp" => "MCP",
             other => other,
         }
     }
@@ -327,6 +329,16 @@ mod tests {
             "iacs_tunnel detail badge MUST use the amber palette \
              (consistent with the active list / sessions history)"
         );
+    }
+
+    #[test]
+    fn test_type_class_mcp_uses_orange() {
+        let detail = create_test_session_detail("active", "mcp");
+        assert!(
+            detail.type_class().contains("orange"),
+            "MCP detail badge uses orange, distinct from IACS amber"
+        );
+        assert_eq!(detail.session_type_display(), "MCP");
     }
 
     #[test]

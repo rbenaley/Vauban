@@ -193,7 +193,10 @@ mod tests {
 
         let html = template.render().expect("render should succeed");
         assert!(
-            html.contains("x-data") && html.contains("ssh: 22") && html.contains("rdp: 3389"),
+            html.contains("x-data")
+                && html.contains("ssh: 22")
+                && html.contains("rdp: 3389")
+                && html.contains("mcp: 443"),
             "Port defaults must be handled via Alpine.js x-data"
         );
         assert!(

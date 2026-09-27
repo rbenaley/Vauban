@@ -235,7 +235,8 @@ impl AssetType {
             Self::IacsIec61850 => Some(102),
             // No default for the generic catch-all.
             Self::IacsTcp => None,
-            Self::Mcp => None,
+            // Public MCP servers are HTTPS on 443.
+            Self::Mcp => Some(443),
         }
     }
 
@@ -896,6 +897,11 @@ mod tests {
         assert_eq!(AssetType::IacsBacnetSc.default_port(), Some(443));
         assert_eq!(AssetType::IacsDnp3.default_port(), Some(20000));
         assert_eq!(AssetType::IacsIec61850.default_port(), Some(102));
+    }
+
+    #[test]
+    fn test_asset_type_default_port_mcp() {
+        assert_eq!(AssetType::Mcp.default_port(), Some(443));
     }
 
     #[test]

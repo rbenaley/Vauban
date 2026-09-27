@@ -98,6 +98,7 @@
             {% if recording.session_type == "ssh" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
             {% else if recording.session_type == "rdp" %}bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300
             {% else if recording.session_type == "iacs_tunnel" %}bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300
+            {% else if recording.session_type == "mcp" %}bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-300
             {% else %}bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}">
             {{ recording.session_type_label }}
         </span>

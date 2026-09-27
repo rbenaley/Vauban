@@ -30,7 +30,7 @@
   {% for s in snapshot.user_lens.recent_sessions %}
   <li class="py-2 flex items-center gap-3">
     <span class="inline-flex h-6 w-6 items-center justify-center rounded
-      {% if s.session_type == "ssh" %}bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300{% else %}bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300{% endif %}
+      {% if s.session_type == "ssh" %}bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300{% else if s.session_type == "iacs_tunnel" %}bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300{% else if s.session_type == "mcp" %}bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300{% else %}bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300{% endif %}
       font-mono text-[10px] uppercase">
       {{ s.session_type }}
     </span>

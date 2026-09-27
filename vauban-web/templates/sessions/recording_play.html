@@ -38,10 +38,12 @@
                 <span class="inline-flex h-10 w-10 items-center justify-center rounded-lg mr-3
                     {% if recording.session_type == "ssh" %}bg-green-100 dark:bg-green-900/50
                     {% else if recording.session_type == "rdp" %}bg-blue-100 dark:bg-blue-900/50
+                    {% else if recording.session_type == "mcp" %}bg-orange-100 dark:bg-orange-900/50
                     {% else %}bg-purple-100 dark:bg-purple-900/50{% endif %}">
                     <svg class="h-6 w-6
                         {% if recording.session_type == "ssh" %}text-green-600 dark:text-green-400
                         {% else if recording.session_type == "rdp" %}text-blue-600 dark:text-blue-400
+                        {% else if recording.session_type == "mcp" %}text-orange-600 dark:text-orange-400
                         {% else %}text-purple-600 dark:text-purple-400{% endif %}"
                          viewBox="0 0 20 20" fill="currentColor">
                         <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>

@@ -113,6 +113,7 @@ impl LiveSession {
             "ssh" => "SSH",
             "rdp" => "RDP",
             "iacs_tunnel" => "IACS",
+            "mcp" => "MCP",
             _ => "OTHER",
         }
     }
@@ -847,6 +848,7 @@ mod tests {
         assert_eq!(make("ssh").session_type_label(), "SSH");
         assert_eq!(make("rdp").session_type_label(), "RDP");
         assert_eq!(make("iacs_tunnel").session_type_label(), "IACS");
+        assert_eq!(make("mcp").session_type_label(), "MCP");
         // Anything else collapses to a non-overflowing fallback so
         // a future enum value never silently breaks the layout.
         assert_eq!(make("vnc").session_type_label(), "OTHER");

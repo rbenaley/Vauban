@@ -30,3 +30,24 @@ pub use group_create::{AssetGroupCreateForm, AssetGroupCreateTemplate};
 pub use group_detail::AssetGroupDetailTemplate;
 pub use group_edit::AssetGroupEditTemplate;
 pub use group_list::AssetGroupListTemplate;
+
+#[cfg(test)]
+mod mcp_color_pins {
+    #[test]
+    fn mcp_asset_badges_are_orange_and_iacs_stays_purple() {
+        for path in [
+            include_str!("../../../templates/assets/asset_list.html"),
+            include_str!("../../../templates/assets/manage/list.html"),
+            include_str!("../../../templates/assets/manage/detail.html"),
+        ] {
+            assert!(
+                path.contains("asset_type == \"mcp\"") && path.contains("bg-orange-100"),
+                "MCP asset badges must use orange"
+            );
+            assert!(
+                path.contains("bg-purple-100"),
+                "IACS asset badges stay purple"
+            );
+        }
+    }
+}

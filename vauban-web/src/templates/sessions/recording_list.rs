@@ -87,6 +87,7 @@ impl RecordingListItem {
             "ssh" => "SSH",
             "rdp" => "RDP",
             "iacs_tunnel" => "IACS",
+            "mcp" => "MCP",
             _ => &self.session_type,
         }
     }

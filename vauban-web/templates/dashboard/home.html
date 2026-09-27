@@ -54,7 +54,7 @@
                     <li class="py-3 flex items-center justify-between">
                         <div class="flex items-center">
                             <span class="inline-flex h-8 w-8 items-center justify-center rounded-full
-                                {% if asset.asset_type == "ssh" %}bg-green-100 text-green-600{% elif asset.asset_type == "rdp" %}bg-blue-100 text-blue-600{% else %}bg-purple-100 text-purple-600{% endif %}">
+                                {% if asset.asset_type == "ssh" %}bg-green-100 text-green-600{% elif asset.asset_type == "rdp" %}bg-blue-100 text-blue-600{% elif asset.asset_type == "mcp" %}bg-orange-100 text-orange-600{% else %}bg-purple-100 text-purple-600{% endif %}">
                                 {% if asset.asset_type == "ssh" %}
                                 <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z"/>
