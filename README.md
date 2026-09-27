@@ -51,6 +51,8 @@ docs/                 # Technical architecture documentation
   RDP fMP4, IACS PCAP bundles)
 - **IACS Tunnel**: EWS-facing SSH local-forward proxy with protocol-aware Inspect
   Capture for industrial recordings
+- **MCP Proxy**: Agent tool-call proxy with a frozen allow-list, Mission Seal (a
+  human approves the plan, then every drift is refused), and JSONL recording
 - **Vault Secrets**: Organizational secrets manager (web admin + M2M API with
   asset provenance)
 - **Notifications**: Sealed Capsicum mailer leaf drains the SMTP outbox via
@@ -98,9 +100,7 @@ Detailed technical architecture documents are available in [`docs/technical/`](d
 | [AccessGuard Architecture](docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md) | Shared `shared::access_guard` defense-in-depth RBAC re-check gate (fail-closed, 10s timeout, RAII pending-map) |
 | [IACS Proxy Architecture](docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.1).md) | EWS-facing russh sshd, per-asset target resolution, Capsicum-aware FD passing (listener + Ed25519 host key), anti-SSRF supervisor broker, BLAKE3 session-token gate, boot Snapshot resync |
 | [IACS Inspect Capture](docs/technical/Vauban_IACS_Inspect_Capture_EN(1.1).md) | Admin-only inline PCAP analyzer for IACS recordings: industrial-protocol-aware dissectors (Modbus/TCP, IEC-104, OPC-UA, PROFINET, passthrough), bounded TCP reassembly, tree<->hex bidirectional highlight, server-rendered HTMX + Tailwind, no inline JavaScript |
-| [MCP Agent View](docs/technical/Vauban_MCP_Agent_View_EN(1.0).md) | Story / Contract DTO the agent sees on `tools/list`: hop 1 freezes access-rule constraints, hop 2 adds `arguments.vauban` for Require plan tools |
 | [MCP Architecture](docs/technical/Vauban_MCP_Architecture_EN(1.0).md) | Fourth asset type: `vauban-proxy-mcp` L7 JSON-RPC PEP (POST `/mcp`), frozen allow-list, Mission Seal CheckStep, JSONL recording, supervisor-brokered upstream TCP |
-| [MCP Mission Seal](docs/technical/Vauban_MCP_Mission_Seal_EN(1.0).md) | Plan before action: the agent announces a Story and a Contract, a human approves it, then CheckStep refuses every drift |
 
 ## Security Model
 
