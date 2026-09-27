@@ -378,7 +378,7 @@ impl AssetType {
 
     /// `(value, label)` tuples suitable for the asset_type `<select>`
     /// element in the admin asset form. Single source of truth so the
-    /// 11 entries cannot drift between create / edit / list templates.
+    /// 12 entries cannot drift between create / edit / list templates.
     ///
     /// `industrial_enabled` mirrors `[industrial].enabled` from the
     /// loaded TOML (see [`crate::config::IndustrialConfig::enabled`]).

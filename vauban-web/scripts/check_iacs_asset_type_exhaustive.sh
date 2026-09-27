@@ -38,6 +38,7 @@ EXPECTED=(
     "iacs_dnp3"
     "iacs_iec61850"
     "iacs_tcp"
+    "mcp"
 )
 
 fail=0
@@ -84,4 +85,4 @@ if [[ "${fail}" -ne 0 ]]; then
     exit 1
 fi
 
-echo "OK -- assets.asset_type vocabulary in lock-step (11 entries)"
+echo "OK -- assets.asset_type vocabulary in lock-step (12 entries)"

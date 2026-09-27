@@ -22,4 +22,11 @@ if ! awk '/^validate:/{p=1;next} p && /^[a-zA-Z]/{exit} p' "${JUST}" | grep -q '
     exit 1
 fi
 
+# The lab archive under .cursor/ must not supply check_*.sh. Those
+# scripts lint the archive, not the product tree.
+if ! awk '/^lint:/{p=1;next} p && /^[a-zA-Z]/{exit} p' "${JUST}" | grep -q 'path \./\.cursor'; then
+    echo "[lint] just lint must prune .cursor so the lab archive is not linted" >&2
+    exit 1
+fi
+
 echo "[lint] just validate is wired to just lint"

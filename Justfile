@@ -44,7 +44,9 @@ lint:
     while IFS= read -r script; do
         echo "==> ${script}"
         bash "${script}"
-    done < <(find . \( -path ./target -o -path ./.git \) -prune -o -path '*/scripts/check_*.sh' -print | sort)
+    # Prune .cursor: the MCP lab archive lives there and is not the
+    # product tree. Its check_*.sh would lint that copy and fail validate.
+    done < <(find . \( -path ./target -o -path ./.git -o -path ./.cursor \) -prune -o -path '*/scripts/check_*.sh' -print | sort)
     just deny
     just semgrep
 
