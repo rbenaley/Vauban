@@ -16,7 +16,7 @@
 
 **A fortified bastion for privileged access management, built in Rust.**
 
-Vauban is an open-source security bastion, developed in Rust, designed to protect and control access to critical infrastructure across enterprise, industrial, and defense environments. Its architecture leverages proven, cutting-edge technologies: privilege separation inspired by OpenSSH and Capsicum sandboxing, a confinement mechanism developed with funding from DARPA (U.S. Department of Defense). The solution includes multi-factor authentication (MFA), role-based access control (RBAC), full session recording, sealed SMTP notifications, and real-time monitoring of SSH, RDP, and IACS (industrial tunnel) connections. Free and sovereignty-friendly, Vauban meets the traceability and audit requirements of sensitive environments while offering an open-source alternative to proprietary solutions.
+Vauban is an open-source security bastion, developed in Rust, designed to protect and control access to critical infrastructure across enterprise, industrial, and defense environments. Its architecture leverages proven, cutting-edge technologies: privilege separation inspired by OpenSSH and Capsicum sandboxing, a confinement mechanism developed with funding from DARPA (U.S. Department of Defense). The solution includes multi-factor authentication (MFA), role-based access control (RBAC), full session recording, sealed SMTP notifications, and real-time monitoring of SSH, RDP, IACS (industrial tunnel), and MCP connections. Free and sovereignty-friendly, Vauban meets the traceability and audit requirements of sensitive environments while offering an open-source alternative to proprietary solutions.
 
 ## Project Structure
 
@@ -32,6 +32,7 @@ vauban-mailer/        # Sealed SMTP outbox drainer (Capsicum leaf)
 vauban-proxy-ssh/     # SSH protocol proxy (russh)
 vauban-proxy-rdp/     # RDP protocol proxy (IronRDP, H.264 encoding)
 vauban-proxy-iacs/    # Industrial Automation and Control Systems (IACS) protocols proxy
+vauban-proxy-mcp/     # Model Context Protocol (MCP) protocol proxy
 vauban-db/            # Shared Diesel schema, migrations, table relationships
 shared/               # IPC protocol, message types, common utilities
 config/               # TOML configuration files
@@ -97,6 +98,9 @@ Detailed technical architecture documents are available in [`docs/technical/`](d
 | [AccessGuard Architecture](docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md) | Shared `shared::access_guard` defense-in-depth RBAC re-check gate (fail-closed, 10s timeout, RAII pending-map) |
 | [IACS Proxy Architecture](docs/technical/Vauban_IACS_Proxy_Architecture_EN(1.1).md) | EWS-facing russh sshd, per-asset target resolution, Capsicum-aware FD passing (listener + Ed25519 host key), anti-SSRF supervisor broker, BLAKE3 session-token gate, boot Snapshot resync |
 | [IACS Inspect Capture](docs/technical/Vauban_IACS_Inspect_Capture_EN(1.1).md) | Admin-only inline PCAP analyzer for IACS recordings: industrial-protocol-aware dissectors (Modbus/TCP, IEC-104, OPC-UA, PROFINET, passthrough), bounded TCP reassembly, tree<->hex bidirectional highlight, server-rendered HTMX + Tailwind, no inline JavaScript |
+| [MCP Agent View](docs/technical/Vauban_MCP_Agent_View_EN(1.0).md) | Story / Contract DTO the agent sees on `tools/list`: hop 1 freezes access-rule constraints, hop 2 adds `arguments.vauban` for Require plan tools |
+| [MCP Architecture](docs/technical/Vauban_MCP_Architecture_EN(1.0).md) | Fourth asset type: `vauban-proxy-mcp` L7 JSON-RPC PEP (POST `/mcp`), frozen allow-list, Mission Seal CheckStep, JSONL recording, supervisor-brokered upstream TCP |
+| [MCP Mission Seal](docs/technical/Vauban_MCP_Mission_Seal_EN(1.0).md) | Plan before action: the agent announces a Story and a Contract, a human approves it, then CheckStep refuses every drift |
 
 ## Security Model
 
@@ -475,6 +479,11 @@ malformed identifier (e.g. bad UUID). Every `/api/*` response carries
 - `GET /api/v1/sessions/{uuid}` - Get session
 - `POST /api/v1/sessions/{uuid}/terminate` - Terminate session
 - `DELETE /api/v1/sessions/{uuid}` - Delete session (501 Not Implemented)
+
+### MCP
+- `POST /api/v1/mcp/sessions` - Open an MCP session (hop 1). Requires a `vbn_` API key and `assets:connect_mcp`. Body: `asset_id`, `justification` (10–1000 characters), optional `requested_duration_seconds`. Returns `session_id`, proxy `url`, a one-time `vbw_` bearer, `expires_at`, and `mcp_protocol_versions`.
+
+`POST /api/v1/sessions` does not open MCP visits. Hop 2 (`POST /mcp` with `Bearer vbw_…`) is the proxy, not this API.
 
 ### Vault Secrets (read-only, requires the dedicated `secrets` scope)
 - `GET /api/v1/vault/secrets` - List authorized secrets (metadata only)

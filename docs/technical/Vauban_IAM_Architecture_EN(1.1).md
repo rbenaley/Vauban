@@ -153,10 +153,11 @@ Both services participate in the supervisor's pipe topology:
 | `proxy-ssh` <-> `access` | Bidirectional | **Implemented** (defense-in-depth re-check) | Session authorization re-check before SSH connect — see [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) |
 | `proxy-rdp` <-> `access` | Bidirectional | **Implemented** (defense-in-depth re-check) | Session authorization re-check before RDP connect — see [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) |
 | `proxy-iacs` <-> `access` | Bidirectional | **Implemented** (defense-in-depth re-check) | Session authorization re-check before IACS tunnel open — same AccessGuard path |
+| `proxy-mcp` <-> `access` | Bidirectional | **Implemented** (Mission Seal PDP) | CheckStep and mandate seal for MCP tool calls |
 
-`vauban-access` boot-pins **five** incoming TOPOLOGY peers
-(`web`, `auth`, `proxy_ssh`, `proxy_rdp`, `proxy_iacs`;
-`EXPECTED_PEER_COUNT = 5`). Missing peers → `bail!` at startup.
+`vauban-access` boot-pins **six** incoming TOPOLOGY peers
+(`web`, `auth`, `proxy_ssh`, `proxy_rdp`, `proxy_iacs`, `proxy_mcp`;
+`EXPECTED_PEER_COUNT = 6`). Missing peers → `bail!` at startup.
 
 > **Defense-in-depth model.** Proxies (`vauban-proxy-ssh`, `vauban-proxy-rdp`,
 > and `vauban-proxy-iacs`) independently re-check authorization against

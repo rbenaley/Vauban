@@ -1,8 +1,8 @@
 # Vauban MCP — agent view (Story / Contract DTO)
 
 > Date: 2026-09-05  
-> Architecture: [`Vauban_MCP_Architecture_EN.md`](Vauban_MCP_Architecture_EN.md)  
-> Mission Seal: [`Vauban_MCP_Mission_Seal_EN.md`](Vauban_MCP_Mission_Seal_EN.md)  
+> Architecture: [`Vauban_MCP_Architecture_EN(1.0).md`](Vauban_MCP_Architecture_EN(1.0).md)  
+> Mission Seal: [`Vauban_MCP_Mission_Seal_EN(1.0).md`](Vauban_MCP_Mission_Seal_EN(1.0).md)  
 > User guide: [`../user/Vauban_MCP_User_Guide_EN.md`](../user/Vauban_MCP_User_Guide_EN.md)
 
 The agent talks to **proxy-mcp**. Access rules live in PostgreSQL (`access_rules`). Hop 1 freezes them on the session (`tool_constraints`). Hop 2 `tools/list` is the upstream schema plus, for **Require plan** tools, `arguments.vauban`.

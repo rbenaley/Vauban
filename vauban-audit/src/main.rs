@@ -302,6 +302,27 @@ fn run_service() -> Result<()> {
         None
     };
 
+    let proxy_mcp_fds: Option<(RawFd, RawFd)> = if recording_enabled {
+        let r: Option<RawFd> = std::env::var("VAUBAN_PROXY_MCP_IPC_READ")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        let w: Option<RawFd> = std::env::var("VAUBAN_PROXY_MCP_IPC_WRITE")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        match (r, w) {
+            (Some(r), Some(w)) => {
+                info!("Proxy-MCP IPC channel available for WORM events");
+                Some((r, w))
+            }
+            _ => {
+                debug!("VAUBAN_PROXY_MCP_IPC_READ/WRITE not set (MCP WORM events disabled)");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let proxy_iacs_fds: Option<(RawFd, RawFd)> = if recording_enabled {
         let r: Option<RawFd> = std::env::var("VAUBAN_PROXY_IACS_IPC_READ")
             .ok()
@@ -377,6 +398,8 @@ fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_PROXY_SSH_IPC_WRITE");
         std::env::remove_var("VAUBAN_PROXY_IACS_IPC_READ");
         std::env::remove_var("VAUBAN_PROXY_IACS_IPC_WRITE");
+        std::env::remove_var("VAUBAN_PROXY_MCP_IPC_READ");
+        std::env::remove_var("VAUBAN_PROXY_MCP_IPC_WRITE");
         std::env::remove_var("VAUBAN_WEB_IPC_READ");
         std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
         std::env::remove_var("VAUBAN_VAULT_IPC_READ");
@@ -389,6 +412,7 @@ fn run_service() -> Result<()> {
     let proxy_rdp_channel = proxy_rdp_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
     let proxy_ssh_channel = proxy_ssh_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
     let proxy_iacs_channel = proxy_iacs_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
+    let proxy_mcp_channel = proxy_mcp_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
     let web_channel = web_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
     let vault_channel = vault_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
 
@@ -404,6 +428,10 @@ fn run_service() -> Result<()> {
         ipc_fds.push(w);
     }
     if let Some((r, w)) = proxy_iacs_fds {
+        ipc_fds.push(r);
+        ipc_fds.push(w);
+    }
+    if let Some((r, w)) = proxy_mcp_fds {
         ipc_fds.push(r);
         ipc_fds.push(w);
     }
@@ -487,6 +515,7 @@ fn run_service() -> Result<()> {
             proxy_rdp_channel: proxy_rdp_channel.as_ref(),
             proxy_ssh_channel: proxy_ssh_channel.as_ref(),
             proxy_iacs_channel: proxy_iacs_channel.as_ref(),
+            proxy_mcp_channel: proxy_mcp_channel.as_ref(),
             web_channel: web_channel.as_ref(),
             state: &mut state,
             recording_mgr: &mut recording_mgr,
@@ -504,6 +533,7 @@ struct MainLoopContext<'a> {
     proxy_rdp_channel: Option<&'a IpcChannel>,
     proxy_ssh_channel: Option<&'a IpcChannel>,
     proxy_iacs_channel: Option<&'a IpcChannel>,
+    proxy_mcp_channel: Option<&'a IpcChannel>,
     web_channel: Option<&'a IpcChannel>,
     state: &'a mut ServiceState,
     recording_mgr: &'a mut Option<RecordingManager>,
@@ -554,6 +584,7 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
         proxy_rdp_channel,
         proxy_ssh_channel,
         proxy_iacs_channel,
+        proxy_mcp_channel,
         web_channel,
         state,
         recording_mgr,
@@ -589,6 +620,13 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
 
     let iacs_poll_idx = if let Some(iacs_ch) = proxy_iacs_channel {
         poll_fds.push(iacs_ch.read_fd());
+        Some(poll_fds.len() - 1)
+    } else {
+        None
+    };
+
+    let mcp_poll_idx = if let Some(mcp_ch) = proxy_mcp_channel {
+        poll_fds.push(mcp_ch.read_fd());
         Some(poll_fds.len() - 1)
     } else {
         None
@@ -804,6 +842,36 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
                 }
                 Err(e) => {
                     debug!(error = %e, "Proxy-IACS IPC receive error");
+                }
+            }
+        }
+
+        // Proxy-MCP channel: WORM AuditEvent only. JSONL bytes stay on the
+        // supervisor recording-lease socket, not on this pipe.
+        if let Some(idx) = mcp_poll_idx
+            && ready.contains(&idx)
+        {
+            #[allow(clippy::unwrap_used)]
+            let mcp_ch = proxy_mcp_channel.unwrap();
+            match mcp_ch.recv() {
+                Ok(msg) => {
+                    let result = if matches!(msg, Message::AuditEvent { .. }) {
+                        route_audit_event(mcp_ch, channel, fd_passing_socket, state, msg)
+                    } else {
+                        warn!("unexpected message on Proxy-MCP audit channel");
+                        state.requests_failed += 1;
+                        Ok(())
+                    };
+                    if let Err(e) = result {
+                        warn!(error = %e, "Error handling MCP audit event");
+                        state.requests_failed += 1;
+                    }
+                }
+                Err(shared::ipc::IpcError::ConnectionClosed) => {
+                    info!("Proxy-MCP IPC connection closed");
+                }
+                Err(e) => {
+                    debug!(error = %e, "Proxy-MCP IPC receive error");
                 }
             }
         }
@@ -2700,6 +2768,31 @@ mod tests {
         assert!(
             source.contains("remove_var(\"VAUBAN_PROXY_IACS_IPC_READ\")"),
             "IACS IPC env vars must be cleaned up"
+        );
+    }
+
+    #[test]
+    fn test_mcp_worm_channel_is_polled() {
+        let source = prod_source();
+        assert!(
+            source.contains("VAUBAN_PROXY_MCP_IPC_READ"),
+            "audit must open the ProxyMcp -> Audit pipe"
+        );
+        assert!(
+            source.contains("remove_var(\"VAUBAN_PROXY_MCP_IPC_READ\")"),
+            "MCP IPC env vars must be cleaned up"
+        );
+        assert!(
+            source.contains("Proxy-MCP IPC channel available for WORM events"),
+            "MCP WORM channel must be logged when attached"
+        );
+        let poll = source
+            .find("let mcp_poll_idx")
+            .expect("MCP audit channel must be polled");
+        let arm = &source[poll..];
+        assert!(
+            arm.contains("route_audit_event(mcp_ch"),
+            "MCP AuditEvent must be sealed on the WORM path"
         );
     }
 }

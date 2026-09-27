@@ -105,6 +105,7 @@ fn run_service() -> Result<()> {
     let auth_channel = parse_topology_channel("AUTH");
     let proxy_ssh_channel = parse_topology_channel("PROXY_SSH");
     let proxy_rdp_channel = parse_topology_channel("PROXY_RDP");
+    let proxy_mcp_channel = parse_topology_channel("PROXY_MCP");
     let audit_channel = parse_topology_channel("AUDIT");
 
     // ── Clear ALL environment variables immediately ──
@@ -112,7 +113,14 @@ fn run_service() -> Result<()> {
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
         std::env::remove_var("VAUBAN_IPC_WRITE");
-        for suffix in ["WEB", "AUTH", "PROXY_SSH", "PROXY_RDP", "AUDIT"] {
+        for suffix in [
+            "WEB",
+            "AUTH",
+            "PROXY_SSH",
+            "PROXY_RDP",
+            "PROXY_MCP",
+            "AUDIT",
+        ] {
             std::env::remove_var(format!("VAUBAN_{}_IPC_READ", suffix));
             std::env::remove_var(format!("VAUBAN_{}_IPC_WRITE", suffix));
         }
@@ -181,6 +189,11 @@ fn run_service() -> Result<()> {
         all_fds.push(ch.read_fd());
         all_fds.push(ch.write_fd());
         peer_channels.push(("proxy_rdp", ch));
+    }
+    if let Some(ref ch) = proxy_mcp_channel {
+        all_fds.push(ch.read_fd());
+        all_fds.push(ch.write_fd());
+        peer_channels.push(("proxy_mcp", ch));
     }
     if let Some(ref ch) = audit_channel {
         all_fds.push(ch.read_fd());
@@ -862,6 +875,25 @@ mod tests {
         assert!(
             source.contains("shutdown_requested"),
             "ServiceState must have a shutdown_requested flag"
+        );
+    }
+
+    #[test]
+    fn test_vault_polls_proxy_mcp() {
+        let source = prod_source();
+        assert!(
+            source.contains("parse_topology_channel(\"PROXY_MCP\")"),
+            "vault must open the ProxyMcp -> Vault pipe"
+        );
+        assert!(
+            source.contains("peer_channels.push((\"proxy_mcp\""),
+            "vault main loop must poll proxy_mcp"
+        );
+        let clear = source.find("for suffix in [").expect("peer env clear loop");
+        let block = &source[clear..clear + 300];
+        assert!(
+            block.contains("\"PROXY_MCP\""),
+            "vault must clear VAUBAN_PROXY_MCP_IPC_* with the other peer env vars"
         );
     }
 

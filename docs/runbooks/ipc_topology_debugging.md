@@ -71,9 +71,9 @@ journalctl -u vauban-supervisor -n 200 --no-pager \
     | grep -E 'rbac_recheck_timeouts|RBAC re-check'
 ```
 
-If `peers=` is missing one of the 5 entries OR `peer_count != 5`,
+If `peers=` is missing one of the 6 entries OR `peer_count != 6`,
 **that is the bug**. `vauban-access` should now refuse to start in
-this state and emit `TOPOLOGY mismatch: expected 5 incoming peers ...`
+this state and emit `TOPOLOGY mismatch: expected 6 incoming peers ...`
 -- if you see it actually running with fewer peers, you are on a
 build older than the post-incident hardening; re-deploy.
 

@@ -48,6 +48,14 @@ fn inv_production_mcp_section_opt_in_disabled() {
         "production [mcp] must default to enabled = false (opt-in)"
     );
     assert!(
+        window.contains("bind_addr = \"127.0.0.1:19443\""),
+        "production [mcp] must set bind_addr (same key as iacs_tunnel)"
+    );
+    assert!(
+        !window.contains("listen_addr"),
+        "production [mcp] must not keep the retired listen_addr key"
+    );
+    assert!(
         window.contains("allow_loopback_targets = false"),
         "production [mcp] must keep allow_loopback_targets = false"
     );

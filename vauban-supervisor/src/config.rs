@@ -856,13 +856,13 @@ fn default_industrial_enabled() -> bool {
 pub struct McpConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default = "default_mcp_listen_addr")]
-    pub listen_addr: String,
+    #[serde(default = "default_mcp_bind_addr")]
+    pub bind_addr: String,
     #[serde(default)]
     pub allow_loopback_targets: bool,
 }
 
-fn default_mcp_listen_addr() -> String {
+fn default_mcp_bind_addr() -> String {
     "127.0.0.1:19443".to_string()
 }
 
@@ -870,7 +870,7 @@ impl Default for McpConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            listen_addr: default_mcp_listen_addr(),
+            bind_addr: default_mcp_bind_addr(),
             allow_loopback_targets: false,
         }
     }
@@ -878,7 +878,7 @@ impl Default for McpConfig {
 
 impl McpConfig {
     pub fn listen_port(&self) -> u16 {
-        self.listen_addr
+        self.bind_addr
             .rsplit_once(':')
             .and_then(|(_, p)| p.parse().ok())
             .unwrap_or(19443)
@@ -1430,6 +1430,16 @@ impl SupervisorConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_bind_addr_deserializes_and_defaults_to_loopback() {
+        let cfg: McpConfig =
+            toml::from_str("bind_addr = \"10.9.8.7:19443\"\nenabled = true\n").expect("mcp table");
+        assert_eq!(cfg.bind_addr, "10.9.8.7:19443");
+        assert_eq!(cfg.listen_port(), 19443);
+        assert_eq!(McpConfig::default().bind_addr, "127.0.0.1:19443");
+        assert_eq!(McpConfig::default().listen_port(), 19443);
+    }
 
     // ==================== Test Helpers ====================
 

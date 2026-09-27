@@ -2,9 +2,9 @@
 
 > For administrators and operators who use the UI.  
 > Date: 2026-09-05  
-> Architecture: [`../technical/Vauban_MCP_Architecture_EN.md`](../technical/Vauban_MCP_Architecture_EN.md)  
-> Mission Seal: [`../technical/Vauban_MCP_Mission_Seal_EN.md`](../technical/Vauban_MCP_Mission_Seal_EN.md)  
-> Agent view: [`../technical/Vauban_MCP_Agent_View_EN.md`](../technical/Vauban_MCP_Agent_View_EN.md)
+> Architecture: [`../technical/Vauban_MCP_Architecture_EN(1.0).md`](../technical/Vauban_MCP_Architecture_EN(1.0).md)  
+> Mission Seal: [`../technical/Vauban_MCP_Mission_Seal_EN(1.0).md`](../technical/Vauban_MCP_Mission_Seal_EN(1.0).md)  
+> Agent view: [`../technical/Vauban_MCP_Agent_View_EN(1.0).md`](../technical/Vauban_MCP_Agent_View_EN(1.0).md)
 
 ---
 
@@ -156,7 +156,7 @@ When a tool has **Require plan**, hop 2 `tools/list` adds `arguments.vauban` (St
 
 Write the Story in clear English. The HITL UI is English.
 
-DTO, JSON Schema, and sequence: [`Vauban_MCP_Agent_View_EN.md`](../technical/Vauban_MCP_Agent_View_EN.md).
+DTO, JSON Schema, and sequence: [`Vauban_MCP_Agent_View_EN(1.0).md`](../technical/Vauban_MCP_Agent_View_EN(1.0).md).
 
 ---
 
@@ -211,8 +211,8 @@ Compromised `vbn_…`: **Revoke** or **Regenerate** under API keys — live MCP 
 
 | Need | Document |
 |------|----------|
-| Hops, errors, recording, code | [`Vauban_MCP_Architecture_EN.md`](../technical/Vauban_MCP_Architecture_EN.md) |
-| Story / Contract / drift | [`Vauban_MCP_Mission_Seal_EN.md`](../technical/Vauban_MCP_Mission_Seal_EN.md) |
-| Agent `tools/list` DTO | [`Vauban_MCP_Agent_View_EN.md`](../technical/Vauban_MCP_Agent_View_EN.md) |
+| Hops, errors, recording, code | [`Vauban_MCP_Architecture_EN(1.0).md`](../technical/Vauban_MCP_Architecture_EN(1.0).md) |
+| Story / Contract / drift | [`Vauban_MCP_Mission_Seal_EN(1.0).md`](../technical/Vauban_MCP_Mission_Seal_EN(1.0).md) |
+| Agent `tools/list` DTO | [`Vauban_MCP_Agent_View_EN(1.0).md`](../technical/Vauban_MCP_Agent_View_EN(1.0).md) |
 | Compromised `vbn_` | [`mcp_api_key_compromise.md`](../runbooks/mcp_api_key_compromise.md) |
 | FreeBSD staging | [`mcp_staging_gwt_acceptance.md`](../runbooks/mcp_staging_gwt_acceptance.md) |

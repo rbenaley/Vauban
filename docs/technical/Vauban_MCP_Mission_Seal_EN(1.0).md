@@ -1,9 +1,9 @@
 # Vauban MCP — Mission Seal (plan before action)
 
 > Date: 2026-09-05  
-> Architecture: [`Vauban_MCP_Architecture_EN.md`](Vauban_MCP_Architecture_EN.md)  
+> Architecture: [`Vauban_MCP_Architecture_EN(1.0).md`](Vauban_MCP_Architecture_EN(1.0).md)  
 > Guide: [`../user/Vauban_MCP_User_Guide_EN.md`](../user/Vauban_MCP_User_Guide_EN.md)  
-> Agent view: [`Vauban_MCP_Agent_View_EN.md`](Vauban_MCP_Agent_View_EN.md)
+> Agent view: [`Vauban_MCP_Agent_View_EN(1.0).md`](Vauban_MCP_Agent_View_EN(1.0).md)
 
 ---
 
@@ -212,7 +212,7 @@ The PDP is `vauban-access` (`CheckStepAuthorized` / `SealMcpMandate`). The proxy
 
 ## 8. Wire (P0)
 
-Agent path (hop 2 `tools/list` plus `arguments.vauban`): [`Vauban_MCP_Agent_View_EN.md`](Vauban_MCP_Agent_View_EN.md).
+Agent path (hop 2 `tools/list` plus `arguments.vauban`): [`Vauban_MCP_Agent_View_EN(1.0).md`](Vauban_MCP_Agent_View_EN(1.0).md).
 
 ```json
 {

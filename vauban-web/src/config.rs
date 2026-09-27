@@ -1291,9 +1291,11 @@ impl Default for IndustrialConfig {
 pub struct McpSettings {
     #[serde(default)]
     pub enabled: bool,
-    /// Host:port advertised to agents for hop 2 (`POST /mcp`).
-    #[serde(default = "McpSettings::default_listen_addr")]
-    pub listen_addr: String,
+    /// Host:port the MCP gateway binds, and the address advertised to
+    /// agents for hop 2 (`POST /mcp`). Same key name as
+    /// `industrial.iacs_tunnel.bind_addr`.
+    #[serde(default = "McpSettings::default_bind_addr")]
+    pub bind_addr: String,
     #[serde(default = "McpSettings::default_session_ttl_seconds")]
     pub session_ttl_seconds: i64,
     #[serde(default = "McpSettings::default_hitl_pending_ttl_seconds")]
@@ -1304,7 +1306,7 @@ impl Default for McpSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            listen_addr: Self::default_listen_addr(),
+            bind_addr: Self::default_bind_addr(),
             session_ttl_seconds: Self::default_session_ttl_seconds(),
             hitl_pending_ttl_seconds: Self::default_hitl_pending_ttl_seconds(),
         }
@@ -1312,7 +1314,7 @@ impl Default for McpSettings {
 }
 
 impl McpSettings {
-    pub fn default_listen_addr() -> String {
+    pub fn default_bind_addr() -> String {
         "127.0.0.1:19443".to_string()
     }
 
@@ -1321,7 +1323,7 @@ impl McpSettings {
     }
 
     pub fn listen_public_host(&self) -> &str {
-        self.listen_addr.as_str()
+        self.bind_addr.as_str()
     }
 
     pub const fn default_hitl_pending_ttl_seconds() -> i64 {
@@ -1823,6 +1825,25 @@ pub mod test_fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_bind_addr_follows_the_iacs_key_name() {
+        let cfg: McpSettings = config::Config::builder()
+            .add_source(config::File::from_str(
+                "[mcp]\nbind_addr = \"10.1.2.3:19443\"\n",
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("mcp snippet")
+            .get("mcp")
+            .expect("mcp table");
+        assert_eq!(cfg.bind_addr, "10.1.2.3:19443");
+        assert_eq!(
+            McpSettings::default().bind_addr,
+            McpSettings::default_bind_addr()
+        );
+        assert_eq!(McpSettings::default_bind_addr(), "127.0.0.1:19443");
+    }
 
     // ==================== ProductConfig / BrandConfig (white-label) ====================
 

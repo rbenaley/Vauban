@@ -554,6 +554,10 @@ fn run_supervisor() -> Result<()> {
         Service::ProxySsh,
         Service::ProxyRdp,
         Service::ProxyIacs,
+        // Recording lease and brokered upstream TCP. Without this pair
+        // the leaf exits 1 at boot ("recording FD lease required") and
+        // the later heartbeat failure linked-restarts web.
+        Service::ProxyMcp,
         Service::Audit,
         Service::Web,
         // vauban-auth receives a brokered TCP socket for the LDAPS bind path:
@@ -5385,6 +5389,43 @@ mod tests {
     #[test]
     fn test_web_needs_fd_passing() {
         assert!(matches!("web", "proxy_ssh" | "proxy_rdp" | "audit" | "web"));
+    }
+
+    /// Boot must hand ProxyMcp an FD-passing socket, same as respawn.
+    /// The leaf refuses to start without it (recording lease).
+    #[test]
+    fn test_proxy_mcp_fd_passing_socket_created_at_boot() {
+        let source = supervisor_prod_source();
+        let marker = source
+            .find("Created FD passing socketpair")
+            .expect("boot FD-passing loop");
+        let list_start = source[..marker]
+            .rfind("for proxy_service in [")
+            .expect("boot FD-passing list");
+        let boot_list = &source[list_start..marker];
+        assert!(
+            boot_list.contains("Service::ProxyMcp"),
+            "boot must create an FD-passing socketpair for ProxyMcp"
+        );
+
+        let mut rest = source;
+        let mut found = 0;
+        while let Some(idx) = rest.find("let needs_fd_passing = matches!(") {
+            let block_end = rest[idx..]
+                .find(");")
+                .expect("needs_fd_passing match must close");
+            let block = &rest[idx..idx + block_end];
+            assert!(
+                block.contains("\"proxy_mcp\""),
+                "respawn needs_fd_passing must include proxy_mcp"
+            );
+            found += 1;
+            rest = &rest[idx + block_end + 2..];
+        }
+        assert_eq!(
+            found, 2,
+            "single respawn and linked restart both recreate the socket"
+        );
     }
 
     #[test]

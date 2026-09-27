@@ -3,8 +3,8 @@
 > For developers and operators.  
 > Date: 2026-09-06  
 > User guide: [`../user/Vauban_MCP_User_Guide_EN.md`](../user/Vauban_MCP_User_Guide_EN.md)  
-> Mission Seal: [`Vauban_MCP_Mission_Seal_EN.md`](Vauban_MCP_Mission_Seal_EN.md)  
-> Agent view: [`Vauban_MCP_Agent_View_EN.md`](Vauban_MCP_Agent_View_EN.md)  
+> Mission Seal: [`Vauban_MCP_Mission_Seal_EN(1.0).md`](Vauban_MCP_Mission_Seal_EN(1.0).md)  
+> Agent view: [`Vauban_MCP_Agent_View_EN(1.0).md`](Vauban_MCP_Agent_View_EN(1.0).md)  
 > Recording (solution E): [`Vauban_Recording_Architecture_EN(1.9).md`](Vauban_Recording_Architecture_EN(1.9).md)  
 > Staging: [`../runbooks/mcp_staging_gwt_acceptance.md`](../runbooks/mcp_staging_gwt_acceptance.md)  
 > API key compromise: [`../runbooks/mcp_api_key_compromise.md`](../runbooks/mcp_api_key_compromise.md)
@@ -167,7 +167,7 @@ flowchart TD
 | Control | Behavior |
 |---------|----------|
 | HITL | First call → `-32030` until Approve on `/sessions/mcp`. Retry before Approve stays `-32030`. SoD: opener user and opening `vbn_` cannot Approve. The access-rule mode select is SoT (HITL / Require plan). Catalogue `hitl` does not override. Mail: `mcp.hitl_pending` / `mcp.hitl_decided`. Claim does not mail. |
-| Mission Seal | PDP in `vauban-access` (`CheckStepAuthorized`). Proxy is PEP. Local CheckStep only when AccessGuard is not wired (tests / HTTP lab). After Seal, CheckStep applies to **every** `tools/call` while the mission is in progress (`!all_steps_done`). After the last step, tools revert to their access-rule modes. A PDP Allow also consumes `Session.mandate` so a later Story+Contract is `Replace` (new HITL), not `-32033`. See [Mission Seal](Vauban_MCP_Mission_Seal_EN.md). |
+| Mission Seal | PDP in `vauban-access` (`CheckStepAuthorized`). Proxy is PEP. Local CheckStep only when AccessGuard is not wired (tests / HTTP lab). After Seal, CheckStep applies to **every** `tools/call` while the mission is in progress (`!all_steps_done`). After the last step, tools revert to their access-rule modes. A PDP Allow also consumes `Session.mandate` so a later Story+Contract is `Replace` (new HITL), not `-32033`. See [Mission Seal](Vauban_MCP_Mission_Seal_EN(1.0).md). |
 | First CheckStep deny | `-32033` to the agent, **upstream not called**, session cut, `mandate_drift`, mail. IAM is the matching MCP rule's `mcp_drift_iam` (default `suspend_group` = group remove). Overturn restores the group only for `suspend_group`. TTL `mission_expired` does **not** notify. |
 | Envelope | Rate limit; `on_exceed=suspend` → `-32031` |
 | `clientInfo` pin | Default ON; missing / drift → terminate |
@@ -255,7 +255,7 @@ Redirects: `/sessions/mcp-hitl*` → `/sessions/mcp*`. The User Zone GET `/sessi
 
 Sidebar HITL + contestation share one `#sidebar-mcp-badge` pill (sum). OOB uses the same WebSocket shape as Approvals (`broadcast_mcp_hitl_badge` / `broadcast_contestation_badge` → `broadcast_mcp_sidebar_badge`). Do not invent a second channel.
 
-Agent discovery: hop 2 `tools/list` is the only machine catalogue (`arguments.vauban` on Require plan tools). `initialize.instructions` is identity, not a tool list. See [`Vauban_MCP_Agent_View_EN.md`](Vauban_MCP_Agent_View_EN.md).
+Agent discovery: hop 2 `tools/list` is the only machine catalogue (`arguments.vauban` on Require plan tools). `initialize.instructions` is identity, not a tool list. See [`Vauban_MCP_Agent_View_EN(1.0).md`](Vauban_MCP_Agent_View_EN(1.0).md).
 
 Mail kinds (outbox → `vauban-mailer`): `mcp.hitl_pending`, `mcp.hitl_decided`, `mcp.contestation_opened`, `mcp.contestation_resolved`, `mcp.mandate_drift`. SMTP stays in the mailer leaf.
 
@@ -316,7 +316,7 @@ Product gaps (do not treat as bugs in the shipped allow-list / HITL / Seal path)
 - **Contract modes:** `literal` only. `constrained` / `derived` → `mode_not_supported` (perimeter drift). `approval=step` rejected.
 - **ExecutionSeal / MatchSeal:** recording E + WORM exist; audit does not yet recompute a MatchSeal job.
 - **Upstream identity:** static vaulted secret only (no MCP OAuth). `clientInfo` is a declarative pin, not attestation.
-- **Transport:** network MCP only (no local stdio servers). Default listen `127.0.0.1:19443`.
+- **Transport:** network MCP only (no local stdio servers). `mcp.bind_addr` defaults to `127.0.0.1:19443`.
 - **UX:** sidebar bell dropdown is still a stub; contestations are MCP-only; no live MCP “watch” like an SSH terminal; Connect returns URL + ticket (the human still needs an MCP client).
 - **Catalogue:** TOFU lives in `assets.connection_config` JSON (not a first-class tools table). Discover cap: 500 tools.
 - **Mission TTL:** post-Approve clock is compiled **900 s** (`MISSION_TTL_DEFAULT_SECS`); HITL pending TTL is configurable (`[mcp].hitl_pending_ttl_seconds`).
