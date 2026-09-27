@@ -3995,10 +3995,12 @@ mod tests {
         // `users` use ON DELETE RESTRICT (intentional in production: an
         // active EWS owner cannot be silently hard-deleted), which would
         // otherwise block the per-batch user prune below.
+        // access_contestations references users and vauban_groups with no
+        // ON DELETE clause (RESTRICT). Truncate it before those deletes.
         diesel::sql_query(
-            "TRUNCATE access_rules, user_groups, asset_asset_groups, \
-             proxy_sessions, auth_sessions, api_keys, assets, \
-             ews, ews_onboarding_requests, ews_audit_log CASCADE",
+            "TRUNCATE access_contestations, access_rules, user_groups, \
+             asset_asset_groups, proxy_sessions, auth_sessions, api_keys, \
+             assets, ews, ews_onboarding_requests, ews_audit_log CASCADE",
         )
         .execute(&mut conn)
         .await

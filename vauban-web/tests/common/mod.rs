@@ -1537,6 +1537,11 @@ pub mod test_db {
             .execute(conn)
             .await
             .ok();
+        // Contestations reference users and vauban_groups with RESTRICT.
+        diesel::sql_query("DELETE FROM access_contestations")
+            .execute(conn)
+            .await
+            .ok();
         diesel::sql_query("DELETE FROM approval_requests")
             .execute(conn)
             .await
