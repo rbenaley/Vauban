@@ -13,8 +13,10 @@ needles=(
   'route("/session"'
 )
 fail=0
+# grep, not rg: just lint runs on hosts where ripgrep is not on PATH.
+# src and Cargo.toml only, so this script's own needle list is not a hit.
 for needle in "${needles[@]}"; do
-  if rg -n --glob '!scripts/**' -F "$needle" src Cargo.toml; then
+  if grep -R -n -F -I -- "$needle" src Cargo.toml; then
     echo "forbidden lab escape: $needle" >&2
     fail=1
   fi
