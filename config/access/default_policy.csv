@@ -3,6 +3,7 @@ p, role:staff, admin, view
 p, role:staff, access_rules, read
 p, role:staff, access_rules, write
 p, role:staff, assets, connect_iacs
+p, role:staff, assets, connect_mcp
 p, role:staff, assets, manage
 p, role:staff, assets, read
 p, role:staff, assets, read_all
@@ -24,6 +25,7 @@ p, role:staff, users, write
 p, role:staff, vault_secrets, manage
 p, role:staff, vault_secrets, read
 p, role:user, assets, connect_iacs
+p, role:user, assets, connect_mcp
 p, role:user, assets, read
 p, role:user, iacs, read
 p, role:user, iacs, request

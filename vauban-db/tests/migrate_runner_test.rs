@@ -598,3 +598,87 @@ fn migrations_are_transaction_safe() {
         }
     }
 }
+
+/// MCP migrations apply on a fresh database and the eight `down.sql`
+/// files reverse their own columns when reverted in order.
+#[test]
+fn mcp_migrations_up_then_down_round_trip() {
+    let db = ScratchDb::create("mcp");
+    let mut conn = db.connect();
+    run(&mut conn).expect("fresh migrate");
+
+    let cols = text_rows(
+        &mut conn,
+        "SELECT table_name || '.' || column_name AS item \
+         FROM information_schema.columns \
+         WHERE table_schema = 'public' \
+           AND (column_name LIKE 'mcp_%' OR column_name IN \
+                ('decision_id','termination_reason','decision_actor','decision_at')) \
+         ORDER BY 1",
+    );
+    for needle in [
+        "access_rules.mcp_allowed_tools",
+        "access_rules.mcp_hitl_tools",
+        "access_rules.mcp_require_plan_tools",
+        "access_rules.mcp_drift_iam",
+        "proxy_sessions.decision_id",
+    ] {
+        assert!(cols.iter().any(|c| c == needle), "missing {needle}");
+    }
+    let tables = text_rows(
+        &mut conn,
+        "SELECT table_name AS item FROM information_schema.tables \
+         WHERE table_schema = 'public' AND table_name = 'access_contestations'",
+    );
+    assert_eq!(tables, vec!["access_contestations".to_string()]);
+
+    let chk = text_rows(
+        &mut conn,
+        "SELECT pg_get_constraintdef(oid) AS item FROM pg_constraint \
+         WHERE conname = 'assets_asset_type_chk'",
+    );
+    assert!(
+        chk.iter().any(|c| c.contains("'mcp'")),
+        "asset type check must admit mcp: {chk:?}"
+    );
+
+    use diesel::migration::MigrationSource;
+    let source = FileBasedMigrations::from_path(migrations_dir()).expect("migrations dir");
+    let names = MigrationSource::<diesel::pg::Pg>::migrations(&source).expect("list");
+    let mcp_versions: Vec<String> = names
+        .iter()
+        .map(|m| m.name().version().to_string())
+        .filter(|v| {
+            matches!(
+                v.as_str(),
+                "20260726000000"
+                    | "20260726120000"
+                    | "20260727180000"
+                    | "20260728210000"
+                    | "20260822160000"
+                    | "20260822180000"
+                    | "20260904180000"
+                    | "20260913190000"
+            )
+        })
+        .collect();
+    assert_eq!(mcp_versions.len(), 8, "{mcp_versions:?}");
+
+    let mut guard = 0;
+    while tracked_versions(&mut conn)
+        .iter()
+        .any(|v| mcp_versions.contains(v))
+    {
+        conn.revert_last_migration(source.clone()).expect("revert");
+        guard += 1;
+        assert!(guard < 40, "revert loop did not clear MCP versions");
+    }
+
+    let gone = text_rows(
+        &mut conn,
+        "SELECT column_name AS item FROM information_schema.columns \
+         WHERE table_schema = 'public' AND table_name = 'access_rules' \
+           AND column_name = 'mcp_drift_iam'",
+    );
+    assert!(gone.is_empty(), "mcp_drift_iam must be reverted");
+}

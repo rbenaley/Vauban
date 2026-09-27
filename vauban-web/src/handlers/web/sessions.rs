@@ -283,13 +283,17 @@ pub async fn session_detail(
 
     let flash = incoming_flash.flash();
 
-    // Parse session ID manually for graceful error handling
-    let id: i32 = match id_str.parse() {
-        Ok(parsed_id) => parsed_id,
-        Err(_) => {
-            return flash_redirect(flash.error("Invalid session identifier"), "/sessions");
-        }
+    // Integer ids stay the historical list links. UUID is the form
+    // used by My Requests (Contest) and contestation pages.
+    let parsed_id: Option<i32> = id_str.parse().ok();
+    let parsed_uuid = if parsed_id.is_some() {
+        None
+    } else {
+        uuid::Uuid::parse_str(&id_str).ok()
     };
+    if parsed_id.is_none() && parsed_uuid.is_none() {
+        return flash_redirect(flash.error("Invalid session identifier"), "/sessions");
+    }
 
     let user = Some(user_context_from_auth(&auth_user));
     let mut conn = match state.db_pool.get().await {
@@ -307,37 +311,46 @@ pub async fn session_detail(
     use crate::schema::users;
 
     #[allow(clippy::type_complexity)]
-    let session_row: (
-        i32,
-        uuid::Uuid,
-        String,
-        uuid::Uuid,
-        String,
-        String,
-        uuid::Uuid,
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        ipnetwork::IpNetwork,
-        Option<String>,
-        Option<String>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<String>,
-        bool,
-        Option<String>,
-        i64,
-        i64,
-        i32,
-        chrono::DateTime<chrono::Utc>,
-    ) = match proxy_sessions::table
-        .inner_join(schema_assets::table)
-        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::id.eq(id))
-        .select((
+    let loaded: Result<
+        (
+            i32,
+            uuid::Uuid,
+            String,
+            uuid::Uuid,
+            String,
+            String,
+            uuid::Uuid,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            ipnetwork::IpNetwork,
+            Option<String>,
+            Option<String>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<String>,
+            bool,
+            Option<String>,
+            i64,
+            i64,
+            i32,
+            chrono::DateTime<chrono::Utc>,
+        ),
+        diesel::result::Error,
+    > = {
+        let mut rows = proxy_sessions::table
+            .inner_join(schema_assets::table)
+            .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+            .into_boxed();
+        if let Some(id) = parsed_id {
+            rows = rows.filter(proxy_sessions::id.eq(id));
+        } else if let Some(session_uuid) = parsed_uuid {
+            rows = rows.filter(proxy_sessions::uuid.eq(session_uuid));
+        }
+        rows.select((
             proxy_sessions::id,
             proxy_sessions::uuid,
             users::username,
@@ -366,7 +379,8 @@ pub async fn session_detail(
         ))
         .first(&mut conn)
         .await
-    {
+    };
+    let session_row = match loaded {
         Ok(data) => data,
         Err(diesel::result::Error::NotFound) => {
             return flash_redirect(flash.error("Session not found"), "/sessions");
@@ -501,7 +515,7 @@ pub async fn session_detail(
         disconnected_at_raw: s_disconnected_at,
     };
 
-    let base = BaseTemplate::new(format!("Session #{}", id), user.clone(), browser_tz.0)
+    let base = BaseTemplate::new(format!("Session #{}", s_id), user.clone(), browser_tz.0)
         .with_current_path("/sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -1617,6 +1631,7 @@ pub async fn submit_access_request(
         industrial_protocol: None,
         ews_uuid: None,
         tunnel_target_addr: None,
+        expires_at: None,
     };
 
     if let Err(e) = diesel::insert_into(proxy_sessions::table)
@@ -2853,6 +2868,7 @@ pub async fn my_requests(
         Option<chrono::DateTime<chrono::Utc>>,
         Option<String>,
         Option<i32>,
+        Option<String>,
     )> = {
         let mut rows_query = proxy_sessions::table
             .inner_join(schema_assets::table)
@@ -2885,6 +2901,7 @@ pub async fn my_requests(
                 proxy_sessions::approved_at,
                 users::username.nullable(),
                 proxy_sessions::max_session_duration,
+                proxy_sessions::decision_id,
             ))
             .order(proxy_sessions::created_at.desc())
             .limit(window.limit_i64())
@@ -2909,6 +2926,7 @@ pub async fn my_requests(
                 approved_at,
                 approved_by,
                 max_session_duration,
+                decision_id,
             )| {
                 crate::templates::sessions::my_requests::MyRequestItem {
                     uuid: uuid.to_string(),
@@ -2922,6 +2940,7 @@ pub async fn my_requests(
                     approved_at: approved_at.map(|dt| crate::utils::format_local(dt, browser_tz.0)),
                     approved_by,
                     max_session_duration,
+                    decision_id,
                 }
             },
         )
@@ -3524,6 +3543,7 @@ pub async fn recording_detail(
         SessionType::Ssh => "SSH (port 22)",
         SessionType::Rdp => "RDP (port 3389)",
         SessionType::IacsTunnel => "IACS tunnel",
+        SessionType::Mcp => "MCP",
     };
 
     let (status_label, status_pill_class) = status_pill(&s_status);
@@ -3793,6 +3813,32 @@ pub async fn download_recording(
         }
         SessionType::Rdp => stream_rdp_zip(&state, &session_uuid_db, base_dir).await,
         SessionType::IacsTunnel => stream_iacs_pcap_zip(&state, &session_uuid_db, base_dir).await,
+        SessionType::Mcp => {
+            let relative = format!("{}session.mcp.jsonl", base_dir);
+            let result = supervisor
+                .request_recording_file(&session_uuid_db.to_string(), &relative)
+                .await
+                .map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("Supervisor request failed: {}", e))
+                })?;
+            if !result.success {
+                return Err(AppError::NotFound("Recording file missing".to_string()));
+            }
+            let std_file = result.file.ok_or_else(|| {
+                AppError::Internal(anyhow::anyhow!("Supervisor returned success but no FD"))
+            })?;
+            let tokio_file = tokio::fs::File::from_std(std_file);
+            let stream = ReaderStream::with_capacity(tokio_file, 64 * 1024);
+            let filename = format!("{}.mcp.jsonl", session_uuid_db);
+            axum::http::Response::builder()
+                .header(header::CONTENT_TYPE, "application/x-ndjson")
+                .header(
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{}\"", filename),
+                )
+                .body(Body::from_stream(stream))
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
+        }
     }
 }
 

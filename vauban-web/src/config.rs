@@ -248,6 +248,9 @@ pub struct Config {
     /// EWS onboarding flow.
     #[serde(default)]
     pub industrial: IndustrialConfig,
+    /// MCP visit knobs. `enabled = false` hides connect and skips the leaf.
+    #[serde(default)]
+    pub mcp: McpSettings,
     /// White-label / branding configuration. Currently only carries
     /// `[product.brand].name` -- the visible brand displayed in the
     /// top-left corner of every sidebar-bearing page. Defaults to
@@ -776,6 +779,9 @@ pub struct RecordingConfig {
     /// Enable recording of IACS tunnel sessions (PCAP bundle).
     #[serde(default = "default_recording_enabled")]
     pub iacs: bool,
+    /// Enable MCP JSONL recording.
+    #[serde(default = "default_recording_enabled")]
+    pub mcp: bool,
     /// Enable the recording integrity hydrator (bootstrap at boot +
     /// per-call-site enqueue + daily reconciliation cron). Default
     /// true. When false, the Recording Details page falls back to
@@ -898,6 +904,10 @@ impl RecordingConfig {
         self.enabled && self.iacs
     }
 
+    pub fn mcp_recording_enabled(&self) -> bool {
+        self.enabled && self.mcp
+    }
+
     /// Resolve [`recording_daily_cron_timezone`] into a typed IANA zone.
     pub fn daily_cron_timezone(&self) -> Result<chrono_tz::Tz, String> {
         crate::middleware::browser_tz::parse_browser_tz(&self.recording_daily_cron_timezone)
@@ -963,6 +973,7 @@ impl Default for RecordingConfig {
             rdp: default_recording_enabled(),
             ssh: default_recording_enabled(),
             iacs: default_recording_enabled(),
+            mcp: default_recording_enabled(),
             hydration_enabled: default_recording_enabled(),
             hydration_batch_size: default_hydration_batch_size(),
             hydration_missing_meta_grace_secs: default_hydration_missing_meta_grace_secs(),
@@ -1272,6 +1283,53 @@ impl Default for IndustrialConfig {
             max_ews_per_user: Self::default_max_ews_per_user(),
             iacs_tunnel: IacsTunnelConfig::default(),
         }
+    }
+}
+
+/// Web-side `[mcp]` knobs. Extra keys owned by the supervisor are ignored.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct McpSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Host:port advertised to agents for hop 2 (`POST /mcp`).
+    #[serde(default = "McpSettings::default_listen_addr")]
+    pub listen_addr: String,
+    #[serde(default = "McpSettings::default_session_ttl_seconds")]
+    pub session_ttl_seconds: i64,
+    #[serde(default = "McpSettings::default_hitl_pending_ttl_seconds")]
+    pub hitl_pending_ttl_seconds: i64,
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen_addr: Self::default_listen_addr(),
+            session_ttl_seconds: Self::default_session_ttl_seconds(),
+            hitl_pending_ttl_seconds: Self::default_hitl_pending_ttl_seconds(),
+        }
+    }
+}
+
+impl McpSettings {
+    pub fn default_listen_addr() -> String {
+        "127.0.0.1:19443".to_string()
+    }
+
+    pub const fn default_session_ttl_seconds() -> i64 {
+        3600
+    }
+
+    pub fn listen_public_host(&self) -> &str {
+        self.listen_addr.as_str()
+    }
+
+    pub const fn default_hitl_pending_ttl_seconds() -> i64 {
+        900
+    }
+
+    pub fn session_ttl_clamped(&self) -> i64 {
+        self.session_ttl_seconds.clamp(30, 28_800)
     }
 }
 

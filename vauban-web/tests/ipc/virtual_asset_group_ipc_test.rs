@@ -205,6 +205,10 @@ async fn c4_create_access_rule_on_virtual_group() {
         max_session_duration: Some(3600),
         is_active: true,
         priority: 0,
+        mcp_allowed_tools: None,
+        mcp_hitl_tools: None,
+        mcp_require_plan_tools: None,
+        mcp_drift_iam: "suspend_group".to_string(),
     };
 
     let rule = client

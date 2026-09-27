@@ -33,6 +33,10 @@ pub struct AccessRule {
     pub updated_by_id: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub mcp_allowed_tools: Option<Vec<Option<String>>>,
+    pub mcp_hitl_tools: Option<Vec<Option<String>>>,
+    pub mcp_require_plan_tools: Option<Vec<Option<String>>>,
+    pub mcp_drift_iam: String,
 }
 
 impl AccessRule {
@@ -88,6 +92,10 @@ pub struct NewAccessRule {
     pub is_active: bool,
     pub priority: i32,
     pub created_by_id: Option<i32>,
+    pub mcp_allowed_tools: Option<Vec<Option<String>>>,
+    pub mcp_hitl_tools: Option<Vec<Option<String>>>,
+    pub mcp_require_plan_tools: Option<Vec<Option<String>>>,
+    pub mcp_drift_iam: String,
 }
 
 /// Access rule creation request (API).
@@ -176,6 +184,10 @@ mod tests {
             updated_by_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            mcp_allowed_tools: None,
+            mcp_hitl_tools: None,
+            mcp_require_plan_tools: None,
+            mcp_drift_iam: "suspend_group".to_string(),
         }
     }
 

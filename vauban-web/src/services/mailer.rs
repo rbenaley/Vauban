@@ -408,6 +408,11 @@ pub enum EmailEvent {
     /// is informed (auto-offboard does not trigger this notification
     /// -- the user already knows).
     IacsOffboarded(IacsOffboardedEvent),
+    McpHitlPending(McpHitlPendingEvent),
+    McpHitlDecided(McpHitlDecidedEvent),
+    McpContestationOpened(McpContestationOpenedEvent),
+    McpContestationResolved(McpContestationResolvedEvent),
+    McpMandateDrift(McpMandateDriftEvent),
 }
 
 impl EmailEvent {
@@ -427,6 +432,11 @@ impl EmailEvent {
             Self::IacsOnboardApproved(_) => "iacs.onboard_approved",
             Self::IacsOnboardRejected(_) => "iacs.onboard_rejected",
             Self::IacsOffboarded(_) => "iacs.offboarded",
+            Self::McpHitlPending(_) => "mcp.hitl_pending",
+            Self::McpHitlDecided(_) => "mcp.hitl_decided",
+            Self::McpContestationOpened(_) => "mcp.contestation_opened",
+            Self::McpContestationResolved(_) => "mcp.contestation_resolved",
+            Self::McpMandateDrift(_) => "mcp.mandate_drift",
         }
     }
 
@@ -446,6 +456,11 @@ impl EmailEvent {
             Self::IacsOnboardApproved(e) => e.event_id,
             Self::IacsOnboardRejected(e) => e.event_id,
             Self::IacsOffboarded(e) => e.event_id,
+            Self::McpHitlPending(e) => e.event_id,
+            Self::McpHitlDecided(e) => e.event_id,
+            Self::McpContestationOpened(e) => e.event_id,
+            Self::McpContestationResolved(e) => e.event_id,
+            Self::McpMandateDrift(e) => e.event_id,
         }
     }
 
@@ -465,6 +480,11 @@ impl EmailEvent {
             Self::IacsOnboardApproved(e) => &e.recipient,
             Self::IacsOnboardRejected(e) => &e.recipient,
             Self::IacsOffboarded(e) => &e.recipient,
+            Self::McpHitlPending(e) => &e.recipient,
+            Self::McpHitlDecided(e) => &e.recipient,
+            Self::McpContestationOpened(e) => &e.recipient,
+            Self::McpContestationResolved(e) => &e.recipient,
+            Self::McpMandateDrift(e) => &e.recipient,
         }
     }
 
@@ -488,6 +508,11 @@ impl EmailEvent {
             Self::IacsOnboardApproved(e) => render_iacs_onboard_approved(e),
             Self::IacsOnboardRejected(e) => render_iacs_onboard_rejected(e),
             Self::IacsOffboarded(e) => render_iacs_offboarded(e),
+            Self::McpHitlPending(e) => render_mcp_hitl_pending(e),
+            Self::McpHitlDecided(e) => render_mcp_hitl_decided(e),
+            Self::McpContestationOpened(e) => render_mcp_contestation_opened(e),
+            Self::McpContestationResolved(e) => render_mcp_contestation_resolved(e),
+            Self::McpMandateDrift(e) => render_mcp_mandate_drift(e),
         }
     }
 }
@@ -1240,6 +1265,147 @@ fn render_iacs_offboarded(e: &IacsOffboardedEvent) -> Result<RenderedEmail, Rend
         body_text: text,
         body_html: Some(html),
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct McpHitlPendingEvent {
+    pub event_id: Uuid,
+    pub recipient: EmailRecipient,
+    pub requester_username: String,
+    pub asset_name: String,
+    pub tool: String,
+    pub has_mission_seal: bool,
+    pub review_url: String,
+    pub base_url: String,
+    pub from_brand: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct McpHitlDecidedEvent {
+    pub event_id: Uuid,
+    pub recipient: EmailRecipient,
+    pub tool: String,
+    pub asset_name: String,
+    pub decision: String,
+    pub decider_username: String,
+    pub review_url: String,
+    pub base_url: String,
+    pub from_brand: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct McpContestationOpenedEvent {
+    pub event_id: Uuid,
+    pub recipient: EmailRecipient,
+    pub opener_username: String,
+    pub decision_id: String,
+    pub session_uuid: String,
+    pub review_url: String,
+    pub base_url: String,
+    pub from_brand: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct McpContestationResolvedEvent {
+    pub event_id: Uuid,
+    pub recipient: EmailRecipient,
+    pub outcome: String,
+    pub reviewer_username: String,
+    pub decision_id: String,
+    pub review_url: String,
+    pub base_url: String,
+    pub from_brand: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct McpMandateDriftEvent {
+    pub event_id: Uuid,
+    pub recipient: EmailRecipient,
+    pub requester_username: String,
+    pub tool: String,
+    pub reason: String,
+    pub iam_consequence: String,
+    pub session_url: String,
+    pub base_url: String,
+    pub from_brand: String,
+}
+
+fn mcp_plain(
+    brand: &str,
+    base_url: &str,
+    subject: &str,
+    body: &str,
+) -> Result<RenderedEmail, RenderError> {
+    let mut text = render_header(brand);
+    text.push_str(body);
+    text.push('\n');
+    text.push_str(&render_footer(base_url));
+    Ok(RenderedEmail {
+        subject: subject.to_string(),
+        body_text: text,
+        body_html: None,
+    })
+}
+
+fn render_mcp_hitl_pending(e: &McpHitlPendingEvent) -> Result<RenderedEmail, RenderError> {
+    mcp_plain(
+        &e.from_brand,
+        &e.base_url,
+        "[Vauban] MCP tool approval required",
+        &format!(
+            "{} requested MCP tool {} on {}.\nReview: {}\n",
+            e.requester_username, e.tool, e.asset_name, e.review_url
+        ),
+    )
+}
+
+fn render_mcp_hitl_decided(e: &McpHitlDecidedEvent) -> Result<RenderedEmail, RenderError> {
+    mcp_plain(
+        &e.from_brand,
+        &e.base_url,
+        "[Vauban] MCP tool decision",
+        &format!(
+            "{} on {}: {}\n{}\n",
+            e.tool, e.asset_name, e.decision, e.review_url
+        ),
+    )
+}
+
+fn render_mcp_contestation_opened(
+    e: &McpContestationOpenedEvent,
+) -> Result<RenderedEmail, RenderError> {
+    mcp_plain(
+        &e.from_brand,
+        &e.base_url,
+        "[Vauban] MCP contestation opened",
+        &format!("Decision {}.\n{}\n", e.decision_id, e.review_url),
+    )
+}
+
+fn render_mcp_contestation_resolved(
+    e: &McpContestationResolvedEvent,
+) -> Result<RenderedEmail, RenderError> {
+    mcp_plain(
+        &e.from_brand,
+        &e.base_url,
+        "[Vauban] MCP contestation resolved",
+        &format!(
+            "{} by {} ({}).\n{}\n",
+            e.outcome, e.reviewer_username, e.decision_id, e.review_url
+        ),
+    )
+}
+
+fn render_mcp_mandate_drift(e: &McpMandateDriftEvent) -> Result<RenderedEmail, RenderError> {
+    mcp_plain(
+        &e.from_brand,
+        &e.base_url,
+        "[Vauban] MCP mandate drift",
+        &format!(
+            "{} / {}.\n{}\n",
+            e.requester_username, e.tool, e.session_url
+        ),
+    )
 }
 
 // ============================================================================

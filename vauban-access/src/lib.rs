@@ -19,6 +19,7 @@ pub mod admin_count;
 pub mod db;
 pub mod handlers;
 pub mod iacs;
+pub mod mcp_pdp;
 pub mod secrets;
 pub mod virtual_group;
 pub mod virtual_secret_group;

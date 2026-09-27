@@ -16,6 +16,7 @@ fn services() -> impl Strategy<Value = Service> {
         Just(Service::ProxyRdp),
         Just(Service::ProxyIacs),
         Just(Service::Mailer),
+        Just(Service::ProxyMcp),
         Just(Service::Web),
     ]
 }

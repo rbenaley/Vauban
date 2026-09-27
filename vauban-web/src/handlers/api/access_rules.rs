@@ -153,6 +153,10 @@ pub async fn create_access_rule(
         max_session_duration: request.max_session_duration,
         is_active: true,
         priority: request.priority,
+        mcp_allowed_tools: None,
+        mcp_hitl_tools: None,
+        mcp_require_plan_tools: None,
+        mcp_drift_iam: "suspend_group".to_string(),
     };
 
     let info = state
@@ -223,6 +227,10 @@ pub async fn update_access_rule(
         max_session_duration: request.max_session_duration.or(info.max_session_duration),
         is_active: request.is_active.unwrap_or(info.is_active),
         priority: request.priority.unwrap_or(info.priority),
+        mcp_allowed_tools: info.mcp_allowed_tools,
+        mcp_hitl_tools: info.mcp_hitl_tools,
+        mcp_require_plan_tools: info.mcp_require_plan_tools,
+        mcp_drift_iam: info.mcp_drift_iam,
     };
 
     let updated = state

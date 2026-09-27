@@ -15,5 +15,6 @@ ALTER TABLE assets ADD CONSTRAINT assets_asset_type_chk CHECK (asset_type IN (
     'iacs_bacnet_sc',
     'iacs_dnp3',
     'iacs_iec61850',
-    'iacs_tcp'
+    'iacs_tcp',
+    'mcp'
 ));

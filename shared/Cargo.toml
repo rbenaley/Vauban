@@ -53,6 +53,7 @@ getrandom = { workspace = true, optional = true }
 # CIDR parsing/matching for the optional `client-acl` module (global
 # client IP allowlist). Same version as vauban-web/supervisor/access.
 ipnetwork = { version = "0.21", optional = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
@@ -65,7 +66,7 @@ correlated-ipc = ["dep:tokio"]
 # binary. Activate this feature in every protocol proxy that opens
 # upstream sessions on behalf of a user. Also enables `correlated-ipc`
 # so RbacClient and web peers share one AsyncFd pump.
-access-guard = ["dep:tokio", "correlated-ipc"]
+access-guard = ["dep:tokio", "correlated-ipc", "mcp-mandate"]
 # Tiny `shared::tasks::spawn_periodic` helper (Handle-based, no
 # thread-local footgun). Activate in any crate that runs ticker-driven
 # background work. tokio-free crates (vault, audit, auth) MUST NOT
@@ -97,6 +98,8 @@ iacs-protocol = []
 # Tokio-free pure matching. Crates that never face clients (vault,
 # audit, auth) MUST NOT enable this.
 client-acl = ["dep:ipnetwork"]
+json-redact = ["dep:serde_json"]
+mcp-mandate = ["dep:blake3", "dep:serde_json"]
 
 # Capsicum bindings for FreeBSD
 [target.'cfg(target_os = "freebsd")'.dependencies]
@@ -145,3 +148,13 @@ required-features = ["client-acl"]
 [[test]]
 name = "access_guard_legacy_iacs_proptest"
 required-features = ["access-guard"]
+
+[[test]]
+name = "mcp_policy_proptest"
+
+[[test]]
+name = "mcp_mandate_battle"
+required-features = ["mcp-mandate"]
+
+[[test]]
+name = "mcp_source_invariants"

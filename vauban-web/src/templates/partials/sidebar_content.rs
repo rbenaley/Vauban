@@ -122,6 +122,7 @@ mod tests {
             iacs_read: true,
             iacs_manage: true,
             assets_connect_iacs: true,
+            assets_connect_mcp: true,
             vault_secrets_read: true,
             vault_secrets_manage: true,
         }

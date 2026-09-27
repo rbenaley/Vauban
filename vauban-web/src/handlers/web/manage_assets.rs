@@ -37,7 +37,9 @@ pub async fn asset_create_form(
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     jar: CookieJar,
+    incoming_flash: IncomingFlash,
     browser_tz: BrowserTz,
+    query: axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::assets::asset_create::{AssetCreateForm, AssetCreateTemplate};
 
@@ -48,8 +50,17 @@ pub async fn asset_create_form(
     }
 
     let user = Some(user_context_from_auth(&auth_user));
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
     let base = BaseTemplate::new("New Asset".to_string(), user.clone(), browser_tz.0)
-        .with_current_path("/assets/manage");
+        .with_current_path("/assets/manage")
+        .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -60,10 +71,20 @@ pub async fn asset_create_form(
         .map(|c| c.value().to_string())
         .unwrap_or_default();
 
+    let q = &query.0;
     let form = AssetCreateForm {
-        port: 22,
-        asset_type: "ssh".to_string(),
-        status: "online".to_string(),
+        name: q.get("name").cloned().unwrap_or_default(),
+        hostname: q.get("hostname").cloned().unwrap_or_default(),
+        port: q.get("port").and_then(|p| p.parse().ok()).unwrap_or(22),
+        asset_type: q
+            .get("asset_type")
+            .cloned()
+            .unwrap_or_else(|| "ssh".to_string()),
+        status: q
+            .get("status")
+            .cloned()
+            .unwrap_or_else(|| "online".to_string()),
+        description: q.get("description").cloned(),
         ..Default::default()
     };
 
@@ -84,6 +105,19 @@ pub async fn asset_create_form(
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
+}
+
+fn create_form_draft_path(form: &CreateAssetWebForm) -> String {
+    let mut ser = url::form_urlencoded::Serializer::new(String::from("/assets/manage/new?"));
+    ser.append_pair("name", form.name.trim());
+    ser.append_pair("hostname", form.hostname.trim());
+    ser.append_pair("port", &form.port.to_string());
+    ser.append_pair("asset_type", form.asset_type.trim());
+    ser.append_pair("status", form.status.trim());
+    if let Some(desc) = form.description.as_deref().filter(|s| !s.is_empty()) {
+        ser.append_pair("description", desc);
+    }
+    ser.finish()
 }
 
 /// Form data for creating an asset via web form (admin zone).
@@ -156,7 +190,7 @@ pub async fn create_asset_web(
         return flash_redirect(flash.error("Hostname is required"), "/assets/manage/new");
     }
     if let Err(msg) = super::validate_hostname_format(form.hostname.trim()) {
-        return flash_redirect(flash.error(msg), "/assets/manage/new");
+        return flash_redirect(flash.error(msg), &create_form_draft_path(&form));
     }
     if form.port < 1 || form.port > 65535 {
         return flash_redirect(
@@ -410,7 +444,7 @@ pub async fn create_asset_web(
             diesel::result::DatabaseErrorKind::UniqueViolation,
             _,
         )) => flash_redirect(
-            flash.error("An asset with this name already exists"),
+            flash.error("An asset with this name already exists. Choose a different name"),
             "/assets/manage/new",
         ),
         Err(e) => {
@@ -1742,7 +1776,7 @@ pub async fn update_asset_web(
             _,
         )) => htmx_or_flash_redirect(
             &headers,
-            flash.error("An asset with this name already exists"),
+            flash.error("An asset with this name already exists. Choose a different name"),
             &format!("/assets/manage/{asset_uuid}/edit"),
         ),
         Err(e) => {

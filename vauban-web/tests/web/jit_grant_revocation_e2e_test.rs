@@ -1035,6 +1035,7 @@ async fn e2e_revoked_status_is_wired_in_ui_helpers() {
         approved_at: None,
         approved_by: None,
         max_session_duration: None,
+        decision_id: None,
     };
     assert_eq!(item.status_label(), "Revoked");
     assert!(!item.is_approved(), "revoked grant must not be connectable");

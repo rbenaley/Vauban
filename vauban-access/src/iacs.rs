@@ -115,6 +115,7 @@ fn parse_uuid_or_ews_not_found(s: &str) -> Result<Uuid, AccessResponse> {
     })
 }
 
+#[allow(clippy::result_large_err)]
 async fn load_actor(
     conn: &mut DbConnection,
     actor_user_uuid: &str,

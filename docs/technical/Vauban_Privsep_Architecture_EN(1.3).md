@@ -26,6 +26,17 @@
 > after a linked restart. Proxies and `vauban-web` exit 100 on a dead
 > peer pipe instead of spinning or running degraded. See §7.5.
 >
+> **1.3 amended 27 September 2026 (crates 0.9.44):** `vauban-proxy-mcp`
+> is a Capsicum leaf (uid 910). It binds its listener, then enters
+> the sandbox, and reaches upstream MCP servers only through a
+> supervisor-brokered FD. There is no HTTP control plane and no
+> free `connect` after sandbox entry. Linked restart closure is
+> `{web, proxy_ssh, proxy_rdp, proxy_mcp}`. `[mcp].enabled` stays
+> false until an operator turns the leaf on. The sandbox is
+> `shared::sandbox` on every OS that ships a backend (FreeBSD
+> Capsicum, Linux Landlock+seccomp, OpenBSD pledge); production
+> does not boot a no-op backend.
+>
 > **1.3 amended 23 September 2026 (no version bump):** the process
 > sandbox is `shared::sandbox`, not a FreeBSD-only Capsicum call.
 > Linux enters Landlock + seccomp-bpf; OpenBSD enters pledge + unveil.

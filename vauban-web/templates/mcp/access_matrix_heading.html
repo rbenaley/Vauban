@@ -1,0 +1,11 @@
+<div class="flex items-center gap-2">
+    {% if !section.badge_label.is_empty() %}
+    <span class="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-purple-100 dark:bg-purple-900/50">
+        <span class="text-xs font-bold tracking-tight text-purple-600 dark:text-purple-400">{{ section.badge_label }}</span>
+    </span>
+    {% endif %}
+    <div>
+        <p class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ section.heading }}</p>
+        <p class="text-xs text-gray-500 dark:text-gray-400">{{ section.tools.len() }} tools</p>
+    </div>
+</div>

@@ -43,6 +43,7 @@ pub enum SessionType {
     Ssh,
     Rdp,
     IacsTunnel,
+    Mcp,
 }
 
 impl SessionType {
@@ -51,6 +52,7 @@ impl SessionType {
             Self::Ssh => "ssh",
             Self::Rdp => "rdp",
             Self::IacsTunnel => "iacs_tunnel",
+            Self::Mcp => "mcp",
         }
     }
 
@@ -61,6 +63,7 @@ impl SessionType {
         match s {
             "rdp" => Self::Rdp,
             "iacs_tunnel" => Self::IacsTunnel,
+            "mcp" => Self::Mcp,
             _ => Self::Ssh,
         }
     }
@@ -73,6 +76,7 @@ impl SessionType {
             "ssh" => Some(Self::Ssh),
             "rdp" => Some(Self::Rdp),
             "iacs_tunnel" => Some(Self::IacsTunnel),
+            "mcp" => Some(Self::Mcp),
             _ => None,
         }
     }
@@ -83,8 +87,12 @@ impl SessionType {
     }
 
     /// Exhaustive enumeration of every variant.
-    pub const ALL: &'static [SessionType] =
-        &[SessionType::Ssh, SessionType::Rdp, SessionType::IacsTunnel];
+    pub const ALL: &'static [SessionType] = &[
+        SessionType::Ssh,
+        SessionType::Rdp,
+        SessionType::IacsTunnel,
+        SessionType::Mcp,
+    ];
 }
 
 impl std::fmt::Display for SessionType {
@@ -137,6 +145,8 @@ pub enum SessionStatus {
     Orphaned,
     Connecting,
     Active,
+    /// MCP envelope pause. The visit still holds its brokered FD.
+    Suspended,
     Disconnected,
     Terminated,
     Failed,
@@ -170,6 +180,7 @@ impl SessionStatus {
         Self::Orphaned,
         Self::Connecting,
         Self::Active,
+        Self::Suspended,
         Self::Disconnected,
         Self::Terminated,
         Self::Failed,
@@ -188,6 +199,7 @@ impl SessionStatus {
             Self::Orphaned => "orphaned",
             Self::Connecting => "connecting",
             Self::Active => "active",
+            Self::Suspended => "suspended",
             Self::Disconnected => "disconnected",
             Self::Terminated => "terminated",
             Self::Failed => "failed",
@@ -209,6 +221,7 @@ impl SessionStatus {
             Self::Orphaned => "Orphaned",
             Self::Connecting => "Connecting",
             Self::Active => "Active",
+            Self::Suspended => "Suspended",
             Self::Disconnected => "Disconnected",
             Self::Terminated => "Terminated",
             Self::Failed => "Failed",
@@ -371,6 +384,11 @@ pub struct ProxySession {
     /// Column order must match `schema::proxy_sessions` (appended after
     /// `revoked_at` by migration `20260722000000_recording_lossy_flag`).
     pub recording_lossy: bool,
+    pub decision_id: Option<String>,
+    pub termination_reason: Option<String>,
+    pub decision_actor: Option<String>,
+    pub decision_at: Option<DateTime<Utc>>,
+    pub decision_source_group_id: Option<i32>,
 }
 
 /// New session for insertion.
@@ -400,6 +418,7 @@ pub struct NewProxySession {
     /// IACS-only. May be `None` while in `waiting_client`; filled on
     /// transition to `tunnel_active`.
     pub tunnel_target_addr: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 impl ProxySession {
@@ -486,6 +505,11 @@ mod tests {
             revoked_by_id: None,
             revoked_at: None,
             recording_lossy: false,
+            decision_id: None,
+            termination_reason: None,
+            decision_actor: None,
+            decision_at: None,
+            decision_source_group_id: None,
         }
     }
 
@@ -518,10 +542,13 @@ mod tests {
     fn test_session_type_all_is_exhaustive() {
         for variant in SessionType::ALL {
             match *variant {
-                SessionType::Ssh | SessionType::Rdp | SessionType::IacsTunnel => {}
+                SessionType::Ssh
+                | SessionType::Rdp
+                | SessionType::IacsTunnel
+                | SessionType::Mcp => {}
             }
         }
-        assert_eq!(SessionType::ALL.len(), 3);
+        assert_eq!(SessionType::ALL.len(), 4);
     }
 
     #[test]
@@ -881,6 +908,7 @@ mod tests {
             industrial_protocol: None,
             ews_uuid: None,
             tunnel_target_addr: None,
+            expires_at: None,
         };
 
         let debug_str = format!("{:?}", new_session);
@@ -907,6 +935,7 @@ mod tests {
             industrial_protocol: None,
             ews_uuid: None,
             tunnel_target_addr: None,
+            expires_at: None,
         };
 
         let cloned = new_session.clone();

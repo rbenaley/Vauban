@@ -19,6 +19,7 @@ pub const FORMAT_ASCIICAST_V2: &str = "asciicast-v2";
 pub const FORMAT_FMP4_DASH: &str = "fmp4-dash";
 pub const FORMAT_FMP4_FLAT: &str = "fmp4-flat";
 pub const FORMAT_PCAP_BUNDLE: &str = "pcap-bundle";
+pub const FORMAT_MCP_JSONL: &str = "mcp-jsonl-v1";
 
 #[derive(Debug, Deserialize)]
 struct SshMeta {
@@ -61,6 +62,15 @@ struct IacsChannelMeta {
     blake3_hex: String,
     file_size: u64,
     packet_count: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct McpJsonlMeta {
+    format: Option<String>,
+    blake3_hex: String,
+    total_bytes: u64,
+    duration_ms: u64,
+    event_count: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -467,6 +477,28 @@ pub fn parse_meta(session_kind: SessionKind, buf: &str) -> Result<IntegrityBundl
                 width: 0,
                 height: 0,
                 segment_count: Some(meta.channels.len() as i32),
+                codec: None,
+            })
+        }
+        SessionKind::Mcp => {
+            let meta: McpJsonlMeta =
+                serde_json::from_str(buf).map_err(|e| format!("mcp meta.json parse: {e}"))?;
+            if !is_valid_blake3_hex(&meta.blake3_hex) {
+                return Err("mcp meta.json: invalid blake3_hex".to_string());
+            }
+            let format = meta.format.unwrap_or_else(|| FORMAT_MCP_JSONL.to_string());
+            if format != FORMAT_MCP_JSONL {
+                return Err(format!("mcp meta.json: unexpected format {format}"));
+            }
+            Ok(IntegrityBundle {
+                blake3_hex: meta.blake3_hex,
+                size_bytes: meta.total_bytes as i64,
+                duration_ms: meta.duration_ms as i64,
+                event_count: Some(meta.event_count as i32),
+                format,
+                width: 0,
+                height: 0,
+                segment_count: None,
                 codec: None,
             })
         }

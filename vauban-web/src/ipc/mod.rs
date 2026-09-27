@@ -10,6 +10,7 @@ pub mod auth;
 pub mod clients;
 pub mod correlated;
 pub mod proxy_iacs;
+pub mod proxy_mcp;
 pub mod proxy_rdp;
 pub mod proxy_ssh;
 pub mod pump;
@@ -25,6 +26,10 @@ pub use audit::{AuditClient, AuditEvent, CRITICAL_ACK_TIMEOUT_SECS};
 pub use auth::AuthIpcClient;
 pub use clients::*;
 pub use proxy_iacs::{IacsTunnelOpenRequest, IacsTunnelOpened, ProxyIacsClient};
+pub use proxy_mcp::{
+    McpDiscoverRequest, McpHitlPendingEntry, McpSessionOpenRequest, McpSessionOpened,
+    McpSessionUpdateRequest, ProxyMcpClient,
+};
 pub use proxy_rdp::{CertFetchIdentity, ProxyRdpClient, RdpSessionOpenRequest, RdpSessionOpened};
 pub use proxy_ssh::{
     HostKeyFetchIdentity, ProxySshClient, SshSessionOpenRequest, SshSessionOpened,

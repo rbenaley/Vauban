@@ -5,7 +5,7 @@
 # Usage: apply_privsep_layout <prefix> <layout.list>
 
 # Service accounts created by +PRE_INSTALL (keep in lock-step with ALL).
-SVC_USERS="vb-audit vb-vault vb-access vb-auth vb-ssh vb-rdp vb-web vb-iacs vb-mailer"
+SVC_USERS="vb-audit vb-vault vb-access vb-auth vb-ssh vb-rdp vb-web vb-iacs vb-mailer vb-mcp"
 
 _acl_type=""
 

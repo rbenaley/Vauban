@@ -169,8 +169,8 @@ fn user_zone_assets_handler_has_no_crud_or_admin_gate() {
 
     let forbidden_mutations: Vec<String> = vec![
         format!("insert{}into{}assets::table", "_", "("),
-        format!("diesel::update(assets::table"),
-        format!("diesel::delete(assets::table"),
+        "diesel::update(assets::table".to_string(),
+        "diesel::delete(assets::table".to_string(),
         format!("perms.assets{}manage", "_"),
         format!("AppError::forbidden(\"assets:{}\")", "manage"),
     ];

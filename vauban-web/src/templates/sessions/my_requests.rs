@@ -17,6 +17,9 @@ pub struct MyRequestItem {
     pub approved_at: Option<String>,
     pub approved_by: Option<String>,
     pub max_session_duration: Option<i32>,
+    /// MCP access decision stamped on a terminated visit. Present only
+    /// when the subject may open a contestation.
+    pub decision_id: Option<String>,
 }
 
 impl MyRequestItem {
@@ -71,6 +74,7 @@ mod tests {
             approved_at: None,
             approved_by: None,
             max_session_duration: duration,
+            decision_id: None,
         }
     }
 

@@ -1387,7 +1387,7 @@ fn encode_region_as_png(
         let row_start = (row * fb_width + x) * 4;
         let row_end = row_start + w * 4;
         if row_end <= fb.len() {
-            for pixel in fb[row_start..row_end].chunks_exact(4) {
+            for pixel in fb[row_start..row_end].as_chunks::<4>().0 {
                 region_buf.push(pixel[0]); // R
                 region_buf.push(pixel[1]); // G
                 region_buf.push(pixel[2]); // B
@@ -4469,7 +4469,7 @@ mod tests {
             255, 255, 255, 0, // white, alpha=0
         ];
         let mut rgb_buf = Vec::with_capacity((w * h * 3) as usize);
-        for pixel in rgba_fb.chunks_exact(4) {
+        for pixel in rgba_fb.as_chunks::<4>().0 {
             rgb_buf.push(pixel[0]);
             rgb_buf.push(pixel[1]);
             rgb_buf.push(pixel[2]);

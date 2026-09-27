@@ -81,6 +81,10 @@ pub struct SupervisorConfig {
     ///      (test/dev only).
     #[serde(default)]
     pub industrial: IndustrialConfig,
+    /// MCP leaf. Spawned only when `enabled` is true. Production keeps
+    /// `allow_loopback_targets` false so the broker refuses 127.0.0.0/8.
+    #[serde(default)]
+    pub mcp: McpConfig,
     /// Security configuration shared with vauban-web ([security] block).
     ///
     /// The supervisor only consumes `allowed_client_networks`: it validates
@@ -847,6 +851,40 @@ fn default_industrial_enabled() -> bool {
     false
 }
 
+/// `[mcp]` block consumed by the supervisor (spawn gate + broker guards).
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_mcp_listen_addr")]
+    pub listen_addr: String,
+    #[serde(default)]
+    pub allow_loopback_targets: bool,
+}
+
+fn default_mcp_listen_addr() -> String {
+    "127.0.0.1:19443".to_string()
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen_addr: default_mcp_listen_addr(),
+            allow_loopback_targets: false,
+        }
+    }
+}
+
+impl McpConfig {
+    pub fn listen_port(&self) -> u16 {
+        self.listen_addr
+            .rsplit_once(':')
+            .and_then(|(_, p)| p.parse().ok())
+            .unwrap_or(19443)
+    }
+}
+
 impl Default for IndustrialConfig {
     fn default() -> Self {
         Self {
@@ -1382,6 +1420,7 @@ impl SupervisorConfig {
             "proxy_ssh",  // Depends on access, vault, audit
             "proxy_rdp",  // Depends on access, vault, audit
             "proxy_iacs", // Depends on access, audit (no vault: no target credentials)
+            "proxy_mcp",  // Depends on access, vault, audit
             "web",        // Depends on auth, access, audit
             "mailer",     // Sealed leaf: outbox drain + SMTP (no TOPOLOGY peers)
         ]
@@ -1430,7 +1469,7 @@ mod tests {
 
         assert!(config.environment.is_development());
         assert!(!config.supervisor.privsep);
-        assert_eq!(config.services.len(), 9);
+        assert_eq!(config.services.len(), 10);
     }
 
     #[test]
@@ -1629,10 +1668,10 @@ mod tests {
         let config = test_config();
         let order = config.startup_order();
 
-        assert_eq!(order.len(), 9);
+        assert_eq!(order.len(), 10);
         assert_eq!(order[0], "audit");
-        assert_eq!(order[7], "web");
-        assert_eq!(order[8], "mailer");
+        assert_eq!(order[8], "web");
+        assert_eq!(order[9], "mailer");
     }
 
     #[test]

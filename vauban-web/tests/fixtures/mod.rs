@@ -1797,6 +1797,10 @@ pub async fn create_test_access_rule(
         is_active: true,
         priority: 0,
         created_by_id: None,
+        mcp_allowed_tools: None,
+        mcp_hitl_tools: None,
+        mcp_require_plan_tools: None,
+        mcp_drift_iam: "suspend_group".to_string(),
     };
 
     unwrap_ok!(
@@ -1856,6 +1860,10 @@ pub async fn create_test_access_rule_with_constraints(
         is_active: true,
         priority: 0,
         created_by_id: None,
+        mcp_allowed_tools: None,
+        mcp_hitl_tools: None,
+        mcp_require_plan_tools: None,
+        mcp_drift_iam: "suspend_group".to_string(),
     };
 
     unwrap_ok!(
@@ -1910,6 +1918,10 @@ pub async fn create_expired_access_rule(
         is_active: true,
         priority: 0,
         created_by_id: None,
+        mcp_allowed_tools: None,
+        mcp_hitl_tools: None,
+        mcp_require_plan_tools: None,
+        mcp_drift_iam: "suspend_group".to_string(),
     };
 
     unwrap_ok!(
@@ -1964,6 +1976,10 @@ pub async fn create_future_access_rule(
         is_active: true,
         priority: 0,
         created_by_id: None,
+        mcp_allowed_tools: None,
+        mcp_hitl_tools: None,
+        mcp_require_plan_tools: None,
+        mcp_drift_iam: "suspend_group".to_string(),
     };
 
     unwrap_ok!(
@@ -2018,6 +2034,10 @@ pub async fn create_inactive_access_rule(
         is_active: false,
         priority: 0,
         created_by_id: None,
+        mcp_allowed_tools: None,
+        mcp_hitl_tools: None,
+        mcp_require_plan_tools: None,
+        mcp_drift_iam: "suspend_group".to_string(),
     };
 
     unwrap_ok!(

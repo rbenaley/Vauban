@@ -79,6 +79,15 @@ fn respawn_decision_references_exit_code_respawn() {
 }
 
 #[test]
+fn web_linked_group_contains_proxy_mcp() {
+    let prod = prod_source();
+    assert!(
+        prod.contains("&[\"web\", \"proxy_mcp\"]"),
+        "LINKED_RESTART_GROUPS must pair web with proxy_mcp"
+    );
+}
+
+#[test]
 fn watchdog_uses_linked_group_keys() {
     let body = fn_body(SUPERVISOR_MAIN, "fn watchdog_loop(");
     assert!(

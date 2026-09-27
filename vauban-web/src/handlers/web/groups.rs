@@ -951,6 +951,8 @@ pub async fn remove_group_member_web(
         }
     };
 
+    crate::services::access_decision::stamp_live_mcp_source_group(&state, user_id, group_info.id)
+        .await;
     match client.remove_group_member(group_info.id, user_id).await {
         Ok(_) => {
             crate::services::emit_audit(

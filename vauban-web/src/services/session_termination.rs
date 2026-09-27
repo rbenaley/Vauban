@@ -58,6 +58,7 @@ pub async fn terminate_live_session(
         SessionType::Ssh => state.config.recording.ssh_recording_enabled(),
         SessionType::Rdp => state.config.recording.rdp_recording_enabled(),
         SessionType::IacsTunnel => state.config.recording.iacs_recording_enabled(),
+        SessionType::Mcp => state.config.recording.mcp_recording_enabled(),
     };
 
     let updated_session = if is_recording {
@@ -163,6 +164,32 @@ pub async fn terminate_live_session(
                 .broadcast
                 .send_raw(&channel_name, payload.to_string())
                 .await;
+        }
+        SessionType::Mcp => {
+            if let Some(ref proxy) = state.proxy_mcp
+                && let Err(e) = proxy.terminate_session(&session_uuid_str, reason)
+            {
+                tracing::warn!(
+                    session_uuid = %session_uuid_str,
+                    error = %e,
+                    "mcp: terminate IPC dispatch failed"
+                );
+            }
+            let decision_id = crate::services::access_decision::mint_decision_id();
+            let _ =
+                diesel::update(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session.uuid)))
+                    .set(proxy_sessions::decision_id.eq(&decision_id))
+                    .execute(&mut conn)
+                    .await;
+            crate::services::access_decision::emit_mcp_access_decision(
+                state,
+                &decision_id,
+                &session_uuid_str,
+                None,
+                reason,
+                "terminate_live_session",
+            )
+            .await;
         }
     }
 

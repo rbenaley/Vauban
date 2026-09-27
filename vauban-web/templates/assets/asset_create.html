@@ -75,13 +75,12 @@
        handled by EWS public keys, see ews table). #}
     <form action="/assets/manage/new" method="POST" class="space-y-6"
           @submit="
-              if (isIacs) {
-                  /* IACS assets carry NO per-asset credentials. Strip every
-                     auth-related field from the submission BEFORE the swap
-                     below so neither `ssh_auth_type=password` nor a stray
-                     `ssh_username` lands on the backend (validate_auth_inputs
-                     would otherwise refuse the IACS asset row). */
+              if (isIacs || isMcp) {
+                  /* IACS and MCP assets carry no SSH secret on this form.
+                     Clear `required` before disable so a hidden Secret
+                     cannot block submit. */
                   $el.querySelectorAll('[data-iacs-strip]').forEach(function (el) {
+                      el.required = false;
                       el.disabled = true;
                   });
               }
@@ -98,8 +97,10 @@
               rdpAuthMode: '{{ form.rdp_auth_mode.as_deref().unwrap_or("ntlm") }}',
               keySource: '{{ form.ssh_key_source.as_deref().unwrap_or("generated") }}',
               username: '{{ form.ssh_username.as_deref().unwrap_or("root") }}',
+              submitError: '',
               get isIacs() { return this.assetType.startsWith('iacs_'); },
-              get isIacsTcp() { return this.assetType === 'iacs_tcp'; }
+              get isIacsTcp() { return this.assetType === 'iacs_tcp'; },
+              get isMcp() { return this.assetType === 'mcp'; }
           }"
           x-effect="if (assetType === 'rdp' && authType !== 'password') { authType = 'password' }">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
@@ -189,7 +190,8 @@
         </div>
 
         <!-- Authentication Settings (protocol-aware) -->
-        <div x-show="!isIacs" x-cloak class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <p x-show="submitError" x-cloak class="text-sm text-red-600" x-text="submitError"></p>
+        <div x-show="!isIacs && !isMcp" x-cloak class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
             <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
                 <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Authentication</h3>
                 <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Configure credentials for connecting to this asset.</p>
@@ -241,7 +243,7 @@
                            data-iacs-strip
                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
-                           :required="!isIacs && (assetType === 'rdp' || authType === 'password')"
+                           :required="!isIacs && !isMcp && (assetType === 'rdp' || authType === 'password')"
                            placeholder="Enter secret">
                     <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Secret used to authenticate against the target system. Required for RDP and for SSH password authentication.</p>
                 </div>

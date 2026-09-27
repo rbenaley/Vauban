@@ -111,6 +111,7 @@ async fn check_rbac_staff_grants_admin_set_only() {
         ("assets", "read_all"),
         ("assets", "manage"),
         ("assets", "connect_iacs"),
+        ("assets", "connect_mcp"),
         ("sessions", "read"),
         ("sessions", "write"),
         ("sessions", "supervise"),
@@ -160,6 +161,7 @@ async fn check_rbac_user_grants_only_self_serve_set() {
     let user_allowed: &[(&str, &str)] = &[
         ("assets", "read"),
         ("assets", "connect_iacs"),
+        ("assets", "connect_mcp"),
         ("profile", "read"),
         ("profile", "write"),
         ("sessions", "read"),
@@ -617,6 +619,7 @@ const TRACKED_PERMS: &[(&str, &str)] = &[
     ("iacs", "read"),
     ("iacs", "manage"),
     ("assets", "connect_iacs"),
+    ("assets", "connect_mcp"),
     ("vault_secrets", "read"),
     ("vault_secrets", "manage"),
 ];
@@ -648,6 +651,7 @@ async fn manual_load(state: &vauban_web::AppState, user: &AuthUser) -> Permissio
         iacs_read: check_rbac(state, user, "iacs", "read").await,
         iacs_manage: check_rbac(state, user, "iacs", "manage").await,
         assets_connect_iacs: check_rbac(state, user, "assets", "connect_iacs").await,
+        assets_connect_mcp: check_rbac(state, user, "assets", "connect_mcp").await,
         vault_secrets_read: check_rbac(state, user, "vault_secrets", "read").await,
         vault_secrets_manage: check_rbac(state, user, "vault_secrets", "manage").await,
     }
@@ -674,6 +678,7 @@ async fn build_state_from(app: &TestApp) -> vauban_web::AppState {
         ssh_proxy: None,
         rdp_proxy: None,
         proxy_iacs: None,
+        proxy_mcp: None,
         supervisor: None,
         vault_client: None,
         audit_client: None,

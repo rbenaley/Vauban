@@ -7,6 +7,7 @@ pub mod audit;
 pub mod base;
 pub mod dashboard;
 pub mod iacs;
+pub mod mcp;
 pub mod partials;
 pub mod secrets;
 pub mod sessions;

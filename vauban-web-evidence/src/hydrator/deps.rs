@@ -12,6 +12,7 @@ pub enum SessionKind {
     Ssh,
     Rdp,
     Iacs,
+    Mcp,
 }
 
 /// Row selected for hydration (`recording_finalized_at IS NULL`).

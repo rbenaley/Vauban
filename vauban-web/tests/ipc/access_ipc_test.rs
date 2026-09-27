@@ -229,6 +229,10 @@ async fn test_ipc_create_and_get_access_rule() {
         max_session_duration: None,
         is_active: true,
         priority: 10,
+        mcp_allowed_tools: None,
+        mcp_hitl_tools: None,
+        mcp_require_plan_tools: None,
+        mcp_drift_iam: "suspend_group".to_string(),
     };
 
     let rule = client
@@ -365,6 +369,10 @@ async fn test_ipc_check_access_allowed_and_protocol_filter() {
         max_session_duration: None,
         is_active: true,
         priority: 0,
+        mcp_allowed_tools: None,
+        mcp_hitl_tools: None,
+        mcp_require_plan_tools: None,
+        mcp_drift_iam: "suspend_group".to_string(),
     };
     let rule = client
         .create_access_rule(data, None)
@@ -427,6 +435,10 @@ async fn test_ipc_list_accessible_groups() {
         max_session_duration: None,
         is_active: true,
         priority: 0,
+        mcp_allowed_tools: None,
+        mcp_hitl_tools: None,
+        mcp_require_plan_tools: None,
+        mcp_drift_iam: "suspend_group".to_string(),
     };
     let rule = client
         .create_access_rule(data, None)

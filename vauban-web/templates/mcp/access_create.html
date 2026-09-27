@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}New MCP Access Rule - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <nav class="flex" aria-label="Breadcrumb">
+                <ol class="flex items-center space-x-2">
+                    <li><a href="/sessions/mcp" class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400">MCP</a></li>
+                    <li><span class="text-sm text-gray-500 dark:text-gray-400">/</span></li>
+                    <li><a href="/sessions/mcp/access" class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400">Access Rules</a></li>
+                    <li><span class="text-sm text-gray-500 dark:text-gray-400">/ New</span></li>
+                </ol>
+            </nav>
+            <h2 class="mt-2 text-xl font-bold text-gray-900 dark:text-white">New MCP rule</h2>
+        </div>
+        {% include "mcp/nav.html" %}
+    </div>
+
+    <form method="post" action="/sessions/mcp/access" x-data="csrf" class="space-y-6">
+        <input type="hidden" name="csrf_token" x-model="token" />
+        {% include "mcp/access_form_fields.html" %}
+        <div class="flex justify-end gap-3">
+            <a href="/sessions/mcp/access" class="rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white ring-1 ring-inset ring-gray-300 dark:ring-gray-600">Cancel</a>
+            <button type="submit" class="rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white hover:bg-vauban-500">Create</button>
+        </div>
+    </form>
+</div>
+{% endblock %}

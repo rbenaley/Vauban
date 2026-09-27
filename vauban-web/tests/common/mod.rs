@@ -463,6 +463,7 @@ impl TestApp {
             ssh_proxy: None, // No SSH proxy in tests
             rdp_proxy: None, // No RDP proxy in tests
             proxy_iacs,
+            proxy_mcp: None,
             supervisor: None,   // No supervisor in tests
             vault_client: None, // No vault in tests (dev mode fallback)
             audit_client: None, // No audit sink in tests (emissions no-op)
@@ -818,6 +819,10 @@ fn build_test_router(state: AppState) -> Router {
         // Sessions routes
         .route("/api/v1/sessions", get(handlers::api::list_sessions))
         .route("/api/v1/sessions", post(handlers::api::create_session))
+        .route(
+            "/api/v1/mcp/sessions",
+            post(handlers::api::mcp_sessions::open_mcp_session),
+        )
         // DELETE stub returns 501 Not Implemented (not 200 OK)
         .route(
             "/api/v1/sessions/{uuid}",
@@ -943,6 +948,55 @@ fn build_test_router(state: AppState) -> Router {
             get(handlers::web::recording_play),
         )
         .route("/audit/approvals", get(handlers::web::approval_audit_list))
+        .nest(
+            "/sessions/mcp",
+            Router::new()
+                .route("/", get(handlers::web::mcp_hitl_list))
+                .route(
+                    "/access",
+                    get(handlers::web::mcp_access_list)
+                        .post(handlers::web::create_mcp_access_rule_web),
+                )
+                .route("/access/new", get(handlers::web::mcp_access_create_form))
+                .route("/access/{uuid}", get(handlers::web::mcp_access_detail))
+                .route(
+                    "/access/{uuid}/edit",
+                    get(handlers::web::mcp_access_edit_form)
+                        .post(handlers::web::update_mcp_access_rule_web),
+                )
+                .route(
+                    "/access/{uuid}/delete",
+                    post(handlers::web::delete_mcp_access_rule_web),
+                )
+                .route("/contestations", get(handlers::web::contestation_list))
+                .route(
+                    "/contestations/{uuid}",
+                    get(handlers::web::contestation_detail),
+                )
+                .route(
+                    "/contestations/{uuid}/claim",
+                    post(handlers::web::contestation_claim_web),
+                )
+                .route(
+                    "/contestations/{uuid}/uphold",
+                    post(handlers::web::contestation_uphold_web),
+                )
+                .route(
+                    "/contestations/{uuid}/overturn",
+                    post(handlers::web::contestation_overturn_web),
+                )
+                .route(
+                    "/{session_id}/{pending_id}/approve",
+                    post(handlers::web::mcp_hitl_approve_web),
+                )
+                .route(
+                    "/{session_id}/{pending_id}/deny",
+                    post(handlers::web::mcp_hitl_deny_web),
+                )
+                .route_layer(axum::middleware::from_fn(
+                    middleware::require_permission::require_mcp_zone,
+                )),
+        )
         .route("/sessions/approvals", get(handlers::web::approval_list))
         .route(
             "/sessions/approvals/{uuid}",
@@ -963,6 +1017,14 @@ fn build_test_router(state: AppState) -> Router {
         .route(
             "/sessions/approvals/{uuid}/duration",
             post(handlers::web::update_access_duration),
+        )
+        .route(
+            "/sessions/contestations/{uuid}",
+            get(handlers::web::contestation_detail_user_zone),
+        )
+        .route(
+            "/sessions/{uuid}/contest",
+            post(handlers::web::contestation_open_web),
         )
         .route("/sessions/my-requests", get(handlers::web::my_requests))
         .route(
@@ -1273,6 +1335,10 @@ fn build_test_router(state: AppState) -> Router {
         .route(
             "/assets/{uuid}/connect-rdp",
             post(handlers::web::connect_rdp),
+        )
+        .route(
+            "/assets/{uuid}/connect-mcp",
+            post(handlers::web::connect_mcp),
         )
         // IACS tunnel session endpoints (L2/L4): mirror the prod
         // Router so the integration suite covers the same surface.

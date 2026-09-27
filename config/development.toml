@@ -249,6 +249,20 @@ log_path = "audit"
 # signing_key_path = "audit/signing_key.sealed"
 
 # ==============================================================================
+# MCP
+# ==============================================================================
+#
+# JSON-RPC leaf. Default `false` in default.toml. Development turns it on
+# and allows loopback upstreams so a local MCP server on 127.0.0.1 works.
+
+[mcp]
+enabled = true
+listen_addr = "127.0.0.1:19443"
+allow_loopback_targets = true
+session_ttl_seconds = 3600
+hitl_pending_ttl_seconds = 900
+
+# ==============================================================================
 # IACS / INDUSTRIAL
 # ==============================================================================
 

@@ -19,6 +19,9 @@
 
 pub mod config_dir;
 pub mod ipc;
+/// Recursive JSON redaction for MCP audit / session recordings.
+#[cfg(feature = "json-redact")]
+pub mod json_redact;
 pub mod ldap_dn;
 pub mod ldap_filter;
 pub mod ldap_mapping;
@@ -45,6 +48,15 @@ pub mod correlated_ipc;
 
 #[cfg(feature = "access-guard")]
 pub mod access_guard;
+
+#[cfg(feature = "mcp-mandate")]
+pub mod mcp_mandate;
+
+/// MCP access-rule callable set (mint + web preview — one copy).
+pub mod mcp_policy;
+
+/// Mission Seal first-drift IAM knob (`access_rules.mcp_drift_iam`).
+pub mod mcp_drift_iam;
 
 // Cryptographic session-token gate (BLAKE3-keyed MAC binding every
 // session-open to a fresh access decision). Pulled in by vauban-access

@@ -124,6 +124,18 @@ pub const TOKEN_TTL_SECONDS: u64 = 30;
 /// upper bound configured in `vauban-web`.
 pub const TOKEN_TTL_SECONDS_IACS_TUNNEL: u64 = 12 * 3600;
 
+/// Default MCP session token lifetime (1 hour) when
+/// `MCP_SESSION_TTL_SECONDS` / `[mcp].session_ttl_seconds` is unset.
+///
+/// MCP sessions are long-lived HTTP conversations (many `tools/call`
+/// round-trips over Streamable HTTP). The live appliance cap is
+/// `[mcp].session_ttl_seconds`; this constant is the compiled default.
+/// The supervisor replay cache is bypassed for `Service::ProxyMcp`
+/// (same class as IACS): the visit may re-broker a TCP when the
+/// upstream keep-alive dies. Compensating controls: crypto binding +
+/// MCP anti-SSRF + session terminate watchdog.
+pub const TOKEN_TTL_SECONDS_MCP: u64 = 3600;
+
 /// Choose the right TTL for `target_service`. Centralised here so the
 /// mint path, the documentation, and the supervisor-side replay
 /// policy stay in lock-step (any new `Service` variant added to
@@ -132,6 +144,7 @@ pub const TOKEN_TTL_SECONDS_IACS_TUNNEL: u64 = 12 * 3600;
 pub const fn token_ttl_for(target_service: crate::messages::Service) -> u64 {
     match target_service {
         crate::messages::Service::ProxyIacs => TOKEN_TTL_SECONDS_IACS_TUNNEL,
+        crate::messages::Service::ProxyMcp => TOKEN_TTL_SECONDS_MCP,
         _ => TOKEN_TTL_SECONDS,
     }
 }
@@ -171,7 +184,7 @@ pub const SESSION_TOKEN_KEY_ENV: &str = "VAUBAN_SESSION_TOKEN_KEY";
 /// Re-export rather than redefining to guarantee a single source of
 /// truth.
 #[cfg(feature = "access-guard")]
-pub use crate::access_guard::{PROTOCOL_IACS_TUNNEL, PROTOCOL_RDP, PROTOCOL_SSH};
+pub use crate::access_guard::{PROTOCOL_IACS_TUNNEL, PROTOCOL_MCP, PROTOCOL_RDP, PROTOCOL_SSH};
 
 #[cfg(not(feature = "access-guard"))]
 pub const PROTOCOL_SSH: &str = "ssh";
@@ -179,6 +192,8 @@ pub const PROTOCOL_SSH: &str = "ssh";
 pub const PROTOCOL_RDP: &str = "rdp";
 #[cfg(not(feature = "access-guard"))]
 pub const PROTOCOL_IACS_TUNNEL: &str = "iacs_tunnel";
+#[cfg(not(feature = "access-guard"))]
+pub const PROTOCOL_MCP: &str = "mcp";
 
 // ============================================================================
 // TokenKey
@@ -407,6 +422,19 @@ impl SessionToken {
     /// idea of wall-clock seconds at issuance time (`SystemTime::UNIX_EPOCH`
     /// based). The function also draws a fresh nonce from the OS RNG.
     pub fn mint(key: &TokenKey, now: u64, params: SessionTokenParams) -> Self {
+        Self::mint_with_ttl(key, now, params, None)
+    }
+
+    /// Like [`mint`], but `ttl_override` (when `Some`) replaces
+    /// [`token_ttl_for`]. Used for MCP so the hop-1 token cannot
+    /// outlive the access-rule `max_session_duration`. Do not add a
+    /// TTL field to `AccessRequest::IssueSessionToken` (bincode wire).
+    pub fn mint_with_ttl(
+        key: &TokenKey,
+        now: u64,
+        params: SessionTokenParams,
+        ttl_override: Option<u64>,
+    ) -> Self {
         let SessionTokenParams {
             session_id,
             user_uuid,
@@ -420,8 +448,9 @@ impl SessionToken {
         // 30 s single-shot window; IACS gets the long-lived multi-use
         // window so a single `ssh -L` operator session can open many
         // `direct-tcpip` channels over its full duration. See
-        // [`token_ttl_for`] for the rationale.
-        let ttl = token_ttl_for(target_service);
+        // [`token_ttl_for`] for the rationale. MCP may be shortened
+        // by the access-rule session cap.
+        let ttl = ttl_override.unwrap_or_else(|| token_ttl_for(target_service));
         let mut nonce = [0u8; NONCE_LENGTH];
         rand::rngs::OsRng.fill_bytes(&mut nonce);
         let mut token = Self {
@@ -1081,6 +1110,28 @@ mod tests {
     }
 
     #[test]
+    fn mint_with_ttl_shortens_mcp_token() {
+        let key = fresh_key();
+        let now = 1_700_000_000;
+        let params = SessionTokenParams {
+            session_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            user_uuid: "22222222-2222-2222-2222-222222222222".to_string(),
+            asset_uuid: "33333333-3333-3333-3333-333333333333".to_string(),
+            protocol: "mcp".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 19001,
+            target_service: crate::messages::Service::ProxyMcp,
+        };
+        let defaulted = SessionToken::mint(&key, now, params.clone());
+        assert_eq!(
+            defaulted.expires_at - defaulted.issued_at,
+            TOKEN_TTL_SECONDS_MCP
+        );
+        let capped = SessionToken::mint_with_ttl(&key, now, params, Some(900));
+        assert_eq!(capped.expires_at - capped.issued_at, 900);
+    }
+
+    #[test]
     fn token_ttl_for_helper_is_exhaustive_match() {
         // Drift pin: every Service variant must be classified. The
         // safe default (`_`) is the short single-shot TTL, so a new
@@ -1089,6 +1140,10 @@ mod tests {
         assert_eq!(
             token_ttl_for(crate::messages::Service::ProxyIacs),
             TOKEN_TTL_SECONDS_IACS_TUNNEL
+        );
+        assert_eq!(
+            token_ttl_for(crate::messages::Service::ProxyMcp),
+            TOKEN_TTL_SECONDS_MCP
         );
         for s in [
             crate::messages::Service::Supervisor,

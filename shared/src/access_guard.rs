@@ -73,6 +73,9 @@ pub const PROTOCOL_RDP: &str = "rdp";
 /// expands `iacs_tunnel` to the set of every `iacs_*` applicative
 /// protocol when matching access-rule rows.
 pub const PROTOCOL_IACS_TUNNEL: &str = "iacs_tunnel";
+/// MCP JSON-RPC sessions. MUST match `assets.asset_type = 'mcp'` and
+/// `proxy_sessions.session_type = 'mcp'`.
+pub const PROTOCOL_MCP: &str = "mcp";
 
 /// Every applicative IACS protocol the access-rule UI persists.
 ///
@@ -469,6 +472,119 @@ impl AccessGuard {
     pub fn protocol(&self) -> &'static str {
         self.protocol
     }
+
+    /// Mission Seal: seal Contract after Approve (PDP in vauban-access).
+    pub async fn seal_mcp_mandate(
+        &self,
+        session_id: &str,
+        mandate_id: &str,
+        asset_id: &str,
+        contract_json: &str,
+        now_unix: f64,
+    ) -> Result<(String, f64), String> {
+        let request = AccessRequest::SealMcpMandate {
+            session_id: session_id.to_string(),
+            mandate_id: mandate_id.to_string(),
+            asset_id: asset_id.to_string(),
+            contract_json: contract_json.to_string(),
+            now_unix,
+        };
+        match self.access_rpc(request).await {
+            Ok(AccessResponse::McpMandateSealed {
+                sealed_digest,
+                expires_at,
+            }) => Ok((sealed_digest, expires_at)),
+            Ok(AccessResponse::McpMandateSealDenied { reason }) => Err(reason),
+            Ok(_) => Err("unexpected seal reply".into()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Mission Seal CheckStep. Timeout / IPC error denies with `pdp_unavailable`.
+    pub async fn check_step_authorized(
+        &self,
+        session_id: &str,
+        tool: &str,
+        arguments: &serde_json::Value,
+        now_unix: f64,
+    ) -> crate::mcp_mandate::CheckStepOutcome {
+        use crate::mcp_mandate::CheckStepOutcome;
+        let request = AccessRequest::CheckStepAuthorized {
+            session_id: session_id.to_string(),
+            tool: tool.to_string(),
+            arguments_json: arguments.to_string(),
+            now_unix,
+        };
+        match self.access_rpc(request).await {
+            Ok(AccessResponse::McpCheckStepAllowed {
+                step_id,
+                call_digest,
+            }) => CheckStepOutcome::Allow {
+                step_id,
+                call_digest,
+            },
+            Ok(AccessResponse::McpCheckStepReplay {
+                step_id,
+                cached_json,
+            }) => {
+                let cached = serde_json::from_str(&cached_json).unwrap_or(serde_json::Value::Null);
+                CheckStepOutcome::Replay { step_id, cached }
+            }
+            Ok(AccessResponse::McpCheckStepDenied { reason }) => CheckStepOutcome::Deny {
+                reason: leak_mcp_reason(&reason),
+            },
+            Ok(_) | Err(_) => CheckStepOutcome::Deny {
+                reason: "pdp_unavailable",
+            },
+        }
+    }
+
+    pub async fn commit_mcp_mandate_step(&self, session_id: &str, result: &serde_json::Value) {
+        let _ = self
+            .access_rpc(AccessRequest::CommitMcpMandateStep {
+                session_id: session_id.to_string(),
+                result_json: result.to_string(),
+            })
+            .await;
+    }
+
+    pub async fn rollback_mcp_mandate_step(&self, session_id: &str) {
+        let _ = self
+            .access_rpc(AccessRequest::RollbackMcpMandateStep {
+                session_id: session_id.to_string(),
+            })
+            .await;
+    }
+
+    pub async fn clear_mcp_mandate(&self, session_id: &str) {
+        let _ = self
+            .access_rpc(AccessRequest::ClearMcpMandate {
+                session_id: session_id.to_string(),
+            })
+            .await;
+    }
+
+    async fn access_rpc(&self, request: AccessRequest) -> Result<AccessResponse, String> {
+        let fut = self.client.access_rpc(request);
+        match tokio::time::timeout(self.timeout, fut).await {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("pdp_unavailable".into()),
+        }
+    }
+}
+
+fn leak_mcp_reason(reason: &str) -> &'static str {
+    match reason {
+        "args_mismatch_or_precedence" => "args_mismatch_or_precedence",
+        "step_not_in_contract" => "step_not_in_contract",
+        "mode_not_supported" => "mode_not_supported",
+        "step_inflight" => "step_inflight",
+        "mission_expired" => "mission_expired",
+        "no_mandate" => "no_mandate",
+        "pdp_unavailable" => "pdp_unavailable",
+        _ => "pdp_unavailable",
+    }
 }
 
 fn read_fd_from_env(name: &'static str) -> Result<RawFd, AccessGuardError> {
@@ -532,6 +648,18 @@ impl RbacClient {
     #[cfg(test)]
     fn pending_count(&self) -> usize {
         self.pending.lock().expect("pending mutex poisoned").len()
+    }
+
+    async fn access_rpc(&self, request: AccessRequest) -> Result<AccessResponse, RbacClientError> {
+        let request_id = self.core.alloc_id();
+        let msg = Message::AccessRequest {
+            request_id,
+            request,
+        };
+        Ok(self
+            .core
+            .request(&self.pending, request_id, &msg, None)
+            .await?)
     }
 
     async fn check_access_by_uuid(

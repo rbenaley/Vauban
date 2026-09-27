@@ -1,6 +1,29 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
+    access_contestations (id) {
+        id -> Int8,
+        uuid -> Uuid,
+        #[max_length = 64]
+        decision_id -> Varchar,
+        session_uuid -> Uuid,
+        subject_user_id -> Int4,
+        #[max_length = 16]
+        status -> Varchar,
+        opened_by_id -> Int4,
+        opened_at -> Timestamptz,
+        open_reason -> Text,
+        claimed_by_id -> Nullable<Int4>,
+        claimed_at -> Nullable<Timestamptz>,
+        resolved_by_id -> Nullable<Int4>,
+        resolved_at -> Nullable<Timestamptz>,
+        resolution_note -> Nullable<Text>,
+        restore_group_id -> Nullable<Int4>,
+        restore_applied_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
     access_rules (id) {
         id -> Int4,
         uuid -> Uuid,
@@ -21,6 +44,10 @@ diesel::table! {
         updated_by_id -> Nullable<Int4>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        mcp_allowed_tools -> Nullable<Array<Nullable<Text>>>,
+        mcp_hitl_tools -> Nullable<Array<Nullable<Text>>>,
+        mcp_require_plan_tools -> Nullable<Array<Nullable<Text>>>,
+        mcp_drift_iam -> Text,
     }
 }
 
@@ -301,6 +328,14 @@ diesel::table! {
         revoked_by_id -> Nullable<Int4>,
         revoked_at -> Nullable<Timestamptz>,
         recording_lossy -> Bool,
+        #[max_length = 64]
+        decision_id -> Nullable<Varchar>,
+        #[max_length = 64]
+        termination_reason -> Nullable<Varchar>,
+        #[max_length = 128]
+        decision_actor -> Nullable<Varchar>,
+        decision_at -> Nullable<Timestamptz>,
+        decision_source_group_id -> Nullable<Int4>,
     }
 }
 
@@ -433,6 +468,7 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(access_contestations -> vauban_groups (restore_group_id));
 diesel::joinable!(access_rules -> asset_groups (asset_group_id));
 diesel::joinable!(access_rules -> vauban_groups (user_group_id));
 diesel::joinable!(api_keys -> users (user_id));
@@ -440,6 +476,7 @@ diesel::joinable!(asset_asset_groups -> asset_groups (asset_group_id));
 diesel::joinable!(asset_asset_groups -> assets (asset_id));
 diesel::joinable!(auth_sessions -> users (user_id));
 diesel::joinable!(proxy_sessions -> assets (asset_id));
+diesel::joinable!(proxy_sessions -> vauban_groups (decision_source_group_id));
 diesel::joinable!(secret_access_rules -> asset_groups (asset_group_id));
 diesel::joinable!(secret_access_rules -> secret_groups (secret_group_id));
 diesel::joinable!(secret_access_rules -> vauban_groups (user_group_id));
@@ -449,6 +486,7 @@ diesel::joinable!(user_groups -> users (user_id));
 diesel::joinable!(user_groups -> vauban_groups (group_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
+    access_contestations,
     access_rules,
     api_keys,
     approval_audit_log,

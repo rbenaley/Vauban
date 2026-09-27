@@ -363,6 +363,7 @@ impl BroadcastService {
     }
 
     /// Send a message to a channel.
+    #[allow(clippy::result_unit_err)] // no-receiver is the only failure; callers ignore it
     pub async fn send(&self, channel: &WsChannel, message: WsMessage) -> Result<usize, ()> {
         let channel_name = channel.as_str();
         let html = message.to_htmx_html();
@@ -370,6 +371,7 @@ impl BroadcastService {
     }
 
     /// Send raw HTML to a channel.
+    #[allow(clippy::result_unit_err)] // no-receiver is the only failure; callers ignore it
     pub async fn send_raw(&self, channel_name: &str, html: String) -> Result<usize, ()> {
         let channels = self.channels.read().await;
 
@@ -416,6 +418,7 @@ impl BroadcastService {
     /// Use [`Self::send`] for event-driven, low-frequency broadcasts
     /// (notifications, `recording_hydrated`, JIT requests, ...) so
     /// every meaningful event still surfaces at `info!` for ops.
+    #[allow(clippy::result_unit_err)] // no-receiver is the only failure; callers ignore it
     pub async fn send_periodic(
         &self,
         channel: &WsChannel,
@@ -429,6 +432,7 @@ impl BroadcastService {
     /// String-keyed counterpart of [`Self::send_periodic`]. See that
     /// method for the rationale; this entry point exists for callers
     /// that already work with the wire-form channel name.
+    #[allow(clippy::result_unit_err)] // no-receiver is the only failure; callers ignore it
     pub async fn send_raw_periodic(&self, channel_name: &str, html: String) -> Result<usize, ()> {
         let channels = self.channels.read().await;
 

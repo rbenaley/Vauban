@@ -1,0 +1,34 @@
+[package]
+name = "vauban-proxy-mcp"
+description = "Vauban - MCP L7 proxy (Streamable HTTP, brokered FD)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+shared = { workspace = true, features = ["json-redact", "access-guard", "session-token"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "io-util", "time"] }
+libc.workspace = true
+hex = "0.4"
+axum = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }
+secrecy.workspace = true
+blake3 = { workspace = true }
+uuid = { version = "1.11", features = ["v4"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tokio-rustls = "0.26"
+x509-cert = { version = "0.2", default-features = false, features = ["std"] }
+sha2 = "0.10"
+base64 = "0.22"
+
+[dev-dependencies]
+proptest = "1"

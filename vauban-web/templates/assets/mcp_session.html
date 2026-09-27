@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="mx-auto max-w-3xl px-4 py-8 sm:px-6 lg:px-8">
+    <div class="mb-6">
+        <h1 class="text-xl font-semibold text-gray-900 dark:text-white sm:text-2xl">MCP session opened</h1>
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            Asset <span class="font-medium text-gray-700 dark:text-gray-200">{{ asset_name }}</span>
+            — present the bearer once to your MCP client. It will not be shown again.
+        </p>
+    </div>
+
+    <div class="space-y-4 rounded-lg bg-white dark:bg-gray-800 shadow p-6">
+        <div>
+            <div class="text-xs font-semibold uppercase tracking-wide text-gray-500">Gateway URL</div>
+            <button type="button"
+                    class="mt-1 group flex w-full items-start gap-2 rounded bg-gray-50 dark:bg-gray-900 px-3 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-900/80 focus:outline-none focus:ring-2 focus:ring-vauban-500"
+                    data-testid="mcp-gateway-url-copy"
+                    :aria-label="copied ? 'Copied' : 'Copy gateway URL'"
+                    :title="copied ? 'Copied' : 'Copy'"
+                    @click="copy()"
+                    x-data="{
+                        value: {{ url|json }},
+                        copied: false,
+                        copy() {
+                            const restore = () => { this.copied = true; setTimeout(() => this.copied = false, 2000); };
+                            if (navigator.clipboard && window.isSecureContext) {
+                                navigator.clipboard.writeText(this.value).then(restore).catch(() => restore());
+                            } else {
+                                const ta = document.createElement('textarea');
+                                ta.value = this.value; document.body.appendChild(ta);
+                                ta.select(); document.execCommand('copy');
+                                document.body.removeChild(ta); restore();
+                            }
+                        }
+                    }">
+                <code class="min-w-0 flex-1 break-all text-sm text-vauban-700 dark:text-vauban-300">{{ url }}</code>
+                <span class="shrink-0 mt-0.5 text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-200">
+                    <svg x-show="!copied" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    <svg x-show="copied" x-cloak class="h-4 w-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                </span>
+            </button>
+        </div>
+        <div>
+            <div class="text-xs font-semibold uppercase tracking-wide text-gray-500">Bearer (vbw_)</div>
+            {# One button: token + copy icon inline (one-shot secret). #}
+            <button type="button"
+                    class="mt-1 group flex w-full items-start gap-2 rounded bg-amber-50 dark:bg-amber-900/30 px-3 py-2 text-left hover:bg-amber-100 dark:hover:bg-amber-900/50 focus:outline-none focus:ring-2 focus:ring-vauban-500"
+                    data-testid="mcp-bearer-copy"
+                    :aria-label="copied ? 'Copied' : 'Copy bearer to clipboard'"
+                    :title="copied ? 'Copied' : 'Copy bearer'"
+                    @click="copy()"
+                    x-data="{
+                        value: {{ bearer|json }},
+                        copied: false,
+                        copy() {
+                            const restore = () => { this.copied = true; setTimeout(() => this.copied = false, 2000); };
+                            if (navigator.clipboard && window.isSecureContext) {
+                                navigator.clipboard.writeText(this.value).then(restore).catch(() => restore());
+                            } else {
+                                const ta = document.createElement('textarea');
+                                ta.value = this.value; document.body.appendChild(ta);
+                                ta.select(); document.execCommand('copy');
+                                document.body.removeChild(ta); restore();
+                            }
+                        }
+                    }">
+                <code class="min-w-0 flex-1 break-all font-mono text-sm text-amber-900 dark:text-amber-100">{{ bearer }}</code>
+                <span class="shrink-0 mt-0.5 text-amber-700/70 dark:text-amber-200/70 group-hover:text-amber-900 dark:group-hover:text-amber-100">
+                    <svg x-show="!copied" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    <svg x-show="copied" x-cloak class="h-4 w-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                </span>
+            </button>
+        </div>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+                <div class="text-xs font-semibold uppercase tracking-wide text-gray-500">Session ID</div>
+                <code class="mt-1 block text-sm text-gray-800 dark:text-gray-200">{{ session_id }}</code>
+            </div>
+            <div>
+                <div class="text-xs font-semibold uppercase tracking-wide text-gray-500">Expires</div>
+                <code class="mt-1 block text-sm text-gray-800 dark:text-gray-200">{{ expires_at }}</code>
+            </div>
+        </div>
+        <div>
+            <div class="text-xs font-semibold uppercase tracking-wide text-gray-500">MCP protocol versions</div>
+            <p class="mt-1 text-sm text-gray-700 dark:text-gray-300">
+                {% for v in mcp_protocol_versions %}{{ v }}{% if !loop.last %}, {% endif %}{% endfor %}
+            </p>
+        </div>
+        <div>
+            <div class="text-xs font-semibold uppercase tracking-wide text-gray-500">Tools granted to you</div>
+            {% if allowed_tools.is_empty() %}
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">All approved tools from the asset catalog (no rule-level restriction).</p>
+            {% else %}
+            <ul class="mt-2 flex flex-wrap gap-2">
+                {% for t in allowed_tools %}
+                <li class="rounded-md bg-amber-50 dark:bg-amber-900/30 px-2 py-1 font-mono text-xs text-amber-900 dark:text-amber-100">{{ t }}</li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="mt-6 flex gap-3">
+        <a href="/assets"
+           class="rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
+            Back to assets
+        </a>
+    </div>
+</div>
+{% endblock %}

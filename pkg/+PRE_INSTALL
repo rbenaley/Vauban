@@ -74,6 +74,7 @@ create_group_if_missing vb-rdp 906
 create_group_if_missing vb-web 907
 create_group_if_missing vb-iacs 908
 create_group_if_missing vb-mailer 909
+create_group_if_missing vb-mcp 910
 
 create_user_if_missing vb-audit 901 901 vauban-audit
 create_user_if_missing vb-vault 902 902 vauban-vault
@@ -84,6 +85,7 @@ create_user_if_missing vb-rdp 906 906 vauban-proxy-rdp
 create_user_if_missing vb-web 907 907 vauban-web
 create_user_if_missing vb-iacs 908 908 vauban-proxy-iacs
 create_user_if_missing vb-mailer 909 909 vauban-mailer
+create_user_if_missing vb-mcp 910 910 vauban-proxy-mcp
 
 echo "==> Setting service account descriptions (GECOS)..."
 set_user_gecos vb-audit vauban-audit
@@ -95,3 +97,4 @@ set_user_gecos vb-rdp vauban-proxy-rdp
 set_user_gecos vb-web vauban-web
 set_user_gecos vb-iacs vauban-proxy-iacs
 set_user_gecos vb-mailer vauban-mailer
+set_user_gecos vb-mcp vauban-proxy-mcp

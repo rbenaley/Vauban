@@ -191,6 +191,33 @@ fn init_rdp_proxy_client() -> Option<Arc<ProxyRdpClient>> {
 /// `VAUBAN_PROXY_IACS_IPC_READ` and `VAUBAN_PROXY_IACS_IPC_WRITE` are
 /// set by the supervisor, `None` otherwise (dev / test mode -- IACS
 /// connect is fail-closed without this client).
+fn init_mcp_proxy_client() -> Option<Arc<vauban_web::ipc::ProxyMcpClient>> {
+    use std::os::unix::io::RawFd;
+
+    let read_fd: RawFd = match std::env::var("VAUBAN_PROXY_MCP_IPC_READ") {
+        Ok(val) => val.parse().ok()?,
+        Err(_) => return None,
+    };
+    let write_fd: RawFd = match std::env::var("VAUBAN_PROXY_MCP_IPC_WRITE") {
+        Ok(val) => val.parse().ok()?,
+        Err(_) => return None,
+    };
+    unsafe {
+        std::env::remove_var("VAUBAN_PROXY_MCP_IPC_READ");
+        std::env::remove_var("VAUBAN_PROXY_MCP_IPC_WRITE");
+    }
+    match vauban_web::ipc::ProxyMcpClient::new(read_fd, write_fd) {
+        Ok(client) => {
+            tracing::info!("MCP proxy client initialized (running under supervisor)");
+            Some(client)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize MCP proxy client: {}", e);
+            None
+        }
+    }
+}
+
 fn init_iacs_proxy_client() -> Option<Arc<ProxyIacsClient>> {
     use std::os::unix::io::RawFd;
 
@@ -803,6 +830,7 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
     // `AppState` is built so tunnel-close can enqueue hydration.
     // Boot Snapshot resync runs AFTER the IPC pump is started (below).
     let proxy_iacs = init_iacs_proxy_client();
+    let proxy_mcp = init_mcp_proxy_client();
 
     // Create vault crypto client if running under supervisor
     let vault_client = init_vault_client();
@@ -910,6 +938,7 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
         ssh_proxy: ssh_proxy.clone(),
         rdp_proxy: rdp_proxy.clone(),
         proxy_iacs,
+        proxy_mcp: proxy_mcp.clone(),
         supervisor: supervisor_client.clone(),
         vault_client,
         audit_client,
@@ -1039,6 +1068,9 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
     // every session it transitions to terminated/disconnected, hence
     // the `app_state.clone()` instead of just `db_pool`.
     start_cleanup_tasks(app_state.clone(), config.security.session_idle_timeout_secs).await;
+    if config.mcp.enabled {
+        vauban_web::services::mcp_recheck::spawn_recheck(app_state.clone());
+    }
 
     // Recording integrity hydrator (issue #29 / UX-28 v1.4):
     // recomputes the dashboard snapshot every second and broadcasts
@@ -1650,6 +1682,79 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         )
         .route("/sessions/{id}", get(handlers::web::session_detail))
         .route("/audit/approvals", get(handlers::web::approval_audit_list))
+        .nest(
+            "/sessions/mcp",
+            Router::new()
+                .route("/", get(handlers::web::mcp_hitl_list))
+                .route(
+                    "/access",
+                    get(handlers::web::mcp_access_list)
+                        .post(handlers::web::create_mcp_access_rule_web),
+                )
+                .route("/access/new", get(handlers::web::mcp_access_create_form))
+                .route("/access/{uuid}", get(handlers::web::mcp_access_detail))
+                .route(
+                    "/access/{uuid}/edit",
+                    get(handlers::web::mcp_access_edit_form)
+                        .post(handlers::web::update_mcp_access_rule_web),
+                )
+                .route(
+                    "/access/{uuid}/delete",
+                    post(handlers::web::delete_mcp_access_rule_web),
+                )
+                .route("/contestations", get(handlers::web::contestation_list))
+                .route(
+                    "/contestations/{uuid}",
+                    get(handlers::web::contestation_detail),
+                )
+                .route(
+                    "/contestations/{uuid}/claim",
+                    post(handlers::web::contestation_claim_web),
+                )
+                .route(
+                    "/contestations/{uuid}/uphold",
+                    post(handlers::web::contestation_uphold_web),
+                )
+                .route(
+                    "/contestations/{uuid}/overturn",
+                    post(handlers::web::contestation_overturn_web),
+                )
+                .route(
+                    "/{session_id}/{pending_id}/approve",
+                    post(handlers::web::mcp_hitl_approve_web),
+                )
+                .route(
+                    "/{session_id}/{pending_id}/deny",
+                    post(handlers::web::mcp_hitl_deny_web),
+                )
+                .route_layer(axum::middleware::from_fn(
+                    middleware::require_permission::require_mcp_zone,
+                )),
+        )
+        .route(
+            "/sessions/mcp-hitl",
+            get(|| async { Redirect::to("/sessions/mcp") }),
+        )
+        .route(
+            "/sessions/mcp-hitl/{session_id}/{pending_id}/approve",
+            post(handlers::web::mcp_hitl_approve_web),
+        )
+        .route(
+            "/sessions/mcp-hitl/{session_id}/{pending_id}/deny",
+            post(handlers::web::mcp_hitl_deny_web),
+        )
+        .route(
+            "/sessions/contestations",
+            get(|| async { Redirect::to("/sessions/my-requests") }),
+        )
+        .route(
+            "/sessions/contestations/{uuid}",
+            get(handlers::web::contestation_detail_user_zone),
+        )
+        .route(
+            "/sessions/{uuid}/contest",
+            post(handlers::web::contestation_open_web),
+        )
         .route("/sessions/approvals", get(handlers::web::approval_list))
         .route(
             "/sessions/approvals/{uuid}",
@@ -1726,6 +1831,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         )
         // SSH connection endpoints (user zone: opening sessions)
         .route("/assets/{uuid}/connect", post(handlers::web::connect_ssh))
+        .route(
+            "/assets/{uuid}/connect-mcp",
+            post(handlers::web::connect_mcp),
+        )
         // SSH host key verification stays in the user zone because it
         // is part of the connect flow (refuses to open a session when
         // the stored fingerprint does not match). The administrative
@@ -1837,6 +1946,14 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route(
             "/{uuid}/fetch-rdp-cert",
             post(handlers::web::fetch_rdp_server_cert),
+        )
+        .route(
+            "/{uuid}/discover-mcp-tools",
+            post(handlers::web::discover_mcp_tools_web),
+        )
+        .route(
+            "/{uuid}/approve-mcp-tools",
+            post(handlers::web::approve_mcp_tools_web),
         )
         .route_layer(axum::middleware::from_fn(
             middleware::require_assets_manage::require_assets_manage,
@@ -2128,6 +2245,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             // Sessions API
             .route("/api/v1/sessions", get(handlers::api::list_sessions))
             .route("/api/v1/sessions", post(handlers::api::create_session))
+            .route(
+                "/api/v1/mcp/sessions",
+                post(handlers::api::mcp_sessions::open_mcp_session),
+            )
             // DELETE stub returns 501 Not Implemented (not 200 OK)
             .route(
                 "/api/v1/sessions/{uuid}",

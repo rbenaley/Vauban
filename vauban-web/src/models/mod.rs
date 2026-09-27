@@ -1,6 +1,7 @@
 /// VAUBAN Web - Data models.
 ///
 /// All models use Diesel for compile-time verified queries.
+pub mod access_contestation;
 pub mod access_rule;
 pub mod api_key;
 pub mod asset;

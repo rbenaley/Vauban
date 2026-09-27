@@ -3,7 +3,7 @@
 //!
 //! The E2E matrix (`tests/web/bac_gate_matrix_test.rs`) pins the
 //! deterministic outcomes for the three concrete roles; the
-//! properties below fuzz the WHOLE `PermissionContext` space (2^26
+//! properties below fuzz the WHOLE `PermissionContext` space (2^27
 //! combinations) and arbitrary URL suffixes to pin the invariants
 //! that make the gates safe by construction:
 //!
@@ -31,7 +31,7 @@ use tower::ServiceExt;
 use vauban_web::auth::PermissionContext;
 use vauban_web::middleware::AuthUser;
 
-/// Map a 26-bit mask onto the 26 boolean fields of
+/// Map a 27-bit mask onto the 27 boolean fields of
 /// [`PermissionContext`]. The mapping is arbitrary but FIXED; the
 /// properties only rely on being able to reach any combination.
 fn perms_from_bits(bits: u32) -> PermissionContext {
@@ -61,8 +61,9 @@ fn perms_from_bits(bits: u32) -> PermissionContext {
         iacs_read: b(21),
         iacs_manage: b(22),
         assets_connect_iacs: b(23),
-        vault_secrets_read: b(24),
-        vault_secrets_manage: b(25),
+        assets_connect_mcp: b(24),
+        vault_secrets_read: b(25),
+        vault_secrets_manage: b(26),
     }
 }
 

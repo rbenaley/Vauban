@@ -85,6 +85,8 @@ pub struct AppState {
     /// [`handlers::web::iacs_tunnel::connect_iacs`] which mints a
     /// `SessionToken` and pushes a pending tunnel to proxy-iacs.
     pub proxy_iacs: Option<Arc<ipc::ProxyIacsClient>>,
+    /// MCP proxy client. `None` outside the supervisor; connect is fail-closed.
+    pub proxy_mcp: Option<Arc<ipc::ProxyMcpClient>>,
     /// Supervisor client for IPC with vauban-supervisor.
     /// Used for TCP connection brokering (Capsicum sandbox support).
     /// None if not running under supervisor (development mode).

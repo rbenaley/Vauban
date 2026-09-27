@@ -231,6 +231,8 @@ pub enum Service {
     /// TCP sockets for the configured relay via SCM_RIGHTS; zero peer
     /// TOPOLOGY edges (supervisor control channel + fd socketpair only).
     Mailer,
+    /// MCP L7 proxy (Streamable HTTP). Discriminant 10 — append only.
+    ProxyMcp,
 }
 
 impl Service {
@@ -251,6 +253,7 @@ impl Service {
             Service::ProxyRdp => 7,
             Service::ProxyIacs => 8,
             Service::Mailer => 9,
+            Service::ProxyMcp => 10,
         }
     }
 }
@@ -399,6 +402,22 @@ pub struct AccessRuleData {
     pub max_session_duration: Option<i32>,
     pub is_active: bool,
     pub priority: i32,
+    /// MCP tool allow-list for this rule (contract §7).
+    /// `None` = no extra restriction; `Some([])` = deny-all; else ∩ at session open.
+    #[serde(default)]
+    pub mcp_allowed_tools: Option<Vec<String>>,
+    /// MCP tools forced to HITL by this rule.
+    /// Policy SoT — not the asset catalogue. `None` = none from this rule.
+    #[serde(default)]
+    pub mcp_hitl_tools: Option<Vec<String>>,
+    /// MCP tools that require Mission Seal (Story+Contract) by this rule.
+    /// Policy SoT — not the asset catalogue. `None` = none from this rule.
+    #[serde(default)]
+    pub mcp_require_plan_tools: Option<Vec<String>>,
+    /// IAM after first Mission Seal CheckStep deny. Last field (append-only).
+    /// Default `suspend_group` — same as today's RemoveGroupMember.
+    #[serde(default = "crate::mcp_drift_iam::default_mcp_drift_iam")]
+    pub mcp_drift_iam: String,
 }
 
 /// Full info about an access rule (returned from queries).
@@ -423,6 +442,18 @@ pub struct AccessRuleInfo {
     pub priority: i32,
     pub created_at: String,
     pub updated_at: String,
+    /// See [`AccessRuleData::mcp_allowed_tools`].
+    #[serde(default)]
+    pub mcp_allowed_tools: Option<Vec<String>>,
+    /// See [`AccessRuleData::mcp_hitl_tools`].
+    #[serde(default)]
+    pub mcp_hitl_tools: Option<Vec<String>>,
+    /// See [`AccessRuleData::mcp_require_plan_tools`].
+    #[serde(default)]
+    pub mcp_require_plan_tools: Option<Vec<String>>,
+    /// See [`AccessRuleData::mcp_drift_iam`].
+    #[serde(default = "crate::mcp_drift_iam::default_mcp_drift_iam")]
+    pub mcp_drift_iam: String,
 }
 
 /// Data for creating or updating a secret access rule (organisational
@@ -1349,6 +1380,46 @@ pub enum AccessRequest {
         secret_uuid: String,
         source_asset_id: i32,
     },
+
+    /// Lot M2 / Phase 2.4: recompute MCP `effective_tools` ∩ without
+    /// minting a SessionToken (mid-session recheck). Same algorithm as
+    /// [`AccessRequest::IssueSessionToken`] for protocol `mcp`.
+    /// Appended at END for wire compatibility.
+    ComputeMcpEffectiveTools {
+        user_uuid: String,
+        asset_uuid: String,
+    },
+
+    /// Mission Seal PDP (target). Proxy-mcp is PEP.
+    /// Seal a validated Contract after human Approve.
+    /// Appended at END for wire compatibility.
+    SealMcpMandate {
+        session_id: String,
+        mandate_id: String,
+        asset_id: String,
+        contract_json: String,
+        now_unix: f64,
+    },
+    /// Per-tools/call CheckStep (literal + DAG + replay/inflight).
+    CheckStepAuthorized {
+        session_id: String,
+        tool: String,
+        arguments_json: String,
+        now_unix: f64,
+    },
+    /// Memorize JSON-RPC body after successful upstream (idempotent replay).
+    CommitMcpMandateStep {
+        session_id: String,
+        result_json: String,
+    },
+    /// Upstream failed after Allow — restore the step.
+    RollbackMcpMandateStep {
+        session_id: String,
+    },
+    /// Session end / TTL clear / replace completed mandate.
+    ClearMcpMandate {
+        session_id: String,
+    },
 }
 
 /// Access control response from vauban-access.
@@ -1393,11 +1464,17 @@ pub enum AccessResponse {
     /// Wire note: appending these fields after `token` is a coordinated
     /// appliance deploy (web + access rebuilt together); mixed versions
     /// will fail to decode `SessionTokenIssued`.
+    ///
+    /// `effective_tools` is set for protocol `mcp` (Lot M2): the ∩ of
+    /// applicable `mcp_allowed_tools` and the asset approved catalogue.
+    /// `None` for non-MCP protocols / diagnostic mints. Empty vec is
+    /// never returned on success — Access denies the mint instead.
     SessionTokenIssued {
         token: Vec<u8>,
         require_mfa: bool,
         require_approval: bool,
         max_session_duration: Option<i32>,
+        effective_tools: Option<Vec<String>>,
     },
 
     /// Fail-closed reply to `AccessRequest::IssueSessionToken`. Returned
@@ -1508,6 +1585,34 @@ pub enum AccessResponse {
     SecretAccessChecked {
         allowed: bool,
     },
+
+    /// Reply to `AccessRequest::ComputeMcpEffectiveTools`.
+    McpEffectiveTools {
+        tools: Vec<String>,
+    },
+
+    /// Reply to `SealMcpMandate`.
+    McpMandateSealed {
+        sealed_digest: String,
+        expires_at: f64,
+    },
+    McpMandateSealDenied {
+        reason: String,
+    },
+    /// Reply to `CheckStepAuthorized`.
+    McpCheckStepAllowed {
+        step_id: String,
+        call_digest: String,
+    },
+    McpCheckStepReplay {
+        step_id: String,
+        cached_json: String,
+    },
+    McpCheckStepDenied {
+        reason: String,
+    },
+    /// Reply to Commit / Rollback / Clear (and unknown session).
+    McpMandateAck,
 }
 
 /// Entry describing one secret group a user can access.
@@ -1712,6 +1817,51 @@ pub enum AuditEventType {
     /// (possible MITM / IP squatting). Security-critical: emitted via
     /// `emit_audit_critical` and NEVER cached.
     VaultHostIdentityMismatch,
+    // ---- appended for MCP Lot 1a (audit / WORM proofs) ----
+    // Appended at the end to keep existing wire discriminants stable.
+    /// MCP session envelope materialized in the L7 gateway.
+    McpSessionOpened,
+    /// `tools/call` forwarded upstream (whitelist + envelope ok).
+    McpToolCallAllowed,
+    /// `tools/call` denied by whitelist / constraints (`tool_not_allowed`).
+    McpToolCallDenied,
+    /// `tools/call` rate-limited (`rate_limited` / envelope throttle).
+    McpToolCallThrottled,
+    /// T1 never-widen: an update tried to add a tool absent from the
+    /// current session whitelist (addition ignored).
+    McpPrivilegeEscalationAttempt,
+    /// JSONL session recording finalized; details carry blake3 hex + path.
+    McpRecordingFinalized,
+    /// Envelope `on_exceed=alert` threshold crossed (dedup 60 s / session).
+    /// Spec event name: `mcp_envelope_threshold`.
+    McpEnvelopeThreshold,
+    /// Session entered `suspended` (envelope / ops / policy / clientinfo).
+    McpSessionSuspended,
+    /// Session resumed from `suspended` (recours).
+    McpSessionResumed,
+    /// HITL pending created for a `tools/call` (`-32030`).
+    McpHitlPending,
+    /// HITL approve|deny decided.
+    McpHitlDecided,
+    /// HITL pending expired (TTL).
+    McpHitlExpired,
+    /// Mid-session `clientInfo` drift (pin violation).
+    McpClientinfoDrift,
+    // ---- appended for TRUSTED R0 (addressable access decisions) ----
+    /// MCP (or shared terminate core) recorded an access decision that
+    /// cut/restricted a live visit. Details carry `decision_id`, reason,
+    /// actor. Emitted via `emit_audit_critical` (forced seal).
+    McpAccessDecision,
+    // ---- appended for TRUSTED R1 (contestation / recours) ----
+    /// Contestation opened against an access decision.
+    McpContestationOpened,
+    /// Contestation resolved (upheld or overturned).
+    McpContestationResolved,
+    // ---- appended for TRUSTED R2 (attribute lifecycle / key compromise) ----
+    /// API key (`vbn_`) revoked; live MCP sessions for that key cut.
+    ApiKeyRevoked,
+    /// API key (`vbn_`) rotated; previous secret dead; live MCP sessions cut.
+    ApiKeyRotated,
     // ---- appended for LDAPS group aggregation Phase 1 ----
     /// Case A: `user_groups` replaced from mapped directory keys.
     LdapAggregationReplaced,
@@ -1723,7 +1873,7 @@ pub enum AuditEventType {
 
 impl AuditEventType {
     /// Number of variants. Pinned by `audit_event_type_count_is_pinned`.
-    pub const COUNT: usize = 61;
+    pub const COUNT: usize = 79;
 
     /// Every variant, for table-driven tests and drift checks.
     pub const ALL: [AuditEventType; Self::COUNT] = [
@@ -1785,6 +1935,24 @@ impl AuditEventType {
         AuditEventType::SecretAccessRuleDeleted,
         AuditEventType::VaultProvenanceDenied,
         AuditEventType::VaultHostIdentityMismatch,
+        AuditEventType::McpSessionOpened,
+        AuditEventType::McpToolCallAllowed,
+        AuditEventType::McpToolCallDenied,
+        AuditEventType::McpToolCallThrottled,
+        AuditEventType::McpPrivilegeEscalationAttempt,
+        AuditEventType::McpRecordingFinalized,
+        AuditEventType::McpEnvelopeThreshold,
+        AuditEventType::McpSessionSuspended,
+        AuditEventType::McpSessionResumed,
+        AuditEventType::McpHitlPending,
+        AuditEventType::McpHitlDecided,
+        AuditEventType::McpHitlExpired,
+        AuditEventType::McpClientinfoDrift,
+        AuditEventType::McpAccessDecision,
+        AuditEventType::McpContestationOpened,
+        AuditEventType::McpContestationResolved,
+        AuditEventType::ApiKeyRevoked,
+        AuditEventType::ApiKeyRotated,
         AuditEventType::LdapAggregationReplaced,
         AuditEventType::LdapAggregationEmptied,
         AuditEventType::LdapAggregationPurgedFailsafe,
@@ -1856,6 +2024,23 @@ impl AuditEventType {
             | AuditEventType::VaultProvenanceDenied
             | AuditEventType::VaultHostIdentityMismatch => "vault",
             AuditEventType::AccessDenied => "denied",
+            AuditEventType::McpSessionOpened
+            | AuditEventType::McpToolCallAllowed
+            | AuditEventType::McpToolCallDenied
+            | AuditEventType::McpToolCallThrottled
+            | AuditEventType::McpPrivilegeEscalationAttempt
+            | AuditEventType::McpRecordingFinalized
+            | AuditEventType::McpEnvelopeThreshold
+            | AuditEventType::McpSessionSuspended
+            | AuditEventType::McpSessionResumed
+            | AuditEventType::McpHitlPending
+            | AuditEventType::McpHitlDecided
+            | AuditEventType::McpHitlExpired
+            | AuditEventType::McpClientinfoDrift
+            | AuditEventType::McpAccessDecision
+            | AuditEventType::McpContestationOpened
+            | AuditEventType::McpContestationResolved => "mcp",
+            AuditEventType::ApiKeyRevoked | AuditEventType::ApiKeyRotated => "user",
         }
     }
 }
@@ -2450,6 +2635,102 @@ pub enum Message {
         /// Free-form reason logged on both sides
         /// (`ews_disabled`, `user_disabled`, `access_revoked`,
         /// `admin_terminate`).
+        reason: String,
+    },
+
+    // ========== MCP Session (Web -> ProxyMcp) ==========
+    McpSessionOpen {
+        request_id: u64,
+        ipc_version: u32, // always 1
+        session_id: String,
+        asset_id: String,
+        user_id: String,
+        /// UUID of the `api_keys` row, or empty string when the open came
+        /// from Connect UI (human). Never a user UUID (M7).
+        api_key_id: String,
+        expires_at: String, // RFC3339
+        vbw_hash: [u8; 32],
+        allowed_tools: Option<Vec<String>>,
+        tool_constraints_json: String, // JSON object map; empty "{}"
+        envelope_max_calls: u32,
+        envelope_window_seconds: u32,
+        envelope_on_exceed: String, // "throttle" | "alert" | "suspend"
+        upstream_host: String,
+        upstream_port: u16,
+        upstream_tls_spki_pin: Option<String>,
+        forward_identity_headers: bool,
+        credential_blob: Vec<u8>,
+        justification: String,
+        max_body_bytes: u64,
+        session_token: Vec<u8>,
+    },
+    McpSessionOpened {
+        request_id: u64,
+        session_id: String,
+        success: bool,
+        error: Option<String>,
+    },
+    McpSessionUpdate {
+        request_id: u64,
+        session_id: String,
+        allowed_tools: Option<Vec<String>>,
+        tool_constraints_json: String,
+        envelope_max_calls: u32,
+        envelope_window_seconds: u32,
+        envelope_on_exceed: String,
+        expires_at: Option<String>,
+    },
+    McpSessionTerminate {
+        request_id: u64,
+        session_id: String,
+        reason: String,
+    },
+    /// Phase C: suspend a live MCP session (`tools/call` → `-32031`).
+    McpSessionSuspend {
+        request_id: u64,
+        session_id: String,
+        /// `envelope` | `ops` | `policy` | `clientinfo`
+        reason: String,
+        /// Optional actor (ops user); empty for automated envelope.
+        actor_user_id: String,
+    },
+    /// Phase C: resume from `suspended` (resets envelope counter).
+    McpSessionResume {
+        request_id: u64,
+        session_id: String,
+        actor_user_id: String,
+    },
+    /// Phase C: HITL approve|deny for a pending `tools/call`.
+    McpHitlDecision {
+        request_id: u64,
+        session_id: String,
+        pending_id: String,
+        /// `approve` | `deny`
+        decision: String,
+        actor_user_id: String,
+    },
+    /// Proxy → Web: HITL pending created (UI / WS file).
+    McpHitlPendingNotify {
+        session_id: String,
+        pending_id: String,
+        tool: String,
+        args_blake3: String,
+        expires_at: String,
+        requester_user_id: String,
+        /// UUID of the `api_keys` row that opened the session (empty if Connect UI).
+        requester_api_key_id: String,
+        /// Mission Seal Contract JSON (empty = classic one-shot HITL).
+        plan_contract_json: String,
+        /// Mission Seal Story JSON for human display (empty = none).
+        plan_story_json: String,
+        mandate_id: String,
+        sealed_digest: String,
+    },
+    /// Proxy → Web: session entered/left `suspended` (envelope auto-suspend, etc.).
+    McpSessionStateNotify {
+        session_id: String,
+        /// `suspended` | `active`
+        status: String,
         reason: String,
     },
 
@@ -3127,11 +3408,43 @@ pub enum Message {
         smtp_accept_invalid_certs: bool,
     },
 
+    // ========== MCP Discover (Web -> ProxyMcp) ==========
+    //
+    // Admin TOFU catalogue refresh (Phase 2.1). Ephemeral: diagnostic
+    // SessionToken + TcpConnect FD, no durable GatewayState session.
+    // Appended at END for bincode wire compat (before LDAPS Phase 1).
+    /// Ask proxy-mcp to run `initialize` + `tools/list` on a brokered FD.
+    McpDiscover {
+        request_id: u64,
+        /// Must match the TcpConnect `session_id` (e.g. `mcp-discover-{uuid}`).
+        session_id: String,
+        asset_id: String,
+        user_id: String,
+        upstream_host: String,
+        upstream_port: u16,
+        /// Vault ciphertext of upstream bearer (empty = no Authorization).
+        credential_blob: Vec<u8>,
+        /// Diagnostic SessionToken (MAC) — verified before claiming FD.
+        session_token: Vec<u8>,
+        /// `SHA256:<base64>` SPKI pin → HTTPS-on-FD (RDP parity). `None` = lab HTTP.
+        upstream_tls_spki_pin: Option<String>,
+    },
+
+    /// Response to [`Message::McpDiscover`].
+    McpDiscovered {
+        request_id: u64,
+        session_id: String,
+        success: bool,
+        /// JSON array of upstream tool objects (`[{name, description, inputSchema?}, …]`).
+        tools_json: Option<String>,
+        error: Option<String>,
+    },
+
     // ========== LDAPS aggregation Phase 1 (append-only) ==========
     //
-    // WIRE COMPATIBILITY: appended AFTER MailerSmtpProvision. Do NOT
-    // insert these next to AuthLdapProvision -- that would shift
-    // SSH / Kerberos / IACS / recording / mailer discriminants.
+    // WIRE COMPATIBILITY: appended AFTER MCP Discover. Do NOT insert
+    // these next to AuthLdapProvision -- that would shift SSH /
+    // Kerberos / IACS / recording / mailer / MCP discriminants.
     /// Web asks auth to bind then collect directory group keys.
     AuthLdapBindAndSearch {
         request_id: u64,
@@ -3161,6 +3474,19 @@ pub enum Message {
     /// Empty when aggregation is off. Auth never sees User Group names.
     AuthLdapAggregationProvision {
         resolve_plan: crate::ldap_mapping::ResolvePlan,
+    },
+
+    /// Proxy → Web: Mission Seal CheckStep deny (args / order / tool
+    /// drift). Web performs IAM suspension (group remove) + R0
+    /// `decision_id` so the subject can contest. Appended at END.
+    McpMandateDriftNotify {
+        session_id: String,
+        tool: String,
+        /// CheckStep deny reason (`binding`, `precedence`, …).
+        reason: String,
+        mandate_id: String,
+        sealed_digest: String,
+        requester_user_id: String,
     },
 }
 
@@ -3200,6 +3526,13 @@ impl Message {
             | Message::IacsTunnelOpened { request_id, .. }
             | Message::IacsTunnelClosed { request_id, .. }
             | Message::IacsTunnelTerminate { request_id, .. }
+            | Message::McpSessionOpen { request_id, .. }
+            | Message::McpSessionOpened { request_id, .. }
+            | Message::McpSessionUpdate { request_id, .. }
+            | Message::McpSessionTerminate { request_id, .. }
+            | Message::McpSessionSuspend { request_id, .. }
+            | Message::McpSessionResume { request_id, .. }
+            | Message::McpHitlDecision { request_id, .. }
             | Message::IacsTunnelSnapshotRequest { request_id, .. }
             | Message::IacsTunnelSnapshotResponse { request_id, .. }
             | Message::RecordingFileUnlinkRequest { request_id, .. }
@@ -3226,7 +3559,9 @@ impl Message {
             | Message::SshTestKeyAuth { request_id, .. }
             | Message::SshTestKeyAuthResult { request_id, .. }
             | Message::KerberosKdcRequest { request_id, .. }
-            | Message::KerberosKdcResponse { request_id, .. } => Some(*request_id),
+            | Message::KerberosKdcResponse { request_id, .. }
+            | Message::McpDiscover { request_id, .. }
+            | Message::McpDiscovered { request_id, .. } => Some(*request_id),
             _ => None,
         }
     }
@@ -3263,8 +3598,9 @@ mod tests {
             Service::ProxyRdp,
             Service::ProxyIacs,
             Service::Mailer,
+            Service::ProxyMcp,
         ];
-        assert_eq!(services.len(), 10);
+        assert_eq!(services.len(), 11);
     }
 
     /// Drift pin: the wire discriminants are an immutable contract
@@ -3285,6 +3621,7 @@ mod tests {
         assert_eq!(Service::ProxyRdp.as_token_discriminant(), 7);
         assert_eq!(Service::ProxyIacs.as_token_discriminant(), 8);
         assert_eq!(Service::Mailer.as_token_discriminant(), 9);
+        assert_eq!(Service::ProxyMcp.as_token_discriminant(), 10);
     }
 
     /// Pinned variant count -- adding a new Service MUST update this
@@ -3303,10 +3640,11 @@ mod tests {
             Service::ProxyRdp,
             Service::ProxyIacs,
             Service::Mailer,
+            Service::ProxyMcp,
         ];
         assert_eq!(
             all.len(),
-            10,
+            11,
             "Service enum has changed -- update topology, mailer whitelist, broker gate, and proxy_*::env_suffix"
         );
     }
@@ -3540,7 +3878,7 @@ mod tests {
         // and ALL together when appending a variant (never reorder existing
         // ones -- bincode encodes the index).
         assert_eq!(AuditEventType::ALL.len(), AuditEventType::COUNT);
-        assert_eq!(AuditEventType::COUNT, 61);
+        assert_eq!(AuditEventType::COUNT, 79);
     }
 
     #[test]
@@ -4278,6 +4616,219 @@ mod tests {
         assert_eq!(map.request_id(), None);
         let decoded: Message = deserialize(&serialize(&map));
         assert!(matches!(decoded, Message::WebLdapMappingProvision { .. }));
+    }
+
+    #[test]
+    fn test_mcp_mandate_drift_notify_roundtrip() {
+        let msg = Message::McpMandateDriftNotify {
+            session_id: "s".into(),
+            tool: "write_file".into(),
+            reason: "binding".into(),
+            mandate_id: "m1".into(),
+            sealed_digest: "abc".into(),
+            requester_user_id: "u".into(),
+        };
+        assert_eq!(msg.request_id(), None);
+        let decoded: Message = deserialize(&serialize(&msg));
+        assert!(matches!(decoded, Message::McpMandateDriftNotify { .. }));
+    }
+
+    #[test]
+    fn test_mcp_mandate_pdp_access_ipc_roundtrip() {
+        let reqs = [
+            AccessRequest::SealMcpMandate {
+                session_id: "s".into(),
+                mandate_id: "m".into(),
+                asset_id: "a".into(),
+                contract_json: "{}".into(),
+                now_unix: 1.0,
+            },
+            AccessRequest::CheckStepAuthorized {
+                session_id: "s".into(),
+                tool: "echo".into(),
+                arguments_json: "{}".into(),
+                now_unix: 2.0,
+            },
+            AccessRequest::CommitMcpMandateStep {
+                session_id: "s".into(),
+                result_json: "{}".into(),
+            },
+            AccessRequest::RollbackMcpMandateStep {
+                session_id: "s".into(),
+            },
+            AccessRequest::ClearMcpMandate {
+                session_id: "s".into(),
+            },
+        ];
+        for r in reqs {
+            let msg = Message::AccessRequest {
+                request_id: 42,
+                request: r.clone(),
+            };
+            let decoded: Message = deserialize(&serialize(&msg));
+            match decoded {
+                Message::AccessRequest {
+                    request_id,
+                    request,
+                } => {
+                    assert_eq!(request_id, 42);
+                    assert_eq!(serialize(&request), serialize(&r));
+                }
+                other => panic!("expected AccessRequest, got {other:?}"),
+            }
+        }
+        let resps = [
+            AccessResponse::McpMandateSealed {
+                sealed_digest: "d".into(),
+                expires_at: 9.0,
+            },
+            AccessResponse::McpMandateSealDenied {
+                reason: "bad".into(),
+            },
+            AccessResponse::McpCheckStepAllowed {
+                step_id: "1".into(),
+                call_digest: "c".into(),
+            },
+            AccessResponse::McpCheckStepReplay {
+                step_id: "1".into(),
+                cached_json: "{}".into(),
+            },
+            AccessResponse::McpCheckStepDenied {
+                reason: "args_mismatch_or_precedence".into(),
+            },
+            AccessResponse::McpMandateAck,
+        ];
+        for r in resps {
+            let msg = Message::AccessResponse {
+                request_id: 43,
+                response: r.clone(),
+            };
+            let decoded: Message = deserialize(&serialize(&msg));
+            match decoded {
+                Message::AccessResponse {
+                    request_id,
+                    response,
+                } => {
+                    assert_eq!(request_id, 43);
+                    assert_eq!(serialize(&response), serialize(&r));
+                }
+                other => panic!("expected AccessResponse, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_mcp_mandate_access_ipc_variant_indices_appended() {
+        let compute = AccessRequest::ComputeMcpEffectiveTools {
+            user_uuid: "u".into(),
+            asset_uuid: "a".into(),
+        };
+        let seal = AccessRequest::SealMcpMandate {
+            session_id: "s".into(),
+            mandate_id: "m".into(),
+            asset_id: "a".into(),
+            contract_json: "{}".into(),
+            now_unix: 1.0,
+        };
+        let check = AccessRequest::CheckStepAuthorized {
+            session_id: "s".into(),
+            tool: "echo".into(),
+            arguments_json: "{}".into(),
+            now_unix: 1.0,
+        };
+        let commit = AccessRequest::CommitMcpMandateStep {
+            session_id: "s".into(),
+            result_json: "{}".into(),
+        };
+        let rollback = AccessRequest::RollbackMcpMandateStep {
+            session_id: "s".into(),
+        };
+        let clear = AccessRequest::ClearMcpMandate {
+            session_id: "s".into(),
+        };
+        let i_compute = bincode_variant_index(&serialize(&compute));
+        assert_eq!(bincode_variant_index(&serialize(&seal)), i_compute + 1);
+        assert_eq!(bincode_variant_index(&serialize(&check)), i_compute + 2);
+        assert_eq!(bincode_variant_index(&serialize(&commit)), i_compute + 3);
+        assert_eq!(bincode_variant_index(&serialize(&rollback)), i_compute + 4);
+        assert_eq!(bincode_variant_index(&serialize(&clear)), i_compute + 5);
+
+        let tools = AccessResponse::McpEffectiveTools { tools: vec![] };
+        let sealed = AccessResponse::McpMandateSealed {
+            sealed_digest: "d".into(),
+            expires_at: 1.0,
+        };
+        let i_tools = bincode_variant_index(&serialize(&tools));
+        assert_eq!(bincode_variant_index(&serialize(&sealed)), i_tools + 1);
+        assert_eq!(
+            bincode_variant_index(&serialize(&AccessResponse::McpMandateAck)),
+            i_tools + 6
+        );
+    }
+
+    #[test]
+    fn test_mcp_session_open_and_hitl_roundtrip() {
+        let open = Message::McpSessionOpen {
+            request_id: 9,
+            ipc_version: 1,
+            session_id: "sid".into(),
+            asset_id: "aid".into(),
+            user_id: "uid".into(),
+            api_key_id: String::new(),
+            expires_at: "2026-01-01T00:00:00Z".into(),
+            vbw_hash: [0u8; 32],
+            allowed_tools: Some(vec!["echo".into()]),
+            tool_constraints_json: "{}".into(),
+            envelope_max_calls: 100,
+            envelope_window_seconds: 60,
+            envelope_on_exceed: "suspend".into(),
+            upstream_host: "127.0.0.1".into(),
+            upstream_port: 19001,
+            upstream_tls_spki_pin: None,
+            forward_identity_headers: false,
+            credential_blob: Vec::new(),
+            justification: "unit test mcp open hop".into(),
+            max_body_bytes: 1_048_576,
+            session_token: vec![1, 2, 3],
+        };
+        assert_eq!(open.request_id(), Some(9));
+        let decoded: Message = deserialize(&serialize(&open));
+        assert!(matches!(
+            decoded,
+            Message::McpSessionOpen { request_id: 9, .. }
+        ));
+
+        let hitl = Message::McpHitlDecision {
+            request_id: 10,
+            session_id: "sid".into(),
+            pending_id: "p1".into(),
+            decision: "approve".into(),
+            actor_user_id: "u".into(),
+        };
+        let decoded: Message = deserialize(&serialize(&hitl));
+        assert!(matches!(
+            decoded,
+            Message::McpHitlDecision {
+                decision,
+                ..
+            } if decision == "approve"
+        ));
+
+        let pending = Message::McpHitlPendingNotify {
+            session_id: "sid".into(),
+            pending_id: "p1".into(),
+            tool: "echo".into(),
+            args_blake3: "aa".into(),
+            expires_at: "2026-01-01T00:00:00Z".into(),
+            requester_user_id: "u".into(),
+            requester_api_key_id: String::new(),
+            plan_contract_json: "{}".into(),
+            plan_story_json: "{}".into(),
+            mandate_id: "m1".into(),
+            sealed_digest: "dd".into(),
+        };
+        let decoded: Message = deserialize(&serialize(&pending));
+        assert!(matches!(decoded, Message::McpHitlPendingNotify { .. }));
     }
 
     #[test]
@@ -6702,6 +7253,10 @@ mod tests {
             max_session_duration: Some(7200),
             is_active: true,
             priority: 10,
+            mcp_allowed_tools: None,
+            mcp_hitl_tools: None,
+            mcp_require_plan_tools: None,
+            mcp_drift_iam: "suspend_group".to_string(),
         };
         let req = AccessRequest::CreateAccessRule {
             data,
@@ -6713,6 +7268,7 @@ mod tests {
             assert_eq!(data.name, "Test Rule");
             assert_eq!(data.allowed_protocols.len(), 2);
             assert!(data.require_mfa);
+            assert_eq!(data.mcp_drift_iam, "suspend_group");
         } else {
             panic!("Wrong variant");
         }
@@ -6753,6 +7309,10 @@ mod tests {
                     max_session_duration: None,
                     is_active: true,
                     priority: 0,
+                    mcp_allowed_tools: None,
+                    mcp_hitl_tools: None,
+                    mcp_require_plan_tools: None,
+                    mcp_drift_iam: "suspend_group".to_string(),
                 },
                 actor_uuid: None,
             },
@@ -6775,6 +7335,10 @@ mod tests {
                     max_session_duration: None,
                     is_active: true,
                     priority: 0,
+                    mcp_allowed_tools: None,
+                    mcp_hitl_tools: None,
+                    mcp_require_plan_tools: None,
+                    mcp_drift_iam: "suspend_group".to_string(),
                 },
                 actor_uuid: None,
             },
@@ -6899,6 +7463,10 @@ mod tests {
                 priority: 0,
                 created_at: "now".to_string(),
                 updated_at: "now".to_string(),
+                mcp_allowed_tools: None,
+                mcp_hitl_tools: None,
+                mcp_require_plan_tools: None,
+                mcp_drift_iam: "suspend_group".to_string(),
             })),
             AccessResponse::AccessRulePage(IpcPage {
                 items: vec![],
@@ -6991,6 +7559,10 @@ mod tests {
             max_session_duration: None,
             is_active: true,
             priority: 0,
+            mcp_allowed_tools: None,
+            mcp_hitl_tools: None,
+            mcp_require_plan_tools: None,
+            mcp_drift_iam: "suspend_group".to_string(),
         };
         let expected: Vec<(&str, u8, AccessRequest)> = vec![
             (
@@ -7372,6 +7944,7 @@ mod tests {
                 require_mfa: true,
                 require_approval: true,
                 max_session_duration: Some(3600),
+                effective_tools: Some(vec!["read_file".to_string()]),
             },
         };
         let serialized = serialize(&msg);
@@ -7385,12 +7958,17 @@ mod tests {
                         require_mfa,
                         require_approval,
                         max_session_duration,
+                        effective_tools,
                     },
             } => {
                 assert_eq!(token, vec![0xde, 0xad, 0xbe, 0xef]);
                 assert!(require_mfa);
                 assert!(require_approval);
                 assert_eq!(max_session_duration, Some(3600));
+                assert_eq!(
+                    effective_tools.as_deref(),
+                    Some(["read_file".to_string()].as_slice())
+                );
             }
             other => panic!("unexpected: {other:?}"),
         }

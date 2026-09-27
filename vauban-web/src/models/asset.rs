@@ -89,6 +89,9 @@ pub enum AssetType {
     /// (S7, MQTT, BACnet/IP, ...). See ADR 006. No default port; the
     /// admin must set one explicitly when creating the asset.
     IacsTcp,
+    /// Model Context Protocol asset. The upstream is reached only
+    /// through a supervisor-brokered FD; the operator sets the port.
+    Mcp,
 }
 
 /// Asset family: orthogonal to the underlying protocol, used to drive
@@ -167,6 +170,7 @@ impl AssetType {
             Self::IacsDnp3 => "iacs_dnp3",
             Self::IacsIec61850 => "iacs_iec61850",
             Self::IacsTcp => "iacs_tcp",
+            Self::Mcp => "mcp",
         }
     }
 
@@ -187,6 +191,7 @@ impl AssetType {
             "iacs_dnp3" => Ok(Self::IacsDnp3),
             "iacs_iec61850" => Ok(Self::IacsIec61850),
             "iacs_tcp" => Ok(Self::IacsTcp),
+            "mcp" => Ok(Self::Mcp),
             other => Err(AssetTypeParseError(other.to_string())),
         }
     }
@@ -230,6 +235,7 @@ impl AssetType {
             Self::IacsIec61850 => Some(102),
             // No default for the generic catch-all.
             Self::IacsTcp => None,
+            Self::Mcp => None,
         }
     }
 
@@ -246,7 +252,7 @@ impl AssetType {
     /// Whether this asset_type belongs to the classical IT family
     /// (SSH, RDP).
     pub fn is_it(&self) -> bool {
-        matches!(self, Self::Ssh | Self::Rdp)
+        matches!(self, Self::Ssh | Self::Rdp | Self::Mcp)
     }
 
     pub fn family(&self) -> AssetFamily {
@@ -269,7 +275,7 @@ impl AssetType {
             Self::IacsDnp3 => Some(IacsProtocol::Dnp3),
             Self::IacsIec61850 => Some(IacsProtocol::Iec61850),
             Self::IacsTcp => Some(IacsProtocol::Tcp),
-            Self::Ssh | Self::Rdp => None,
+            Self::Ssh | Self::Rdp | Self::Mcp => None,
         }
     }
 
@@ -287,6 +293,7 @@ impl AssetType {
         AssetType::IacsDnp3,
         AssetType::IacsIec61850,
         AssetType::IacsTcp,
+        AssetType::Mcp,
     ];
 
     /// Human-readable label suitable for `<select>` options. Kept on
@@ -305,6 +312,7 @@ impl AssetType {
             Self::IacsDnp3 => "IACS - DNP3",
             Self::IacsIec61850 => "IACS - IEC 61850 MMS",
             Self::IacsTcp => "IACS - Generic TCP",
+            Self::Mcp => "MCP",
         }
     }
 
@@ -336,6 +344,7 @@ impl AssetType {
             Self::IacsDnp3 => "DNP",
             Self::IacsIec61850 => "618",
             Self::IacsTcp => "TCP",
+            Self::Mcp => "MCP",
         }
     }
 
@@ -355,6 +364,7 @@ impl AssetType {
             Self::IacsDnp3 => "DNP3",
             Self::IacsIec61850 => "IEC 61850",
             Self::IacsTcp => "IACS (TCP)",
+            Self::Mcp => "MCP",
         }
     }
 
@@ -1229,13 +1239,14 @@ mod tests {
                 | AssetType::IacsBacnetSc
                 | AssetType::IacsDnp3
                 | AssetType::IacsIec61850
-                | AssetType::IacsTcp => {}
+                | AssetType::IacsTcp
+                | AssetType::Mcp => {}
             }
         }
         assert_eq!(
             AssetType::ALL.len(),
-            11,
-            "ALL must list exactly 11 canonical variants"
+            12,
+            "ALL must list exactly 12 canonical variants"
         );
     }
 

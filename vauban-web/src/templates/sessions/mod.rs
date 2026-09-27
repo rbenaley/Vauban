@@ -1,8 +1,11 @@
 pub mod active_list;
 pub mod approval_detail;
 pub mod approval_list;
+pub mod contestation_detail;
+pub mod contestation_list;
 pub mod iacs_tunnel_status;
 pub mod inspect_capture;
+pub mod mcp_hitl_list;
 pub mod my_requests;
 pub mod presentation;
 pub mod recording_detail;

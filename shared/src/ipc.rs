@@ -451,6 +451,10 @@ mod tests {
             priority: i32::MAX,
             created_at: rfc.clone(),
             updated_at: rfc,
+            mcp_allowed_tools: Some(vec!["echo".into()]),
+            mcp_hitl_tools: Some(vec!["hitl".into()]),
+            mcp_require_plan_tools: Some(vec!["plan".into()]),
+            mcp_drift_iam: "suspend_group".into(),
         }
     }
 
@@ -477,6 +481,10 @@ mod tests {
             priority: 0,
             created_at: rfc.clone(),
             updated_at: rfc,
+            mcp_allowed_tools: None,
+            mcp_hitl_tools: None,
+            mcp_require_plan_tools: None,
+            mcp_drift_iam: "suspend_group".into(),
         }
     }
 

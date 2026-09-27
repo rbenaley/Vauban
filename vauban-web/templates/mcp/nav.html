@@ -1,0 +1,25 @@
+{# Shared MCP zone header. Parent must set `mcp_nav` and `mcp_can_supervise`. #}
+<div class="mt-4 flex flex-wrap gap-2 md:ml-4 md:mt-0">
+    {% if mcp_can_supervise %}
+    <a href="/sessions/mcp"
+       class="inline-flex items-center rounded-md px-3 py-2 text-sm font-semibold shadow-sm ring-1 ring-inset
+              {% if mcp_nav == "hitl" %}bg-vauban-600 text-white ring-vauban-600
+              {% else %}bg-white dark:bg-gray-700 text-gray-900 dark:text-white ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600{% endif %}">
+        HITL
+    </a>
+    {% endif %}
+    <a href="/sessions/mcp/access"
+       class="inline-flex items-center rounded-md px-3 py-2 text-sm font-semibold shadow-sm ring-1 ring-inset
+              {% if mcp_nav == "access" %}bg-vauban-600 text-white ring-vauban-600
+              {% else %}bg-white dark:bg-gray-700 text-gray-900 dark:text-white ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600{% endif %}">
+        Access Rules
+    </a>
+    {% if mcp_can_supervise %}
+    <a href="/sessions/mcp/contestations"
+       class="inline-flex items-center rounded-md px-3 py-2 text-sm font-semibold shadow-sm ring-1 ring-inset
+              {% if mcp_nav == "contestations" %}bg-vauban-600 text-white ring-vauban-600
+              {% else %}bg-white dark:bg-gray-700 text-gray-900 dark:text-white ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600{% endif %}">
+        Contestations
+    </a>
+    {% endif %}
+</div>

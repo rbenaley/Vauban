@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block title %}Contestation {{ c.decision_id }} - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
+                Contestation
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400 font-mono">{{ c.decision_id }}</p>
+        </div>
+        {% if mcp_can_supervise %}
+        {% include "mcp/nav.html" %}
+        {% endif %}
+    </div>
+
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between gap-3">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Status</h3>
+            <span class="inline-flex items-center rounded-md px-2.5 py-1 text-sm font-medium
+                {% if c.status == "open" %}bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200
+                {% else if c.status == "under_review" %}bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200
+                {% else if c.status == "overturned" %}bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200
+                {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}">
+                {{ c.status_label }}
+            </span>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Subject</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ c.subject_username }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Opened by</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ c.opened_by_username }} · {{ c.opened_at }}</dd>
+                </div>
+                <div class="sm:col-span-2">
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Reason</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white whitespace-pre-wrap">{{ c.open_reason }}</dd>
+                </div>
+                <div class="sm:col-span-2">
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Session</dt>
+                    <dd class="mt-1 text-sm font-mono">
+                        <a class="text-vauban-600 hover:underline" href="/sessions/{{ c.session_uuid }}">{{ c.session_uuid }}</a>
+                    </dd>
+                </div>
+                {% if c.claimed_by_username.is_some() %}
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Claimed by</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ c.claimed_by_username.as_ref().unwrap() }}{% if c.claimed_at.is_some() %} · {{ c.claimed_at.as_ref().unwrap() }}{% endif %}</dd>
+                </div>
+                {% endif %}
+                {% if c.resolved_by_username.is_some() %}
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Resolved by</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ c.resolved_by_username.as_ref().unwrap() }}{% if c.resolved_at.is_some() %} · {{ c.resolved_at.as_ref().unwrap() }}{% endif %}</dd>
+                </div>
+                {% endif %}
+                {% if c.resolution_note.is_some() %}
+                <div class="sm:col-span-2">
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Resolution note</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white whitespace-pre-wrap">{{ c.resolution_note.as_ref().unwrap() }}</dd>
+                </div>
+                {% endif %}
+                {% if c.restore_group_id.is_some() %}
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Restored group id</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ c.restore_group_id.unwrap() }}</dd>
+                </div>
+                {% endif %}
+                {% if c.restore_applied_at.is_some() %}
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Restore applied</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ c.restore_applied_at.as_ref().unwrap() }}</dd>
+                </div>
+                {% endif %}
+            </dl>
+        </div>
+    </div>
+
+    {% if c.is_opener && c.can_resolve == false && (c.status == "open" || c.status == "under_review") %}
+    <div class="rounded-md bg-yellow-50 dark:bg-yellow-900/20 p-4 text-sm text-yellow-800 dark:text-yellow-200">
+        You opened this contestation. Another supervisor must claim and resolve it (separation of duties).
+    </div>
+    {% endif %}
+
+    {% if c.can_claim %}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-4 sm:p-6">
+        <form method="post" action="/sessions/mcp/contestations/{{ c.uuid }}/claim" x-data="csrf" class="flex items-center gap-3">
+            <input type="hidden" name="csrf_token" x-model="token" />
+            <button type="submit"
+                    class="inline-flex items-center rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-600">
+                Claim for review
+            </button>
+        </form>
+    </div>
+    {% endif %}
+
+    {% if c.can_resolve %}
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-stretch">
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden flex flex-col h-full">
+            <div class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700 min-h-[5.5rem]">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Uphold decision</h3>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Confirm the original cut; subject stays ineligible.</p>
+            </div>
+            <form method="post" action="/sessions/mcp/contestations/{{ c.uuid }}/uphold" x-data="csrf"
+                  class="px-4 py-4 sm:p-6 flex flex-col flex-1 gap-3">
+                <input type="hidden" name="csrf_token" x-model="token" />
+                <div class="flex-1 space-y-3">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Note (optional)</label>
+                    <textarea name="resolution_note" rows="3"
+                              class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 dark:bg-gray-900 dark:text-white dark:ring-gray-600 sm:text-sm"></textarea>
+                </div>
+                <button type="submit"
+                        class="mt-auto self-start inline-flex items-center rounded-md bg-gray-800 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-700 dark:bg-gray-600 dark:hover:bg-gray-500">
+                    Uphold
+                </button>
+            </form>
+        </div>
+
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden flex flex-col h-full">
+            <div class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700 min-h-[5.5rem]">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Overturn decision</h3>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {% if c.can_overturn %}
+                    Restore <span class="font-medium text-gray-700 dark:text-gray-200">{{ c.restore_group_name.as_ref().unwrap() }}</span>
+                    (same group removed for IAM suspension). Old session stays dead — subject must Connect again.
+                    {% else %}
+                    Restore membership in the same group that was removed (IAM suspension). The old session ticket stays dead — subject must Connect again.
+                    {% endif %}
+                </p>
+            </div>
+            {% if c.can_overturn %}
+            <form method="post" action="/sessions/mcp/contestations/{{ c.uuid }}/overturn" x-data="csrf"
+                  class="px-4 py-4 sm:p-6 flex flex-col flex-1 gap-3">
+                <input type="hidden" name="csrf_token" x-model="token" />
+                <div class="flex-1 space-y-3">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Note (optional)</label>
+                    <textarea name="resolution_note" rows="3"
+                              class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 dark:bg-gray-900 dark:text-white dark:ring-gray-600 sm:text-sm"></textarea>
+                </div>
+                <button type="submit"
+                        class="mt-auto self-start inline-flex items-center rounded-md bg-green-700 px-3 py-2 text-sm font-semibold text-white hover:bg-green-600">
+                    Overturn &amp; restore group
+                </button>
+            </form>
+            {% else %}
+            <div class="px-4 py-4 sm:p-6 flex-1 text-sm text-gray-600 dark:text-gray-300">
+                Overturn is not available for this decision: no unique removed access group is linked.
+                Use <span class="font-medium">Uphold</span>, or re-add the subject to a group manually.
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

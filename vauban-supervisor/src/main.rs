@@ -192,6 +192,7 @@ const LINKED_RESTART_GROUPS: &[&[&str]] = &[
     &["web", "proxy_ssh"],
     // Web and RDP proxy share IPC pipes
     &["web", "proxy_rdp"],
+    &["web", "proxy_mcp"],
 ];
 
 /// Transitive linked-restart set for `service_key` (empty = not linked).
@@ -212,6 +213,7 @@ fn service_key_to_service(key: &str) -> Option<Service> {
         "proxy_ssh" => Some(Service::ProxySsh),
         "proxy_rdp" => Some(Service::ProxyRdp),
         "proxy_iacs" => Some(Service::ProxyIacs),
+        "proxy_mcp" => Some(Service::ProxyMcp),
         "mailer" => Some(Service::Mailer),
         _ => None,
     }
@@ -228,6 +230,7 @@ fn service_to_env_suffix(service: Service) -> &'static str {
         Service::ProxySsh => "PROXY_SSH",
         Service::ProxyRdp => "PROXY_RDP",
         Service::ProxyIacs => "PROXY_IACS",
+        Service::ProxyMcp => "PROXY_MCP",
         Service::Mailer => "MAILER",
         Service::Supervisor => "SUPERVISOR",
     }
@@ -310,6 +313,22 @@ const TOPOLOGY: &[PipeTopology] = &[
     },
     PipeTopology {
         from: Service::ProxyIacs,
+        to: Service::Audit,
+    },
+    PipeTopology {
+        from: Service::Web,
+        to: Service::ProxyMcp,
+    },
+    PipeTopology {
+        from: Service::ProxyMcp,
+        to: Service::Access,
+    },
+    PipeTopology {
+        from: Service::ProxyMcp,
+        to: Service::Vault,
+    },
+    PipeTopology {
+        from: Service::ProxyMcp,
         to: Service::Audit,
     },
     // Audit connections: the audit service unseals its Ed25519 signing-key
@@ -408,7 +427,7 @@ fn main() -> ExitCode {
 fn service_needs_session_token_key(service_key: &str) -> bool {
     matches!(
         service_key,
-        "access" | "proxy_ssh" | "proxy_rdp" | "proxy_iacs"
+        "access" | "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "proxy_mcp"
     )
 }
 
@@ -706,6 +725,10 @@ fn run_supervisor() -> Result<()> {
         // post-Capsicum file opens).
         if service_key == "proxy_iacs" && !config.industrial.enabled {
             info!("Skipping proxy_iacs spawn: industrial.enabled = false");
+            continue;
+        }
+        if service_key == "proxy_mcp" && !config.mcp.enabled {
+            info!("Skipping proxy_mcp spawn: mcp.enabled = false");
             continue;
         }
         if service_key == "mailer" && !config.mailer.enabled {
@@ -1391,6 +1414,7 @@ fn watchdog_loop(
             &config.auth.ldaps,
             &config.auth.kerberos,
             &iacs_guards,
+            &McpConnectGuards::from_config(&config.mcp),
         );
 
         // Send heartbeats periodically
@@ -1936,7 +1960,14 @@ fn respawn_service(
 
     let needs_fd_passing = matches!(
         state.service_key.as_str(),
-        "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "audit" | "web" | "auth" | "mailer"
+        "proxy_ssh"
+            | "proxy_rdp"
+            | "proxy_iacs"
+            | "proxy_mcp"
+            | "audit"
+            | "web"
+            | "auth"
+            | "mailer"
     );
     let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
         match socketpair_for_fd_passing() {
@@ -2168,7 +2199,14 @@ fn respawn_linked_group(
 
             let needs_fd_passing = matches!(
                 service_key,
-                "proxy_ssh" | "proxy_rdp" | "proxy_iacs" | "audit" | "web" | "auth" | "mailer"
+                "proxy_ssh"
+                    | "proxy_rdp"
+                    | "proxy_iacs"
+                    | "proxy_mcp"
+                    | "audit"
+                    | "web"
+                    | "auth"
+                    | "mailer"
             );
             let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
                 match socketpair_for_fd_passing() {
@@ -2323,6 +2361,7 @@ fn service_to_key(service: Service) -> &'static str {
         Service::ProxySsh => "proxy_ssh",
         Service::ProxyRdp => "proxy_rdp",
         Service::ProxyIacs => "proxy_iacs",
+        Service::ProxyMcp => "proxy_mcp",
         Service::Mailer => "mailer",
         Service::Supervisor => "supervisor",
     }
@@ -2386,6 +2425,51 @@ impl IacsTunnelGuards {
     }
 }
 
+/// Broker guards for `TcpConnectRequest { target_service: ProxyMcp }`.
+///
+/// The leaf never calls `connect` itself. The supervisor refuses:
+/// loopback, link-local, and unspecified addresses unless
+/// `allow_loopback_targets` is set (production stays false), and any
+/// target that lands on the MCP listener port on a local address
+/// (anti-self-listener).
+#[derive(Debug, Clone)]
+struct McpConnectGuards {
+    listen_port: u16,
+    allow_loopback_targets: bool,
+}
+
+impl McpConnectGuards {
+    fn from_config(cfg: &crate::config::McpConfig) -> Self {
+        Self {
+            listen_port: cfg.listen_port(),
+            allow_loopback_targets: cfg.allow_loopback_targets,
+        }
+    }
+}
+
+fn mcp_ip_is_link_local(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 169 && o[1] == 254
+        }
+        std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+    }
+}
+
+/// `true` when the broker must not open this address for MCP.
+pub(crate) fn mcp_target_refused(
+    ip: std::net::IpAddr,
+    port: u16,
+    guards: &McpConnectGuards,
+) -> bool {
+    let localish = ip.is_loopback() || ip.is_unspecified() || mcp_ip_is_link_local(ip);
+    if localish && !(guards.allow_loopback_targets && ip.is_loopback()) {
+        return true;
+    }
+    port == guards.listen_port && (ip.is_loopback() || ip.is_unspecified())
+}
+
 /// Handle a TcpConnectRequest from vauban-web.
 ///
 /// This function:
@@ -2417,6 +2501,7 @@ impl IacsTunnelGuards {
 /// `target_key == requesting_service_key`. Failure paths (which only
 /// touch step 5) are unaffected: the requester needs the explicit
 /// `success: false` reply regardless of self-vs-other targeting.
+#[allow(clippy::too_many_arguments)] // distinct broker trust domains; source pins grep these params
 fn handle_tcp_connect_request(
     payload: TcpConnectPayload,
     requesting_channel: &IpcChannel,
@@ -2425,6 +2510,7 @@ fn handle_tcp_connect_request(
     mailer: &crate::config::MailerConfig,
     ldap: &crate::config::LdapConfig,
     iacs_guards: &IacsTunnelGuards,
+    mcp_guards: &McpConnectGuards,
 ) {
     let TcpConnectPayload {
         request_id,
@@ -2463,6 +2549,7 @@ fn handle_tcp_connect_request(
         Service::ProxySsh => "proxy_ssh",
         Service::ProxyRdp => "proxy_rdp",
         Service::ProxyIacs => "proxy_iacs",
+        Service::ProxyMcp => "proxy_mcp",
         Service::Mailer => "mailer",
         Service::Auth => "auth",
         _ => {
@@ -2620,7 +2707,7 @@ fn handle_tcp_connect_request(
         // anti-self-listener), and (c) the revocation watchdog in
         // `vauban-web` which fires `IacsTunnelTerminate` the moment
         // the policy decision changes.
-        if !matches!(target_service, Service::ProxyIacs)
+        if !matches!(target_service, Service::ProxyIacs | Service::ProxyMcp)
             && !session_token_replay_cache()
                 .lock()
                 .map(|mut c| c.record(&token.session_id, &token.nonce))
@@ -2720,6 +2807,19 @@ fn handle_tcp_connect_request(
         &candidates,
         Duration::from_secs(10),
         |socket_addr| {
+            if matches!(target_service, Service::ProxyMcp) {
+                if mcp_target_refused(socket_addr.ip(), socket_addr.port(), mcp_guards) {
+                    warn!(
+                        session_id = %session_id,
+                        requested_host = %host,
+                        requested_port = port,
+                        target_resolved_ip = %socket_addr.ip(),
+                        "mcp anti-SSRF: refused loopback, link-local, or self-listener"
+                    );
+                    return crate::tcp_resolve::AddrDecision::Skip("Access denied".into());
+                }
+                return crate::tcp_resolve::AddrDecision::Accept;
+            }
             if !iacs_target {
                 return crate::tcp_resolve::AddrDecision::Accept;
             }
@@ -3444,6 +3544,7 @@ fn handle_recording_file_unlink_request(
 /// (SSRF whitelist, Issue #10); the `ldap` config is consulted when
 /// `target_service = Auth` (LDAPS directory whitelist); `kerberos` gates
 /// the KDC FD broker.
+#[allow(clippy::too_many_arguments)] // distinct broker trust domains; source pins grep these params
 fn process_service_messages(
     children: &HashMap<String, ChildState>,
     recording_storage_path: &str,
@@ -3452,6 +3553,7 @@ fn process_service_messages(
     ldap: &crate::config::LdapConfig,
     kerberos: &crate::config::KerberosConfig,
     iacs_guards: &IacsTunnelGuards,
+    mcp_guards: &McpConnectGuards,
 ) {
     // Collect all read FDs from services
     let service_fds: Vec<(String, i32)> = children
@@ -3508,6 +3610,7 @@ fn process_service_messages(
                             mailer,
                             ldap,
                             iacs_guards,
+                            mcp_guards,
                         );
                     }
                     Ok(Message::KerberosKdcRequest {
@@ -3916,6 +4019,7 @@ fn service_key_to_enum(key: &str) -> Option<Service> {
         "proxy_ssh" => Some(Service::ProxySsh),
         "proxy_rdp" => Some(Service::ProxyRdp),
         "proxy_iacs" => Some(Service::ProxyIacs),
+        "proxy_mcp" => Some(Service::ProxyMcp),
         "mailer" => Some(Service::Mailer),
         _ => None,
     }
@@ -3951,7 +4055,7 @@ mod tests {
 
     #[test]
     fn test_topology_count() {
-        assert_eq!(TOPOLOGY.len(), 18);
+        assert_eq!(TOPOLOGY.len(), 22);
     }
 
     #[test]
@@ -4094,8 +4198,8 @@ mod tests {
             .collect();
 
         // Web connects to: Auth, Access, Audit, ProxySsh, ProxyRdp,
-        // ProxyIacs, Vault
-        assert_eq!(web_connections.len(), 7);
+        // ProxyIacs, ProxyMcp, Vault
+        assert_eq!(web_connections.len(), 8);
     }
 
     #[test]
@@ -4158,6 +4262,26 @@ mod tests {
             !proxy_connections.iter().any(|c| c.to == Service::Vault),
             "ProxyIacs MUST NOT have an edge to Vault: IACS tunnels do \
              not hold target-asset credentials"
+        );
+    }
+
+    #[test]
+    fn test_topology_proxy_mcp_connections() {
+        let proxy_connections: Vec<_> = TOPOLOGY
+            .iter()
+            .filter(|conn| conn.from == Service::ProxyMcp)
+            .collect();
+
+        // ProxyMcp connects to: Access (CheckStep), Vault, Audit.
+        assert_eq!(proxy_connections.len(), 3);
+        assert!(proxy_connections.iter().any(|c| c.to == Service::Access));
+        assert!(proxy_connections.iter().any(|c| c.to == Service::Vault));
+        assert!(proxy_connections.iter().any(|c| c.to == Service::Audit));
+        assert!(
+            TOPOLOGY
+                .iter()
+                .any(|c| c.from == Service::Web && c.to == Service::ProxyMcp),
+            "Web must open the hop-1 IPC edge to proxy_mcp"
         );
     }
 
@@ -4623,6 +4747,7 @@ mod tests {
                 Service::ProxySsh => "proxy_ssh",
                 Service::ProxyRdp => "proxy_rdp",
                 Service::ProxyIacs => "proxy_iacs",
+                Service::ProxyMcp => "proxy_mcp",
                 Service::Supervisor => continue, // Supervisor not in services
             };
 
@@ -5026,7 +5151,7 @@ mod tests {
         assert_eq!(BACKEND_SERVICES.last(), Some(&"audit"));
 
         // Web is the last frontend to start and drains with FRONTEND_SERVICES
-        assert_eq!(startup_order[7], "web");
+        assert_eq!(startup_order[8], "web");
         assert!(FRONTEND_SERVICES.contains(&"web"));
 
         // Mailer starts after web; drains as a backend leaf before audit
@@ -5856,11 +5981,12 @@ mod tests {
         // wildcard). We grep for the exact gate so an accidental
         // change to a different Service::* is loud.
         assert!(
-            handler.contains("!matches!(target_service, Service::ProxyIacs)")
+            handler.contains("!matches!(target_service, Service::ProxyIacs | Service::ProxyMcp)")
                 && handler.contains("session_token_replay_cache"),
             "handle_tcp_connect_request MUST bypass the replay cache \
-             ONLY for Service::ProxyIacs (multi-use by design); every \
-             other target_service MUST still be replay-protected."
+             ONLY for Service::ProxyIacs and Service::ProxyMcp \
+             (multi-use by design); every other target_service MUST \
+             still be replay-protected."
         );
 
         // The bypass MUST NOT extend to other Service variants. We
@@ -6045,6 +6171,10 @@ mod tests {
                 &mailer,
                 &ldap,
                 &guards,
+                &McpConnectGuards {
+                    listen_port: 19443,
+                    allow_loopback_targets: false,
+                },
             );
 
             // FD must have been passed via SCM_RIGHTS.
@@ -6096,6 +6226,10 @@ mod tests {
                 &mailer,
                 &ldap,
                 &guards,
+                &McpConnectGuards {
+                    listen_port: 19443,
+                    allow_loopback_targets: false,
+                },
             );
 
             let resp = child_channel.recv().expect("deny response");
@@ -6139,6 +6273,10 @@ mod tests {
                 &mailer,
                 &ldap,
                 &guards,
+                &McpConnectGuards {
+                    listen_port: 19443,
+                    allow_loopback_targets: false,
+                },
             );
 
             let resp = child_channel.recv().expect("deny response");
@@ -6217,6 +6355,10 @@ mod tests {
             &mailer,
             &ldap,
             &guards,
+            &McpConnectGuards {
+                listen_port: 19443,
+                allow_loopback_targets: false,
+            },
         );
 
         let received = recv_fd(child_sock.as_raw_fd()).expect("recv_fd after localhost broker");
@@ -6521,5 +6663,51 @@ mod tests {
             "even with a perfectly matching (host, port), a disabled mailer \
              MUST refuse the broker request (fail-closed)"
         );
+    }
+
+    #[test]
+    fn test_linked_closure_of_web_contains_proxy_mcp() {
+        let keys = linked_group_keys("web");
+        assert!(
+            keys.contains(&"proxy_mcp"),
+            "linked restart of web must include proxy_mcp"
+        );
+        assert!(keys.contains(&"proxy_ssh"));
+        assert!(keys.contains(&"proxy_rdp"));
+    }
+
+    #[test]
+    fn attack_mcp_connect_self_listener_is_rejected() {
+        let guards = McpConnectGuards {
+            listen_port: 19443,
+            allow_loopback_targets: true,
+        };
+        let ip: std::net::IpAddr = "127.0.0.1".parse().expect("ip");
+        assert!(
+            mcp_target_refused(ip, 19443, &guards),
+            "the MCP listener port on loopback is the proxy itself"
+        );
+        assert!(
+            !mcp_target_refused(ip, 19001, &guards),
+            "a different loopback port is allowed only when the dev flag is on"
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn proptest_mcp_loopback_and_link_local_refused(
+            a in 1u8..224,
+            b in 0u8..255,
+            c in 0u8..255,
+            d in 1u8..255,
+        ) {
+            let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(a, b, c, d));
+            let guards = McpConnectGuards {
+                listen_port: 19443,
+                allow_loopback_targets: false,
+            };
+            let refused = a == 127 || (a == 169 && b == 254);
+            proptest::prop_assert_eq!(mcp_target_refused(ip, 443, &guards), refused);
+        }
     }
 }

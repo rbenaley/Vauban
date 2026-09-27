@@ -175,6 +175,7 @@ fn iacs_error_to_response(
 /// redirect when the fingerprint clashes. `exclude_request_uuid`
 /// allows the edit flow to pass its own request UUID through (so the
 /// row's CURRENT fingerprint does not flag itself).
+#[allow(clippy::result_large_err)] // flash redirect is the error payload
 async fn advisory_uniqueness_or_redirect(
     state: &AppState,
     parsed: &iacs_service::ParsedKey,

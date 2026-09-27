@@ -429,6 +429,7 @@ pub async fn connect_rdp(
             industrial_protocol: None,
             ews_uuid: None,
             tunnel_target_addr: None,
+            expires_at: None,
         };
 
         if let Err(e) = diesel::insert_into(proxy_sessions::table)

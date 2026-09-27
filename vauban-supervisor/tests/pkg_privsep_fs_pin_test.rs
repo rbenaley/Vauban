@@ -70,6 +70,7 @@ fn all_svc_users_exist_in_pre_install() {
         "vb-web",
         "vb-iacs",
         "vb-mailer",
+        "vb-mcp",
     ] {
         assert!(
             PRE_INSTALL.contains(&format!("create_user_if_missing {user} ")),

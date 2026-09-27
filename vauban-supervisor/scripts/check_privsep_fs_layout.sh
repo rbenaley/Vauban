@@ -42,7 +42,7 @@ if [[ ! -f "$APPLY" || ! -f "$LIST" ]]; then
     err "INV-FS-3: catalogue and apply helper must exist under pkg/"
 fi
 
-for u in vb-audit vb-vault vb-access vb-auth vb-ssh vb-rdp vb-web vb-iacs vb-mailer; do
+for u in vb-audit vb-vault vb-access vb-auth vb-ssh vb-rdp vb-web vb-iacs vb-mailer vb-mcp; do
     if ! grep -q "create_user_if_missing $u " "$PRE"; then
         err "INV-FS-3: +PRE_INSTALL must create $u (ALL list drift)"
     fi

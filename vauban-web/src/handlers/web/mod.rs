@@ -60,6 +60,7 @@ pub(crate) use askama::Template;
 // Sub-modules
 // ============================================================================
 
+mod access_contestation;
 mod access_rules;
 mod asset_groups;
 mod assets;
@@ -69,6 +70,30 @@ mod groups;
 pub mod iacs;
 mod iacs_tunnel;
 mod manage_assets;
+mod mcp;
+mod mcp_access;
+mod mcp_discover;
+mod mcp_hitl;
+pub use access_contestation::*;
+pub use mcp::*;
+pub use mcp_access::*;
+pub use mcp_discover::*;
+pub use mcp_hitl::*;
+
+pub(crate) async fn broadcast_mcp_hitl_badge(state: &crate::AppState) {
+    let count = state
+        .proxy_mcp
+        .as_ref()
+        .map(|p| p.list_hitl_pendings().len() as i64)
+        .unwrap_or(0);
+    let html = format!(r#"<span id="sidebar-mcp-badge" hx-swap-oob="true">{count}</span>"#);
+    let _ = state.broadcast.send_raw("notifications", html).await;
+}
+
+/// Same MCP sidebar signal as [`broadcast_mcp_hitl_badge`].
+pub(crate) async fn broadcast_contestation_badge(state: &crate::AppState) {
+    broadcast_mcp_hitl_badge(state).await;
+}
 mod rdp;
 mod secret_access_rules;
 mod secret_groups;
@@ -474,7 +499,8 @@ pub(crate) fn validate_required_credentials(
         | AssetType::IacsBacnetSc
         | AssetType::IacsDnp3
         | AssetType::IacsIec61850
-        | AssetType::IacsTcp => {}
+        | AssetType::IacsTcp
+        | AssetType::Mcp => {}
     }
 
     Ok(())
@@ -670,6 +696,16 @@ pub(crate) fn build_connection_config(
         | AssetType::IacsDnp3
         | AssetType::IacsIec61850
         | AssetType::IacsTcp => {}
+        AssetType::Mcp => {
+            config.insert(
+                "auth_type".to_string(),
+                serde_json::Value::String("none".to_string()),
+            );
+            config.insert(
+                "allowed_tools".to_string(),
+                serde_json::Value::Array(Vec::new()),
+            );
+        }
     }
 
     serde_json::Value::Object(config)
@@ -919,6 +955,15 @@ pub(crate) fn compute_updated_connection_config(
         | AssetType::IacsTcp => {
             obj.remove("auth_type");
             obj.remove("password");
+            obj.remove("private_key");
+            obj.remove("passphrase");
+            obj.remove("domain");
+            obj.remove("ssh_public_key");
+            obj.remove("ssh_key_source");
+            obj.remove("ssh_pubkey_pushed");
+        }
+        AssetType::Mcp => {
+            obj.remove("auth_type");
             obj.remove("private_key");
             obj.remove("passphrase");
             obj.remove("domain");

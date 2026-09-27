@@ -25,6 +25,7 @@ pub fn session_kind_from_session_type(session_type: SessionType) -> SessionKind 
         SessionType::Ssh => SessionKind::Ssh,
         SessionType::Rdp => SessionKind::Rdp,
         SessionType::IacsTunnel => SessionKind::Iacs,
+        SessionType::Mcp => SessionKind::Mcp,
     }
 }
 

@@ -98,6 +98,19 @@ pub async fn require_access_rules_read(request: Request, next: Next) -> Response
     require_flag(request, next, |p| p.access_rules_read, "access_rules:read").await
 }
 
+/// Nest gate for `/sessions/mcp`: HITL needs `sessions:supervise`,
+/// access CRUD needs `access_rules:read`. Either permission opens the
+/// zone; handlers re-assert their own flag.
+pub async fn require_mcp_zone(request: Request, next: Next) -> Response {
+    require_flag(
+        request,
+        next,
+        |p| p.sessions_supervise || p.access_rules_read,
+        "sessions:supervise or access_rules:read",
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     //! Router-driven gate tests, mirroring
@@ -230,6 +243,7 @@ mod tests {
                 iacs_read: true,
                 iacs_manage: true,
                 assets_connect_iacs: true,
+                assets_connect_mcp: true,
                 vault_secrets_read: true,
                 vault_secrets_manage: true,
             };

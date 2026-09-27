@@ -4,14 +4,15 @@ use diesel::prelude::*;
 use diesel::sql_types::Bool as SqlBool;
 use diesel_async::AsyncConnection;
 use diesel_async::RunQueryDsl;
+use shared::mcp_policy::mcp_rule_callable_tools;
 use shared::messages::{
     AccessCheckResult, AccessCheckResultEntry, AccessRequest, AccessResponse, AccessRuleData,
     AccessRuleInfo, AccessibleGroupEntry, ApprovalDecisionKind, ApprovalDenyReason, AssetGroupInfo,
     DEFAULT_IPC_PAGE_LIMIT, GroupOption, IpcPage, IpcPageParams, MAX_IPC_PAGE_LIMIT,
     VaubanGroupInfo,
 };
-use shared::session_token::{SessionToken, SessionTokenParams, TokenKey};
-use std::collections::HashMap;
+use shared::session_token::{SessionToken, SessionTokenParams, TOKEN_TTL_SECONDS_MCP, TokenKey};
+use std::collections::{BTreeSet, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -42,6 +43,10 @@ type AccessRuleRow = (
     i32,
     chrono::DateTime<Utc>,
     chrono::DateTime<Utc>,
+    Option<Vec<Option<String>>>,
+    Option<Vec<Option<String>>>,
+    Option<Vec<Option<String>>>,
+    String,
 );
 
 macro_rules! access_rule_columns {
@@ -66,6 +71,10 @@ macro_rules! access_rule_columns {
             access_rules::priority,
             access_rules::created_at,
             access_rules::updated_at,
+            access_rules::mcp_allowed_tools,
+            access_rules::mcp_hitl_tools,
+            access_rules::mcp_require_plan_tools,
+            access_rules::mcp_drift_iam,
         )
     };
 }
@@ -73,6 +82,10 @@ macro_rules! access_rule_columns {
 // ==================== Main dispatch ====================
 
 pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> AccessResponse {
+    if crate::mcp_pdp::is_mandate_request(&request) {
+        return crate::mcp_pdp::handle(request);
+    }
+
     let mut conn = match pool.get().await {
         Ok(c) => c,
         Err(e) => return AccessResponse::Error(format!("DB connection error: {}", e)),
@@ -491,6 +504,28 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
             )
             .await
         }
+
+        AccessRequest::ComputeMcpEffectiveTools {
+            user_uuid,
+            asset_uuid,
+        } => match compute_mcp_effective_tools(&mut conn, &user_uuid, &asset_uuid).await {
+            Ok(tools) => AccessResponse::McpEffectiveTools { tools },
+            Err(e) => {
+                warn!(
+                    user_uuid = %user_uuid,
+                    asset_uuid = %asset_uuid,
+                    error = %e,
+                    "ComputeMcpEffectiveTools failed — empty (fail-closed)"
+                );
+                AccessResponse::McpEffectiveTools { tools: Vec::new() }
+            }
+        },
+
+        AccessRequest::SealMcpMandate { .. }
+        | AccessRequest::CheckStepAuthorized { .. }
+        | AccessRequest::CommitMcpMandateStep { .. }
+        | AccessRequest::RollbackMcpMandateStep { .. }
+        | AccessRequest::ClearMcpMandate { .. } => crate::mcp_pdp::handle(request),
     }
 }
 
@@ -687,6 +722,138 @@ async fn handle_verify_session_access(
 /// [`AccessResponse::SessionTokenDenied`]. The variant is intentionally
 /// indistinguishable from a policy-denied reply so a probe cannot
 /// fingerprint whether the issue is policy, DB, or minter.
+pub(crate) async fn compute_mcp_effective_tools(
+    conn: &mut DbConnection,
+    user_uuid: &str,
+    asset_uuid: &str,
+) -> Result<Vec<String>, String> {
+    let user_uuid = Uuid::parse_str(user_uuid).map_err(|e| format!("bad user uuid: {e}"))?;
+    let asset_uuid = Uuid::parse_str(asset_uuid).map_err(|e| format!("bad asset uuid: {e}"))?;
+
+    let user_id: i32 = users::table
+        .filter(users::uuid.eq(user_uuid))
+        .filter(users::is_active.eq(true))
+        .filter(users::is_deleted.eq(false))
+        .select(users::id)
+        .first::<i32>(conn)
+        .await
+        .optional()
+        .map_err(|e| format!("user lookup: {e}"))?
+        .ok_or_else(|| "user not found".to_string())?;
+
+    let (asset_id, connection_config): (i32, serde_json::Value) = assets::table
+        .filter(assets::uuid.eq(asset_uuid))
+        .filter(assets::deleted_at.is_null())
+        .select((assets::id, assets::connection_config))
+        .first::<(i32, serde_json::Value)>(conn)
+        .await
+        .optional()
+        .map_err(|e| format!("asset lookup: {e}"))?
+        .ok_or_else(|| "asset not found".to_string())?;
+
+    let catalog: Option<BTreeSet<String>> = connection_config
+        .get("allowed_tools")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .map(|v| v.into_iter().collect());
+
+    let group_ids: Vec<i32> = user_groups::table
+        .filter(user_groups::user_id.eq(user_id))
+        .select(user_groups::group_id)
+        .load::<i32>(conn)
+        .await
+        .map_err(|e| format!("user groups: {e}"))?;
+    if group_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut asset_group_ids: Vec<i32> = asset_asset_groups::table
+        .filter(asset_asset_groups::asset_id.eq(asset_id))
+        .select(asset_asset_groups::asset_group_id)
+        .load::<i32>(conn)
+        .await
+        .map_err(|e| format!("asset groups: {e}"))?;
+
+    let virtual_id = crate::virtual_group::virtual_asset_group_id();
+    if virtual_id != crate::virtual_group::UNINITIALIZED_VIRTUAL_ID
+        && !asset_group_ids.contains(&virtual_id)
+    {
+        asset_group_ids.push(virtual_id);
+    }
+    if asset_group_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let now = Utc::now();
+    type McpRuleToolRow = (
+        Option<Vec<Option<String>>>,
+        Option<Vec<Option<String>>>,
+        Option<Vec<Option<String>>>,
+    );
+    let rows: Vec<McpRuleToolRow> = access_rules::table
+        .filter(access_rules::user_group_id.eq_any(&group_ids))
+        .filter(access_rules::asset_group_id.eq_any(&asset_group_ids))
+        .filter(access_rules::is_active.eq(true))
+        .filter(
+            access_rules::valid_from
+                .is_null()
+                .or(access_rules::valid_from.le(now)),
+        )
+        .filter(
+            access_rules::valid_until
+                .is_null()
+                .or(access_rules::valid_until.ge(now)),
+        )
+        .filter(access_rules::allowed_protocols.contains(vec![Some("mcp".to_string())]))
+        .select((
+            access_rules::mcp_allowed_tools,
+            access_rules::mcp_hitl_tools,
+            access_rules::mcp_require_plan_tools,
+        ))
+        .load(conn)
+        .await
+        .map_err(|e| format!("access rules: {e}"))?;
+
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut effective: Option<BTreeSet<String>> = None;
+    let mut saw_restricting_rule = false;
+    for (allow, hitl, plan) in rows {
+        let Some(set) = mcp_rule_callable_tools(allow, hitl, plan) else {
+            continue;
+        };
+        saw_restricting_rule = true;
+        effective = Some(match effective {
+            None => set,
+            Some(prev) => prev.intersection(&set).cloned().collect(),
+        });
+    }
+
+    let merged: BTreeSet<String> = match (effective, catalog, saw_restricting_rule) {
+        (None, Some(cat), false) => cat,
+        (None, None, false) => BTreeSet::new(),
+        (Some(rule_set), Some(cat), _) => rule_set.intersection(&cat).cloned().collect(),
+        (Some(rule_set), None, _) => rule_set,
+        (None, _, true) => BTreeSet::new(),
+    };
+
+    let mut out: Vec<String> = merged.into_iter().collect();
+    out.sort();
+    Ok(out)
+}
+
+pub(crate) fn mcp_appliance_ttl_secs() -> u64 {
+    mcp_appliance_ttl_secs_from(std::env::var("MCP_SESSION_TTL_SECONDS").ok().as_deref())
+}
+
+pub(crate) fn mcp_appliance_ttl_secs_from(raw: Option<&str>) -> u64 {
+    raw.and_then(|v| v.parse::<u64>().ok())
+        .filter(|&d| d > 0)
+        .map(|d| d.clamp(30, 28_800))
+        .unwrap_or(TOKEN_TTL_SECONDS_MCP)
+}
+
 pub async fn handle_issue_session_token(
     pool: &DbPool,
     key: &TokenKey,
@@ -733,13 +900,50 @@ pub async fn handle_issue_session_token(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let token = SessionToken::mint(key, now, params);
+
+    let effective_tools = if params.protocol == "mcp" {
+        match compute_mcp_effective_tools(&mut conn, &params.user_uuid, &params.asset_uuid).await {
+            Ok(tools) if !tools.is_empty() => Some(tools),
+            Ok(_) => {
+                info!(
+                    user_uuid = %params.user_uuid,
+                    asset_uuid = %params.asset_uuid,
+                    session_id = %params.session_id,
+                    "IssueSessionToken denied: empty MCP tool whitelist"
+                );
+                return AccessResponse::SessionTokenDenied;
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    user_uuid = %params.user_uuid,
+                    asset_uuid = %params.asset_uuid,
+                    "IssueSessionToken: MCP tool whitelist compute failed, deny"
+                );
+                return AccessResponse::SessionTokenDenied;
+            }
+        }
+    } else {
+        None
+    };
+
+    let ttl_override = if params.protocol == "mcp" {
+        let appliance = mcp_appliance_ttl_secs();
+        let from_rule = max_session_duration
+            .and_then(|d| u64::try_from(d).ok())
+            .filter(|&d| d > 0);
+        Some(from_rule.map(|d| d.min(appliance)).unwrap_or(appliance))
+    } else {
+        None
+    };
+    let token = SessionToken::mint_with_ttl(key, now, params, ttl_override);
     match token.to_bytes() {
         Ok(bytes) => AccessResponse::SessionTokenIssued {
             token: bytes,
             require_mfa,
             require_approval,
             max_session_duration,
+            effective_tools,
         },
         Err(e) => {
             warn!(error = ?e, "IssueSessionToken: serialization failure, deny");
@@ -800,6 +1004,7 @@ pub async fn handle_issue_diagnostic_token(
             require_mfa: false,
             require_approval: false,
             max_session_duration: None,
+            effective_tools: None,
         },
         Err(e) => {
             warn!(error = ?e, "IssueDiagnosticToken: serialization failure, deny");
@@ -832,6 +1037,12 @@ pub(crate) fn parse_optional_datetime(
     }
 }
 
+fn pg_text_array(values: &Option<Vec<String>>) -> Option<Vec<Option<String>>> {
+    values
+        .as_ref()
+        .map(|items| items.iter().cloned().map(Some).collect())
+}
+
 fn to_access_rule_info(row: AccessRuleRow) -> AccessRuleInfo {
     AccessRuleInfo {
         uuid: row.0.to_string(),
@@ -853,6 +1064,10 @@ fn to_access_rule_info(row: AccessRuleRow) -> AccessRuleInfo {
         priority: row.16,
         created_at: row.17.to_rfc3339(),
         updated_at: row.18.to_rfc3339(),
+        mcp_allowed_tools: row.19.map(|v| v.into_iter().flatten().collect()),
+        mcp_hitl_tools: row.20.map(|v| v.into_iter().flatten().collect()),
+        mcp_require_plan_tools: row.21.map(|v| v.into_iter().flatten().collect()),
+        mcp_drift_iam: row.22,
     }
 }
 
@@ -1575,6 +1790,10 @@ async fn handle_create_access_rule(
             access_rules::updated_by_id.eq(actor_id),
             access_rules::created_at.eq(now),
             access_rules::updated_at.eq(now),
+            access_rules::mcp_allowed_tools.eq(pg_text_array(&data.mcp_allowed_tools)),
+            access_rules::mcp_hitl_tools.eq(pg_text_array(&data.mcp_hitl_tools)),
+            access_rules::mcp_require_plan_tools.eq(pg_text_array(&data.mcp_require_plan_tools)),
+            access_rules::mcp_drift_iam.eq(&data.mcp_drift_iam),
         ))
         .execute(conn)
         .await;
@@ -1676,6 +1895,10 @@ async fn handle_update_access_rule(
             access_rules::priority.eq(data.priority),
             access_rules::updated_at.eq(now),
             access_rules::updated_by_id.eq(actor_id),
+            access_rules::mcp_allowed_tools.eq(pg_text_array(&data.mcp_allowed_tools)),
+            access_rules::mcp_hitl_tools.eq(pg_text_array(&data.mcp_hitl_tools)),
+            access_rules::mcp_require_plan_tools.eq(pg_text_array(&data.mcp_require_plan_tools)),
+            access_rules::mcp_drift_iam.eq(&data.mcp_drift_iam),
         ))
         .execute(conn)
         .await;
@@ -3941,6 +4164,10 @@ mod tests {
             max_session_duration: None,
             is_active: true,
             priority: 0,
+            mcp_allowed_tools: None,
+            mcp_hitl_tools: None,
+            mcp_require_plan_tools: None,
+            mcp_drift_iam: "suspend_group".into(),
         };
         match handle_access_request(
             pool,
@@ -4457,6 +4684,10 @@ mod tests {
             max_session_duration: None,
             is_active: true,
             priority: 0,
+            mcp_allowed_tools: None,
+            mcp_hitl_tools: None,
+            mcp_require_plan_tools: None,
+            mcp_drift_iam: "suspend_group".into(),
         };
         let create = handle_access_request(
             &pool,
@@ -5137,6 +5368,10 @@ mod tests {
                     max_session_duration: Some(3600),
                     is_active: true,
                     priority: 0,
+                    mcp_allowed_tools: None,
+                    mcp_hitl_tools: None,
+                    mcp_require_plan_tools: None,
+                    mcp_drift_iam: "suspend_group".into(),
                 },
                 actor_uuid: None,
             },
@@ -5163,6 +5398,10 @@ mod tests {
                     max_session_duration: Some(7200),
                     is_active: true,
                     priority: 0,
+                    mcp_allowed_tools: None,
+                    mcp_hitl_tools: None,
+                    mcp_require_plan_tools: None,
+                    mcp_drift_iam: "suspend_group".into(),
                 },
                 actor_uuid: None,
             },
@@ -6848,6 +7087,10 @@ mod tests {
             max_session_duration: c.max_session_duration,
             is_active: true,
             priority: 0,
+            mcp_allowed_tools: None,
+            mcp_hitl_tools: None,
+            mcp_require_plan_tools: None,
+            mcp_drift_iam: "suspend_group".into(),
         };
         match handle_access_request(
             pool,
@@ -6946,8 +7189,10 @@ mod tests {
                 require_mfa,
                 require_approval,
                 max_session_duration,
+                effective_tools,
             } => {
                 assert!(!token.is_empty());
+                assert!(effective_tools.is_none());
                 assert_eq!(require_mfa, expected.require_mfa);
                 assert_eq!(require_approval, expected.require_approval);
                 assert_eq!(max_session_duration, expected.max_session_duration);
@@ -7012,8 +7257,10 @@ mod tests {
                 require_mfa,
                 require_approval,
                 max_session_duration,
+                effective_tools,
             } => {
                 assert!(!token.is_empty());
+                assert!(effective_tools.is_none());
                 assert!(!require_mfa);
                 assert!(!require_approval);
                 assert!(max_session_duration.is_none());

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Access contestations - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
+                Access contestations
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Review challenges to MCP access decisions (SoD: you cannot resolve a contestation you opened).
+            </p>
+        </div>
+        {% include "mcp/nav.html" %}
+    </div>
+
+    <div id="contestation-ws-trigger" class="hidden"
+         hx-get="/sessions/mcp/contestations"
+         hx-trigger="htmx:wsAfterMessage[detail.message&&detail.message.indexOf('mcp_contestation_')>-1] from:body throttle:500ms"
+         hx-select="#contestation-list-container"
+         hx-target="#contestation-list-container"
+         hx-swap="outerHTML">
+    </div>
+
+    <div id="contestation-list-container">
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden" data-testid="contestation-list">
+        <div class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Recent contestations</h3>
+        </div>
+        {% if items.is_empty() %}
+        <p class="px-4 py-8 text-sm text-center text-gray-500 dark:text-gray-400">
+            No contestations yet.
+        </p>
+        {% else %}
+        <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+            {% for item in items %}
+            <li class="px-4 py-4 sm:px-6">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="min-w-0 space-y-1">
+                        <div class="flex flex-wrap items-center gap-2 text-sm">
+                            <a href="/sessions/mcp/contestations/{{ item.uuid }}"
+                               class="font-mono text-vauban-600 hover:underline">{{ item.decision_id }}</a>
+                            <span class="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium
+                                {% if item.status == "open" %}bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200
+                                {% else if item.status == "under_review" %}bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200
+                                {% else if item.status == "overturned" %}bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200
+                                {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}">
+                                {{ item.status_label }}
+                            </span>
+                            {% if item.is_own_open && item.is_open_queue %}
+                            <span class="text-xs text-yellow-700 dark:text-yellow-300">Opened by you (awaiting another reviewer)</span>
+                            {% endif %}
+                        </div>
+                        <p class="text-sm text-gray-700 dark:text-gray-300">
+                            Subject <span class="font-medium">{{ item.subject_username }}</span>
+                            · opened by <span class="font-medium">{{ item.opened_by_username }}</span>
+                            · {{ item.opened_at }}
+                        </p>
+                        <p class="text-sm text-gray-500 dark:text-gray-400 truncate">{{ item.open_reason_preview }}</p>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">
+                            session <a class="text-vauban-600 hover:underline" href="/sessions/{{ item.session_uuid }}">{{ item.session_uuid }}</a>
+                        </p>
+                    </div>
+                    <a href="/sessions/mcp/contestations/{{ item.uuid }}"
+                       class="shrink-0 text-sm font-semibold text-vauban-600 hover:text-vauban-500">Open →</a>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+    </div>
+</div>
+{% endblock %}

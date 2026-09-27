@@ -94,6 +94,7 @@ impl SessionDetail {
             "waiting_client" => "Waiting client".to_string(),
             "ews_connected" => "EWS connected".to_string(),
             "disconnected" => "Disconnected".to_string(),
+            "suspended" => "Envelope paused".to_string(),
             "terminated" => "Terminated".to_string(),
             "pending" => "Pending".to_string(),
             "failed" => "Failed".to_string(),

@@ -8,6 +8,14 @@ use crate::templates::assets::{
 };
 use shared::messages::{ASSET_GROUP_KIND_ALL, AccessRuleData, GroupOption as IpcGroupOption};
 
+fn protocols_include_mcp(protocols: &[String]) -> bool {
+    protocols.iter().any(|p| p == "mcp")
+}
+
+fn mcp_access_edit_path(uuid: &str) -> String {
+    format!("/sessions/mcp/access/{uuid}/edit")
+}
+
 /// Map IPC `GroupOption`s into template `GroupOption`s for the access-rule
 /// editor. Virtual asset groups (`kind == "all"`) are flagged with
 /// `is_virtual = true`, so the template can render the "Virtual" badge and
@@ -380,6 +388,9 @@ pub async fn access_rule_detail(
             return flash_redirect(flash.error("Failed to load access rule"), "/assets/access");
         }
     };
+    if protocols_include_mcp(&info.allowed_protocols) {
+        return Redirect::to(&format!("/sessions/mcp/access/{uuid_str}")).into_response();
+    }
 
     // Audit pair (issue #22). The IPC `AccessRuleData` does not
     // carry `created_by_id` / `updated_by_id` (those are pure
@@ -634,6 +645,10 @@ pub async fn create_access_rule_web(
         max_session_duration: max_dur,
         is_active: form.is_active.is_some(),
         priority,
+        mcp_allowed_tools: None,
+        mcp_hitl_tools: None,
+        mcp_require_plan_tools: None,
+        mcp_drift_iam: "suspend_group".to_string(),
     };
     // Issue #22 — forward the operator UUID so vauban-access
     // stamps `created_by_id` / `updated_by_id` on the new row.
@@ -719,6 +734,9 @@ pub async fn access_rule_edit(
                 return flash_redirect(flash.error("Failed to load access rule"), "/assets/access");
             }
         };
+        if protocols_include_mcp(&info.allowed_protocols) {
+            return Redirect::to(&mcp_access_edit_path(&uuid_str)).into_response();
+        }
 
         let (ug, ag) = match groups_res {
             Ok((a, b)) => (
@@ -926,6 +944,10 @@ pub async fn update_access_rule_web(
         max_session_duration: max_dur,
         is_active: form.is_active.is_some(),
         priority,
+        mcp_allowed_tools: None,
+        mcp_hitl_tools: None,
+        mcp_require_plan_tools: None,
+        mcp_drift_iam: "suspend_group".to_string(),
     };
     // Issue #22 — forward the operator UUID so vauban-access
     // re-stamps `updated_by_id` on the row.

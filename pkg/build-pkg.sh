@@ -26,7 +26,7 @@ echo "==> Building Vauban ${VERSION} package..."
 # ---- Verify release binaries exist ----------------------------------------
 _missing=""
 for _bin in vauban-access vauban-audit vauban-auth vauban-mailer vauban-proxy-iacs \
-            vauban-proxy-rdp vauban-proxy-ssh vauban-supervisor vauban-vault vauban-web; do
+            vauban-proxy-mcp vauban-proxy-rdp vauban-proxy-ssh vauban-supervisor vauban-vault vauban-web; do
     if [ ! -f "${RELEASE_DIR}/${_bin}" ]; then
         _missing="${_missing} ${_bin}"
     fi
@@ -52,7 +52,7 @@ mkdir -p "${STAGING}/usr/local/etc/newsyslog.conf.d"
 mkdir -p "${STAGING}/usr/local/share/vauban/migrations"
 
 for _svc in vauban-access vauban-audit vauban-auth vauban-mailer vauban-proxy-iacs \
-            vauban-proxy-rdp vauban-proxy-ssh vauban-supervisor vauban-vault vauban-web; do
+            vauban-proxy-mcp vauban-proxy-rdp vauban-proxy-ssh vauban-supervisor vauban-vault vauban-web; do
     install -m 755 "${RELEASE_DIR}/${_svc}" "${STAGING}/usr/local/libexec/vauban/"
 done
 
@@ -89,6 +89,7 @@ libexec/vauban/vauban-audit
 libexec/vauban/vauban-auth
 libexec/vauban/vauban-mailer
 libexec/vauban/vauban-proxy-iacs
+libexec/vauban/vauban-proxy-mcp
 libexec/vauban/vauban-proxy-rdp
 libexec/vauban/vauban-proxy-ssh
 libexec/vauban/vauban-access

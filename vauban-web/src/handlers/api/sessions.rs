@@ -271,6 +271,18 @@ pub async fn create_session(
             _ => AppError::Database(e),
         })?;
 
+    let asset_type: String = crate::schema::assets::table
+        .filter(crate::schema::assets::id.eq(asset_internal_id))
+        .select(crate::schema::assets::asset_type)
+        .first(&mut conn)
+        .await
+        .map_err(AppError::Database)?;
+    if asset_type == "mcp" {
+        return Err(AppError::Validation(
+            "MCP visits are opened with POST /api/v1/mcp/sessions".to_string(),
+        ));
+    }
+
     let protocol = request.session_type.as_str();
 
     if !perms.sessions_bypass_access_rules {
@@ -328,6 +340,7 @@ pub async fn create_session(
         industrial_protocol: None,
         ews_uuid: None,
         tunnel_target_addr: None,
+        expires_at: None,
     };
 
     let session: ProxySession = diesel::insert_into(proxy_sessions)

@@ -24,6 +24,7 @@ pub mod accounts;
 pub mod assets;
 pub mod groups;
 pub mod manage_assets;
+pub mod mcp_sessions;
 pub mod sessions;
 pub mod vault_secrets;
 

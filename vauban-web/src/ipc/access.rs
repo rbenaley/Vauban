@@ -34,6 +34,7 @@ pub struct IssuedSessionToken {
     pub require_mfa: bool,
     pub require_approval: bool,
     pub max_session_duration: Option<i32>,
+    pub effective_tools: Option<Vec<String>>,
 }
 
 /// Async IPC client for vauban-access authorization checks.
@@ -208,6 +209,26 @@ impl AccessIpcClient {
     /// "Access denied" message to the user regardless of the cause --
     /// distinguishing "policy denied" from "minter is broken" would
     /// let a probe fingerprint the bastion.
+    pub async fn compute_mcp_effective_tools(
+        &self,
+        user_uuid: &str,
+        asset_uuid: &str,
+    ) -> AppResult<Vec<String>> {
+        let resp = self
+            .send_access_request(AccessReq::ComputeMcpEffectiveTools {
+                user_uuid: user_uuid.to_string(),
+                asset_uuid: asset_uuid.to_string(),
+            })
+            .await?;
+        match resp {
+            AccessResp::McpEffectiveTools { tools } => Ok(tools),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc(
+                "unexpected response for ComputeMcpEffectiveTools".to_string(),
+            )),
+        }
+    }
+
     pub async fn issue_session_token(
         &self,
         params: shared::session_token::SessionTokenParams,
@@ -229,11 +250,13 @@ impl AccessIpcClient {
                 require_mfa,
                 require_approval,
                 max_session_duration,
+                effective_tools,
             } => Ok(IssuedSessionToken {
                 token,
                 require_mfa,
                 require_approval,
                 max_session_duration,
+                effective_tools,
             }),
             AccessResp::SessionTokenDenied => {
                 Err(AppError::Authorization("Access denied".to_string()))

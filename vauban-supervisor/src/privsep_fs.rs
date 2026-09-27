@@ -25,6 +25,7 @@ pub const SVC_USERS: &[&str] = &[
     "vb-web",
     "vb-iacs",
     "vb-mailer",
+    "vb-mcp",
 ];
 
 /// Directory vs regular file.

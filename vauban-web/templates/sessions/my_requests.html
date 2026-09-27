@@ -204,6 +204,13 @@
                                 Connect
                             </a>
                             {% endif %}
+                            {% if let Some(did) = req.decision_id.as_ref() %}
+                            <span class="font-mono text-xs text-gray-500 dark:text-gray-400">{{ did }}</span>
+                            <a href="/sessions/{{ req.uuid }}"
+                               class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                                Contest
+                            </a>
+                            {% endif %}
                             {% if req.is_pending() %}
                             <form method="post" action="/sessions/my-requests/{{ req.uuid }}/cancel" x-data="csrf">
                                 <input type="hidden" name="csrf_token" x-model="token" />

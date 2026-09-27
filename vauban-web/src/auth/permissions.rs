@@ -106,6 +106,10 @@ pub struct PermissionContext {
     /// `[industrial].enabled = false` forces the flag to `false`,
     /// regardless of the policy decision.
     pub assets_connect_iacs: bool,
+    /// Open an MCP session (`POST /api/v1/mcp/sessions` and
+    /// `POST /assets/{uuid}/connect-mcp`). Forced off when
+    /// `[mcp].enabled` is false.
+    pub assets_connect_mcp: bool,
     /// Consume the organisational vault-secrets M2M API
     /// (`GET /api/v1/vault/secrets*`). This is the FUNCTIONAL capability
     /// only; the instance-level decision (which secrets) is governed by
@@ -154,6 +158,7 @@ impl PermissionContext {
             iacs_read,
             iacs_manage,
             assets_connect_iacs,
+            assets_connect_mcp,
             vault_secrets_read,
             vault_secrets_manage,
         ) = tokio::join!(
@@ -181,6 +186,7 @@ impl PermissionContext {
             check_rbac(state, user, "iacs", "read"),
             check_rbac(state, user, "iacs", "manage"),
             check_rbac(state, user, "assets", "connect_iacs"),
+            check_rbac(state, user, "assets", "connect_mcp"),
             check_rbac(state, user, "vault_secrets", "read"),
             check_rbac(state, user, "vault_secrets", "manage"),
         );
@@ -222,6 +228,7 @@ impl PermissionContext {
             // of the other `iacs_*` flags. The user-zone Connect
             // button is hidden in that mode (see asset_list.html).
             assets_connect_iacs: assets_connect_iacs && industrial_enabled,
+            assets_connect_mcp: assets_connect_mcp && state.config.mcp.enabled,
             vault_secrets_read,
             vault_secrets_manage,
         }

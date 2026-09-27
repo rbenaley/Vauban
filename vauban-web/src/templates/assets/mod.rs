@@ -14,6 +14,7 @@ pub mod group_detail;
 pub mod group_edit;
 pub mod group_list;
 pub mod manage;
+pub mod mcp_tool_option;
 
 pub use access_list::AccessListTemplate;
 pub use access_rule_create::{AccessRuleCreateForm, AccessRuleCreateTemplate, GroupOption};

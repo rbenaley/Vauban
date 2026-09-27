@@ -7,7 +7,10 @@
 //! credential-listing logic must go through encrypted-transit verbs in
 //! [`crate::ipc::vault::VaultCryptoClient`].
 pub mod access;
+pub mod access_contestation;
+pub mod access_decision;
 pub mod anomalies;
+pub mod api_key_lifecycle;
 pub mod api_response_invariants;
 pub mod asset_membership;
 pub mod audit;
@@ -25,7 +28,15 @@ pub mod list_filters;
 pub mod login_sessions;
 pub mod mail_templates;
 pub mod mailer;
+pub mod mcp_attribute_diff;
+pub mod mcp_control;
+pub mod mcp_discover;
+pub mod mcp_drift;
+pub mod mcp_mail;
+pub mod mcp_recheck;
+pub mod mcp_session;
 pub mod pending_mfa;
+pub mod policy_recheck;
 pub mod rate_limit;
 pub mod rbac;
 pub mod recording_hydrator;

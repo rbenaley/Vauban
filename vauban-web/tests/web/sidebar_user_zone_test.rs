@@ -79,6 +79,7 @@ fn admin_perms() -> PermissionContext {
         iacs_read: true,
         iacs_manage: true,
         assets_connect_iacs: true,
+        assets_connect_mcp: true,
         vault_secrets_read: true,
         vault_secrets_manage: true,
     }
@@ -353,5 +354,44 @@ fn test_vault_secrets_beta_tag_hidden_when_vault_secrets_manage_is_false() {
     assert!(
         !html.contains("Vault Secrets is a beta preview surface"),
         "the Vault Secrets Beta badge must NOT render when vault_secrets_manage is false; it lives inside the gated entry"
+    );
+}
+
+// ---------------------------------------------------------------
+// MCP sidebar entry carries a "Beta" badge
+// ---------------------------------------------------------------
+
+/// Same contract as IACS and Vault Secrets: the MCP administration
+/// entry must surface the Beta tag next to its label.
+#[test]
+fn test_mcp_sidebar_entry_carries_beta_tag() {
+    let html = render_with(make_sidebar(user_ctx(true), admin_perms()));
+
+    let mcp_idx = html
+        .find(">MCP\n")
+        .or_else(|| html.find(">MCP<"))
+        .or_else(|| html.find("MCP\n"))
+        .expect("sidebar must carry the MCP entry label");
+    let beta_rel = html[mcp_idx..]
+        .find(">Beta<")
+        .or_else(|| html[mcp_idx..].find("Beta\n"))
+        .expect("sidebar MCP entry must carry a 'Beta' badge");
+    let beta_idx = mcp_idx + beta_rel;
+    assert!(
+        mcp_idx < beta_idx,
+        "the Beta badge must appear after the MCP label"
+    );
+    assert!(
+        html.contains("MCP is a beta preview surface"),
+        "the MCP Beta badge MUST carry a title tooltip explaining that the surface is a preview"
+    );
+}
+
+#[test]
+fn test_mcp_sidebar_beta_tag_hidden_without_mcp_zone() {
+    let html = render_with(make_sidebar(user_ctx(false), user_perms()));
+    assert!(
+        !html.contains("MCP is a beta preview surface"),
+        "the MCP Beta badge must NOT render when the MCP entry is gated off"
     );
 }

@@ -69,6 +69,15 @@ memory_size_kb = 1024
 iterations = 1
 parallelism = 1
 
+# MCP leaf is opt-in in production. The integration suite turns it on
+# so hop 1 / HITL / access pages are reachable. Loopback targets stay
+# refused; there is no demo upstream URL.
+[mcp]
+enabled = true
+allow_loopback_targets = false
+session_ttl_seconds = 3600
+hitl_pending_ttl_seconds = 900
+
 # ==============================================================================
 # IACS / INDUSTRIAL
 # ==============================================================================
