@@ -75,6 +75,10 @@ pub struct McpSessionOpenRequest {
     /// vauban-access, verified by vauban-proxy-mcp BEFORE trusting
     /// the rest of this payload -- same invariant as SSH/RDP/IACS.
     pub session_token: Vec<u8>,
+    /// `direct` or `tunnel`. Frozen for the visit.
+    pub transport: String,
+    /// When true the leaf refuses a `tools/call` outside a sealed mandate.
+    pub require_seal: bool,
 }
 
 /// Response from opening an MCP session.
@@ -161,6 +165,8 @@ pub struct ProxyMcpClient {
     hitl_pendings: StdMutex<HashMap<String, McpHitlPendingEntry>>,
     /// Set after AppState is built — applies envelope auto-suspend DB updates.
     runtime: StdMutex<Option<crate::AppState>>,
+    /// Hop-2 data pipe. `None` until the supervisor fds are attached.
+    data: StdMutex<Option<Arc<crate::ipc::proxy_mcp_data::ProxyMcpDataClient>>>,
 }
 
 impl ProxyMcpClient {
@@ -173,7 +179,18 @@ impl ProxyMcpClient {
             pending_discover_requests: StdMutex::new(HashMap::new()),
             hitl_pendings: StdMutex::new(HashMap::new()),
             runtime: StdMutex::new(None),
+            data: StdMutex::new(None),
         }))
+    }
+
+    pub fn set_data(&self, data: Arc<crate::ipc::proxy_mcp_data::ProxyMcpDataClient>) {
+        if let Ok(mut g) = self.data.lock() {
+            *g = Some(data);
+        }
+    }
+
+    pub fn data(&self) -> Option<Arc<crate::ipc::proxy_mcp_data::ProxyMcpDataClient>> {
+        self.data.lock().ok().and_then(|g| g.clone())
     }
 
     /// Push a frozen authorization envelope to proxy-mcp for a new
@@ -223,6 +240,8 @@ impl ProxyMcpClient {
             justification: request.justification,
             max_body_bytes: request.max_body_bytes,
             session_token: request.session_token,
+            transport: request.transport,
+            require_seal: request.require_seal,
         };
 
         self.core
@@ -654,6 +673,8 @@ mod tests {
             justification: "demo".to_string(),
             max_body_bytes: 1_048_576,
             session_token: vec![1, 2, 3],
+            transport: "direct".to_string(),
+            require_seal: false,
         };
         let c = r.clone();
         assert_eq!(c.session_id, r.session_id);

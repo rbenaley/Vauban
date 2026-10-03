@@ -23,67 +23,101 @@ use std::os::unix::io::RawFd;
 /// death / sandboxed DB loss).
 pub const EXIT_CODE_RESPAWN: i32 = 100;
 
+/// Role of one directed topology edge.
+///
+/// `Control` keeps the historical `VAUBAN_<PEER>_IPC_*` names. `Data`
+/// is a second edge between the same pair (hop-2 bytes) and uses
+/// `VAUBAN_<PEER>_DATA_IPC_*`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PipeKind {
+    Control,
+    Data,
+}
+
+impl PipeKind {
+    /// Infix placed between the peer suffix and `_IPC`.
+    pub const fn env_infix(self) -> &'static str {
+        match self {
+            PipeKind::Control => "",
+            PipeKind::Data => "_DATA",
+        }
+    }
+}
+
+/// One directed edge: `(from, to, kind)`.
+pub type TopologyEdge = (Service, Service, PipeKind);
+
 /// Extra IPC pipes to pass to a child service (raw fd numbers only).
 ///
 /// The numbers are valid only while the matching [`PipeStore`] still
 /// owns the underlying [`IpcChannel`]s. Recipients must not close them;
 /// they inherit copies at `fork`/`execv`.
+///
+/// Control edges stay in `outgoing` / `incoming` so existing env-var
+/// loops keep the historical names. Data edges are separate so a second
+/// pipe between the same peers cannot collide.
 #[derive(Default, Clone, Debug)]
 pub struct ServicePipes {
-    /// Pipes where this service is the "from" side (sender).
+    /// Control pipes where this service is the "from" side (sender).
     pub outgoing: Vec<(Service, i32, i32)>,
-    /// Pipes where this service is the "to" side (receiver).
+    /// Control pipes where this service is the "to" side (receiver).
     pub incoming: Vec<(Service, i32, i32)>,
+    /// Data pipes where this service is the "from" side.
+    pub outgoing_data: Vec<(Service, i32, i32)>,
+    /// Data pipes where this service is the "to" side.
+    pub incoming_data: Vec<(Service, i32, i32)>,
 }
 
 /// Owns every live topology pipe pair for the supervisor process.
 pub struct PipeStore {
-    pipes: HashMap<(Service, Service), (IpcChannel, IpcChannel)>,
+    pipes: HashMap<(Service, Service, PipeKind), (IpcChannel, IpcChannel)>,
 }
 
 impl PipeStore {
     /// Create one pipe pair per directed topology edge and retain both ends.
-    pub fn new(topology: &[(Service, Service)]) -> Result<Self> {
+    pub fn new(topology: &[TopologyEdge]) -> Result<Self> {
         let mut pipes = HashMap::with_capacity(topology.len());
-        for &(from, to) in topology {
-            if pipes.contains_key(&(from, to)) {
+        for &(from, to, kind) in topology {
+            if pipes.contains_key(&(from, to, kind)) {
                 return Err(IpcError::Io(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("duplicate topology edge {from:?} -> {to:?}"),
+                    format!("duplicate topology edge {from:?} -> {to:?} ({kind:?})"),
                 )));
             }
-            pipes.insert((from, to), IpcChannel::pair()?);
+            pipes.insert((from, to, kind), IpcChannel::pair()?);
         }
         Ok(Self { pipes })
     }
 
     /// Replace the pair for an existing edge. The previous pair is dropped
     /// (its fds close) after the processes that inherited them are gone.
-    pub fn replace(&mut self, from: Service, to: Service) -> Result<()> {
-        if !self.pipes.contains_key(&(from, to)) {
+    pub fn replace(&mut self, from: Service, to: Service, kind: PipeKind) -> Result<()> {
+        if !self.pipes.contains_key(&(from, to, kind)) {
             return Err(IpcError::Io(io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("no pipe {from:?} -> {to:?}"),
+                format!("no pipe {from:?} -> {to:?} ({kind:?})"),
             )));
         }
-        self.pipes.insert((from, to), IpcChannel::pair()?);
+        self.pipes.insert((from, to, kind), IpcChannel::pair()?);
         Ok(())
     }
 
     /// Unique construction door for the per-service fd tables.
     pub fn derive_service_pipes(&self) -> HashMap<Service, ServicePipes> {
         let mut service_pipes: HashMap<Service, ServicePipes> = HashMap::new();
-        for ((from, to), (from_channel, to_channel)) in &self.pipes {
-            service_pipes.entry(*from).or_default().outgoing.push((
-                *to,
-                from_channel.read_fd(),
-                from_channel.write_fd(),
-            ));
-            service_pipes.entry(*to).or_default().incoming.push((
-                *from,
-                to_channel.read_fd(),
-                to_channel.write_fd(),
-            ));
+        for ((from, to, kind), (from_channel, to_channel)) in &self.pipes {
+            let from_end = (*to, from_channel.read_fd(), from_channel.write_fd());
+            let to_end = (*from, to_channel.read_fd(), to_channel.write_fd());
+            let from_pipes = service_pipes.entry(*from).or_default();
+            match kind {
+                PipeKind::Control => from_pipes.outgoing.push(from_end),
+                PipeKind::Data => from_pipes.outgoing_data.push(from_end),
+            }
+            let to_pipes = service_pipes.entry(*to).or_default();
+            match kind {
+                PipeKind::Control => to_pipes.incoming.push(to_end),
+                PipeKind::Data => to_pipes.incoming_data.push(to_end),
+            }
         }
         service_pipes
     }
@@ -99,13 +133,18 @@ impl PipeStore {
     }
 
     /// Directed edges currently stored.
-    pub fn edges(&self) -> impl Iterator<Item = (Service, Service)> + '_ {
+    pub fn edges(&self) -> impl Iterator<Item = TopologyEdge> + '_ {
         self.pipes.keys().copied()
     }
 
-    /// Borrow the live pair for `from -> to`, if present.
-    pub fn get(&self, from: Service, to: Service) -> Option<&(IpcChannel, IpcChannel)> {
-        self.pipes.get(&(from, to))
+    /// Borrow the live pair for `from -> to` of `kind`, if present.
+    pub fn get(
+        &self,
+        from: Service,
+        to: Service,
+        kind: PipeKind,
+    ) -> Option<&(IpcChannel, IpcChannel)> {
+        self.pipes.get(&(from, to, kind))
     }
 
     /// Every raw fd currently owned by the store (four per edge).
@@ -159,7 +198,13 @@ pub fn linked_closure<'a>(groups: &[&'a [&'a str]], key: &str) -> BTreeSet<&'a s
 pub fn derived_raw_fds(service_pipes: &HashMap<Service, ServicePipes>) -> Vec<RawFd> {
     let mut fds = Vec::new();
     for pipes in service_pipes.values() {
-        for &(_, r, w) in pipes.outgoing.iter().chain(pipes.incoming.iter()) {
+        for &(_, r, w) in pipes
+            .outgoing
+            .iter()
+            .chain(pipes.incoming.iter())
+            .chain(pipes.outgoing_data.iter())
+            .chain(pipes.incoming_data.iter())
+        {
             fds.push(r);
             fds.push(w);
         }
@@ -183,11 +228,20 @@ mod tests {
     use std::collections::HashSet;
     use std::os::unix::io::BorrowedFd;
 
-    const WEB_RDP: (Service, Service) = (Service::Web, Service::ProxyRdp);
-    const WEB_SSH: (Service, Service) = (Service::Web, Service::ProxySsh);
+    fn ctl(from: Service, to: Service) -> TopologyEdge {
+        (from, to, PipeKind::Control)
+    }
 
-    fn mini_topology() -> Vec<(Service, Service)> {
-        vec![WEB_RDP, WEB_SSH]
+    fn web_rdp() -> TopologyEdge {
+        ctl(Service::Web, Service::ProxyRdp)
+    }
+
+    fn web_ssh() -> TopologyEdge {
+        ctl(Service::Web, Service::ProxySsh)
+    }
+
+    fn mini_topology() -> Vec<TopologyEdge> {
+        vec![web_rdp(), web_ssh()]
     }
 
     #[test]
@@ -195,14 +249,45 @@ mod tests {
         let store = PipeStore::new(&mini_topology()).expect("new");
         assert!(!store.is_empty());
         assert_eq!(store.len(), 2);
-        assert!(store.get(Service::Web, Service::ProxyRdp).is_some());
-        assert!(store.get(Service::Web, Service::ProxySsh).is_some());
-        assert!(store.get(Service::Web, Service::Auth).is_none());
+        assert!(
+            store
+                .get(Service::Web, Service::ProxyRdp, PipeKind::Control)
+                .is_some()
+        );
+        assert!(
+            store
+                .get(Service::Web, Service::ProxySsh, PipeKind::Control)
+                .is_some()
+        );
+        assert!(
+            store
+                .get(Service::Web, Service::Auth, PipeKind::Control)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn control_and_data_between_the_same_peers_are_distinct() {
+        let edges = [
+            (Service::Web, Service::ProxyMcp, PipeKind::Control),
+            (Service::Web, Service::ProxyMcp, PipeKind::Data),
+        ];
+        let store = PipeStore::new(&edges).expect("two kinds");
+        assert_eq!(store.len(), 2);
+        let derived = store.derive_service_pipes();
+        let web = derived.get(&Service::Web).expect("web");
+        assert_eq!(web.outgoing.len(), 1);
+        assert_eq!(web.outgoing_data.len(), 1);
+        assert_eq!(web.outgoing[0].0, Service::ProxyMcp);
+        assert_eq!(web.outgoing_data[0].0, Service::ProxyMcp);
+        assert_ne!(web.outgoing[0].1, web.outgoing_data[0].1);
+        let dup = PipeStore::new(&[edges[1], edges[1]]);
+        assert!(dup.is_err(), "same kind twice is still a duplicate");
     }
 
     #[test]
     fn new_rejects_duplicate_edge() {
-        let err = match PipeStore::new(&[WEB_RDP, WEB_RDP]) {
+        let err = match PipeStore::new(&[web_rdp(), web_rdp()]) {
             Ok(_) => panic!("duplicate edge must fail"),
             Err(e) => e,
         };
@@ -233,8 +318,10 @@ mod tests {
 
     #[test]
     fn replace_changes_fds_and_old_read_sees_eof() {
-        let mut store = PipeStore::new(&[WEB_RDP]).expect("new");
-        let (from_ch, to_ch) = store.get(Service::Web, Service::ProxyRdp).expect("pair");
+        let mut store = PipeStore::new(&[web_rdp()]).expect("new");
+        let (from_ch, to_ch) = store
+            .get(Service::Web, Service::ProxyRdp, PipeKind::Control)
+            .expect("pair");
         let old_from_r = from_ch.read_fd();
         let old_from_w = from_ch.write_fd();
         let old_to_r = to_ch.read_fd();
@@ -244,10 +331,10 @@ mod tests {
         let duped = dup(borrowed).expect("dup old to-read");
 
         store
-            .replace(Service::Web, Service::ProxyRdp)
+            .replace(Service::Web, Service::ProxyRdp, PipeKind::Control)
             .expect("replace");
         let (new_from, new_to) = store
-            .get(Service::Web, Service::ProxyRdp)
+            .get(Service::Web, Service::ProxyRdp, PipeKind::Control)
             .expect("new pair");
         assert_ne!(
             (
@@ -267,8 +354,8 @@ mod tests {
 
     #[test]
     fn replace_missing_edge_errors() {
-        let mut store = PipeStore::new(&[WEB_RDP]).expect("new");
-        let err = match store.replace(Service::Web, Service::ProxySsh) {
+        let mut store = PipeStore::new(&[web_rdp()]).expect("new");
+        let err = match store.replace(Service::Web, Service::ProxySsh, PipeKind::Control) {
             Ok(()) => panic!("missing edge must fail"),
             Err(e) => e,
         };
@@ -326,8 +413,10 @@ mod tests {
 
     #[test]
     fn ping_round_trips_on_live_pair() {
-        let store = PipeStore::new(&[WEB_RDP]).expect("new");
-        let (from_ch, to_ch) = store.get(Service::Web, Service::ProxyRdp).expect("pair");
+        let store = PipeStore::new(&[web_rdp()]).expect("new");
+        let (from_ch, to_ch) = store
+            .get(Service::Web, Service::ProxyRdp, PipeKind::Control)
+            .expect("pair");
         let msg = Message::Control(ControlMessage::Ping { seq: 7 });
         from_ch.send(&msg).expect("send");
         match to_ch.recv().expect("recv") {

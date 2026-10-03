@@ -41,6 +41,8 @@ pub struct OpenMcpSessionResponse {
     pub bearer: String,
     pub expires_at: String,
     pub mcp_protocol_versions: Vec<&'static str>,
+    pub transport: String,
+    pub tunnel_spki: Option<String>,
 }
 
 pub fn mcp_justification_accepted(raw: &str) -> bool {
@@ -196,13 +198,17 @@ pub async fn open_mcp_session(
         }
     };
 
-    let url = format!("http://{}/mcp", state.config.mcp.listen_public_host());
+    let url = state.config.public_mcp_url();
+    let transport = crate::services::mcp_session::mcp_transport(&asset);
+    let tunnel_spki = state.supervisor.as_ref().and_then(|s| s.tunnel_spki());
     Ok(Json(OpenMcpSessionResponse {
         session_id: session_uuid.to_string(),
         url,
         bearer,
         expires_at: expires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         mcp_protocol_versions: MCP_PROTOCOL_VERSIONS.to_vec(),
+        transport,
+        tunnel_spki,
     }))
 }
 

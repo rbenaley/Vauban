@@ -22,25 +22,28 @@ mod mcp_pyramid_tests;
 mod agent_view;
 mod async_ipc;
 mod audit;
+mod data_pipe;
 mod fd_passing;
 mod mandate;
 mod mcp_recording;
 mod phase_c;
 mod tls_pin;
 mod tool_constraints;
+mod tunnel;
 mod upstream_http;
 mod upstream_rebroker;
 mod vault;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use audit::{McpAudit, open_audit_channel, spawn_audit_writer};
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Extension, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::post,
 };
+use data_pipe::McpIngress;
 use fd_passing::{
     FdPassingState, PendingConnections, claim_pending_wait, owned_fd_to_tcp_stream,
     receive_fd_with_retry,
@@ -55,11 +58,10 @@ use serde_json::{Value, json};
 use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_MCP};
 use shared::ipc::IpcChannel;
 use shared::messages::{ControlMessage, Message, ServiceStats};
-use shared::sandbox;
+use shared::sandbox as capsicum;
 use shared::session_token::proxy_gate as session_token_gate;
 use std::collections::{HashMap, VecDeque};
-use std::net::SocketAddr;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::RawFd;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -114,30 +116,6 @@ const SUPPORTED_METHODS: &[&str] = &[
     "tools/call",
 ];
 
-#[derive(Clone, Debug)]
-struct GatewayConfig {
-    listen_addr: SocketAddr,
-}
-
-impl GatewayConfig {
-    fn from_env() -> Result<Self> {
-        // Supervisor sets VAUBAN_MCP_BIND_ADDR from `[mcp].bind_addr`.
-        // MCP_LISTEN_ADDR / LISTEN_ADDR remain for a standalone leaf.
-        let listen = std::env::var("VAUBAN_MCP_BIND_ADDR")
-            .or_else(|_| std::env::var("MCP_LISTEN_ADDR"))
-            .or_else(|_| std::env::var("LISTEN_ADDR"))
-            .unwrap_or_else(|_| "127.0.0.1:19443".to_string());
-        unsafe {
-            std::env::remove_var("VAUBAN_MCP_BIND_ADDR");
-            std::env::remove_var("MCP_LISTEN_ADDR");
-            std::env::remove_var("LISTEN_ADDR");
-        }
-        Ok(Self {
-            listen_addr: listen.parse().context("invalid VAUBAN_MCP_BIND_ADDR")?,
-        })
-    }
-}
-
 #[derive(Debug)]
 struct Session {
     session_id: String,
@@ -184,6 +162,10 @@ struct Session {
     /// Active Mission Seal mandate (post-Approve). Display / lab fallback.
     /// Supervised CheckStep SoT is vauban-access.
     mandate: Option<mandate::MandateState>,
+    /// `direct` or `tunnel`. Frozen at `McpSessionOpen`.
+    transport: String,
+    /// Production visits treat every unsealed `tools/call` as Require plan.
+    require_seal: bool,
 }
 
 #[derive(Clone)]
@@ -330,6 +312,8 @@ impl GatewayState {
             clientinfo_pin: sess.clientinfo_pin,
             hitl_pendings: sess.hitl_pendings.clone(),
             mandate: sess.mandate.clone(),
+            transport: sess.transport.clone(),
+            require_seal: sess.require_seal,
         })
     }
 
@@ -1380,14 +1364,30 @@ async fn handle_hitl_tools_call(
 }
 
 async fn handle_mcp(
-    State((_cfg, state)): State<(GatewayConfig, GatewayState)>,
+    State(state): State<GatewayState>,
     headers: HeaderMap,
+    ingress: Option<Extension<McpIngress>>,
     Json(body): Json<Value>,
 ) -> Response {
+    let Some(Extension(ingress)) = ingress else {
+        return Json(jsonrpc_err(Value::Null, -32010, "ingress_required", None)).into_response();
+    };
     let mut sess = match state.resolve_session(&headers) {
         Ok(s) => s,
         Err(resp) => return resp.into_response(),
     };
+    if sess.transport == "tunnel" && matches!(ingress, McpIngress::Direct { .. }) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(jsonrpc_err(
+                body.get("id").cloned().unwrap_or(Value::Null),
+                -32003,
+                "tunnel_required",
+                None,
+            )),
+        )
+            .into_response();
+    }
 
     let req_id = body.get("id").cloned().unwrap_or(Value::Null);
     let method = body
@@ -1589,22 +1589,28 @@ async fn handle_mcp(
         }
 
         // HITL / Mission Seal gate: no upstream until approved.
-        let needs_hitl = sess
-            .tool_constraints
-            .get(name)
-            .map(|c| c.hitl)
-            .unwrap_or(false);
-        let require_plan = sess
-            .tool_constraints
-            .get(name)
-            .map(|c| c.require_plan)
-            .unwrap_or(false);
         let live_mandate = {
             let g = state.lock_inner();
             g.sessions
                 .get(&sess.session_id)
                 .and_then(|s| s.mandate.clone())
         };
+        let seal_gate = sess.require_seal
+            && !live_mandate
+                .as_ref()
+                .is_some_and(mandate::pep_mandate_active);
+        let needs_hitl = sess
+            .tool_constraints
+            .get(name)
+            .map(|c| c.hitl)
+            .unwrap_or(false)
+            || seal_gate;
+        let require_plan = sess
+            .tool_constraints
+            .get(name)
+            .map(|c| c.require_plan)
+            .unwrap_or(false)
+            || seal_gate;
         if mandate::pep_enter_hitl(needs_hitl, live_mandate.as_ref()) {
             let pending_id = extract_pending_id(&params);
             if let Some(resp) = handle_hitl_tools_call(
@@ -1811,13 +1817,13 @@ fn is_loopback_upstream_host(host: &str) -> bool {
     matches!(h.as_str(), "127.0.0.1" | "::1" | "localhost")
 }
 
-fn build_router(cfg: GatewayConfig, state: GatewayState) -> Router {
+fn build_router(state: GatewayState) -> Router {
     Router::new()
         .route("/mcp", post(handle_mcp))
         .layer(DefaultBodyLimit::max(
             upstream_http::MAX_UPSTREAM_BODY_BYTES,
         ))
-        .with_state((cfg, state))
+        .with_state(state)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2053,6 +2059,8 @@ async fn handle_mcp_session_open(
         max_body_bytes,
         session_token,
         tool_constraints_json,
+        transport,
+        require_seal,
         ..
     } = msg
     else {
@@ -2334,6 +2342,12 @@ async fn handle_mcp_session_open(
         clientinfo_pin: clientinfo_pin_from_env(),
         hitl_pendings: HashMap::new(),
         mandate: None,
+        transport: if transport == "tunnel" {
+            "tunnel".to_string()
+        } else {
+            "direct".to_string()
+        },
+        require_seal,
     });
 
     state
@@ -2623,10 +2637,6 @@ async fn supervisor_control_loop(
     let mut recording_request_id: u64 = 0;
 
     loop {
-        if st.shutdown {
-            break;
-        }
-
         while let Ok(msg) = tcp_connect_rx.try_recv() {
             if let Err(e) = channel.send(&msg) {
                 warn!(error = %e, "failed to send TcpConnectRequest (mcp rebroker)");
@@ -2731,6 +2741,13 @@ async fn supervisor_control_loop(
                         reply.send(Err(error.unwrap_or_else(|| "recording open failed".into())));
                 }
             }
+            Ok(Message::McpTunnelIdentityProvision { cert_der, key_pem }) => {
+                if let Err(e) = tunnel::install_identity(cert_der, key_pem.as_str()) {
+                    error!(error = %e, "rejected MCP tunnel identity");
+                } else {
+                    info!("MCP tunnel identity installed");
+                }
+            }
             Ok(other) => {
                 debug!(
                     ?other,
@@ -2748,6 +2765,10 @@ async fn supervisor_control_loop(
                 warn!(error = %e, "IPC try_recv in MCP proxy control loop, exiting");
                 break;
             }
+        }
+        if st.shutdown {
+            info!("Shutdown flag set, exiting main loop to run destructors");
+            break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -2991,6 +3012,44 @@ async fn web_ipc_loop(
     }
 }
 
+/// Block until the supervisor has pushed the tunnel identity. Heartbeats
+/// that arrive first are answered so the wait cannot stall the parent.
+fn wait_for_mcp_identity(channel: &IpcChannel) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if std::time::Instant::now() > deadline {
+            return Err("timed out waiting for McpTunnelIdentityProvision".into());
+        }
+        match channel.try_recv() {
+            Ok(Message::McpTunnelIdentityProvision { cert_der, key_pem }) => {
+                return tunnel::install_identity(cert_der, key_pem.as_str());
+            }
+            Ok(Message::Control(shared::messages::ControlMessage::Ping { seq })) => {
+                let stats = shared::messages::ServiceStats {
+                    uptime_secs: 0,
+                    requests_processed: 0,
+                    requests_failed: 0,
+                    active_connections: 0,
+                    pending_requests: 0,
+                    recording_ack_timeouts: 0,
+                    recording_ack_dropped: 0,
+                    recording_try_send_full: 0,
+                    recording_ack_wait_ms_max: 0,
+                };
+                let _ = channel.send(&Message::Control(shared::messages::ControlMessage::Pong {
+                    seq,
+                    stats,
+                }));
+            }
+            Ok(_) => {}
+            Err(shared::ipc::IpcError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -3009,14 +3068,6 @@ async fn main() -> ExitCode {
     {
         tracing::debug!("Default CryptoProvider already installed");
     }
-
-    let cfg = match GatewayConfig::from_env() {
-        Ok(c) => c,
-        Err(e) => {
-            error!("config error: {e:#}");
-            return ExitCode::FAILURE;
-        }
-    };
 
     // Parse IPC / FD-passing FDs before TokenKey / AccessGuard consume env.
     let supervisor_fds: Option<(RawFd, RawFd)> = match (
@@ -3042,6 +3093,16 @@ async fn main() -> ExitCode {
     let fd_passing_socket: Option<RawFd> = std::env::var("VAUBAN_FD_PASSING_SOCKET")
         .ok()
         .and_then(|s| s.parse().ok());
+    let data_fds: Option<(RawFd, RawFd)> = match (
+        std::env::var("VAUBAN_WEB_DATA_IPC_READ"),
+        std::env::var("VAUBAN_WEB_DATA_IPC_WRITE"),
+    ) {
+        (Ok(r), Ok(w)) => match (r.parse(), w.parse()) {
+            (Ok(r), Ok(w)) => Some((r, w)),
+            _ => None,
+        },
+        _ => None,
+    };
 
     // ProxyMcp → Vault (decrypt-only). Same env names as proxy-ssh.
     let vault_fds: Option<(RawFd, RawFd)> = {
@@ -3066,6 +3127,10 @@ async fn main() -> ExitCode {
     };
 
     let supervised = supervisor_fds.is_some() || web_fds.is_some();
+    if supervised && data_fds.is_none() {
+        error!("MCP data pipe required under supervisor (refusing to start)");
+        return ExitCode::FAILURE;
+    }
 
     // Session-token MAC key BEFORE Capsicum (env mutation impossible after).
     match session_token_gate::init_from_env() {
@@ -3119,6 +3184,8 @@ async fn main() -> ExitCode {
         std::env::remove_var("VAUBAN_IPC_WRITE");
         std::env::remove_var("VAUBAN_WEB_IPC_READ");
         std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
+        std::env::remove_var("VAUBAN_WEB_DATA_IPC_READ");
+        std::env::remove_var("VAUBAN_WEB_DATA_IPC_WRITE");
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
         std::env::remove_var("VAUBAN_VAULT_IPC_READ");
         std::env::remove_var("VAUBAN_VAULT_IPC_WRITE");
@@ -3159,15 +3226,7 @@ async fn main() -> ExitCode {
     let (web_notify_tx, web_notify_rx) = mpsc::unbounded_channel::<Message>();
     let mut state = GatewayState::new(audit, Some(web_notify_tx));
     state.access_guard = access_guard.clone();
-    let router = build_router(cfg.clone(), state.clone());
-
-    let listener = match tokio::net::TcpListener::bind(cfg.listen_addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            error!(addr = %cfg.listen_addr, error = %e, "failed to bind MCP gateway");
-            return ExitCode::FAILURE;
-        }
-    };
+    let router = build_router(state.clone());
 
     let fd_passing = fd_passing_socket.map(|fd| {
         info!(fd, "FD passing socket available");
@@ -3201,11 +3260,30 @@ async fn main() -> ExitCode {
 
     // Capsicum / pledge seal (noop on macOS lab). Enrol IPC + Access +
     // Audit + Vault + FD-receiver + Streamable HTTP listener (PROXY_MCP_KINDS).
+    let supervisor_channel = supervisor_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
+    if supervised {
+        match supervisor_channel.as_ref() {
+            Some(channel) => {
+                if let Err(e) = wait_for_mcp_identity(channel) {
+                    error!(error = %e, "MCP tunnel identity required before the sandbox");
+                    return ExitCode::FAILURE;
+                }
+            }
+            None => {
+                error!("supervisor channel required before the sandbox");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     let mut ipc_fds: Vec<RawFd> = Vec::new();
-    if let Some((r, w)) = supervisor_fds {
-        ipc_fds.extend([r, w]);
+    if let Some(ref channel) = supervisor_channel {
+        ipc_fds.extend([channel.read_fd(), channel.write_fd()]);
     }
     if let Some((r, w)) = web_fds {
+        ipc_fds.extend([r, w]);
+    }
+    if let Some((r, w)) = data_fds {
         ipc_fds.extend([r, w]);
     }
     if let Some((r, w)) = audit_fds {
@@ -3215,31 +3293,28 @@ async fn main() -> ExitCode {
         ipc_fds.extend([r, w]);
     }
     ipc_fds.extend(access_fds.iter().copied());
-    let listener_fd = listener.as_raw_fd();
     let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| vec![fd]);
-    match sandbox::setup_service_sandbox_with_listeners(
+    let sealed = match capsicum::setup_service_sandbox_with_listeners(
         &ipc_fds,
         None,
         fd_receiver_fds.as_deref(),
-        Some(&[listener_fd]),
+        None,
     ) {
-        Ok(sealed) => {
-            sandbox::log_main_loop_start(&sealed, "MCP gateway sealed, starting serve");
-            // Keep the sandbox token alive for the process lifetime.
-            let _keep_sandbox = sealed;
-        }
+        Ok(sealed) => sealed,
         Err(e) => {
             error!(error = %e, "failed to setup service sandbox");
             return ExitCode::FAILURE;
         }
-    }
+    };
+    capsicum::log_main_loop_start(&sealed, "MCP gateway sealed, no listener");
+    let _sealed: capsicum::Entered = sealed;
 
     // Vault reader after seal (mirrors AccessGuard / proxy-ssh).
     if let Some(ref vc) = vault_client {
         tokio::spawn(Arc::clone(vc).process_incoming());
     }
 
-    info!(addr = %cfg.listen_addr, "MCP gateway listening");
+    info!("MCP gateway ready (hop 2 arrives on the data pipe)");
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let mut shutdown_rx = shutdown_tx.subscribe();
@@ -3254,8 +3329,7 @@ async fn main() -> ExitCode {
         drop(tcp_tx);
     }
 
-    if let Some((read_fd, write_fd)) = supervisor_fds {
-        let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
+    if let Some(channel) = supervisor_channel {
         let shutdown_tx_ctrl = shutdown_tx.clone();
         let fd_passing_ctrl = fd_passing.clone();
         tokio::spawn(async move {
@@ -3299,22 +3373,33 @@ async fn main() -> ExitCode {
         );
     }
 
-    let serve = axum::serve(listener, router).with_graceful_shutdown(async move {
-        tokio::select! {
-            _ = shutdown_rx.recv() => {
-                info!("shutdown requested (supervisor control / IPC closed)");
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("shutdown signal received");
-            }
-        }
-    });
-
-    if let Err(e) = serve.await {
-        error!(error = %e, "HTTP server error");
-        return ExitCode::FAILURE;
+    if let Some((read_fd, write_fd)) = data_fds {
+        let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
+        let max_tunnels = std::env::var("VAUBAN_MCP_MAX_TUNNELS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(256usize);
+        let relay_timeout = std::time::Duration::from_secs(
+            std::env::var("VAUBAN_MCP_RELAY_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(90u64),
+        );
+        let shutdown_rx_data = shutdown_tx.subscribe();
+        let code = data_pipe::data_ipc_loop(
+            channel,
+            router,
+            data_pipe::RELAY_MAX_INFLIGHT,
+            max_tunnels,
+            relay_timeout,
+            shutdown_rx_data,
+        )
+        .await;
+        let _ = shutdown_tx.send(());
+        return code;
     }
 
+    let _ = shutdown_rx.recv().await;
     let _ = shutdown_tx.send(());
     ExitCode::SUCCESS
 }
@@ -3340,19 +3425,60 @@ mod gwt_tests {
     }
 
     #[test]
-    fn gateway_bind_addr_comes_from_supervisor_env() {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap();
-        unsafe {
-            std::env::set_var("VAUBAN_MCP_BIND_ADDR", "51.159.12.96:19443");
-            std::env::set_var("LISTEN_ADDR", "127.0.0.1:9");
-        }
-        let cfg = GatewayConfig::from_env().unwrap();
-        assert_eq!(cfg.listen_addr.to_string(), "51.159.12.96:19443");
-        assert!(std::env::var("VAUBAN_MCP_BIND_ADDR").is_err());
-        assert!(std::env::var("LISTEN_ADDR").is_err());
-        let fallback = GatewayConfig::from_env().unwrap();
-        assert_eq!(fallback.listen_addr.to_string(), "127.0.0.1:19443");
+    fn leaf_has_no_listener_and_requires_the_data_pipe() {
+        let src = include_str!("main.rs");
+        let prod = src.split("mod gwt_tests").next().unwrap_or(src);
+        assert!(
+            !prod.contains(concat!("TcpListener::", "bind")),
+            "the leaf must not bind a socket; hop 2 arrives on the data pipe"
+        );
+        assert!(
+            !prod.contains(concat!("VAUBAN_MCP_", "BIND_ADDR")),
+            "the supervisor must not tell the leaf an address to bind"
+        );
+        assert!(
+            prod.contains("VAUBAN_WEB_DATA_IPC_READ")
+                && prod.contains("MCP data pipe required under supervisor"),
+            "supervised boot is fail-closed without the data pipe"
+        );
+        assert!(
+            prod.contains("capsicum::setup_service_sandbox_with_listeners")
+                && prod.contains("let _sealed: capsicum::Entered"),
+            "sandbox entry must be the capsicum helper and keep the Entered witness"
+        );
+    }
+
+    #[test]
+    fn data_loop_observes_supervisor_shutdown() {
+        let src = include_str!("main.rs");
+        let prod = src.split("mod gwt_tests").next().unwrap_or(src);
+        let call = prod
+            .find("data_pipe::data_ipc_loop(")
+            .expect("data_ipc_loop call");
+        let window = &prod[call..prod.len().min(call + 500)];
+        assert!(
+            window.contains("shutdown_rx_data"),
+            "the data pipe loop must observe supervisor shutdown"
+        );
+        let ctrl = prod
+            .find("if st.shutdown")
+            .expect("control-loop shutdown flag");
+        let ctrl_window = &prod[ctrl..prod.len().min(ctrl + 500)];
+        assert!(
+            ctrl_window.contains("Shutdown flag set, exiting main loop to run destructors"),
+            "control loop must log shutdown and leave the poll before the next sleep"
+        );
+    }
+
+    #[test]
+    fn shutdown_control_sets_the_flag() {
+        let mut st = ControlLoopState {
+            start_time: Instant::now(),
+            requests_processed: 0,
+            shutdown: false,
+        };
+        assert!(handle_control(ControlMessage::Shutdown, &mut st).is_none());
+        assert!(st.shutdown);
     }
 
     #[test]
@@ -3422,6 +3548,8 @@ mod gwt_tests {
             clientinfo_pin: true,
             hitl_pendings: HashMap::new(),
             mandate: None,
+            transport: "direct".into(),
+            require_seal: false,
         }
     }
 
@@ -3640,6 +3768,8 @@ mod gwt_tests {
                 clientinfo_pin: self.clientinfo_pin,
                 hitl_pendings: self.hitl_pendings.clone(),
                 mandate: self.mandate.clone(),
+                transport: self.transport.clone(),
+                require_seal: self.require_seal,
             }
         }
     }
@@ -3865,19 +3995,19 @@ mod gwt_tests {
         assert!(
             impl_rb.contains("target_service: Service::ProxyMcp")
                 && impl_rb.contains("TcpConnectRequest")
-                && !impl_rb.contains("TcpStream::connect"),
+                && !impl_rb.contains("TcpStream::connect"), // allow-post-sandbox: assertion text, not a connect
             "re-broker MUST use supervisor TcpConnect, never free connect"
         );
         assert!(
-            !impl_rb.contains("std::net::TcpStream::connect")
-                && !impl_rb.contains("tokio::net::TcpStream::connect"),
+            !impl_rb.contains("std::net::TcpStream::connect") // allow-post-sandbox: assertion text, not a connect
+                && !impl_rb.contains("tokio::net::TcpStream::connect"), // allow-post-sandbox: assertion text, not a connect
             "impl must not name a free connect"
         );
     }
 
     async fn http_peer(response_body: &'static str) -> tokio::net::TcpStream {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); // allow-post-sandbox: test fake upstream
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let Ok((mut s, _)) = listener.accept().await else {
@@ -3891,17 +4021,17 @@ mod gwt_tests {
             );
             let _ = s.write_all(resp.as_bytes()).await;
         });
-        tokio::net::TcpStream::connect(addr).await.unwrap()
+        tokio::net::TcpStream::connect(addr).await.unwrap() // allow-post-sandbox: test fake upstream
     }
 
     async fn dead_peer() -> tokio::net::TcpStream {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); // allow-post-sandbox: test fake upstream
         let addr = listener.local_addr().unwrap();
         let accept = tokio::spawn(async move {
             let (s, _) = listener.accept().await.unwrap();
             drop(s);
         });
-        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap(); // allow-post-sandbox: test fake upstream
         accept.await.unwrap();
         client
     }
@@ -4671,10 +4801,10 @@ mod gwt_tests {
         );
     }
 
-    fn test_cfg() -> GatewayConfig {
-        GatewayConfig {
-            listen_addr: "127.0.0.1:0".parse().unwrap(),
-        }
+    fn direct_ingress() -> Extension<McpIngress> {
+        Extension(McpIngress::Direct {
+            client_ip: "203.0.113.4".into(),
+        })
     }
 
     fn bearer_headers(token: &str) -> HeaderMap {
@@ -4693,8 +4823,9 @@ mod gwt_tests {
         arguments: Value,
     ) -> Value {
         let resp = handle_mcp(
-            State((test_cfg(), state.clone())),
+            State(state.clone()),
             bearer_headers(token),
+            Some(direct_ingress()),
             Json(json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -4889,12 +5020,34 @@ mod gwt_tests {
         finalize_mandate_upstream(&state, "s-fin-bare", &json!({}), true).await;
     }
 
-    /// Hop 2 on the real router: a brokered TCP stream relays `tools/list`,
-    /// a forged `vbw_` is refused, and the lab control paths are not mounted.
+    async fn oneshot_mcp(
+        app: &Router,
+        uri: &str,
+        token: Option<&str>,
+        body: &str,
+    ) -> (u16, String) {
+        use axum::body::Body;
+        use tower::ServiceExt;
+        let mut builder = axum::http::Request::builder().method("POST").uri(uri);
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        builder = builder.header("content-type", "application/json");
+        let mut req = builder.body(Body::from(body.to_string())).unwrap();
+        req.extensions_mut().insert(McpIngress::Direct {
+            client_ip: "203.0.113.4".into(),
+        });
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status().as_u16();
+        let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Hop 2 on the real router, the way the data pipe calls it:
+    /// `router.oneshot` with an ingress extension. A forged `vbw_` is
+    /// refused and the lab control paths are not mounted.
     #[tokio::test]
     async fn e2e_post_mcp_relays_on_brokered_fd_lab_routes_absent() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
         let state = test_state();
         let token = "vbw_e2e_relay";
         let mut sess = session_with_token("s-e2e-relay", token);
@@ -4905,65 +5058,19 @@ mod gwt_tests {
         sess.upstream_url = Some("http://127.0.0.1/mcp".into());
         insert_session(&state, sess);
 
-        let app = build_router(test_cfg(), state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
-
-        async fn exchange(addr: std::net::SocketAddr, request: &str) -> (u16, String) {
-            let mut stream = None;
-            for _ in 0..25 {
-                match tokio::net::TcpStream::connect(addr).await {
-                    Ok(s) => {
-                        stream = Some(s);
-                        break;
-                    }
-                    Err(_) => {
-                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                    }
-                }
-            }
-            let mut stream = stream.expect("proxy router listening");
-            stream.write_all(request.as_bytes()).await.unwrap();
-            let mut buf = vec![0u8; 16384];
-            let n = tokio::time::timeout(std::time::Duration::from_secs(2), stream.read(&mut buf))
-                .await
-                .expect("response timeout")
-                .unwrap();
-            let text = String::from_utf8_lossy(&buf[..n]).to_string();
-            let status = text.split_whitespace().nth(1).unwrap().parse().unwrap();
-            (status, text)
-        }
-
-        let (health, _) = exchange(
-            addr,
-            "POST /health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        )
-        .await;
-        assert_eq!(health, 404, "GET/POST /health must not exist on the leaf");
-        let (session_status, _) = exchange(
-            addr,
-            "POST /session HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
-        )
-        .await;
+        let app = build_router(state);
+        let (health, _) = oneshot_mcp(&app, "/health", None, "").await;
+        assert_eq!(health, 404, "POST /health must not exist on the leaf");
+        let (session_status, _) = oneshot_mcp(&app, "/session", None, "{}").await;
         assert_eq!(session_status, 404, "lab /session must not exist");
 
         let forged = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
-        let forged_req = format!(
-            "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer vbw_forged\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{forged}",
-            forged.len()
-        );
-        let (forged_status, forged_body) = exchange(addr, &forged_req).await;
+        let (forged_status, forged_body) =
+            oneshot_mcp(&app, "/mcp", Some("vbw_forged"), forged).await;
         assert_eq!(forged_status, 401, "{forged_body}");
 
         let good = r#"{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}"#;
-        let good_req = format!(
-            "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{good}",
-            good.len()
-        );
-        let (ok_status, ok_body) = exchange(addr, &good_req).await;
+        let (ok_status, ok_body) = oneshot_mcp(&app, "/mcp", Some(token), good).await;
         assert_eq!(ok_status, 200, "{ok_body}");
         assert!(ok_body.contains("echo"), "relayed tools/list: {ok_body}");
         assert!(

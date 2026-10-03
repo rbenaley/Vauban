@@ -1518,6 +1518,7 @@ fn build_test_router(state: AppState) -> Router {
             state.clone(),
             middleware::ip_acl::ip_acl_middleware,
         ))
+        .merge(vauban_web::handlers::mcp_relay::mcp_bare_router(&state))
         .with_state(state)
 }
 

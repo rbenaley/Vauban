@@ -7,7 +7,10 @@
 #   INV-2  shared::ipc::clear_cloexec is the SINGLE door: no raw
 #          F_SETFD(FdFlag::empty()) lives in the supervisor.
 #   INV-3  spawn_child de-CLOEXECs the supervisor channel + this service's
-#          topology pipe ends (outgoing + incoming) via the single door.
+#          topology pipe ends (control and data, outgoing + incoming) via
+#          the single door. Substrings match
+#          ipc_fd_hygiene_pin_test::spawn_child_decloexecs_supervisor_channel_and_topology
+#          so rustfmt line breaks cannot drift the two checks apart.
 #   ---    exactly one fork()/execv( surface, all through spawn_child.
 #
 # Run before `cargo test`.
@@ -43,14 +46,34 @@ if ! grep -q "pub fn clear_cloexec(" "$IPC"; then
     err "INV-2: shared::ipc::clear_cloexec must exist (the single door)."
 fi
 
-# INV-3
-if ! grep -q "for fd in \[read_fd, write_fd\]" "$SUP"; then
+# INV-3 — body of spawn_child only (next top-level `fn ` ends the extract,
+# same cut as ipc_fd_hygiene_pin_test::fn_body).
+spawn_body="$(
+    awk '
+        found && /^fn / { exit }
+        /fn spawn_child\(/ { found = 1 }
+        found { print }
+    ' "$SUP"
+)"
+if [ -z "$spawn_body" ]; then
+    err "INV-3: fn spawn_child( must exist in $SUP."
+fi
+if ! grep -qF "for fd in [read_fd, write_fd]" <<<"$spawn_body"; then
     err "INV-3: spawn_child must de-CLOEXEC the supervisor channel (read_fd + write_fd)."
 fi
-if ! grep -q "pipes.outgoing.iter().chain(pipes.incoming.iter())" "$SUP"; then
-    err "INV-3: spawn_child must iterate outgoing AND incoming topology pipe ends."
-fi
-if ! grep -q "shared::ipc::clear_cloexec" "$SUP"; then
+# rustfmt splits `.outgoing` / `.iter()` / `.chain(...)` across lines.
+# Require each end the pin test requires, not one concatenated source line.
+for needle in \
+    "pipes.outgoing" \
+    "pipes.incoming.iter()" \
+    "pipes.outgoing_data.iter()" \
+    "pipes.incoming_data.iter()"
+do
+    if ! grep -qF "$needle" <<<"$spawn_body"; then
+        err "INV-3: spawn_child must de-CLOEXEC control and data topology pipe ends (missing: ${needle})."
+    fi
+done
+if ! grep -qF "shared::ipc::clear_cloexec" <<<"$spawn_body"; then
     err "INV-3: spawn_child must use the single door shared::ipc::clear_cloexec."
 fi
 

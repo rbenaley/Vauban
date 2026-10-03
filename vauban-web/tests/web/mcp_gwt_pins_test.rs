@@ -348,10 +348,11 @@ fn gwt_mcp_zone_nest_and_require_plan_policy() {
     assert!(
         sidebar.contains("href=\"/sessions/mcp\"")
             && sidebar.contains("show_mcp")
-            && sidebar.contains("M15.75 5.25v13.5m-7.5-13.5v13.5")
+            && sidebar.contains("M7 7.3H11.05V6.6A.95.95 0 0 0 12.95 6.6V7.3")
+            && sidebar.contains("cx=\"9.15\" cy=\"13\" r=\"1.55\"")
             && !sidebar.contains("MCP HITL")
             && !sidebar.contains("href=\"/sessions/contestations\""),
-        "sidebar must have a single MCP entry with the proposal icon (no Contestations row)"
+        "sidebar must have a single MCP entry with the IA robot-head icon (no Contestations row)"
     );
     let main = include_str!("../../src/main.rs");
     assert!(
@@ -872,5 +873,24 @@ fn gwt_hitl_story_fields_are_redacted() {
     assert!(
         src.contains("sanitize_story_field") && src.contains("redact_sensitive_json"),
         "HITL Story strings must run through json_redact (JWT-looking values)"
+    );
+}
+
+/// The MCP control pipe is drained. Without this pump `open_session`
+/// waits forever for `McpSessionOpened`.
+#[test]
+fn gwt_mcp_control_pump_is_spawned_after_app_state() {
+    let src = include_str!("../../src/main.rs");
+    let pump = src.find("\"mcp_proxy\"").expect("mcp_proxy pump name");
+    let window_start = pump.saturating_sub(80);
+    let head = &src[window_start..pump];
+    assert!(
+        head.contains("spawn_ipc_pump"),
+        "mcp_proxy must be a spawn_ipc_pump name, not a log string"
+    );
+    let runtime = src.find("proxy_mcp").unwrap_or(0);
+    assert!(
+        src[runtime..].contains("set_runtime("),
+        "MCP pump must bind AppState via set_runtime before hop 1"
     );
 }

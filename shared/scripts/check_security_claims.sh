@@ -10,7 +10,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 errors=0
 
-crates=(vauban-auth vauban-audit vauban-access vauban-supervisor vauban-web vauban-vault shared)
+crates=(vauban-auth vauban-audit vauban-access vauban-supervisor vauban-web vauban-vault vauban-mcp shared)
 
 has_attack_test() {
     local crate_dir="$1"
@@ -53,6 +53,7 @@ done < <(grep -REn --include='*.rs' -E 'attacker who|cannot forge' \
     "${ROOT}/vauban-supervisor/src" \
     "${ROOT}/vauban-web/src" \
     "${ROOT}/vauban-vault/src" \
+    "${ROOT}/vauban-mcp/src" \
     2>/dev/null || true)
 
 if [[ ${errors} -ne 0 ]]; then

@@ -52,6 +52,10 @@ pub mod access_guard;
 #[cfg(feature = "mcp-mandate")]
 pub mod mcp_mandate;
 
+/// SPKI SHA-256 pin. The certificate under verification is not the trust anchor.
+#[cfg(feature = "tls-pin")]
+pub mod tls_pin;
+
 /// MCP access-rule callable set (mint + web preview — one copy).
 pub mod mcp_policy;
 

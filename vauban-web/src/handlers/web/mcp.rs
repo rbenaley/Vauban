@@ -269,8 +269,7 @@ pub async fn connect_mcp(
         return fail_connect(is_htmx, flash, "Failed to create session");
     }
 
-    let gateway_url = std::env::var("VAUBAN_MCP_PROXY_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:19443/mcp".to_string());
+    let gateway_url = state.config.public_mcp_url();
 
     let bearer = match open_on_proxy(
         &state,

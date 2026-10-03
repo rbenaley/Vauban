@@ -66,8 +66,11 @@ fn spawn_child_decloexecs_supervisor_channel_and_topology() {
         "spawn_child MUST de-CLOEXEC the supervisor channel (read_fd + write_fd)."
     );
     assert!(
-        body.contains("pipes.outgoing.iter().chain(pipes.incoming.iter())"),
-        "spawn_child MUST iterate this service's outgoing AND incoming topology pipe ends."
+        body.contains("pipes.outgoing")
+            && body.contains("pipes.incoming.iter()")
+            && body.contains("pipes.outgoing_data.iter()")
+            && body.contains("pipes.incoming_data.iter()"),
+        "spawn_child MUST de-CLOEXEC control and data topology pipe ends"
     );
     // All de-CLOEXEC in spawn_child go through the single door.
     assert!(

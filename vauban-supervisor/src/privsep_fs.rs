@@ -395,7 +395,13 @@ mod tests {
     #[test]
     fn parse_shipped_catalogue() {
         let entries = shipped();
-        assert_eq!(entries.len(), 8);
+        assert_eq!(entries.len(), 10);
+        for name in ["mcp-tunnel.crt", "mcp-tunnel.key"] {
+            let entry = entries.iter().find(|e| e.path.ends_with(name)).expect(name);
+            assert_eq!(entry.mode, 0o600, "{name}");
+            assert_eq!(entry.flags, EntryFlags::IfExists, "{name}");
+            assert_eq!(entry.owner, "root", "{name}");
+        }
         assert!(
             entries
                 .iter()

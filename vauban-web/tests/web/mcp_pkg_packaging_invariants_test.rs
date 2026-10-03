@@ -42,18 +42,20 @@ fn inv_production_mcp_section_opt_in_disabled() {
         .map(|i| i + 1)
         .or_else(|| conf.find("[mcp]\n"))
         .expect("[mcp] section in vauban.conf");
-    let window = &conf[start..start.saturating_add(900).min(conf.len())];
+    let rest = &conf[start..];
+    let end = rest[6..].find("\n[").map(|i| i + 6).unwrap_or(rest.len());
+    let window = &rest[..end];
     assert!(
         window.contains("enabled = false"),
         "production [mcp] must default to enabled = false (opt-in)"
     );
     assert!(
-        window.contains("bind_addr = \"127.0.0.1:19443\""),
-        "production [mcp] must set bind_addr (same key as iacs_tunnel)"
+        window.contains("require_seal = true"),
+        "production [mcp] must require Mission Seal"
     );
     assert!(
-        !window.contains("listen_addr"),
-        "production [mcp] must not keep the retired listen_addr key"
+        !window.contains("bind_addr") && !window.contains("listen_addr"),
+        "production [mcp] must not keep a dedicated listener address"
     );
     assert!(
         window.contains("allow_loopback_targets = false"),

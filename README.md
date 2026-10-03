@@ -481,9 +481,9 @@ malformed identifier (e.g. bad UUID). Every `/api/*` response carries
 - `DELETE /api/v1/sessions/{uuid}` - Delete session (501 Not Implemented)
 
 ### MCP
-- `POST /api/v1/mcp/sessions` - Open an MCP session (hop 1). Requires a `vbn_` API key and `assets:connect_mcp`. Body: `asset_id`, `justification` (10–1000 characters), optional `requested_duration_seconds`. Returns `session_id`, proxy `url`, a one-time `vbw_` bearer, `expires_at`, and `mcp_protocol_versions`.
+- `POST /api/v1/mcp/sessions` - Open an MCP session (hop 1). Requires a `vbn_` API key and `assets:connect_mcp`. Body: `asset_id`, `justification` (10–1000 characters), optional `requested_duration_seconds`. Returns `session_id`, the hop-2 `url` (`https://<bastion>/mcp`), a one-time `vbw_` bearer, `expires_at`, and `mcp_protocol_versions`.
 
-`POST /api/v1/sessions` does not open MCP visits. Hop 2 (`POST /mcp` with `Bearer vbw_…`) is the proxy, not this API.
+`POST /api/v1/sessions` does not open MCP visits. Hop 2 (`POST /mcp` with `Bearer vbw_…`) is on the same HTTPS origin, relayed to `vauban-proxy-mcp`. It is not this API.
 
 ### Vault Secrets (read-only, requires the dedicated `secrets` scope)
 - `GET /api/v1/vault/secrets` - List authorized secrets (metadata only)

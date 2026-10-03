@@ -26,6 +26,9 @@ edge `from: Service -> to: Service`. At boot, the supervisor:
    `derive_service_pipes` is the only fd-table construction),
 3. Forks each child and passes the relevant raw FDs through env
    vars `VAUBAN_<PEER>_IPC_READ` / `VAUBAN_<PEER>_IPC_WRITE`.
+   A second edge of kind `Data` between the same peers (hop-2 MCP
+   bytes, web -> proxy_mcp) uses `VAUBAN_<PEER>_DATA_IPC_READ` /
+   `VAUBAN_<PEER>_DATA_IPC_WRITE` and must be polled on its own.
 
 Each child must:
 

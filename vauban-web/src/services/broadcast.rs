@@ -56,6 +56,9 @@ pub enum WsChannel {
     /// most one event -- worth surfacing at INFO. See
     /// `.cursor/rules/websocket-logging.mdc` for the level matrix.
     IacsRequests,
+    /// One inner-TLS tunnel on `GET /mcp/tunnel`. High-cardinality:
+    /// one channel instance per attached shim.
+    McpTunnel(String),
 }
 
 impl WsChannel {
@@ -76,6 +79,7 @@ impl WsChannel {
                 format!("dashboard:user:{}", user_uuid)
             }
             WsChannel::IacsRequests => "iacs:requests".to_string(),
+            WsChannel::McpTunnel(id) => format!("mcp:tunnel:{id}"),
         }
     }
 
@@ -121,7 +125,8 @@ impl WsChannel {
             WsChannel::SessionLive(_)
             | WsChannel::UserAuthSessions(_)
             | WsChannel::UserApiKeys(_)
-            | WsChannel::DashboardStatsUser(_) => false,
+            | WsChannel::DashboardStatsUser(_)
+            | WsChannel::McpTunnel(_) => false,
         }
     }
 
@@ -146,6 +151,14 @@ impl WsChannel {
             "dashboard:recent-activity" => Some(WsChannel::RecentActivity),
             "notifications" => Some(WsChannel::Notifications),
             "iacs:requests" => Some(WsChannel::IacsRequests),
+            s if s.starts_with("mcp:tunnel:") => {
+                let id = s.strip_prefix("mcp:tunnel:")?.to_string();
+                if id.is_empty() {
+                    None
+                } else {
+                    Some(WsChannel::McpTunnel(id))
+                }
+            }
             s if s.starts_with("session:") => {
                 let id = s.strip_prefix("session:")?.to_string();
                 Some(WsChannel::SessionLive(id))
@@ -1344,6 +1357,7 @@ mod tests {
             WsChannel::UserAuthSessions("any".into()),
             WsChannel::UserApiKeys("any".into()),
             WsChannel::DashboardStatsUser("any-uuid".into()),
+            WsChannel::McpTunnel("1".into()),
         ] {
             assert!(
                 !high.is_low_cardinality(),
@@ -1371,6 +1385,7 @@ mod tests {
             ("user:42:auth-sessions", false),
             ("user:42:api-keys", false),
             ("dashboard:user:00000000-0000-0000-0000-000000000001", false),
+            ("mcp:tunnel:7", false),
         ];
         for (name, expected) in cases {
             assert_eq!(

@@ -75,6 +75,7 @@ parallelism = 1
 [mcp]
 enabled = true
 allow_loopback_targets = false
+require_seal = false
 session_ttl_seconds = 3600
 hitl_pending_ttl_seconds = 900
 

@@ -9,6 +9,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod mcp_relay;
 pub mod web;
 pub mod websocket;
 

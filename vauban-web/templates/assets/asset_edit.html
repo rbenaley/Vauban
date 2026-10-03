@@ -180,7 +180,16 @@
                                placeholder="root">
                         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Account on the target system, used for authentication.</p>
                     </div>
-                    <div x-show="assetType === 'ssh'" x-cloak>
+                    <div x-show="assetType === 'mcp'" x-cloak class="sm:col-span-2">
+                    <label for="mcp_transport" class="block text-sm font-medium text-gray-700 dark:text-gray-300">MCP transport</label>
+                    <select name="mcp_transport" id="mcp_transport"
+                            class="mt-1 block w-full max-w-md rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                        <option value="direct">Direct</option>
+                        <option value="tunnel">Tunnel</option>
+                    </select>
+                    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Tunnel requires the vauban-mcp stdio shim. Direct accepts Authorization: Bearer.</p>
+                </div>
+                <div x-show="assetType === 'ssh'" x-cloak>
                         <label for="ssh_auth_type" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Authentication Type</label>
                         <select name="ssh_auth_type" id="ssh_auth_type" x-model="authType"
                                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">

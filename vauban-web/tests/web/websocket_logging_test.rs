@@ -66,6 +66,7 @@ const HANDLERS: &[&str] = &[
     "async fn handle_session_list_socket(",
     "async fn handle_terminal_socket(",
     "async fn handle_rdp_socket(",
+    "async fn handle_mcp_tunnel_socket(",
 ];
 
 /// Every WS lifecycle line in every handler MUST be `info!` (never
@@ -151,6 +152,7 @@ fn every_upgrade_wrapper_emits_connection_requested_at_info() {
         "pub async fn session_list_ws(",
         "pub async fn terminal_ws(",
         "pub async fn rdp_ws(",
+        "pub async fn mcp_tunnel_ws(",
     ] {
         let body = fn_body(WS_HANDLERS_SRC, sig);
         assert!(

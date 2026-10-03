@@ -108,6 +108,8 @@ pub mod mcp_contestation_user_zone_e2e_test;
 pub mod mcp_drift_iam_e2e_test;
 pub mod mcp_gwt_pins_test;
 pub mod mcp_pkg_packaging_invariants_test;
+pub mod mcp_relay_e2e_test;
+pub mod mcp_relay_invariants_test;
 pub mod mcp_session_ttl_e2e_test;
 pub mod mfa_audit_critical_pins_test;
 pub mod mfa_setup_vau008_test;

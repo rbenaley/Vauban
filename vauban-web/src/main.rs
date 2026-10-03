@@ -218,6 +218,32 @@ fn init_mcp_proxy_client() -> Option<Arc<vauban_web::ipc::ProxyMcpClient>> {
     }
 }
 
+fn init_mcp_data_client() -> Option<Arc<vauban_web::ipc::proxy_mcp_data::ProxyMcpDataClient>> {
+    use std::os::unix::io::RawFd;
+    let read_fd: RawFd = match std::env::var("VAUBAN_PROXY_MCP_DATA_IPC_READ") {
+        Ok(val) => val.parse().ok()?,
+        Err(_) => return None,
+    };
+    let write_fd: RawFd = match std::env::var("VAUBAN_PROXY_MCP_DATA_IPC_WRITE") {
+        Ok(val) => val.parse().ok()?,
+        Err(_) => return None,
+    };
+    unsafe {
+        std::env::remove_var("VAUBAN_PROXY_MCP_DATA_IPC_READ");
+        std::env::remove_var("VAUBAN_PROXY_MCP_DATA_IPC_WRITE");
+    }
+    match vauban_web::ipc::proxy_mcp_data::ProxyMcpDataClient::new(read_fd, write_fd) {
+        Ok(client) => {
+            tracing::info!("MCP data pipe initialized");
+            Some(client)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize MCP data pipe: {}", e);
+            None
+        }
+    }
+}
+
 fn init_iacs_proxy_client() -> Option<Arc<ProxyIacsClient>> {
     use std::os::unix::io::RawFd;
 
@@ -965,6 +991,29 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
     }
     if let Some(ref client) = app_state.rdp_proxy {
         client.set_db_pool(db_pool.clone()).await;
+    }
+
+    // MCP control pipe. `set_runtime` needs the finished AppState (drift
+    // and envelope notifies write `proxy_sessions`). The pump must run
+    // before any hop-1 `open_session`: without it `McpSessionOpened`
+    // is never delivered and the correlated request times out.
+    if let Some(ref client) = app_state.proxy_mcp {
+        client.set_runtime(app_state.clone());
+        if let Some(data) = init_mcp_data_client() {
+            client.set_data(Arc::clone(&data));
+            spawn_ipc_pump(
+                "mcp_data",
+                async move { data.process_incoming().await },
+                pump_ctx.clone(),
+            );
+        }
+        let client_clone = Arc::clone(client);
+        spawn_ipc_pump(
+            "mcp_proxy",
+            async move { client_clone.process_incoming().await },
+            pump_ctx.clone(),
+        );
+        tracing::info!("MCP proxy IPC processing task started");
     }
 
     // VAU-008: periodically evict abandoned MFA enrolment candidates so the
@@ -2452,9 +2501,13 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             std::time::Duration::from_secs(30),
         )));
 
+    // Hop 2. Outside common_layers: no cookie, CSRF, auth or Casbin.
+    let mcp_bare = handlers::mcp_relay::mcp_bare_router(&state);
+
     // Merge all routes
     let app = ws_app
         .merge(http_app)
+        .merge(mcp_bare)
         .fallback(handlers::web::fallback_handler)
         .with_state(state);
 

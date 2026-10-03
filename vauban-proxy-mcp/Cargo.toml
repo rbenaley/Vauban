@@ -11,11 +11,12 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-shared = { workspace = true, features = ["json-redact", "access-guard", "session-token"] }
+shared = { workspace = true, features = ["json-redact", "access-guard", "session-token", "tls-pin"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "io-util", "time"] }
 libc.workspace = true
 hex = "0.4"
 axum = "0.8"
+tower = "0.5"
 serde = { workspace = true }
 serde_json = { workspace = true }
 secrecy.workspace = true
@@ -26,9 +27,12 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tokio-rustls = "0.26"
-x509-cert = { version = "0.2", default-features = false, features = ["std"] }
-sha2 = "0.10"
 base64 = "0.22"
+
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "service"] }
+http-body-util = "0.1"
 
 [dev-dependencies]
 proptest = "1"
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }

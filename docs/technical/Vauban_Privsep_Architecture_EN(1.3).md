@@ -26,10 +26,18 @@
 > after a linked restart. Proxies and `vauban-web` exit 100 on a dead
 > peer pipe instead of spinning or running degraded. See §7.5.
 >
+> **1.3 amended 3 October 2026 (crates 0.9.45):** hop 2 is no longer
+> a listener on the MCP leaf. `TOPOLOGY` has 23 edges: the extra one
+> is `Web -> ProxyMcp` with kind `Data` (`VAUBAN_<PEER>_DATA_IPC_*`).
+> The leaf enters the sandbox with no listening socket. The public
+> `POST /mcp` is served by `vauban-web` on the existing HTTPS port
+> and relayed opaquely on that data pipe. A tunnel mode terminates
+> an inner TLS session inside the leaf, with an identity the
+> supervisor provisions. `[mcp].bind_addr` is obsolete.
+>
 > **1.3 amended 27 September 2026 (crates 0.9.44):** `vauban-proxy-mcp`
-> is a Capsicum leaf (uid 910). It binds its listener, then enters
-> the sandbox, and reaches upstream MCP servers only through a
-> supervisor-brokered FD. There is no HTTP control plane and no
+> is a Capsicum leaf (uid 910). It reaches upstream MCP servers only
+> through a supervisor-brokered FD. There is no HTTP control plane and no
 > free `connect` after sandbox entry. Linked restart closure is
 > `{web, proxy_ssh, proxy_rdp, proxy_mcp}`. `[mcp].enabled` stays
 > false until an operator turns the leaf on. The sandbox is

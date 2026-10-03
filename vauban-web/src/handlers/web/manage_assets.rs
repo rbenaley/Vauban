@@ -154,6 +154,30 @@ pub struct CreateAssetWebForm {
     /// `kerberos_restricted_admin`. Stored as
     /// `connection_config.rdp_auth_mode`. Ignored for non-RDP assets.
     pub rdp_auth_mode: Option<String>,
+    /// Hop-2 transport for an MCP asset: `direct` or `tunnel`.
+    pub mcp_transport: Option<String>,
+}
+
+fn apply_mcp_transport(
+    config: &mut serde_json::Value,
+    asset_type: crate::models::asset::AssetType,
+    raw: Option<&str>,
+) {
+    use crate::models::asset::AssetType;
+    if asset_type != AssetType::Mcp {
+        return;
+    }
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let Some(obj) = config.as_object_mut() else {
+        return;
+    };
+    let transport = if raw == "tunnel" { "tunnel" } else { "direct" };
+    obj.insert(
+        "transport".to_string(),
+        serde_json::Value::String(transport.to_string()),
+    );
 }
 
 /// Handle asset creation form submission (admin zone).
@@ -374,6 +398,11 @@ pub async fn create_asset_web(
         form.ssh_key_source.as_deref(),
         eff_public_key.as_deref(),
         form.rdp_auth_mode.as_deref(),
+    );
+    apply_mcp_transport(
+        &mut connection_config,
+        parsed_asset_type,
+        form.mcp_transport.as_deref(),
     );
 
     if let Some(ref vault) = state.vault_client
@@ -1356,6 +1385,7 @@ pub struct UpdateAssetForm {
     /// SSH key source: `generated` | `existing` (see `CreateAssetWebForm`).
     pub ssh_key_source: Option<String>,
     pub rdp_domain: Option<String>,
+    pub mcp_transport: Option<String>,
     /// RDP NLA auth mode: `ntlm` | `kerberos_restricted_admin`
     /// (see `CreateAssetWebForm::rdp_auth_mode`).
     pub rdp_auth_mode: Option<String>,
@@ -1708,6 +1738,11 @@ pub async fn update_asset_web(
         form.ssh_key_source.as_deref(),
         eff_update_public_key.as_deref(),
         form.rdp_auth_mode.as_deref(),
+    );
+    apply_mcp_transport(
+        &mut connection_config,
+        effective_asset_type,
+        form.mcp_transport.as_deref(),
     );
 
     if let Some(ref vault) = state.vault_client

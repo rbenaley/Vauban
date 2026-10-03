@@ -1287,15 +1287,26 @@ impl Default for IndustrialConfig {
 }
 
 /// Web-side `[mcp]` knobs. Extra keys owned by the supervisor are ignored.
+///
+/// Hop 2 is `https://<public origin>/mcp` on this process. There is no
+/// dedicated listener address.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpSettings {
     #[serde(default)]
     pub enabled: bool,
-    /// Host:port the MCP gateway binds, and the address advertised to
-    /// agents for hop 2 (`POST /mcp`). Same key name as
-    /// `industrial.iacs_tunnel.bind_addr`.
-    #[serde(default = "McpSettings::default_bind_addr")]
-    pub bind_addr: String,
+    /// Obsolete since 0.9.45. Presence is reported by `reject_obsolete`.
+    #[serde(default)]
+    pub bind_addr: Option<String>,
+    #[serde(default = "McpSettings::default_require_seal")]
+    pub require_seal: bool,
+    #[serde(default = "McpSettings::default_relay_rate_limit_per_minute")]
+    pub relay_rate_limit_per_minute: u32,
+    #[serde(default = "McpSettings::default_relay_max_inflight")]
+    pub relay_max_inflight: u32,
+    #[serde(default = "McpSettings::default_relay_timeout_seconds")]
+    pub relay_timeout_seconds: u64,
+    #[serde(default = "McpSettings::default_max_tunnels")]
+    pub max_tunnels: u32,
     #[serde(default = "McpSettings::default_session_ttl_seconds")]
     pub session_ttl_seconds: i64,
     #[serde(default = "McpSettings::default_hitl_pending_ttl_seconds")]
@@ -1306,7 +1317,12 @@ impl Default for McpSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            bind_addr: Self::default_bind_addr(),
+            bind_addr: None,
+            require_seal: Self::default_require_seal(),
+            relay_rate_limit_per_minute: Self::default_relay_rate_limit_per_minute(),
+            relay_max_inflight: Self::default_relay_max_inflight(),
+            relay_timeout_seconds: Self::default_relay_timeout_seconds(),
+            max_tunnels: Self::default_max_tunnels(),
             session_ttl_seconds: Self::default_session_ttl_seconds(),
             hitl_pending_ttl_seconds: Self::default_hitl_pending_ttl_seconds(),
         }
@@ -1314,16 +1330,41 @@ impl Default for McpSettings {
 }
 
 impl McpSettings {
-    pub fn default_bind_addr() -> String {
-        "127.0.0.1:19443".to_string()
+    pub const fn default_require_seal() -> bool {
+        true
+    }
+
+    pub const fn default_relay_rate_limit_per_minute() -> u32 {
+        600
+    }
+
+    pub const fn default_relay_max_inflight() -> u32 {
+        64
+    }
+
+    /// Longer than the leaf's upstream call, so the web timeout is not
+    /// the one that cuts a live tool call.
+    pub const fn default_relay_timeout_seconds() -> u64 {
+        120
+    }
+
+    pub const fn default_max_tunnels() -> u32 {
+        256
     }
 
     pub const fn default_session_ttl_seconds() -> i64 {
         3600
     }
 
-    pub fn listen_public_host(&self) -> &str {
-        self.bind_addr.as_str()
+    pub fn reject_obsolete(&self) -> Result<(), String> {
+        if self.bind_addr.is_some() {
+            Err(
+                "[mcp].bind_addr is obsolete since 0.9.45; hop 2 is served on this HTTPS listener"
+                    .into(),
+            )
+        } else {
+            Ok(())
+        }
     }
 
     pub const fn default_hitl_pending_ttl_seconds() -> i64 {
@@ -1332,6 +1373,19 @@ impl McpSettings {
 
     pub fn session_ttl_clamped(&self) -> i64 {
         self.session_ttl_seconds.clamp(30, 28_800)
+    }
+}
+
+impl Config {
+    /// Hop-2 URL advertised at hop 1. The public origin when one is
+    /// configured, otherwise the bind host and port.
+    pub fn public_mcp_url(&self) -> String {
+        let origins = self.server.parsed_public_origins();
+        if let Some(origin) = origins.first() {
+            format!("{}/mcp", origin.trim_end_matches('/'))
+        } else {
+            format!("https://{}:{}/mcp", self.server.host, self.server.port)
+        }
     }
 }
 
@@ -1702,6 +1756,10 @@ impl Config {
 
         // Deserialize into Config
         let mut config: Config = settings.try_deserialize().map_err(Self::config_error)?;
+        config
+            .mcp
+            .reject_obsolete()
+            .map_err(crate::error::AppError::Config)?;
 
         // Force environment in case it's not in the file
         config.environment = environment;
@@ -1827,8 +1885,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mcp_bind_addr_follows_the_iacs_key_name() {
-        let cfg: McpSettings = config::Config::builder()
+    fn mcp_require_seal_defaults_on_and_bind_addr_is_obsolete() {
+        let fresh = McpSettings::default();
+        assert!(fresh.require_seal);
+        assert!(fresh.bind_addr.is_none());
+        assert_eq!(fresh.relay_timeout_seconds, 120);
+        assert!(fresh.relay_timeout_seconds > 30);
+        let stale: McpSettings = config::Config::builder()
             .add_source(config::File::from_str(
                 "[mcp]\nbind_addr = \"10.1.2.3:19443\"\n",
                 config::FileFormat::Toml,
@@ -1837,12 +1900,7 @@ mod tests {
             .expect("mcp snippet")
             .get("mcp")
             .expect("mcp table");
-        assert_eq!(cfg.bind_addr, "10.1.2.3:19443");
-        assert_eq!(
-            McpSettings::default().bind_addr,
-            McpSettings::default_bind_addr()
-        );
-        assert_eq!(McpSettings::default_bind_addr(), "127.0.0.1:19443");
+        assert!(stale.reject_obsolete().is_err());
     }
 
     // ==================== ProductConfig / BrandConfig (white-label) ====================

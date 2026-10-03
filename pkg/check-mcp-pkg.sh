@@ -19,4 +19,12 @@ awk '
 
 grep -q 'allow_loopback_targets = false' "$toml"
 grep -q 'allow_loopback_targets = false' "$conf"
+grep -q 'require_seal = true' "$toml"
+grep -q 'require_seal = true' "$conf"
+awk '
+  $0 ~ /^\[mcp\]/ { in_m=1; next }
+  $0 ~ /^\[/ { in_m=0 }
+  in_m && $0 ~ /bind_addr/ { found=1 }
+  END { if (found) { print "vauban.conf [mcp] must not keep bind_addr"; exit 1 } }
+' "$conf"
 echo "mcp pkg pin ok"

@@ -35,7 +35,7 @@ use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, execv, fork};
 use shared::ipc::{IpcChannel, poll_readable, send_fd, socketpair_for_fd_passing};
 use shared::messages::{ControlMessage, Message, SensitiveString, Service, ServiceStats};
-use shared::pipe_store::{EXIT_CODE_RESPAWN, PipeStore, ServicePipes, linked_closure};
+use shared::pipe_store::{EXIT_CODE_RESPAWN, PipeKind, PipeStore, ServicePipes, linked_closure};
 use shared::session_token::replay_cache::ReplayCache;
 use shared::session_token::{SESSION_TOKEN_KEY_ENV, SessionToken, TokenKey, Verifier};
 use std::collections::HashMap;
@@ -174,6 +174,7 @@ struct ChildState {
 struct PipeTopology {
     from: Service,
     to: Service,
+    kind: PipeKind,
 }
 
 /// Unix socket pairs for passing file descriptors via SCM_RIGHTS.
@@ -242,66 +243,81 @@ const TOPOLOGY: &[PipeTopology] = &[
     PipeTopology {
         from: Service::Web,
         to: Service::Auth,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::Web,
         to: Service::Access,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::Web,
         to: Service::Audit,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::Web,
         to: Service::Vault,
+        kind: PipeKind::Control,
     }, // encrypt/decrypt secrets
     // Web <-> Proxy connections (for SSH/RDP session data)
     PipeTopology {
         from: Service::Web,
         to: Service::ProxySsh,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::Web,
         to: Service::ProxyRdp,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::Web,
         to: Service::ProxyIacs,
+        kind: PipeKind::Control,
     },
     // Auth connections
     PipeTopology {
         from: Service::Auth,
         to: Service::Access,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::Auth,
         to: Service::Vault,
+        kind: PipeKind::Control,
     },
     // Proxy SSH connections
     PipeTopology {
         from: Service::ProxySsh,
         to: Service::Access,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::ProxySsh,
         to: Service::Vault,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::ProxySsh,
         to: Service::Audit,
+        kind: PipeKind::Control,
     },
     // Proxy RDP connections
     PipeTopology {
         from: Service::ProxyRdp,
         to: Service::Access,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::ProxyRdp,
         to: Service::Vault,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::ProxyRdp,
         to: Service::Audit,
+        kind: PipeKind::Control,
     },
     // Proxy IACS connections (no Vault edge: IACS tunnels do not
     // hold target-asset credentials -- the EWS authenticates with its
@@ -310,26 +326,32 @@ const TOPOLOGY: &[PipeTopology] = &[
     PipeTopology {
         from: Service::ProxyIacs,
         to: Service::Access,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::ProxyIacs,
         to: Service::Audit,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::Web,
         to: Service::ProxyMcp,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::ProxyMcp,
         to: Service::Access,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::ProxyMcp,
         to: Service::Vault,
+        kind: PipeKind::Control,
     },
     PipeTopology {
         from: Service::ProxyMcp,
         to: Service::Audit,
+        kind: PipeKind::Control,
     },
     // Audit connections: the audit service unseals its Ed25519 signing-key
     // seed at boot from the vault `audit` key domain (VaultDecrypt{audit}).
@@ -337,6 +359,12 @@ const TOPOLOGY: &[PipeTopology] = &[
     PipeTopology {
         from: Service::Audit,
         to: Service::Vault,
+        kind: PipeKind::Control,
+    },
+    PipeTopology {
+        from: Service::Web,
+        to: Service::ProxyMcp,
+        kind: PipeKind::Data,
     },
 ];
 
@@ -493,6 +521,7 @@ fn check_schema_up_to_date(config: &SupervisorConfig) -> Result<()> {
 fn run_supervisor() -> Result<()> {
     // Load configuration
     let config = SupervisorConfig::load_auto().context("Failed to load configuration")?;
+    config.mcp.reject_obsolete().map_err(anyhow::Error::msg)?;
 
     info!(
         "Configuration loaded: environment={}, bin_path={}, privsep={}",
@@ -892,6 +921,14 @@ fn run_supervisor() -> Result<()> {
         warn!("vauban-web not started, skipping listener FD and cert transfer");
     }
 
+    if let Err(e) = send_mcp_tunnel_identity(
+        children.get("proxy_mcp").map(|s| &s.channel),
+        children.get("web").map(|s| &s.channel),
+        &tls_paths.cert_path,
+    ) {
+        error!("Failed to provision MCP tunnel identity: {e}");
+    }
+
     // Provision the LDAPS config + trust anchor to vauban-auth BEFORE it seals
     // its sandbox (mirrors the TLS provisioning for web). The
     // supervisor reads the CA bundle as root and ships the (host, port,
@@ -1053,6 +1090,139 @@ fn send_tls_cert_provision(
         .context("Failed to send TlsCertProvision to vauban-web")
 }
 
+struct McpTunnelIdentity {
+    cert_der: Vec<u8>,
+    key_pem: SensitiveString,
+    spki_sha256: String,
+}
+
+fn mcp_identity_paths(tls_cert_path: &str) -> (String, String) {
+    let parent = std::path::Path::new(tls_cert_path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("certs"));
+    (
+        parent.join("mcp-tunnel.crt").display().to_string(),
+        parent.join("mcp-tunnel.key").display().to_string(),
+    )
+}
+
+fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    let b64: String = pem
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("-----"))
+        .collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .context("MCP tunnel certificate PEM is not valid base64")
+}
+
+fn spki_sha256_pin(cert_der: &[u8]) -> Result<String> {
+    shared::tls_pin::spki_sha256_fingerprint(cert_der).map_err(anyhow::Error::msg)
+}
+
+/// True when the certificate is already expired or inside the 30-day
+/// renewal window. A parse failure is treated as expired so a broken
+/// file is replaced.
+fn cert_expires_soon(cert_der: &[u8]) -> bool {
+    use x509_cert::der::Decode;
+    let Ok(parsed) = x509_cert::Certificate::from_der(cert_der) else {
+        return true;
+    };
+    let exp = parsed.tbs_certificate.validity.not_after.to_system_time();
+    let horizon = std::time::SystemTime::now() + std::time::Duration::from_secs(30 * 24 * 60 * 60);
+    exp <= horizon
+}
+
+fn sign_mcp_cert(key_pair: &rcgen::KeyPair) -> Result<(String, Vec<u8>)> {
+    use rcgen::CertificateParams;
+    let mut params = CertificateParams::new(vec!["vauban-proxy-mcp.internal".to_string()])
+        .map_err(|e| anyhow::anyhow!("MCP tunnel cert params: {e}"))?;
+    let now = time::OffsetDateTime::now_utc();
+    params.not_before = now;
+    params.not_after = now + time::Duration::days(365 * 10);
+    let cert = params
+        .self_signed(key_pair)
+        .map_err(|e| anyhow::anyhow!("MCP tunnel self-sign: {e}"))?;
+    let pem = cert.pem();
+    let der = cert.der().to_vec();
+    Ok((pem, der))
+}
+
+/// Load or create the leaf's internal TLS identity (10-year, CN
+/// `vauban-proxy-mcp.internal`). The key stays on disk at mode 0600
+/// and is shipped only to `vauban-proxy-mcp`.
+fn ensure_mcp_tunnel_identity(tls_cert_path: &str) -> Result<McpTunnelIdentity> {
+    use rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256};
+    let (cert_path, key_path) = mcp_identity_paths(tls_cert_path);
+    let missing =
+        !std::path::Path::new(&cert_path).exists() || !std::path::Path::new(&key_path).exists();
+    let expired = if missing {
+        false
+    } else {
+        let existing = std::fs::read_to_string(&cert_path).unwrap_or_default();
+        pem_to_der(&existing)
+            .ok()
+            .is_some_and(|der| cert_expires_soon(&der))
+    };
+    if missing || expired {
+        let key_pair = if expired {
+            let pem = std::fs::read_to_string(&key_path)
+                .with_context(|| format!("Failed to read MCP tunnel key: {key_path}"))?;
+            KeyPair::from_pem(&pem).map_err(|e| anyhow::anyhow!("MCP tunnel key reload: {e}"))?
+        } else {
+            KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+                .map_err(|e| anyhow::anyhow!("MCP tunnel key: {e}"))?
+        };
+        let (cert_pem, _der) = sign_mcp_cert(&key_pair)?;
+        let mut key_pem = key_pair.serialize_pem();
+        atomic_write_pem(&cert_path, &cert_pem)?;
+        atomic_write_pem(&key_path, &key_pem)?;
+        key_pem.zeroize();
+        info!(cert_path, key_path, "Generated MCP tunnel identity");
+    }
+    let cert_pem = std::fs::read_to_string(&cert_path)
+        .with_context(|| format!("Failed to read MCP tunnel cert: {cert_path}"))?;
+    let mut key_text = std::fs::read_to_string(&key_path)
+        .with_context(|| format!("Failed to read MCP tunnel key: {key_path}"))?;
+    let cert_der = pem_to_der(&cert_pem)?;
+    let spki_sha256 = spki_sha256_pin(&cert_der)?;
+    let key_pem = SensitiveString::new(key_text.clone());
+    key_text.zeroize();
+    Ok(McpTunnelIdentity {
+        cert_der,
+        key_pem,
+        spki_sha256,
+    })
+}
+
+/// Push the identity to the leaf and the SPKI pin to web. Either side
+/// may be absent (a single-service respawn).
+fn send_mcp_tunnel_identity(
+    proxy: Option<&IpcChannel>,
+    web: Option<&IpcChannel>,
+    tls_cert_path: &str,
+) -> Result<()> {
+    let identity = ensure_mcp_tunnel_identity(tls_cert_path)?;
+    if let Some(channel) = proxy {
+        channel
+            .send(&Message::McpTunnelIdentityProvision {
+                cert_der: identity.cert_der,
+                key_pem: identity.key_pem.clone(),
+            })
+            .context("Failed to send McpTunnelIdentityProvision")?;
+    }
+    if let Some(channel) = web {
+        channel
+            .send(&Message::McpTunnelIdentityFingerprint {
+                spki_sha256: identity.spki_sha256,
+            })
+            .context("Failed to send McpTunnelIdentityFingerprint")?;
+    }
+    Ok(())
+}
+
 /// Read the LDAP CA bundle (root) and provision the LDAPS configuration to
 /// vauban-auth via IPC, BEFORE the auth child seals its sandbox
 /// (mirrors [`send_tls_cert_provision`] for web). The CA PEM is trust material,
@@ -1167,8 +1337,24 @@ fn setup_signal_handlers() -> Result<()> {
     Ok(())
 }
 
-fn topology_pairs() -> Vec<(Service, Service)> {
-    TOPOLOGY.iter().map(|c| (c.from, c.to)).collect()
+fn topology_pairs() -> Vec<(Service, Service, PipeKind)> {
+    TOPOLOGY.iter().map(|c| (c.from, c.to, c.kind)).collect()
+}
+
+fn push_pipe_env(
+    vars: &mut Vec<(String, String)>,
+    peer: Service,
+    kind: PipeKind,
+    r_fd: i32,
+    w_fd: i32,
+) {
+    let suffix = service_to_env_suffix(peer);
+    let infix = kind.env_infix();
+    vars.push((format!("VAUBAN_{suffix}{infix}_IPC_READ"), r_fd.to_string()));
+    vars.push((
+        format!("VAUBAN_{suffix}{infix}_IPC_WRITE"),
+        w_fd.to_string(),
+    ));
 }
 
 // Post-fork child process: tracing is NOT available, eprintln! is the only output mechanism.
@@ -1193,17 +1379,31 @@ fn spawn_child(
     // Format: VAUBAN_{TARGET}_IPC_READ and VAUBAN_{TARGET}_IPC_WRITE
     let mut topology_env_vars: Vec<(String, String)> = Vec::new();
     if let Some(pipes) = topology_pipes {
-        // For outgoing connections (this service -> target)
-        for (target, r_fd, w_fd) in &pipes.outgoing {
-            let suffix = service_to_env_suffix(*target);
-            topology_env_vars.push((format!("VAUBAN_{}_IPC_READ", suffix), r_fd.to_string()));
-            topology_env_vars.push((format!("VAUBAN_{}_IPC_WRITE", suffix), w_fd.to_string()));
+        // Control edges keep VAUBAN_<PEER>_IPC_*. Data edges use
+        // VAUBAN_<PEER>_DATA_IPC_* so a second pipe cannot overwrite them.
+        for (peer, r_fd, w_fd) in &pipes.outgoing {
+            push_pipe_env(
+                &mut topology_env_vars,
+                *peer,
+                PipeKind::Control,
+                *r_fd,
+                *w_fd,
+            );
         }
-        // For incoming connections (source -> this service)
-        for (source, r_fd, w_fd) in &pipes.incoming {
-            let suffix = service_to_env_suffix(*source);
-            topology_env_vars.push((format!("VAUBAN_{}_IPC_READ", suffix), r_fd.to_string()));
-            topology_env_vars.push((format!("VAUBAN_{}_IPC_WRITE", suffix), w_fd.to_string()));
+        for (peer, r_fd, w_fd) in &pipes.incoming {
+            push_pipe_env(
+                &mut topology_env_vars,
+                *peer,
+                PipeKind::Control,
+                *r_fd,
+                *w_fd,
+            );
+        }
+        for (peer, r_fd, w_fd) in &pipes.outgoing_data {
+            push_pipe_env(&mut topology_env_vars, *peer, PipeKind::Data, *r_fd, *w_fd);
+        }
+        for (peer, r_fd, w_fd) in &pipes.incoming_data {
+            push_pipe_env(&mut topology_env_vars, *peer, PipeKind::Data, *r_fd, *w_fd);
         }
     }
 
@@ -1266,7 +1466,13 @@ fn spawn_child(
             // `topology_pipes` was allocated before fork; iterating it is
             // allocation-free (async-signal-safe enough for post-fork).
             if let Some(pipes) = topology_pipes {
-                for (_, r_fd, w_fd) in pipes.outgoing.iter().chain(pipes.incoming.iter()) {
+                for (_, r_fd, w_fd) in pipes
+                    .outgoing
+                    .iter()
+                    .chain(pipes.incoming.iter())
+                    .chain(pipes.outgoing_data.iter())
+                    .chain(pipes.incoming_data.iter())
+                {
                     for fd in [*r_fd, *w_fd] {
                         if let Err(e) = shared::ipc::clear_cloexec(fd) {
                             eprintln!("Failed to clear FD_CLOEXEC on topology fd {}: {}", fd, e);
@@ -1418,7 +1624,7 @@ fn watchdog_loop(
             &config.auth.ldaps,
             &config.auth.kerberos,
             &iacs_guards,
-            &McpConnectGuards::from_config(&config.mcp),
+            &McpConnectGuards::from_config(&config.mcp, config.server.port),
         );
 
         // Send heartbeats periodically
@@ -1502,6 +1708,29 @@ fn watchdog_loop(
     }
 }
 
+/// Reap children that have already exited. `true` when none are still running.
+fn reap_finished_children(children: &mut HashMap<String, ChildState>) -> bool {
+    let mut all_exited = true;
+    for (service_key, state) in children.iter_mut() {
+        if state.pid > 0 {
+            match waitpid(Pid::from_raw(state.pid), Some(WaitPidFlag::WNOHANG)) {
+                Ok(WaitStatus::Exited(_, code)) => {
+                    info!("{}: Exited with code {}", service_key, code);
+                    state.pid = -1;
+                }
+                Ok(WaitStatus::Signaled(_, sig, _)) => {
+                    info!("{}: Killed by signal {:?}", service_key, sig);
+                    state.pid = -1;
+                }
+                _ => {
+                    all_exited = false;
+                }
+            }
+        }
+    }
+    all_exited
+}
+
 /// Send Shutdown to all children and wait for them to exit gracefully.
 fn graceful_shutdown_children(children: &mut HashMap<String, ChildState>) {
     // Send ControlMessage::Shutdown to each child via IPC
@@ -1514,29 +1743,12 @@ fn graceful_shutdown_children(children: &mut HashMap<String, ChildState>) {
         }
     }
 
-    // Wait up to 5 seconds for children to exit, then SIGTERM stragglers
+    // Wait up to 5 seconds for children to exit, then SIGTERM stragglers.
+    // Reap after SIGTERM: a dead child still has pid > 0 until waitpid,
+    // and must not be reported as still running.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let mut all_exited = true;
-        for (service_key, state) in children.iter_mut() {
-            if state.pid > 0 {
-                match waitpid(Pid::from_raw(state.pid), Some(WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::Exited(_, code)) => {
-                        info!("{}: Exited with code {}", service_key, code);
-                        state.pid = -1;
-                    }
-                    Ok(WaitStatus::Signaled(_, sig, _)) => {
-                        info!("{}: Killed by signal {:?}", service_key, sig);
-                        state.pid = -1;
-                    }
-                    _ => {
-                        all_exited = false;
-                    }
-                }
-            }
-        }
-
-        if all_exited {
+        if reap_finished_children(children) {
             info!("All children exited gracefully");
             return;
         }
@@ -1552,8 +1764,17 @@ fn graceful_shutdown_children(children: &mut HashMap<String, ChildState>) {
                     let _ = kill(Pid::from_raw(state.pid), Signal::SIGTERM);
                 }
             }
-            // Give them 1 more second then SIGKILL
-            std::thread::sleep(Duration::from_secs(1));
+            let term_deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                if reap_finished_children(children) {
+                    info!("All children exited gracefully");
+                    return;
+                }
+                if Instant::now() >= term_deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
             for (service_key, state) in children.iter() {
                 if state.pid > 0 {
                     error!("{}: Still running, sending SIGKILL", service_key);
@@ -2073,6 +2294,16 @@ fn respawn_service(
                     }
                 }
             }
+            if state.service_key == "web" || state.service_key == "proxy_mcp" {
+                let proxy = (state.service_key == "proxy_mcp").then_some(&state.channel);
+                let web = (state.service_key == "web").then_some(&state.channel);
+                if let Err(e) = send_mcp_tunnel_identity(proxy, web, &config.server.tls.cert_path) {
+                    error!(
+                        service = %state.service_key,
+                        "Failed to send MCP tunnel identity after respawn: {e}"
+                    );
+                }
+            }
 
             // Re-provision LDAPS config to a respawned vauban-auth BEFORE it
             // re-seals. Without this, a crashed/respawned auth would
@@ -2161,11 +2392,11 @@ fn respawn_linked_group(
 
     // Step 4: Replace only intra-group edges. PipeStore keeps the new
     // pairs; edges to living outsiders stay untouched.
-    for (from, to) in pipe_store.edges().collect::<Vec<_>>() {
+    for (from, to, kind) in pipe_store.edges().collect::<Vec<_>>() {
         let from_key = service_to_key(from);
         let to_key = service_to_key(to);
         if group.contains(&from_key) && group.contains(&to_key) {
-            match pipe_store.replace(from, to) {
+            match pipe_store.replace(from, to, kind) {
                 Ok(()) => info!("Replaced pipe: {} -> {}", from_key, to_key),
                 Err(e) => error!("Failed to replace pipe {} -> {}: {}", from_key, to_key, e),
             }
@@ -2310,6 +2541,18 @@ fn respawn_linked_group(
                             }
                         }
                     }
+                    if service_key == "web" || service_key == "proxy_mcp" {
+                        let proxy = (service_key == "proxy_mcp").then_some(&state.channel);
+                        let web = (service_key == "web").then_some(&state.channel);
+                        if let Err(e) =
+                            send_mcp_tunnel_identity(proxy, web, &config.server.tls.cert_path)
+                        {
+                            error!(
+                                service = %service_key,
+                                "Failed to send MCP tunnel identity after linked restart: {e}"
+                            );
+                        }
+                    }
                     if service_key == "web" && config.auth.ldaps.enabled {
                         match send_web_ldap_mapping_provision(&state.channel, &config.auth.ldaps) {
                             Ok(()) => info!(
@@ -2443,9 +2686,9 @@ struct McpConnectGuards {
 }
 
 impl McpConnectGuards {
-    fn from_config(cfg: &crate::config::McpConfig) -> Self {
+    fn from_config(cfg: &crate::config::McpConfig, https_port: u16) -> Self {
         Self {
-            listen_port: cfg.listen_port(),
+            listen_port: https_port,
             allow_loopback_targets: cfg.allow_loopback_targets,
         }
     }
@@ -4059,7 +4302,50 @@ mod tests {
 
     #[test]
     fn test_topology_count() {
-        assert_eq!(TOPOLOGY.len(), 22);
+        assert_eq!(TOPOLOGY.len(), 23);
+    }
+
+    #[test]
+    fn send_mcp_tunnel_identity_has_three_call_sites() {
+        let src = include_str!("main.rs");
+        let src = src
+            .split("fn send_mcp_tunnel_identity_has_three_call_sites")
+            .next()
+            .unwrap_or(src);
+        assert_eq!(
+            src.matches("send_mcp_tunnel_identity(").count(),
+            4,
+            "definition plus boot, respawn and linked restart"
+        );
+    }
+
+    #[test]
+    fn mcp_tunnel_identity_fingerprint_is_sha256_spki() {
+        let dir = std::env::temp_dir().join(format!("vauban-mcp-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tls = dir.join("server.crt");
+        std::fs::write(&tls, b"placeholder").unwrap();
+        let identity = ensure_mcp_tunnel_identity(tls.to_str().unwrap()).unwrap();
+        assert!(identity.spki_sha256.starts_with("SHA256:"));
+        assert!(identity.cert_der.starts_with(&[0x30]));
+        assert!(identity.key_pem.as_str().contains("PRIVATE KEY"));
+        let again = ensure_mcp_tunnel_identity(tls.to_str().unwrap()).unwrap();
+        assert_eq!(again.spki_sha256, identity.spki_sha256);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_tunnel_reissue_keeps_the_spki_pin() {
+        use rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256};
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let (_, first) = sign_mcp_cert(&key).unwrap();
+        let (_, second) = sign_mcp_cert(&key).unwrap();
+        assert_eq!(
+            spki_sha256_pin(&first).unwrap(),
+            spki_sha256_pin(&second).unwrap()
+        );
+        assert!(!cert_expires_soon(&first));
     }
 
     #[test]
@@ -4202,8 +4488,8 @@ mod tests {
             .collect();
 
         // Web connects to: Auth, Access, Audit, ProxySsh, ProxyRdp,
-        // ProxyIacs, ProxyMcp, Vault
-        assert_eq!(web_connections.len(), 8);
+        // ProxyIacs, ProxyMcp (control + data), Vault
+        assert_eq!(web_connections.len(), 9);
     }
 
     #[test]
@@ -4282,10 +4568,16 @@ mod tests {
         assert!(proxy_connections.iter().any(|c| c.to == Service::Vault));
         assert!(proxy_connections.iter().any(|c| c.to == Service::Audit));
         assert!(
-            TOPOLOGY
-                .iter()
-                .any(|c| c.from == Service::Web && c.to == Service::ProxyMcp),
-            "Web must open the hop-1 IPC edge to proxy_mcp"
+            TOPOLOGY.iter().any(|c| {
+                c.from == Service::Web && c.to == Service::ProxyMcp && c.kind == PipeKind::Control
+            }),
+            "Web must open the hop-1 control edge to proxy_mcp"
+        );
+        assert!(
+            TOPOLOGY.iter().any(|c| {
+                c.from == Service::Web && c.to == Service::ProxyMcp && c.kind == PipeKind::Data
+            }),
+            "Web must open the hop-2 data edge to proxy_mcp"
         );
     }
 
@@ -4335,7 +4627,7 @@ mod tests {
 
         for conn in TOPOLOGY {
             assert!(
-                store.get(conn.from, conn.to).is_some(),
+                store.get(conn.from, conn.to, conn.kind).is_some(),
                 "Pipe {:?} -> {:?} should exist",
                 conn.from,
                 conn.to
@@ -5516,6 +5808,25 @@ mod tests {
         assert!(
             shutdown_source.contains("ControlMessage::Shutdown"),
             "graceful_shutdown_children must send ControlMessage::Shutdown to all children"
+        );
+    }
+
+    #[test]
+    fn test_sigterm_reaps_before_sigkill() {
+        let source = supervisor_prod_source();
+        let term = source.find("sending SIGTERM").expect("SIGTERM log");
+        let kill_rel = source[term..].find("sending SIGKILL").expect("SIGKILL log");
+        let between = &source[term..term + kill_rel];
+        assert!(
+            between.contains("reap_finished_children"),
+            "graceful shutdown must reap after SIGTERM before SIGKILL"
+        );
+        let helper = source
+            .find("fn reap_finished_children")
+            .expect("reap helper");
+        assert!(
+            source[helper..source.len().min(helper + 600)].contains("waitpid"),
+            "reap helper must waitpid"
         );
     }
 

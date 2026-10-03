@@ -4,7 +4,7 @@
 
 use proptest::prelude::*;
 use shared::messages::Service;
-use shared::pipe_store::{PipeStore, derived_raw_fds, fd_is_open, linked_closure};
+use shared::pipe_store::{PipeKind, PipeStore, derived_raw_fds, fd_is_open, linked_closure};
 use std::collections::HashSet;
 use std::os::unix::io::RawFd;
 
@@ -15,12 +15,12 @@ const SERVICES: [Service; 4] = [
     Service::Auth,
 ];
 
-fn all_edges() -> Vec<(Service, Service)> {
+fn all_edges() -> Vec<(Service, Service, PipeKind)> {
     vec![
-        (Service::Web, Service::ProxySsh),
-        (Service::Web, Service::ProxyRdp),
-        (Service::Web, Service::Auth),
-        (Service::ProxySsh, Service::Auth),
+        (Service::Web, Service::ProxySsh, PipeKind::Control),
+        (Service::Web, Service::ProxyRdp, PipeKind::Control),
+        (Service::Web, Service::Auth, PipeKind::Control),
+        (Service::ProxySsh, Service::Auth, PipeKind::Control),
     ]
 }
 
@@ -35,8 +35,8 @@ proptest! {
         let edges = all_edges();
         let mut store = PipeStore::new(&edges).expect("new");
         for i in indices {
-            let (from, to) = edges[i];
-            store.replace(from, to).expect("replace");
+            let (from, to, kind) = edges[i];
+            store.replace(from, to, kind).expect("replace");
             let owned = store.all_raw_fds();
             prop_assert!(fds_unique_and_open(&owned), "store fds collided or closed");
             let derived = store.derive_service_pipes();
@@ -75,5 +75,52 @@ proptest! {
 fn services_used_in_edges_are_known() {
     for svc in SERVICES {
         let _ = format!("{svc:?}");
+    }
+}
+
+proptest! {
+    /// Random multisets of (from, to, kind). The store accepts an edge
+    /// exactly once per kind: a second Control is rejected, a Data edge
+    /// beside a Control is not, and derived env-name pieces stay unique.
+    #[test]
+    fn random_edges_are_unique_per_kind(
+        raw in prop::collection::vec((0usize..4, 0usize..4, 0u8..2), 1..24)
+    ) {
+        let peers = [Service::Web, Service::ProxyMcp, Service::ProxySsh, Service::Auth];
+        let mut edges = Vec::new();
+        let mut seen = HashSet::new();
+        for (a, b, k) in raw {
+            if a == b {
+                continue;
+            }
+            let kind = if k == 0 { PipeKind::Control } else { PipeKind::Data };
+            let edge = (peers[a], peers[b], kind);
+            if !seen.insert(edge) {
+                let err = PipeStore::new(&[edge, edge]);
+                prop_assert!(err.is_err(), "duplicate {:?} must be rejected", edge);
+                continue;
+            }
+            edges.push(edge);
+        }
+        if edges.is_empty() {
+            return Ok(());
+        }
+        let store = PipeStore::new(&edges).expect("unique edges");
+        prop_assert_eq!(store.len(), edges.len());
+        let derived = store.derive_service_pipes();
+        for pipes in derived.values() {
+            let mut names = HashSet::new();
+            for (peer, infix) in pipes
+                .outgoing
+                .iter()
+                .map(|(peer, _, _)| (peer, ""))
+                .chain(pipes.outgoing_data.iter().map(|(peer, _, _)| (peer, "_DATA")))
+            {
+                let name = format!("VAUBAN_{peer:?}{infix}_IPC_READ");
+                prop_assert!(names.insert(name.clone()), "env name collided: {name}");
+            }
+        }
+        let fds = derived_raw_fds(&derived);
+        prop_assert!(fds_unique_and_open(&fds));
     }
 }

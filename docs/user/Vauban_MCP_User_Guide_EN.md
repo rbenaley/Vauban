@@ -147,7 +147,7 @@ Replay is the same player as SSH. Full audit evidence stays on the server.
 1. Authenticate with `vbn_…` (rights ≤ the human owner).
 2. `POST /api/v1/mcp/sessions` with the asset id and a justification of 10 to 1000 characters.
 3. Keep `url` + `vbw_…` + expiry.
-4. Every MCP request goes to `url` (`https://<bastion>/mcp`) with that ticket, either directly from the MCP client or through the local `vauban-mcp` shim (tunnel mode, when the client runs stdio servers or the asset requires it).
+4. Every MCP request goes to `url` (`https://<bastion>/mcp`) with that ticket. A client that can set `Authorization: Bearer` posts there directly. A client that only speaks stdio runs the `vauban-mcp` shim, which opens the same URL through the tunnel. Hosted connectors that require MCP OAuth are not supported ([ADR 009](../adr/009-mcp-no-oauth-for-now.md)).
 
 When a tool has **Require plan**, hop 2 `tools/list` adds `arguments.vauban` (Story + Contract) to that tool’s `inputSchema`. The first `tools/call` must include `arguments.vauban.story` and `arguments.vauban.contract` (that call always queues `-32030` HITL). Retrying before a human Approves stays `-32030`; upstream is not called. `_meta.vauban` is still accepted (curl). After Approve, later **Contract** steps send the tool + args only — Vauban CheckSteps. During the mission, a call that is not in the Contract (even an Allow tool) is **drift** (`-32033`), not `-32001`. After every step is done, an Allow tool is a normal call; a Require plan tool without `vauban` is `-32602` (not IAM). Story+Contract again starts a **new** mission (replace).
 
@@ -155,6 +155,39 @@ When a tool has **Require plan**, hop 2 `tools/list` adds `arguments.vauban` (St
 - **Contract** is the only perimeter Vauban checks after Approve.
 
 Write the Story in clear English. The HITL UI is English.
+
+### Direct client
+
+A client that can set a static header posts to the hop-1 `url` (`https://<bastion>/mcp`):
+
+```json
+{
+  "mcpServers": {
+    "vauban": {
+      "url": "https://bastion.example/mcp",
+      "headers": { "Authorization": "Bearer vbw_…" }
+    }
+  }
+}
+```
+
+The `vbw_` value is the one-time ticket from hop 1, not the `vbn_` API key.
+
+### Tunnel client
+
+A client that only speaks stdio runs the shim. The API key stays in the environment or a file, never on the command line:
+
+```text
+VAUBAN_API_KEY=vbn_… vauban-mcp \
+  --url https://bastion.example \
+  --asset <asset-uuid> \
+  --justification "read the ticket queue for the morning review" \
+  --transport tunnel
+```
+
+Point the assistant at that command as a stdio MCP server. The first connection records the leaf pin. A later pin change is refused.
+
+Hosted connectors that require MCP OAuth are not supported.
 
 DTO and sequence: [`Vauban_MCP_Architecture_EN(1.0).md`, §7 The Agent View](../technical/Vauban_MCP_Architecture_EN(1.0).md#7-the-agent-view).
 

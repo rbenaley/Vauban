@@ -10,6 +10,8 @@
 
 dir  ${PREFIX}/etc/vauban              root  wheel     0750  ALL              rx  fd:r   required
 dir  ${PREFIX}/etc/vauban/certs        root  wheel     0700  -                -   none   required
+file ${PREFIX}/etc/vauban/certs/mcp-tunnel.crt root wheel 0600 - - none if_exists
+file ${PREFIX}/etc/vauban/certs/mcp-tunnel.key root wheel 0600 - - none if_exists
 dir  ${PREFIX}/etc/vauban/access       root  wheel     0750  vb-access        rx  fd:r   required
 file ${PREFIX}/etc/vauban/vauban.conf  root  wheel     0600  ALL              r   none   required
 dir  /var/vauban/vault                 root  vb-vault  0750  -                -   none   required

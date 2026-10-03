@@ -11,6 +11,7 @@ pub mod clients;
 pub mod correlated;
 pub mod proxy_iacs;
 pub mod proxy_mcp;
+pub mod proxy_mcp_data;
 pub mod proxy_rdp;
 pub mod proxy_ssh;
 pub mod pump;

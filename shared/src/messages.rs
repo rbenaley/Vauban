@@ -2663,6 +2663,11 @@ pub enum Message {
         justification: String,
         max_body_bytes: u64,
         session_token: Vec<u8>,
+        /// `direct` (opaque HTTP relay) or `tunnel` (inner TLS).
+        transport: String,
+        /// Production visits refuse a `tools/call` that is not inside a
+        /// sealed mandate.
+        require_seal: bool,
     },
     McpSessionOpened {
         request_id: u64,
@@ -3488,7 +3493,74 @@ pub enum Message {
         sealed_digest: String,
         requester_user_id: String,
     },
+
+    // WIRE COMPATIBILITY: these variants are APPENDED at the end of the enum.
+    // Bincode encodes enum variants by ordinal index, so new variants MUST be
+    // added here (never inserted in the middle) to preserve the discriminants
+    // of already-deployed peers. Hop-2 bytes travel on the dedicated data
+    // pipe; they are not correlated through `request_id()`.
+    /// Web -> proxy-mcp: one hop-2 HTTP request, before its body chunks.
+    McpRelayRequest {
+        relay_id: u64,
+        client_ip: String,
+        authorization: SensitiveString,
+        content_type: String,
+        accept: String,
+        mcp_session_id: Option<String>,
+        mcp_protocol_version: Option<String>,
+        body_len: u32,
+    },
+    /// Either direction: one body chunk. `last` closes the body.
+    McpRelayBody {
+        relay_id: u64,
+        seq: u32,
+        last: bool,
+        data: Vec<u8>,
+    },
+    /// Proxy-mcp -> web: hop-2 status line, before response body chunks.
+    McpRelayResponse {
+        relay_id: u64,
+        status: u16,
+        content_type: String,
+        mcp_session_id: Option<String>,
+        body_len: u32,
+    },
+    /// Either direction: drop an in-flight relay (timeout, oversize, peer gone).
+    McpRelayAbort {
+        relay_id: u64,
+        reason: String,
+    },
+    /// Web -> proxy-mcp: a tunnel client is attached on the data pipe.
+    McpTunnelOpen {
+        tunnel_id: u64,
+        client_ip: String,
+    },
+    /// Either direction: opaque inner-TLS record bytes.
+    McpTunnelData {
+        tunnel_id: u64,
+        data: Vec<u8>,
+    },
+    /// Either direction: the tunnel is finished.
+    McpTunnelClose {
+        tunnel_id: u64,
+        reason: String,
+    },
+    /// Supervisor -> proxy-mcp, before the sandbox: internal TLS identity.
+    McpTunnelIdentityProvision {
+        cert_der: Vec<u8>,
+        key_pem: SensitiveString,
+    },
+    /// Supervisor -> web: SPKI pin the hop-1 response publishes (`SHA256:<b64>`).
+    McpTunnelIdentityFingerprint {
+        spki_sha256: String,
+    },
 }
+
+/// Largest payload of one [`Message::McpRelayBody`] or [`Message::McpTunnelData`].
+///
+/// Stays under [`crate::ipc::MAX_MESSAGE_SIZE`] once the bincode envelope
+/// (variant tag, ids, length prefix) is added.
+pub const MCP_PIPE_CHUNK_BYTES: usize = 192 * 1024;
 
 impl Message {
     /// Get the request ID if this message has one.
@@ -4790,6 +4862,8 @@ mod tests {
             justification: "unit test mcp open hop".into(),
             max_body_bytes: 1_048_576,
             session_token: vec![1, 2, 3],
+            transport: "direct".into(),
+            require_seal: true,
         };
         assert_eq!(open.request_id(), Some(9));
         let decoded: Message = deserialize(&serialize(&open));
@@ -4829,6 +4903,128 @@ mod tests {
         };
         let decoded: Message = deserialize(&serialize(&pending));
         assert!(matches!(decoded, Message::McpHitlPendingNotify { .. }));
+    }
+
+    #[test]
+    fn test_mcp_relay_roundtrip_and_debug_never_prints_authorization() {
+        let secret = "vbw_super-secret-ticket";
+        let req = Message::McpRelayRequest {
+            relay_id: 4,
+            client_ip: "203.0.113.9".into(),
+            authorization: SensitiveString::new(secret.into()),
+            content_type: "application/json".into(),
+            accept: "application/json".into(),
+            mcp_session_id: Some("sid".into()),
+            mcp_protocol_version: Some("2025-03-26".into()),
+            body_len: 3,
+        };
+        let debug = format!("{req:?}");
+        assert!(
+            !debug.contains(secret) && debug.contains("[REDACTED]"),
+            "relay authorization must stay redacted: {debug}"
+        );
+        let decoded: Message = deserialize(&serialize(&req));
+        match decoded {
+            Message::McpRelayRequest {
+                relay_id,
+                authorization,
+                body_len,
+                ..
+            } => {
+                assert_eq!(relay_id, 4);
+                assert_eq!(authorization.as_str(), secret);
+                assert_eq!(body_len, 3);
+            }
+            other => panic!("wrong variant {other:?}"),
+        }
+        assert!(req.request_id().is_none());
+
+        let ident = Message::McpTunnelIdentityProvision {
+            cert_der: vec![1, 2, 3],
+            key_pem: SensitiveString::new("PRIVATE-KEY-BYTES".into()),
+        };
+        let debug = format!("{ident:?}");
+        assert!(
+            !debug.contains("PRIVATE-KEY-BYTES"),
+            "identity key must stay redacted: {debug}"
+        );
+        let decoded: Message = deserialize(&serialize(&ident));
+        match decoded {
+            Message::McpTunnelIdentityProvision { cert_der, key_pem } => {
+                assert_eq!(cert_der, vec![1, 2, 3]);
+                assert_eq!(key_pem.as_str(), "PRIVATE-KEY-BYTES");
+            }
+            other => panic!("wrong variant {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_relay_variant_indices_appended() {
+        let drift = Message::McpMandateDriftNotify {
+            session_id: "s".into(),
+            tool: "echo".into(),
+            reason: "binding".into(),
+            mandate_id: "m".into(),
+            sealed_digest: "d".into(),
+            requester_user_id: "u".into(),
+        };
+        let relay = Message::McpRelayRequest {
+            relay_id: 1,
+            client_ip: "127.0.0.1".into(),
+            authorization: SensitiveString::new("vbw_x".into()),
+            content_type: String::new(),
+            accept: String::new(),
+            mcp_session_id: None,
+            mcp_protocol_version: None,
+            body_len: 0,
+        };
+        let body = Message::McpRelayBody {
+            relay_id: 1,
+            seq: 0,
+            last: true,
+            data: vec![],
+        };
+        let response = Message::McpRelayResponse {
+            relay_id: 1,
+            status: 200,
+            content_type: "application/json".into(),
+            mcp_session_id: None,
+            body_len: 0,
+        };
+        let abort = Message::McpRelayAbort {
+            relay_id: 1,
+            reason: "timeout".into(),
+        };
+        let open = Message::McpTunnelOpen {
+            tunnel_id: 2,
+            client_ip: "127.0.0.1".into(),
+        };
+        let data = Message::McpTunnelData {
+            tunnel_id: 2,
+            data: vec![9],
+        };
+        let close = Message::McpTunnelClose {
+            tunnel_id: 2,
+            reason: "eof".into(),
+        };
+        let provision = Message::McpTunnelIdentityProvision {
+            cert_der: vec![],
+            key_pem: SensitiveString::new(String::new()),
+        };
+        let pin = Message::McpTunnelIdentityFingerprint {
+            spki_sha256: "SHA256:aa".into(),
+        };
+        let base = bincode_variant_index(&serialize(&drift));
+        let ordered = [
+            relay, body, response, abort, open, data, close, provision, pin,
+        ];
+        for (i, msg) in ordered.iter().enumerate() {
+            assert_eq!(
+                bincode_variant_index(&serialize(msg)),
+                base + 1 + i as u8,
+                "variant {i} must stay appended after McpMandateDriftNotify"
+            );
+        }
     }
 
     #[test]

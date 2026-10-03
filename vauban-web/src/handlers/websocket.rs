@@ -2652,6 +2652,91 @@ async fn handle_rdp_socket(
           session_id = %session_id, "WebSocket disconnected");
 }
 
+/// Hop-2 tunnel. Unauthenticated: the `vbw_` ticket travels inside the
+/// inner TLS records, which this socket only forwards.
+pub async fn mcp_tunnel_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    client_addr: crate::middleware::client_addr::ClientAddr,
+) -> Response {
+    let Some(data) = state.proxy_mcp.as_ref().and_then(|proxy| proxy.data()) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Ok((tunnel_id, inbound)) = data.open_tunnel(client_addr.0.ip().to_string()) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let channel = WsChannel::McpTunnel(tunnel_id.to_string()).as_str();
+    info!(channel = %channel, "WebSocket connection requested");
+    ws.on_upgrade(move |socket| handle_mcp_tunnel_socket(socket, data, tunnel_id, inbound, channel))
+}
+
+async fn handle_mcp_tunnel_socket(
+    socket: WebSocket,
+    data: Arc<crate::ipc::proxy_mcp_data::ProxyMcpDataClient>,
+    tunnel_id: u64,
+    mut inbound: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    channel_label: String,
+) {
+    let (mut sender, mut receiver) = socket.split();
+    info!(channel = %channel_label, "WebSocket connected");
+    let mut ping_interval = interval(Duration::from_secs(30));
+    // Initial value is overwritten at every break. Clippy cannot see that.
+    #[allow(unused_assignments)]
+    let mut close_cause: &'static str = "unknown";
+    loop {
+        tokio::select! {
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Binary(bytes))) => {
+                        if data.send_tunnel(tunnel_id, bytes.to_vec()).is_err() {
+                            close_cause = "send_fail";
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        close_cause = "close";
+                        break;
+                    }
+                    Some(Err(e)) => {
+                        warn!(channel = %channel_label, error = %e, "WebSocket recv error");
+                        close_cause = "error";
+                        break;
+                    }
+                    None => {
+                        close_cause = "stream_end";
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            chunk = inbound.recv() => {
+                match chunk {
+                    Some(bytes) => {
+                        if sender.send(Message::Binary(bytes.into())).await.is_err() {
+                            close_cause = "send_fail";
+                            break;
+                        }
+                    }
+                    None => {
+                        close_cause = "server_close";
+                        break;
+                    }
+                }
+            }
+            _ = ping_interval.tick() => {
+                if sender.send(Message::Ping(vec![].into())).await.is_err() {
+                    warn!(channel = %channel_label, "Ping send failed");
+                    close_cause = "ping_fail";
+                    break;
+                }
+            }
+        }
+    }
+    info!(channel = %channel_label, cause = %close_cause, "WebSocket closed");
+    data.close_tunnel(tunnel_id, close_cause);
+    info!(channel = %channel_label, "WebSocket disconnected");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3897,6 +3982,20 @@ mod tests {
             }
 
             let signature = balanced_parens(after, paren_open_rel);
+
+            // Hop-2 `GET /mcp/tunnel` has no browser session. The `vbw_`
+            // ticket travels inside the inner TLS records, and the stdio
+            // shim cannot present a cookie. Putting `WsAuthUser` here
+            // would reject that client.
+            if header_name == "mcp_tunnel_ws" {
+                assert!(
+                    !signature.contains(": AuthUser") && !signature.contains(": WsAuthUser"),
+                    "mcp_tunnel_ws stays unauthenticated at the HTTP layer. Signature was:\n{}",
+                    signature
+                );
+                handler_count += 1;
+                continue;
+            }
 
             assert!(
                 !signature.contains(": AuthUser"),

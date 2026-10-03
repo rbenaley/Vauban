@@ -112,6 +112,8 @@ pub struct SupervisorClientInner {
     admin_db_pool: OnceLock<crate::db::DbPool>,
     /// Tokio runtime handle for running async admin commands from the sync IPC thread.
     tokio_handle: OnceLock<tokio::runtime::Handle>,
+    /// SPKI pin of the MCP tunnel identity (`SHA256:<b64>`).
+    tunnel_spki: Mutex<Option<String>>,
     /// Sliding-window tracker for supervisor-brokered round-trip
     /// latency. Updated from `request_tcp_connect` on success; consumed
     /// by the Bastion Watch dashboard's "FD-passing latency" tile.
@@ -170,6 +172,7 @@ impl SupervisorClient {
             admin_db_pool: OnceLock::new(),
             tokio_handle: OnceLock::new(),
             broker_latency: Arc::new(BrokerLatencyTracker::default()),
+            tunnel_spki: Mutex::new(None),
         });
 
         let thread_inner = Arc::clone(&inner);
@@ -190,6 +193,16 @@ impl SupervisorClient {
                 ldap_mapping_rx,
             },
         )
+    }
+
+    /// SPKI pin published on hop 1 (`SHA256:<b64>`), once the supervisor
+    /// has provisioned the leaf identity.
+    pub fn tunnel_spki(&self) -> Option<String> {
+        self.inner
+            .tunnel_spki
+            .lock()
+            .ok()
+            .and_then(|pin| pin.clone())
     }
 
     /// Request the supervisor to establish a TCP connection.
@@ -545,6 +558,12 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                         request_id,
                         "No pending request for recording delete response"
                     );
+                }
+            }
+            Ok(Message::McpTunnelIdentityFingerprint { spki_sha256 }) => {
+                info!("Received MCP tunnel identity fingerprint from supervisor");
+                if let Ok(mut pin) = inner.tunnel_spki.lock() {
+                    *pin = Some(spki_sha256);
                 }
             }
             Ok(Message::TlsCertProvision { cert_pem, key_pem }) => {

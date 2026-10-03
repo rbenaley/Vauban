@@ -189,6 +189,21 @@
             </div>
         </div>
 
+        <div x-show="isMcp" x-cloak class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">MCP transport</h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Direct posts JSON-RPC to the bastion. Tunnel wraps it in an inner TLS session via the local shim.</p>
+            </div>
+            <div class="px-4 py-5 sm:p-6">
+                <label for="mcp_transport" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Transport</label>
+                <select name="mcp_transport" id="mcp_transport"
+                        class="mt-1 block w-full max-w-md rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                    <option value="direct" selected>Direct</option>
+                    <option value="tunnel">Tunnel</option>
+                </select>
+            </div>
+        </div>
+
         <!-- Authentication Settings (protocol-aware) -->
         <p x-show="submitError" x-cloak class="text-sm text-red-600" x-text="submitError"></p>
         <div x-show="!isIacs && !isMcp" x-cloak class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">

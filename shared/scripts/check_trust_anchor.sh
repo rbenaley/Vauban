@@ -49,4 +49,20 @@ if [[ ${errors} -ne 0 ]]; then
     exit 1
 fi
 
+for f in "${ROOT}/shared/src/tls_pin.rs" "${ROOT}/vauban-mcp/src/inner.rs" "${ROOT}/vauban-proxy-mcp/src/tls_pin.rs"; do
+    if [[ ! -f "${f}" ]]; then
+        echo "[lint] missing ${f}" >&2
+        errors=1
+        continue
+    fi
+    if grep -q 'danger_accept_invalid_certs' "${f}"; then
+        echo "[lint] ${f} must not disable certificate checks" >&2
+        errors=1
+    fi
+done
+if ! grep -q 'pins_match' "${ROOT}/shared/src/tls_pin.rs"; then
+    echo "[lint] shared tls pin must compare to an expected pin" >&2
+    errors=1
+fi
+
 echo "[lint] WORM / signature verify uses an out-of-band pin"

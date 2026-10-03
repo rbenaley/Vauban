@@ -21,4 +21,16 @@ for needle in "${needles[@]}"; do
     fail=1
   fi
 done
+# The leaf does not listen. Test helpers may still bind a fake upstream.
+for needle in 'MCP_LISTEN_ADDR' 'VAUBAN_MCP_BIND_ADDR'; do
+  if grep -R -n -F -I -- "$needle" src Cargo.toml; then
+    echo "forbidden listener env: $needle" >&2
+    fail=1
+  fi
+done
+prod=$(awk 'BEGIN{p=1} /mod gwt_tests/{p=0} p' src/main.rs)
+if printf '%s\n' "$prod" | grep -n -F 'TcpListener::bind'; then
+  echo "production leaf must not bind a TCP listener" >&2
+  fail=1
+fi
 exit "$fail"

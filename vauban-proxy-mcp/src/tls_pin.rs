@@ -18,8 +18,6 @@
 
 use std::sync::Arc;
 
-use base64::Engine;
-use sha2::{Digest, Sha256};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls;
@@ -81,34 +79,7 @@ pub async fn connect_pinned(
 
 /// SHA256:<base64> of full SPKI DER.
 pub fn spki_sha256_fingerprint(cert: &pki_types::CertificateDer<'_>) -> Result<String, String> {
-    let spki = spki_der(cert)?;
-    let digest = Sha256::digest(&spki);
-    Ok(format!(
-        "SHA256:{}",
-        base64::engine::general_purpose::STANDARD.encode(digest)
-    ))
-}
-
-fn spki_der(cert: &pki_types::CertificateDer<'_>) -> Result<Vec<u8>, String> {
-    use x509_cert::der::{Decode as _, Encode as _};
-    let parsed = x509_cert::Certificate::from_der(cert.as_ref())
-        .map_err(|e| format!("Failed to parse X.509 certificate: {e}"))?;
-    parsed
-        .tbs_certificate
-        .subject_public_key_info
-        .to_der()
-        .map_err(|e| format!("Failed to re-encode SubjectPublicKeyInfo: {e}"))
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    shared::tls_pin::spki_sha256_fingerprint(cert.as_ref())
 }
 
 #[derive(Debug)]
@@ -129,7 +100,7 @@ impl ServerCertVerifier for PinningServerCertVerifier {
         let live = spki_sha256_fingerprint(end_entity)
             .map_err(|e| rustls::Error::General(format!("SPKI extraction failed: {e}")))?;
 
-        if constant_time_eq(live.as_bytes(), self.expected_fingerprint.as_bytes()) {
+        if shared::tls_pin::pins_match(&self.expected_fingerprint, &live) {
             Ok(ServerCertVerified::assertion())
         } else {
             Err(rustls::Error::General(format!(
@@ -179,6 +150,7 @@ impl ServerCertVerifier for PinningServerCertVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     #[test]
     fn pin_format_rejected_when_empty() {

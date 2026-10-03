@@ -4,10 +4,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use shared::messages::{ControlMessage, Message, Service};
-use shared::pipe_store::{PipeStore, derived_raw_fds};
+use shared::pipe_store::{PipeKind, PipeStore, derived_raw_fds};
 
 fn send_ping(store: &PipeStore, from: Service, to: Service, seq: u64) {
-    let (from_ch, to_ch) = store.get(from, to).expect("pair");
+    let (from_ch, to_ch) = store.get(from, to, PipeKind::Control).expect("pair");
     from_ch
         .send(&Message::Control(ControlMessage::Ping { seq }))
         .expect("send");
@@ -22,19 +22,23 @@ fn send_ping(store: &PipeStore, from: Service, to: Service, seq: u64) {
 #[test]
 fn e2e_two_successive_replaces_keep_distinct_live_pipes() {
     let mut store = PipeStore::new(&[
-        (Service::Web, Service::ProxyRdp),
-        (Service::Web, Service::ProxySsh),
+        (Service::Web, Service::ProxyRdp, PipeKind::Control),
+        (Service::Web, Service::ProxySsh, PipeKind::Control),
     ])
     .expect("new");
 
-    let (rdp_from, rdp_to) = store.get(Service::Web, Service::ProxyRdp).expect("rdp");
+    let (rdp_from, rdp_to) = store
+        .get(Service::Web, Service::ProxyRdp, PipeKind::Control)
+        .expect("rdp");
     let old_rdp = (
         rdp_from.read_fd(),
         rdp_from.write_fd(),
         rdp_to.read_fd(),
         rdp_to.write_fd(),
     );
-    let (ssh_from, ssh_to) = store.get(Service::Web, Service::ProxySsh).expect("ssh");
+    let (ssh_from, ssh_to) = store
+        .get(Service::Web, Service::ProxySsh, PipeKind::Control)
+        .expect("ssh");
     let old_ssh = (
         ssh_from.read_fd(),
         ssh_from.write_fd(),
@@ -43,20 +47,24 @@ fn e2e_two_successive_replaces_keep_distinct_live_pipes() {
     );
 
     store
-        .replace(Service::Web, Service::ProxyRdp)
+        .replace(Service::Web, Service::ProxyRdp, PipeKind::Control)
         .expect("replace rdp");
     store
-        .replace(Service::Web, Service::ProxySsh)
+        .replace(Service::Web, Service::ProxySsh, PipeKind::Control)
         .expect("replace ssh");
 
-    let (rdp_from, rdp_to) = store.get(Service::Web, Service::ProxyRdp).expect("rdp");
+    let (rdp_from, rdp_to) = store
+        .get(Service::Web, Service::ProxyRdp, PipeKind::Control)
+        .expect("rdp");
     let new_rdp = (
         rdp_from.read_fd(),
         rdp_from.write_fd(),
         rdp_to.read_fd(),
         rdp_to.write_fd(),
     );
-    let (ssh_from, ssh_to) = store.get(Service::Web, Service::ProxySsh).expect("ssh");
+    let (ssh_from, ssh_to) = store
+        .get(Service::Web, Service::ProxySsh, PipeKind::Control)
+        .expect("ssh");
     let new_ssh = (
         ssh_from.read_fd(),
         ssh_from.write_fd(),

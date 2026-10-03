@@ -182,15 +182,18 @@
                     {% endif %}
 
                     <!-- show_mcp: one MCP entry, not a Contestations row.
-                         Icon is the original proposal glyph (two vertical
-                         strokes, heroicons pause outline) so the label
-                         lines up with the other Administration entries. -->
+                         Icon is the IA robot-head glyph (rounded body,
+                         short centred antenna, two eyes). Stroke and
+                         eyes use currentColor so the mark tracks the
+                         sidebar: gray-400 at rest, white on hover. -->
                     {% if sc.perms.sessions_supervise || sc.perms.access_rules_read %}
                     <li>
                         <a href="/sessions/mcp"
                            class="group flex gap-x-3 rounded-md p-2 text-sm font-semibold leading-6 text-gray-400 hover:bg-gray-800 hover:text-white">
-                            <svg class="h-6 w-6 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5"/>
+                            <svg class="h-6 w-6 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M7 7.3H11.05V6.6A.95.95 0 0 0 12.95 6.6V7.3H17A3 3 0 0 1 20 10.3V15.7A3 3 0 0 1 17 18.7H7A3 3 0 0 1 4 15.7V10.3A3 3 0 0 1 7 7.3Z"/>
+                                <circle cx="9.15" cy="13" r="1.55" fill="currentColor" stroke="none"/>
+                                <circle cx="14.85" cy="13" r="1.55" fill="currentColor" stroke="none"/>
                             </svg>
                             MCP
                             {# Beta marker: MCP is a preview surface; UX, schema

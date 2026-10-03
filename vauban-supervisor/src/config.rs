@@ -852,36 +852,64 @@ fn default_industrial_enabled() -> bool {
 }
 
 /// `[mcp]` block consumed by the supervisor (spawn gate + broker guards).
+///
+/// Hop 2 is served on `vauban-web`'s HTTPS listener. `bind_addr` is
+/// obsolete since 0.9.45: if a deployed file still has the key, boot
+/// fails closed instead of silently ignoring it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default = "default_mcp_bind_addr")]
-    pub bind_addr: String,
+    /// Obsolete. `Some` means the operator file was not updated.
+    #[serde(default)]
+    pub bind_addr: Option<String>,
     #[serde(default)]
     pub allow_loopback_targets: bool,
+    /// Production visits refuse a `tools/call` outside a sealed mandate.
+    #[serde(default = "default_require_seal")]
+    pub require_seal: bool,
+    #[serde(default = "default_max_tunnels")]
+    pub max_tunnels: u32,
+    #[serde(default = "default_relay_max_inflight")]
+    pub relay_max_inflight: u32,
 }
 
-fn default_mcp_bind_addr() -> String {
-    "127.0.0.1:19443".to_string()
+fn default_require_seal() -> bool {
+    true
+}
+
+fn default_max_tunnels() -> u32 {
+    256
+}
+
+fn default_relay_max_inflight() -> u32 {
+    64
 }
 
 impl Default for McpConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            bind_addr: default_mcp_bind_addr(),
+            bind_addr: None,
             allow_loopback_targets: false,
+            require_seal: default_require_seal(),
+            max_tunnels: default_max_tunnels(),
+            relay_max_inflight: default_relay_max_inflight(),
         }
     }
 }
 
 impl McpConfig {
-    pub fn listen_port(&self) -> u16 {
-        self.bind_addr
-            .rsplit_once(':')
-            .and_then(|(_, p)| p.parse().ok())
-            .unwrap_or(19443)
+    /// `Err` when `[mcp].bind_addr` is still present.
+    pub fn reject_obsolete(&self) -> Result<(), String> {
+        if self.bind_addr.is_some() {
+            Err(
+                "[mcp].bind_addr is obsolete since 0.9.45; hop 2 is served on the web HTTPS listener"
+                    .into(),
+            )
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -1403,12 +1431,17 @@ impl SupervisorConfig {
                 ));
             }
             "proxy_mcp" => {
-                // The leaf binds this address itself, before the sandbox.
-                // Without it, GatewayConfig falls back to 127.0.0.1:19443
-                // and ignores `[mcp].bind_addr`.
                 vars.push((
-                    "VAUBAN_MCP_BIND_ADDR".to_string(),
-                    self.mcp.bind_addr.clone(),
+                    "VAUBAN_MCP_REQUIRE_SEAL".to_string(),
+                    self.mcp.require_seal.to_string(),
+                ));
+                vars.push((
+                    "VAUBAN_MCP_RELAY_MAX_INFLIGHT".to_string(),
+                    self.mcp.relay_max_inflight.to_string(),
+                ));
+                vars.push((
+                    "VAUBAN_MCP_MAX_TUNNELS".to_string(),
+                    self.mcp.max_tunnels.to_string(),
                 ));
             }
             _ => {}
@@ -1441,13 +1474,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mcp_bind_addr_deserializes_and_defaults_to_loopback() {
-        let cfg: McpConfig =
+    fn mcp_bind_addr_is_obsolete_and_require_seal_defaults_on() {
+        let stale: McpConfig =
             toml::from_str("bind_addr = \"10.9.8.7:19443\"\nenabled = true\n").expect("mcp table");
-        assert_eq!(cfg.bind_addr, "10.9.8.7:19443");
-        assert_eq!(cfg.listen_port(), 19443);
-        assert_eq!(McpConfig::default().bind_addr, "127.0.0.1:19443");
-        assert_eq!(McpConfig::default().listen_port(), 19443);
+        assert!(stale.reject_obsolete().is_err());
+        let fresh: McpConfig = toml::from_str("enabled = true\n").expect("mcp table");
+        assert!(fresh.reject_obsolete().is_ok());
+        assert!(fresh.require_seal);
+        assert!(McpConfig::default().bind_addr.is_none());
+        assert!(McpConfig::default().require_seal);
     }
 
     // ==================== Test Helpers ====================
@@ -1866,15 +1901,19 @@ mod tests {
     }
 
     #[test]
-    fn test_service_env_vars_proxy_mcp_carries_bind_addr() {
+    fn test_service_env_vars_proxy_mcp_carries_require_seal() {
         let mut config = test_config();
-        config.mcp.bind_addr = "51.159.12.96:19443".to_string();
+        config.mcp.require_seal = true;
         let vars = config.service_env_vars("proxy_mcp");
-        let bind = vars
+        assert!(
+            vars.iter().all(|(k, _)| k != "VAUBAN_MCP_BIND_ADDR"),
+            "proxy_mcp must not be told an address to bind"
+        );
+        let seal = vars
             .iter()
-            .find(|(k, _)| k == "VAUBAN_MCP_BIND_ADDR")
-            .expect("proxy_mcp must receive VAUBAN_MCP_BIND_ADDR");
-        assert_eq!(bind.1, "51.159.12.96:19443");
+            .find(|(k, _)| k == "VAUBAN_MCP_REQUIRE_SEAL")
+            .expect("proxy_mcp must receive VAUBAN_MCP_REQUIRE_SEAL");
+        assert_eq!(seal.1, "true");
     }
 
     #[test]

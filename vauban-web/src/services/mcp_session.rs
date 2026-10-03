@@ -53,6 +53,19 @@ pub const ENVELOPE_WINDOW_SECONDS: u32 = 60;
 pub const MCP_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05", "2025-03-26"];
 
 /// Normative data-plane bearer (04 §5): `vbw_` + base64url(SessionToken wire).
+/// `connection_config.transport` is `tunnel` or `direct` (the default).
+pub fn mcp_transport(asset: &Asset) -> String {
+    match asset
+        .connection_config
+        .get("transport")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+    {
+        Some("tunnel") => "tunnel".to_string(),
+        _ => "direct".to_string(),
+    }
+}
+
 pub fn bearer_from_session_token(token: &[u8]) -> String {
     format!(
         "vbw_{}",
@@ -575,7 +588,14 @@ async fn open_via_ipc(
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("lookup user for HITL union: {e}")))?;
         let rule_hitl = resolve_rule_hitl_tools(&mut conn, user_id, asset).await?;
-        let rule_plan = resolve_rule_require_plan_tools(&mut conn, user_id, asset).await?;
+        let mut rule_plan = resolve_rule_require_plan_tools(&mut conn, user_id, asset).await?;
+        if state.config.mcp.require_seal {
+            for tool in catalog_from_asset(asset) {
+                if tool.is_approved() {
+                    rule_plan.insert(tool.name);
+                }
+            }
+        }
         tool_constraints_json_for_session_extra(&catalog_from_asset(asset), &rule_hitl, &rule_plan)
     };
 
@@ -608,6 +628,8 @@ async fn open_via_ipc(
         justification: justification.to_string(),
         max_body_bytes: MAX_BODY_BYTES,
         session_token,
+        transport: mcp_transport(asset),
+        require_seal: state.config.mcp.require_seal,
     };
 
     match proxy.open_session(open_req).await {

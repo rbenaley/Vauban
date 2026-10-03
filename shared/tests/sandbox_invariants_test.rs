@@ -15,6 +15,7 @@ const AUDIT: &str = include_str!("../../vauban-audit/src/main.rs");
 const PROXY_SSH: &str = include_str!("../../vauban-proxy-ssh/src/main.rs");
 const PROXY_IACS: &str = include_str!("../../vauban-proxy-iacs/src/main.rs");
 const PROXY_RDP: &str = include_str!("../../vauban-proxy-rdp/src/main.rs");
+const PROXY_MCP: &str = include_str!("../../vauban-proxy-mcp/src/main.rs");
 const WEB: &str = include_str!("../../vauban-web/src/main.rs");
 
 // ---- sandbox backends ----
@@ -24,7 +25,7 @@ const SB_LINUX: &str = include_str!("../src/sandbox/linux.rs");
 const SB_OPENBSD: &str = include_str!("../src/sandbox/openbsd.rs");
 const SB_NOOP: &str = include_str!("../src/sandbox/noop.rs");
 
-/// The 7 IPC/proxy services that build their sandbox from the raw-fd
+/// The IPC/proxy services that build their sandbox from the raw-fd
 /// `setup_service_sandbox*` helpers.
 const RAW_FD_SERVICES: &[(&str, &str)] = &[
     ("vauban-auth", AUTH),
@@ -34,6 +35,7 @@ const RAW_FD_SERVICES: &[(&str, &str)] = &[
     ("vauban-proxy-ssh", PROXY_SSH),
     ("vauban-proxy-iacs", PROXY_IACS),
     ("vauban-proxy-rdp", PROXY_RDP),
+    ("vauban-proxy-mcp", PROXY_MCP),
 ];
 
 const ALL_SERVICES: &[(&str, &str)] = &[
@@ -44,6 +46,7 @@ const ALL_SERVICES: &[(&str, &str)] = &[
     ("vauban-proxy-ssh", PROXY_SSH),
     ("vauban-proxy-iacs", PROXY_IACS),
     ("vauban-proxy-rdp", PROXY_RDP),
+    ("vauban-proxy-mcp", PROXY_MCP),
     ("vauban-web", WEB),
 ];
 

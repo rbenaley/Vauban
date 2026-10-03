@@ -1,9 +1,13 @@
 # Runbook -- MCP staging acceptance
 
-> Manual validation after shipping the MCP leaf (crates **0.9.44**).
+> Manual validation after shipping the MCP leaf (crates **0.9.44**,
+> hop 2 moved onto the bastion HTTPS listener in **0.9.45**).
 > Hop 1 is `POST /api/v1/mcp/sessions` with a `vbn_` key. Hop 2 is
-> `POST /mcp` on `vauban-proxy-mcp` with the returned `vbw_` bearer.
-> The proxy has no `/health` and no `/session` control plane.
+> `POST /mcp` on that same HTTPS origin with the returned `vbw_` bearer.
+> The proxy has no listener, no `/health` and no `/session` control plane.
+> The 0.9.45 transport checks are in
+> [mcp_hop2_relay_smoke_test.md](mcp_hop2_relay_smoke_test.md)
+> (section D covers leaf shutdown).
 >
 > Audience: release / staging operators.
 > Severity: **BLOCKING** for **0.9.44**.

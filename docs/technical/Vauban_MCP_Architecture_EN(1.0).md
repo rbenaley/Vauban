@@ -672,7 +672,7 @@ leaf-to-audit pipe. Drift notifications and mail do go through web.
 |------|---------|------|
 | `-32001` | tool not in the frozen allow-list | upstream not called; the visit lives |
 | `-32002` | tool pending or catalogue drift | |
-| `-32003` | unknown or expired ticket | HTTP 401 |
+| `-32003` | unknown or expired ticket, or a direct post on a tunnel-only visit (`tunnel_required`) | HTTP 401 |
 | `-32004` | visit terminated (IAM, expiry, administrator) | HTTP 401 |
 | `-32010` | recording could not be written, step in flight, PDP unavailable, re-broker failed | |
 | `-32029` | envelope rate limit | |
