@@ -2,9 +2,8 @@
 
 > For administrators and operators who use the UI.  
 > Date: 2026-09-05  
-> Architecture: [`../technical/Vauban_MCP_Architecture_EN(1.0).md`](../technical/Vauban_MCP_Architecture_EN(1.0).md)  
-> Mission Seal: [`../technical/Vauban_MCP_Mission_Seal_EN(1.0).md`](../technical/Vauban_MCP_Mission_Seal_EN(1.0).md)  
-> Agent view: [`../technical/Vauban_MCP_Agent_View_EN(1.0).md`](../technical/Vauban_MCP_Agent_View_EN(1.0).md)
+> Architecture (hops, Mission Seal, agent view): [`../technical/Vauban_MCP_Architecture_EN(1.0).md`](../technical/Vauban_MCP_Architecture_EN(1.0).md)  
+> Authorization choice: [`../adr/009-mcp-no-oauth-for-now.md`](../adr/009-mcp-no-oauth-for-now.md)
 
 ---
 
@@ -50,14 +49,15 @@ sequenceDiagram
 
   Agent->>Web: hop 1 — POST /api/v1/mcp/sessions (Bearer vbn_)
   Web-->>Agent: session_id + url + ticket vbw_
-  Agent->>Proxy: hop 2 — POST /mcp (Bearer vbw_)
+  Agent->>Web: hop 2 — POST /mcp (Bearer vbw_), same name and port
+  Web->>Proxy: relayed unchanged (direct) or as ciphertext (tunnel)
   Proxy->>Up: relay only if allowed
   Up-->>Proxy: result
   Proxy-->>Agent: result
 ```
 
 - `vbn_` never talks to the proxy.
-- `vbw_` never opens a session on `:8443`.
+- `vbw_` is accepted on `/mcp` only; it cannot open a hop 1.
 - A fake key or fake ticket is refused. Nothing opens upstream.
 - The visit (`vbw_`) is not one TCP socket. If the upstream closes the pipe (long HITL wait, MCP server restart), Vauban opens a **new brokered FD** with the same ticket and retries **once**. That is not a new Connect. You only need a new hop 1 if the session itself is dead (`-32003` / `-32004`) or recording cannot be written.
 
@@ -147,7 +147,7 @@ Replay is the same player as SSH. Full audit evidence stays on the server.
 1. Authenticate with `vbn_…` (rights ≤ the human owner).
 2. `POST /api/v1/mcp/sessions` with the asset id and a justification of 10 to 1000 characters.
 3. Keep `url` + `vbw_…` + expiry.
-4. Every MCP request goes to the proxy with that ticket.
+4. Every MCP request goes to `url` (`https://<bastion>/mcp`) with that ticket, either directly from the MCP client or through the local `vauban-mcp` shim (tunnel mode, when the client runs stdio servers or the asset requires it).
 
 When a tool has **Require plan**, hop 2 `tools/list` adds `arguments.vauban` (Story + Contract) to that tool’s `inputSchema`. The first `tools/call` must include `arguments.vauban.story` and `arguments.vauban.contract` (that call always queues `-32030` HITL). Retrying before a human Approves stays `-32030`; upstream is not called. `_meta.vauban` is still accepted (curl). After Approve, later **Contract** steps send the tool + args only — Vauban CheckSteps. During the mission, a call that is not in the Contract (even an Allow tool) is **drift** (`-32033`), not `-32001`. After every step is done, an Allow tool is a normal call; a Require plan tool without `vauban` is `-32602` (not IAM). Story+Contract again starts a **new** mission (replace).
 
@@ -156,7 +156,7 @@ When a tool has **Require plan**, hop 2 `tools/list` adds `arguments.vauban` (St
 
 Write the Story in clear English. The HITL UI is English.
 
-DTO, JSON Schema, and sequence: [`Vauban_MCP_Agent_View_EN(1.0).md`](../technical/Vauban_MCP_Agent_View_EN(1.0).md).
+DTO and sequence: [`Vauban_MCP_Architecture_EN(1.0).md`, §7 The Agent View](../technical/Vauban_MCP_Architecture_EN(1.0).md#7-the-agent-view).
 
 ---
 
@@ -211,8 +211,9 @@ Compromised `vbn_…`: **Revoke** or **Regenerate** under API keys — live MCP 
 
 | Need | Document |
 |------|----------|
-| Hops, errors, recording, code | [`Vauban_MCP_Architecture_EN(1.0).md`](../technical/Vauban_MCP_Architecture_EN(1.0).md) |
-| Story / Contract / drift | [`Vauban_MCP_Mission_Seal_EN(1.0).md`](../technical/Vauban_MCP_Mission_Seal_EN(1.0).md) |
-| Agent `tools/list` DTO | [`Vauban_MCP_Agent_View_EN(1.0).md`](../technical/Vauban_MCP_Agent_View_EN(1.0).md) |
+| Hops, hop-2 exposure, errors, recording | [`Vauban_MCP_Architecture_EN(1.0).md`](../technical/Vauban_MCP_Architecture_EN(1.0).md) |
+| Story / Contract / drift | [`Vauban_MCP_Architecture_EN(1.0).md`, §6](../technical/Vauban_MCP_Architecture_EN(1.0).md#6-human-in-the-loop-and-mission-seal) |
+| Agent `tools/list` DTO | [`Vauban_MCP_Architecture_EN(1.0).md`, §7](../technical/Vauban_MCP_Architecture_EN(1.0).md#7-the-agent-view) |
+| Why no MCP OAuth | [`009-mcp-no-oauth-for-now.md`](../adr/009-mcp-no-oauth-for-now.md) |
 | Compromised `vbn_` | [`mcp_api_key_compromise.md`](../runbooks/mcp_api_key_compromise.md) |
 | FreeBSD staging | [`mcp_staging_gwt_acceptance.md`](../runbooks/mcp_staging_gwt_acceptance.md) |

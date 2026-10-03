@@ -14,3 +14,4 @@ doc-family only).
 | [006](006-iacs-protocol-scope.md) | IACS protocol profile scope (EIP / BACnet-SC / DNP3 / IEC 61850 MMS) | Accepted |
 | [007](007-ldap-group-aggregation-phase-1.md) | LDAP User Group aggregation (Phase 1, login-only) | Accepted (amended 2026-08-22) |
 | [008](008-ldaps-mapping-file-dsl.md) | LDAPS mapping file (`resolve` / `static` / `match`) | Accepted (amended 2026-08-22) |
+| [009](009-mcp-no-oauth-for-now.md) | MCP hop 2 keeps the Vauban visit ticket (no MCP OAuth for now) | Accepted |
