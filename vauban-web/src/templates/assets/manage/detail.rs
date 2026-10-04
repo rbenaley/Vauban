@@ -67,6 +67,10 @@ pub struct ManageAssetDetail {
     /// certificate disagreed with the pinned one
     /// (`connection_config.rdp_server_cert_mismatch`).
     pub rdp_server_cert_mismatch: bool,
+    /// Hop-2 tunnel SPKI pin (`SHA256:<base64>`) the shim learns on
+    /// first use. Set for MCP assets only, once the supervisor has
+    /// provisioned the leaf identity.
+    pub mcp_tunnel_spki: Option<String>,
 }
 
 #[derive(Template)]

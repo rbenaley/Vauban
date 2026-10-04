@@ -1307,6 +1307,8 @@ pub struct McpSettings {
     pub relay_timeout_seconds: u64,
     #[serde(default = "McpSettings::default_max_tunnels")]
     pub max_tunnels: u32,
+    #[serde(default = "McpSettings::default_max_tunnels_per_ip")]
+    pub max_tunnels_per_ip: u32,
     #[serde(default = "McpSettings::default_session_ttl_seconds")]
     pub session_ttl_seconds: i64,
     #[serde(default = "McpSettings::default_hitl_pending_ttl_seconds")]
@@ -1323,6 +1325,7 @@ impl Default for McpSettings {
             relay_max_inflight: Self::default_relay_max_inflight(),
             relay_timeout_seconds: Self::default_relay_timeout_seconds(),
             max_tunnels: Self::default_max_tunnels(),
+            max_tunnels_per_ip: Self::default_max_tunnels_per_ip(),
             session_ttl_seconds: Self::default_session_ttl_seconds(),
             hitl_pending_ttl_seconds: Self::default_hitl_pending_ttl_seconds(),
         }
@@ -1352,19 +1355,35 @@ impl McpSettings {
         256
     }
 
+    pub const fn default_max_tunnels_per_ip() -> u32 {
+        16
+    }
+
     pub const fn default_session_ttl_seconds() -> i64 {
         3600
     }
 
+    /// The leaf gets `relay_timeout_seconds - 30` (floor 10), so the web
+    /// timeout must leave that margin.
+    pub const MIN_RELAY_TIMEOUT_SECONDS: u64 = 40;
+
     pub fn reject_obsolete(&self) -> Result<(), String> {
         if self.bind_addr.is_some() {
-            Err(
+            return Err(
                 "[mcp].bind_addr is obsolete since 0.9.45; hop 2 is served on this HTTPS listener"
                     .into(),
-            )
-        } else {
-            Ok(())
+            );
         }
+        if self.relay_timeout_seconds < Self::MIN_RELAY_TIMEOUT_SECONDS {
+            return Err(format!(
+                "[mcp].relay_timeout_seconds must be >= {}",
+                Self::MIN_RELAY_TIMEOUT_SECONDS
+            ));
+        }
+        if self.max_tunnels_per_ip == 0 || self.max_tunnels_per_ip > self.max_tunnels {
+            return Err("[mcp].max_tunnels_per_ip must be in 1..=max_tunnels".into());
+        }
+        Ok(())
     }
 
     pub const fn default_hitl_pending_ttl_seconds() -> i64 {
@@ -1901,6 +1920,28 @@ mod tests {
             .get("mcp")
             .expect("mcp table");
         assert!(stale.reject_obsolete().is_err());
+    }
+
+    #[test]
+    fn mcp_tunnel_and_timeout_bounds_are_validated() {
+        let fresh = McpSettings::default();
+        assert_eq!(fresh.max_tunnels_per_ip, 16);
+        assert!(fresh.reject_obsolete().is_ok());
+        let short = McpSettings {
+            relay_timeout_seconds: McpSettings::MIN_RELAY_TIMEOUT_SECONDS - 1,
+            ..McpSettings::default()
+        };
+        assert!(short.reject_obsolete().is_err());
+        let wide = McpSettings {
+            max_tunnels_per_ip: fresh.max_tunnels + 1,
+            ..McpSettings::default()
+        };
+        assert!(wide.reject_obsolete().is_err());
+        let zero = McpSettings {
+            max_tunnels_per_ip: 0,
+            ..McpSettings::default()
+        };
+        assert!(zero.reject_obsolete().is_err());
     }
 
     // ==================== ProductConfig / BrandConfig (white-label) ====================

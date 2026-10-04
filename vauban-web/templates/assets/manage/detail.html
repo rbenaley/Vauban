@@ -343,6 +343,25 @@
     </div>
     {% endif %}
 
+    <!-- MCP tunnel pin - Only for MCP assets -->
+    {% if asset.asset_type == "mcp" %}
+    <div id="mcp-tunnel-spki-section" class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Tunnel fingerprint (SPKI)</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                The vauban-mcp shim prints this pin the first time it connects. Compare both before trusting it.
+            </p>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            {% if let Some(spki) = asset.mcp_tunnel_spki %}
+            <p data-testid="mcp-tunnel-spki" class="text-sm text-gray-900 dark:text-white font-mono break-all">{{ spki }}</p>
+            {% else %}
+            <p class="text-sm text-amber-700 dark:text-amber-400">The tunnel identity is not provisioned yet. Check that the MCP leaf is running.</p>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
     <!-- System Information -->
     <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">

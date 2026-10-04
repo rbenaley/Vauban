@@ -714,7 +714,7 @@ async fn serve_static_test(
 }
 
 /// Build the test router with all routes.
-fn build_test_router(state: AppState) -> Router {
+pub fn build_test_router(state: AppState) -> Router {
     use axum::routing::{get, post};
     use vauban_web::handlers;
     use vauban_web::middleware;

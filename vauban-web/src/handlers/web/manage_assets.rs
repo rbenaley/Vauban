@@ -946,6 +946,15 @@ pub async fn asset_search(
     Ok(Html(html))
 }
 
+/// The hop-2 tunnel pin is one per appliance; only MCP assets show it.
+pub fn mcp_tunnel_spki_for(asset_type: &AssetType, pin: Option<String>) -> Option<String> {
+    if matches!(asset_type, AssetType::Mcp) {
+        pin
+    } else {
+        None
+    }
+}
+
 /// Asset detail page (admin zone).
 ///
 /// Renders the full administrative detail of an asset. Replaces the
@@ -1049,6 +1058,10 @@ pub async fn asset_detail(
         .get("rdp_server_cert_mismatch")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let mcp_tunnel_spki = mcp_tunnel_spki_for(
+        &asset_model.asset_type,
+        state.supervisor.as_ref().and_then(|s| s.tunnel_spki()),
+    );
 
     let group_rows: Vec<(String, ::uuid::Uuid)> = aag::asset_asset_groups
         .inner_join(ag::asset_groups.on(aag::asset_group_id.eq(ag::id)))
@@ -1111,6 +1124,7 @@ pub async fn asset_detail(
         ssh_host_key_mismatch,
         rdp_server_cert_fingerprint,
         rdp_server_cert_mismatch,
+        mcp_tunnel_spki,
     };
 
     let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash

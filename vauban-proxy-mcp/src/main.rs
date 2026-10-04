@@ -178,6 +178,23 @@ struct GatewayState {
     access_guard: Option<Arc<AccessGuard>>,
     /// Mid-visit TcpConnect (same token). Set after FD socket is ready.
     rebroker: Arc<OnceLock<Arc<McpUpstreamRebroker>>>,
+    /// `VAUBAN_MCP_REQUIRE_SEAL` as read at boot. Web can only add a seal.
+    require_seal_policy: bool,
+}
+
+/// Leaf seal policy from `VAUBAN_MCP_REQUIRE_SEAL`. Only an explicit
+/// `false` / `0` turns it off; a missing value under the supervisor
+/// is `true`.
+fn require_seal_policy(env: Option<&str>, supervised: bool) -> bool {
+    match env.map(str::trim) {
+        Some("false") | Some("0") => false,
+        Some(_) => true,
+        None => supervised,
+    }
+}
+
+fn effective_require_seal(policy: bool, from_web: bool) -> bool {
+    policy || from_web
 }
 
 #[derive(Default)]
@@ -195,6 +212,7 @@ impl GatewayState {
             web_notify_tx,
             access_guard: None,
             rebroker: Arc::new(OnceLock::new()),
+            require_seal_policy: false,
         }
     }
 
@@ -2060,12 +2078,19 @@ async fn handle_mcp_session_open(
         session_token,
         tool_constraints_json,
         transport,
-        require_seal,
+        require_seal: web_require_seal,
         ..
     } = msg
     else {
         return None;
     };
+    let require_seal = effective_require_seal(state.require_seal_policy, web_require_seal);
+    if require_seal != web_require_seal {
+        warn!(
+            session_id = %session_id,
+            "McpSessionOpen asked for require_seal = false; leaf policy keeps the visit sealed"
+        );
+    }
 
     // 1) Cryptographic session-token gate BEFORE AccessGuard / FD claim.
     if !session_token_gate::verify_proxy(&session_token, &user_id, &asset_id, "mcp", &session_id) {
@@ -3022,7 +3047,9 @@ fn wait_for_mcp_identity(channel: &IpcChannel) -> Result<(), String> {
         }
         match channel.try_recv() {
             Ok(Message::McpTunnelIdentityProvision { cert_der, key_pem }) => {
-                return tunnel::install_identity(cert_der, key_pem.as_str());
+                tunnel::install_identity(cert_der, key_pem.as_str())?;
+                info!("MCP tunnel identity installed before the sandbox");
+                return Ok(());
             }
             Ok(Message::Control(shared::messages::ControlMessage::Ping { seq })) => {
                 let stats = shared::messages::ServiceStats {
@@ -3226,6 +3253,11 @@ async fn main() -> ExitCode {
     let (web_notify_tx, web_notify_rx) = mpsc::unbounded_channel::<Message>();
     let mut state = GatewayState::new(audit, Some(web_notify_tx));
     state.access_guard = access_guard.clone();
+    state.require_seal_policy = require_seal_policy(
+        std::env::var("VAUBAN_MCP_REQUIRE_SEAL").ok().as_deref(),
+        supervised,
+    );
+    info!(require_seal = state.require_seal_policy, "MCP seal policy");
     let router = build_router(state.clone());
 
     let fd_passing = fd_passing_socket.map(|fd| {
@@ -3375,26 +3407,10 @@ async fn main() -> ExitCode {
 
     if let Some((read_fd, write_fd)) = data_fds {
         let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
-        let max_tunnels = std::env::var("VAUBAN_MCP_MAX_TUNNELS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(256usize);
-        let relay_timeout = std::time::Duration::from_secs(
-            std::env::var("VAUBAN_MCP_RELAY_TIMEOUT_SECS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(90u64),
-        );
+        let config = data_pipe::DataLoopConfig::from_env(|name| std::env::var(name).ok());
+        info!(?config, "MCP data loop limits");
         let shutdown_rx_data = shutdown_tx.subscribe();
-        let code = data_pipe::data_ipc_loop(
-            channel,
-            router,
-            data_pipe::RELAY_MAX_INFLIGHT,
-            max_tunnels,
-            relay_timeout,
-            shutdown_rx_data,
-        )
-        .await;
+        let code = data_pipe::data_ipc_loop(channel, router, config, shutdown_rx_data).await;
         let _ = shutdown_tx.send(());
         return code;
     }
@@ -5041,6 +5057,529 @@ mod gwt_tests {
         let status = resp.status().as_u16();
         let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
         (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    #[test]
+    fn require_seal_policy_truth_table() {
+        assert!(require_seal_policy(Some("true"), true));
+        assert!(require_seal_policy(Some("true"), false));
+        assert!(!require_seal_policy(Some("false"), true));
+        assert!(!require_seal_policy(Some(" 0 "), true));
+        assert!(require_seal_policy(Some("yes-please"), false));
+        assert!(
+            require_seal_policy(None, true),
+            "missing under supervisor fails closed"
+        );
+        assert!(
+            !require_seal_policy(None, false),
+            "dev run keeps the web value"
+        );
+        for (policy, web, sealed) in [
+            (false, false, false),
+            (false, true, true),
+            (true, false, true),
+            (true, true, true),
+        ] {
+            assert_eq!(effective_require_seal(policy, web), sealed);
+        }
+    }
+
+    #[test]
+    fn require_seal_env_is_read_and_applied_at_open() {
+        let src = include_str!("main.rs");
+        let prod = src.split("mod gwt_tests").next().unwrap_or(src);
+        assert!(prod.contains("std::env::var(\"VAUBAN_MCP_REQUIRE_SEAL\")"));
+        let open = prod
+            .find("async fn handle_mcp_session_open(")
+            .expect("open handler");
+        let body = &prod[open..];
+        let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        assert!(
+            body.contains("effective_require_seal(state.require_seal_policy, web_require_seal)")
+        );
+        assert!(!body.contains("        require_seal,\n        .."));
+
+        let runbook = include_str!("../../docs/runbooks/mcp_hop2_relay_smoke_test.md");
+        let section_c = runbook
+            .split("## C -- ")
+            .nth(1)
+            .and_then(|rest| rest.split("\n## ").next())
+            .expect("runbook section C");
+        let step3 = section_c
+            .lines()
+            .find(|line| line.starts_with("3. "))
+            .expect("step C.3");
+        assert!(step3.contains("require_seal=true"), "{step3}");
+        assert!(
+            step3.contains("MCP tunnel identity installed before the sandbox"),
+            "{step3}"
+        );
+        assert!(
+            prod.contains("info!(require_seal = state.require_seal_policy, \"MCP seal policy\");"),
+            "the runbook greps this boot line"
+        );
+        let step4 = section_c
+            .lines()
+            .find(|line| line.starts_with("4. "))
+            .expect("step C.4");
+        assert!(step4.contains("Open a new hop 1"), "{step4}");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn seal_is_env_or_message(
+            env in proptest::option::of("[a-z01 ]{0,6}"),
+            supervised in proptest::bool::ANY,
+            web in proptest::bool::ANY,
+        ) {
+            let policy = require_seal_policy(env.as_deref(), supervised);
+            proptest::prop_assert_eq!(effective_require_seal(policy, web), policy || web);
+            if env.is_none() && supervised {
+                proptest::prop_assert!(effective_require_seal(policy, web));
+            }
+            if web {
+                proptest::prop_assert!(effective_require_seal(policy, web));
+            }
+        }
+    }
+
+    async fn unsealed_echo(state: &GatewayState, id: &str, web_require_seal: bool) -> Value {
+        let token = format!("vbw_{id}");
+        let mut sess = session_with_token(id, &token);
+        sess.require_seal = effective_require_seal(state.require_seal_policy, web_require_seal);
+        insert_session(state, sess);
+        mcp_tools_call(state, &token, "echo", json!({"message": "hi"})).await
+    }
+
+    /// Web sends `require_seal = false`; the leaf env says `true`. An
+    /// Allow tool with no mandate must not reach the upstream.
+    #[tokio::test]
+    async fn attack_web_disables_seal_is_rejected() {
+        let mut sealed = test_state();
+        sealed.require_seal_policy = true;
+        let v = unsealed_echo(&sealed, "s-seal-attack", false).await;
+        assert_eq!(v["error"]["code"], -32602, "seal gate, not upstream: {v}");
+        let reason = v["error"]["data"]["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.starts_with("require_plan_"),
+            "the seal forces a mission contract: {v}"
+        );
+
+        let open = test_state();
+        let control = unsealed_echo(&open, "s-seal-control", false).await;
+        assert_eq!(
+            control["error"]["code"], -32010,
+            "without the leaf policy the call goes upstream: {control}"
+        );
+    }
+
+    #[tokio::test]
+    async fn battle_sixteen_mixed_opens_all_sealed_under_policy() {
+        let mut state = test_state();
+        state.require_seal_policy = true;
+        let barrier = Arc::new(tokio::sync::Barrier::new(16));
+        let mut joins = Vec::new();
+        for i in 0..16 {
+            let state = state.clone();
+            let barrier = Arc::clone(&barrier);
+            joins.push(tokio::spawn(async move {
+                barrier.wait().await;
+                unsealed_echo(&state, &format!("s-seal-{i}"), i % 2 == 0).await
+            }));
+        }
+        for join in joins {
+            let v = join.await.unwrap();
+            assert_eq!(v["error"]["code"], -32602, "seal gate, not upstream: {v}");
+        }
+        let g = state.lock_inner();
+        assert!(g.sessions.values().all(|s| s.require_seal));
+    }
+
+    /// Process-wide session-token key; the gate accepts one key only.
+    fn token_gate() -> &'static shared::session_token::TokenKey {
+        static KEY: std::sync::OnceLock<shared::session_token::TokenKey> =
+            std::sync::OnceLock::new();
+        KEY.get_or_init(|| {
+            let bytes = fresh_key_bytes();
+            session_token_gate::init_with_key(shared::session_token::TokenKey::from_bytes(bytes))
+                .unwrap();
+            shared::session_token::TokenKey::from_bytes(bytes)
+        })
+    }
+
+    fn fresh_key_bytes() -> [u8; 32] {
+        *blake3::hash(uuid::Uuid::new_v4().as_bytes()).as_bytes()
+    }
+
+    fn mint_with(
+        key: &shared::session_token::TokenKey,
+        session_id: &str,
+        user: &str,
+        asset: &str,
+    ) -> Vec<u8> {
+        shared::session_token::SessionToken::mint(
+            key,
+            unix_now() as u64,
+            shared::session_token::SessionTokenParams {
+                session_id: session_id.into(),
+                user_uuid: user.into(),
+                asset_uuid: asset.into(),
+                protocol: "mcp".into(),
+                host: "127.0.0.1".into(),
+                port: 443,
+                target_service: shared::messages::Service::ProxyMcp,
+            },
+        )
+        .to_bytes()
+        .unwrap()
+    }
+
+    #[test]
+    fn attack_second_token_key_is_rejected() {
+        let installed = token_gate();
+        let rogue = shared::session_token::TokenKey::from_bytes(fresh_key_bytes());
+        assert!(matches!(
+            session_token_gate::init_with_key(rogue),
+            Err(session_token_gate::ProxyGateError::AlreadyInitialized)
+        ));
+        let rogue = shared::session_token::TokenKey::from_bytes(fresh_key_bytes());
+        let forged = mint_with(&rogue, "s-rogue", "u-rogue", "a-rogue");
+        assert!(
+            !session_token_gate::verify_proxy(&forged, "u-rogue", "a-rogue", "mcp", "s-rogue"),
+            "a token from a second key must not verify"
+        );
+        let genuine = mint_with(installed, "s-genuine", "u-genuine", "a-genuine");
+        assert!(session_token_gate::verify_proxy(
+            &genuine,
+            "u-genuine",
+            "a-genuine",
+            "mcp",
+            "s-genuine"
+        ));
+    }
+
+    #[test]
+    fn init_with_key_never_touches_the_environment() {
+        let before = std::env::var_os(shared::session_token::SESSION_TOKEN_KEY_ENV);
+        let _ = token_gate();
+        assert_eq!(
+            std::env::var_os(shared::session_token::SESSION_TOKEN_KEY_ENV),
+            before
+        );
+        assert!(matches!(
+            session_token_gate::init_from_env(),
+            Err(session_token_gate::ProxyGateError::TokenKey(_))
+                | Err(session_token_gate::ProxyGateError::AlreadyInitialized)
+        ));
+    }
+
+    fn mint_open_token(session_id: &str, user: &str, asset: &str, port: u16) -> Vec<u8> {
+        shared::session_token::SessionToken::mint(
+            token_gate(),
+            unix_now() as u64,
+            shared::session_token::SessionTokenParams {
+                session_id: session_id.into(),
+                user_uuid: user.into(),
+                asset_uuid: asset.into(),
+                protocol: "mcp".into(),
+                host: "127.0.0.1".into(),
+                port,
+                target_service: shared::messages::Service::ProxyMcp,
+            },
+        )
+        .to_bytes()
+        .unwrap()
+    }
+
+    /// AccessGuard over a pipe pair whose far end grants every check.
+    fn granting_access_guard() -> Arc<shared::access_guard::AccessGuard> {
+        use shared::messages::{AccessCheckResult, AccessResponse};
+        let (stub, guard_end) = IpcChannel::pair().unwrap();
+        let wiring = shared::access_guard::AccessGuard::from_fds(
+            PROTOCOL_MCP,
+            Arc::new(McpAccessMetrics::new()),
+            guard_end.read_fd(),
+            guard_end.write_fd(),
+        )
+        .unwrap();
+        std::mem::forget(guard_end);
+        wiring.guard.spawn_dispatcher();
+        std::thread::spawn(move || {
+            while let Ok(msg) = stub.recv() {
+                if let Message::AccessRequest { request_id, .. } = msg {
+                    let reply = Message::AccessResponse {
+                        request_id,
+                        response: AccessResponse::AccessChecked(AccessCheckResult {
+                            allowed: true,
+                            require_mfa: false,
+                            require_approval: false,
+                            max_session_duration: None,
+                        }),
+                    };
+                    if stub.send(&reply).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        wiring.guard
+    }
+
+    /// Fake MCP upstream on loopback. The counter is the number of
+    /// non-empty reads it has served, so zero proves it was never reached.
+    async fn counting_upstream(
+        body: &'static str,
+    ) -> (tokio::net::TcpStream, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); // allow-post-sandbox: test fake upstream
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::clone(&hits);
+        tokio::spawn(async move {
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 16 * 1024];
+            while let Ok(n) = s.read(&mut buf).await {
+                if n == 0 {
+                    return;
+                }
+                seen.fetch_add(1, Ordering::SeqCst);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
+                    body.len()
+                );
+                if s.write_all(resp.as_bytes()).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap(); // allow-post-sandbox: test fake upstream
+        (client, hits)
+    }
+
+    const UPSTREAM_ECHO: &str =
+        r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"upstream-hi"}]}}"#;
+
+    /// Brokered FD parked for `session_id`, as `TcpConnectResponse` does.
+    async fn pending_with_fake_upstream(
+        pending: &PendingConnections,
+        session_id: &str,
+    ) -> Arc<std::sync::atomic::AtomicUsize> {
+        let (stream, hits) = counting_upstream(UPSTREAM_ECHO).await;
+        let fd: std::os::fd::OwnedFd = stream.into_std().unwrap().into();
+        pending.lock().await.insert(session_id.to_string(), fd);
+        hits
+    }
+
+    struct IpcOpen {
+        token: String,
+        hits: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    /// One `McpSessionOpen` through the production handler; it must succeed.
+    async fn open_via_ipc(
+        state: &GatewayState,
+        guard: &Arc<shared::access_guard::AccessGuard>,
+        session_id: &str,
+        require_seal: bool,
+    ) -> IpcOpen {
+        let pending: PendingConnections =
+            Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let hits = pending_with_fake_upstream(&pending, session_id).await;
+        let token = format!("vbw_{session_id}");
+        let (user, asset) = ("user-ipc", "asset-ipc");
+        let msg = Message::McpSessionOpen {
+            request_id: 1,
+            ipc_version: 1,
+            session_id: session_id.into(),
+            asset_id: asset.into(),
+            user_id: user.into(),
+            api_key_id: String::new(),
+            expires_at: String::new(),
+            vbw_hash: *blake3::hash(token.as_bytes()).as_bytes(),
+            allowed_tools: Some(vec!["echo".into()]),
+            tool_constraints_json: "{}".into(),
+            envelope_max_calls: 100,
+            envelope_window_seconds: 60,
+            envelope_on_exceed: "throttle".into(),
+            upstream_host: "127.0.0.1".into(),
+            upstream_port: 8080,
+            upstream_tls_spki_pin: None,
+            forward_identity_headers: false,
+            credential_blob: Vec::new(),
+            justification: "seal through the real open".into(),
+            max_body_bytes: 1024 * 1024,
+            session_token: mint_open_token(session_id, user, asset, 8080),
+            transport: "tunnel".into(),
+            require_seal,
+        };
+        let reply =
+            handle_mcp_session_open(state, Some(Arc::clone(guard)), Some(pending), None, msg).await;
+        match reply {
+            Some(Message::McpSessionOpened {
+                success: true,
+                error: None,
+                ..
+            }) => {}
+            other => unreachable!("open must succeed: {other:?}"),
+        }
+        IpcOpen { token, hits }
+    }
+
+    /// `tools/call echo` on hop 2 as the data pipe delivers it.
+    async fn tunnel_echo(state: &GatewayState, token: &str) -> Value {
+        let resp = handle_mcp(
+            State(state.clone()),
+            bearer_headers(token),
+            Some(Extension(McpIngress::Tunnel {
+                tunnel_id: 1,
+                client_ip: "203.0.113.4".into(),
+            })),
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": { "name": "echo", "arguments": { "message": "hi" } }
+            })),
+        )
+        .await;
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    fn stored_seal(state: &GatewayState, session_id: &str) -> bool {
+        state
+            .lock_inner()
+            .sessions
+            .get(session_id)
+            .map(|s| s.require_seal)
+            .expect("session stored by the open")
+    }
+
+    fn assert_seal_refusal(v: &Value) {
+        assert_eq!(v["error"]["code"], -32602, "seal gate, not upstream: {v}");
+        let reason = v["error"]["data"]["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.starts_with("require_plan_"),
+            "the seal forces a mission contract: {v}"
+        );
+    }
+
+    /// Web sends `require_seal = false` on the real `McpSessionOpen`; the
+    /// leaf env says `true`. The visit is sealed and the upstream is never
+    /// reached.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn attack_web_disables_seal_is_rejected_through_session_open() {
+        use std::sync::atomic::Ordering;
+        let mut state = test_state();
+        state.require_seal_policy = true;
+        let guard = granting_access_guard();
+        let open = open_via_ipc(&state, &guard, "s-ipc-seal-attack", false).await;
+        assert!(stored_seal(&state, "s-ipc-seal-attack"));
+        let v = tunnel_echo(&state, &open.token).await;
+        assert_seal_refusal(&v);
+        assert_eq!(
+            open.hits.load(Ordering::SeqCst),
+            0,
+            "upstream must stay untouched"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_open_honours_web_flag_when_policy_is_off() {
+        use std::sync::atomic::Ordering;
+        let state = test_state();
+        assert!(!state.require_seal_policy);
+        let guard = granting_access_guard();
+        let open = open_via_ipc(&state, &guard, "s-ipc-seal-control", false).await;
+        assert!(!stored_seal(&state, "s-ipc-seal-control"));
+        let v = tunnel_echo(&state, &open.token).await;
+        assert_eq!(v["result"]["content"][0]["text"], "upstream-hi", "{v}");
+        assert!(open.hits.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_open_seal_table_is_policy_or_message() {
+        use std::sync::atomic::Ordering;
+        let guard = granting_access_guard();
+        for (i, (policy, message)) in [(false, false), (false, true), (true, false), (true, true)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut state = test_state();
+            state.require_seal_policy = policy;
+            let id = format!("s-ipc-seal-table-{i}");
+            let open = open_via_ipc(&state, &guard, &id, message).await;
+            let sealed = policy || message;
+            assert_eq!(
+                stored_seal(&state, &id),
+                sealed,
+                "policy={policy} message={message}"
+            );
+            let v = tunnel_echo(&state, &open.token).await;
+            if sealed {
+                assert_seal_refusal(&v);
+                assert_eq!(open.hits.load(Ordering::SeqCst), 0);
+            } else {
+                assert_eq!(v["result"]["content"][0]["text"], "upstream-hi", "{v}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn battle_sixteen_session_opens_mixed_flags_all_sealed() {
+        use std::sync::atomic::Ordering;
+        let mut state = test_state();
+        state.require_seal_policy = true;
+        let guard = granting_access_guard();
+        let barrier = Arc::new(tokio::sync::Barrier::new(16));
+        let mut joins = Vec::new();
+        for i in 0..16 {
+            let state = state.clone();
+            let guard = Arc::clone(&guard);
+            let barrier = Arc::clone(&barrier);
+            joins.push(tokio::spawn(async move {
+                barrier.wait().await;
+                let id = format!("s-ipc-seal-battle-{i}");
+                let open = open_via_ipc(&state, &guard, &id, i % 2 == 0).await;
+                let v = tunnel_echo(&state, &open.token).await;
+                (v, open.hits.load(Ordering::SeqCst))
+            }));
+        }
+        for join in joins {
+            let (v, hits) = join.await.unwrap();
+            assert_seal_refusal(&v);
+            assert_eq!(hits, 0, "no sealed visit may reach the upstream");
+        }
+        let g = state.lock_inner();
+        assert_eq!(g.sessions.len(), 16);
+        assert!(g.sessions.values().all(|s| s.require_seal));
+    }
+
+    #[test]
+    fn session_open_stores_only_the_effective_seal() {
+        let src = include_str!("main.rs");
+        let prod = src.split("mod gwt_tests").next().unwrap_or(src);
+        let open = prod
+            .find("async fn handle_mcp_session_open(")
+            .expect("open handler");
+        let body = &prod[open..];
+        let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        let warn = body
+            .find("leaf policy keeps the visit sealed")
+            .expect("mismatch warn");
+        assert!(
+            !body[warn..].contains("web_require_seal"),
+            "the wire flag must not be read after the policy is applied"
+        );
+        let insert = body
+            .find("state.insert_session(Session {")
+            .expect("session insert");
+        let fields = &body[insert..];
+        let fields = &fields[..fields.find("});").expect("insert end")];
+        assert!(fields.contains("\n        require_seal,\n"), "{fields}");
     }
 
     /// Hop 2 on the real router, the way the data pipe calls it:

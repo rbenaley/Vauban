@@ -111,6 +111,7 @@ pub mod mcp_pkg_packaging_invariants_test;
 pub mod mcp_relay_e2e_test;
 pub mod mcp_relay_invariants_test;
 pub mod mcp_session_ttl_e2e_test;
+pub mod mcp_tunnel_spki_page_test;
 pub mod mfa_audit_critical_pins_test;
 pub mod mfa_setup_vau008_test;
 pub mod mfa_test;

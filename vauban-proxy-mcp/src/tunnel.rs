@@ -8,15 +8,68 @@ use crate::data_pipe::McpIngress;
 use base64::Engine;
 use std::io::{self, ErrorKind};
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::server::ServerConfig;
 use tokio_rustls::rustls::version::TLS13;
 use tower::ServiceExt;
+
+/// Queue depth of client bytes per tunnel. A full queue closes the tunnel.
+pub const TUNNEL_INBOUND_QUEUE: usize = 32;
+
+pub const TUNNEL_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub const DEFAULT_TUNNEL_IDLE: Duration = Duration::from_secs(300);
+
+#[derive(Debug, Clone, Copy)]
+pub struct TunnelTimeouts {
+    pub handshake: Duration,
+    pub idle: Duration,
+}
+
+impl Default for TunnelTimeouts {
+    fn default() -> Self {
+        Self {
+            handshake: TUNNEL_HANDSHAKE_TIMEOUT,
+            idle: DEFAULT_TUNNEL_IDLE,
+        }
+    }
+}
+
+/// Last time a byte crossed the tunnel, in either direction.
+#[derive(Clone)]
+pub struct Activity(Arc<StdMutex<Instant>>);
+
+impl Activity {
+    fn new() -> Self {
+        Self(Arc::new(StdMutex::new(Instant::now())))
+    }
+
+    fn touch(&self) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
+    }
+
+    fn last(&self) -> Instant {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Resolves once no byte has moved for `idle`.
+    pub async fn idle_for(&self, idle: Duration) {
+        loop {
+            let deadline = self.last() + idle;
+            if Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep_until(deadline).await;
+        }
+    }
+}
 
 /// Bytes the web process forwards for one tunnel, in both directions.
 pub struct PipeStream {
@@ -24,11 +77,12 @@ pub struct PipeStream {
     tx: mpsc::UnboundedSender<Vec<u8>>,
     buf: Vec<u8>,
     pos: usize,
+    activity: Activity,
 }
 
 impl PipeStream {
     pub fn pair() -> (Self, TunnelEnds) {
-        let (in_tx, in_rx) = mpsc::channel(32);
+        let (in_tx, in_rx) = mpsc::channel(TUNNEL_INBOUND_QUEUE);
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         (
             Self {
@@ -36,12 +90,17 @@ impl PipeStream {
                 tx: out_tx,
                 buf: Vec::new(),
                 pos: 0,
+                activity: Activity::new(),
             },
             TunnelEnds {
                 inbound: in_tx,
                 outbound: out_rx,
             },
         )
+    }
+
+    pub fn activity(&self) -> Activity {
+        self.activity.clone()
     }
 }
 
@@ -70,6 +129,7 @@ impl AsyncRead for PipeStream {
         }
         match Pin::new(&mut this.rx).poll_recv(cx) {
             Poll::Ready(Some(bytes)) => {
+                this.activity.touch();
                 this.buf = bytes;
                 this.pos = 0;
                 Pin::new(this).poll_read(cx, buf)
@@ -86,6 +146,7 @@ impl AsyncWrite for PipeStream {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
+        self.activity.touch();
         match self.tx.send(buf.to_vec()) {
             Ok(()) => Poll::Ready(Ok(buf.len())),
             Err(_) => Poll::Ready(Err(io::Error::new(ErrorKind::BrokenPipe, "tunnel closed"))),
@@ -138,21 +199,28 @@ fn pem_body(pem: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Accept one inner TLS connection and serve the MCP router on it.
+/// Returns why the tunnel ended; the caller reports it to web.
 pub async fn serve_tunnel(
     config: Arc<ServerConfig>,
     stream: PipeStream,
     router: axum::Router,
     ingress: McpIngress,
-) {
+    timeouts: TunnelTimeouts,
+) -> &'static str {
+    let activity = stream.activity();
     let acceptor = TlsAcceptor::from(config);
-    let Ok(tls) = acceptor.accept(stream).await else {
-        return;
+    let tls = match tokio::time::timeout(timeouts.handshake, acceptor.accept(stream)).await {
+        Ok(Ok(tls)) => tls,
+        Ok(Err(_)) => return "handshake_failed",
+        Err(_) => return "handshake_timeout",
     };
     let io = hyper_util::rt::TokioIo::new(tls);
     let service = TunnelService { router, ingress };
-    let _ = hyper::server::conn::http1::Builder::new()
-        .serve_connection(io, service)
-        .await;
+    let connection = hyper::server::conn::http1::Builder::new().serve_connection(io, service);
+    tokio::select! {
+        _ = connection => "done",
+        () = activity.idle_for(timeouts.idle) => "idle",
+    }
 }
 
 struct TunnelService {

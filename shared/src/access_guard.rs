@@ -362,6 +362,28 @@ impl AccessGuard {
             std::env::remove_var("VAUBAN_ACCESS_IPC_READ");
             std::env::remove_var("VAUBAN_ACCESS_IPC_WRITE");
         }
+        Self::wire(protocol, metrics, read_fd, write_fd)
+    }
+
+    /// Same wiring as [`Self::from_env`] on fds the caller already owns,
+    /// without touching the process environment. Test builds only: a
+    /// production build of a proxy never enables `test-seams`.
+    #[cfg(feature = "test-seams")]
+    pub fn from_fds(
+        protocol: &'static str,
+        metrics: Arc<dyn AccessGuardMetrics>,
+        read_fd: RawFd,
+        write_fd: RawFd,
+    ) -> Result<AccessGuardWiring, AccessGuardError> {
+        Self::wire(protocol, metrics, read_fd, write_fd)
+    }
+
+    fn wire(
+        protocol: &'static str,
+        metrics: Arc<dyn AccessGuardMetrics>,
+        read_fd: RawFd,
+        write_fd: RawFd,
+    ) -> Result<AccessGuardWiring, AccessGuardError> {
         let client = RbacClient::new(read_fd, write_fd)?;
         let guard = Arc::new(Self {
             client,
@@ -1299,6 +1321,43 @@ mod tests {
         assert_eq!(metrics.granted.load(Ordering::SeqCst), 0);
         assert_eq!(metrics.denied.load(Ordering::SeqCst), 0);
         assert_eq!(metrics.ipc_error.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "test-seams")]
+    #[tokio::test]
+    async fn from_fds_wires_like_from_env_without_the_environment() {
+        let (read_fd, write_fd, stub) = pipe_pair();
+        let metrics = Arc::new(CountingMetrics::default());
+        let before_read = std::env::var_os("VAUBAN_ACCESS_IPC_READ");
+        let wiring = AccessGuard::from_fds(
+            "ssh",
+            metrics.clone() as Arc<dyn AccessGuardMetrics>,
+            read_fd,
+            write_fd,
+        )
+        .unwrap();
+        assert_eq!(wiring.fds, vec![read_fd, write_fd]);
+        assert_eq!(std::env::var_os("VAUBAN_ACCESS_IPC_READ"), before_read);
+        let _handle = wiring.guard.spawn_dispatcher();
+        let stub_join = tokio::task::spawn_blocking(move || {
+            let Message::AccessRequest { request_id, .. } = stub.recv().unwrap() else {
+                unreachable!("guard sends an AccessRequest")
+            };
+            stub.send(&Message::AccessResponse {
+                request_id,
+                response: AccessResponse::AccessChecked(AccessCheckResult {
+                    allowed: true,
+                    require_mfa: false,
+                    require_approval: false,
+                    max_session_duration: None,
+                }),
+            })
+            .unwrap();
+        });
+        let decision = wiring.guard.authorize("u", "asset").await;
+        stub_join.await.unwrap();
+        assert!(decision.is_granted());
+        assert_eq!(metrics.granted.load(Ordering::SeqCst), 1);
     }
 
     #[test]

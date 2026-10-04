@@ -2677,18 +2677,18 @@ impl IacsTunnelGuards {
 /// The leaf never calls `connect` itself. The supervisor refuses:
 /// loopback, link-local, and unspecified addresses unless
 /// `allow_loopback_targets` is set (production stays false), and any
-/// target that lands on the MCP listener port on a local address
-/// (anti-self-listener).
+/// target that lands on web's HTTPS port on a local address: hop 2 is
+/// served there, so it would be the bastion itself (anti-self-listener).
 #[derive(Debug, Clone)]
 struct McpConnectGuards {
-    listen_port: u16,
+    web_https_port: u16,
     allow_loopback_targets: bool,
 }
 
 impl McpConnectGuards {
     fn from_config(cfg: &crate::config::McpConfig, https_port: u16) -> Self {
         Self {
-            listen_port: https_port,
+            web_https_port: https_port,
             allow_loopback_targets: cfg.allow_loopback_targets,
         }
     }
@@ -2714,7 +2714,7 @@ pub(crate) fn mcp_target_refused(
     if localish && !(guards.allow_loopback_targets && ip.is_loopback()) {
         return true;
     }
-    port == guards.listen_port && (ip.is_loopback() || ip.is_unspecified())
+    port == guards.web_https_port && (ip.is_loopback() || ip.is_unspecified())
 }
 
 /// Handle a TcpConnectRequest from vauban-web.
@@ -4333,6 +4333,83 @@ mod tests {
         let again = ensure_mcp_tunnel_identity(tls.to_str().unwrap()).unwrap();
         assert_eq!(again.spki_sha256, identity.spki_sha256);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Boot order on the real channels: the leaf reads the identity
+    /// before the first heartbeat, and web gets the pin of that same
+    /// certificate.
+    #[test]
+    fn e2e_identity_reaches_the_leaf_before_the_first_ping() {
+        let dir = tempfile::tempdir().unwrap();
+        let tls = dir.path().join("server.crt");
+        std::fs::write(&tls, b"placeholder").unwrap();
+        let (sup_proxy, leaf) = IpcChannel::pair().unwrap();
+        let (sup_web, web) = IpcChannel::pair().unwrap();
+
+        send_mcp_tunnel_identity(Some(&sup_proxy), Some(&sup_web), tls.to_str().unwrap()).unwrap();
+        sup_proxy
+            .send(&Message::Control(ControlMessage::Ping { seq: 1 }))
+            .unwrap();
+
+        let Message::McpTunnelIdentityProvision { cert_der, key_pem } = leaf.recv().unwrap() else {
+            unreachable!("first leaf message must be the identity")
+        };
+        assert!(key_pem.as_str().contains("PRIVATE KEY"));
+        assert!(matches!(
+            leaf.recv().unwrap(),
+            Message::Control(ControlMessage::Ping { seq: 1 })
+        ));
+        let Message::McpTunnelIdentityFingerprint { spki_sha256 } = web.recv().unwrap() else {
+            unreachable!("web must receive the pin")
+        };
+        assert_eq!(spki_sha256, spki_sha256_pin(&cert_der).unwrap());
+    }
+
+    #[test]
+    fn battle_twenty_linked_restarts_keep_one_spki() {
+        let dir = tempfile::tempdir().unwrap();
+        let tls = dir.path().join("server.crt");
+        std::fs::write(&tls, b"placeholder").unwrap();
+        let tls = tls.to_str().unwrap().to_string();
+        let first = ensure_mcp_tunnel_identity(&tls).unwrap().spki_sha256;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let (tls, barrier) = (tls.clone(), std::sync::Arc::clone(&barrier));
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (0..5)
+                        .map(|_| {
+                            let (sup_proxy, leaf) = IpcChannel::pair().unwrap();
+                            let (sup_web, web) = IpcChannel::pair().unwrap();
+                            send_mcp_tunnel_identity(Some(&sup_proxy), Some(&sup_web), &tls)
+                                .unwrap();
+                            let Message::McpTunnelIdentityProvision { cert_der, .. } =
+                                leaf.recv().unwrap()
+                            else {
+                                unreachable!("identity")
+                            };
+                            let Message::McpTunnelIdentityFingerprint { spki_sha256 } =
+                                web.recv().unwrap()
+                            else {
+                                unreachable!("pin")
+                            };
+                            assert_eq!(spki_sha256, spki_sha256_pin(&cert_der).unwrap());
+                            spki_sha256
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let pins: Vec<String> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
+        assert_eq!(pins.len(), 20);
+        assert!(
+            pins.iter().all(|p| *p == first),
+            "a restart changed the SPKI"
+        );
     }
 
     #[test]
@@ -6524,7 +6601,7 @@ mod tests {
                 &ldap,
                 &guards,
                 &McpConnectGuards {
-                    listen_port: 19443,
+                    web_https_port: 443,
                     allow_loopback_targets: false,
                 },
             );
@@ -6579,7 +6656,7 @@ mod tests {
                 &ldap,
                 &guards,
                 &McpConnectGuards {
-                    listen_port: 19443,
+                    web_https_port: 443,
                     allow_loopback_targets: false,
                 },
             );
@@ -6626,7 +6703,7 @@ mod tests {
                 &ldap,
                 &guards,
                 &McpConnectGuards {
-                    listen_port: 19443,
+                    web_https_port: 443,
                     allow_loopback_targets: false,
                 },
             );
@@ -6708,7 +6785,7 @@ mod tests {
             &ldap,
             &guards,
             &McpConnectGuards {
-                listen_port: 19443,
+                web_https_port: 443,
                 allow_loopback_targets: false,
             },
         );
@@ -7030,19 +7107,25 @@ mod tests {
 
     #[test]
     fn attack_mcp_connect_self_listener_is_rejected() {
-        let guards = McpConnectGuards {
-            listen_port: 19443,
+        let cfg = crate::config::McpConfig {
             allow_loopback_targets: true,
+            ..crate::config::McpConfig::default()
         };
-        let ip: std::net::IpAddr = "127.0.0.1".parse().expect("ip");
-        assert!(
-            mcp_target_refused(ip, 19443, &guards),
-            "the MCP listener port on loopback is the proxy itself"
-        );
-        assert!(
-            !mcp_target_refused(ip, 19001, &guards),
-            "a different loopback port is allowed only when the dev flag is on"
-        );
+        for https_port in [443u16, 8443] {
+            let guards = McpConnectGuards::from_config(&cfg, https_port);
+            for ip in ["127.0.0.1", "::1", "0.0.0.0"] {
+                let ip: std::net::IpAddr = ip.parse().expect("ip");
+                assert!(
+                    mcp_target_refused(ip, https_port, &guards),
+                    "{ip}:{https_port} is web's HTTPS port, where hop 2 is served"
+                );
+            }
+            let lo: std::net::IpAddr = "127.0.0.1".parse().expect("ip");
+            assert!(
+                !mcp_target_refused(lo, 19443, &guards),
+                "19443 is no longer a listener; only the dev flag gates loopback"
+            );
+        }
     }
 
     proptest::proptest! {
@@ -7055,7 +7138,7 @@ mod tests {
         ) {
             let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(a, b, c, d));
             let guards = McpConnectGuards {
-                listen_port: 19443,
+                web_https_port: 443,
                 allow_loopback_targets: false,
             };
             let refused = a == 127 || (a == 169 && b == 254);

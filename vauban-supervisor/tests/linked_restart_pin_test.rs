@@ -87,6 +87,26 @@ fn web_linked_group_contains_proxy_mcp() {
     );
 }
 
+/// A linked restart re-pushes the identity loaded from disk; it never
+/// mints a new key while the files are present and valid, so the SPKI
+/// the shim pinned survives any number of restarts. The 20-restart
+/// runtime battle is `battle_twenty_linked_restarts_keep_one_spki`.
+#[test]
+fn linked_restart_reuses_the_tunnel_identity_on_disk() {
+    let linked = fn_body(SUPERVISOR_MAIN, "fn respawn_linked_group(");
+    assert!(linked.contains("send_mcp_tunnel_identity(proxy, web, &config.server.tls.cert_path)"));
+    let ensure = fn_body(SUPERVISOR_MAIN, "fn ensure_mcp_tunnel_identity(");
+    assert!(
+        ensure.contains("if missing || expired {"),
+        "a new key is generated only when the files are missing or expiring"
+    );
+    assert!(
+        ensure.contains("KeyPair::from_pem(&pem)"),
+        "a re-issue keeps the existing key, hence the SPKI"
+    );
+    assert!(SUPERVISOR_MAIN.contains("fn battle_twenty_linked_restarts_keep_one_spki"));
+}
+
 #[test]
 fn watchdog_uses_linked_group_keys() {
     let body = fn_body(SUPERVISOR_MAIN, "fn watchdog_loop(");

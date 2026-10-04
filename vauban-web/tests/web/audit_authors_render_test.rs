@@ -105,6 +105,7 @@ fn make_manage_detail(
             ssh_host_key_mismatch: false,
             rdp_server_cert_fingerprint: None,
             rdp_server_cert_mismatch: false,
+            mcp_tunnel_spki: None,
         },
     }
 }

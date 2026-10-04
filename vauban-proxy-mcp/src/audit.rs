@@ -45,10 +45,20 @@ struct McpAuditInner {
 
 impl McpAudit {
     pub fn from_env(lease_tx: Option<RecordingLeaseTx>) -> Self {
+        Self::with_recording(McpRecording::from_env(lease_tx))
+    }
+
+    /// Hub over an explicit recording root, without the environment.
+    #[cfg(test)]
+    pub(crate) fn with_recording_dir(dir: std::path::PathBuf) -> Self {
+        Self::with_recording(McpRecording::with_storage(dir, None))
+    }
+
+    fn with_recording(recording: McpRecording) -> Self {
         Self {
             inner: Arc::new(McpAuditInner {
                 audit_tx: None,
-                recording: McpRecording::from_env(lease_tx),
+                recording,
                 last_ts: AtomicU64::new(0),
             }),
         }
@@ -544,10 +554,7 @@ mod tests {
             std::env::temp_dir().join(format!("vauban-mcp-audit-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        unsafe {
-            std::env::set_var("MCP_RECORDING_DIR", &dir);
-        }
-        let audit = McpAudit::from_env(None);
+        let audit = McpAudit::with_recording_dir(dir.clone());
         audit.record_session_opened("sess-1", None, json!({})).await;
         audit
             .record_tool_call(
@@ -561,16 +568,15 @@ mod tests {
             )
             .unwrap();
         // Find session.mcp.jsonl under YYYY/MM/sess-1/
-        let found = walkdir_jsonl(&dir).into_iter().next();
+        let found = walkdir_jsonl(&dir)
+            .into_iter()
+            .find(|p| p.parent().and_then(|d| d.file_name()) == Some("sess-1".as_ref()));
         let text = fs::read_to_string(found.expect("jsonl written")).unwrap();
         assert!(!text.contains("SECRET"));
         assert!(!text.contains("\"api_key\":\"k\""));
         assert!(text.contains("***"));
         assert!(text.contains("\"decision\":\"allow\""));
         let _ = fs::remove_dir_all(&dir);
-        unsafe {
-            std::env::remove_var("MCP_RECORDING_DIR");
-        }
     }
 
     fn walkdir_jsonl(dir: &Path) -> Vec<std::path::PathBuf> {

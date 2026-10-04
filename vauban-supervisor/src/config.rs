@@ -872,6 +872,33 @@ pub struct McpConfig {
     pub max_tunnels: u32,
     #[serde(default = "default_relay_max_inflight")]
     pub relay_max_inflight: u32,
+    /// Web-side relay timeout. The leaf gets [`leaf_relay_timeout_secs`].
+    #[serde(default = "default_relay_timeout_seconds")]
+    pub relay_timeout_seconds: u64,
+    #[serde(default = "default_tunnel_idle_seconds")]
+    pub tunnel_idle_seconds: u64,
+    #[serde(default = "default_max_tunnels_per_ip")]
+    pub max_tunnels_per_ip: u32,
+}
+
+/// The web timeout must leave the leaf 30 s to give up first.
+pub const MIN_RELAY_TIMEOUT_SECONDS: u64 = 40;
+
+/// Leaf upstream budget: 30 s under the web timeout, never below 10 s.
+pub fn leaf_relay_timeout_secs(web_relay_timeout_secs: u64) -> u64 {
+    web_relay_timeout_secs.saturating_sub(30).max(10)
+}
+
+fn default_relay_timeout_seconds() -> u64 {
+    120
+}
+
+fn default_tunnel_idle_seconds() -> u64 {
+    300
+}
+
+fn default_max_tunnels_per_ip() -> u32 {
+    16
 }
 
 fn default_require_seal() -> bool {
@@ -895,21 +922,35 @@ impl Default for McpConfig {
             require_seal: default_require_seal(),
             max_tunnels: default_max_tunnels(),
             relay_max_inflight: default_relay_max_inflight(),
+            relay_timeout_seconds: default_relay_timeout_seconds(),
+            tunnel_idle_seconds: default_tunnel_idle_seconds(),
+            max_tunnels_per_ip: default_max_tunnels_per_ip(),
         }
     }
 }
 
 impl McpConfig {
-    /// `Err` when `[mcp].bind_addr` is still present.
+    /// `Err` when `[mcp].bind_addr` is still present or a limit is out
+    /// of range.
     pub fn reject_obsolete(&self) -> Result<(), String> {
         if self.bind_addr.is_some() {
-            Err(
+            return Err(
                 "[mcp].bind_addr is obsolete since 0.9.45; hop 2 is served on the web HTTPS listener"
                     .into(),
-            )
-        } else {
-            Ok(())
+            );
         }
+        if self.relay_timeout_seconds < MIN_RELAY_TIMEOUT_SECONDS {
+            return Err(format!(
+                "[mcp].relay_timeout_seconds must be >= {MIN_RELAY_TIMEOUT_SECONDS}"
+            ));
+        }
+        if self.tunnel_idle_seconds == 0 {
+            return Err("[mcp].tunnel_idle_seconds must be > 0".into());
+        }
+        if self.max_tunnels_per_ip == 0 || self.max_tunnels_per_ip > self.max_tunnels {
+            return Err("[mcp].max_tunnels_per_ip must be in 1..=max_tunnels".into());
+        }
+        Ok(())
     }
 }
 
@@ -1443,6 +1484,18 @@ impl SupervisorConfig {
                     "VAUBAN_MCP_MAX_TUNNELS".to_string(),
                     self.mcp.max_tunnels.to_string(),
                 ));
+                vars.push((
+                    "VAUBAN_MCP_MAX_TUNNELS_PER_IP".to_string(),
+                    self.mcp.max_tunnels_per_ip.to_string(),
+                ));
+                vars.push((
+                    "VAUBAN_MCP_RELAY_TIMEOUT_SECS".to_string(),
+                    leaf_relay_timeout_secs(self.mcp.relay_timeout_seconds).to_string(),
+                ));
+                vars.push((
+                    "VAUBAN_MCP_TUNNEL_IDLE_SECS".to_string(),
+                    self.mcp.tunnel_idle_seconds.to_string(),
+                ));
             }
             _ => {}
         }
@@ -1483,6 +1536,136 @@ mod tests {
         assert!(fresh.require_seal);
         assert!(McpConfig::default().bind_addr.is_none());
         assert!(McpConfig::default().require_seal);
+    }
+
+    #[test]
+    fn mcp_limits_are_validated() {
+        let ok = McpConfig::default();
+        assert!(ok.reject_obsolete().is_ok());
+        for bad in [
+            McpConfig {
+                relay_timeout_seconds: MIN_RELAY_TIMEOUT_SECONDS - 1,
+                ..McpConfig::default()
+            },
+            McpConfig {
+                tunnel_idle_seconds: 0,
+                ..McpConfig::default()
+            },
+            McpConfig {
+                max_tunnels_per_ip: 0,
+                ..McpConfig::default()
+            },
+            McpConfig {
+                max_tunnels_per_ip: ok.max_tunnels + 1,
+                ..McpConfig::default()
+            },
+        ] {
+            assert!(bad.reject_obsolete().is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn leaf_relay_timeout_is_below_the_web_timeout() {
+        assert_eq!(leaf_relay_timeout_secs(120), 90);
+        assert_eq!(leaf_relay_timeout_secs(40), 10);
+        assert_eq!(leaf_relay_timeout_secs(5), 10);
+        for web in MIN_RELAY_TIMEOUT_SECONDS..=600 {
+            let leaf = leaf_relay_timeout_secs(web);
+            assert!(leaf < web && leaf >= 10, "web {web} leaf {leaf}");
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn leaf_timeout_always_gives_up_first(web in MIN_RELAY_TIMEOUT_SECONDS..u64::MAX / 2) {
+            let leaf = leaf_relay_timeout_secs(web);
+            proptest::prop_assert!(leaf < web);
+            proptest::prop_assert!(leaf >= 10);
+            proptest::prop_assert!(web - leaf >= 30 || leaf == 10);
+        }
+    }
+
+    fn proxy_mcp_keys(cfg: &SupervisorConfig) -> Vec<(String, String)> {
+        cfg.service_env_vars("proxy_mcp")
+            .into_iter()
+            .filter(|(k, _)| k.starts_with("VAUBAN_MCP_"))
+            .collect()
+    }
+
+    /// Every `VAUBAN_MCP_*` the supervisor emits for the leaf is read by
+    /// the leaf, and every `VAUBAN_MCP_*` the leaf reads is emitted.
+    #[test]
+    fn proxy_mcp_env_has_no_drift_with_the_leaf() {
+        let cfg = test_config();
+        let emitted: std::collections::BTreeSet<String> =
+            proxy_mcp_keys(&cfg).into_iter().map(|(k, _)| k).collect();
+        let leaf_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../vauban-proxy-mcp/src");
+        let mut leaf_src = String::new();
+        for entry in std::fs::read_dir(&leaf_dir).expect("leaf src") {
+            let path = entry.expect("entry").path();
+            if path.extension().is_some_and(|e| e == "rs") {
+                leaf_src.push_str(&std::fs::read_to_string(&path).expect("read"));
+            }
+        }
+        let mut read = std::collections::BTreeSet::new();
+        let mut rest = leaf_src.as_str();
+        while let Some(i) = rest.find("\"VAUBAN_MCP_") {
+            let tail = &rest[i + 1..];
+            let end = tail.find('"').unwrap_or(tail.len());
+            let key = &tail[..end];
+            if key.len() > "VAUBAN_MCP_".len()
+                && key
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            {
+                read.insert(key.to_string());
+            }
+            rest = &tail[end..];
+        }
+        for key in &emitted {
+            assert!(
+                read.contains(key),
+                "{key} is emitted but never read by the leaf"
+            );
+        }
+        for key in &read {
+            assert!(
+                emitted.contains(key) || LEAF_ONLY_MCP_ENV.contains(&key.as_str()),
+                "{key} is read by the leaf but never emitted by the supervisor"
+            );
+        }
+    }
+
+    /// Leaf keys an operator sets by hand in a lab, never emitted.
+    const LEAF_ONLY_MCP_ENV: &[&str] = &[];
+
+    #[test]
+    fn battle_proxy_mcp_env_is_deterministic_across_threads() {
+        let cfg = std::sync::Arc::new(test_config());
+        let expected = proxy_mcp_keys(&cfg);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let joins: Vec<_> = (0..8)
+            .map(|_| {
+                let cfg = std::sync::Arc::clone(&cfg);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    proxy_mcp_keys(&cfg)
+                })
+            })
+            .collect();
+        for join in joins {
+            assert_eq!(join.join().expect("thread"), expected);
+        }
+        let timeout = expected
+            .iter()
+            .find(|(k, _)| k == "VAUBAN_MCP_RELAY_TIMEOUT_SECS")
+            .map(|(_, v)| v.clone());
+        assert_eq!(
+            timeout,
+            Some(leaf_relay_timeout_secs(cfg.mcp.relay_timeout_seconds).to_string())
+        );
     }
 
     // ==================== Test Helpers ====================

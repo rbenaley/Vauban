@@ -105,6 +105,11 @@ mcp-mandate = ["dep:blake3", "dep:serde_json"]
 # SPKI fingerprint and pin compare for MCP upstream and the hop-2 tunnel.
 # The presented certificate is never a trust anchor.
 tls-pin = ["dep:sha2", "dep:base64", "dep:x509-cert"]
+# Env-free constructors (`AccessGuard::from_fds`,
+# `session_token::proxy_gate::init_with_key`) for parallel tests.
+# Enabled ONLY from `[dev-dependencies]`; never from `[dependencies]`
+# (pinned by shared/scripts/check_test_seams.sh).
+test-seams = []
 
 # Capsicum bindings for FreeBSD
 [target.'cfg(target_os = "freebsd")'.dependencies]

@@ -26,6 +26,15 @@
 > after a linked restart. Proxies and `vauban-web` exit 100 on a dead
 > peer pipe instead of spinning or running degraded. See §7.5.
 >
+> **1.3 amended 4 October 2026 (crates 0.9.46):** the hop-2 data pipe
+> survives an oversize message (only that relay or tunnel ends). The
+> leaf bounds tunnels per client IP and in total, with handshake and
+> idle timeouts. It reads `VAUBAN_MCP_REQUIRE_SEAL` and its relay and
+> tunnel limits from the supervisor's environment, and web cannot turn
+> Mission Seal off. The supervisor resends the tunnel identity on boot
+> and every restart before the first heartbeat. The broker refuses
+> `web`'s HTTPS port on a local address for MCP targets.
+>
 > **1.3 amended 3 October 2026 (crates 0.9.45):** hop 2 is no longer
 > a listener on the MCP leaf. `TOPOLOGY` has 23 edges: the extra one
 > is `Web -> ProxyMcp` with kind `Data` (`VAUBAN_<PEER>_DATA_IPC_*`).

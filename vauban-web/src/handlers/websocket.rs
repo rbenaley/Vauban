@@ -2657,32 +2657,60 @@ async fn handle_rdp_socket(
 pub async fn mcp_tunnel_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     client_addr: crate::middleware::client_addr::ClientAddr,
 ) -> Response {
     let Some(data) = state.proxy_mcp.as_ref().and_then(|proxy| proxy.data()) else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let Ok((tunnel_id, inbound)) = data.open_tunnel(client_addr.0.ip().to_string()) else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    let client_ip = crate::handlers::mcp_relay::hop2_client_ip(&state, &headers, client_addr.0);
+    let tunnel = McpTunnelCtx {
+        tunnel_id: data.reserve_tunnel_id(),
+        client_ip: client_ip.to_string(),
+        limits: crate::handlers::mcp_relay::tunnel_limits(&state),
+        data,
     };
-    let channel = WsChannel::McpTunnel(tunnel_id.to_string()).as_str();
+    let channel = WsChannel::McpTunnel(tunnel.tunnel_id.to_string()).as_str();
     info!(channel = %channel, "WebSocket connection requested");
-    ws.on_upgrade(move |socket| handle_mcp_tunnel_socket(socket, data, tunnel_id, inbound, channel))
+    let chunk = shared::messages::MCP_PIPE_CHUNK_BYTES;
+    ws.max_message_size(chunk)
+        .max_frame_size(chunk)
+        .on_upgrade(move |socket| handle_mcp_tunnel_socket(socket, tunnel, channel))
 }
 
-async fn handle_mcp_tunnel_socket(
-    socket: WebSocket,
+struct McpTunnelCtx {
     data: Arc<crate::ipc::proxy_mcp_data::ProxyMcpDataClient>,
     tunnel_id: u64,
-    mut inbound: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
-    channel_label: String,
-) {
+    client_ip: String,
+    limits: crate::ipc::proxy_mcp_data::TunnelLimits,
+}
+
+/// The tunnel is registered only once the upgrade has succeeded.
+async fn handle_mcp_tunnel_socket(socket: WebSocket, tunnel: McpTunnelCtx, channel_label: String) {
+    let McpTunnelCtx {
+        data,
+        tunnel_id,
+        client_ip,
+        limits,
+    } = tunnel;
     let (mut sender, mut receiver) = socket.split();
+    let opened = data.open_tunnel(tunnel_id, client_ip, limits);
     info!(channel = %channel_label, "WebSocket connected");
-    let mut ping_interval = interval(Duration::from_secs(30));
     // Initial value is overwritten at every break. Clippy cannot see that.
     #[allow(unused_assignments)]
     let mut close_cause: &'static str = "unknown";
+    let mut inbound = match opened {
+        Ok(inbound) => inbound,
+        Err(refused) => {
+            warn!(channel = %channel_label, ?refused, "MCP tunnel refused at registration");
+            let _ = sender.send(Message::Close(None)).await;
+            close_cause = "server_close";
+            info!(channel = %channel_label, cause = %close_cause, "WebSocket closed");
+            info!(channel = %channel_label, "WebSocket disconnected");
+            return;
+        }
+    };
+    let mut ping_interval = interval(Duration::from_secs(30));
     loop {
         tokio::select! {
             msg = receiver.next() => {

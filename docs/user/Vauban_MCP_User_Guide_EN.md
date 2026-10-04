@@ -185,7 +185,9 @@ VAUBAN_API_KEY=vbn_… vauban-mcp \
   --transport tunnel
 ```
 
-Point the assistant at that command as a stdio MCP server. The first connection records the leaf pin. A later pin change is refused.
+Point the assistant at that command as a stdio MCP server. The first connection records the leaf pin and prints it (`learned MCP tunnel pin; compare it with the asset page`). Before you trust it, an administrator compares that `SHA256:…` value with **Tunnel fingerprint (SPKI)** on the asset page (`/assets/manage/<asset-uuid>`). If they differ, delete the entry from the pin store and stop: something sits between you and the bastion. A later pin change is refused.
+
+`--url` must be `https://`. The pin is stored per origin (host and port, case-insensitive); a hop-1 answer that names another host or port is refused. A pin store from an older shim (one line per bare host) is migrated on first use: the same pin moves to `host:port` and the shim logs `migrated legacy MCP tunnel pin`; a different pin is refused and the old line is kept.
 
 Hosted connectors that require MCP OAuth are not supported.
 

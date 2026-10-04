@@ -69,6 +69,47 @@ fn inv_production_mcp_section_opt_in_disabled() {
         window.contains("hitl_pending_ttl_seconds = 900"),
         "production [mcp] must document hitl_pending_ttl_seconds"
     );
+    for key in [
+        "relay_timeout_seconds = 120",
+        "max_tunnels = 256",
+        "max_tunnels_per_ip = 16",
+        "tunnel_idle_seconds = 300",
+    ] {
+        assert!(window.contains(key), "production [mcp] must set {key}");
+    }
+}
+
+#[test]
+fn inv_every_shipped_mcp_section_carries_the_hop2_limits() {
+    for file in [
+        "config/default.toml",
+        "config/vauban.conf",
+        "config/testing.toml",
+        "config/development.toml",
+    ] {
+        let text = std::fs::read_to_string(repo_root().join(file)).expect(file);
+        let start = text.find("\n[mcp]\n").expect("[mcp]") + 1;
+        let rest = &text[start..];
+        let end = rest[6..].find("\n[").map_or(rest.len(), |i| i + 6);
+        let window = &rest[..end];
+        for key in [
+            "relay_timeout_seconds",
+            "max_tunnels",
+            "max_tunnels_per_ip",
+            "tunnel_idle_seconds",
+        ] {
+            assert!(
+                window
+                    .lines()
+                    .any(|l| l.trim_start().starts_with(&format!("{key} ="))),
+                "{file} [mcp] must set {key}"
+            );
+        }
+    }
+    let pin = std::fs::read_to_string(repo_root().join("pkg/check-mcp-pkg.sh")).expect("pin");
+    assert!(
+        pin.contains("relay_timeout_seconds max_tunnels max_tunnels_per_ip tunnel_idle_seconds")
+    );
 }
 
 #[test]

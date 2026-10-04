@@ -52,7 +52,19 @@ pub enum ProxyGateError {
 /// is already initialized — every error path is a hard boot failure
 /// for the proxy.
 pub fn init_from_env() -> Result<(), ProxyGateError> {
-    let key = TokenKey::from_env()?;
+    install(TokenKey::from_env()?)
+}
+
+/// Install `key` as [`init_from_env`] would, without the environment.
+/// First call wins; any later key is refused with
+/// [`ProxyGateError::AlreadyInitialized`]. Test builds only: a
+/// production build of a proxy never enables `test-seams`.
+#[cfg(feature = "test-seams")]
+pub fn init_with_key(key: TokenKey) -> Result<(), ProxyGateError> {
+    install(key)
+}
+
+fn install(key: TokenKey) -> Result<(), ProxyGateError> {
     TOKEN_KEY
         .set(key)
         .map_err(|_| ProxyGateError::AlreadyInitialized)?;

@@ -34,5 +34,8 @@ hyper-util = { version = "0.1", features = ["tokio", "server", "service"] }
 http-body-util = "0.1"
 
 [dev-dependencies]
+shared = { workspace = true, features = ["test-seams", "json-redact", "access-guard", "session-token", "tls-pin"] }
 proptest = "1"
+tokio = { workspace = true, features = ["test-util"] }
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+tempfile = "3"

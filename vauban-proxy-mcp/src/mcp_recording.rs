@@ -226,6 +226,10 @@ impl McpRecording {
             .or_else(|_| std::env::var("MCP_RECORDING_DIR"))
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("recordings"));
+        Self::with_storage(storage_base, lease_tx)
+    }
+
+    pub(crate) fn with_storage(storage_base: PathBuf, lease_tx: Option<RecordingLeaseTx>) -> Self {
         if let Err(e) = fs::create_dir_all(&storage_base) {
             warn!(
                 dir = %storage_base.display(),
@@ -245,27 +249,13 @@ impl McpRecording {
     /// Test / lab helper with an explicit storage root (no FD lease).
     #[cfg(test)]
     pub fn with_storage_base(storage_base: PathBuf) -> Self {
-        let _ = fs::create_dir_all(&storage_base);
-        Self {
-            inner: Arc::new(McpRecordingInner {
-                storage_base,
-                lease_tx: None,
-                sessions: Mutex::new(HashMap::new()),
-            }),
-        }
+        Self::with_storage(storage_base, None)
     }
 
     /// Test helper: storage root + FD lease channel (production-shaped).
     #[cfg(test)]
     pub fn with_storage_base_and_lease(storage_base: PathBuf, lease_tx: RecordingLeaseTx) -> Self {
-        let _ = fs::create_dir_all(&storage_base);
-        Self {
-            inner: Arc::new(McpRecordingInner {
-                storage_base,
-                lease_tx: Some(lease_tx),
-                sessions: Mutex::new(HashMap::new()),
-            }),
-        }
+        Self::with_storage(storage_base, Some(lease_tx))
     }
 
     /// When a lease channel is wired, local `open` is forbidden (Capsicum).

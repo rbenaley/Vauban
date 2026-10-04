@@ -65,4 +65,42 @@ if ! grep -q 'pins_match' "${ROOT}/shared/src/tls_pin.rs"; then
     errors=1
 fi
 
+# vauban-mcp TOFU: the pin is filed under the --url origin, never under
+# a URL the bastion returned, and plain http/ws is never an accepted scheme.
+SHIM="${ROOT}/vauban-mcp/src"
+shim_prod() { sed '/#\[cfg(test)\]/,$d' "$1" | sed 's|//.*$||'; }
+if ! shim_prod "${SHIM}/session.rs" | grep -qF 'accept_pin(cli_origin,'; then
+    echo "[lint] vauban-mcp post_tunnel must key the TOFU pin on the CLI origin" >&2
+    errors=1
+fi
+if ! shim_prod "${SHIM}/hop.rs" | grep -qF 'origin != expected_origin'; then
+    echo "[lint] vauban-mcp parse_hop1 must refuse a hop-1 url off the --url origin" >&2
+    errors=1
+fi
+for f in "${SHIM}"/*.rs; do
+    if shim_prod "${f}" | grep -qE 'starts_with\("(http|ws)://"\)|strip_prefix\("(http|ws)://"\)'; then
+        echo "[lint] ${f} accepts a plain http:// or ws:// scheme" >&2
+        errors=1
+    fi
+    # The TOFU store map is read and written by tofu.rs only (observe and
+    # the legacy migration); every other file goes through accept_pin.
+    if [[ "$(basename "${f}")" != "tofu.rs" ]] \
+        && shim_prod "${f}" | grep -qE '\bstore\.(get|insert|remove|entry)\('; then
+        echo "[lint] ${f} reads or writes the TOFU store outside tofu.rs" >&2
+        errors=1
+    fi
+done
+# A TOFU key never comes from a URL hop 1 returned.
+if shim_prod "${SHIM}/session.rs" | grep -qE '(accept_pin|observe)\([^;]*hop\.'; then
+    echo "[lint] vauban-mcp session.rs keys the TOFU pin on a hop-1 field" >&2
+    errors=1
+fi
+if ! shim_prod "${SHIM}/session.rs" | grep -qF 'tofu::observe(&mut store, origin, advertised)'; then
+    echo "[lint] vauban-mcp accept_pin must observe the pin under the origin it was given" >&2
+    errors=1
+fi
+if [[ ${errors} -ne 0 ]]; then
+    exit 1
+fi
+
 echo "[lint] WORM / signature verify uses an out-of-band pin"

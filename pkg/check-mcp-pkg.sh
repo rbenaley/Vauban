@@ -27,4 +27,14 @@ awk '
   in_m && $0 ~ /bind_addr/ { found=1 }
   END { if (found) { print "vauban.conf [mcp] must not keep bind_addr"; exit 1 } }
 ' "$conf"
+for f in "$toml" "$conf"; do
+  for key in relay_timeout_seconds max_tunnels max_tunnels_per_ip tunnel_idle_seconds; do
+    awk -v key="$key" '
+      $0 ~ /^\[mcp\]/ { in_m=1; next }
+      $0 ~ /^\[/ { in_m=0 }
+      in_m && $1 == key { found=1 }
+      END { if (!found) { print "[mcp] must set " key; exit 1 } }
+    ' "$f"
+  done
+done
 echo "mcp pkg pin ok"

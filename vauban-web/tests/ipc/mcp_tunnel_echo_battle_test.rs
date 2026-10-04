@@ -9,7 +9,7 @@ use std::time::Duration;
 use shared::ipc::IpcChannel;
 use shared::messages::Message;
 use tokio::sync::Barrier;
-use vauban_web::ipc::proxy_mcp_data::ProxyMcpDataClient;
+use vauban_web::ipc::proxy_mcp_data::{ProxyMcpDataClient, TunnelLimits};
 
 fn would_block(err: &shared::ipc::IpcError) -> bool {
     matches!(err, shared::ipc::IpcError::Io(e) if e.kind() == ErrorKind::WouldBlock)
@@ -47,7 +47,10 @@ async fn battle_thirty_two_tunnels_echo() {
         let barrier = Arc::clone(&barrier);
         joins.push(tokio::spawn(async move {
             barrier.wait().await;
-            let (id, mut rx) = data.open_tunnel(format!("203.0.113.{i}")).unwrap();
+            let id = data.reserve_tunnel_id();
+            let mut rx = data
+                .open_tunnel(id, format!("203.0.113.{i}"), TunnelLimits::default())
+                .unwrap();
             let payload = vec![i, i, i, i];
             data.send_tunnel(id, payload.clone()).unwrap();
             let echoed = tokio::time::timeout(Duration::from_secs(3), rx.recv())

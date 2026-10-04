@@ -1000,6 +1000,9 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
     if let Some(ref client) = app_state.proxy_mcp {
         client.set_runtime(app_state.clone());
         if let Some(data) = init_mcp_data_client() {
+            data.set_relay_timeout(std::time::Duration::from_secs(
+                app_state.config.mcp.relay_timeout_seconds,
+            ));
             client.set_data(Arc::clone(&data));
             spawn_ipc_pump(
                 "mcp_data",
